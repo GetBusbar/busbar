@@ -3,10 +3,10 @@
 
 //! Step 4 — **Admit**: the door, as the LLM plane's own step file.
 //!
-//! This is the plane half of the kernel's `Units::admit` row. The signature below is that row's,
-//! argument for argument — the step's own unit token, the admit token the hold is opened with, the
-//! request's context, the principal and the verified set — and it hands back the same sealed
-//! answer, `Decision<Admit>`, alongside the plane-side facts the Route, Meter and Audit steps read.
+//! This is the plane half of the kernel's `Units::admit` row. It asks the door and hands back the
+//! door's VERDICT — admitted, or the refusal — alongside the plane-side facts the Route, Meter and
+//! Audit steps read. It does not hand back the sealed `Decision<Admit>`, because on a yes that
+//! decision carries the unit's hold, and the hold is not the plane's to open (see "The hold" below).
 //!
 //! # The body is today's door, unchanged
 //!
@@ -51,21 +51,18 @@
 //!
 //! # The hold
 //!
-//! The hold this step opens is accounting. It sizes a reservation; it never refuses a unit the
-//! decision admitted, and an under-sized one tops up or posts an overdraft rather than turning
-//! anyone away. That is why it is opened at zero here: the pricer that sizes it against the
-//! verified set is the ledger phase's, and a hold sized wrong is invisible to a caller, whereas a
-//! hold that gated admission would not be. What the hold does carry from this step is the identity
-//! it was opened for and the fact that the door said yes — which is what the exit path needs to
-//! settle it exactly once.
+//! The hold is the KERNEL'S, and this step neither opens nor names one. #43 makes a plane
+//! pricing-blind and #83 puts the hold at the kernel's admit and exit (defs 5/6): a reservation is
+//! accounting against a money figure, and a plane that opened one would be doing money on its side
+//! of the seam. So this step says only what the door said; the composition root that drives the
+//! kernel's `Units::admit` row opens the hold on a yes, journals it (item 127), and the loop's exit
+//! settles it. The hold never refused a unit the door admitted, so moving where it is opened moves
+//! no refusal and no figure.
 
 use std::sync::Arc;
 
 use axum::response::Response;
-use busbar_contract::caps::{
-    step::Admit, Admission, Admittance, Decision, Grant, Hold, Pass, PrincipalId, ReasonCode,
-    Refusal, VerifiedDestination,
-};
+use busbar_contract::caps::{ReasonCode, Refusal, VerifiedDestination};
 use busbar_kernel::plane_host::EngineHost;
 
 /// What the door needs that the step shape has nowhere to put.
@@ -93,12 +90,13 @@ pub struct AdmitCtx<'a> {
 
 /// The door's answer, plus what the later steps read.
 ///
-/// [`Admitted::decision`] is exactly what the kernel's `Units::admit` returns. The rest is the
-/// plane's own: which pool the charge actually landed on, whether it landed at all, the meter half
-/// of the hold, and — on a refusal — the bytes the door already rendered.
+/// [`Admitted::verdict`] is the door's yes or no; the kernel turns it into the sealed step-4
+/// answer, opening the hold on a yes. The rest is the plane's own: which pool the charge actually
+/// landed on, whether it landed at all, the stream-end metering sink, and — on a refusal — the
+/// bytes the door already rendered.
 pub struct Admitted {
-    /// The sealed step-4 answer.
-    pub decision: Decision<Admit>,
+    /// The door's verdict: `Ok` when it admitted the unit, the refusal when it did not.
+    pub verdict: Result<(), Refusal>,
     /// Whether the charge LANDED. `false` means the request was admitted without charging
     /// (governance off, or no key resolved), and a non-2xx end must NOT refund: the refund is a
     /// blind decrement that would erode another request's spend in the same window.
@@ -109,7 +107,7 @@ pub struct Admitted {
     /// Whether the verified set offered an upstream to route to, which is what makes a client unit
     /// draw a request slot and post the flat fee.
     pub upstream_candidate: bool,
-    /// The stream-end metering sink: the hold's meter half. It carries the admission's in-flight
+    /// The stream-end metering sink. It carries the admission's in-flight
     /// concurrency gauges, which release when its last clone drops — i.e. when the response stream
     /// completes or the request unwinds — so it is built here, with the admission, and never later.
     ///
@@ -123,39 +121,20 @@ pub struct Admitted {
     pub refusal: Option<Response>,
 }
 
-impl Admitted {
-    /// The step's answer on its own, which is what the loop takes.
-    pub fn into_decision(self) -> Decision<Admit> {
-        self.decision
-    }
-}
-
-/// The shape of this step, as a value — the `Units::admit` row with the plane's own context.
+/// The shape of this step, as a value — the plane's half of the `Units::admit` row.
 ///
 /// The kernel's row takes a `UnitCtx` the kernel owns and this crate cannot name: a plane is a
-/// plugin on the neutral ABI and does not depend on the kernel. So the context is the plane's, and
-/// everything else — the two tokens, the principal, the verified set, the sealed answer — is the
-/// kernel's own vocabulary, named at `busbar-caps` where a plugin is entitled to name it.
-pub type AdmitStep = for<'a, 'b> fn(
-    &Pass<Admit>,
-    &Grant<Admittance>,
-    &AdmitCtx<'a>,
-    &PrincipalId,
-    &'b [VerifiedDestination],
-) -> Admitted;
+/// plugin on the neutral ABI and does not depend on the kernel. So the context is the plane's. The
+/// step tokens, the principal and the sealed answer stay with the kernel's row, which opens the
+/// hold; the plane reads the verified set and answers with the door's verdict.
+pub type AdmitStep = for<'a, 'b> fn(&AdmitCtx<'a>, &'b [VerifiedDestination]) -> Admitted;
 
-/// Step 4. Ask the door, and open the hold its yes entitles the unit to.
+/// Step 4. Ask the door, and say what it answered.
 ///
 /// The verified set is read for one fact only: whether there is an upstream to route to. Every
 /// destination this plane verifies is an upstream lane, so a non-empty set is that fact; the kind
 /// tag that would say so directly is not on a verified destination yet.
-pub fn admit(
-    unit_token: &Pass<Admit>,
-    admit_token: &Grant<Admittance>,
-    ctx: &AdmitCtx<'_>,
-    principal: &PrincipalId,
-    destinations: &[VerifiedDestination],
-) -> Admitted {
+pub fn admit(ctx: &AdmitCtx<'_>, destinations: &[VerifiedDestination]) -> Admitted {
     // THE door, taken without its terminal. Its `Err` is the refusal ALREADY rendered in the
     // ingress protocol's native envelope and NOT yet posted — nothing was charged, so nothing is
     // refunded on the way out, and the one place it is sealed is the Audit step.
@@ -163,7 +142,7 @@ pub fn admit(
         .host
         .admission_check(ctx.gov, ctx.proto, ctx.destination, ctx.charged_at)
     {
-        Err(resp) => refused(unit_token, *resp),
+        Err(resp) => refused(*resp),
         Ok((admit, downgraded)) => {
             // `Some` iff the charge landed. Governance off or no resolved key admits without
             // charging, and that request must finish with `charged = false`.
@@ -174,12 +153,8 @@ pub fn admit(
             let sink =
                 crate::native_ingress::usage_sink(ctx.host, ctx.gov, pool, ctx.charged_at, admit);
             Admitted {
-                // The hold is opened at zero: it is accounting, and sizing it is the ledger
-                // phase's. See this module's header for why a small hold cannot refuse anyone.
-                decision: Decision::proceed(
-                    unit_token,
-                    Admission::Own(Hold::open(admit_token, principal.clone(), 0)),
-                ),
+                // A yes, and nothing more: the hold it entitles the unit to is the kernel's to open.
+                verdict: Ok(()),
                 charged,
                 effective_pool: downgraded,
                 upstream_candidate: !destinations.is_empty(),
@@ -190,8 +165,8 @@ pub fn admit(
     }
 }
 
-/// A door refusal: no hold, no charge, no refund, no posted link, and the door's own bytes carried
-/// through to the one step that posts.
+/// A door refusal: no charge, no refund, no posted link, and the door's own bytes carried through
+/// to the one step that posts.
 ///
 /// The reason code is the record's closed vocabulary, and the seam this step reaches the door
 /// through hands back a rendered response rather than the blocking bucket, so the code cannot be
@@ -199,13 +174,13 @@ pub fn admit(
 /// status, the `kind`, the message and the retry hint an SDK reads — is the response itself, which
 /// is why it is carried rather than re-derived. The retry hint is lifted onto the refusal so the
 /// record carries the same number the wire does.
-fn refused(unit_token: &Pass<Admit>, resp: Response) -> Admitted {
+fn refused(resp: Response) -> Admitted {
     let mut refusal = Refusal::new(ReasonCode::OverBudget);
     if let Some(secs) = retry_after_secs(&resp) {
         refusal = refusal.retry_after(secs);
     }
     Admitted {
-        decision: Decision::refuse(unit_token, refusal),
+        verdict: Err(refusal),
         charged: false,
         effective_pool: None,
         upstream_candidate: false,

@@ -13,14 +13,12 @@
 //! per-call `Queries` charge, `receive.rs:723-740`); the kernel exit opens an empty `ZeroHold`,
 //! reports `Evidence::default` and binds no book, so it settles NOTHING and cannot double-count.
 //!
-//! DORMANT — DUAL-PATH, MONEY AUTHORITY NOT FLIPPED. The shipped A2A authority stays
-//! `busbar_kernel::plane_host::run_gauntlet` at `crates/busbar-a2a/src/a2a/receive.rs:892`. This
-//! rider is built and shadow-proven byte-identical here, but the one-line flip (re-point that call
-//! to `run_a2a_via_kernel`) waits on the fleet-box money oracle (DECISIONS #29): `bin/oracle
-//! record`+`replay` run DIRECTLY on a fleet box (docker present), scoped to the money families, vs
-//! the 1.5.5 golden — NOT through `prove-remote.sh` (that wrapper is circular until core-deletion
-//! lands). Per DECISIONS #29 the cutover is dual-write-then-flip-authority, not from-scratch byte
-//! reproduction, because the loop==legacy switch-over golden is already green.
+//! THIS MODULE IS TEST-ONLY; THE FLIP IT REHEARSES IS LIVE. The shipped A2A call site is still
+//! `busbar_kernel::plane_host::run_gauntlet` at `crates/busbar-a2a/src/a2a/receive.rs`, but
+//! `gauntlet_install::install()` registers the kernel-loop runner under A2A's capability key at
+//! boot, so that call ALREADY dispatches through `run_gauntlet_via_kernel` in production (item
+//! 125). The money stays where it was because the bridge opens a `ZeroHold` and reports no
+//! evidence; this rider's shadow proof is what shows the two paths byte-identical.
 //!
 //! WHY `#[cfg(test)]`. The rider is a re-point of an existing call, not a new production surface: the
 //! only production entry to the kernel bridge stays the shipped substrate gauntlet until the flip.

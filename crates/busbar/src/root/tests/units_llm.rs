@@ -257,6 +257,7 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
             output_utok: 1.0,
             cache_read_utok: 0.0,
             cache_write_utok: 0.0,
+            ..Default::default()
         },
     )]);
     let cost = busbar_kernel::cost::CostModel::resolve_parts(
@@ -798,11 +799,13 @@ fn a_unit_prices_at_the_entry_in_force_when_it_arrived_and_not_at_the_head() {
     let late = priced_amount(&history, Arrived::at(5_000, 2), &token, &report_of(1_000));
 
     assert_eq!(
-        early, 1_000_000,
+        early,
+        Ok(1_000_000),
         "a unit that arrived before the appended entry was re-priced at it"
     );
     assert_eq!(
-        late, 100_000_000,
+        late,
+        Ok(100_000_000),
         "a unit that arrived after the appended entry was priced at the entry it superseded"
     );
 }
@@ -861,12 +864,12 @@ fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
     let at = Arrived::at(9_000, 1);
     assert_eq!(
         priced_amount(&admitted, at, &token, &report_of(1_000)),
-        1_000_000,
+        Ok(1_000_000),
         "the pinned snapshot saw an entry appended after the unit was admitted"
     );
     assert_eq!(
         priced_amount(&next, at, &token, &report_of(1_000)),
-        100_000_000,
+        Ok(100_000_000),
         "the next admission did not see the appended entry"
     );
 }
@@ -891,12 +894,12 @@ fn a_pin_below_the_head_reads_the_history_as_it_stood_at_that_seq() {
     let at = Arrived::at(9_000, 1);
     assert_eq!(
         priced_amount(&earlier, at, &token, &report_of(1_000)),
-        1_000_000,
+        Ok(1_000_000),
         "a snapshot at seq 0 resolved an entry that was appended after it"
     );
     assert_eq!(
         priced_amount(&head, at, &token, &report_of(1_000)),
-        100_000_000,
+        Ok(100_000_000),
         "the head snapshot did not resolve the entry appended onto it"
     );
 }
@@ -1109,6 +1112,7 @@ async fn drive_keeping_the_unit<'n>(
         charged_at: EPOCH,
         history: crate::root::kernel::ROOT_CARD.pin(),
         arrived: Arrived::at(EPOCH * 1_000, 0),
+        principal: principal.clone(),
         deferred: Mutex::new(None),
         model: Mutex::new(String::new()),
         walk: Walk::open(arrival),
@@ -2776,5 +2780,908 @@ fn the_llm_provenance_stamp_names_the_card_in_force_when_the_unit_arrived() {
         0,
         "a seconds-valued instant matches only the from-zero opening entry — which is why the \
          settle path resolves at `Arrived::ms()` and never at `Arrived::secs()`"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// ITEM 126 — TWO BOOKS OVER ONE EVENT: WHICH ONE IS THE INVOICE, AND A DISAGREEMENT IS RED
+// ---------------------------------------------------------------------------------------------
+
+/// A dated history of `(effective_from_ms, input rate, output rate, flat fee)` entries over the one
+/// lane `"lane"`, built outside the process holder so the proof names its own instants. `present`
+/// is the #42 switch: `false` builds the ABSENT card (billing off — every class at nothing, the flat
+/// fee still carried, `card_from_config`'s documented shape).
+fn fee_history_of(
+    entries: &[(u64, f64, f64, i64)],
+    present: bool,
+) -> crate::root::kernel::PinnedHistory {
+    let mut history = busbar_kernel_ledger::cost::History::new();
+    for (n, (from, input, output, fee)) in entries.iter().enumerate() {
+        let card = crate::root::kernel::card_from_config(
+            [(
+                "lane",
+                busbar_substrate_values::billing::RawTierRates {
+                    input: *input,
+                    output: *output,
+                    cache_read: 0.0,
+                    cache_write: 0.0,
+                },
+            )],
+            *fee,
+            present,
+        );
+        history.append(busbar_kernel_ledger::cost::CardEntryDraft {
+            effective_from: if n == 0 { 0 } else { *from },
+            effective_until: None,
+            card,
+            appended_at: *from,
+            author: busbar_kernel_ledger::cost::Author::Config {
+                policy_epoch: n as u64,
+            },
+        });
+    }
+    crate::root::kernel::PinnedHistory::for_test(
+        std::sync::Arc::new(history),
+        busbar_kernel_ledger::cost::HistorySeq((entries.len() - 1) as u64),
+    )
+}
+
+/// A late report of `input`/`output` tokens and `fee_count` billable requests on `"lane"`.
+fn split_report(input: u64, output: u64, fee_count: u32) -> LateReport {
+    let mut units = std::collections::BTreeMap::new();
+    if input != 0 {
+        units.insert(busbar_api::UNIT_INPUT.to_string(), input);
+    }
+    if output != 0 {
+        units.insert(busbar_api::UNIT_OUTPUT.to_string(), output);
+    }
+    LateReport {
+        usage: busbar_substrate_values::billing::Usage { usage_units: units },
+        fee_count,
+        lane: "lane".to_string(),
+        provider: "provider".to_string(),
+    }
+}
+
+/// **THE INVOICE'S FIGURE for one unit** — what `GET /api/v1/admin/usage` serves for the metering
+/// row this unit lands on, computed by the admin read's OWN function (`read_path_money`, a `pub use`
+/// of the served derivation, never a copy) at the instant that read resolves the row at:
+/// `row_priced_at_ms(bucket start, era start)`, where the era is the `effective_from` of the entry
+/// in force when the unit accrued (what `record_metering` stamps as `priced_from_ms`).
+fn invoice_micros(
+    history: &crate::root::kernel::PinnedHistory,
+    arrived_ms: u64,
+    report: &LateReport,
+) -> i64 {
+    use busbar_core_admin::v1::service::read_path_money as invoice;
+    let view = history.view();
+    let era = view
+        .entry_at(arrived_ms)
+        .map_or(0, busbar_kernel_ledger::cost::CardEntry::effective_from);
+    let bucket_start_secs = arrived_ms / 1_000 / 86_400 * 86_400;
+    let at = invoice::row_priced_at_ms(bucket_start_secs, era);
+    let (_, card) = view.card_at(at).expect("a card covers every instant");
+    let unit = |k: &str| report.usage.usage_units.get(k).copied().unwrap_or(0);
+    let row = busbar_kernel::admin::v1::contract::UsageBreakdown {
+        tokens_input: unit(busbar_api::UNIT_INPUT),
+        tokens_output: unit(busbar_api::UNIT_OUTPUT),
+        tokens_cache_read: unit(busbar_api::UNIT_CACHE_READ),
+        tokens_cache_creation: unit(busbar_api::UNIT_CACHE_WRITE),
+        requests: u64::from(report.fee_count),
+        spend_micros: 0,
+    };
+    let cost =
+        busbar_kernel::cost::CostModel::resolve_parts(None, 0, &std::collections::BTreeMap::new());
+    invoice::derive_spend_micros_row_at_card(&view, at, card, &cost, &report.lane, &row)
+        .expect("the invoice's card prices every lane the fixture serves")
+}
+
+/// The second book's figure (nano-units) through the CHECKED micro-projection — the one money type,
+/// which refuses a figure it cannot hold rather than pinning it at the ceiling (item 28).
+fn second_book_micros(
+    second_book: Result<u64, busbar_kernel_ledger::cost::Unpriceable>,
+) -> Result<i64, String> {
+    let nanos = second_book.map_err(|refusal| format!("the second book refused: {refusal:?}"))?;
+    busbar_kernel_ledger::cost::Money::of_nanos(u128::from(nanos))
+        .and_then(busbar_kernel_ledger::cost::Money::micros_i64)
+        .map_err(|refusal| format!("{nanos} nano-units do not project: {refusal:?}"))
+}
+
+/// The reconciliation: the second book's posting (nano-units) projected through the ONE checked
+/// micro-projection must equal the invoice's figure. A second book that REFUSED where the invoice
+/// served a figure disagrees with it. `Err` names the cell and both figures.
+fn books_agree(
+    label: &str,
+    second_book: Result<u64, busbar_kernel_ledger::cost::Unpriceable>,
+    invoice: i64,
+) -> Result<(), String> {
+    let projected = second_book_micros(second_book.clone());
+    if projected == Ok(invoice) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{label}: the kernel-loop book posted {second_book:?} nano-units ({projected:?} micro) \
+             but the invoice (/admin/usage over the governance ledger) serves {invoice} micro"
+        ))
+    }
+}
+
+/// **TWO BOOKS, ONE EVENT — THE INVOICE IS THE GOVERNANCE LEDGER, AND THE SECOND BOOK MUST AGREE WITH
+/// IT CELL BY CELL.**
+///
+/// A delivered LLM unit leaves two records. The walk's completion tap accrues its counts onto the
+/// GOVERNANCE LEDGER (the metering series + usage ledger) — raw counts, no price, which is what
+/// `/usage` serves and what 1.5.5 billed. Then [`LateAccrual`] PRICES the same reading and posts
+/// the priced amount onto the kernel-loop Durability book. By the money model (BUSBAR-1.6.0.md
+/// Part 0: *money = f(ledger, ratecard), derived at read time*; #43/#71: the ledger stores counts;
+/// #77(3): a price is NEVER stored) only the first can be the invoice: it holds the facts and the
+/// served figure is the read-time view over them. The Durability posting carries a priced figure,
+/// so it is a derived reading — sound exactly while it agrees with the invoice, and a defect the
+/// moment it does not.
+///
+/// The cells mirror `billing|rate-card|history-mid-window`: a boot card, a 10x card, then a 100x card
+/// with a 3-unit flat fee, and a unit arriving in each window — plus a fee-only unit (a failed
+/// billing that still carries its request), a token-only provider-origin unit (fee count 0), and a
+/// billing-OFF deployment (absent card, #42: tokens at nothing, fee still carried).
+///
+/// THE NEGATIVE CONTROL is inside the test: the same comparator fed a PLANTED divergence — the
+/// second book priced against the head card instead of the card in force at arrival, and the second
+/// book dropping the fee — must report RED. A comparator that could not see those would make the
+/// green above meaningless.
+#[test]
+fn the_second_book_agrees_with_the_invoice_cell_by_cell_and_a_divergence_is_red() {
+    let kernel = busbar_kernel::teller::Kernel::new();
+    let token = kernel.usage_token();
+    let billed = fee_history_of(
+        &[
+            (0, 0.5, 1.0, 0),
+            (5_000, 5.0, 10.0, 0),
+            (9_000, 50.0, 100.0, 3),
+        ],
+        true,
+    );
+    let billing_off = fee_history_of(&[(0, 0.0, 0.0, 1)], false);
+
+    let cells: [(&str, &crate::root::kernel::PinnedHistory, u64, LateReport); 7] = [
+        (
+            "boot card, before A",
+            &billed,
+            1_000,
+            split_report(11, 7, 1),
+        ),
+        (
+            "card A, between A and B",
+            &billed,
+            6_000,
+            split_report(11, 7, 1),
+        ),
+        (
+            "card B + fee, after B",
+            &billed,
+            10_000,
+            split_report(11, 7, 1),
+        ),
+        (
+            "fee only (billing failed)",
+            &billed,
+            10_000,
+            split_report(0, 0, 1),
+        ),
+        (
+            "provider origin (no fee)",
+            &billed,
+            10_000,
+            split_report(11, 7, 0),
+        ),
+        (
+            "billing off, tokens + fee",
+            &billing_off,
+            10_000,
+            split_report(11, 7, 1),
+        ),
+        (
+            "billing off, fee only",
+            &billing_off,
+            10_000,
+            split_report(0, 0, 1),
+        ),
+    ];
+
+    let mut failures = Vec::new();
+    for (label, history, at, report) in &cells {
+        let second = priced_amount(history, Arrived::at(*at, 1), &token, report);
+        let invoice = invoice_micros(history, *at, report);
+        if let Err(e) = books_agree(label, second, invoice) {
+            failures.push(e);
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "the second book disagrees with the invoice on {} cell(s):\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+
+    // A NON-VACUITY FLOOR: the billed cells are not all zero, so agreement is not 0 == 0.
+    assert_eq!(
+        Ok(invoice_micros(&billed, 10_000, &split_report(11, 7, 1))),
+        // 11 x 50 + 7 x 100 + the 3-unit fee at the one scale.
+        second_book_micros(priced_amount(
+            &billed,
+            Arrived::at(10_000, 1),
+            &token,
+            &split_report(11, 7, 1)
+        )),
+    );
+    assert_ne!(invoice_micros(&billed, 10_000, &split_report(11, 7, 1)), 0);
+
+    // THE PLANTED DIVERGENCES — each must go RED.
+    // (1) the second book prices a unit that arrived under the boot card at the HEAD card.
+    let early = split_report(11, 7, 1);
+    let at_head = priced_amount(&billed, Arrived::at(10_000, 1), &token, &early);
+    assert!(
+        books_agree(
+            "planted: priced at head",
+            at_head,
+            invoice_micros(&billed, 1_000, &early)
+        )
+        .is_err(),
+        "a second book priced at the head card was NOT caught disagreeing with the invoice"
+    );
+    // (2) the second book drops the flat fee.
+    let fee_dropped = priced_amount(
+        &billed,
+        Arrived::at(10_000, 1),
+        &token,
+        &split_report(11, 7, 0),
+    );
+    assert!(
+        books_agree(
+            "planted: fee dropped",
+            fee_dropped,
+            invoice_micros(&billed, 10_000, &split_report(11, 7, 1))
+        )
+        .is_err(),
+        "a second book that dropped the fee was NOT caught disagreeing with the invoice"
+    );
+}
+
+/// A PRESENT card (#42) that prices `"lane"`'s input and output and is SILENT about cache reads.
+fn cache_silent_history() -> crate::root::kernel::PinnedHistory {
+    use busbar_kernel_ledger::cost::{History, HistorySeq, LaneClass, RateCard};
+    let card = RateCard::from_micro_rates(
+        [
+            (LaneClass::new("lane", busbar_api::UNIT_INPUT), 3.0),
+            (LaneClass::new("lane", busbar_api::UNIT_OUTPUT), 16.0),
+        ],
+        0,
+    );
+    crate::root::kernel::PinnedHistory::for_test(
+        std::sync::Arc::new(History::opening(card, 0)),
+        HistorySeq(0),
+    )
+}
+
+/// **AN UNPRICED CLASS ON A PRESENT CARD KEEPS ITS COUNTS ROW, AND THE READ REFUSES** (#42, #43).
+///
+/// The unit read 1,000 input, 250 output and 10,000,000 cache-read tokens; the card in force names
+/// input and output for the lane and says nothing about cache reads. Before, settlement priced
+/// through the READ posture, which flags the silent class and prices it at nothing, so the second
+/// book took 7,000,000 nano-units — the input and output alone — for a unit whose largest line
+/// was never priced: a RATECARD fault (a class the card should have refused) booked as a figure.
+///
+/// Now settlement prices fail-closed and REFUSES; the posting still carries every count, whole,
+/// and the served read over the same counts refuses the same class. Nothing is zeroed, nothing is
+/// dropped, and no partial figure reaches a book.
+#[test]
+fn an_unpriced_class_on_a_present_card_keeps_its_counts_row_and_the_read_refuses() {
+    let kernel = busbar_kernel::teller::Kernel::new();
+    let token = kernel.usage_token();
+    let history = cache_silent_history();
+    let mut report = split_report(1_000, 250, 1);
+    report
+        .usage
+        .usage_units
+        .insert(busbar_api::UNIT_CACHE_READ.to_string(), 10_000_000);
+    let at = Arrived::at(4_000, 7);
+
+    // THE ROW: the counts, whole — not zeroed, not dropped, not trimmed to the priced classes.
+    let (posting, priced) = priced_posting(&history, at, &token, &report);
+    let counts: std::collections::BTreeMap<&str, u64> = posting
+        .quantities
+        .iter()
+        .map(|q| (q.class.as_str(), q.amount))
+        .collect();
+    assert_eq!(
+        counts,
+        std::collections::BTreeMap::from([
+            (busbar_api::UNIT_INPUT, 1_000),
+            (busbar_api::UNIT_OUTPUT, 250),
+            (busbar_api::UNIT_CACHE_READ, 10_000_000),
+        ]),
+        "the posting lost or zeroed a count the unit reported"
+    );
+    assert_eq!(posting.fee_count, 1, "the billable count rides the row");
+
+    // SETTLEMENT REFUSES the class, and leaves no figure cached as though it had priced it.
+    assert!(
+        matches!(
+            priced,
+            Err(busbar_kernel_ledger::cost::Unpriceable::ClassUnpriced { ref class, .. })
+                if class == busbar_api::UNIT_CACHE_READ
+        ),
+        "settlement priced a class the present card is silent about: {priced:?}"
+    );
+    assert!(posting.cached.is_none(), "a refused lookup cached a figure");
+    assert!(
+        matches!(
+            priced_amount(&history, at, &token, &report),
+            Err(busbar_kernel_ledger::cost::Unpriceable::ClassUnpriced { .. })
+        ),
+        "the second book was handed a figure — a partial is a silent zero for the unpriced class"
+    );
+
+    // THE READ over the same counts row — the served /admin/usage derivation — refuses too.
+    use busbar_core_admin::v1::service::read_path_money as invoice;
+    let view = history.view();
+    let (_, card) = view.card_at(at.ms()).expect("the card is in force");
+    let row = busbar_kernel::admin::v1::contract::UsageBreakdown {
+        tokens_input: 1_000,
+        tokens_output: 250,
+        tokens_cache_read: 10_000_000,
+        tokens_cache_creation: 0,
+        requests: 1,
+        spend_micros: 0,
+    };
+    let cost =
+        busbar_kernel::cost::CostModel::resolve_parts(None, 0, &std::collections::BTreeMap::new());
+    assert!(
+        invoice::derive_spend_micros_row_at_card(&view, at.ms(), card, &cost, "lane", &row)
+            .is_err(),
+        "the read priced a class the present card is silent about"
+    );
+}
+
+/// **A FIGURE THE RECORD CANNOT HOLD REFUSES; IT IS NEVER PINNED AT THE CEILING** (item 28).
+///
+/// 10^17 output tokens at 1,000 micro-units each is 10^23 nano-units: inside the one function's
+/// arithmetic, past a `u64`. The narrowing used to answer `u64::MAX` — a bill nobody posted.
+#[test]
+fn a_settled_figure_past_the_record_refuses_and_is_never_pinned() {
+    let kernel = busbar_kernel::teller::Kernel::new();
+    let token = kernel.usage_token();
+    let history = history_of(&[(0, 1_000.0)]);
+    let (_, priced) = priced_posting(
+        &history,
+        Arrived::at(4_000, 7),
+        &token,
+        &report_of(100_000_000_000_000_000),
+    );
+    assert!(
+        priced.is_ok_and(|p| p.priced_nanos > u128::from(u64::MAX)),
+        "the fixture must price past the record, or this pins nothing"
+    );
+    assert_eq!(
+        priced_amount(
+            &history,
+            Arrived::at(4_000, 7),
+            &token,
+            &report_of(100_000_000_000_000_000)
+        ),
+        Err(busbar_kernel_ledger::cost::Unpriceable::Overflow),
+    );
+}
+
+/// ITEM 129: THE DROP GUARD MARKS, AND THE SWEEP SETTLES WHAT IT MARKED.
+///
+/// A unit whose task goes away before its end is reached leaves its hold in its cell. The guard used
+/// to REMOVE the slot on every way out, so the sweep — the second holder of a key to that cell —
+/// could never see it, and nothing in production called the sweep anyway: the hold stayed in a cell
+/// nothing would ever take it out of and the unit posted nothing. Now the guard marks and leaves the
+/// slot, and the next arrival's sweep takes the hold, posts it onto the node's book, and gives the
+/// slot back.
+#[test]
+fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
+    let node = LlmNode::new();
+    let book = Arc::new(Mutex::new(
+        crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            Box::new(busbar_kernel_wal::NullShipper::new()),
+            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+        )
+        .expect("a memory-buffered journal cannot fail to open"),
+    ));
+    node.bind_book(Arc::clone(&book));
+
+    let who = PrincipalId::new("acct:swept");
+    let key = UnitKey::new(41);
+    let slot = node
+        .inflight
+        .insert(busbar_kernel::inflight::Enter {
+            key,
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            provider_of_open_session: false,
+            zero_hold_tick: false,
+            arrival: busbar_kernel::inflight::arrival_hold(&node.kernel, &node.door, who),
+            now: EPOCH * 1_000,
+        })
+        .expect("the uncapped table takes the unit");
+
+    // The task goes away with its hold still in the cell: an end nobody reached.
+    drop(Occupied {
+        node: &node,
+        slot: Arc::clone(&slot),
+        arrived: Arrived::at(EPOCH * 1_000, 7),
+        reached_end: false,
+    });
+    assert!(
+        slot.is_marked(),
+        "the guard MARKS the slot it could not end"
+    );
+    assert!(
+        node.inflight.get(key).is_some(),
+        "and leaves it in the table, where the sweep can see it"
+    );
+    assert_ne!(
+        slot.cell().state(),
+        busbar_contract::caps::HoldCellState::Taken,
+        "the hold is still in the cell: nobody has settled it"
+    );
+
+    // The next arrival sweeps.
+    assert_eq!(node.sweep(Arrived::at(EPOCH * 1_000 + 5, 99)), 1);
+    assert_eq!(
+        slot.cell().state(),
+        busbar_contract::caps::HoldCellState::Taken,
+        "the sweep took the hold out of the cell"
+    );
+    assert!(node.inflight.get(key).is_none(), "and gave the slot back");
+    {
+        let durability = book.lock().unwrap_or_else(|p| p.into_inner());
+        let replayed = durability
+            .journal
+            .replay()
+            .expect("reads back")
+            .expect("verifies");
+        assert_eq!(
+            replayed
+                .iter()
+                .filter(|r| r.class == busbar_kernel_wal::RecordClass::Transaction)
+                .count(),
+            1,
+            "the swept hold's posting is on the journal"
+        );
+        assert_eq!(durability.ledger.book().len(), 1, "and on the book");
+    }
+    // Nothing marked is left, so the next arrival's sweep walks nothing.
+    assert_eq!(node.sweep(Arrived::at(EPOCH * 1_000 + 6, 100)), 0);
+
+    // A unit that reached its own end gives its slot straight back, unmarked.
+    let key = UnitKey::new(42);
+    let slot = node
+        .inflight
+        .insert(busbar_kernel::inflight::Enter {
+            key,
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            provider_of_open_session: false,
+            zero_hold_tick: false,
+            arrival: busbar_kernel::inflight::arrival_hold(
+                &node.kernel,
+                &node.door,
+                PrincipalId::new("acct:finished"),
+            ),
+            now: EPOCH * 1_000,
+        })
+        .expect("the uncapped table takes the unit");
+    drop(Occupied {
+        node: &node,
+        slot: Arc::clone(&slot),
+        arrived: Arrived::at(EPOCH * 1_000, 8),
+        reached_end: true,
+    });
+    assert!(!slot.is_marked());
+    assert!(node.inflight.get(key).is_none());
+}
+
+// ---------------------------------------------------------------------------------------------
+// P2A-books (#71/#43/#42; follows items 126 and 71): THE SECOND BOOK CARRIES THE COUNTS, AND THE
+// TWO BOOKS AGREE ON EVERY CLASS CELL
+// ---------------------------------------------------------------------------------------------
+
+/// The open class a rerank's search units are ledgered under (`busbar-llm-codec`'s
+/// `SEARCH_UNITS_CLASS`, which `record_resp_usage` ledgers verbatim — item 134). Spelled here because
+/// this crate does not depend on the codec.
+const SEARCH_UNITS: &str = "search_units";
+
+/// Run the late arm's posting for one drained `report` onto a fresh node book, and hand the book
+/// back.
+fn late_post(
+    history: &crate::root::kernel::PinnedHistory,
+    at: Arrived,
+    principal: &str,
+    report: &LateReport,
+) -> crate::root::durability::NodeBook {
+    let node = crate::root::durability::node_book();
+    let kernel = busbar_kernel::teller::Kernel::new();
+    let (durability, ledger, usage) = (
+        kernel.durability_token(),
+        kernel.ledger_token(),
+        kernel.usage_token(),
+    );
+    post_late(
+        &crate::root::durability::SharedBook::over(Arc::clone(&node.durability)),
+        &LateTokens {
+            durability: &durability,
+            ledger: &ledger,
+            usage: &usage,
+        },
+        history,
+        &PrincipalId::new(principal),
+        at,
+        report,
+    );
+    node
+}
+
+/// The unit records the second book's chain holds (settlements and counts rows), read back off the
+/// journal.
+fn second_book_rows(
+    node: &crate::root::durability::NodeBook,
+) -> Vec<crate::root::durability::Posting> {
+    let durability = node.durability.lock().expect("unpoisoned");
+    durability
+        .journal
+        .replay()
+        .expect("reads")
+        .expect("verifies")
+        .iter()
+        .filter_map(crate::root::durability::Posting::from_record)
+        // The overdraft CARRY beside a late settlement repeats its unreserved part and carries no
+        // counts; it is the same unit's second record, not a second unit.
+        .filter(|p| p.kind != crate::root::durability::PostingKind::Carry)
+        .collect()
+}
+
+/// THE GOVERNANCE LEDGER'S ROW for one unit — the invoice's facts: the class map the tap ledgers
+/// VERBATIM (`meter_ledger`; for a rerank `record_resp_usage` ledgers `{search_units: n}`), the
+/// serving lane, and the billable count the fee is charged on.
+fn governance_row(report: &LateReport) -> crate::root::durability::UnitCounts {
+    crate::root::durability::UnitCounts {
+        lane: report.lane.clone(),
+        fee_count: u64::from(report.fee_count),
+        classes: report
+            .usage
+            .usage_units
+            .iter()
+            .filter(|(_, count)| **count > 0)
+            .map(|(class, count)| (class.clone(), *count))
+            .collect(),
+    }
+}
+
+/// **THE AGREEMENT CHECK, EVERY CLASS CELL** — the second book's record of one unit against the
+/// governance ledger's, cell by cell over the UNION of their classes (reserved and open alike), the
+/// lane and the fee count; then the money: the invoice is the one function over the governance row
+/// at the unit's arrival (`price_exact`, which every served read prices through), and the second
+/// book must hold that figure as a settlement — or, where the invoice is nothing or REFUSES, a
+/// counts row with no figure (a refused one where it refuses). `Err` names every cell that differs.
+///
+/// 21f725601's comparator priced the TOKEN cells alone (`UsageBreakdown`), so a class outside the
+/// reserved four could differ between the books and both sides of it would still read equal.
+fn every_cell_agrees(
+    label: &str,
+    second: &[crate::root::durability::Posting],
+    governance: &crate::root::durability::UnitCounts,
+    history: &crate::root::kernel::PinnedHistory,
+    arrived_ms: u64,
+) -> Result<(), String> {
+    use crate::root::durability::PostingKind;
+    let [row] = second else {
+        return Err(format!(
+            "{label}: the second book holds {} records for one unit, not one",
+            second.len()
+        ));
+    };
+    let Some(counts) = row.counts.as_ref() else {
+        return Err(format!(
+            "{label}: the second book's record carries no counts"
+        ));
+    };
+    let mut cells = Vec::new();
+    let classes: std::collections::BTreeSet<&String> = counts
+        .classes
+        .keys()
+        .chain(governance.classes.keys())
+        .collect();
+    for class in classes {
+        let (second_book, invoice) = (counts.classes.get(class), governance.classes.get(class));
+        if second_book != invoice {
+            cells.push(format!(
+                "class {class}: second book {second_book:?}, governance ledger {invoice:?}"
+            ));
+        }
+    }
+    if counts.lane != governance.lane {
+        cells.push(format!("lane: {:?} vs {:?}", counts.lane, governance.lane));
+    }
+    if counts.fee_count != governance.fee_count {
+        cells.push(format!(
+            "fee count: {} vs {}",
+            counts.fee_count, governance.fee_count
+        ));
+    }
+    let invoice =
+        busbar_kernel_ledger::cost::price_exact(&[governance.entry(arrived_ms)], &history.view())
+            .and_then(busbar_kernel_ledger::cost::nanos_of_exact);
+    let money_agrees = match (&invoice, row.kind, row.refusal.as_ref()) {
+        (Ok(nanos), PostingKind::Settlement, None) => {
+            u128::try_from(row.settled).is_ok_and(|settled| settled == *nanos) && *nanos != 0
+        }
+        (Ok(0), PostingKind::Counted, None) => true,
+        (Err(_), PostingKind::Counted, Some(_)) => true,
+        _ => false,
+    };
+    if !money_agrees {
+        cells.push(format!(
+            "money: second book {:?} settled {} (refusal {:?}), invoice {invoice:?} nano-units",
+            row.kind, row.settled, row.refusal
+        ));
+    }
+    if cells.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("{label}: {}", cells.join("; ")))
+    }
+}
+
+/// A PRESENT card over `"lane"` pricing input 3 / output 16 micro-units, a fee of `fee`, and — when
+/// `search_units` is `Some` — the open class `search_units` at that many nano-units per unit
+/// (the `units:` grammar, item 123). `None` is a present card SILENT about search units.
+fn rerank_history(fee: i64, search_units: Option<u64>) -> crate::root::kernel::PinnedHistory {
+    use busbar_kernel_ledger::cost::{History, HistorySeq, LaneClass, RateCard};
+    let card = RateCard::from_micro_rates(
+        [
+            (LaneClass::new("lane", busbar_api::UNIT_INPUT), 3.0),
+            (LaneClass::new("lane", busbar_api::UNIT_OUTPUT), 16.0),
+        ],
+        fee,
+    )
+    .with_unit_rates(search_units.map(|nanos| (LaneClass::new("lane", SEARCH_UNITS), nanos)));
+    crate::root::kernel::PinnedHistory::for_test(
+        std::sync::Arc::new(History::opening(card, 0)),
+        HistorySeq(0),
+    )
+}
+
+/// A rerank's drained report: `units` search units and one billable request, no tokens.
+fn rerank_report(units: u64) -> LateReport {
+    LateReport {
+        usage: busbar_substrate_values::billing::Usage {
+            usage_units: std::collections::BTreeMap::from([(SEARCH_UNITS.to_string(), units)]),
+        },
+        fee_count: 1,
+        lane: "lane".to_string(),
+        provider: "provider".to_string(),
+    }
+}
+
+/// **AN UNPRICED CLASS ON A PRESENT CARD LEAVES A DURABLE COUNTS ROW, AND THE READ REFUSES**
+/// (#71/#43/#42).
+///
+/// The card prices input and output and is silent about cache reads; the unit read all three. The
+/// late arm used to post NO row at all — it warned with the counts and returned, so the second book
+/// held nothing for a unit the node served. Now it posts the counts row: every class, whole, with
+/// the money UNPRICED (no figure, no zero, no partial), the balance unmoved, and the read over it
+/// refusing. Rows posted per refused unit: 0 -> 1.
+#[test]
+fn an_unpriced_class_on_a_present_card_leaves_a_durable_counts_row_and_the_read_refuses() {
+    use crate::root::durability::PostingKind;
+    let history = cache_silent_history();
+    let mut report = split_report(1_000, 250, 1);
+    report
+        .usage
+        .usage_units
+        .insert(busbar_api::UNIT_CACHE_READ.to_string(), 10_000_000);
+    let at = Arrived::at(4_000, 7);
+    let node = late_post(&history, at, "vk_refused", &report);
+
+    let rows = second_book_rows(&node);
+    assert_eq!(rows.len(), 1, "one counts row per refused unit: {rows:?}");
+    let row = &rows[0];
+    assert_eq!(row.kind, PostingKind::Counted);
+    let counts = row.counts.as_ref().expect("the row carries the counts");
+    assert_eq!(
+        counts.classes,
+        std::collections::BTreeMap::from([
+            (busbar_api::UNIT_INPUT.to_string(), 1_000),
+            (busbar_api::UNIT_OUTPUT.to_string(), 250),
+            (busbar_api::UNIT_CACHE_READ.to_string(), 10_000_000),
+        ]),
+        "every count, whole — not zeroed, not trimmed to the priced classes"
+    );
+    assert_eq!((counts.lane.as_str(), counts.fee_count), ("lane", 1));
+    assert!(
+        row.refusal
+            .as_deref()
+            .is_some_and(|why| why.contains("ClassUnpriced") && why.contains("cache_read")),
+        "the money is refused and says which class: {:?}",
+        row.refusal
+    );
+    assert_eq!(
+        (row.reserved, row.settled, row.overdraft),
+        (0, 0, 0),
+        "no figure: no zero posted as a price, no partial"
+    );
+
+    let durability = node.durability.lock().expect("unpoisoned");
+    let key = balance(&PrincipalId::new("vk_refused"));
+    let window =
+        busbar_kernel_budget::budget_window(busbar_kernel_budget::window::WINDOW_DAY, at.secs());
+    assert_eq!(
+        durability.ledger.book().get(&key, window).settled,
+        0,
+        "a refused unit moves no balance"
+    );
+    assert!(
+        durability.settled_read(&key, window).is_err(),
+        "the read over a refused counts row refuses (#42), never the priced remainder"
+    );
+    assert_eq!(durability.refused_rows().len(), 1);
+
+    // And the two books agree on it cell by cell: the governance read refuses the same class.
+    every_cell_agrees(
+        "refused",
+        &rows,
+        &governance_row(&report),
+        &history,
+        at.ms(),
+    )
+    .expect("both books refuse the same unit");
+}
+
+/// **A RERANK'S SEARCH UNITS AGREE ACROSS BOTH BOOKS** (items 123/134 on the governance ledger; this
+/// book now carries and prices them too). Priced: the settlement carries `{search_units: 50}` and
+/// the figure the invoice derives from it. A present card silent about search units: both REFUSE.
+/// And the 21f725601 token cells, through the every-cell check, still agree.
+#[test]
+fn a_reranks_search_units_agree_across_both_books() {
+    let at = Arrived::at(4_000, 7);
+    // 2,000 micro-units = 2,000,000 nano-units per search unit, and a 3-unit fee.
+    let priced = rerank_history(3, Some(2_000_000));
+    let report = rerank_report(50);
+    let node = late_post(&priced, at, "vk_rerank", &report);
+    let rows = second_book_rows(&node);
+    every_cell_agrees(
+        "rerank, priced",
+        &rows,
+        &governance_row(&report),
+        &priced,
+        at.ms(),
+    )
+    .expect("the books agree on the rerank");
+    // NON-VACUITY: the search units are in the figure, not only the fee.
+    let fee_only = late_post(&priced, at, "vk_fee", &rerank_report(0));
+    let fee_only = second_book_rows(&fee_only);
+    assert_eq!(
+        rows[0].settled - fee_only[0].settled,
+        50 * 2_000_000,
+        "the second book priced the 50 search units"
+    );
+
+    let silent = rerank_history(3, None);
+    let node = late_post(&silent, at, "vk_silent", &report);
+    let rows = second_book_rows(&node);
+    every_cell_agrees(
+        "rerank, card silent about search units",
+        &rows,
+        &governance_row(&report),
+        &silent,
+        at.ms(),
+    )
+    .expect("both books refuse a rerank the card is silent about");
+    assert!(
+        rows[0]
+            .refusal
+            .as_deref()
+            .is_some_and(|w| w.contains(SEARCH_UNITS)),
+        "{:?}",
+        rows[0].refusal
+    );
+
+    // The token cells of 21f725601, every class cell compared.
+    let billed = fee_history_of(
+        &[
+            (0, 0.5, 1.0, 0),
+            (5_000, 5.0, 10.0, 0),
+            (9_000, 50.0, 100.0, 3),
+        ],
+        true,
+    );
+    let mut failures = Vec::new();
+    for (label, at_ms, report) in [
+        ("boot card", 1_000, split_report(11, 7, 1)),
+        ("card A", 6_000, split_report(11, 7, 1)),
+        ("card B + fee", 10_000, split_report(11, 7, 1)),
+        ("fee only", 10_000, split_report(0, 0, 1)),
+        ("no fee", 10_000, split_report(11, 7, 0)),
+    ] {
+        let at = Arrived::at(at_ms, 1);
+        let node = late_post(&billed, at, "vk_tokens", &report);
+        if let Err(e) = every_cell_agrees(
+            label,
+            &second_book_rows(&node),
+            &governance_row(&report),
+            &billed,
+            at_ms,
+        ) {
+            failures.push(e);
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// **A PLANTED OPEN-CLASS DIVERGENCE GOES RED.** The second book's rerank row, planted three ways —
+/// the open class under-counted, the open class dropped, and the figure priced without it (the
+/// shape this book had: fee only, no counts) — each is named by the every-cell check.
+#[test]
+fn a_planted_open_class_divergence_goes_red() {
+    let at = Arrived::at(4_000, 7);
+    let priced = rerank_history(3, Some(2_000_000));
+    let report = rerank_report(50);
+    let governance = governance_row(&report);
+    let rows = second_book_rows(&late_post(&priced, at, "vk_rerank", &report));
+    every_cell_agrees("unplanted", &rows, &governance, &priced, at.ms())
+        .expect("the unplanted rows agree, so a red below is the plant's");
+
+    let mut undercounted = rows.clone();
+    if let Some(counts) = undercounted[0].counts.as_mut() {
+        counts.classes.insert(SEARCH_UNITS.to_string(), 49);
+    }
+    let red = every_cell_agrees("planted: 49", &undercounted, &governance, &priced, at.ms());
+    assert!(
+        red.as_ref()
+            .is_err_and(|e| e.contains("class search_units")),
+        "an under-counted open class was NOT caught: {red:?}"
+    );
+
+    let mut dropped = rows.clone();
+    if let Some(counts) = dropped[0].counts.as_mut() {
+        counts.classes.remove(SEARCH_UNITS);
+    }
+    assert!(
+        every_cell_agrees("planted: dropped", &dropped, &governance, &priced, at.ms()).is_err(),
+        "a dropped open class was NOT caught"
+    );
+
+    // The pre-change second book: priced at the fee alone, with no counts on the record.
+    let fee_only = second_book_rows(&late_post(&priced, at, "vk_fee", &rerank_report(0)));
+    let mut head_shaped = rows.clone();
+    head_shaped[0].settled = fee_only[0].settled;
+    assert!(
+        every_cell_agrees(
+            "planted: fee only",
+            &head_shaped,
+            &governance,
+            &priced,
+            at.ms()
+        )
+        .is_err_and(|e| e.contains("money")),
+        "a second book that priced the rerank at the fee alone was NOT caught"
+    );
+    head_shaped[0].counts = None;
+    assert!(
+        every_cell_agrees(
+            "planted: no counts",
+            &head_shaped,
+            &governance,
+            &priced,
+            at.ms()
+        )
+        .is_err(),
+        "a second book with no counts was NOT caught"
     );
 }

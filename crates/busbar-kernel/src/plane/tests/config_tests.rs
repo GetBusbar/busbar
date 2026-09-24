@@ -64,10 +64,10 @@ fn the_section_list_is_derived_from_the_config_grammar_rather_than_written() {
     );
 }
 
-/// EVERY section the grammar declares is refused BY BOTH PLANES' production validators MOVED to
-/// `tests/plane_config_cross_plane.rs::every_section_the_grammar_declares_is_refused_on_both_planes`
-/// — it registers the REAL busbar_llm/busbar_mcp/busbar_a2a planes, which only type-checks with
-/// ONE `busbar_kernel` in the graph. See that file's header.
+// EVERY section the grammar declares is refused BY BOTH PLANES' production validators MOVED to
+// `tests/plane_config_cross_plane.rs::every_section_the_grammar_declares_is_refused_on_both_planes`
+// — it registers the REAL busbar_llm/busbar_mcp/busbar_a2a planes, which only type-checks with
+// ONE `busbar_kernel` in the graph. See that file's header.
 
 // ══ 2. A THIRD PLANE COSTS A SECTION NAME AND NOTHING ELSE ═══════════════════════════════════════
 

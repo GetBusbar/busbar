@@ -121,7 +121,7 @@ pub(crate) struct RouteInput<'a> {
 /// way. Nothing here is finished: the Audit step posts it, as it posts every other unit.
 ///
 /// [`Routed::facts`] is the half that did not exist. The Meter step asks for the serving lane, the
-/// reported usage, the client-facing status and the billing-failed fact, and a response carries
+/// reported usage and the client-facing status, and a response carries
 /// none of them; now the step that watched the walk hands them over, along with the one fact that
 /// decides where the unit's single accrual is made.
 pub(crate) struct Routed {
@@ -296,11 +296,10 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
                 lane: None,
                 usage: None,
                 status: response.status().as_u16(),
-                billing_failed: false,
                 // Nothing was dialled, so this is not a fee-bearing upstream leg.
                 upstream_leg: false,
-                // The walk never ran, so no tap of its can have accrued anything.
-                accrued: false,
+                // The walk never ran, so no tap of its can have posted anything.
+                tap_posts: false,
             },
             meter_sink: usage_sink,
             refusal: Some(Refusal::new(ReasonCode::NoDestination)),
@@ -335,7 +334,7 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
     // The walk is about to take the meter half, and its taps are where this unit's accrual is made
     // — see the Meter step's header for why a streamed answer's usage can become known nowhere
     // else. Recorded here, before the move, because after it there is nothing left to ask.
-    let accrued = usage_sink.is_some();
+    let tap_posts = usage_sink.is_some();
 
     let span = tracing::span!(
         HOTPATH_LEVEL,
@@ -443,14 +442,14 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
         .await
     };
     // THE TAP'S REPORT-BACK, taken off the response the walk handed back. The serving lane, the
-    // usage the dialect's reader found and the terminal-error fact are resolved INSIDE the walk, at
+    // usage the dialect's reader found up to the end it reached are resolved INSIDE the walk, at
     // the tap that accrues them — the walk answers with a response, not with a lane — so this is how
     // they reach the step that has to report them.
     //
     // For a BUFFERED answer the tap has already finished: the body was read whole before it was
     // translated, so the cell is filled here and the three figures below are the tap's own. For a
     // STREAMED answer the cell is still empty, because the response is served on its headers and its
-    // figures do not exist yet — so the fields stay as they were and `accrued` says the tap owns the
+    // figures do not exist yet — so the fields stay as they were and `tap_posts` says the tap owns the
     // posting.
     //
     // This fold is a snapshot of the cell at THIS instant, not a promise about a later one. The cell
@@ -465,10 +464,9 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
         usage: None,
         // The status the CLIENT saw, which is the fee basis and is known at the head either way.
         status: resp.status().as_u16(),
-        billing_failed: false,
         // The walk resolved candidates and dialled, so this is a fee-bearing client request.
         upstream_leg: true,
-        accrued,
+        tap_posts,
     };
     if let Some(report) = resp
         .extensions()

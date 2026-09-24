@@ -1589,6 +1589,7 @@ fn usage_cost(
             output_utok: 10.0,
             cache_read_utok: 0.0,
             cache_write_utok: 0.0,
+            ..Default::default()
         },
     )]);
     busbar_kernel::cost::CostModel::resolve_parts(Some(&card), 0, groups)
@@ -2419,6 +2420,7 @@ mod dated_rate_card_history {
                 output_utok: 0.0,
                 cache_read_utok: 0.0,
                 cache_write_utok: 0.0,
+                ..Default::default()
             },
         )]);
         busbar_kernel::cost::CostModel::resolve_parts(
@@ -2785,6 +2787,7 @@ mod dated_rate_card_history {
                 output_utok: 20_000_000.0,
                 cache_read_utok: 0.0,
                 cache_write_utok: 0.0,
+                ..Default::default()
             },
         )]);
         let app = crate::new_test_app()
@@ -3149,6 +3152,7 @@ mod one_recorded_usage_every_surface {
                 output_utok: 0.0,
                 cache_read_utok: 0.0,
                 cache_write_utok: 0.0,
+                ..Default::default()
             },
         )]);
         busbar_kernel::cost::CostModel::resolve_parts(
@@ -3296,31 +3300,35 @@ mod one_recorded_usage_every_surface {
             .expect("the key bucket reads")
             .spend_cents;
         //    THE BUDGET GATE — governance/state.rs:1970, the figure `try_admit` compares to a cap.
-        let gate_cents = cost.derive_spend_cents(
-            [(
-                LANE,
-                &std::collections::BTreeMap::from([(
-                    busbar_api::UNIT_INPUT.to_string(),
-                    TOKENS * 2,
-                )]),
-            )]
-            .into_iter(),
-            2,
-            true,
-        );
+        let gate_cents = cost
+            .derive_spend_cents(
+                [(
+                    LANE,
+                    &std::collections::BTreeMap::from([(
+                        busbar_api::UNIT_INPUT.to_string(),
+                        TOKENS * 2,
+                    )]),
+                )]
+                .into_iter(),
+                2,
+                true,
+            )
+            .expect("the one function prices");
         //    THE HOOK SEAM / budget_state — governance/state.rs:1691, the same fold in micro-units.
-        let hook_micros = cost.derive_spend_micros(
-            [(
-                LANE,
-                &std::collections::BTreeMap::from([(
-                    busbar_api::UNIT_INPUT.to_string(),
-                    TOKENS * 2,
-                )]),
-            )]
-            .into_iter(),
-            2,
-            true,
-        );
+        let hook_micros = cost
+            .derive_spend_micros(
+                [(
+                    LANE,
+                    &std::collections::BTreeMap::from([(
+                        busbar_api::UNIT_INPUT.to_string(),
+                        TOKENS * 2,
+                    )]),
+                )]
+                .into_iter(),
+                2,
+                true,
+            )
+            .expect("the one function prices");
 
         eprintln!("\n── ONE RECORDED USAGE: 2 x {TOKENS} input tokens on `{LANE}`, one posting");
         eprintln!("   under a {RATE_EARNED} card and one under a {RATE_CURRENT} card ────────────");
@@ -3392,7 +3400,7 @@ mod one_recorded_usage_every_surface {
         // 1.5.5 customer observes today and they are recorded in the shadow oracle
         // (`billing|group-usage|*`, `billing|key-usage|*`, `llm|*|over_budget*`). Moving one is
         // moving a golden, which no agent may do.
-        let flat_micros = i64::from(RATE_CURRENT as i64) * (TOKENS as i64) * 2;
+        let flat_micros = (RATE_CURRENT as i64) * (TOKENS as i64) * 2;
         assert_eq!(
             hook_micros, flat_micros,
             "the enforcement fold prices both postings at the card in force NOW"
@@ -3417,7 +3425,7 @@ mod one_recorded_usage_every_surface {
         // The gap between the book and the bill, pinned exactly. This is the figure the report
         // carries to the owner: 19,000 of 39,000 micro-units — 48.7% of this slice's bill — is
         // the distance between what the ledger says and what three of the five surfaces answer.
-        let served = i64::from(group_cents) * MICROS_PER_CENT;
+        let served = group_cents * MICROS_PER_CENT;
         assert_eq!(
             one_micros - served,
             19_000,

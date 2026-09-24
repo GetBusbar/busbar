@@ -32,10 +32,14 @@ use crate::teller::{settle_amount, Evidence, Kernel, KERNEL_ACCRUAL_CLASS};
 
 /// A hold as the journal wrote it.
 ///
-/// This one is the kernel's own and stays here. The journal entry the write-ahead-log unit appends
-/// at the door is that unit's record, not a plugin-visible type, so there is nothing in the
-/// contract crate to name: the shape below is what recovery needs to read back, and the unit that
-/// writes the journal binds to it.
+/// This one is the kernel's own and stays here. The journal entry is the composition root's record,
+/// not a plugin-visible type, so there is nothing in the contract crate to name: the shape below is
+/// what recovery needs to read back, and the root binds to it. Concretely (item 127): the root's
+/// `Durability::open_hold` puts a hold on the journal as its unit enters, before anything runs, and
+/// the root's boot (`durability::build_for_node`) reads every hold no posting closed back into one
+/// of these and hands them to [`recover_all`]. Until that binding existed this sentence described a
+/// journal nothing wrote: every production journal write happened at or after settle time, and
+/// [`recover_all`] had no production caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HoldRecord {
     /// Which unit.

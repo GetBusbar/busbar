@@ -47,7 +47,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use busbar_kernel_ledger::cost::{micros_of, Priced};
+use busbar_kernel_ledger::cost::{Money, MoneyError, Priced};
 use busbar_kernel_ledger::identity::{residual, Residual};
 use busbar_kernel_ledger::totals::Totals;
 
@@ -109,9 +109,11 @@ pub struct LedgerRow {
 }
 
 impl LedgerRow {
-    /// The row's money in micro-units: one truncating divide over the summed nano-units.
-    pub fn micros(&self) -> i64 {
-        micros_of(self.priced_nanos)
+    /// The row's money in micro-units: one truncating divide over the summed nano-units, through
+    /// the one money type and CHECKED (item 28). A row past the served `i64` is REFUSED
+    /// (`Err(Overflow)`) — it was pinned at `i64::MAX`, a wrong figure that looked like a bill.
+    pub fn micros(&self) -> Result<i64, MoneyError> {
+        Money::of_nanos(self.priced_nanos)?.micros_i64()
     }
 }
 
@@ -156,17 +158,20 @@ pub fn accumulate(snapshot: &mut LedgerSnapshot, row: RowKey, priced: &Priced) {
 ///
 /// `since` is zeros for the same reason: a row's figures are the row's own total, not a delta from
 /// an earlier seal, so the snapshot before it is the one where nothing had happened.
-pub fn as_totals(ledger: &LedgerRow, legacy: &LegacyRow) -> Totals {
-    Totals {
-        settled: i128::from(ledger.micros()),
+///
+/// `Err` when the ledger row's projection is refused (item 28): an identity over a pinned figure
+/// would report a residual against a number nobody posted.
+pub fn as_totals(ledger: &LedgerRow, legacy: &LegacyRow) -> Result<Totals, MoneyError> {
+    Ok(Totals {
+        settled: i128::from(ledger.micros()?),
         drawn: i128::from(legacy.spend_micros),
         ..Totals::zero()
-    }
+    })
 }
 
 /// How far out one row is, on the money side.
-pub fn row_residual(ledger: &LedgerRow, legacy: &LegacyRow) -> Residual {
-    residual(&Totals::zero(), &as_totals(ledger, legacy))
+pub fn row_residual(ledger: &LedgerRow, legacy: &LegacyRow) -> Result<Residual, MoneyError> {
+    Ok(residual(&Totals::zero(), &as_totals(ledger, legacy)?))
 }
 
 /// One row where the two sides do not agree.
@@ -214,14 +219,18 @@ impl std::error::Error for Discrepancy {}
 /// iterating the legacy keys only would step straight past it. Such a row is compared against a
 /// zero legacy row, so it reports as a residual naming the whole posting rather than as silence.
 ///
-/// Returns the rows that do not reconcile, in row order. An empty answer is the good one.
-pub fn reconcile(ledger: &LedgerSnapshot, legacy: &LegacySnapshot) -> Vec<Discrepancy> {
+/// Returns the rows that do not reconcile, in row order. An empty answer is the good one. `Err` when
+/// any row's projection is refused (item 28): the whole check refuses rather than skip that row.
+pub fn reconcile(
+    ledger: &LedgerSnapshot,
+    legacy: &LegacySnapshot,
+) -> Result<Vec<Discrepancy>, MoneyError> {
     let rows: BTreeSet<&RowKey> = ledger.keys().chain(legacy.keys()).collect();
     let mut out = Vec::new();
     for row in rows {
         let l = ledger.get(row).copied().unwrap_or_default();
         let g = legacy.get(row).copied().unwrap_or_default();
-        let spend = row_residual(&l, &g);
+        let spend = row_residual(&l, &g)?;
         if spend.holds() && l.fee_count == g.billable_requests {
             continue;
         }
@@ -232,12 +241,12 @@ pub fn reconcile(ledger: &LedgerSnapshot, legacy: &LegacySnapshot) -> Vec<Discre
             legacy_billable_requests: g.billable_requests,
         });
     }
-    out
+    Ok(out)
 }
 
-/// Whether the identity holds over every row.
+/// Whether the identity holds over every row. A refused projection is not a holding identity.
 pub fn holds(ledger: &LedgerSnapshot, legacy: &LegacySnapshot) -> bool {
-    reconcile(ledger, legacy).is_empty()
+    reconcile(ledger, legacy).is_ok_and(|d| d.is_empty())
 }
 
 /// Every discrepancy on one line, for a message.

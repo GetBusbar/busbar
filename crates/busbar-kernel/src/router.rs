@@ -50,6 +50,10 @@ pub fn fallback_error_response(
         if path == API_ROOT || path.starts_with(&format!("{API_ROOT}/")) {
             let e = if status == axum::http::StatusCode::METHOD_NOT_ALLOWED {
                 AdminError::MethodNotAllowed
+            } else if status == axum::http::StatusCode::INTERNAL_SERVER_ERROR {
+                // The request-panic boundary ([`CatchPanicLayer`]) is the one caller that asks for
+                // a 500 here; on the native-API root that is the frozen envelope's own `internal`.
+                AdminError::Internal
             } else {
                 AdminError::not_found("resource")
             };
@@ -735,13 +739,279 @@ pub(crate) fn apply_common_layers(
     // `advanced.response_headers.server_timing` (default `false`): when `false` the layer is simply
     // NOT ADDED to the stack — zero per-request cost — mirroring
     // `apply_inbound_concurrency_limit`'s `max_inbound_concurrent > 0` composition gate below. Must
-    // stay the LAST `.layer()` when present so it wraps (and times) everything inside it.
+    // stay the LAST timing `.layer()` when present so it wraps (and times) everything inside it; only
+    // the request-panic boundary below sits outside it.
     let router = if server_timing_enabled {
         router.layer(axum::middleware::from_fn(server_timing))
     } else {
         router
     };
+    // THE REQUEST-PANIC BOUNDARY — the outermost layer of every router the kernel serves, so it
+    // wraps every handler AND every layer above (a panic in the auth chain or a reshaper fails the
+    // one request too). See [`CatchPanicLayer`] for the policy. The ONLY `.layer()` allowed after
+    // it is the inbound-concurrency cap, which is outside and therefore sees an ordinary 500.
+    // `the_request_panic_boundary_wraps_every_served_router` pins that it stays last.
+    let router = router.layer(CatchPanicLayer::new(handle.clone()));
     router.with_state(handle.clone())
+}
+
+// ── THE REQUEST-PANIC BOUNDARY ───────────────────────────────────────────────────────────────────
+
+/// POLICY (1.6.0 item 148): **A PANIC IN A REQUEST HANDLER FAILS THAT REQUEST — NEVER THE
+/// CONNECTION, NEVER ITS MULTIPLEXED SIBLINGS.**
+///
+/// The workspace keeps `panic = "unwind"` on purpose (see the root `Cargo.toml`) so one request's
+/// panic cannot abort the gateway. Unwinding alone is not isolation, though: with no boundary on
+/// the request path the unwind leaves the handler future and tears down hyper's CONNECTION task,
+/// so the client sees a reset connection and every other request multiplexed on that h2 connection
+/// dies with it. This layer is that boundary. It polls the whole inner stack inside
+/// `catch_unwind`; when the unwind reaches it, the one request is answered with a `500` in the
+/// kernel's standard error body for its path ([`fallback_error_response`]: the native-API root's
+/// frozen `{error:{code:"internal"}}`, a mounted plane's JSON-RPC refusal, otherwise the path's
+/// dialect-native envelope with the agnostic `api_error` kind), and the panic is logged ONCE, at
+/// `error`, with its source location — see `install_request_panic_hook` for how the location
+/// is captured without the default hook printing the same panic a second time.
+///
+/// WHAT IT COVERS: the handler future and every middleware inside it, from `call` until the
+/// response HEAD is produced. WHAT IT CANNOT COVER: a panic while polling a streaming response
+/// BODY after the head was returned — that is hyper polling the body, outside any service future.
+///
+/// ENFORCED: `apply_common_layers` is the only place a kernel router becomes servable (the one
+/// `.with_state`), and it installs this as its last layer; the structural gate
+/// `the_request_panic_boundary_wraps_every_served_router` fails if a router is built any other way.
+///
+/// Cost on the success path: one thread-local increment/decrement and a `catch_unwind` frame per
+/// poll, and a cheap `Uri` clone per request (refcounted bytes). Nothing else — the snapshot load
+/// and the error shaping happen only after a panic.
+#[derive(Clone)]
+pub struct CatchPanicLayer {
+    handle: std::sync::Arc<state::AppHandle>,
+}
+
+impl CatchPanicLayer {
+    /// The boundary for routers served over `handle` (read only on the failure path, to shape the
+    /// 500 in the path's own envelope). Installs the process panic hook on first use.
+    pub fn new(handle: std::sync::Arc<state::AppHandle>) -> Self {
+        install_request_panic_hook();
+        Self { handle }
+    }
+}
+
+impl<S> tower::Layer<S> for CatchPanicLayer {
+    type Service = CatchPanic<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        CatchPanic {
+            inner,
+            handle: self.handle.clone(),
+        }
+    }
+}
+
+/// The service [`CatchPanicLayer`] wraps a router in.
+#[derive(Clone)]
+pub struct CatchPanic<S> {
+    inner: S,
+    handle: std::sync::Arc<state::AppHandle>,
+}
+
+impl<S> tower::Service<axum::extract::Request> for CatchPanic<S>
+where
+    S: tower::Service<
+            axum::extract::Request,
+            Response = axum::response::Response,
+            Error = std::convert::Infallible,
+        > + Clone
+        + Send
+        + 'static,
+    S::Future: Send + 'static,
+{
+    type Response = axum::response::Response;
+    type Error = std::convert::Infallible;
+    type Future = std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>,
+    >;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: axum::extract::Request) -> Self::Future {
+        use std::future::Future as _;
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        use std::task::Poll;
+        // tower's clone-out-of-`self` idiom (see `InboundAdmissionService::call`).
+        let mut inner = self.inner.clone();
+        let handle = self.handle.clone();
+        let uri = req.uri().clone();
+        let method = req.method().clone();
+        Box::pin(async move {
+            // `AssertUnwindSafe`: nothing observed across the boundary is reused after an unwind —
+            // the panicked future is never polled again and is dropped with this one.
+            // The scope lives INSIDE each `catch_unwind` closure: on an unwind it is dropped while
+            // the thread is still panicking (and so leaves the hook's record for this boundary);
+            // on a normal return it is dropped first and reports any panic an inner boundary
+            // caught.
+            let started = catch_unwind(AssertUnwindSafe(|| {
+                let _scope = RequestPanicScope::enter();
+                inner.call(req)
+            }));
+            let outcome = match started {
+                Err(payload) => Err(payload),
+                Ok(fut) => {
+                    let mut fut = std::pin::pin!(fut);
+                    std::future::poll_fn(|cx| {
+                        match catch_unwind(AssertUnwindSafe(|| {
+                            let _scope = RequestPanicScope::enter();
+                            fut.as_mut().poll(cx)
+                        })) {
+                            Ok(Poll::Ready(r)) => Poll::Ready(Ok(r)),
+                            Ok(Poll::Pending) => Poll::Pending,
+                            Err(payload) => Poll::Ready(Err(payload)),
+                        }
+                    })
+                    .await
+                }
+            };
+            match outcome {
+                Ok(r) => r,
+                Err(payload) => Ok(request_panicked(&handle, &method, &uri, payload.as_ref())),
+            }
+        })
+    }
+}
+
+/// Log the caught panic once, with its location, and shape the one request's `500`.
+fn request_panicked(
+    handle: &std::sync::Arc<state::AppHandle>,
+    method: &axum::http::Method,
+    uri: &axum::http::Uri,
+    payload: &(dyn std::any::Any + Send),
+) -> axum::response::Response {
+    let message = panic_payload_message(payload);
+    let (location, backtrace) = take_panic_seen().map_or_else(
+        || {
+            (
+                "<unknown: another panic hook replaced the kernel's>".to_string(),
+                String::new(),
+            )
+        },
+        |s| (s.location, s.backtrace),
+    );
+    tracing::error!(
+        method = %method,
+        path = %uri.path(),
+        panic.location = %location,
+        panic.message = %message,
+        backtrace = %backtrace,
+        "a request handler panicked; that request was answered 500 and the connection kept serving"
+    );
+    fallback_error_response(
+        &handle.load().planes,
+        uri.path(),
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        crate::proxy::KIND_API_ERROR,
+        "internal error",
+    )
+}
+
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        s
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.as_str()
+    } else {
+        "<non-string panic payload>"
+    }
+}
+
+/// What the panic hook recorded for a panic raised inside a [`RequestPanicScope`].
+struct PanicSeen {
+    location: String,
+    /// `std::backtrace::Backtrace::capture()` rendered — honours `RUST_BACKTRACE`, exactly as the
+    /// default hook would have, and is empty-cheap when it is off.
+    backtrace: String,
+}
+
+thread_local! {
+    /// How many [`CatchPanic`] polls are on this thread's stack right now (nesting-safe).
+    static REQUEST_PANIC_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// The last panic the hook saw inside a request scope on this thread, for the boundary to log.
+    static REQUEST_PANIC_SEEN: std::cell::RefCell<Option<PanicSeen>> = const { std::cell::RefCell::new(None) };
+}
+
+/// RAII marker: "a [`CatchPanic`] boundary is polling on this thread". Decremented on drop, which
+/// also runs when the poll unwinds.
+struct RequestPanicScope;
+
+impl RequestPanicScope {
+    fn enter() -> Self {
+        REQUEST_PANIC_DEPTH.with(|d| d.set(d.get().saturating_add(1)));
+        Self
+    }
+}
+
+impl Drop for RequestPanicScope {
+    fn drop(&mut self) {
+        REQUEST_PANIC_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+        // Leaving the OUTERMOST scope with a record still unclaimed means the panic was caught by an
+        // unwind boundary INSIDE the request (a plugin ABI `catch_unwind`, say) rather than reaching
+        // this one. The hook withheld the default report for it, so it is reported here instead —
+        // still exactly once, still with its location.
+        if REQUEST_PANIC_DEPTH.with(std::cell::Cell::get) == 0 && !std::thread::panicking() {
+            if let Some(seen) = take_panic_seen() {
+                tracing::error!(
+                    panic.location = %seen.location,
+                    backtrace = %seen.backtrace,
+                    "a panic inside a request was caught by an inner unwind boundary"
+                );
+            }
+        }
+    }
+}
+
+fn take_panic_seen() -> Option<PanicSeen> {
+    REQUEST_PANIC_SEEN.with(|s| s.borrow_mut().take())
+}
+
+/// Install (once per process) the hook that gives [`CatchPanic`] the panic's LOCATION. The unwind
+/// payload carries only the message; the location exists only inside the panic hook. Inside a
+/// request scope the hook records location + backtrace for the boundary to log and prints NOTHING
+/// itself, so the panic is reported once, as a structured `tracing` event, rather than once by the
+/// boundary and again as a bare stderr line by the default hook. Outside a request scope — every
+/// other thread and task — it defers to whatever hook was installed before it, unchanged.
+pub(crate) fn install_request_panic_hook() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if REQUEST_PANIC_DEPTH.with(std::cell::Cell::get) == 0 {
+                previous(info);
+                return;
+            }
+            let location = info.location().map_or_else(
+                || "<no location>".to_string(),
+                |l| format!("{}:{}:{}", l.file(), l.line(), l.column()),
+            );
+            let captured = std::backtrace::Backtrace::capture();
+            let backtrace = if captured.status() == std::backtrace::BacktraceStatus::Captured {
+                captured.to_string()
+            } else {
+                String::new()
+            };
+            REQUEST_PANIC_SEEN.with(|s| {
+                if let Ok(mut slot) = s.try_borrow_mut() {
+                    *slot = Some(PanicSeen {
+                        location,
+                        backtrace,
+                    });
+                }
+            });
+        }));
+    });
 }
 
 /// Build SEPARATE data-plane and admin-plane routers sharing ONE `AppHandle`, for the split-listener

@@ -244,7 +244,6 @@ neutral-no-dialect
 loc-ceilings:caps-contract
 loc-ceilings:union
 surface-ceiling:contract
-loc-ceilings:kernel:teller
 EOF
 )"
   case "${P_to:-}" in

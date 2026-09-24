@@ -357,6 +357,55 @@ impl ServerAsk {
     }
 }
 
+// ══ THE OUTBOUND ID SPACE ════════════════════════════════════════════════════════════════════════
+//
+// ONE JSON-RPC id space, split into two ranges that CANNOT MEET — and the split is a property of a
+// TYPE rather than of a number anyone has to remember.
+//
+// [`parse_response`] below is the whole correlation defence on this plane. There is no table of
+// pending ids (this revision deleted sessions — see the module header), so "is this the answer to
+// what I asked?" is decided by comparing one id against one id. That defence is worth exactly as
+// much as the ids being distinct, and on the STDIO carrier the handshake and the dispatch share ONE
+// byte stream: they are the two messages that must never be confused.
+//
+// THEY WERE CONFUSABLE. The handshake's id was the literal `0`, and a dispatch's id is the round
+// number — which starts at `0` on every call, at both minting sites (`method::tools_call`'s leg
+// seam and the task runner's, each widening a `round: u32`). A child that left a spare `initialize`
+// response in its pipe (one that answers twice, or answers a handshake whose reader went away) had
+// that response read by the next `tools/call`, and `parse_response` CORRELATED it: same id, so the
+// handshake's result was served to a caller as their tool's result. The `Uncorrelated` arm that
+// exists for exactly this could not fire, because there was nothing for it to tell apart.
+//
+// So the handshake's id is the first value ABOVE every id [`dispatch_request_id`] can return. Every
+// dispatch id is a `u32` widened to `u64`, so the dispatch range is `0..=u32::MAX` BY TYPE; the
+// handshake sits at `u32::MAX + 1`. A dispatch cannot reach it without first widening a round
+// counter — and the `const` assertion below fails the BUILD, not a test, on the day one does.
+
+/// THE ID BUSBAR PUTS ON AN OUTBOUND DISPATCH: the round number, widened, and nothing else.
+///
+/// A function rather than a `u64::from(round)` written out at each minting site, because the
+/// disjointness asserted below is a claim about the RANGE of the dispatch id — and that claim is
+/// only true while this is the one way to mint one. The `u32` argument is the bound: it is what
+/// makes `0..=u32::MAX` a fact about the type rather than a convention about the counter.
+pub(crate) const fn dispatch_request_id(round: u32) -> u64 {
+    round as u64
+}
+
+/// THE JSON-RPC ID BUSBAR PUTS ON ITS STDIO HANDSHAKE.
+///
+/// DISJOINT BY CONSTRUCTION from every dispatch id — see the block above for what the collision
+/// did. It does not need to be unique across CHILDREN: correlation is per exchange, and there is no
+/// table of pending ids for two children to collide in.
+pub(crate) const HANDSHAKE_REQUEST_ID: u64 = u32::MAX as u64 + 1;
+
+/// THE DISJOINTNESS, CHECKED BY THE COMPILER rather than asserted by a comment or a test.
+///
+/// [`dispatch_request_id`] is monotonic in its argument, so its maximum is its value at `u32::MAX`;
+/// the handshake must sit strictly above that. Widening a round counter to `u64` — the one edit
+/// that would silently re-open the collision — stops being possible here rather than being
+/// discovered by an operator whose caller was served a handshake.
+const _: () = assert!(HANDSHAKE_REQUEST_ID > dispatch_request_id(u32::MAX));
+
 /// Parse an upstream response body AS THE ANSWER TO THE REQUEST `sent_id` NAMES.
 ///
 /// ## `sent_id` is not decoration, and it is not a session either

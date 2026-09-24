@@ -32,9 +32,10 @@
 //! 2. **Storage.** A posting stores QUANTITIES and the instant they happened, and nothing priced.
 //!    See [`Posting`].
 //! 3. **Projections.** Minor units and micro-units are read-only views of the summed nano-units,
-//!    each truncating exactly once at the very end. Minor units floor at zero; micro-units do not.
-//!    See [`minor_of`] and [`micros_of`]. The divisor is [`NANOS_PER_CENT`] — THE ONE SCALE, and the
-//!    only one there is.
+//!    each truncating exactly once at the very end, and each CHECKED: a figure the served type
+//!    cannot hold refuses, never pins (item 28). See [`Money::of_nanos`], [`Money::micros_i64`] and
+//!    [`Money::minor_i64`]. The divisor is [`NANOS_PER_CENT`] — THE ONE SCALE, and the only one there
+//!    is.
 //! 4. **Append-only.** A card is never replaced. A price change APPENDS a [`CardEntry`], and a
 //!    posting prices at whatever [`HistoryView::card_at`] resolves for its own instant, so an edit
 //!    prices what happens after it rather than what happened before it. See [`History::append`].
@@ -70,21 +71,22 @@ mod project;
 mod rate;
 mod view;
 
+/// The exact count type the one function prices — re-exported so a caller driving a
+/// [`Tally`] names it through the crate that prices it.
+pub use busbar_contract::count::Count;
 pub use history::{Author, CardEntry, CardEntryDraft, History, HistorySeq, HistoryView};
 pub use posting::{
     apply_tier, apply_tier_signed, checked_apply_tier, price, price_at_card, price_fail_closed,
     CachedPrice, Posting, Priced, PricedLine, Quantity, Unpriceable, FEE_CLASS, STANDARD_TIER_BP,
 };
-pub use project::{
-    cents_of, derive_spend_cents, derive_spend_micros, derive_spend_minor, micros_of, minor_of,
-};
+pub use project::{derive_spend_cents, derive_spend_micros};
 pub use rate::{
-    nano_rate, nanos_sum, CellPrices, LaneClass, LaneRates, RateCard, TierRates, CLASS_CACHE_READ,
-    CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT,
+    nano_rate, nanos_sum, representable_nano_rate, CellPrices, LaneClass, LaneRates, RateCard,
+    TierRates, CLASS_CACHE_READ, CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT,
 };
 pub use view::{
-    price as price_ledger, price_exact, price_in_view, LedgerEntry, Money, MoneyError, EXACT_SCALE,
-    MONEY_SCALE,
+    nanos_of_exact, price as price_ledger, price_exact, price_in_view, whole, LedgerEntry, Money,
+    MoneyError, Tally, EXACT_SCALE, MONEY_SCALE, PLANE_LANE_SEP,
 };
 
 /// **THE ONE SCALE.** Nano-units in one minor unit: ten million.

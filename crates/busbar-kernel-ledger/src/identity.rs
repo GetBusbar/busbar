@@ -38,6 +38,21 @@
 //! "no" tells an operator that something is wrong and nothing else, which in practice means it gets
 //! run once and then ignored. A residual is a starting point: its sign says which side the missing
 //! value is on, and its magnitude is often recognisably one posting.
+//!
+//! ## ONE GUARD POLICY FOR THIS FILE: NO BOOK OPERATOR WRAPS
+//!
+//! `totals.rs` and `settle.rs` both announce that every operator moving a money column saturates.
+//! This file is the one that READS those columns to decide whether the books balance, and it was
+//! the one that still summed eight `i128`s with a bare `+`/`-` — so the imbalance detector was the
+//! only place in the crate a broken book could wrap. Measured: `settled = i128::MAX`,
+//! `open_holds = i128::MAX`, `open_slice_remainders = 2` sums to exactly 2^128, which a release
+//! build wraps to ZERO — against zero drawn, a residual of zero, and the most broken book the type
+//! can hold verified CLEAN. (A debug build panicked on the same figures, on the verification path.)
+//!
+//! CHECKED rather than saturating here, and the reason is specific to a comparison: two sides that
+//! both saturate meet at the same bound and "balance". So a sum that does not fit is not pinned —
+//! it is an UNREPRESENTABLE book, and it reads as out by the most the type can say
+//! ([`Residual::unrepresentable`]), which can never hold.
 
 use crate::totals::{Totals, TotalsKey, WindowStart};
 
@@ -51,9 +66,22 @@ pub struct Residual {
 }
 
 impl Residual {
+    /// The answer for a book whose figures do not fit the type: out by the most it can say.
+    ///
+    /// Not a pinned sum. Pinning both sides would let them meet at the same bound and read as
+    /// balanced, so an overflow is reported as the widest residual there is, which never holds.
+    pub const fn unrepresentable() -> Self {
+        Residual {
+            accounted: i128::MAX,
+            drawn: i128::MIN,
+        }
+    }
+
     /// How far out the books are. Zero is the only good answer.
+    ///
+    /// Saturating: a residual wider than the type is still a residual, never a wrap back to zero.
     pub fn amount(self) -> i128 {
-        self.accounted - self.drawn
+        self.accounted.saturating_sub(self.drawn)
     }
 
     /// Whether the identity holds.
@@ -79,16 +107,30 @@ impl std::fmt::Display for Residual {
 /// `since` is the last sealed checkpoint's figures for this key; `now` is the figures as they
 /// stand. A key that was not in the last checkpoint is measured from zeros, which is right: it had
 /// nothing then.
+///
+/// Every step is checked (see the module note): a book whose delta cannot be summed in 128 bits is
+/// [`Residual::unrepresentable`], never a wrapped figure that happens to read as balanced.
 pub fn residual(since: &Totals, now: &Totals) -> Residual {
-    let accounted = (now.settled - since.settled)
-        + (now.open_holds - since.open_holds)
-        + (now.open_slice_remainders - since.open_slice_remainders)
-        + (now.unreconciled - since.unreconciled)
-        + (now.adjustments - since.adjustments)
-        - (now.overdraft_carried() - since.overdraft_carried())
-        + (now.cross_window_transfers - since.cross_window_transfers);
-    let drawn = now.drawn - since.drawn;
-    Residual { accounted, drawn }
+    let delta = |now: i128, since: i128| now.checked_sub(since);
+    let accounted = (|| {
+        delta(now.settled, since.settled)?
+            .checked_add(delta(now.open_holds, since.open_holds)?)?
+            .checked_add(delta(
+                now.open_slice_remainders,
+                since.open_slice_remainders,
+            )?)?
+            .checked_add(delta(now.unreconciled, since.unreconciled)?)?
+            .checked_add(delta(now.adjustments, since.adjustments)?)?
+            .checked_sub(delta(now.overdraft_carried(), since.overdraft_carried())?)?
+            .checked_add(delta(
+                now.cross_window_transfers,
+                since.cross_window_transfers,
+            )?)
+    })();
+    match (accounted, delta(now.drawn, since.drawn)) {
+        (Some(accounted), Some(drawn)) => Residual { accounted, drawn },
+        _ => Residual::unrepresentable(),
+    }
 }
 
 /// Whether the identity holds for one balance.

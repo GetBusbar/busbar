@@ -288,7 +288,9 @@ pub(crate) fn bucket_usage(
         Some(cell) if cell.window_start == window => (
             cell.requests,
             cell.total_tokens(),
-            pricer.derive_spend_cents(cell.model_views(), cell.billable_requests, true),
+            pricer
+                .derive_spend_cents(cell.model_views(), cell.billable_requests, true)
+                .expect("the fixture's card prices every model it serves"),
         ),
         _ => (0, 0, 0),
     }

@@ -1145,11 +1145,14 @@ fn write_text_format(rf: &crate::ir::IrResponseFormat) -> serde_json::Value {
 /// `usage.input_tokens_details.cached_tokens`. Returns `None` when the nested field is absent (so a
 /// usage object without cache details does not gain a spurious `Some(0)`), mapping into the IR's
 /// `cache_read_input_tokens`. Shared by the non-streaming `read_response` and the streaming terminal.
-fn read_cached_tokens(usage_val: &serde_json::Value) -> Option<u64> {
-    usage_val
-        .get("input_tokens_details")
-        .and_then(|d| d.get("cached_tokens"))
-        .and_then(read_count_u64)
+///
+/// A present-but-UNREADABLE count is an [`crate::usage_count::UnreadableCount`] the caller turns
+/// into a refusal (#42, item 133) — the old read returned `None` for it, and a cache read the
+/// provider reported was ledgered as no cache read at all.
+fn read_cached_tokens(
+    usage_val: &serde_json::Value,
+) -> Result<Option<u64>, crate::usage_count::UnreadableCount> {
+    crate::usage_count::billed_count_opt(usage_val.get("input_tokens_details"), "cached_tokens")
 }
 
 /// Read the Responses CACHE-WRITE count from a `usage` object:
@@ -1165,11 +1168,16 @@ fn read_cached_tokens(usage_val: &serde_json::Value) -> Option<u64> {
 /// always EMITTED `cache_write_tokens` (the pinned `ResponseUsage` schema requires the member), so
 /// a Responses body that stated a cache write was re-emitted with the total intact and the write
 /// count zeroed — the tokens silently moved from the cache-write tier to the plain input rate.
-fn read_cache_write_tokens(usage_val: &serde_json::Value) -> Option<u64> {
-    usage_val
-        .get("input_tokens_details")
-        .and_then(|d| d.get("cache_write_tokens"))
-        .and_then(read_count_u64)
+///
+/// A present-but-UNREADABLE count is an [`crate::usage_count::UnreadableCount`] the caller turns
+/// into a refusal (#42, item 133), never the `None` that reads as "no cache write".
+fn read_cache_write_tokens(
+    usage_val: &serde_json::Value,
+) -> Result<Option<u64>, crate::usage_count::UnreadableCount> {
+    crate::usage_count::billed_count_opt(
+        usage_val.get("input_tokens_details"),
+        "cache_write_tokens",
+    )
 }
 
 /// OpenAI Responses streaming writer.

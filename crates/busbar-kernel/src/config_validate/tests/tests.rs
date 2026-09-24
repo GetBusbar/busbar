@@ -4046,6 +4046,43 @@ fn test_validate_absent_card_boots_free_no_refusal() {
     );
 }
 
+/// #77(5), item 22: A RATE THE CARD CANNOT HOLD IS A BOOT REFUSAL, naming the model, the class and
+/// the rate. The card quantises a rate to integer nano-units once; a positive rate below half a
+/// nano-unit (`0.0004`, or `$0.10/GB` a byte = `0.00009313`) or one past the integer's range has no
+/// representation, and the card holds it as an UNPRICED cell (`RateCard::refused_cells`) that
+/// refuses at runtime. Validation refuses the whole configuration first, so it never boots with a
+/// class it claims to price and cannot. 1.5.5 booted these configs and billed the class at 0.
+#[test]
+fn test_validate_rate_card_refuses_a_rate_the_card_cannot_hold() {
+    for (tier, v) in [
+        ("input_utok", 0.0004),
+        ("output_utok", 0.000_093_13),
+        ("cache_write_utok", 2.0e16),
+    ] {
+        let mut cfg = cost_cfg(&["m"]);
+        let mut entry = priced_entry();
+        match tier {
+            "input_utok" => entry.input_utok = v,
+            "output_utok" => entry.output_utok = v,
+            _ => entry.cache_write_utok = v,
+        }
+        cfg.rate_card = Some([("m".to_string(), entry)].into_iter().collect());
+        let errs = validate(&cfg).expect_err("a rate the card cannot hold must refuse boot");
+        let want = format!("rate_card['m'].{tier} = {v} micro-units per token is a rate the card");
+        assert!(
+            errs.iter().any(|e| e.contains(&want)),
+            "must name the model, class and rate ({want}): {errs:?}"
+        );
+    }
+    // The boundary and the explicit zero both hold: 0.0005 is one nano-unit, 0 is a free class.
+    let mut cfg = cost_cfg(&["m"]);
+    let mut entry = priced_entry();
+    entry.input_utok = 0.0005;
+    entry.cache_read_utok = 0.0;
+    cfg.rate_card = Some([("m".to_string(), entry)].into_iter().collect());
+    assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
+}
+
 /// EVERY missing model is stubbed (sorted), not just the first - the operator pastes once.
 #[test]
 fn test_validate_rate_card_stubs_every_missing_model() {
@@ -4107,6 +4144,7 @@ fn test_validate_rate_card_rejects_nan_and_negative_rates() {
             output_utok: -1.0,
             cache_read_utok: f64::INFINITY,
             cache_write_utok: 0.0,
+            ..Default::default()
         },
     )]));
     let errs = validate(&cfg).expect_err("NaN/negative/infinite rates must fail");
@@ -4120,6 +4158,50 @@ fn test_validate_rate_card_rejects_nan_and_negative_rates() {
     assert!(
         !joined.contains("rate_card['m'].cache_write_utok"),
         "a well-formed tier (0) must not error: {joined}"
+    );
+}
+
+/// ITEM 123 — THE OPEN-CLASS GRAMMAR. `rate_card.<model>.units` prices open classes, each rate read
+/// EXACTLY (integer, or a decimal STRING) into the card's integer nano-units; a bare float, a rate
+/// finer than one nano-unit, and a negative rate are refused at parse; a RESERVED class named under
+/// `units:` would price one class twice and is refused at validation, naming the path.
+#[test]
+fn test_rate_card_open_class_grammar_is_exact_and_refuses_a_reserved_class() {
+    let parse = |y: &str| {
+        serde_yaml::from_str::<std::collections::BTreeMap<String, config::RateEntryCfg>>(y)
+    };
+    let card = parse("m: { units: { search_units: 2000, hops: \"0.5\" } }\n").expect("parses");
+    let units = &card["m"].units;
+    assert_eq!(units["search_units"].nanos_per_unit(), 2_000_000);
+    assert_eq!(units["hops"].nanos_per_unit(), 500);
+    let round_trip = serde_yaml::to_string(&card).expect("serializes");
+    assert_eq!(
+        parse(&round_trip).expect("re-parses"),
+        card,
+        "exact both ways: {round_trip}"
+    );
+    assert!(
+        parse("m: { units: { hops: 0.5 } }\n").is_err(),
+        "a bare float is not exact"
+    );
+    assert!(
+        parse("m: { units: { hops: \"0.0001\" } }\n").is_err(),
+        "finer than a nano-unit"
+    );
+    assert!(parse("m: { units: { hops: -1 } }\n").is_err(), "negative");
+    assert!(
+        parse("m: { units: { hops: 1 }, typo_utok: 1 }\n").is_err(),
+        "deny_unknown_fields stays"
+    );
+
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.rate_card = Some(parse("m: { input_utok: 1, units: { output: 5 } }\n").expect("parses"));
+    let joined = validate(&cfg)
+        .expect_err("a reserved class under units: must fail")
+        .join("\n");
+    assert!(
+        joined.contains("rate_card['m'].units.output names a reserved class"),
+        "{joined}"
     );
 }
 
@@ -4144,6 +4226,7 @@ fn test_validate_all_zero_rate_card_warns_but_does_not_fail() {
             output_utok: 15.0,
             cache_read_utok: 0.3,
             cache_write_utok: 3.75,
+            ..Default::default()
         },
     );
     // All-zero: every tier 0.0 (RateEntryCfg::default()), the exact shape the completeness stub
@@ -4228,12 +4311,18 @@ fn test_validate_rate_card_entry_omitting_a_tier_is_accepted_and_bills_that_clas
     // …and here is what that acceptance costs, in the units the ledger bills in. A prompt-caching
     // workload of ten million cache-read tokens in a day, against a card whose `cache_read_utok`
     // was never written.
-    let entry = cfg.rate_card.as_ref().unwrap()["claude-sonnet"];
-    let rate = crate::cost::RateNanos::from_cfg(&entry);
+    // Measured through THE ONE FUNCTION (the kernel's cost model prices every figure with it), in
+    // micro-units: 1,000 micro-units is one whole unit.
+    let micros = |card: &std::collections::BTreeMap<String, config::RateEntryCfg>,
+                  units: &std::collections::BTreeMap<String, u64>| {
+        crate::cost::CostModel::resolve_parts(Some(card), 0, &std::collections::BTreeMap::new())
+            .derive_spend_micros([("claude-sonnet", units)].into_iter(), 0, false)
+            .expect("the model is on the card")
+    };
     let a_day_of_cache_reads =
         std::collections::BTreeMap::from([("cache_read".to_string(), 10_000_000u64)]);
     assert_eq!(
-        rate.reserved_nanos(&a_day_of_cache_reads),
+        micros(cfg.rate_card.as_ref().unwrap(), &a_day_of_cache_reads),
         0,
         "the silent zero, measured: ten million cache-read tokens bill at nothing"
     );
@@ -4244,9 +4333,12 @@ fn test_validate_rate_card_entry_omitting_a_tier_is_accepted_and_bills_that_clas
     )
     .unwrap();
     assert_eq!(
-        crate::cost::RateNanos::from_cfg(&priced).reserved_nanos(&a_day_of_cache_reads),
-        3_000_000_000,
-        "three whole units (1e9 nano-units each) a day is what the silent zero swallowed"
+        micros(
+            &std::collections::BTreeMap::from([("claude-sonnet".to_string(), priced)]),
+            &a_day_of_cache_reads
+        ),
+        3_000_000,
+        "three whole units (1e6 micro-units each) a day is what the silent zero swallowed"
     );
 }
 
@@ -5738,5 +5830,124 @@ fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
             .iter()
             .any(|e| e.contains("providers.acme.api_key") && e.to_lowercase().contains("non-empty")),
         "a non-empty canonical key must not raise the empty-secret error; got: {errs:?}"
+    );
+}
+
+/// ITEM 147 — the unbounded-numeric sweep. `limits.pool_idle_timeout_secs` at 2^63 used to pass
+/// validation (so the admin settings apply answered 200) and then overflow `Instant + Duration`
+/// under the egress pool mutex, killing the shard's egress until restart. Every duration on the
+/// settings surface — and the per-instance webhook `delivery_timeout_secs` — is now refused above
+/// the 30-year runtime horizon, by name; the boundary value itself stays clean.
+#[test]
+fn test_validate_refuses_every_duration_past_the_runtime_horizon() {
+    let over_s = MAX_DURATION_SECS + 1;
+    let over_ms = MAX_DURATION_MS + 1;
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    cfg.limits.pool_idle_timeout_secs = 1u64 << 63;
+    cfg.limits.upstream_request_timeout_secs = over_s;
+    cfg.limits.hard_down_cooldown_secs = over_s;
+    cfg.limits.tls_handshake_timeout_secs = over_s;
+    cfg.limits.request_body_read_timeout_secs = over_s;
+    cfg.limits.max_honored_retry_after_secs = over_s;
+    cfg.limits.default_probe_interval_secs = over_s;
+    cfg.limits.default_probe_timeout_secs = u64::MAX;
+    cfg.limits.usage_flush_interval_ms = over_ms;
+    cfg.limits.default_policy_timeout_ms = u64::MAX;
+    let webhook: crate::config::WebhookSettings = serde_json::from_value(serde_json::json!({
+        "url": "https://hooks.example.com/ingest",
+        "delivery_timeout_secs": u64::MAX,
+    }))
+    .expect("webhook settings");
+    cfg.export.request_log_webhooks.push(webhook);
+
+    let errs = validate(&cfg).expect_err("every over-horizon duration must fail validation");
+    for name in [
+        "limits.pool_idle_timeout_secs (9223372036854775808) exceeds",
+        "limits.upstream_request_timeout_secs",
+        "limits.hard_down_cooldown_secs",
+        "limits.tls_handshake_timeout_secs",
+        "limits.request_body_read_timeout_secs",
+        "limits.max_honored_retry_after_secs",
+        "health.default_probe_interval_secs",
+        "health.default_probe_timeout_secs",
+        "advanced.usage_flush_interval_ms",
+        "routing.default_policy_timeout_ms",
+        "settings.delivery_timeout_secs: 18446744073709551615",
+    ] {
+        assert!(
+            errs.iter()
+                .any(|e| e.contains(name) && (e.contains("30-year") || e.contains("30 years"))),
+            "expected a named over-horizon refusal for {name}; got: {errs:?}"
+        );
+    }
+
+    // The exact boundary is accepted — the ceiling refuses only what overflows.
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    cfg.limits.pool_idle_timeout_secs = MAX_DURATION_SECS;
+    cfg.limits.upstream_request_timeout_secs = MAX_DURATION_SECS;
+    cfg.limits.default_probe_timeout_secs = MAX_DURATION_SECS;
+    cfg.limits.usage_flush_interval_ms = MAX_DURATION_MS;
+    cfg.limits.default_policy_timeout_ms = MAX_DURATION_MS;
+    assert!(
+        validate(&cfg).is_ok(),
+        "the boundary values must not error: {:?}",
+        validate(&cfg)
+    );
+    // And the boundary itself is representable where the old overflow happened.
+    assert!(std::time::Instant::now()
+        .checked_add(std::time::Duration::from_millis(MAX_DURATION_MS))
+        .is_some());
+}
+
+/// ITEM 147 (sweep 2) — the per-lane duration overrides reach the same clock arithmetic as the
+/// settings-surface defaults (`health.timeout_secs` → the probe deadline `Instant::now() + t`;
+/// `attempt_timeout_ms` → the attempt timer), through the config file and the named maps, both
+/// of which pass `validate`. Each is refused above the 30-year horizon, by name; the boundary is
+/// accepted.
+#[test]
+fn test_validate_refuses_per_lane_durations_past_the_runtime_horizon() {
+    let mut providers = HashMap::new();
+    let mut provider = make_provider("anthropic", "https://api.example.com", "API_KEY");
+    provider.health = Some(crate::config::providers::HealthCfg {
+        mode: crate::config::providers::HealthMode::Active,
+        interval_secs: Some(MAX_DURATION_SECS + 1),
+        timeout_secs: Some(1u64 << 63),
+    });
+    providers.insert("myprovider".to_string(), provider);
+    let mut models = HashMap::new();
+    let mut model = make_model("myprovider", 1);
+    model.attempt_timeout_ms = Some(u64::MAX);
+    models.insert("m".to_string(), model);
+    let mut member = make_member("m");
+    member.attempt_timeout_ms = Some(MAX_DURATION_MS + 1);
+    let mut pools = HashMap::new();
+    pools.insert("p".to_string(), make_pool(vec![member]));
+    let mut cfg = make_root_cfg(providers, models, pools);
+    let errs = validate(&cfg).expect_err("over-horizon per-lane durations must fail validation");
+    for needle in [
+        "health.interval_secs (946080001) exceeds",
+        "health.timeout_secs (9223372036854775808) exceeds",
+        "model 'm' has attempt_timeout_ms: 18446744073709551615, above the maximum",
+        "member 'm' has attempt_timeout_ms: 946080000001, above the maximum",
+    ] {
+        assert!(
+            errs.iter().any(|e| e.contains(needle)),
+            "expected a named refusal containing {needle:?}; got: {errs:?}"
+        );
+    }
+
+    // The boundary is accepted.
+    let p = cfg.providers.get_mut("myprovider").expect("provider");
+    p.health = Some(crate::config::providers::HealthCfg {
+        mode: crate::config::providers::HealthMode::Active,
+        interval_secs: Some(MAX_DURATION_SECS),
+        timeout_secs: Some(MAX_DURATION_SECS),
+    });
+    cfg.models.get_mut("m").expect("model").attempt_timeout_ms = Some(MAX_DURATION_MS);
+    cfg.pools.get_mut("p").expect("pool").members[0].attempt_timeout_ms = Some(MAX_DURATION_MS);
+    assert!(
+        validate(&cfg).is_ok(),
+        "the boundary values must not error: {:?}",
+        validate(&cfg)
     );
 }

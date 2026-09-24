@@ -7,21 +7,28 @@ use super::*;
 
 #[test]
 fn rerank_resp_billing_is_flat() {
-    // Rerank has no token meter on either wire; until the 1.3 pricing engine prices search
-    // units, the billing projection must be the flat marker.
+    // Rerank has no token meter on either wire; a response reporting no search units is the flat
+    // marker.
     let resp = RerankResp::default();
     assert_eq!(resp.billing(), Some(Billing::Flat));
 }
 
+/// ITEM 134: the search units Cohere billed REACH THE PRICE. `billing()` hardcoded `Flat` and
+/// discarded the count it had correctly read, so a 5,000-document rerank billed like a 1-document
+/// one. The count now leaves as the open class `search_units`, exactly as billed.
 #[test]
-fn rerank_resp_billing_flat_regardless_of_search_units() {
-    // Even when Cohere reports billed search units, the projection stays Flat (search-unit
-    // pricing is deferred; the count is echoed, not priced here).
+fn rerank_resp_billing_counts_search_units_as_an_open_class() {
     let resp = RerankResp {
         search_units: Some(3),
         ..Default::default()
     };
-    assert_eq!(resp.billing(), Some(Billing::Flat));
+    assert_eq!(
+        resp.billing(),
+        Some(Billing::Counted {
+            class: "search_units".to_string(),
+            count: 3
+        })
+    );
 }
 
 // ── IrFacts projection (close-non-chat-gate-blindness) ───────────────────────────────────────────

@@ -149,16 +149,19 @@ fn example_cdylib() -> Option<std::path::PathBuf> {
         let exe = std::env::current_exe().ok()?;
         let profile_dir = exe.parent()?.parent()?;
         let name = crate::plugin_library_filename("busbar_export_example_plugin");
-        [profile_dir.join(&name), profile_dir.join("deps").join(&name)]
-            .into_iter()
-            .filter_map(|p| {
-                std::fs::metadata(&p)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .map(|mtime| (p, mtime))
-            })
-            .max_by_key(|(_, mtime)| *mtime)
-            .map(|(p, _)| p)
+        [
+            profile_dir.join(&name),
+            profile_dir.join("deps").join(&name),
+        ]
+        .into_iter()
+        .filter_map(|p| {
+            std::fs::metadata(&p)
+                .and_then(|m| m.modified())
+                .ok()
+                .map(|mtime| (p, mtime))
+        })
+        .max_by_key(|(_, mtime)| *mtime)
+        .map(|(p, _)| p)
     })();
     if candidate.is_none() && std::env::var_os("CI").is_some() {
         panic!(

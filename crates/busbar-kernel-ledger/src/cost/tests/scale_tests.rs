@@ -10,15 +10,14 @@
 //! currencies natively, and that each currency truncates at its own divisor.
 //!
 //! **Every figure this file asserts is a figure the deleted file already asserted at USD**, which
-//! was the only scale any deployment ever read at: `minor_of`'s boundaries, the cent projection,
+//! was the only scale any deployment ever read at: the minor projection's boundaries, the cent projection,
 //! the explicit-zero fee's `0.005000` and the named fee's `0.125000` are carried over unchanged.
 //! The rows that moved were the ones that asked for a SECOND scale, and a second scale is exactly
 //! what #66 removes.
 
 use super::*;
 use crate::cost::{
-    micros_of, minor_of, LaneClass, RateCard, MICROS_PER_CENT, NANOS_PER_CENT, NANOS_PER_MICRO,
-    STANDARD_TIER_BP,
+    LaneClass, RateCard, MICROS_PER_CENT, NANOS_PER_CENT, NANOS_PER_MICRO, STANDARD_TIER_BP,
 };
 
 /// **THE SCALE IS A CONSTANT, NOT A CHOICE.** Ten million nano-units to one minor unit, which is
@@ -42,28 +41,33 @@ fn the_one_scale_is_ten_million_nanos_and_nothing_can_name_another() {
 }
 
 /// **ONE TRUNCATION, AT THE ONE DIVISOR, AT THE BOUNDARY.** Carried over verbatim from the deleted
-/// file's USD rows: just under, exactly at, and just over two minor units; the floor; and the
-/// saturation that stops an over-the-top ledger wrapping negative and billing as free.
+/// file's USD rows: just under, exactly at, and just over two minor units; and a total past the
+/// served range, which REFUSES (item 28) where the deleted `minor_of` pinned it at `i64::MAX`.
 #[test]
 fn the_minor_projection_truncates_once_at_the_one_boundary() {
-    assert_eq!(minor_of(19_999_999), 1);
-    assert_eq!(minor_of(20_000_000), 2);
-    assert_eq!(minor_of(20_000_001), 2);
-    assert_eq!(minor_of(2_000_000_000), 200);
+    assert_eq!(minor_nanos(19_999_999), Ok(1));
+    assert_eq!(minor_nanos(20_000_000), Ok(2));
+    assert_eq!(minor_nanos(20_000_001), Ok(2));
+    assert_eq!(minor_nanos(2_000_000_000), Ok(200));
 
-    // The micro projection is a scale of the ACCUMULATOR, not of the minor unit, and it is still
-    // unfloored where the minor projection floors.
-    assert_eq!(micros_of(2_000_000_000), 2_000_000);
-    assert_eq!(minor_of(u128::MAX), i64::MAX, "saturates, never wraps");
+    // The micro projection is a scale of the ACCUMULATOR, not of the minor unit.
+    assert_eq!(micros_nanos(2_000_000_000), Ok(2_000_000));
+    assert_eq!(
+        minor_nanos(u128::MAX),
+        Err(crate::cost::MoneyError::Overflow),
+        "refuses, never pins and never wraps"
+    );
 }
 
-/// The legacy cent spelling and the minor projection are ONE function. They were the same function
-/// at USD before #66 and they are the same function outright now; if they ever stopped being,
-/// every 1.5.5 figure would move.
+/// The checked projection IS the one divisor: every in-range total reads exactly `nanos /
+/// NANOS_PER_CENT`, and a total whose quotient the served type cannot hold refuses. The legacy cent
+/// spelling that used to sit beside it (`cents_of`) is deleted, so there is one projection to ask.
 #[test]
-fn the_cent_projection_is_the_minor_projection() {
+fn the_minor_projection_is_the_one_divisor_or_a_refusal() {
     for nanos in [0u128, 1, 9_999_999, 10_000_000, 123_456_789, u128::MAX] {
-        assert_eq!(crate::cost::cents_of(nanos), minor_of(nanos));
+        let expected =
+            i64::try_from(nanos / NANOS_PER_CENT).map_err(|_| crate::cost::MoneyError::Overflow);
+        assert_eq!(minor_nanos(nanos), expected, "{nanos} nano-units");
     }
 }
 
@@ -150,7 +154,7 @@ fn a_priced_card_reads_and_settles_at_the_one_scale() {
     let report = usage(&[(INPUT, 1_000)]);
     let read = priced(&card, "m", &report, 1, STANDARD_TIER_BP);
     assert_eq!(read.pre_tier_nanos, 2_000_000 + 30_000_000);
-    assert_eq!(read.minor(), 3);
+    assert_eq!(minor(&read), 3);
     assert!(read.unpriced_classes().is_empty());
 
     let history = History::opening(card, 0);

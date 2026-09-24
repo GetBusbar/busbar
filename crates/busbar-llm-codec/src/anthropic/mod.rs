@@ -680,23 +680,33 @@ fn stream_error_type(err: &IrError) -> &'static str {
 /// (`message_start` and `message_delta`) read the identical object instead of defaulting the split
 /// away: the same request must not report the tier split at `stream: false` and lose it at
 /// `stream: true`.
-fn read_cache_tier_detail(usage_val: Option<&serde_json::Value>) -> crate::ir::IrUsageDetail {
-    crate::ir::IrUsageDetail {
-        cache_creation_5m_input_tokens: usage_val
-            .and_then(|u| u.get("cache_creation"))
-            .and_then(|c| c.get("ephemeral_5m_input_tokens"))
-            .and_then(crate::usage_count::read_count_u64),
-        cache_creation_1h_input_tokens: usage_val
-            .and_then(|u| u.get("cache_creation"))
-            .and_then(|c| c.get("ephemeral_1h_input_tokens"))
-            .and_then(crate::usage_count::read_count_u64),
+///
+/// The PRICED counts here — both cache tiers and the separately-metered `web_search_requests` — are
+/// read through [`crate::usage_count::billed_count_opt`] (#42, item 133): absent or `null` is
+/// `None`, a present-but-UNREADABLE count is an [`crate::usage_count::UnreadableCount`] the caller
+/// turns into a refusal. The old read returned `None` for it, which reads as "not reported".
+/// `reasoning_tokens` stays a lenient read: it is ATTRIBUTION inside `output_tokens` (already
+/// billed there), not a priced term, exactly as item 133 left the other dialects' reasoning slices.
+fn read_cache_tier_detail(
+    usage_val: Option<&serde_json::Value>,
+) -> Result<crate::ir::IrUsageDetail, crate::usage_count::UnreadableCount> {
+    let tiers = usage_val.and_then(|u| u.get("cache_creation"));
+    Ok(crate::ir::IrUsageDetail {
+        cache_creation_5m_input_tokens: crate::usage_count::billed_count_opt(
+            tiers,
+            "ephemeral_5m_input_tokens",
+        )?,
+        cache_creation_1h_input_tokens: crate::usage_count::billed_count_opt(
+            tiers,
+            "ephemeral_1h_input_tokens",
+        )?,
         // `usage.server_tool_use.web_search_requests` — count of server-side web-search invocations,
         // a separately-metered bucket (see the IR field). Read alongside the cache tiers so the
         // buffered AND streaming usage sites all surface it.
-        web_search_requests: usage_val
-            .and_then(|u| u.get("server_tool_use"))
-            .and_then(|s| s.get("web_search_requests"))
-            .and_then(crate::usage_count::read_count_u64),
+        web_search_requests: crate::usage_count::billed_count_opt(
+            usage_val.and_then(|u| u.get("server_tool_use")),
+            "web_search_requests",
+        )?,
         // `usage.service_tier` — which tier served/billed the turn (`standard`/`priority`/`batch`).
         service_tier: usage_val
             .and_then(|u| u.get("service_tier"))
@@ -710,7 +720,7 @@ fn read_cache_tier_detail(usage_val: Option<&serde_json::Value>) -> crate::ir::I
             .and_then(|d| d.get("thinking_tokens"))
             .and_then(crate::usage_count::read_count_u64),
         ..Default::default()
-    }
+    })
 }
 
 /// The `cache_creation` tier object for a wire `usage`, in Anthropic's native nested

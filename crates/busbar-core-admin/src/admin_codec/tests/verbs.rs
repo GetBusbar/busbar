@@ -168,3 +168,59 @@ fn every_1_5_5_fixture_operation_resolves_to_the_right_verb_and_scope() {
         "the pinned tag's own column splits the 66 as 34 read-only / 32 full"
     );
 }
+
+/// ITEM 149 — THE GATE AND THE VERB TABLE AGREE ON EVERY ADMIN ROUTE.
+///
+/// Three answers exist for "what scope does this admin operation need": the live gate's (method,
+/// path) matrix (`busbar_kernel::admin::v1::contract::required_scope`, the 1.5.5 rule the auth
+/// middleware and the admin units' approve step enforce), this table's per-row `read_only`, and the
+/// verbs unit's `verbs::required_scope(verb)`. For every row the closed table declares, all three
+/// must name the same rung. `POST /api/v1/admin/verify` was the one row where they did not: the gate
+/// demanded `full` of a verb the unit answers `read-only` for, refusing a read-only operator.
+#[test]
+fn the_live_gate_and_the_verb_table_agree_on_every_admin_route() {
+    use crate::verb::{verb_name, AUDIT_VERBS, LEDGER_VERBS, LEGACY_VERBS, NEW_VERBS};
+    let kernel_verb = |entry: &VerbEntry| {
+        LEGACY_VERBS
+            .iter()
+            .find(|r| r.method == entry.method && r.path == entry.path)
+            .map(|r| r.verb)
+            .or_else(|| {
+                NEW_VERBS
+                    .iter()
+                    .chain(LEDGER_VERBS)
+                    .chain(AUDIT_VERBS)
+                    .copied()
+                    .find(|v| verb_name(*v) == Some(entry.verb))
+            })
+            .unwrap_or_else(|| panic!("{} {}: no kernel verb", entry.method, entry.path))
+    };
+    let mut checked = 0usize;
+    let mut disagreements = Vec::new();
+    for entry in all_verbs() {
+        let method = axum::http::Method::from_bytes(entry.method.as_bytes()).expect("a method");
+        let gate = busbar_kernel::admin::v1::contract::required_scope(&method, entry.path);
+        let gate_read_only = gate == busbar_kernel::admin::v1::contract::Scope::ReadOnly;
+        let unit_read_only =
+            crate::verbs::required_scope(kernel_verb(entry)) == crate::verb::VerbScope::ReadOnly;
+        if gate_read_only != entry.read_only || gate_read_only != unit_read_only {
+            disagreements.push(format!(
+                "{} {}: gate read_only={gate_read_only}, table read_only={}, verbs unit read_only={unit_read_only}",
+                entry.method, entry.path, entry.read_only
+            ));
+        }
+        checked += 1;
+    }
+    assert_eq!(checked, VERB_COUNT, "every declared admin route is checked");
+    assert!(
+        disagreements.is_empty(),
+        "the live admin gate and the verb table disagree:\n{}",
+        disagreements.join("\n")
+    );
+    // The row this item moved: `verify` is the architecture's `GET`, and no `POST` row names it.
+    assert_eq!(
+        resolve("GET", "/api/v1/admin/verify").map(|r| r.verb),
+        Some("verify")
+    );
+    assert!(resolve("POST", "/api/v1/admin/verify").is_none());
+}

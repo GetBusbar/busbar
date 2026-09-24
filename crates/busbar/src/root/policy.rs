@@ -171,11 +171,14 @@ pub fn pools_without_expansion(cfg: &MeterPolicyConfig, policy: &MeterPolicyHand
 /// resolved limits rather than from the transport crate's `Default`.
 ///
 /// Every field of `ClientSettings` is an operator knob that already has a home in `limits:` /
-/// `advanced:`, and the legacy serving path builds its upstream client from exactly these five
+/// `advanced:`, and the legacy serving path builds its upstream client from exactly these six
 /// values. The one that matters most is `request_body_max_bytes`: it is the SAME number the served
 /// door's inbound body limit is built from, so a transport built from a `Default` would accept a
 /// body the door refused (or refuse one the door accepted) on any deployment that set the knob.
-/// Reading all five off one struct is what makes that impossible to get half-right.
+/// `request_timeout_secs` is the same shape of hazard for a different knob: a deployment that
+/// raised `limits.upstream_request_timeout_secs` for long generations must have the transport's own
+/// `client.request()` wait raised with it, not silently re-capped at a transport-crate default.
+/// Reading all six off one struct is what makes that impossible to get half-right.
 ///
 /// A deployment that sets nothing gets the config layer's own resolved defaults — which for the
 /// body cap is the same 32 MiB `ClientSettings::default()` carries, so an unset limit changes
@@ -195,6 +198,7 @@ pub fn client_settings(limits: &LimitsResolved) -> ClientSettings {
         // The deployment resolves one body limit; the transport holds it against both directions,
         // which is the same posture its own default takes.
         response_body_max_bytes: limits.request_body_max_bytes,
+        request_timeout_secs: limits.upstream_request_timeout_secs,
     }
 }
 

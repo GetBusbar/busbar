@@ -182,19 +182,10 @@ pub async fn dial_provider(
     }
 }
 
-/// THE ALREADY-PRICED SESSION BUDGET handed across the D2 lease at session start (`plane4-duplex-session.md` §2.5): the coarse
-/// over-`estimate` debited up front, the once-per-session flat `fee`, and the TRUE budget `cap`
-/// exhaustion is judged against (`None` = uncapped, `Some(0)` = refuse-all). All nanodollars — the
-/// plane priced them; core prices nothing.
-#[derive(Debug, Clone, Copy)]
-pub struct SessionBudget {
-    /// The coarse over-estimate debited at reserve.
-    pub estimate_nanos: u64,
-    /// The once-per-session flat fee (`0` = none).
-    pub fee_nanos: u64,
-    /// The true budget ceiling (`None` = uncapped).
-    pub cap_nanos: Option<u64>,
-}
+/// THE SESSION BUDGET handed to the session meter at open (`plane4-duplex-session.md` §2.5) — a
+/// KERNEL type the plane passes through and never reads: the kernel derives it for a presenting key
+/// ([`SessionBudget::for_principal`]) and prices against it (#43).
+pub use crate::runtime::SessionBudget;
 
 /// Why a session failed to start before any frame flowed.
 #[derive(Debug)]
@@ -377,9 +368,7 @@ where
     let call_id = call_id.into();
 
     // The marquee guarantee's charge — no lease ⇒ no session (fail closed). Reserved AFTER admission.
-    let lease = rt
-        .open_lease(budget.estimate_nanos, budget.fee_nanos, budget.cap_nanos)
-        .ok_or(StartError::BudgetRefused)?;
+    let lease = rt.open_lease(&budget).ok_or(StartError::BudgetRefused)?;
 
     let handle = rt.bind_session(owner.clone(), call_id.clone());
     handle.open(now).map_err(StartError::Durable)?;
@@ -409,7 +398,9 @@ where
         Arc::clone(&rt.tools),
         carrier,
         locked_config,
-    );
+    )
+    // The operator's hard wall-clock ceiling, enforced on the sweep tick beside the pump.
+    .with_session_ceiling(rt.session_max_secs);
     // The binding, applied before the core is shared: a session that reached a socket ungoverned and
     // was governed afterwards would have a window in which its pump could see a tool call it had no
     // table to enter.

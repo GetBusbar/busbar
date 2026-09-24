@@ -1166,6 +1166,12 @@ fn symbol_table_scan(
         let because = need_str(spec, "because", rule)?;
         let confined: Vec<String> = spec.list_of("confined_to_paths");
         let sym_rx = Regex::new(&rx::escape(symbol))?;
+        // THE SITES INSIDE THE HOME, counted where a spec states how many there are (item 130).
+        // Confinement alone says WHERE a symbol may appear and nothing about how often: a fourth
+        // `HoldCell::take` written next to the other three sat inside the confined file and the
+        // row stayed PASS. A `sites = N` spec holds the home to exactly N, so a fourth goes red and
+        // so does a site that stops spelling the literal the count is taken over.
+        let mut homed: Vec<String> = Vec::new();
         for (rel, l) in tree.grep(&sym_rx, true, Some(&files)) {
             // ANCHORED, and matched as a path prefix: `confined_to` is the busbar-caps fixture's
             // prose spelling and excuses any path containing those characters; the resolved
@@ -1175,6 +1181,7 @@ fn symbol_table_scan(
                 !p.is_empty() && (rel == p || rel.starts_with(&format!("{p}/")))
             });
             if here {
+                homed.push(format!("{rel}:{}", l.no));
                 continue;
             }
             let fname = tree
@@ -1185,6 +1192,16 @@ fn symbol_table_scan(
                 tracked.push(where_);
             } else {
                 offenders.push(where_);
+            }
+        }
+        if let Some(want) = spec.int_of("sites") {
+            if homed.len() as i64 != want {
+                offenders.push(format!(
+                    "`{symbol}` has {} site(s) inside its home, the spec says exactly {want} \
+                     ({because}): {}",
+                    homed.len(),
+                    join_or_none(&homed)
+                ));
             }
         }
     }

@@ -34,7 +34,7 @@ use crate::ir::codec::{DuplexReader, DuplexWriter, OpenAiRealtimeCodec};
 use crate::ir::config::SessionConfig;
 use crate::runtime::carrier::Carrier;
 use crate::runtime::scope::SessionHandle;
-use crate::runtime::session::{serve_with_sweep, UplinkForwarder, VoiceSession};
+use crate::runtime::session::{serve_to_teardown, serve_with_sweep, UplinkForwarder, VoiceSession};
 use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
 use crate::topology::minter_https::HttpsTokenMinter;
 use crate::topology::telephony::{begin_telephony, g711_config, open_admitted_telephony};
@@ -83,10 +83,6 @@ const SESSION_OPEN_METHOD: &str = "session.open";
 /// REJECTED row a committed-but-unreadable rewrite refuses under ([`hook_tap`]). An operator reading
 /// the audit stream must see ONE action with two outcomes, not two spellings that drift apart.
 pub(crate) const SESSION_AUDIT_ACTION: &str = "voice.session.open";
-
-/// The coarse over-estimate (nanodollars) a session debits up front at reserve. It is an audit tap,
-/// not a ceiling — the ceiling is the presenting key's own remaining budget, read per session.
-const SESSION_ESTIMATE_NANOS: u64 = 1_000;
 
 /// THE HOOK CONTAINER the voice plane's session-open gate/tap fire under — the plane's SINGULAR config
 /// section noun (`streams`), since voice declares no per-registration container (its config is one
@@ -718,11 +714,7 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
     // caller has no ceiling to impose, and stays uncapped exactly as an unbudgeted model call is.
     let hosted = crate::runtime::build_runtime_hosted(rt, Arc::clone(&host));
     let rt = &hosted;
-    let budget = SessionBudget {
-        estimate_nanos: SESSION_ESTIMATE_NANOS,
-        fee_nanos: 0,
-        cap_nanos: crate::runtime::principal_cap_nanos(&host, vkey.as_ref(), now),
-    };
+    let budget = SessionBudget::for_principal(&*host, vkey.as_ref(), now);
     // The session-open params the hooks screen and (maybe) rewrite: the g711 lock for telephony, the
     // plane-default session posture otherwise. One projection both the gate and the tap read.
     let mut session_cfg = match ingress {
@@ -1457,11 +1449,7 @@ where
     // The session budget: the coarse over-estimate at reserve, no flat fee, and the presenting key's
     // REAL remaining budget as the ceiling — the SAME shape `open_governed` uses for the one-shot
     // passes, so both doors meter a session identically.
-    let budget = SessionBudget {
-        estimate_nanos: SESSION_ESTIMATE_NANOS,
-        fee_nanos: 0,
-        cap_nanos: crate::runtime::principal_cap_nanos(&host, vkey.as_ref(), now),
-    };
+    let budget = SessionBudget::for_principal(&*host, vkey.as_ref(), now);
     // THE METER STEP's attribution for this WS session — the presenting key each turn's usage is
     // landed on through the core seam, under THIS LEG'S OWN dialect label (K4: no longer a plane-wide
     // constant). Built from the resolved key (or `None` ungoverned) and moved into the post-upgrade
@@ -1478,6 +1466,8 @@ where
         Ingress::Gemini => composed_gemini_provider(),
         _ => composed_provider(),
     };
+    // The clock each served session's teardown is stamped with — the same host clock its open was.
+    let teardown_clock = Arc::clone(&host);
     accept_gauntlet(
         arrival.upgrade,
         gauntlet_req,
@@ -1520,10 +1510,12 @@ where
                                     .await;
                                 }
                                 Err(e) => {
-                                    // The dial failed: nothing to relay client frames to. Drop the
-                                    // proxy (its lease-close guard closes the D2 reserve, and its
-                                    // durable handle's own drop path applies) rather than serve a
-                                    // client socket with no upstream — fail closed, no orphaned row.
+                                    // The dial failed: nothing to relay client frames to. Settle the
+                                    // just-opened durable row terminal and evict it, then drop the
+                                    // proxy (its lease-close guard closes the D2 reserve) rather than
+                                    // serve a client socket with no upstream — fail closed, no
+                                    // orphaned row. The handle has no drop path of its own.
+                                    proxy.handle.finish(unix_secs(&*teardown_clock));
                                     tracing::warn!(
                                         error = %redact_url_credentials(&e.to_string()),
                                         dialect,
@@ -1541,7 +1533,7 @@ where
                     // frame is discarded with ZERO buffering — client uplink is decoded + metered with
                     // no upstream to funnel to, and no unbounded queue grows for the session's life.
                     None => {
-                        if let Ok((core, _handle, _guard)) = open_admitted_session(
+                        if let Ok((core, handle, _guard)) = open_admitted_session(
                             &rt,
                             codec,
                             owner,
@@ -1554,13 +1546,15 @@ where
                             served_governed_session(),
                         ) {
                             let (upstream_tx, _) = futures::channel::mpsc::unbounded::<Vec<u8>>();
-                            serve_with_sweep(
+                            serve_to_teardown(
                                 Arc::clone(&core),
+                                handle,
                                 serve_messages(
                                     stream,
                                     sink,
                                     Arc::new(UplinkForwarder::new(core, upstream_tx)),
                                 ),
+                                || unix_secs(&*teardown_clock),
                             )
                             .await;
                         }
@@ -1569,7 +1563,7 @@ where
                 // BROWSER-WEBRTC SIDEBAND: media is peer-to-peer by design (see `crate::topology::webrtc`
                 // docs) — this socket is control-only, so there is no provider leg to dial here.
                 Ingress::Sideband => {
-                    if let Ok((core, _handle, _guard)) = open_admitted_session(
+                    if let Ok((core, handle, _guard)) = open_admitted_session(
                         &rt,
                         codec,
                         owner,
@@ -1581,9 +1575,11 @@ where
                         now,
                         served_governed_session(),
                     ) {
-                        serve_with_sweep(
+                        serve_to_teardown(
                             Arc::clone(&core),
+                            handle,
                             serve_messages(stream, sink, Arc::new(VoiceSession::new(core))),
+                            || unix_secs(&*teardown_clock),
                         )
                         .await;
                     }

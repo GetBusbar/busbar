@@ -22,7 +22,7 @@
 //! after the Audit step gave the client its bytes. So for a unit that reached the walk holding the
 //! admission's meter half, the walk's tap IS this step's body — the same function, the same four
 //! arguments — and what this step does is SEAL what was posted rather than post it a second time.
-//! [`MeterFacts::accrued`] is Route saying which of the two happened, and it is the only thing
+//! [`MeterFacts::tap_posts`] is Route saying which of the two happened, and it is the only thing
 //! standing between one accrual and two. [`Metered::posted`] is this step saying which of the two
 //! it did, and it is set inside the accrual arm: the row this step reports is filled either way, so
 //! a row cannot answer that question and a caller that read one for the answer would call every
@@ -68,22 +68,24 @@
 //! in the window the pinned arrival epoch names, which is the window the charge landed in, so a
 //! request that straddles a boundary refunds where it charged.
 //!
-//! **A stream that ends in an error bills ZERO tokens.** Not the tokens observed before the error,
-//! and not a floor: the accrual is skipped entirely, exactly as the live taps skip it when the
-//! translator reports a terminal error or an abort. The figures observed either side of it are
-//! evidence, and evidence is not a charge.
+//! **A stream that ends in an error bills the tokens it streamed.** A terminal error, a translate
+//! abort, a transport cut or a timeout is an interruption, not a reversal of incurred cost: the
+//! customer pays for what was actually delivered up to the cut, exactly as the live taps accrue it
+//! (#62, owner-locked). The readers were fed only the frames that arrived before the end, so what
+//! they report IS what streamed; a transfer that failed before a byte reached the client reported
+//! nothing and bills nothing, with no gate of its own.
 //!
 //! **A response that reports no usage bills ZERO and still counts its request.** The token ledger
 //! is untouched — nothing is charged to the key's budget — and the metering series records one
 //! request for the serving model with every tier at zero. Dropping the row because the tiers were
 //! empty would make the request count and the consumption disagree about the same response.
 //!
-//! # The hold, and the settle that is not here
+//! # No hold, and no settle
 //!
-//! Meter computes; the exit path settles. There are exactly two places a hold is taken out of its
-//! cell — the exit and the node's sweep — and a third would be a unit that could post twice. So
-//! this step takes the hold, accrues against it, and hands it straight back for the exit to close;
-//! it never builds a `Posted`. What it does own is the report the posting is made against.
+//! Meter counts; the kernel settles. The hold is the kernel's — opened at its admit, in the unit's
+//! cell, and taken out only by the exit and the node's sweep (#43, #83 defs 5/6) — so this step is
+//! handed none, carries none and spends against none. What it does own is the report of counts
+//! the posting is made against.
 //!
 //! **What a unit consumed is not what it is WORTH, and this step does not turn one into the other.**
 //! The report's lines are quantities in four different meter classes and their sum is a figure in no
@@ -99,8 +101,8 @@
 use std::sync::Arc;
 
 use busbar_contract::caps::{
-    step::Meter, Consumption, Decision, Grant, Hold, MeterClassId, Outcome, Pass, QuantitySource,
-    Usage, UsageLine,
+    step::Meter, Consumption, Decision, Grant, MeterClassId, Outcome, Pass, QuantitySource, Usage,
+    UsageLine,
 };
 use busbar_contract::ClassDirection;
 use busbar_kernel::plane_host::EngineHost;
@@ -112,7 +114,7 @@ use busbar_kernel::plane_host::EngineHost;
 /// expression a driver could write produced a [`MeterCtx`] from what Route returned. Every field
 /// here is read off the walk that actually ran.
 ///
-/// [`MeterFacts::accrued`] is the load-bearing one, and it says where this unit's ONE posting is
+/// [`MeterFacts::tap_posts`] is the load-bearing one, and it says where this unit's ONE posting is
 /// made. The walk is handed the admission's meter half and its taps — the buffered tap and the
 /// stream-end tap — are the only places a streamed answer's usage becomes known at all; a stream is
 /// still flowing when Route returns and when this step runs, so no shape of this type could carry
@@ -140,33 +142,30 @@ pub(crate) struct MeterFacts {
     pub(crate) usage: Option<busbar_substrate_values::billing::TokenUsage>,
     /// The status the CLIENT saw — the fee basis, decided at the frame that carried it.
     pub(crate) status: u16,
-    /// The terminal-error/abort/cut fact the taps read at the end of the response.
-    pub(crate) billing_failed: bool,
     /// Whether the unit reached an upstream at all, which is what makes it a fee-bearing client
     /// request rather than a turn-away that never dialled.
     pub(crate) upstream_leg: bool,
-    /// Whether the walk's own taps hold this unit's accrual. When true this step seals; when false
+    /// Whether the walk's own tap posts this unit's counts. When true this step seals; when false
     /// this step posts.
-    pub(crate) accrued: bool,
+    pub(crate) tap_posts: bool,
 }
 
 impl MeterFacts {
     /// FOLD A TAP'S REPORT INTO THESE FACTS.
     ///
-    /// The three figures the Route step could not fill are the tap's, and this is where they land:
-    /// the serving lane, the usage the dialect's reader found, and whether those figures are
-    /// evidence rather than a charge. Route calls it on the way out, which fills them for every end
+    /// The figures the Route step could not fill are the tap's, and this is where they land:
+    /// the serving lane and the usage the dialect's reader found up to the end the response reached,
+    /// which is the charge on every end (#62). Route calls it on the way out, which fills them for every end
     /// the tap had already reached — every buffered answer, and every transfer that failed before a
     /// body could flow. A stream's report does not exist yet at that moment, so nothing is folded and
-    /// the facts stay as they were, `accrued` says the tap owns the posting, and the tap's own
+    /// the facts stay as they were, `tap_posts` says the tap owns the posting, and the tap's own
     /// accrual is the unit's one accrual.
     ///
-    /// A report is folded ONCE and never partially: reading three figures out of two different
+    /// A report is folded ONCE and never partially: reading two figures out of two different
     /// observations of the same response is the divergence this takes the whole report to avoid.
     pub(crate) fn fold(&mut self, report: &crate::engine::TapReport) {
         self.lane = Some(report.lane);
         self.usage = report.usage.clone();
-        self.billing_failed = report.billing_failed;
     }
 }
 
@@ -183,8 +182,7 @@ pub struct MeterCtx<'a> {
     status: u16,
     charged: bool,
     upstream_leg: bool,
-    billing_failed: bool,
-    accrued: bool,
+    tap_posts: bool,
 }
 
 impl<'a> MeterCtx<'a> {
@@ -194,8 +192,8 @@ impl<'a> MeterCtx<'a> {
     /// client-facing frame. `charged` is the admit step's: whether the admission charge landed, and
     /// therefore whether there is anything a non-2xx could refund. `upstream_leg` says the unit
     /// routed to an upstream, which is what makes it a fee-bearing client request rather than a
-    /// kernel verb or a delivery. `billing_failed` is the terminal-error/abort fact the stream taps
-    /// read off the translator.
+    /// kernel verb or a delivery. How the response ENDED is not a parameter: a cut stream bills
+    /// what it streamed (#62), so `usage` is the whole charge on every end.
     ///
     /// `allow(dead_code)` while the module is dark: the Route step is what builds one of these on
     /// the request path, and it does not exist yet.
@@ -208,7 +206,6 @@ impl<'a> MeterCtx<'a> {
         status: u16,
         charged: bool,
         upstream_leg: bool,
-        billing_failed: bool,
     ) -> Self {
         MeterCtx {
             host,
@@ -218,10 +215,9 @@ impl<'a> MeterCtx<'a> {
             status,
             charged,
             upstream_leg,
-            billing_failed,
             // The step is the posting unless something before it says otherwise; `bind` is what
             // says otherwise.
-            accrued: false,
+            tap_posts: false,
         }
     }
 
@@ -246,8 +242,7 @@ impl<'a> MeterCtx<'a> {
             status: facts.status,
             charged,
             upstream_leg: facts.upstream_leg,
-            billing_failed: facts.billing_failed,
-            accrued: facts.accrued,
+            tap_posts: facts.tap_posts,
         }
     }
 
@@ -260,15 +255,10 @@ impl<'a> MeterCtx<'a> {
 
 /// The step's answer, plus what the Audit step and the exit path read.
 ///
-/// [`Metered::decision`] is exactly what the kernel's `Units::meter` returns. The hold rides back
-/// out untouched by anything but its accrual, because settling it is the exit's and only the
-/// exit's.
+/// [`Metered::decision`] is exactly what the kernel's `Units::meter` returns.
 pub struct Metered {
     /// The sealed step-6 answer: the usage report the posting is made against.
     pub decision: Decision<Meter>,
-    /// The unit's reservation, handed back for the exit path to settle. Never settled here: there
-    /// are two places a hold leaves its cell and this is not one of them.
-    pub hold: Option<Hold>,
     /// The metering row this response accrued — one request for the serving model, with the token
     /// split preserved. `None` when there was no key or no serving lane to attribute it to, which
     /// is the only case in which nothing is metered at all.
@@ -308,11 +298,10 @@ impl Metered {
 
 /// The shape of this step, as a value — the `Units::meter` row with the plane's own context.
 ///
-/// The kernel's row also takes the hold implicitly, through the cell; here it is passed and
-/// returned explicitly, because a plane holds no cell and the point is that the hold leaves this
-/// step exactly as it arrived plus its accrual.
+/// The hold is not part of it: the kernel's row reaches the hold through the unit's cell, which a
+/// plane never holds, and a plane-side step that carried one would be a plane doing money.
 pub type MeterStep =
-    for<'a> fn(&Pass<Meter>, &Grant<Consumption>, &MeterCtx<'a>, Option<Hold>, &Outcome) -> Metered;
+    for<'a> fn(&Pass<Meter>, &Grant<Consumption>, &MeterCtx<'a>, &Outcome) -> Metered;
 
 /// The four reserved meter classes, in the canonical order the pricer prices them.
 ///
@@ -324,7 +313,7 @@ const CLASS_OUTPUT: MeterClassId = MeterClassId::new(busbar_api::UNIT_OUTPUT);
 const CLASS_CACHE_READ: MeterClassId = MeterClassId::new(busbar_api::UNIT_CACHE_READ);
 const CLASS_CACHE_WRITE: MeterClassId = MeterClassId::new(busbar_api::UNIT_CACHE_WRITE);
 
-/// Step 6. Fold what the legs reported, accrue it, and say what the posting is made against.
+/// Step 6. Fold what the legs reported, post the counts, and say what the posting is made against.
 ///
 /// The provisional end is carried for the record and does not lower the fee: the fee was decided
 /// at the frame that carried the status, and a unit that ended badly after that still delivered
@@ -333,7 +322,6 @@ pub fn meter(
     unit_token: &Pass<Meter>,
     usage_token: &Grant<Consumption>,
     ctx: &MeterCtx<'_>,
-    hold: Option<Hold>,
     _provisional: &Outcome,
 ) -> Metered {
     let delivered = ctx.delivered();
@@ -342,10 +330,10 @@ pub fn meter(
     // own answer and the report handed over to be priced, so the two cannot come to different
     // answers about the same unit.
     let fee_count = u32::from(delivered && ctx.upstream_leg);
-    // A stream whose end carried a terminal error, or whose translation aborted, bills ZERO: the
-    // accrual is skipped, not floored. The figures seen before the error are evidence only.
-    let bills = !ctx.billing_failed;
-    let reported = if bills { ctx.usage } else { None };
+    // A stream whose end carried a terminal error, whose translation aborted or whose transport was
+    // cut bills what it streamed up to that end (#62): the reported usage is the charge on every end,
+    // and there is no end that turns it back into mere evidence.
+    let reported = ctx.usage;
 
     // THE LIVE ACCRUAL, unchanged: the tier split onto the key's budget chain in the pinned
     // window, then the raw per-model series row. Both through the one seam the stream-end tap,
@@ -364,35 +352,33 @@ pub fn meter(
     // and a meter half to attribute it to, which is the honest statement that there is nothing to
     // price — and it is the same `None` a unit that billed nothing reports.
     let mut report = None;
-    if bills {
-        if let (Some(sink), Some(lane)) = (ctx.sink, ctx.lane) {
-            // The tier split, projected once and read twice: the ledger accrues against it, and the
-            // card prices the same counts. Hoisted out of the accrual arm so a unit the walk already
-            // posted still prices what it delivered — sealing is not a reason to spend nothing.
-            let tier = reported
-                .map(busbar_llm_codec::wire_shim::tier_usage)
-                .unwrap_or_default();
-            if !ctx.accrued {
-                crate::engine::usage::ledger_and_meter(ctx.host, sink, lane, reported, &tier);
-                posted = true;
-            }
-            row = Some(metering_row(sink, lane, reported));
-            // THE REPORT, and it is where the money used to be. The step used to reach the legacy
-            // host seam here and come back with an amount; what it hands over now is the tier split
-            // it already projected, the billable count it already decided, and the two names the row
-            // it belongs to is keyed by — and the side that holds a card turns that into a total.
-            //
-            // The lane is the SERVING lane's config name, after any failover. That is the key space
-            // rates are written in and the same key the metering row above attributes to, so the
-            // line this reports and the entry that prices it are keyed by the same name with no
-            // translation between them.
-            report = Some(crate::unit::walk::LateReport {
-                usage: tier,
-                fee_count,
-                lane: lane.model.clone(),
-                provider: lane.provider.clone(),
-            });
+    if let (Some(sink), Some(lane)) = (ctx.sink, ctx.lane) {
+        // The tier split, projected once and read twice: the ledger accrues against it, and the
+        // card prices the same counts. Hoisted out of the accrual arm so a unit the walk already
+        // posted still prices what it delivered — sealing is not a reason to spend nothing.
+        let tier = reported
+            .map(busbar_llm_codec::wire_shim::tier_usage)
+            .unwrap_or_default();
+        if !ctx.tap_posts {
+            crate::engine::usage::ledger_and_meter(ctx.host, sink, lane, reported, &tier);
+            posted = true;
         }
+        row = Some(metering_row(sink, lane, reported));
+        // THE REPORT, and it is where the money used to be. The step used to reach the legacy
+        // host seam here and come back with an amount; what it hands over now is the tier split
+        // it already projected, the billable count it already decided, and the two names the row
+        // it belongs to is keyed by — and the side that holds a card turns that into a total.
+        //
+        // The lane is the SERVING lane's config name, after any failover. That is the key space
+        // rates are written in and the same key the metering row above attributes to, so the
+        // line this reports and the entry that prices it are keyed by the same name with no
+        // translation between them.
+        report = Some(crate::unit::walk::LateReport {
+            usage: tier,
+            fee_count,
+            lane: lane.model.clone(),
+            provider: lane.provider.clone(),
+        });
     }
 
     // The report the posting is made against: one line per non-zero tier, in canonical order. A
@@ -417,14 +403,10 @@ pub fn meter(
     }
     let usage = Usage::report(usage_token, lines).expect("four tiers fit any record");
 
-    // The hold rides back out exactly as it arrived. This step settles nothing: what the unit
-    // consumed leaves on the report, and the side that holds the card is the one that turns those
-    // quantities into an amount — the plane's own quantity sum is still there to be read and is
-    // still not a money figure.
-
+    // This step settles nothing: what the unit consumed leaves on the report, and the side that
+    // holds the card is the one that turns those quantities into an amount.
     Metered {
         decision: Decision::proceed(unit_token, usage),
-        hold,
         row,
         fee_count,
         // The refund is owed only where a charge landed and the client did not see a 2xx — and it

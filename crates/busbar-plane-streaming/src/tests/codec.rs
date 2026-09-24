@@ -1453,3 +1453,202 @@ fn unit_zero_egress_reframes_an_opening_audio_frame() {
         "the enveloped append must carry the base64 audio"
     );
 }
+
+/// The quantity `meter` states for `class`, or `None` when it states no line for it.
+fn metered(locators: &busbar_contract::unit::UsageLocators, class: &str) -> Option<u64> {
+    locators
+        .lines
+        .as_slice()
+        .iter()
+        .find(|l| l.class.as_str() == class)
+        .and_then(|l| l.quantity)
+}
+
+/// A carrier `stop` mid-turn settles the open turn: what the caller spoke and what the upstream
+/// opened since the last usage report travel on the ending, and `meter` reads them off it.
+///
+/// Item 137. The `stop` arm took the open turn's counters out of the state and dropped them, so a
+/// call that hung up mid-turn ended with an empty fact set: the ledger recorded none of the audio
+/// relayed after the opening frame and none of the tool calls, where both were served.
+#[test]
+fn a_twilio_stop_settles_the_open_turn() {
+    let plane = openai_plane();
+    let arena = LeakPlaneAlloc;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/twilio/call-123");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let dest = destination("api.openai.com", LaneId::new("realtime"));
+    let mut state = PlaneSessionState::new(crate::session::VoiceSessionState::for_dialect(
+        Dialect::TwilioMediaStreams,
+    ));
+
+    let start = serde_json::to_vec(&json!({
+        "event": "start",
+        "start": {
+            "streamSid": "MZ1",
+            "callSid": "CA1",
+            "mediaFormat": { "encoding": "audio/x-mulaw", "sampleRate": 8000, "channels": 1 },
+        },
+    }))
+    .unwrap();
+    let frames = [frame(&start)];
+    let mut cursor = FrameCursor::new(&frames);
+    plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("start decodes");
+
+    // G.711 µ-law at 8 kHz is 8 bytes a millisecond: 8 000 bytes is one second.
+    let media = serde_json::to_vec(&json!({
+        "event": "media",
+        "streamSid": "MZ1",
+        "media": { "payload": base64_of(&vec![0xFFu8; 8_000]) },
+    }))
+    .unwrap();
+    // The first second OPENS the turn and is stated on its draft.
+    let frames = [frame(&media)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::Open(draft) = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("media decodes")
+    else {
+        panic!("the first media frame opens the turn");
+    };
+    let unit = crate::tests::harness::unit(draft.op, draft.body_ir, draft.facts);
+    // The second second is RELAYED, which is where it is counted.
+    let frames = [frame(&media)];
+    let mut cursor = FrameCursor::new(&frames);
+    plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("media decodes");
+    plane
+        .encode_ingress_frame(&unit, &frames[0], &dest, Some(&mut state), &c)
+        .expect("media relays");
+    // The upstream opens one tool call before the caller hangs up.
+    let opened = serde_json::to_vec(&json!({
+        "type": "response.output_item.added",
+        "item": { "type": "function_call", "call_id": "call_1", "name": "lookup" },
+    }))
+    .unwrap();
+    let frames = [frame(&opened)];
+    let mut cursor = FrameCursor::new(&frames);
+    plane
+        .decode_response(&mut cursor, &dest, Some(&mut state), &c)
+        .expect("a tool-call open decodes");
+
+    let stop = serde_json::to_vec(&json!({ "event": "stop", "streamSid": "MZ1" })).unwrap();
+    let frames = [frame(&stop)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::Close { facts, .. } = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("stop decodes")
+    else {
+        panic!("stop closes the open turn");
+    };
+    let ending = busbar_contract::plane::Response {
+        ir: busbar_contract::bounded::Ir::empty(),
+        finish: busbar_contract::unit::FinishClass::Partial,
+        facts: *facts,
+    };
+    let locators = plane.meter(&unit, &ending, &c);
+    assert_eq!(
+        metered(&locators, "audio_seconds_in"),
+        Some(2),
+        "the opening second and the relayed second were both served"
+    );
+    assert_eq!(metered(&locators, "tool_calls"), Some(1));
+}
+
+/// A barge-in bills what it served.
+///
+/// Item 137. A client-authored interrupt superseded the open turn and reset its counters with the
+/// correlation. A superseded turn is never answered, so no usage report ever metered it, and
+/// everything the caller had already spoken — and every tool call the upstream had already opened —
+/// vanished from the ledger. Carried onto the turn that takes over, it is emitted exactly once, on
+/// that turn's terminal.
+#[test]
+fn a_barge_in_bills_what_the_interrupted_turn_served() {
+    let plane = openai_plane();
+    let arena = LeakPlaneAlloc;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let dest = destination("api.openai.com", LaneId::new("realtime"));
+    let mut state = open_client_session(&plane, &c);
+
+    let opening = client_wire(&session_update_fixture());
+    let frames = [frame(&opening)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::Open(first) = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("the turn opens")
+    else {
+        panic!("the first client event opens a turn");
+    };
+    let first_unit = crate::tests::harness::unit(first.op, first.body_ir, first.facts);
+
+    // One second of PCM16 at 24 kHz, relayed on the first turn.
+    let append = serde_json::to_vec(&json!({
+        "type": "input_audio_buffer.append",
+        "audio": base64_of(&vec![0u8; 48_000]),
+    }))
+    .unwrap();
+    let frames = [frame(&append)];
+    let mut cursor = FrameCursor::new(&frames);
+    plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("audio decodes");
+    plane
+        .encode_ingress_frame(&first_unit, &frames[0], &dest, Some(&mut state), &c)
+        .expect("audio relays");
+    let opened = serde_json::to_vec(&json!({
+        "type": "response.output_item.added",
+        "item": { "type": "function_call", "call_id": "call_1", "name": "lookup" },
+    }))
+    .unwrap();
+    let frames = [frame(&opened)];
+    let mut cursor = FrameCursor::new(&frames);
+    plane
+        .decode_response(&mut cursor, &dest, Some(&mut state), &c)
+        .expect("a tool-call open decodes");
+
+    // The caller talks over it.
+    let truncate = serde_json::to_vec(&json!({
+        "type": "conversation.item.truncate",
+        "item_id": "item_1",
+        "content_index": 0,
+        "audio_end_ms": 640,
+    }))
+    .unwrap();
+    let frames = [frame(&truncate)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::Open(second) = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("the barge-in decodes")
+    else {
+        panic!("a barge-in opens the turn that takes over");
+    };
+    let second_unit = crate::tests::harness::unit(second.op, second.body_ir, second.facts);
+
+    let done = serde_json::to_vec(&json!({
+        "type": "response.done",
+        "response": { "usage": { "input_token_details": { "audio_tokens": 1 } } }
+    }))
+    .unwrap();
+    let frames = [frame(&done)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Progress::Terminal { r, .. } = plane
+        .decode_response(&mut cursor, &dest, Some(&mut state), &c)
+        .expect("the usage report decodes")
+    else {
+        panic!("a usage report ends the turn");
+    };
+    let locators = plane.meter(&second_unit, &r, &c);
+    assert_eq!(
+        metered(&locators, "audio_seconds_in"),
+        Some(1),
+        "the second the caller spoke before barging in was served and must be metered"
+    );
+    assert_eq!(metered(&locators, "tool_calls"), Some(1));
+}

@@ -187,8 +187,8 @@ fn the_correlation_carries_the_declared_key() {
     assert_eq!(c.value, CorrelationValue::Num(7));
 }
 
-/// The metadata keys are spelled the way the codec spells them.
-///
+// The metadata keys are spelled the way the codec spells them.
+//
 // `the_metadata_keys_are_the_codecs_own` IS GONE for the same reason as `jsonrpc`'s code test:
 // this module re-exports the codec's two keys rather than restating them, so the assertion read
 // `X == X`. The pin that still bites — that each QUOTED needle says the same thing as the name it

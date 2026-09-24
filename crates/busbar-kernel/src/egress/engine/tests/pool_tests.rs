@@ -1507,3 +1507,110 @@ async fn a_fresh_conn_take_message_bounce_is_terminal_not_retried() {
         "nothing ever reached the wire"
     );
 }
+
+// ── Item 147: an admin-settable idle timeout, and a poisoned pool lock, never kill the shard ─────
+
+/// A keep-alive upstream that answers every request on every connection with `200 ok`.
+fn keepalive_upstream() -> SocketAddr {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            std::thread::spawn(move || {
+                use std::io::Write;
+                while read_head(&mut stream).is_some() {
+                    if stream
+                        .write_all(
+                            b"HTTP/1.1 200 X\r\ncontent-length: 2\r\nconnection: keep-alive\r\n\r\nok",
+                        )
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    addr
+}
+
+/// The proven trigger: `limits.pool_idle_timeout_secs` at 2^63 reached the reaper's
+/// `idle_since + timeout` UNDER the pool lock, overflowed `Instant`, panicked, poisoned the mutex,
+/// and every later checkout's `.expect("engine pool lock")` panicked — the shard's egress dead
+/// until restart. Now the reaper's arithmetic is checked (an unrepresentable expiry never fires),
+/// so the parked conn is simply kept and the next request is served on it.
+#[tokio::test]
+async fn an_unrepresentable_idle_timeout_does_not_kill_the_pool() {
+    let addr = keepalive_upstream();
+    let answer = ip_only(addr);
+    let script = ScriptedDial::new(move |_| DialScript::Answer(answer));
+    let client = client_over(
+        EgressResolver::Custom(script.clone()),
+        PoolConfig {
+            idle_timeout: Duration::from_secs(1u64 << 63),
+            ..cfg(4)
+        },
+    );
+    let uri = format!("http://idle-max.test:{}/v1/x", addr.port());
+
+    let resp = client.request(get(&uri)).await.expect("first request");
+    let _ = resp.into_body().collect().await;
+    // The park spawns the reaper, which computes the expiry of the parked conn — the old overflow.
+    eventually("the parked conn spawned the reaper", || {
+        client.pool_stats_for_tests().1
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !client.inner_for_tests().pool.is_poisoned(),
+        "the reaper must not panic under the pool lock"
+    );
+    for n in 0..3 {
+        let resp = client
+            .request(get(&uri))
+            .await
+            .unwrap_or_else(|e| panic!("request {n} after the park failed: {e}"));
+        let _ = resp.into_body().collect().await;
+    }
+    assert_eq!(script.calls(), 1, "the never-expiring idle conn is reused");
+}
+
+/// Defence in depth: whatever panics under the pool lock, later requests are served — the lock is
+/// recovered (state reset to a fresh pool, poison cleared), never cascaded.
+#[tokio::test]
+async fn a_poisoned_pool_lock_is_recovered_and_later_requests_are_served() {
+    let addr = keepalive_upstream();
+    let answer = ip_only(addr);
+    let script = ScriptedDial::new(move |_| DialScript::Answer(answer));
+    let client = client_over(EgressResolver::Custom(script.clone()), cfg(4));
+    let uri = format!("http://poison.test:{}/v1/x", addr.port());
+
+    let resp = client.request(get(&uri)).await.expect("before the poison");
+    let _ = resp.into_body().collect().await;
+
+    let inner = Arc::clone(client.inner_for_tests());
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _held = inner.pool.lock();
+        panic!("a panic while the pool lock is held");
+    }));
+    assert!(unwound.is_err());
+    assert!(
+        inner.pool.is_poisoned(),
+        "the fixture must actually poison the lock"
+    );
+
+    for n in 0..3 {
+        let resp = client
+            .request(get(&uri))
+            .await
+            .unwrap_or_else(|e| panic!("request {n} after the poison failed: {e}"));
+        let _ = resp.into_body().collect().await;
+    }
+    assert!(!inner.pool.is_poisoned(), "recovery clears the poison");
+    let (authorities, _) = client.pool_stats_for_tests();
+    assert_eq!(
+        authorities, 1,
+        "the pool re-learned the authority after its reset"
+    );
+}

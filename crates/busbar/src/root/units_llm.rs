@@ -81,9 +81,9 @@ use axum::http::StatusCode;
 use axum::response::Response;
 
 use busbar_contract::caps::{
-    Admit, Admittance, Approve, Arrival, ArrivalRecord, Audit, Authenticate, Consumption, Decision,
-    Decode, Dial, Encode, Grant, Meter, OpClassId, OriginKind, Outcome, Pass, PrincipalId,
-    ReasonCode, Refusal, Route, VerifiedDestination, Verify,
+    Admission, Admit, Admittance, Approve, Arrival, ArrivalRecord, Audit, Authenticate,
+    Consumption, Decision, Decode, Dial, Encode, Grant, Hold, Meter, OpClassId, OriginKind,
+    Outcome, Pass, PrincipalId, ReasonCode, Refusal, Route, VerifiedDestination, Verify,
 };
 use busbar_contract::{LaneId, Registration, UnitKey};
 use busbar_kernel::ingress::arrival::{Arrival as ArrivalRequest, ArrivalPayload};
@@ -245,6 +245,18 @@ pub struct LlmNode {
     /// them through it again.
     lane_names: Mutex<LaneNames>,
     next_key: AtomicU64,
+    /// How many slots the drop guard has MARKED since the sweep last walked the table.
+    ///
+    /// A counter rather than a walk on every arrival: a unit whose task went away leaves its slot
+    /// marked for the sweep (see [`Occupied`]), and the sweep only walks the table when there is
+    /// something marked in it, so the ordinary arrival pays one atomic read and nothing more.
+    marked: AtomicU64,
+    /// The ARRIVAL of every unit whose slot the drop guard marked, by key, until the sweep takes it.
+    ///
+    /// What the sweep posts has to land where the unit's own exit would have posted it: the window
+    /// it arrived in, and the arrival reading that — with the balance and the journal's
+    /// incarnation — names the unit on the chain and closes the hold its entry opened there.
+    lost: Mutex<HashMap<UnitKey, Arrived>>,
     /// THE NODE'S MONOTONIC CLOCK, for the second stamp on every audit record and every posting
     /// this node writes: a counter that only ever goes up, whatever the wall clock does.
     ///
@@ -343,6 +355,8 @@ impl LlmNode {
                 consulted: 0,
             }),
             next_key: AtomicU64::new(1),
+            marked: AtomicU64::new(0),
+            lost: Mutex::new(HashMap::new()),
             mono: AtomicU64::new(0),
             // THE PRODUCTION HALF, which awaits the leg it is handed and returns that leg's own
             // value. Composed here because composing is what this file does: the plane names the
@@ -435,6 +449,123 @@ impl LlmNode {
         );
     }
 
+    /// Open this unit's hold on the book and on the journal, if this node has a book (item 127).
+    ///
+    /// On the same balance, in the same window and under the same arrival reading the exit arm
+    /// will settle it with ([`settle`]), so the posting that ends the unit closes this record on the
+    /// chain. A journal that will not take it is not a refusal: the log retains the record and
+    /// offers it again, and the previous release served through a store hiccup.
+    fn open_on_book(&self, principal: &PrincipalId, arrived: Arrived, reserved: u64) {
+        let Some(book) = self.book.get() else {
+            return;
+        };
+        let key = balance(principal);
+        let at = crate::root::durability::Settling {
+            key: &key,
+            window: busbar_kernel_budget::budget_window(
+                busbar_kernel_budget::window::WINDOW_DAY,
+                arrived.secs(),
+            ),
+            durability: &self.durability_token,
+            step: busbar_contract::caps::StepName::Admit,
+            stamp: crate::root::durability::PostingStamp {
+                rate_card_version: 0,
+                wall: arrived.secs(),
+                mono: arrived.mono(),
+            },
+        };
+        let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
+        let _opened = durability.open_hold(&at, principal, reserved);
+    }
+
+    /// THE SWEEP: the second holder of a key to every unit's hold cell, run over the slots the drop
+    /// guard MARKED (item 129).
+    ///
+    /// A unit whose task goes away without reaching its own end leaves its slot in the table,
+    /// marked, with whatever the cell still holds. This is what finds it: `tick::sweep` reads the
+    /// mark as `TaskLost`, `tick::sweep_settle` takes the hold by compare-and-set — the same cell
+    /// the exit path takes from, so whichever arrives second finds it empty and does nothing — and
+    /// what it settles is posted onto this node's book exactly as the exit arm posts, in the window
+    /// the unit ENTERED in. Then the slot leaves the table.
+    ///
+    /// A client that hangs up mid-dispatch is not usually this path: the loop's own guard reaches
+    /// that unit's terminal and hands the end to [`LlmUnit`]'s `abandoned`, so by the time the sweep
+    /// arrives the cell is already empty and the sweep only gives the slot back. What this path is
+    /// FOR is the unit whose end nobody reached — and it posts that unit's hold rather than leaving
+    /// it in a cell nothing will ever take it out of.
+    ///
+    /// Run by the next arrival (see [`LlmNode::answer_arriving_at`]), and only when something is
+    /// marked, so a lost task costs one arrival's delay and an ordinary arrival costs one atomic
+    /// read. The idle bound does not apply on this plane — a slow LLM stream was never cut, and the
+    /// sweep does not start cutting it — so only a MARKED slot is ever settled here.
+    ///
+    /// Returns how many slots it gave back.
+    pub fn sweep(&self, now: Arrived) -> usize {
+        if self.marked.swap(0, Ordering::AcqRel) == 0 {
+            return 0;
+        }
+        let mut swept = 0;
+        for slot in self.inflight.snapshot() {
+            if !slot.is_marked() {
+                continue;
+            }
+            let verdict = busbar_kernel::tick::sweep(
+                &slot,
+                busbar_contract::caps::StepName::Route,
+                now.ms(),
+                busbar_kernel::Millis::MAX,
+                false,
+            );
+            // The unit's own evidence went with its task, so the table's row for a lost unit reads
+            // nothing located and posts the floor it can defend — marked estimated, never guessed
+            // upward.
+            let end = busbar_kernel::tick::sweep_settle(
+                &self.kernel,
+                &slot,
+                verdict,
+                &Evidence::default(),
+                &self.canary,
+                &self.gauge,
+            );
+            if let Some(end) = end {
+                if let Ok(posted) = end.posted() {
+                    let principal = posted.principal().clone();
+                    // The unit's own ARRIVAL, as its guard recorded it: a unit found gone after
+                    // midnight was admitted, and is charged, in the day before — and the same
+                    // reading closes the hold its entry opened on the journal. Every slot in this
+                    // node's table is marked by that guard, so the fallback — the sweeping arrival's
+                    // own reading — is an answer for a slot nothing on this node could have marked.
+                    let entered = self
+                        .lost
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remove(&slot.key())
+                        .unwrap_or(now);
+                    let card = crate::root::kernel::ROOT_CARD.pin();
+                    self.settle_end(
+                        &principal,
+                        entered,
+                        card.as_ref(),
+                        busbar_kernel::teller::Ended::Settled {
+                            end,
+                            // The request slot and the flat fee are the exit's to count, and a
+                            // unit the sweep ends never reached the exit that counts them.
+                            requests: 0,
+                            fee: 0,
+                        },
+                    );
+                }
+            }
+            self.lost
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&slot.key());
+            self.inflight.remove(slot.key());
+            swept += 1;
+        }
+        swept
+    }
+
     /// Walk one request through the loop and answer with what the terminal posted.
     ///
     /// The whole of the kernel's ten steps, two audit doors and one exit, for a request that used to
@@ -483,6 +614,9 @@ impl LlmNode {
         seats: &[&(dyn approve::VetoSeat + Sync)],
         arrived: Arrived,
     ) -> Response {
+        // The sweep, before this unit takes a slot of its own: any slot a lost task left MARKED is
+        // settled and given back now. One atomic read when nothing is marked.
+        self.sweep(arrived);
         let proto = arrival.proto;
         let op_class = OpClassId::new(arrival.operation.name());
         let key = UnitKey::new(self.next_key.fetch_add(1, Ordering::Relaxed));
@@ -519,6 +653,7 @@ impl LlmNode {
             // here, so the epoch this unit is billed in and the stamp the table enters it under
             // cannot be two different instants.
             charged_at: arrived.secs(),
+            principal: principal.clone(),
             deferred: Mutex::new(None),
             model: Mutex::new(String::new()),
             walk: Walk::open(arrival),
@@ -526,6 +661,11 @@ impl LlmNode {
 
         let hold =
             busbar_kernel::inflight::arrival_hold(&self.kernel, &self.door, principal.clone());
+        // What this unit reserves, read off the hold it enters the table with. The door on this
+        // plane has its hold opened at ZERO (this file's `Units::admit` row), so the arrival hold's
+        // figure is the unit's reservation for its whole life; a door that reserved would be the
+        // place to journal the difference.
+        let reserved = hold.reserved();
         let entered = self.inflight.insert(busbar_kernel::inflight::Enter {
             key,
             origin: OriginKind::Client,
@@ -550,9 +690,15 @@ impl LlmNode {
                 // how many units this node has in flight, so the one thing that must not depend on
                 // the unit finishing is giving the slot back — and a client that hangs up is exactly
                 // the case where it does not finish.
-                let _occupied = Occupied {
-                    table: &self.inflight,
-                    key,
+                // THE HOLD, ON THE JOURNAL, before the unit runs (item 127): what this unit holds
+                // is written down now, so a node killed mid-unit leaves a record the next boot
+                // recovers and posts rather than a hold that only ever existed in memory.
+                self.open_on_book(&principal, arrived, reserved);
+                let mut occupied = Occupied {
+                    node: self,
+                    slot: Arc::clone(&slot),
+                    arrived,
+                    reached_end: false,
                 };
                 let ctx = UnitCtx {
                     key,
@@ -585,6 +731,9 @@ impl LlmNode {
                 // follows it name one snapshot. Re-pinning here would read a history a live apply
                 // may have appended to since the door, which is the hazard the pin exists for.
                 self.settle_end(&principal, arrived, history.as_ref(), ended);
+                // The unit reached its own end and its posting is on the book: the slot goes
+                // straight back. Anything that leaves this function before here leaves it MARKED.
+                occupied.reached_end = true;
                 // The loop ran; the answer is whatever the terminal posted. There is no unit that
                 // reaches an end without passing one of the two audit doors, so the fallback below
                 // is unreachable — and it is an answer rather than an unwrap, because a path that
@@ -673,35 +822,41 @@ impl LlmNode {
 ///
 /// The four reserved tiers are walked in the canonical order rather than the report's map order,
 /// which is what makes the line sequence a property of this function rather than of a `BTreeMap`'s
-/// collation. An OPEN unit a report carries prices at nothing on this path and is left off: the card
-/// this node binds names the reserved four, so a line for a class it cannot price would be a zero
-/// line claiming to be a priced one.
+/// collation. An OPEN class is not a line of this record — a contract line names its class with a
+/// static id, and an open class is a runtime name — so [`priced_posting`] puts every open class the
+/// report carries onto the POSTING directly, verbatim (#71). It used to be LEFT OFF entirely —
+/// priced at nothing — which was a silent zero once a card could price an open class (item 123,
+/// `units:`): a rerank's search units reached the governance ledger and its read, and this book
+/// took the fee alone. Now the card prices the class, or a present card silent about it REFUSES (#42).
 ///
 /// The flat fee is NOT a line built here. It is the card's, added by the pricing as a line of its own
 /// from the billable count the report carries, which is what keeps one configured fee to one place.
+/// The four reserved classes, in the canonical order.
+const RESERVED_CLASSES: [&str; 4] = [
+    busbar_api::UNIT_INPUT,
+    busbar_api::UNIT_OUTPUT,
+    busbar_api::UNIT_CACHE_READ,
+    busbar_api::UNIT_CACHE_WRITE,
+];
+
 fn usage_record(
     token: &busbar_contract::caps::Grant<busbar_contract::caps::Consumption>,
     usage: &busbar_substrate_values::billing::Usage,
 ) -> busbar_contract::caps::Usage {
-    let lines = [
-        busbar_api::UNIT_INPUT,
-        busbar_api::UNIT_OUTPUT,
-        busbar_api::UNIT_CACHE_READ,
-        busbar_api::UNIT_CACHE_WRITE,
-    ]
-    .into_iter()
-    .filter_map(|class| {
-        // A zero-quantity line is not a fact about anything, and the plane's own metering step drops
-        // them for the same reason. Kept out here too so the two reports have the same shape.
-        let quantity = usage.usage_units.get(class).copied().unwrap_or(0);
-        (quantity > 0).then(|| busbar_contract::caps::UsageLine {
-            class: busbar_contract::caps::MeterClassId::new(class),
-            quantity,
-            source: busbar_contract::caps::QuantitySource::Count,
-            estimated: false,
+    let lines = RESERVED_CLASSES
+        .into_iter()
+        .filter_map(|class| {
+            // A zero-quantity line is not a fact about anything, and the plane's own metering step drops
+            // them for the same reason. Kept out here too so the two reports have the same shape.
+            let quantity = usage.usage_units.get(class).copied().unwrap_or(0);
+            (quantity > 0).then(|| busbar_contract::caps::UsageLine {
+                class: busbar_contract::caps::MeterClassId::new(class),
+                quantity,
+                source: busbar_contract::caps::QuantitySource::Count,
+                estimated: false,
+            })
         })
-    })
-    .collect();
+        .collect();
     // A report wider than the record holds is not a reason to post nothing: the record's own limit is
     // a bound on lines, and the four tiers this plane reports are far inside it. An empty record is
     // the honest fallback — it prices the fee and no tokens, which is what a response that reported
@@ -729,9 +884,12 @@ fn usage_record(
 /// projection reprices a row's token counts and adds the same configured fee at read time, so a node
 /// that posted only the tokens was out by the fee on every billable request.
 ///
-/// A figure too large for the record narrows at the ceiling rather than wrapping, exactly as the
-/// terminal's own settlement narrows it: a wrap would charge nearly nothing for the most expensive
-/// unit the node has ever run.
+/// **SETTLEMENT PRICES FAIL-CLOSED** (#42, 789d55a78): the lookup is
+/// [`busbar_kernel_ledger::cost::price_fail_closed`], never the read posture that flags an unpriced
+/// line and prices it at nothing. A present card silent about the lane or about a class the unit
+/// hit is a REFUSAL here. The posting — the counts and the instant — is returned either way: the
+/// counts are what the unit did (#43, #71), and a refusal to price them is not a reason to lose
+/// them or to call them zero.
 fn priced_posting(
     history: &crate::root::kernel::PinnedHistory,
     arrived: Arrived,
@@ -739,7 +897,7 @@ fn priced_posting(
     report: &LateReport,
 ) -> (
     busbar_kernel_ledger::cost::Posting,
-    Option<busbar_kernel_ledger::cost::Priced>,
+    Result<busbar_kernel_ledger::cost::Priced, busbar_kernel_ledger::cost::Unpriceable>,
 ) {
     // A POSTING IS QUANTITIES AND AN INSTANT, and both are stated here: the plane's report supplies
     // the classes and their counts, and the unit's PINNED arrival supplies the instant in both its
@@ -754,37 +912,47 @@ fn priced_posting(
         arrived.ms(),
         arrived.mono(),
     );
+    // EVERY OPEN CLASS the report carries, verbatim and in its name's order, after the reserved four
+    // (#71; item 123/134 — a rerank's search units). A present card prices it or refuses it (#42);
+    // an absent card prices it at nothing, the one silent zero.
+    posting.quantities.extend(
+        report
+            .usage
+            .usage_units
+            .iter()
+            .filter(|(class, count)| **count > 0 && !RESERVED_CLASSES.contains(&class.as_str()))
+            .map(|(class, count)| {
+                busbar_kernel_ledger::cost::Quantity::new(class.as_str(), *count)
+            }),
+    );
     // THE LOOKUP, at the snapshot pinned at the door and the instant the unit arrived at. The
     // history resolves which entry was in force then; a later apply is not in this view at all, so
     // there is no arm here that could read one.
-    let priced = busbar_kernel_ledger::cost::price(&history.view(), &posting).ok();
+    let priced = busbar_kernel_ledger::cost::price_fail_closed(&history.view(), &posting);
     // THE CACHE IS WRITTEN AND IS NEVER READ BACK. It rides the posting so a reader has a figure to
     // compare a re-derivation against and so a totals read need not re-price a day of postings on
     // every request — but the figure this function RETURNS is the lookup's, taken off `priced`
     // directly. There is no arm below that consults `posting.cached`, which is the invariant stated
     // as code rather than as a comment: corrupt the cache and this expression answers exactly what
     // the quantities and the history say.
-    posting.cached = priced.as_ref().map(|p| p.as_cache(history.seq()));
+    posting.cached = priced.as_ref().ok().map(|p| p.as_cache(history.seq()));
     (posting, priced)
 }
 
-/// The narrowed figure the books take, spelled out of [`priced_posting`]'s lookup.
+/// The figure the books take, spelled out of [`priced_posting`]'s lookup — or the refusal.
 ///
-/// A figure too large for the record narrows at the ceiling rather than wrapping, exactly as the
-/// terminal's own settlement narrows it: a wrap would charge nearly nothing for the most expensive
-/// unit the node has ever run. A report nothing can price — a hole in the history — is nothing
-/// rather than a zero the caller cannot tell from a free request, and the caller posts no row for
-/// it.
+/// Every way this cannot state a figure is an `Err`, never a number: a hole in the history, a lane
+/// or a hit class a present card is silent about (#42), and a figure the record cannot hold, which
+/// REFUSES rather than pinning at the ceiling (item 28) — a pinned figure is a bill nobody posted.
 fn priced_amount(
     history: &crate::root::kernel::PinnedHistory,
     arrived: Arrived,
     token: &busbar_contract::caps::Grant<busbar_contract::caps::Consumption>,
     report: &LateReport,
-) -> u64 {
+) -> Result<u64, busbar_kernel_ledger::cost::Unpriceable> {
     let (_posting, priced) = priced_posting(history, arrived, token, report);
-    priced
-        .map(|p| u64::try_from(p.priced_nanos).unwrap_or(u64::MAX))
-        .unwrap_or(0)
+    u64::try_from(priced?.priced_nanos)
+        .map_err(|_| busbar_kernel_ledger::cost::Unpriceable::Overflow)
 }
 
 /// **THE LATE ACCRUAL'S ARM.** What this unit spent, posted once the body that reports it has
@@ -800,6 +968,15 @@ fn priced_amount(
 /// It needs no hold and no slot, and that is not an accommodation — it is what the flags SAY. The
 /// reservation went back at the terminal, so the whole amount books as overdraft with nothing behind
 /// it, which is the honest description of a spend the node learned about after it had let go.
+///
+/// **THIS BOOK IS NOT THE INVOICE.** One delivered unit leaves two records: the tap's accrual of
+/// raw counts onto the GOVERNANCE LEDGER (the metering series `GET /api/v1/admin/usage` prices at
+/// read time, and what 1.5.5 billed) and this priced posting onto the Durability book. The money
+/// model (BUSBAR-1.6.0.md Part 0; #43/#71: the ledger stores counts; #77(3): a price is never
+/// stored) makes the governance ledger the invoice and this posting a derived reading of it. The
+/// two must agree cell by cell —
+/// `the_second_book_agrees_with_the_invoice_cell_by_cell_and_a_divergence_is_red` holds this book's
+/// figure against the served read's own derivation, and a divergence is RED.
 struct LateAccrual {
     book: Arc<Mutex<crate::root::durability::Durability>>,
     /// THE HISTORY SNAPSHOT the report is resolved against — the deployment's dated card history as
@@ -841,51 +1018,116 @@ impl LateAccrual {
         let Some(report) = walk.reported_after_terminal(&tap) else {
             return;
         };
-        // THE PRICING, and it happens HERE rather than on the plane. The plane said what the unit
-        // consumed — quantities, by class — and how many billable requests it is. What that is worth
-        // is the card's answer, and this is the only side that holds a card. It is the same
-        // expression the live metering step is answered through, because one report priced two ways
-        // is two answers to what one request cost.
-        //
-        // THE ROW THIS LANDS ON. `report` names the serving lane and its provider — the two names the
-        // legacy row is keyed by — and the balance below is keyed by principal and window. Those are
-        // the same row: the node's books retain no lane and no provider, so both the ledger's side and
-        // the legacy side of the reconciliation are read at the width the node keeps, with the two
-        // names empty on BOTH. Carrying them here is what makes that a fact about the width rather
-        // than a figure that lost its row on the way — and it is where a wider key attaches the day
-        // the books grow one.
-        //
-        // A ZERO IS NOT A ROW, and posting one would say the node had settled something. A unit that
-        // reached a lane and priced at nothing — no tokens, no fee, or a lane the card does not name —
-        // is already fully described by the settlement the exit made.
-        //
-        // A figure too large for the record settles at the ceiling rather than wrapping, exactly as
-        // the terminal's own settlement narrows it: there is no amount above the ceiling to post, and
-        // a wrap would post nearly nothing for the most expensive unit the node has ever run.
-        let amount = priced_amount(&history, arrived, &usage_token, &report);
-        if amount == 0 {
-            return;
-        }
-        let accrual = busbar_contract::caps::HoldAccrual::after_terminal(
-            principal.clone(),
-            amount,
-            &ledger_token,
-        );
-        let posted = busbar_contract::caps::Posted::settle_late(accrual, &ledger_token);
-        // Through the money-book seam, as the terminal exit arm does — the same shared book, the
-        // same posting, the lock taken and released behind the seam.
-        let book = crate::root::durability::SharedBook::over(book);
-        // The same pinned snapshot the amount above was PRICED against, so the figure and the entry
-        // number the posting claims priced it cannot come from two different reads.
-        let _settled = settle(
-            &book,
+        post_late(
+            &crate::root::durability::SharedBook::over(book),
+            &LateTokens {
+                durability: &durability_token,
+                ledger: &ledger_token,
+                usage: &usage_token,
+            },
+            &history,
             &principal,
             arrived,
-            Some(&history),
-            &durability_token,
-            posted,
+            &report,
         );
     }
+}
+
+/// The three tokens the late arm posts under, lent together.
+struct LateTokens<'a> {
+    durability: &'a busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
+    ledger: &'a busbar_contract::caps::Grant<busbar_contract::caps::WriteMoney>,
+    usage: &'a busbar_contract::caps::Grant<busbar_contract::caps::Consumption>,
+}
+
+/// The unit's raw counts as its posting record carries them (#71): the serving lane, the billable
+/// count, and every class the report carries — the reserved four and the open ones — verbatim. A
+/// zero-quantity class is not a fact about anything and is left off, as [`usage_record`] leaves it.
+fn counts_of(report: &LateReport) -> crate::root::durability::UnitCounts {
+    crate::root::durability::UnitCounts {
+        lane: report.lane.clone(),
+        fee_count: u64::from(report.fee_count),
+        classes: report
+            .usage
+            .usage_units
+            .iter()
+            .filter(|(_, count)| **count > 0)
+            .map(|(class, count)| (class.clone(), *count))
+            .collect(),
+    }
+}
+
+/// **THE LATE ARM'S POSTING**: what one drained report leaves on the second book. ALWAYS one row
+/// (#43: the write is unconditional; #71: the fact is the counts, and pricing is the read).
+///
+/// - PRICED above zero: the settlement moves the book, and its record carries the counts beside
+///   the figure.
+/// - PRICED AT ZERO, or REFUSED: a counts row that moves no balance. A refusal (#42) leaves the
+///   money unpriced — no zero, no partial — and every read of the balance it sits on refuses.
+fn post_late(
+    book: &dyn crate::root::durability::MoneyBook,
+    tokens: &LateTokens<'_>,
+    history: &crate::root::kernel::PinnedHistory,
+    principal: &PrincipalId,
+    arrived: Arrived,
+    report: &LateReport,
+) {
+    let counts = counts_of(report);
+    // THE PRICING, and it happens HERE rather than on the plane. The plane said what the unit
+    // consumed — quantities, by class — and how many billable requests it is. What that is worth is
+    // the card's answer, and this is the only side that holds a card. It is the same expression the
+    // live metering step is answered through, because one report priced two ways is two answers to
+    // what one request cost.
+    //
+    // THE ROW THIS LANDS ON. `report` names the serving lane and its provider — the two names the
+    // legacy row is keyed by — and the balance below is keyed by principal and window. Those are the
+    // same row: the node's books retain no lane and no provider, so both the ledger's side and the
+    // legacy side of the reconciliation are read at the width the node keeps, with the two names
+    // empty on BOTH. The lane rides the counts row, which is where a read prices from.
+    //
+    // A ZERO IS NOT A SETTLEMENT, and posting one would say the node had settled something. But the
+    // counts are still the unit's fact (#43), so a unit that priced at nothing leaves its counts row
+    // and moves no balance.
+    //
+    // A REFUSAL IS NOT A ZERO AND NOT A PARTIAL (#42, item 28). A present card silent about the
+    // lane or a hit class, a hole in the history, or a figure the record cannot hold states no
+    // amount, so this book is handed none — never the priced part with the unpriced part at nothing.
+    // The COUNTS are not lost: they are posted as a counts row with the money unpriced, and every
+    // read of the balance it sits on refuses (`Durability::settled_read`). It used to post nothing
+    // at all and only warn — the fact survived on the governance ledger alone.
+    let key = balance(principal);
+    // The same pinned snapshot the amount below is PRICED against, so the figure and the entry
+    // number the posting claims priced it cannot come from two different reads.
+    let at = settling_at(&key, arrived, Some(history), tokens.durability);
+    let amount = match priced_amount(history, arrived, tokens.usage, report) {
+        Ok(amount) => amount,
+        Err(refusal) => {
+            tracing::warn!(
+                principal = principal.as_str(),
+                lane = %report.lane,
+                counts = ?report.usage.usage_units,
+                fee_count = report.fee_count,
+                ?refusal,
+                "late accrual refused at settlement: the card cannot price these counts; \
+                 the counts row is posted with no figure"
+            );
+            let _row = book.post_counts(&at, principal, &counts, Some(format!("{refusal:?}")));
+            return;
+        }
+    };
+    if amount == 0 {
+        let _row = book.post_counts(&at, principal, &counts, None);
+        return;
+    }
+    let accrual = busbar_contract::caps::HoldAccrual::after_terminal(
+        principal.clone(),
+        amount,
+        tokens.ledger,
+    );
+    let posted = busbar_contract::caps::Posted::settle_late(accrual, tokens.ledger);
+    // Through the money-book seam, as the terminal exit arm does — the same shared book, the same
+    // posting, the lock taken and released behind the seam — with the counts on the record.
+    let _settled = book.settle_counted(&at, posted, &counts);
 }
 
 /// The answer's body, with the late arm riding on it.
@@ -975,20 +1217,40 @@ impl Drop for LateBody {
     }
 }
 
-/// THE IN-FLIGHT SLOT, for the length of one unit.
+/// THE IN-FLIGHT SLOT, for the length of one unit — and the drop guard that MARKS it (item 129).
 ///
-/// The table is what bounds how many units this node has in flight, so the slot has to come back on
-/// every way out of the unit — the answer, a panic, and the one this seam exists for: the client
-/// hanging up mid-request, which drops the whole of `answer` where it stands. A `remove` written at
-/// the end of that function comes back on one of those three.
+/// A unit that reached its own end gives its slot straight back. Every other way out — a panic, or
+/// the client hanging up mid-request, which drops the whole of `answer` where it stands — leaves the
+/// slot in the table MARKED, and the node's sweep ([`LlmNode::sweep`]) is what gives it back.
+///
+/// It used to REMOVE the slot on every way out, and that is the half of the protocol that could not
+/// work: the sweep is the second holder of a key to the unit's hold cell, and a slot removed on the
+/// way out is a cell the sweep can never see — so a hold the exit never reached was left in a cell
+/// nothing would ever take it out of, and a disconnect mid-dispatch skipped its charge. A guard only
+/// ever MARKS: it runs during an unwind, where taking a hold and settling it is exactly what must not
+/// happen, so ending the unit is the sweep's job and marking is the whole of this one's.
 struct Occupied<'n> {
-    table: &'n busbar_kernel::inflight::InFlight,
-    key: UnitKey,
+    node: &'n LlmNode,
+    slot: Arc<busbar_kernel::inflight::UnitSlot>,
+    /// The unit's arrival, handed to the sweep with the mark.
+    arrived: Arrived,
+    /// Set once the unit's end has been reached and settled on the ordinary path.
+    reached_end: bool,
 }
 
 impl Drop for Occupied<'_> {
     fn drop(&mut self) {
-        self.table.remove(self.key);
+        if self.reached_end {
+            self.node.inflight.remove(self.slot.key());
+        } else {
+            self.node
+                .lost
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(self.slot.key(), self.arrived);
+            self.slot.mark();
+            self.node.marked.fetch_add(1, Ordering::AcqRel);
+        }
     }
 }
 
@@ -1054,6 +1316,12 @@ pub struct LlmUnit<'n> {
     /// back would place a unit that arrived in the last millisecond of a second at the start of it —
     /// on the wrong side of an entry appended in between.
     arrived: Arrived,
+    /// Whose unit this is — the principal the balance it settles onto is keyed by.
+    ///
+    /// Kept on the unit because the unit is what a caller going away leaves behind: the loop hands
+    /// the end of an ABANDONED unit to this unit's `abandoned`, and posting it needs the same
+    /// balance the returned end would have been posted to.
+    principal: PrincipalId,
     /// The handler-lookup refusal the arrival arm performed and the decode arm raises. See this
     /// module's header for why the two are apart.
     deferred: Mutex<Option<decode::DecodeRefusal>>,
@@ -1349,8 +1617,6 @@ impl Units for LlmUnit<'_> {
         // than an already-posted record, and the over-budget path leaves through the same terminal
         // every other path leaves through, with exactly one link on the unit's chain.
         let admitted = admit::admit(
-            token,
-            admit_token,
             &admit::AdmitCtx {
                 host: self.walk.host(),
                 gov: self.walk.gov(),
@@ -1358,12 +1624,19 @@ impl Units for LlmUnit<'_> {
                 destination: &model,
                 charged_at: self.charged_at,
             },
-            principal,
             destinations,
         );
-        // The plane's half of the answer — the meter half of the hold, whether the charge landed,
-        // and which pool it landed on — stays with the walk; the kernel's half comes back here.
-        self.walk.take_admission(admitted)
+        // The plane's half of the answer — the metering sink, whether the charge landed, and which
+        // pool it landed on — stays with the walk; the door's verdict comes back here. THE HOLD IS
+        // OPENED HERE, not in the plane (#43, #83 defs 5/6): at zero, for this principal — it never
+        // refused a unit the door admitted, and the spend is the governance ledger's.
+        match self.walk.take_admission(admitted) {
+            Ok(()) => Decision::proceed(
+                token,
+                Admission::Own(Hold::open(admit_token, principal.clone(), 0)),
+            ),
+            Err(refusal) => Decision::refuse(token, refusal),
+        }
     }
 
     fn route(
@@ -1542,6 +1815,20 @@ impl busbar_kernel::teller::RouteAwait for LlmUnit<'_> {
             Box::pin(async move { self.walk.route(token, &destination).await }),
         )
     }
+
+    /// THE CALLER WENT AWAY MID-DISPATCH, and the end the loop reached for it is POSTED here (item
+    /// 99) — onto the same book, the same balance and the same window [`LlmNode::answer_arriving_at`]
+    /// posts a returned end to, through the same exit arm.
+    ///
+    /// The loop's guard has already sealed this end at the charged audit door, emptied the cell and
+    /// given the leases back; what it hands over is the posting, which has moved no balance and left
+    /// no record until something settles it. Nothing else will: the future that would have read it
+    /// is the one being dropped. Before this arm the end was bound to `let _ended` and dropped, so
+    /// an abandoned unit left no ledger row and no journal entry and its reservation stayed drawn.
+    fn abandoned(&self, _ctx: &UnitCtx, ended: busbar_kernel::teller::Ended) {
+        self.node
+            .settle_end(&self.principal, self.arrived, self.history.as_ref(), ended);
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1586,8 +1873,19 @@ pub fn settle(
     posted: busbar_contract::caps::Posted,
 ) -> Result<crate::root::durability::Settled, busbar_contract::caps::DurabilityLost> {
     let key = balance(principal);
-    let at = crate::root::durability::Settling {
-        key: &key,
+    book.settle_posted(&settling_at(&key, arrived, card, token), posted)
+}
+
+/// Where an LLM unit's posting lands: its balance, the window of its pinned arrival, stamped with the
+/// card in force at that arrival.
+fn settling_at<'a>(
+    key: &'a busbar_kernel_ledger::totals::TotalsKey,
+    arrived: Arrived,
+    card: Option<&crate::root::kernel::PinnedHistory>,
+    token: &'a busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
+) -> crate::root::durability::Settling<'a> {
+    crate::root::durability::Settling {
+        key,
         window: busbar_kernel_budget::budget_window(
             busbar_kernel_budget::window::WINDOW_DAY,
             arrived.secs(),
@@ -1610,8 +1908,7 @@ pub fn settle(
             wall: arrived.secs(),
             mono: arrived.mono(),
         },
-    };
-    book.settle_posted(&at, posted)
+    }
 }
 
 /// THE PROVENANCE STAMP: which rate-card entry was in force when this unit arrived.
@@ -1928,8 +2225,16 @@ pub static BODY_INGRESS: &[(&str, busbar_kernel::ingress::arrival::BodyIngress)]
 /// resolved `model` is carried as the loop's `model_hint`, exactly as `run()` carries its resolved
 /// `model`; `path: None`, because a native arrival's model rides its body.
 ///
-/// IT IS DORMANT. Nothing mounts it, and it is NOT the shipped authority: the shipped `run()` still
-/// calls `run_gauntlet`. DECISION #28 unified the loop plane-neutrally; DECISION #29 gates the
+/// CORRECTION (item 125, measured 2026-09-24): `run_gauntlet` is no longer "the SUBSTRATE loop" —
+/// `gauntlet_install::install()` registers the kernel-loop runner for the LLM capability key at
+/// boot, money-neutrally (a `ZeroHold`, no evidence). And on a default build (`root-llm` on) the
+/// body- and path-model arrivals do not reach `run()` at all: they are driven through [`LlmNode`]
+/// and this module's late accrual. Measured: `root-llm` OFF returns
+/// `billing|rate-card|history-mid-window` to its 1.5.5 figures; the `install()` flips do not move
+/// it.
+///
+/// THIS FUNCTION is test-only. Nothing mounts it, and it is NOT the shipped authority: the shipped
+/// `run()` still calls `run_gauntlet`. DECISION #28 unified the loop plane-neutrally; DECISION #29 gates the
 /// money-authority flip on the fleet-box oracle — the flip is thrown only once loop==legacy is proven
 /// byte-identical on that box (`bin/oracle` record+replay), never here. This entry exists so the
 /// entry-level shadow proof can drive it beside `run()` on the same fixtures and prove exactly that

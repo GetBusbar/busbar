@@ -23,7 +23,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::price::{units_total, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
+use crate::price::{UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
 
 /// The most models one cell interns before the coldest one is evicted.
 ///
@@ -134,12 +134,13 @@ impl LedgerCell {
     /// Total current tokens across every model and every unit key — the counter the total-token
     /// cap reads. The evicted tally counts here too, so the cap sees every token ever accrued into
     /// this cell whether or not the name that carried it is still interned.
+    ///
+    /// TOKENS ONLY: the reserved token classes. An open class (item 123) rides the same map to be
+    /// priced, but is not a token and never counts toward a token cap.
     pub fn total_tokens(&self) -> u64 {
-        self.models
+        crate::price::RESERVED_UNITS
             .iter()
-            .fold(units_total(&self.evicted), |acc, m| {
-                acc.saturating_add(units_total(&m.units))
-            })
+            .fold(0u64, |acc, u| acc.saturating_add(self.total_tier(u)))
     }
 
     /// Current summed count of one unit key across models — a per-tier cap's counter. The evicted

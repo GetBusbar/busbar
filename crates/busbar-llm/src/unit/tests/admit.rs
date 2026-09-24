@@ -5,7 +5,7 @@
 use super::*;
 use crate::test_support::TestApp;
 use busbar_api::Store as _;
-use busbar_contract::caps::{Consumption, Grant, KernelSeal, Posted, StepName, Usage, WriteMoney};
+use busbar_contract::caps::{step::Admit, Decision, KernelSeal, Pass, StepName};
 use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
 use busbar_store_memory::MemoryStore;
 use std::collections::BTreeMap;
@@ -99,13 +99,12 @@ fn durable(app: &std::sync::Arc<crate::test_support::BuiltApp>, bucket: &str) ->
     (row.requests, row.billable_requests)
 }
 
-/// A kernel seal for the length of one test: the tokens the step is lent are minted from it
-/// and dropped when the call returns, exactly as the loop lends them.
-fn tokens() -> (KernelSeal, Pass<Admit>, Grant<Admittance>) {
+/// A kernel seal for the length of one test, and the step token the kernel's `Units::admit` row
+/// seals the door's verdict with.
+fn tokens() -> (KernelSeal, Pass<Admit>) {
     let seal = KernelSeal::acquire_for_kernel();
     let unit = Pass::mint(&seal);
-    let admit = Grant::<Admittance>::mint(&seal);
-    (seal, unit, admit)
+    (seal, unit)
 }
 
 /// THE ADMITTED IDENTITY. One admitted request charges ONE admission slot and ONE fee-base
@@ -161,7 +160,6 @@ async fn the_step_charges_the_same_slot_fee_base_and_cent_as_the_live_door() {
     );
 
     // LEG 2 — the same door, through the step.
-    let (seal, unit_token, admit_token) = tokens();
     let ctx = AdmitCtx {
         host: &host,
         gov: &gov,
@@ -169,13 +167,7 @@ async fn the_step_charges_the_same_slot_fee_base_and_cent_as_the_live_door() {
         destination: "p",
         charged_at,
     };
-    let admitted = admit(
-        &unit_token,
-        &admit_token,
-        &ctx,
-        &PrincipalId::new(key.id.clone()),
-        &[],
-    );
+    let admitted = admit(&ctx, &[]);
     assert!(admitted.charged, "the step's charge landed too");
     assert!(
         admitted.refusal.is_none(),
@@ -200,43 +192,10 @@ async fn the_step_charges_the_same_slot_fee_base_and_cent_as_the_live_door() {
     );
     assert_eq!(durable(&app, &key.id), (2, 2));
 
-    // The hold the yes entitled the unit to, and the posting that closes it. Settling here is
-    // this test standing in for the exit path: what matters is that the hold reaches one, that
-    // it is opened for this principal, and that it reserves nothing it could refuse anyone
-    // with.
-    let admission = admitted
-        .decision
-        .into_result(&seal)
-        .expect("the door said yes");
-    let hold = match admission {
-        Admission::Own(hold) => hold,
-        Admission::Accrual(_) => {
-            panic!("a client unit holds its own admission, not a parent's")
-        }
-        Admission::ZeroHold => panic!("an admitted client unit carries a hold"),
-    };
-    assert_eq!(hold.principal().as_str(), key.id.as_str());
-    assert_eq!(
-        hold.reserved(),
-        0,
-        "the hold is accounting; sizing it is later"
-    );
-    assert_eq!(hold.accrued(), 0, "nothing has been spent against it yet");
-    let usage_token = Grant::<Consumption>::mint(&seal);
-    let posted = Posted::settle(
-        hold,
-        // Nothing was routed, so the priced total is zero — and it is passed as money rather
-        // than derived from the report, which carries no lines to derive one from.
-        0,
-        &Usage::report(&usage_token, Vec::new()).expect("no lines is a legal report"),
-        &Grant::<WriteMoney>::mint(&seal),
-    );
-    assert_eq!(posted.principal().as_str(), key.id.as_str());
-    assert_eq!(
-        posted.settled(),
-        0,
-        "nothing was routed, so nothing settled"
-    );
+    // THE DOOR SAID YES, AND THAT IS ALL THE STEP SAYS. The hold its yes entitles the unit to is
+    // the kernel's to open (#43, #83 defs 5/6): the step names none, reserves none and hands none
+    // back, so the verdict is the whole of its answer to the kernel.
+    assert!(admitted.verdict.is_ok(), "the door said yes");
 }
 
 /// THE REFUSED IDENTITY. An over-budget key is turned away with a 429 that charges NOTHING —
@@ -310,7 +269,7 @@ async fn over_budget_refuses_with_no_charge_and_nothing_to_refund() {
     assert_eq!(ledger(&app, &key.id, charged_at), key_before);
 
     // LEG 2 — the step. Same status, same untouched counters, no hold and no meter half.
-    let (seal, unit_token, admit_token) = tokens();
+    let (seal, unit_token) = tokens();
     let ctx = AdmitCtx {
         host: &host,
         gov: &gov,
@@ -318,13 +277,7 @@ async fn over_budget_refuses_with_no_charge_and_nothing_to_refund() {
         destination: "p",
         charged_at,
     };
-    let refused = admit(
-        &unit_token,
-        &admit_token,
-        &ctx,
-        &PrincipalId::new(key.id.clone()),
-        &[],
-    );
+    let refused = admit(&ctx, &[]);
     assert!(!refused.charged, "nothing was charged");
     assert!(refused.sink.is_none(), "no admission, so no meter half");
     assert_eq!(
@@ -348,8 +301,8 @@ async fn over_budget_refuses_with_no_charge_and_nothing_to_refund() {
         "nor on the key's own"
     );
 
-    let refusal = refused
-        .decision
+    // Sealed the way the kernel's `Units::admit` row seals the verdict.
+    let refusal = Decision::refuse(&unit_token, refused.verdict.expect_err("the door said no"))
         .into_result(&seal)
         .expect_err("the door said no");
     assert_eq!(refusal.reason(), ReasonCode::OverBudget);
@@ -360,8 +313,8 @@ async fn over_budget_refuses_with_no_charge_and_nothing_to_refund() {
     );
 }
 
-/// The step is the `Units::admit` row's shape, as a value: a mismatch in the tokens, the
-/// principal, the verified set or the answer stops compiling here rather than at the root.
+/// The step is the plane half of the `Units::admit` row, as a value: a mismatch in the context,
+/// the verified set or the verdict stops compiling here rather than at the root.
 #[test]
 fn the_step_has_the_doors_shape() {
     let _: AdmitStep = admit;

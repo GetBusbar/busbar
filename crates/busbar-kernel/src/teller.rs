@@ -47,6 +47,9 @@
 //! everything the terminal needs, so a dropped unit leaves through the SAME audit door, the same
 //! settle and the same exit a finished one leaves through — named for what happened, the client
 //! went away — and the cell is emptied and the leases released before the loop's frame is gone.
+//! And the end it reaches is POSTED rather than discarded: the settle is a pure constructor and
+//! the books move only where somebody reads the [`Ended`], so the guard hands it to the leg's own
+//! [`RouteAwait::abandoned`] — the one party still standing that knows which book it belongs on.
 //!
 //! ## No early exits
 //!
@@ -55,14 +58,15 @@
 //! "every unit posts exactly once" has to be readable in the shape of the code, not just true.
 
 use std::future::Future;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use busbar_contract::caps::{
     Abort, AdminVerb, Admission, Admit, Admittance, Approve, Arrival, Audit, Authenticate,
-    Authenticated, CallId, Canary, Consumption, Decision, Decode, Dial, DurabilityLost, Encode,
-    Exit, Grant, Hold, HoldAccrual, HoldCell, KernelSeal, KeyHandle, Meter, MeterClassId, Origin,
-    OriginKind, Outcome, Pass, Posted, PostingFlags, PrincipalId, QuantitySource, ReasonCode,
-    Refusal, Route, SessionId, StepName, UnitEnd, UnitKey, Usage, UsageLine, VerifiedDestination,
-    Verify, WriteMoney,
+    Authenticated, CallId, Canary, Consumption, Decision, Decode, Dial, DurabilityLost,
+    DurableWrite, Encode, Exit, Grant, Hold, HoldAccrual, HoldCell, KernelSeal, KeyHandle, Meter,
+    MeterClassId, Origin, OriginKind, Outcome, Pass, Posted, PostingFlags, PrincipalId,
+    QuantitySource, ReasonCode, Refusal, Route, SessionId, StepName, UnitEnd, UnitKey, Usage,
+    UsageLine, VerifiedDestination, Verify, WriteMoney,
 };
 
 use crate::registry::Generation;
@@ -78,7 +82,7 @@ pub struct Kernel {
     /// The per-request generation counter (#74). Bumped once per unit, so every request's proofs
     /// carry a generation distinct from the last, and a proof stamped for one request does not match
     /// another. A plain `u64` compared by the stages — no crypto on the hot path (#71).
-    call_gen: std::sync::atomic::AtomicU64,
+    call_gen: AtomicU64,
 }
 
 impl Default for Kernel {
@@ -92,7 +96,7 @@ impl Kernel {
     pub fn new() -> Self {
         Kernel {
             seal: KernelSeal::acquire_for_kernel(),
-            call_gen: std::sync::atomic::AtomicU64::new(0),
+            call_gen: AtomicU64::new(0),
         }
     }
 
@@ -101,10 +105,7 @@ impl Kernel {
     /// stray or stored proof from an earlier request is rejected. Wraps below `u64::MAX`, which is
     /// reserved for the unbound sentinel.
     pub fn next_call(&self) -> CallId {
-        let gen = self
-            .call_gen
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            % (u64::MAX - 1);
+        let gen = self.call_gen.fetch_add(1, Ordering::Relaxed) % (u64::MAX - 1);
         CallId::seal(&self.seal, gen)
     }
 
@@ -175,10 +176,8 @@ impl Kernel {
     ///
     /// Kept beside the other two and named the same way, so the source scan that accounts for every
     /// mint sees this one too.
-    pub fn durability_token(
-        &self,
-    ) -> busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite> {
-        busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(&self.seal)
+    pub fn durability_token(&self) -> Grant<DurableWrite> {
+        Grant::<DurableWrite>::mint(&self.seal)
     }
 
     /// The ledger unit's token, as the composition root lends it to a posting made after the exit.
@@ -195,8 +194,8 @@ impl Kernel {
     ///
     /// Kept beside the other three and named the same way, so the source scan that accounts for
     /// every mint sees this one too.
-    pub fn ledger_token(&self) -> busbar_contract::caps::Grant<busbar_contract::caps::WriteMoney> {
-        busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(&self.seal)
+    pub fn ledger_token(&self) -> Grant<WriteMoney> {
+        Grant::<WriteMoney>::mint(&self.seal)
     }
 
     /// The usage record's token, as the composition root lends it to a report assembled after the exit.
@@ -253,8 +252,8 @@ pub struct UnitCtx {
 /// after the compare-and-set that took the hold.
 #[derive(Debug, Default)]
 pub struct AccrualMeter {
-    spent: std::sync::atomic::AtomicU64,
-    headroom: std::sync::atomic::AtomicU64,
+    spent: AtomicU64,
+    headroom: AtomicU64,
 }
 
 impl AccrualMeter {
@@ -265,13 +264,12 @@ impl AccrualMeter {
 
     /// Add a spend.
     pub fn accrue(&self, amount: u64) {
-        self.spent
-            .fetch_add(amount, std::sync::atomic::Ordering::AcqRel);
+        self.spent.fetch_add(amount, Ordering::AcqRel);
     }
 
     /// What the unit has spent so far.
     pub fn total(&self) -> u64 {
-        self.spent.load(std::sync::atomic::Ordering::Acquire)
+        self.spent.load(Ordering::Acquire)
     }
 
     /// Say how far the unit's reservation may still be grown, in nano-units.
@@ -285,13 +283,12 @@ impl AccrualMeter {
     /// Offered rather than added: the last word wins, because the figure is a reading of the window
     /// and not a quantity that accumulates.
     pub fn offer_headroom(&self, nanos: u64) {
-        self.headroom
-            .store(nanos, std::sync::atomic::Ordering::Release);
+        self.headroom.store(nanos, Ordering::Release);
     }
 
     /// What the leg said the reservation may still grow by.
     pub fn headroom(&self) -> u64 {
-        self.headroom.load(std::sync::atomic::Ordering::Acquire)
+        self.headroom.load(Ordering::Acquire)
     }
 }
 
@@ -633,6 +630,24 @@ pub trait RouteAwait {
         meter: &'a AccrualMeter,
         destinations: &'a [VerifiedDestination],
     ) -> RouteLeg<'a>;
+
+    /// THE END OF A UNIT THE CALLER WENT AWAY FROM — handed here so it is POSTED, not discarded.
+    ///
+    /// A caller that drops the loop drops it at the one await, and the loop's guard runs the unit's
+    /// terminal there: the audit door seals the end, the hold leaves the cell and the leases go
+    /// back. What the terminal RETURNS is the posting, and a posting is a value — `Posted::settle`
+    /// is a pure constructor that moves no book, and the books move only where somebody reads the
+    /// [`Ended`]. The caller that would have read it is the one that went away, so the guard hands it
+    /// here instead, to the plane whose leg the unit was waiting on: the one party still standing
+    /// that knows which book the unit settles onto. It used to be bound to `let _ended` and dropped,
+    /// which consumed the hold, emptied the cell, wrote no ledger row and no journal entry, and left
+    /// the reservation drawn against the principal's window (item 99).
+    ///
+    /// REQUIRED, with no default body, because the only default there is — dropping the end — is the
+    /// defect. An implementation settles it exactly as its own caller settles a returned end.
+    ///
+    /// Runs inside a `Drop`, possibly during an unwind: it must not panic and must not await.
+    fn abandoned(&self, ctx: &UnitCtx, ended: Ended);
 }
 
 /// The Route step's future, as the loop holds it while it waits.
@@ -653,13 +668,15 @@ impl<U: Units> RouteAwait for Blocking<'_, U> {
         meter: &'a AccrualMeter,
         destinations: &'a [VerifiedDestination],
     ) -> RouteLeg<'a> {
-        Box::pin(std::future::ready(self.0.route(
-            token,
-            ctx,
-            meter,
-            destinations,
-        )))
+        let answer = self.0.route(token, ctx, meter, destinations);
+        Box::pin(std::future::ready(answer))
     }
+
+    /// Unreachable by a caller going away: the synchronous driver polls its one await once and it
+    /// is ready, so the guard's terminal is always taken back out by [`Abandoned::reached`]. The one
+    /// way here is an unwind out of a step, and on that path [`run_unit`]'s caller receives no end
+    /// either — the panic is the answer it gets — so there is no reader of this end to hand it to.
+    fn abandoned(&self, _ctx: &UnitCtx, _ended: Ended) {}
 }
 
 /// Everything one run of the loop borrows.
@@ -814,7 +831,13 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                     let meter = run.meter;
                     // THE ONE AWAIT is inside this scope, and so is the only place a caller that
                     // goes away can drop the loop. The guard owns the terminal for the length of it.
-                    let mut abandoned = Abandoned::arm(kernel, units, ctx, run, settling);
+                    let mut abandoned = Abandoned {
+                        kernel,
+                        units,
+                        route,
+                        ctx,
+                        ending: Some((run, settling)),
+                    };
                     let outcome = under_hold(kernel, units, route, ctx, meter, &destinations).await;
                     abandoned.reached(outcome)
                 }
@@ -929,46 +952,41 @@ fn open_to_door<U: Units>(
                     &principal,
                 )
                 .into_result(seal)
-                .map(|destinations| (principal, destinations))
-                .and_then(
-                    |(principal, destinations): (PrincipalId, Vec<VerifiedDestination>)| {
-                        units
-                            .approve(&Pass::<Approve>::mint(seal), ctx, &principal, &destinations)
-                            .into_result(seal)
-                            .map(|_| (principal, destinations))
-                    },
-                )
-                .and_then(
-                    |(principal, destinations): (PrincipalId, Vec<VerifiedDestination>)| {
-                        // The slip the door names its capped groups on, for the length of the one
-                        // call. It lives here rather than on the unit's context because it is not
-                        // something the unit IS: it is what the door said, read once, on the next
-                        // line, by the draw.
-                        let groups = GroupLeaseSlip::new();
-                        let admitted = units
-                            .admit(
-                                &Pass::<Admit>::mint(seal),
-                                &Grant::<Admittance>::mint(seal),
-                                ctx,
-                                &principal,
-                                &destinations,
-                                &groups,
-                            )
-                            .into_result(seal);
-                        // THE LEASE, drawn on the one answer that entitles a unit to it. The door
-                        // said yes, so from here until this unit's end the node is running it, and
-                        // the lease is what says so. A refusal draws nothing — there is no slot to
-                        // count — and neither does a challenge round, which now faces this same
-                        // door but opens no reservation behind it (see the arm above).
-                        if admitted.is_ok() {
-                            draw_lease(ctx, run, &groups);
-                        }
-                        // The sealed set travels WITH the admission from here on, so Route and
-                        // Meter consume the exact set Approve and Admit just read rather than a
-                        // recomputation of it.
-                        admitted.map(|admission| (admission, destinations))
-                    },
-                ),
+                .and_then(|destinations| {
+                    units
+                        .approve(&Pass::<Approve>::mint(seal), ctx, &principal, &destinations)
+                        .into_result(seal)
+                        .map(|_| destinations)
+                })
+                .and_then(|destinations| {
+                    // The slip the door names its capped groups on, for the length of the one
+                    // call. It lives here rather than on the unit's context because it is not
+                    // something the unit IS: it is what the door said, read once, on the next
+                    // line, by the draw.
+                    let groups = GroupLeaseSlip::new();
+                    let admitted = units
+                        .admit(
+                            &Pass::<Admit>::mint(seal),
+                            &Grant::<Admittance>::mint(seal),
+                            ctx,
+                            &principal,
+                            &destinations,
+                            &groups,
+                        )
+                        .into_result(seal);
+                    // THE LEASE, drawn on the one answer that entitles a unit to it. The door
+                    // said yes, so from here until this unit's end the node is running it, and
+                    // the lease is what says so. A refusal draws nothing — there is no slot to
+                    // count — and neither does a challenge round, which now faces this same
+                    // door but opens no reservation behind it (see the arm above).
+                    if admitted.is_ok() {
+                        draw_lease(ctx, run, &groups);
+                    }
+                    // The sealed set travels WITH the admission from here on, so Route and
+                    // Meter consume the exact set Approve and Admit just read rather than a
+                    // recomputation of it.
+                    admitted.map(|admission| (admission, destinations))
+                }),
         })
 }
 
@@ -1110,34 +1128,24 @@ enum Settling {
 /// back to the gauge in the same breath. Both are done before the loop's frame is gone, so the cell
 /// the sweep also holds a key to is already empty and the caller's slot is free to give back.
 ///
+/// And the end is POSTED: it goes to the leg's [`RouteAwait::abandoned`], which settles it onto the
+/// book exactly as a returned end is settled. The sealed end IS the money write — the posting inside
+/// it has moved nothing until somebody reads it — so an end dropped here was a charge dropped here.
+///
 /// [`reached`](Abandoned::reached) is how a unit that finished on its own takes its end back out. A
 /// guard whose terminal has been taken does nothing when it is dropped, which is the whole of the
 /// arming.
-struct Abandoned<'k, 'r, U: Units> {
+struct Abandoned<'k, 'r, U: Units, R: RouteAwait> {
     kernel: &'k Kernel,
     units: &'k U,
+    /// Where an abandoned unit's end is handed, so it is posted rather than dropped.
+    route: &'k R,
     ctx: &'k UnitCtx,
     /// The terminal, until somebody runs it. `None` once one of the two callers has.
     ending: Option<(Run<'r>, Settling)>,
 }
 
-impl<'k, 'r, U: Units> Abandoned<'k, 'r, U> {
-    /// Take the terminal, for the length of the await.
-    fn arm(
-        kernel: &'k Kernel,
-        units: &'k U,
-        ctx: &'k UnitCtx,
-        run: Run<'r>,
-        settling: Settling,
-    ) -> Self {
-        Abandoned {
-            kernel,
-            units,
-            ctx,
-            ending: Some((run, settling)),
-        }
-    }
-
+impl<U: Units, R: RouteAwait> Abandoned<'_, '_, U, R> {
     /// The unit reached its own end: take the terminal back out and run it there.
     fn reached(&mut self, outcome: Outcome) -> Ended {
         match self.ending.take() {
@@ -1153,13 +1161,14 @@ impl<'k, 'r, U: Units> Abandoned<'k, 'r, U> {
     }
 }
 
-impl<U: Units> Drop for Abandoned<'_, '_, U> {
+impl<U: Units, R: RouteAwait> Drop for Abandoned<'_, '_, U, R> {
     fn drop(&mut self) {
         if let Some((run, settling)) = self.ending.take() {
-            // The end is discarded because there is nobody left to hand it to: the caller that
-            // would have read it is the one that went away. What matters is that it was REACHED —
-            // the audit door sealed it, the cell is empty and the leases are back.
-            let _ended = terminal(
+            // The end is REACHED here — the audit door seals it, the cell is emptied and the leases
+            // go back — and then it is HANDED ON, because reaching it is not posting it. The value
+            // below carries the posting, and a posting moves no book until somebody reads it; the
+            // caller that would have is the one that went away, so the leg's own plane reads it.
+            let ended = terminal(
                 self.kernel,
                 self.units,
                 self.ctx,
@@ -1169,6 +1178,7 @@ impl<U: Units> Drop for Abandoned<'_, '_, U> {
                 }),
                 settling,
             );
+            self.route.abandoned(self.ctx, ended);
         }
     }
 }
@@ -1253,11 +1263,8 @@ async fn under_hold<U: Units, R: RouteAwait>(
 ) -> Outcome {
     let seal = &kernel.seal;
     let token = Pass::<Route>::mint(seal);
-    match route
-        .route_leg(&token, ctx, meter, destinations)
-        .await
-        .into_result(seal)
-    {
+    let leg = route.route_leg(&token, ctx, meter, destinations).await;
+    match leg.into_result(seal) {
         Err(refusal) => {
             Outcome::Failed(refusal.step().unwrap_or(StepName::Route), refusal.reason())
         }
@@ -1311,10 +1318,8 @@ pub fn exit<U: Units>(
             let (amount, table_flags) = settle_amount(&outcome, &evidence);
             let (fee, fee_flags) = fee_count(&evidence.fee);
             let flags = table_flags.with(fee_flags);
-            let requests = requests_settled(
-                reached_admitted,
-                requests_drawn(ctx.origin, evidence.upstream_candidate),
-            );
+            let drawn = requests_drawn(ctx.origin, evidence.upstream_candidate);
+            let requests = requests_settled(reached_admitted, drawn);
             // What the unit spent while it ran is applied to the hold here, where the hold is
             // owned. The spend lands in full: past the end of the reservation it grows out of
             // whatever headroom the leg offered while it ran, and whatever nothing can back is
@@ -1354,9 +1359,7 @@ pub fn exit<U: Units>(
                 Err(_) => {
                     drop_arrival(hold);
                     Err(DurabilityLost::observed(
-                        &busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(
-                            seal,
-                        ),
+                        &Grant::<DurableWrite>::mint(seal),
                         StepName::Meter,
                     ))
                 }

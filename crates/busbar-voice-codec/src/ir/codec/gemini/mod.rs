@@ -37,6 +37,7 @@
 //! clear, item delete/truncate, per-response overrides) — frames NOTHING (`write_up` answers `None`),
 //! because a stand-in frame carrying none of the semantics reads upstream as the concept surviving.
 
+use super::{billed_count, usage_refusal};
 use super::{decode_audio, encode_audio, parse, str_at, wire_of, DecodeState};
 use super::{DuplexReader, DuplexWriter, WireEvent, WireRef};
 use crate::ir::config::{MaxOutputTokens, SessionConfig};
@@ -352,8 +353,10 @@ fn setup_from_session_config(cfg: &SessionConfig) -> Value {
 // ── usage ↔ usageMetadata ─────────────────────────────────────────────────────────────────────────
 
 /// Pull a per-modality token count out of a Gemini `*TokensDetails` array (`[{modality, tokenCount}]`).
-fn modality_tokens(details: Option<&Value>, modality: &str) -> u64 {
-    details
+/// A BILLED COUNT, read through [`billed_count`]: an absent modality or count is zero, a present but
+/// unreadable one is an `Err` the caller turns into a refusal (#42).
+fn modality_tokens(details: Option<&Value>, modality: &str) -> Result<u64, String> {
+    let entry = details
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
@@ -362,13 +365,8 @@ fn modality_tokens(details: Option<&Value>, modality: &str) -> u64 {
                 .and_then(Value::as_str)
                 .map(str::to_ascii_uppercase)
                 == Some(modality.to_string())
-        })
-        // A BILLED COUNT: through the crate's one count seam, never a bare `as_u64`.
-        .and_then(|d| {
-            d.get("tokenCount")
-                .and_then(crate::ir::usage::read_count_u64)
-        })
-        .unwrap_or_default()
+        });
+    billed_count(entry, "tokenCount")
 }
 
 /// Extract the split token classes from a Gemini `usageMetadata` object (`plane4-duplex-session.md` — audio vs text are
@@ -382,41 +380,35 @@ fn modality_tokens(details: Option<&Value>, modality: &str) -> u64 {
 /// conservative default when the split is unknown — this only changes the audio/text LABEL, never the
 /// input/output lane the billing fold sums onto, and it is an integer passthrough of the wire figure,
 /// no rate lookup or multiply).
-fn usage_from_metadata(u: &Value) -> IrDuplexUsage {
+///
+/// Every count is a BILLED count and is read through [`billed_count`]: absent is zero, and a
+/// present-but-unreadable one is an `Err` the caller turns into a refusal (#42).
+fn usage_from_metadata(u: &Value) -> Result<IrDuplexUsage, String> {
     let pd = u.get("promptTokensDetails");
     let rd = u.get("responseTokensDetails");
-    // BILLED COUNTS: through the crate's one count seam — see `ir::usage::read_count_u64`.
-    let stated_total = |key: &str| {
-        u.get(key)
-            .and_then(crate::ir::usage::read_count_u64)
-            .unwrap_or_default()
-    };
     let (audio_in, text_in) = {
-        let (a, t) = (modality_tokens(pd, "AUDIO"), modality_tokens(pd, "TEXT"));
+        let (a, t) = (modality_tokens(pd, "AUDIO")?, modality_tokens(pd, "TEXT")?);
         if a.saturating_add(t) == 0 {
-            (0, stated_total("promptTokenCount"))
+            (0, billed_count(Some(u), "promptTokenCount")?)
         } else {
             (a, t)
         }
     };
     let (audio_out, text_out) = {
-        let (a, t) = (modality_tokens(rd, "AUDIO"), modality_tokens(rd, "TEXT"));
+        let (a, t) = (modality_tokens(rd, "AUDIO")?, modality_tokens(rd, "TEXT")?);
         if a.saturating_add(t) == 0 {
-            (0, stated_total("responseTokenCount"))
+            (0, billed_count(Some(u), "responseTokenCount")?)
         } else {
             (a, t)
         }
     };
-    IrDuplexUsage {
+    Ok(IrDuplexUsage {
         audio_in,
         text_in,
         audio_out,
         text_out,
-        cached: u
-            .get("cachedContentTokenCount")
-            .and_then(crate::ir::usage::read_count_u64)
-            .unwrap_or_default(),
-    }
+        cached: billed_count(Some(u), "cachedContentTokenCount")?,
+    })
 }
 
 /// Re-frame the extracted token classes back onto a Gemini `usageMetadata` object (inverse of
@@ -648,7 +640,11 @@ impl DuplexReader for GeminiLiveCodec {
         }
 
         if let Some(um) = v.get(wire::USAGE_METADATA) {
-            return vec![IrServerEvent::Usage(usage_from_metadata(um))];
+            // A present-but-unreadable billed count REFUSES the turn (#42), never meters it at zero.
+            return match usage_from_metadata(um) {
+                Ok(usage) => vec![IrServerEvent::Usage(usage)],
+                Err(message) => vec![usage_refusal(message)],
+            };
         }
 
         // `toolCallCancellation`, `goAway`, `sessionResumptionUpdate` and any unknown frame have no

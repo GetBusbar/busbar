@@ -463,9 +463,37 @@ fn spawn_handler<P: DuplexPlane>(
     // keeps the `Arc<Shared>` (and its permit) alive and runs to its own natural completion, detached.
     tokio::spawn(async move {
         let _permit = permit;
+        // THE SLOT IS RELEASED BY A DROP GUARD, not by a statement after the `.await`. `plane.handle`
+        // is plane code: if it panics, the task unwinds past any statement written after it, and a
+        // key left behind here is one the EOF drain waits the full `EOF_DRAIN` on, then reports as
+        // a phantom straggler — for every later drain of the session. The guard runs on normal
+        // completion and on unwind alike (the sibling boundary in `plane::handle_engine` catches the
+        // equivalent plane callback for the same reason).
+        let _slot = InflightSlot {
+            shared: for_cleanup,
+            key,
+        };
         plane.handle(frame, handle).await;
-        for_cleanup.inflight.lock().unwrap().remove(&key);
     });
+}
+
+/// ONE handler's reservation in [`Shared::inflight`], released when the handler task ends — by
+/// returning OR by unwinding out of a panicking plane callback. The release recovers a poisoned
+/// lock rather than unwrapping it: this drop can run DURING an unwind, where a second panic aborts
+/// the whole process.
+struct InflightSlot {
+    shared: Arc<Shared>,
+    key: u64,
+}
+
+impl Drop for InflightSlot {
+    fn drop(&mut self) {
+        self.shared
+            .inflight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.key);
+    }
 }
 
 /// END OF SESSION: DRAIN the in-flight handlers under a bound, then STOP WAITING on the remainder

@@ -21,7 +21,7 @@ use crate::ir::control::IrDuplexControl;
 use crate::ir::event::{IrClientEvent, IrServerEvent};
 use crate::ir::tool::{CallRef, IrDuplexTool};
 use crate::runtime::carrier::Carrier;
-use crate::runtime::metering::{MeteringLease, TurnMeter};
+use crate::runtime::metering::{SessionLease, TurnMeter, TurnVerdict};
 use crate::runtime::tools::ToolExecutor;
 use busbar_plane_streaming::governed::GovernedSession;
 use bytes::Bytes;
@@ -83,30 +83,36 @@ struct Inner {
 
 /// THE GOVERNED SESSION CORE — the synchronous heart shared across the concurrent frame handlers. It
 /// owns the codec, the locked config (the plane's tools + instructions the browser cannot override),
-/// the metering lease (which also prices each turn host-side), the tool executor, the priced model id,
-/// and the carrier. Generic over the codec
-/// `C` (HARD RULE 3); the lease and tool executor are dependency-inverted ports.
+/// the metering lease (the kernel prices each turn's counts behind it), the tool executor, the metered
+/// model id, and the carrier. Generic over the codec `C` (HARD RULE 3); the lease and tool executor
+/// are dependency-inverted ports.
 pub struct SessionCore<C> {
     codec: C,
     inner: Mutex<Inner>,
     /// The locked GA `session` config — the authoritative copy the plane holds server-side and
     /// re-applies; a client `session.update` is a HINT reconciled against this, never trusted blind.
     locked_config: Option<SessionConfig>,
-    lease: Box<dyn MeteringLease>,
+    lease: SessionLease,
     /// The presenting-key attribution each turn's usage is landed on through the CORE Meter seam
     /// (`host.meter_ledger` + `host.meter_series`). `None` on an ungoverned deployment. Voice keeps
     /// NO meter of its own — this IS the metering step, the same one every plane traverses.
     meter: Option<TurnMeter>,
     tools: Arc<dyn ToolExecutor>,
-    /// The upstream MODEL id this session prices against (from the locked `session` config; empty when
-    /// the dialect carries it server-side and none was locked). Handed to the lease's `price_usage` so
-    /// the host prices each turn against that model's rate-card lane.
+    /// The upstream MODEL id this session meters under (from the locked `session` config; empty when
+    /// the dialect carries it server-side and none was locked). Reported with each turn's counts so the
+    /// kernel prices the turn against that model's rate-card lane.
     model: String,
     carrier: Carrier,
     /// The node's open-call table, when a composition root bound one. `None` is an ungoverned
     /// deployment: every call is served in-process and a client-authored result is carried upstream
     /// verbatim, which is exactly what this runtime did before the governed wait existed.
     governed: Option<GovernedSession>,
+    /// When this session opened — the start of the wall clock [`Self::ceiling`] bounds.
+    opened: std::time::Instant,
+    /// The hard session wall-clock ceiling (`streams.session_max_secs:`), `None` until a runtime
+    /// binds one ([`Self::with_session_ceiling`]). Compared on the sweep tick beside the pump
+    /// ([`Self::enforce_ceiling`]): a session past it is hard-closed exactly as a dry budget is.
+    ceiling: Option<std::time::Duration>,
 }
 
 impl<C> SessionCore<C>
@@ -117,7 +123,7 @@ where
     /// start); `locked_config` is the plane's authoritative tools+instructions.
     pub fn new(
         codec: C,
-        lease: Box<dyn MeteringLease>,
+        lease: SessionLease,
         meter: Option<TurnMeter>,
         tools: Arc<dyn ToolExecutor>,
         carrier: Carrier,
@@ -139,7 +145,34 @@ where
             model,
             carrier,
             governed: None,
+            opened: std::time::Instant::now(),
+            ceiling: None,
         }
+    }
+
+    /// Bind the hard session wall-clock ceiling, in seconds (`streams.session_max_secs:`).
+    ///
+    /// The value was declared, defaulted, parsed and plumbed onto the runtime and then compared with
+    /// nothing, so an operator who set it to bound a session's worst-case cost bounded nothing. It is
+    /// taken literally: the session may run for exactly this many seconds of wall clock.
+    #[must_use]
+    pub fn with_session_ceiling(mut self, secs: u32) -> Self {
+        self.ceiling = Some(std::time::Duration::from_secs(u64::from(secs)));
+        self
+    }
+
+    /// **The ceiling's comparison.** Hard-close the carrier when the session has run for its ceiling
+    /// as of `now`, and say whether it is (now or already) closed on that account. A session with no
+    /// ceiling bound is never closed here.
+    pub fn enforce_ceiling(&self, now: std::time::Instant) -> bool {
+        let Some(ceiling) = self.ceiling else {
+            return false;
+        };
+        if now.saturating_duration_since(self.opened) < ceiling {
+            return false;
+        }
+        self.carrier.hard_close();
+        true
     }
 
     /// Bind this session to the node's open-call table.
@@ -180,11 +213,6 @@ where
         &self.carrier
     }
 
-    /// Total nanodollars the metering lease has settled so far — the audit tap the tests assert.
-    pub fn settled_nanos(&self) -> u64 {
-        self.lease.settled_nanos()
-    }
-
     /// DECODE + ACT on ONE downlink (server→client) wire frame. Meters usage (hard-closing on
     /// exhaustion), correlates + executes tool calls server-side, drives barge-in truncate, and relays
     /// media/control downlink to the client. Returns the [`Outbound`] plan; a closed carrier yields an
@@ -208,9 +236,9 @@ where
                     // ── metering: the marquee guarantee ──────────────────────────────────────────
                     IrServerEvent::Usage(u) => {
                         // Fold the turn's five token classes onto the neutral reserved-key `Usage` (the
-                        // 5→4 map), price it HOST-side against the model's rate-card lane, then settle the
-                        // already-priced increment. A missing rate (`None`) fails CLOSED — the turn cannot
-                        // meter as free — exactly as an exhaustion would.
+                        // 5→4 map) and REPORT the raw counts to the kernel meter, which prices and
+                        // settles them and answers whether the carrier stays open. An unpriced model
+                        // fails CLOSED kernel-side — the turn cannot meter as free (#43, #71).
                         let usage = u.to_billing_usage();
                         // METER THE TURN through the CORE seam — land this turn's usage on the ONE
                         // ledger, attributed to the presenting key (the voice twin of the LLM plane's
@@ -218,11 +246,7 @@ where
                         if let Some(meter) = &self.meter {
                             meter.record_turn(&self.model, &usage);
                         }
-                        let close = match self.lease.price_usage(&self.model, &usage) {
-                            Some(nanos) => self.lease.settle(nanos).must_close(),
-                            None => true,
-                        };
-                        if close {
+                        if self.lease.report_turn(&self.model, &usage) == TurnVerdict::MustClose {
                             // Budget dry (or the lease refused / faulted / unpriced): cancel the in-flight
                             // response upstream and demand a hard close.
                             out.push_up(self.codec.write_up(
@@ -465,6 +489,11 @@ where
             if core.carrier().is_closed() {
                 return;
             }
+            // The session wall-clock ceiling is time passing, too, and so is noticed here: a session
+            // past it is hard-closed and the pump ends with the sweep.
+            if core.enforce_ceiling(std::time::Instant::now()) {
+                return;
+            }
             core.sweep_expired(now_ms());
         }
     };
@@ -472,6 +501,26 @@ where
     futures::pin_mut!(sweep);
     // The sweep never completes on its own, so this ends when — and only when — the pump does.
     futures::future::select(pump, sweep).await;
+}
+
+/// **SERVE A SESSION TO ITS TEARDOWN.** [`serve_with_sweep`], then settle the session's durable row
+/// terminal and evict it, stamped at `now()` taken when the pump returns.
+///
+/// Every serving site used to drop its [`crate::runtime::SessionHandle`] unsettled once the pump
+/// returned, so the row outlived the socket as an ACTIVE session. This is the one shape a serving
+/// site takes instead, so none of them can forget the second half.
+pub async fn serve_to_teardown<C, F, N>(
+    core: Arc<SessionCore<C>>,
+    handle: crate::runtime::SessionHandle,
+    pump: F,
+    now: N,
+) where
+    C: DuplexReader + DuplexWriter + Send + Sync + 'static,
+    F: std::future::Future<Output = ()>,
+    N: FnOnce() -> u64,
+{
+    serve_with_sweep(core, pump).await;
+    handle.finish(now());
 }
 
 /// Wall-clock milliseconds, for the sweep's "which deadlines have passed" question.
@@ -578,6 +627,17 @@ where
         for up in plan.upstream {
             // Funnel to the single upstream writer shared with the downlink-facing plane.
             let _ = self.upstream.unbounded_send(up.0.to_vec());
+        }
+    }
+}
+
+/// The settled-figure AUDIT TAP, test scope only: production reads no money figure back (#43).
+#[cfg(test)]
+mod audit_tap {
+    impl<C> super::SessionCore<C> {
+        /// What the kernel meter has settled on this session so far — the figure the tests assert.
+        pub(crate) fn settled_nanos(&self) -> u64 {
+            self.lease.settled()
         }
     }
 }

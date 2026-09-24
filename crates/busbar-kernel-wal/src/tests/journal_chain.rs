@@ -752,3 +752,39 @@ fn the_bound_is_pinned() {
         MEMORY_BUFFER_RECORDS
     );
 }
+
+/// The reading half of a body gives back exactly what the writing half put down, field by field, and
+/// answers `None` — never a panic — on a body that is short or not what the reader expected.
+#[test]
+fn a_body_reads_back_what_was_written() {
+    let mut body = crate::BodyWriter::new();
+    body.text("hold.open");
+    body.num(7);
+    body.figure(-42);
+    body.bytes(&[1, 2, 3]);
+    let bytes = body.finish();
+
+    let mut read = crate::BodyReader::new(&bytes);
+    assert_eq!(read.text(), Some("hold.open"));
+    assert_eq!(read.num(), Some(7));
+    assert_eq!(read.figure(), Some(-42));
+    assert_eq!(read.bytes(), Some(&[1u8, 2, 3][..]));
+    assert!(read.is_done());
+    assert_eq!(
+        read.num(),
+        None,
+        "reading past the end is an answer, not a panic"
+    );
+
+    // A body cut short.
+    let mut short = crate::BodyReader::new(&bytes[..bytes.len() - 1]);
+    assert_eq!(short.text(), Some("hold.open"));
+    assert_eq!(short.num(), Some(7));
+    assert_eq!(short.figure(), Some(-42));
+    assert_eq!(short.bytes(), None);
+
+    // A length prefix that claims more than there is.
+    let claim = u64::MAX.to_le_bytes();
+    let mut lying = crate::BodyReader::new(&claim);
+    assert_eq!(lying.text(), None);
+}

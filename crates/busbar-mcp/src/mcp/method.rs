@@ -1892,17 +1892,35 @@ async fn tools_call(
     // The JSON-RPC id busbar puts on the OUTBOUND request is the round number, not the inbound
     // caller's id. An id chosen by the caller and echoed onto an upstream is a caller-controlled
     // value crossing a trust boundary for no reason.
+    //
+    // Minted through `jsonrpc::dispatch_request_id` rather than by widening `round` here, because
+    // the handshake's id is defined as the first value ABOVE this function's range — a disjointness
+    // the compiler checks at that definition, and which only holds while this is the one way a
+    // dispatch id is made. See the id-space block in `crate::mcp::client::jsonrpc`.
+    let billed_key = ctx.gov.key.as_deref();
+    let namespaced = selected.namespaced.as_str();
     let mut call_seam = |round: u32, satisfaction: Option<serde_json::Value>| {
+        let arguments = &arguments;
         // Box::pin: erases the leg future's type so `drive` instantiates once across both call
         // sites, and keeps this request's future small; see the walk.rs precedent.
-        let leg: inputreq::ErasedRoundFut<'_> = Box::pin(route_ref.dispatch(
-            &ctx.host,
-            pool,
-            scope,
-            &arguments,
-            u64::from(round),
-            satisfaction,
-        ));
+        let leg: inputreq::ErasedRoundFut<'_> = Box::pin(async move {
+            let answered = route_ref
+                .dispatch(
+                    &ctx.host,
+                    pool,
+                    scope,
+                    arguments,
+                    super::client::jsonrpc::dispatch_request_id(round),
+                    satisfaction,
+                )
+                .await;
+            // ITEM 136: an ANSWERED round is one tool call this node made — ledgered on the
+            // declared class, so a `budget:` cap can trip on it. A leg that failed ledgers nothing.
+            if answered.is_ok() {
+                ledger_tool_call(&*ctx.host, billed_key, namespaced);
+            }
+            answered
+        });
         leg
     };
     // THE GRANT, RE-READ LIVE ON EVERY ROUND. There is no handshake to authorise once and then
@@ -2293,6 +2311,7 @@ async fn create_task(
             // The ADMITTED member's id, not the caller-named one: the runner's per-round grant and
             // roots lookups must read the deployment the task actually runs against.
             server_id: member_id,
+            namespaced: selected.namespaced.clone(),
             max_rounds: server.max_input_required_rounds,
             input_schema: selected.input_schema.clone(),
             task_asks: super::tasks::task_ask_rounds(selected, ctx.capabilities),
@@ -2612,6 +2631,50 @@ fn charge_round(
         "mcp round metered"
     );
     Ok(())
+}
+
+/// LEDGER ONE ANSWERED UPSTREAM `tools/call` under the plane's declared `tool_calls` class (#71).
+///
+/// The plane's whole money obligation: one raw count, on the class it declares
+/// ([`busbar_plane_mcp::meta::CLASS_TOOL_CALLS`]), appended to the caller's budget chain through the
+/// SAME host `meter_ledger` seam the llm plane ledgers its tokens and a rerank its search units
+/// through. The card is never consulted here (#43), and the write is unconditional. The view prices
+/// the row with the MCP plane's own card (the lane is plane-qualified, see below); no `tools`
+/// section can carry a card yet, so MCP billing is OFF and the count reads 0 even beside an llm
+/// card — the row is still there for a count cap and for the day that card exists.
+///
+/// Called only once the upstream has ANSWERED the round (`Ok` from the leg) — the class is declared
+/// `ClassDirection::Response` because a call that never reached a server is not a call this node
+/// made, so a refused, unreachable or failed leg ledgers nothing (the flat fee `charge_round` took at
+/// admission is untouched by this). Keyed exactly as the admission was: `pool` is the namespaced tool
+/// (so pool-scoped buckets see the same predicate), and the lane is that tool qualified by the plane.
+pub(super) fn ledger_tool_call(
+    host: &dyn busbar_kernel::plane_host::EngineHost,
+    key: Option<&busbar_api::VirtualKey>,
+    namespaced: &str,
+) {
+    // No governance, or no key on a governed deployment: nothing to ledger against — the same two
+    // early returns `charge_round` takes, so the admission and the ledger see the same principals.
+    let (Some(pin), Some(key)) = (host.meter_pin(), key) else {
+        return;
+    };
+    let usage = busbar_substrate_values::billing::Usage {
+        usage_units: std::collections::BTreeMap::from([(
+            busbar_plane_mcp::meta::CLASS_TOOL_CALLS
+                .as_str()
+                .to_string(),
+            1,
+        )]),
+    };
+    // The row's lane is qualified by THIS plane's key, so the view prices it with the MCP plane's own
+    // card (#42 "scoped per plane", #47) — which config cannot author yet, so it reads 0 — and never
+    // with the llm plane's flat card, whose presence says nothing about MCP billing.
+    let lane = format!(
+        "{}{}{namespaced}",
+        crate::PLANE_KEY,
+        busbar_kernel::governance::PLANE_LANE_SEP
+    );
+    host.meter_ledger(&pin, key, namespaced, &lane, &usage, host.clock_now_secs());
 }
 
 /// A refusal from the EGRESS gate — the outbound credential could not be bound to this caller — or

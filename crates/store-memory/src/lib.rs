@@ -56,12 +56,15 @@ fn now() -> u64 {
 /// holds a fixture-sized table and a second map to keep in step with every sweep, tombstone cascade
 /// and rotation is more failure surface than the scan costs), token ledgers keyed by (bucket_id,
 /// window_start), metering rows keyed by (key_id, bucket, model, provider, priced_from_ms).
+/// A metering row's key: (key_id, bucket, model, provider, priced_from_ms).
+type MeteringKey = (String, u64, String, String, u64);
+
 #[derive(Default)]
 pub struct MemoryStore {
     keys: RwLock<HashMap<String, VirtualKey>>,
     creds: RwLock<HashMap<String, CredentialSecret>>,
     usage: RwLock<HashMap<(String, u64), UsageLedger>>,
-    metering: RwLock<HashMap<(String, u64, String, String, u64), MeteringRow>>,
+    metering: RwLock<HashMap<MeteringKey, MeteringRow>>,
     /// The revocation DENYLIST: denied subject ids (1.5.0 signed-token keys). A set (the reason is
     /// audit-only and not needed for the enforcement read).
     denylist: RwLock<std::collections::HashSet<String>>,
@@ -239,10 +242,7 @@ impl MemoryStore {
     fn usage(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<(String, u64), UsageLedger>> {
         self.usage.write().unwrap_or_else(|e| e.into_inner())
     }
-    fn metering(
-        &self,
-    ) -> std::sync::RwLockWriteGuard<'_, HashMap<(String, u64, String, String, u64), MeteringRow>>
-    {
+    fn metering(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<MeteringKey, MeteringRow>> {
         self.metering.write().unwrap_or_else(|e| e.into_inner())
     }
     // The SHARED (read) side of the same four locks, for the methods that only ever read. A pure
@@ -260,10 +260,7 @@ impl MemoryStore {
     fn usage_read(&self) -> std::sync::RwLockReadGuard<'_, HashMap<(String, u64), UsageLedger>> {
         self.usage.read().unwrap_or_else(|e| e.into_inner())
     }
-    fn metering_read(
-        &self,
-    ) -> std::sync::RwLockReadGuard<'_, HashMap<(String, u64, String, String, u64), MeteringRow>>
-    {
+    fn metering_read(&self) -> std::sync::RwLockReadGuard<'_, HashMap<MeteringKey, MeteringRow>> {
         self.metering.read().unwrap_or_else(|e| e.into_inner())
     }
     fn next_revision(&self) -> u64 {

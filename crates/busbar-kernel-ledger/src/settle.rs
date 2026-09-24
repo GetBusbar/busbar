@@ -206,9 +206,69 @@ impl Ledger {
     /// doors move the same three figures through this one function, because a second copy of that
     /// arithmetic is a second answer to the identity.
     pub fn post(&mut self, key: &TotalsKey, window: WindowStart, posted: Posted) -> Settlement {
-        let reserved = i128::from(posted.reserved());
-        let settled = i128::from(posted.settled());
-        let overdraft = i128::from(posted.overdraft());
+        let (released, overdraft) = self.move_books(
+            key,
+            window,
+            posted.principal().as_str(),
+            posted.reserved(),
+            posted.settled(),
+            posted.overdraft(),
+        );
+        Settlement {
+            overdraft: (overdraft > 0).then(|| Overdraft {
+                principal: posted.principal().as_str().to_string(),
+                key: key.clone(),
+                window,
+                amount: overdraft,
+            }),
+            released,
+            posted,
+        }
+    }
+
+    /// Move the books for a posting read back off the journal, exactly as [`Ledger::post`] moved
+    /// them when it was made.
+    ///
+    /// The restart half of the one book-moving function. A node that restarts rebuilds its book by
+    /// replaying the postings its journal holds, and a replay that moved the figures by a second
+    /// copy of the arithmetic would be a second answer to the identity — so both doors go through
+    /// the same private function, and the dual write is fed on replay exactly as it was fed live,
+    /// because the rows the reconciliation reads are the rows the postings made. Returns the residual
+    /// released, as [`Settlement::released`] reports it.
+    ///
+    /// No token: nothing is being SETTLED here. The settlement happened, under a token, in the
+    /// incarnation that wrote the record; this only restores what it did to the figures.
+    pub fn replay_post(
+        &mut self,
+        key: &TotalsKey,
+        window: WindowStart,
+        principal: &str,
+        reserved: u64,
+        settled: u64,
+        overdraft: u64,
+    ) -> i128 {
+        self.move_books(key, window, principal, reserved, settled, overdraft)
+            .0
+    }
+
+    /// THE ONE BOOK-MOVING ARITHMETIC, for a live posting and a replayed one alike.
+    ///
+    /// Returns what was released and what was carried as overdraft.
+    fn move_books(
+        &mut self,
+        key: &TotalsKey,
+        window: WindowStart,
+        principal: &str,
+        reserved: u64,
+        settled: u64,
+        overdraft: u64,
+    ) -> (i128, i128) {
+        let legacy_reserved = reserved;
+        let legacy_settled = settled;
+        let legacy_overdraft = overdraft;
+        let reserved = i128::from(reserved);
+        let settled = i128::from(settled);
+        let overdraft = i128::from(overdraft);
         let released = reserved.saturating_sub(settled).max(0);
 
         let figures = self.book.entry(key.clone(), window);
@@ -227,24 +287,15 @@ impl Ledger {
             // system of record, and failing a settlement because a legacy row would not write would
             // be a behavioural change in the direction nobody wants.
             let _ = rows.write(&LegacyPosting {
-                principal: posted.principal().as_str().to_string(),
+                principal: principal.to_string(),
                 bucket: key.bucket.as_str().to_string(),
                 window_start: window,
-                reserved: posted.reserved(),
-                settled: posted.settled(),
-                overdraft: posted.overdraft(),
+                reserved: legacy_reserved,
+                settled: legacy_settled,
+                overdraft: legacy_overdraft,
             });
         }
-        Settlement {
-            overdraft: (overdraft > 0).then(|| Overdraft {
-                principal: posted.principal().as_str().to_string(),
-                key: key.clone(),
-                window,
-                amount: overdraft,
-            }),
-            released,
-            posted,
-        }
+        (released, overdraft)
     }
 
     /// Open a hold's reservation in the books. Called when the door says yes.
@@ -283,21 +334,6 @@ impl Ledger {
         let figures = self.book.entry(key.clone(), window);
         figures.adjustments = figures.adjustments.saturating_add(amount);
         figures.settled = figures.settled.saturating_sub(amount);
-    }
-
-    /// Record a correction inside the open window that also gives headroom back to the store.
-    ///
-    /// The reversal first, then the release. Only the open window may do this: a closed window's
-    /// budget has already been reported, so handing headroom back to it would change a figure
-    /// somebody has already read.
-    pub fn record_adjustment_releasing(
-        &mut self,
-        key: &TotalsKey,
-        window: WindowStart,
-        amount: i128,
-    ) {
-        self.record_adjustment(key, window, amount);
-        self.record_release(key, window, amount);
     }
 
     /// Move value from one window to another, both sides at once.

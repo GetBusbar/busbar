@@ -43,6 +43,9 @@ fn host_runtime_slot(host: &dyn EngineHost) -> Option<Arc<dyn std::any::Any + Se
 /// request path's size-capped read: a hostile/misconfigured upstream must not force an unbounded
 /// heap allocation just because a probe failed. 64 KiB is far more than any error envelope needs.
 const PROBE_ERROR_BODY_CAP: usize = 64 * 1024;
+/// The probe deadline used when `now + timeout` is unrepresentable: 30 years, tokio's own
+/// `far_future` horizon and the config-validation ceiling on every duration (item 147).
+const NEVER_PROBE_DEADLINE: Duration = Duration::from_secs(30 * 365 * 86_400);
 
 // Default probe interval / timeout (the PROCESS-WIDE fallback used when a per-lane `health:` block
 // omits `interval_secs` / `timeout_secs`). Operator-tunable via `health.default_probe_interval_secs`
@@ -382,7 +385,13 @@ pub(crate) async fn probe_lane(host: &dyn EngineHost, i: usize, timeout: Duratio
     // total timeout, so re-provide the same bound as ONE deadline shared by the send below and the
     // capped error-body read (`read_capped_error_body`), so a black-holed upstream can never hang
     // the prober past its configured `timeout_secs`.
-    let deadline = tokio::time::Instant::now() + timeout;
+    //
+    // `checked_add` (item 147): a timeout the clock cannot represent is refused at config
+    // validation, but the probe must never panic on one — fall back to tokio's own "never".
+    let sent_at = tokio::time::Instant::now();
+    let deadline = sent_at
+        .checked_add(timeout)
+        .unwrap_or_else(|| sent_at + NEVER_PROBE_DEADLINE);
     let res = tokio::time::timeout_at(deadline, rt.client.get().request(req)).await;
 
     // Classify the probe outcome through the organic disposition pipeline so auth/billing failures

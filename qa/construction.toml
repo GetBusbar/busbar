@@ -738,7 +738,7 @@ kernel_crate = "busbar-kernel"
 # 52950 (slack 1414)" — 1,414 lines the Teller/pump/admit surface could grow by with no row
 # reporting it. Downward only; this is the figure the crate measures, committed-tree, not the
 # working tree (whose uncommitted kernel edits read 51543 and are not this file's to bless).
-kernel_ceiling = 51536
+kernel_ceiling = 51439
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
@@ -836,7 +836,7 @@ patterns = ["teller.rs"]
 # mis-pin: a no-headroom ceiling exists precisely so the next line that grows the loop is the line
 # that has to justify itself. Re-measure (`cargo xtask loc --per-file busbar-kernel`) before reading
 # either number as current, and use `--write` to re-pin rather than editing by hand.
-ceiling = 661
+ceiling = 659
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"
@@ -883,10 +883,11 @@ ceiling = 61
 # not separate files: they are two of the three jobs inside tick.rs, and the label says so.
 #
 # The ceiling is today's measurement, not the abolished 500: a ratchet, so the first line that
-# grows this file is the line that has to justify itself.
+# grows this file is the line that has to justify itself. Re-pinned DOWN 193 -> 192 on 2026-09-24:
+# item 130 took the sweep's named-grant line out (the take now mints its grant in the argument).
 label = "tick: session tick, node tick and the drain sweep"
 patterns = ["tick.rs"]
-ceiling = 193
+ceiling = 192
 
 # ── REPOINTED 2026-09-22, the same repair `ticks` above already had. ───────────────────────────
 # Neither `arena.rs` nor `masking.rs` exists anywhere in the tree, so this row measured the empty
@@ -1588,7 +1589,13 @@ symbol = "take(&Grant::<Exit>::mint("
 confined_to = "kernel/src"
 # The scope resolved against this tree, matched as path prefixes.
 confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-kernel/src/tick.rs"]
-because = "there are three take sites -- the exit path, the sweep and the tick -- and no fourth"
+# COUNTED, not only confined (item 130). The three are teller.rs's exit path and a child unit's end,
+# and tick.rs's sweep. The sweep used to take through a named grant (`take(&exit)`), which this
+# literal cannot see, so confinement guarded two of the three and "no fourth" was guarded by
+# nothing: a fourth take written inside teller.rs sat inside the home and the row stayed PASS.
+# The sweep now spells the literal, and `sites` holds the home to exactly three.
+sites = 3
+because = "there are three take sites -- the exit path and a child unit's end in teller.rs, and the sweep in tick.rs -- and no fourth"
 
 # ── 28. plane-no-money ───────────────────────────────────────────────────────────────────────────
 [rules.plane-no-money]

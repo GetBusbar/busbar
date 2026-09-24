@@ -35,8 +35,25 @@ pub(crate) fn record_resp_usage(
         // when nothing token-bills. Routed through the host `meter_series` seam over the sink's opaque
         // `GovHandle` — byte-identical to the pre-flip `sink.gov.record_metering(...)`.
         if let Some(lane) = lane {
+            // ITEM 134: a COUNTED non-token unit (a rerank's search units) is ledgered VERBATIM as
+            // its open class (#71) against the key's budget chain, in the fee's window — where the
+            // card prices it; a present card silent about it refuses (#42); an absent card reads 0.
+            // The metering row below is untouched: the request counts with no token split.
+            if let Some(busbar_substrate_values::billing::Billing::Counted { class, count }) =
+                &usage
+            {
+                let usage_units = std::collections::BTreeMap::from([(class.clone(), *count)]);
+                host.meter_ledger(
+                    &sink.pin,
+                    &sink.key,
+                    &sink.pool,
+                    &lane.model,
+                    &busbar_substrate_values::billing::Usage { usage_units },
+                    sink.charged_at,
+                );
+            }
             host.meter_series(
-                &sink.gov,
+                sink.pin.gov(),
                 &sink.key.id,
                 &lane.model,
                 &lane.provider,
@@ -88,11 +105,10 @@ pub(crate) fn ledger_and_meter(
     // differently under the rate card) against the key's budget chain, in the SAME window as the
     // flat per-request fee (`sink.charged_at`, the header-arrival epoch), so token accrual and the
     // per-request fee never split across windows (#29). `meter_ledger` no-ops on an all-zero tier.
-    // Routed through the host seam over the sink's opaque `GovHandle`/`CostHandle` — byte-identical to
-    // the pre-flip `sink.gov.record_usage(&sink.cost, …)`.
+    // Routed through the host seam over the sink's opaque meter pin — byte-identical to the pre-flip
+    // `sink.gov.record_usage(&sink.cost, …)`.
     host.meter_ledger(
-        &sink.gov,
-        &sink.cost,
+        &sink.pin,
         &sink.key,
         &sink.pool,
         &lane.model,
@@ -102,24 +118,22 @@ pub(crate) fn ledger_and_meter(
     // Metering (raw per-model consumption series, token SPLIT preserved) — even a zero-token
     // delivered response counts its request. Same pinned epoch as the budget charges (#29).
     //
-    // BILLING OFF ⇒ NO METERING ROW (DECISION #42). With no `rate_card:` the node serves free as a
-    // failover/routing proxy and writes no per-model FinOps/usage row; the metering series is the
-    // billing-facing usage ledger, and #42 says an unbilled plane emits none. The switch is the card's
-    // presence, read through the host seam (`cost_pricing_enabled`); with a card PRESENT this is `true`
-    // and the row is recorded byte-for-byte as before, so every rate_card-present recording is
-    // unchanged. The budget/ledger accrual ABOVE is deliberately NOT gated: token-COUNT rate caps
-    // (a non-money limit, like `concurrent`) enforce off that accrual, and #42 keeps admission,
-    // concurrency and breaker on for an unbilled plane — only the money surface goes quiet.
-    if host.cost_pricing_enabled(&sink.cost) {
-        host.meter_series(
-            &sink.gov,
-            &sink.key.id,
-            &lane.model,
-            &lane.provider,
-            usage,
-            sink.charged_at,
-        );
-    }
+    // The plane hands its counts over UNCONDITIONALLY (DECISION #43: no branch, no knowledge of
+    // billing state). Whether the row is written — BILLING OFF ⇒ NO METERING ROW, #42 — is the
+    // kernel's question, answered in `meter_series_billed` over the card the sink pinned at the
+    // door; with a card PRESENT the row is recorded byte-for-byte as before. The budget/ledger
+    // accrual ABOVE is not switched at all: token-COUNT rate caps (a non-money limit, like
+    // `concurrent`) enforce off that accrual, and #42 keeps admission, concurrency and breaker on for
+    // an unbilled plane — only the money surface goes quiet.
+    busbar_kernel::plane_host::meter_series_billed(
+        &**host,
+        &sink.pin,
+        &sink.key.id,
+        &lane.model,
+        &lane.provider,
+        usage,
+        sink.charged_at,
+    );
 }
 
 /// `lane` is the SERVING lane - the model attribution for BOTH the token ledger and the metering
@@ -218,3 +232,7 @@ pub(crate) fn effective_reasoning(
 pub(crate) fn attempt_cap(ms: u64, remaining_secs: u64) -> std::time::Duration {
     std::time::Duration::from_millis(ms.min(remaining_secs.saturating_mul(1000).max(1)))
 }
+
+#[cfg(test)]
+#[path = "tests/rerank_search_units_tests.rs"]
+mod rerank_search_units_tests;

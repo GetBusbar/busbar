@@ -70,12 +70,20 @@ const MAX_HEADER_LIST_BYTES: u32 = 16 * 1024;
 /// the very first poll of the connection must still find something to fire. Firing it asks hyper
 /// for a graceful shutdown (a GOAWAY: no new calls, the ones in flight end with their own
 /// trailers), and the socket goes with the task.
-pub(crate) fn serve_connection(stream: crate::conn::LowerIo, state: Arc<ConnState>) {
+pub(crate) fn serve_connection(
+    stream: crate::conn::LowerIo,
+    state: Arc<ConnState>,
+    preface_timeout: std::time::Duration,
+) {
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
     state.arm_shutdown(stop_tx);
     let ending = state.clone();
     tokio::spawn(async move {
-        let io = TokioIo::new(stream);
+        // Bounded: see `crate::conn::PrefaceGuard` on why the preface-only budget has to live on
+        // the raw stream rather than around this whole future. The budget is the one the
+        // transport was built with — [`crate::conn::PREFACE_TIMEOUT`] unless a caller shortened
+        // it (a deployment, or a battery cell proving item 146 without a real ten-second wait).
+        let io = TokioIo::new(crate::conn::PrefaceGuard::new(stream, preface_timeout));
         let svc = hyper::service::service_fn(move |req: hyper::Request<Incoming>| {
             let state = state.clone();
             async move { Ok::<_, std::convert::Infallible>(handle_one_rpc(state, req).await) }

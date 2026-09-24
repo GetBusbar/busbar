@@ -136,7 +136,7 @@ impl EngineClient {
     /// (authorities, reaper_running) — the config-off zero-cost probe reads this.
     #[cfg(test)]
     pub(crate) fn pool_stats_for_tests(&self) -> (usize, bool) {
-        let pm = self.inner.pool.lock().expect("engine pool lock");
+        let pm = super::pool::lock_pool(&self.inner);
         (pm.map.len(), pm.reaper_running)
     }
 }

@@ -1610,11 +1610,13 @@ impl GovState {
                 return Ok(DerivedUsage {
                     // Fee derives from the BILLABLE (2xx-only) count; `requests` reports the
                     // admission count (the requests-limit truth).
-                    spend_cents: cost.derive_spend_cents(
-                        cell.model_views(),
-                        cell.billable_requests,
-                        include_request_fee,
-                    ),
+                    spend_cents: cost
+                        .derive_spend_cents(
+                            cell.model_views(),
+                            cell.billable_requests,
+                            include_request_fee,
+                        )
+                        .map_err(|e| money_refusal(bucket_id, &e))?,
                     tokens: cell.total_tokens(),
                     requests: cell.requests,
                 });
@@ -1622,14 +1624,16 @@ impl GovState {
         }
         let ledger = self.store.get_usage(bucket_id, window)?;
         Ok(DerivedUsage {
-            spend_cents: cost.derive_spend_cents(
-                ledger
-                    .models
-                    .iter()
-                    .map(|m| (m.model.as_str(), &m.usage_units)),
-                ledger.billable_requests,
-                include_request_fee,
-            ),
+            spend_cents: cost
+                .derive_spend_cents(
+                    ledger
+                        .models
+                        .iter()
+                        .map(|m| (m.model.as_str(), &m.usage_units)),
+                    ledger.billable_requests,
+                    include_request_fee,
+                )
+                .map_err(|e| money_refusal(bucket_id, &e))?,
             tokens: ledger.total_tokens(),
             requests: ledger.requests,
         })
@@ -1684,20 +1688,31 @@ impl GovState {
         let mut out = Vec::with_capacity(chain.len());
         for bucket in chain.iter() {
             let window = budget_window(bucket.window, now);
-            let spend_micros = {
+            let spend = {
                 let map = self.budget.read(bucket.bucket_id);
                 match map.get(bucket.bucket_id) {
                     Some(cell) if cell.window_start == window => {
                         cost.derive_spend_micros(cell.model_views(), cell.billable_requests, true)
                     }
-                    _ => 0,
+                    _ => Ok(0),
                 }
             };
-            let remaining_micros = bucket.budget_cap.map(|cap| {
-                cap.saturating_mul(10_000)
-                    .saturating_sub(spend_micros)
-                    .max(0)
-            });
+            // A REFUSED figure (#42: the card present and silent about a model or class the bucket
+            // holds; item 28: an overflow) is not a figure, and the projection has no error channel
+            // to carry it in. It reads FAIL-CLOSED: no headroom (`remaining_micros: Some(0)`), and a
+            // spend at the top of the range so a policy comparing spends ranks it last. It used to
+            // derive as the flat fee alone — full headroom for consumption nobody priced.
+            let (spend_micros, remaining_micros) = match spend {
+                Ok(spend_micros) => (
+                    spend_micros,
+                    bucket.budget_cap.map(|cap| {
+                        cap.saturating_mul(10_000)
+                            .saturating_sub(spend_micros)
+                            .max(0)
+                    }),
+                ),
+                Err(_) => (i64::MAX, Some(0)),
+            };
             out.push(busbar_api::BudgetBucketState {
                 bucket_id: bucket.bucket_id.to_string(),
                 budget_group: bucket.group_name.map(String::from),
@@ -1973,12 +1988,21 @@ impl GovState {
                                 true,
                             )
                         } else {
-                            0
+                            Ok(0)
                         },
                     ),
                     // stale or absent cell = fresh window = nothing used
-                    _ => (0, 0, 0, 0, 0, 0, 0),
+                    _ => (0, 0, 0, 0, 0, 0, Ok(0)),
                 };
+            // #42 AT THE DOOR (item 124): a spend the one function REFUSES — the card present and
+            // silent about a model or class this bucket holds, or an overflow — BLOCKS on the
+            // budget metric. This door used to drop an unpriced model's whole consumption
+            // (`if let Some(rate)`), so a model the card did not name ran uncapped on spend. A
+            // refusal is never downgraded: a cheaper pool is no answer to "this cannot be priced".
+            let (derived, refused) = match derived {
+                Ok(d) => (d, false),
+                Err(_) => (0, true),
+            };
             let blocked_metric = if bucket
                 .requests_cap
                 .is_some_and(|cap| requests.saturating_add(1) > cap)
@@ -2002,7 +2026,7 @@ impl GovState {
                 Some("tokens_cache_write")
             } else if bucket
                 .budget_cap
-                .is_some_and(|cap| derived >= cap || derived.saturating_add(fee) > cap)
+                .is_some_and(|cap| refused || derived >= cap || derived.saturating_add(fee) > cap)
             {
                 Some("budget")
             } else {
@@ -2021,7 +2045,7 @@ impl GovState {
                     pool: bucket.scope.map(|s| s.value.clone()),
                     // `on_exhaust` is declared on (and validated against) the BUDGET metric
                     // only; a requests/tokens block on the same bucket still blocks.
-                    downgrade_to: (metric == "budget")
+                    downgrade_to: (metric == "budget" && !refused)
                         .then(|| bucket.downgrade_to.map(|s| s.value.clone()))
                         .flatten(),
                     retry_after: super::window_end(bucket.window, now)
@@ -2377,4 +2401,14 @@ impl GovState {
 /// Non-`group:` ids are never in the set (a key bucket is uncapped by construction).
 fn still_enforces_a_cap(cost: &crate::cost::CostModel, bucket_id: &str) -> bool {
     cost.bucket_enforces_a_cap(bucket_id)
+}
+
+/// A money figure the one function REFUSED, carried out of a usage read through the read's own
+/// error channel (#42: *"a cost request FAILS if billing-on & unpriced"*). The read fails loudly
+/// rather than answering a figure nobody priced; the refusal is named in the text, which every
+/// caller already logs under its own diagnostic code.
+fn money_refusal(bucket_id: &str, e: &busbar_kernel_ledger::cost::MoneyError) -> StoreError {
+    StoreError(format!(
+        "the spend of bucket `{bucket_id}` cannot be priced: {e}"
+    ))
 }

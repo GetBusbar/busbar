@@ -201,13 +201,17 @@ const MAX_OPEN_TOOLS: usize = OPENAI_FAMILY_MAX_OPEN_TOOLS;
 /// that tier and carries the count across a cross-protocol hop. `None` when the nested field is
 /// absent (never a spurious `Some(0)`).
 ///
-/// Read through [`crate::usage_count::read_count_u64`], the one seam every money count in this crate
-/// goes through, so a float-spelled count is not silently recorded as zero.
-fn read_cache_write_tokens(usage_val: &serde_json::Value) -> Option<u64> {
-    usage_val
-        .get("prompt_tokens_details")
-        .and_then(|d| d.get("cache_write_tokens"))
-        .and_then(read_count_u64)
+/// Read through [`crate::usage_count::billed_count_opt`] (#42, item 133): a float-spelled count is
+/// the count, absent or `null` is `None`, and a present-but-UNREADABLE count is an
+/// [`crate::usage_count::UnreadableCount`] the caller turns into a refusal. The old read returned
+/// `None` for it, which priced the cache-write slice as nothing at all.
+fn read_cache_write_tokens(
+    usage_val: &serde_json::Value,
+) -> Result<Option<u64>, crate::usage_count::UnreadableCount> {
+    crate::usage_count::billed_count_opt(
+        usage_val.get("prompt_tokens_details"),
+        "cache_write_tokens",
+    )
 }
 
 /// Fallback `model` string stamped onto a cross-protocol OpenAI response when the egress backend

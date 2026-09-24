@@ -20,9 +20,10 @@
 
 use crate::mount::{open_governed, GovernedOpen, Ingress};
 use crate::runtime::metering::TurnMeter;
-use crate::runtime::{cap_nanos_from_buckets, EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
+use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
 use crate::testkit::fixture_host::FixtureHost;
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
+use busbar_kernel::plane_host::session_meter::cap_nanos_from_buckets;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

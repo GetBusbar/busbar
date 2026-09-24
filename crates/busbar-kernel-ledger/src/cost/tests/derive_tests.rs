@@ -5,7 +5,7 @@
 //! projection still reprices at read time. Quantities are the truth; the amount is derived.
 
 use super::*;
-use crate::cost::{derive_spend_cents, derive_spend_micros, LaneClass, RateCard};
+use crate::cost::{derive_spend_cents, derive_spend_micros, LaneClass, MoneyError, RateCard};
 
 /// With NO card, quantities derive to nothing and only the flat fee counts. This is the
 /// all-or-nothing switch in its off position.
@@ -15,7 +15,7 @@ fn an_absent_card_prices_quantities_at_zero() {
     let l = lines(&[(INPUT, 1_000_000), (OUTPUT, 1_000_000)]);
     assert_eq!(
         derive_spend_cents(&c, [("anything", l.as_slice())].into_iter(), 5, true),
-        15,
+        Ok(15),
         "quantities derive to nothing; five requests at three cents remain"
     );
 }
@@ -29,11 +29,11 @@ fn a_present_card_derives_integer_spend() {
     let l = lines(&[(INPUT, 1_000_000), (OUTPUT, 1_000_000)]);
     assert_eq!(
         derive_spend_cents(&c, [("gpt-5", l.as_slice())].into_iter(), 0, false),
-        1250
+        Ok(1250)
     );
     assert_eq!(
         derive_spend_micros(&c, [("gpt-5", l.as_slice())].into_iter(), 0, false),
-        12_500_000
+        Ok(12_500_000)
     );
 }
 
@@ -45,22 +45,25 @@ fn the_nano_scale_keeps_sub_micro_precision() {
     let l = lines(&[(INPUT, 8)]);
     assert_eq!(
         derive_spend_micros(&c, [("m", l.as_slice())].into_iter(), 0, false),
-        25
+        Ok(25)
     );
 }
 
-/// A lane a present card does not name is reported unpriced — the admission path refuses it — and
-/// derives at nothing on this path, because the only way a ledger row can name one is a card edit
-/// that landed after the row was written. The retroactive effect is the designed behaviour.
+/// A lane a present card does not name REFUSES (#42, items 25/31). This derivation used to SKIP the
+/// lane — a million tokens derived as nothing, "the designed behaviour" — which is the silent zero
+/// #42 confines to a card that is ABSENT. It is the one function now, and the one function refuses.
 #[test]
-fn an_unknown_lane_with_a_card_is_unpriced_and_derives_zero() {
+fn an_unknown_lane_with_a_card_is_unpriced_and_refuses() {
     let c = card("gpt-5", 1.0, 1.0, 0);
     assert!(c.lane_unpriced("mystery-lane"));
     assert!(!c.lane_unpriced("gpt-5"));
     let l = lines(&[(INPUT, 1_000_000)]);
     assert_eq!(
         derive_spend_cents(&c, [("mystery-lane", l.as_slice())].into_iter(), 0, false),
-        0
+        Err(MoneyError::LaneUnpriced {
+            card_seq: crate::cost::HistorySeq::OPENING,
+            lane: "mystery-lane".to_string(),
+        })
     );
 }
 
@@ -73,29 +76,29 @@ fn repricing_on_read_recomputes_the_derived_spend() {
     let fixed = card("m", 5.0, 0.0, 0);
     assert_eq!(
         derive_spend_cents(&wrong, [("m", l.as_slice())].into_iter(), 0, false),
-        1000
+        Ok(1000)
     );
     assert_eq!(
         derive_spend_cents(&fixed, [("m", l.as_slice())].into_iter(), 0, false),
-        500,
+        Ok(500),
         "the same quantities under a corrected rate halve on the next read"
     );
 }
 
-/// A cent total past the top of the signed range pins there. The wrapping cast this replaced would
-/// land negative, be floored to nothing, and derive an astronomical ledger as FREE — bypassing
-/// every budget cap it should have blocked.
+/// A total past the top of the range REFUSES (item 28). It used to pin at `i64::MAX` — never
+/// wrapping toward free, which was right, but billing a ceiling nobody consumed, which is a wrong
+/// bill wearing a right bill's clothes. Neither a wrap nor a pin: `Err(Overflow)`.
 #[test]
-fn the_derivation_saturates_and_never_wraps_toward_free() {
+fn the_derivation_refuses_an_overflow_and_never_pins_or_wraps() {
     let c = card("m", 1e15, 0.0, 0);
     let l = lines(&[(INPUT, u64::MAX)]);
     assert_eq!(
         derive_spend_cents(&c, [("m", l.as_slice())].into_iter(), 0, false),
-        i64::MAX
+        Err(MoneyError::Overflow)
     );
     assert_eq!(
         derive_spend_micros(&c, [("m", l.as_slice())].into_iter(), 0, false),
-        i64::MAX
+        Err(MoneyError::Overflow)
     );
 }
 
@@ -112,7 +115,7 @@ fn a_four_class_card_prices_each_class_against_its_own_rate() {
     ]);
     assert_eq!(
         derive_spend_cents(&c, [("quad", l.as_slice())].into_iter(), 0, false),
-        1500
+        Ok(1500)
     );
 }
 
@@ -125,9 +128,9 @@ fn the_cent_derivation_truncates_toward_zero() {
         let l = lines(&[(INPUT, tokens)]);
         derive_spend_cents(&c, [("m", l.as_slice())].into_iter(), 0, false)
     };
-    assert_eq!(at(19_999), 1);
-    assert_eq!(at(20_000), 2);
-    assert_eq!(at(20_001), 2);
+    assert_eq!(at(19_999), Ok(1));
+    assert_eq!(at(20_000), Ok(2));
+    assert_eq!(at(20_001), Ok(2));
 }
 
 /// Two lanes billed into ONE bucket accumulate nano-units first and divide to cents ONCE. Two
@@ -146,7 +149,7 @@ fn sub_cent_contributions_across_lanes_sum_before_flooring() {
     let lb = lines(&[(INPUT, 1_000)]);
     assert_eq!(
         derive_spend_cents(&c, [("a", la.as_slice())].into_iter(), 0, false),
-        0,
+        Ok(0),
         "one half-cent lane alone floors to nothing"
     );
     assert_eq!(
@@ -156,7 +159,7 @@ fn sub_cent_contributions_across_lanes_sum_before_flooring() {
             0,
             false
         ),
-        1,
+        Ok(1),
         "two half-cent lanes sum to a whole cent before the single divide"
     );
 }
@@ -174,14 +177,15 @@ fn an_explicit_zero_rate_lane_derives_zero() {
     ]);
     assert_eq!(
         derive_spend_cents(&c, [("freebie", l.as_slice())].into_iter(), 0, false),
-        0
+        Ok(0)
     );
 }
 
-/// A PARTIAL card: only the named lane contributes, the unnamed one derives nothing, and neither
-/// panics nor borrows the other's rate.
+/// A PARTIAL card: the named lane prices, and the unnamed one REFUSES the whole derivation (#42) —
+/// it used to derive at nothing, so nine million tokens vanished from the bucket's spend. Neither
+/// lane borrows the other's rate, and nothing panics.
 #[test]
-fn a_partial_card_prices_the_known_lane_and_zeroes_the_missing_one() {
+fn a_partial_card_prices_the_known_lane_and_refuses_the_missing_one() {
     let c = card("priced", 2.0, 0.0, 0);
     assert!(!c.lane_unpriced("priced"));
     assert!(c.lane_unpriced("absent"));
@@ -194,24 +198,32 @@ fn a_partial_card_prices_the_known_lane_and_zeroes_the_missing_one() {
             0,
             false
         ),
-        200
+        Err(MoneyError::LaneUnpriced {
+            card_seq: crate::cost::HistorySeq::OPENING,
+            lane: "absent".to_string(),
+        })
+    );
+    assert_eq!(
+        derive_spend_cents(&c, [("priced", known.as_slice())].into_iter(), 0, false),
+        Ok(200),
+        "the named lane alone prices as it always did"
     );
 }
 
-/// The flat fee is the fee times the billable request count, added only when asked for. Both the
-/// multiply and the add pin at the top of the range: an enormous request count can never wrap the
-/// fee negative, which the floor would then turn into a free bucket.
+/// The flat fee is the fee times the billable request count, added only when asked for. A product
+/// past the range REFUSES (item 28): it can never wrap the fee negative into a free bucket, and it
+/// no longer pins a ceiling nobody was charged either.
 #[test]
-fn the_flat_fee_saturates_and_is_gated_by_the_flag() {
+fn the_flat_fee_refuses_an_overflow_and_is_gated_by_the_flag() {
     let c = RateCard::absent(i64::MAX);
     let l = lines(&[]);
     assert_eq!(
         derive_spend_cents(&c, [("m", l.as_slice())].into_iter(), u64::MAX, true),
-        i64::MAX
+        Err(MoneyError::Overflow)
     );
     assert_eq!(
         derive_spend_cents(&c, [("m", l.as_slice())].into_iter(), u64::MAX, false),
-        0,
+        Ok(0),
         "with the fee excluded it contributes nothing"
     );
 }
@@ -225,7 +237,7 @@ fn a_negative_fee_can_never_credit_a_bucket() {
     assert_eq!(c.fee(), 0);
     assert_eq!(
         derive_spend_cents(&c, [("m", l.as_slice())].into_iter(), 100, true),
-        0
+        Ok(0)
     );
 }
 
@@ -237,15 +249,15 @@ fn the_micro_projection_fee_is_ten_thousand_times_the_cent_fee() {
     let l = lines(&[]);
     assert_eq!(
         derive_spend_micros(&c, [("m", l.as_slice())].into_iter(), 5, true),
-        150_000
+        Ok(150_000)
     );
     assert_eq!(
         derive_spend_cents(&c, [("m", l.as_slice())].into_iter(), 5, true),
-        15
+        Ok(15)
     );
     assert_eq!(
         derive_spend_micros(&c, [("m", l.as_slice())].into_iter(), 5, false),
-        0
+        Ok(0)
     );
 }
 
@@ -259,6 +271,6 @@ fn the_derived_spend_lands_exactly_on_an_integer_cap() {
         let l = lines(&[(INPUT, tokens)]);
         derive_spend_cents(&c, [("m", l.as_slice())].into_iter(), 0, false)
     };
-    assert_eq!(at(1_000_000), 100);
-    assert_eq!(at(1_010_000), 101);
+    assert_eq!(at(1_000_000), Ok(100));
+    assert_eq!(at(1_010_000), Ok(101));
 }

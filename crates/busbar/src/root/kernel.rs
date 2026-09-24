@@ -832,6 +832,14 @@ impl ProductionUnits {
         //
         // Until this line the three verbs resolved and refused: a node served its own chain to
         // nobody, which makes a signed chain a claim rather than evidence.
+        // A sealed rate-card amendment is recorded on this SAME book's journal, with its figures,
+        // before it touches the history (item 30). Without this binding `amend_rate_history`
+        // refuses: the only trail it used to leave was the legacy admin ring, a volatile thousand
+        // entries behind a seam that does nothing.
+        units.admin.amendments = Some(Arc::new(crate::root::units_admin::AmendmentJournal::new(
+            Arc::clone(&durability),
+            kernel.durability_token(),
+        )));
         units.admin.audit = Some(Arc::new(crate::root::units_admin::NodeAudit::new(
             durability,
         )));

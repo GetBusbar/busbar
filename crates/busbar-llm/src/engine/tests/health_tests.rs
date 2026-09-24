@@ -682,3 +682,41 @@ fn a_late_tick_write_does_not_revert_a_newer_generations_clamp() {
         "and the late prober must adopt it, not its own stale value"
     );
 }
+
+/// Item 147 (sweep 2): a per-lane `health.timeout_secs` the clock cannot represent (config
+/// validation refuses it, but the prober must never depend on that) used to panic the probe at
+/// `Instant::now() + timeout`, killing the prober task. The probe now runs to its classification:
+/// a 401 still parks the lane hard-down.
+#[tokio::test]
+async fn test_probe_with_an_unrepresentable_timeout_still_classifies() {
+    crate::testkit::install_test_seams();
+    let state = Arc::new(MockServerState::new());
+    state.push(MockResponse::Auth {
+        status: StatusCode::UNAUTHORIZED,
+    });
+    let server = MockServer::new(state).await;
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "claude",
+                crate::proto_codec::PROTO_ANTHROPIC,
+                &server.base_url(),
+            )
+            .api_key("sk-test")
+            .health(health_active()),
+        )
+        .pool("p", &[(0, 1)])
+        .build();
+    probe_lane(
+        busbar_kernel::test_support::engine_host(&app).as_ref(),
+        0,
+        Duration::from_secs(1u64 << 63),
+    )
+    .await;
+    assert!(
+        matches!(app.store.breaker_state(0), BreakerState::Open { .. }),
+        "the probe must complete and classify the 401, got {:?}",
+        app.store.breaker_state(0)
+    );
+    server.shutdown().await;
+}

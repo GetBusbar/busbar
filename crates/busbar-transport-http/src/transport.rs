@@ -6,6 +6,7 @@
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use busbar_contract::transport::wire::ArrivalRecord;
 use busbar_contract::transport::wire::CloseReason;
@@ -272,7 +273,18 @@ impl Transport for HttpTransport {
                     let req = builder
                         .body(Full::new(Bytes::from(raw.body)))
                         .map_err(|_| TransportError::Framing)?;
-                    let resp = client.request(req).await.map_err(|e| map_egress_err(&e))?;
+                    // TCP connect and HTTP/2 keepalive are both bounded on the client this dials
+                    // through; the wait for the response HEAD itself was not. An HTTP/1.1 upstream
+                    // that accepts the connection and then never answers held this future open
+                    // forever — a stalled response is now cut at the operator's own configured
+                    // ceiling, the same one this instance was built with.
+                    let resp = tokio::time::timeout(
+                        Duration::from_secs(self.request_timeout_secs),
+                        client.request(req),
+                    )
+                    .await
+                    .map_err(|_| TransportError::Timeout)?
+                    .map_err(|e| map_egress_err(&e))?;
                     let status = resp.status().as_u16();
                     // Read against the instant the answer arrived: an HTTP-date `Retry-After`
                     // means "until then", and only this layer still holds both the header and the

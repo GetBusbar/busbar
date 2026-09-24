@@ -5,8 +5,8 @@
 //! (rerank models via `InvokeModel`) — the two protocols that ship a rerank surface. The wire
 //! shapes are near-identical (query + documents in, index + relevance_score out), so the IR is a
 //! thin normalization; OpenAI/Anthropic/Gemini/Responses have no surface and 404 via the standard
-//! no-handler rule. Search-unit metered → `Billing::Flat` (Cohere bills per search unit, carried
-//! for the response echo; the pricing engine lands in 1.3).
+//! no-handler rule. Search-unit metered → `Billing::Counted` (Cohere bills per search unit; the
+//! count is ledgered as the open class `search_units` and priced by the card, item 134).
 
 use busbar_substrate_values::billing::Billing;
 use busbar_substrate_values::lossless::SourceScopedExtra;
@@ -85,6 +85,10 @@ pub struct RerankResult {
     pub document: Option<String>,
 }
 
+/// The meter class a rerank's billed search units are ledgered and priced under — the key an
+/// operator writes under `rate_card.<model>.units` (the provider's own field name).
+pub const SEARCH_UNITS_CLASS: &str = "search_units";
+
 /// Rerank response IR.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct RerankResp {
@@ -95,10 +99,19 @@ pub struct RerankResp {
 }
 
 impl RerankResp {
-    /// Billing projection: no token meter on either wire; flat until the 1.3 pricing engine
-    /// prices search units.
+    /// Billing projection: no token meter on either wire. The SEARCH UNITS Cohere billed
+    /// (`meta.billed_units.search_units`, read exactly by the response reader) are the price's
+    /// quantity, so they reach it as the open class [`SEARCH_UNITS_CLASS`] (item 134) — a
+    /// 5,000-document rerank no longer bills like a 1-document one. A response that reports none
+    /// (Bedrock's wire, or a Cohere body without `billed_units`) stays the flat marker.
     pub fn billing(&self) -> Option<Billing> {
-        Some(Billing::Flat)
+        Some(match self.search_units {
+            Some(count) => Billing::Counted {
+                class: SEARCH_UNITS_CLASS.to_string(),
+                count,
+            },
+            None => Billing::Flat,
+        })
     }
 }
 

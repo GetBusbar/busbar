@@ -1428,6 +1428,50 @@ fn vocabulary_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<
         ],
     ));
 
+    // ITEM 130: THE HOLD CELL'S TAKE IS COUNTED, NOT ONLY CONFINED. Confinement said where the
+    // literal may appear and nothing about how often, so a fourth take written INSIDE teller.rs sat
+    // in its home and the row stayed PASS; and the sweep took through a named grant the literal
+    // cannot see, so the "three" the spec states was two. Two plants, two runs, because the two
+    // directions would cancel in one: a fourth site, and the sweep's site respelled out of sight.
+    let teller = "crates/busbar-kernel/src/teller.rs";
+    if let Ok(basetext) = cx.read(teller) {
+        let mut ov = on(base);
+        ov.set(
+            teller,
+            format!(
+                "{basetext}\npub fn planted_fourth_take(cell: &HoldCell, seal: &KernelSeal) {{\n    \
+                 let _ = cell.take(&Grant::<Exit>::mint(seal));\n}}\n"
+            ),
+        );
+        r.push(prove_red(
+            cx,
+            gate,
+            "a fourth HoldCell::take is written inside the kernel's own teller",
+            &["seal-sites"],
+            ov,
+            &["has 4 site(s) inside its home, the spec says exactly 3"],
+        ));
+    }
+    let tick = "crates/busbar-kernel/src/tick.rs";
+    if let Ok(basetext) = cx.read(tick) {
+        let mut ov = on(base);
+        ov.set(
+            tick,
+            basetext.replace(
+                "slot.cell().take(&Grant::<Exit>::mint(kernel.seal()))",
+                "slot.cell().take(&exit)",
+            ),
+        );
+        r.push(prove_red(
+            cx,
+            gate,
+            "the sweep takes through a named grant the take literal cannot see",
+            &["seal-sites"],
+            ov,
+            &["has 2 site(s) inside its home, the spec says exactly 3"],
+        ));
+    }
+
     // ITEMS 191/192: A SEALED TRAIT WHOSE DECLARATION MOVED. Only the traits that ARE sealed are
     // renamed, so the unsealed one is still judged and the row is not vacuous: the rule used to
     // drop the vanished ones from the denominator and pass on what was left.

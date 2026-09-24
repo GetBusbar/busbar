@@ -92,8 +92,8 @@ pub const SEAL_SITES: &[LintRule] = &[
         // that finds every take site is the exit token the take demands.
         symbol: "take(&Grant::<Exit>::mint(",
         scope: LintScope::ConfinedTo("kernel/src"),
-        because: "there are three take sites -- the exit path, the sweep and the tick -- all in \
-                  the kernel, and no fourth anywhere",
+        because: "there are three take sites -- the exit path and a child unit's end in the \
+                  teller, and the sweep in the tick -- all in the kernel, and no fourth anywhere",
     },
 ];
 

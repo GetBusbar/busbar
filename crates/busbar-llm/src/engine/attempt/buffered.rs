@@ -66,9 +66,13 @@ fn token_usage_of(
     use busbar_substrate_values::billing::Billing;
     match usage {
         Some(Billing::Tokens(t)) => Some(t.clone()),
+        // A COUNTED unit (a rerank's search units, item 134) is not a token figure either, and is
+        // NOT dropped: `record_resp_usage`, reading the same `usage` right after the report, ledgers
+        // it as its open class, where the card prices it.
         Some(Billing::Duration { .. })
         | Some(Billing::Characters { .. })
         | Some(Billing::Images { .. })
+        | Some(Billing::Counted { .. })
         | Some(Billing::Flat)
         | None => None,
     }
@@ -308,7 +312,6 @@ fn try_deliver_opaque(
             tap.report(TapReport {
                 lane: i,
                 usage: token_usage_of(&usage),
-                billing_failed: false,
                 finish: TapFinish::Complete,
             });
             record_resp_usage(
@@ -324,14 +327,15 @@ fn try_deliver_opaque(
 }
 
 /// Every exit that is NOT a delivery is a transfer that FAILED after the upstream's 2xx headers,
-/// and every one bills zero. The client is handed an ingress-native error and no completion at all,
+/// and every one bills zero — because nothing of it was delivered, so no usage is reported.
+/// (A cut STREAM bills what it streamed, #62; a buffered transfer streams nothing until it is
+/// whole.) The client is handed an ingress-native error and no completion at all,
 /// so the end is `Error` rather than `Partial`: nothing of the answer was ever relayed. Named once
 /// so the failure exits report one end rather than several spellings of it.
 fn failed_transfer(i: usize) -> TapReport {
     TapReport {
         lane: i,
         usage: None,
-        billing_failed: true,
         finish: TapFinish::Error,
     }
 }
@@ -546,7 +550,6 @@ fn deliver_json(
         tap.report(TapReport {
             lane: i,
             usage: token_usage_of(&usage),
-            billing_failed: false,
             finish: TapFinish::Complete,
         });
         record_resp_usage(
@@ -574,7 +577,6 @@ fn deliver_json(
             tap.report(TapReport {
                 lane: i,
                 usage: None,
-                billing_failed: true,
                 finish: TapFinish::Error,
             });
             Some(ingress_error(

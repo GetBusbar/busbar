@@ -82,7 +82,15 @@
 //! the child would be forgotten the moment the child was dropped, which is the moment it is always
 //! reached — so the breaker would reset itself on exactly the event it exists to count.
 
-use super::jsonrpc::OutboundRequest;
+// THE HANDSHAKE'S ID IS `super::jsonrpc`'S, not a second copy declared here.
+//
+// It was the literal `0` in this file, and a dispatch's first round is also `0`, so a spare
+// `initialize` response left in a child's pipe — a child that answers twice, or answers a handshake
+// whose reader went away — was read by the next `tools/call` and CORRELATED to it: `parse_response`
+// compared one id against one id and they matched, so the handshake's result was served to a caller
+// as their tool's result. The two ids now live in one place, in ranges that cannot meet by
+// construction; see the id-space block in `super::jsonrpc`.
+use super::jsonrpc::{OutboundRequest, HANDSHAKE_REQUEST_ID};
 use super::wire::{McpWire, TransportError, TransportResponse, WireLeg};
 use std::collections::BTreeMap;
 use std::process::Stdio;
@@ -311,13 +319,8 @@ impl Supervisor {
 /// anything that could matter as a cost.
 const MAX_INTERLEAVED_MESSAGES: u32 = 256;
 
-/// The JSON-RPC id busbar puts on its handshake.
-///
-/// A constant, and DISTINCT from any dispatch id, so an answer to the handshake can never correlate
-/// to a caller's call. It does not need to be unique across children: correlation is per exchange
-/// (see `super::jsonrpc::parse_response`), and there is no table of pending ids for two children to
-/// collide in.
-const HANDSHAKE_REQUEST_ID: u64 = 0;
+// THE JSON-RPC ID BUSBAR PUTS ON ITS HANDSHAKE is imported, not declared: see the file's import
+// block, and the id-space block in `super::jsonrpc` for why the two ranges cannot meet.
 
 /// EVERYTHING THE INBOUND HALF NEEDS about one leg: whose child this is, what authority the operator
 /// granted it, and where an accepted refresh trigger goes.
@@ -645,9 +648,11 @@ impl StdioChild {
         timeout: Duration,
     ) -> Result<(), String> {
         use super::verb::UpstreamVerb;
-        // Its own id, distinct from any dispatch's, so an answer to the handshake can never be
-        // correlated to a caller's call — see `super::jsonrpc::parse_response` on why correlation is
-        // per-exchange and never a table of pending ids.
+        // Its own id, DISJOINT BY CONSTRUCTION from every dispatch's (see the id-space block in
+        // `super::jsonrpc`), so an answer to the handshake can never be correlated to a caller's
+        // call — which matters most on THIS carrier, where the handshake and every later dispatch
+        // travel down one byte stream and `parse_response`'s one-id-against-one-id check is the
+        // only thing that tells them apart.
         let request = UpstreamVerb::Initialize.build("", HANDSHAKE_REQUEST_ID, None);
         let answer = self.call(&request.body, timeout, policy).await?;
         match super::jsonrpc::parse_response(&answer, HANDSHAKE_REQUEST_ID) {

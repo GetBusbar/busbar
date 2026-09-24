@@ -285,6 +285,7 @@ fn billed_m0() -> busbar_kernel::cost::CostModel {
                 output_utok: 6.0,
                 cache_read_utok: 0.0,
                 cache_write_utok: 0.0,
+                ..Default::default()
             },
         )])),
         0,
@@ -336,8 +337,7 @@ async fn run_case(egress: &str, shape: Upstream) {
 
     let charged_at = busbar_kernel::store::now();
     let sink = UsageSink {
-        gov: host.governance().expect("governance is configured"),
-        cost: host.cost(),
+        pin: host.meter_pin().expect("governance is configured"),
         key: Arc::new(key.clone()),
         pool: Arc::from("p"),
         charged_at,

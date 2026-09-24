@@ -54,11 +54,14 @@ fn now() -> u64 {
 /// metering rows by `(key_id, bucket, model, provider, priced_from_ms)`. Every map is BOUNDED (see
 /// `MAX_RETENTION_SECS`); the whole thing dies with the process, which is the point of the
 /// `durable_path` mode next door.
+/// A metering row's key: (key_id, bucket, model, provider, priced_from_ms).
+type MeteringKey = (String, u64, String, String, u64);
+
 #[derive(Default)]
 pub(crate) struct RamStore {
     keys: RwLock<HashMap<String, VirtualKey>>,
     usage: RwLock<HashMap<(String, u64), UsageLedger>>,
-    metering: RwLock<HashMap<(String, u64, String, String, u64), MeteringRow>>,
+    metering: RwLock<HashMap<MeteringKey, MeteringRow>>,
     keys_sweep_ticker: AtomicU64,
     usage_sweep_ticker: AtomicU64,
     metering_sweep_ticker: AtomicU64,
@@ -278,5 +281,5 @@ guard!(keys_write, write, RwLockWriteGuard, HashMap<String, VirtualKey>);
 guard!(keys_read, read, RwLockReadGuard, HashMap<String, VirtualKey>);
 guard!(usage_write, write, RwLockWriteGuard, HashMap<(String, u64), UsageLedger>);
 guard!(usage_read, read, RwLockReadGuard, HashMap<(String, u64), UsageLedger>);
-guard!(metering_write, write, RwLockWriteGuard, HashMap<(String, u64, String, String, u64), MeteringRow>);
-guard!(metering_read, read, RwLockReadGuard, HashMap<(String, u64, String, String, u64), MeteringRow>);
+guard!(metering_write, write, RwLockWriteGuard, HashMap<MeteringKey, MeteringRow>);
+guard!(metering_read, read, RwLockReadGuard, HashMap<MeteringKey, MeteringRow>);

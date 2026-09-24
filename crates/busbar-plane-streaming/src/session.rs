@@ -31,8 +31,10 @@ pub enum Pending {
 
 /// The plane's own bookkeeping for the current, still-open turn.
 ///
-/// Reset to zero every time a turn closes (see `crate::plane`'s `decode_response`), because these
-/// are the quantities [`busbar_voice_codec::ir::usage::IrDuplexUsage`] does not carry and this plane must
+/// Taken (and so reset to zero) every time a turn is ANSWERED — a usage report, an upstream error or
+/// a carrier `stop`, each of which states them on its own facts — and CARRIED, not reset, when a
+/// barge-in supersedes the open turn, because a superseded turn is never answered and nothing else
+/// would ever state what it served. These are the quantities [`busbar_voice_codec::ir::usage::IrDuplexUsage`] does not carry and this plane must
 /// derive itself: `audio_seconds_in` from the byte counts of ingress audio frames, `tool_calls` from
 /// counting `IrDuplexTool::CallOpen` events as they are decoded.
 #[derive(Debug, Clone, Copy, Default)]

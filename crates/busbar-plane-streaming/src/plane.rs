@@ -1034,11 +1034,18 @@ fn decode_twilio_frame<'u>(
             reason: DiscardCode::Unsupported,
         }),
         twilio::TwilioEvent::Stop => {
+            // The call ended mid-turn. The open turn's counters are the only record of the audio the
+            // caller spoke and the tool calls the upstream opened since the last usage report, and
+            // closing the turn is what takes them — so they travel on the ending, under the same keys
+            // `meter` reads off a terminal answer. Taking them and dropping them metered every
+            // hung-up turn at zero: the ledger said nothing happened where audio was served.
             let for_ = state.turn_correlation;
-            let _ = state.close_turn();
+            let counters = state.close_turn();
+            let mut facts = Facts::new();
+            set_counter_facts(&mut facts, counters)?;
             Ok(Ingress::Close {
                 for_,
-                facts: Box::new(Facts::new()),
+                facts: Box::new(facts),
             })
         }
     }
@@ -1126,8 +1133,14 @@ fn open_or_relay<'u>(
             FactValue::Int(i64::try_from(ms).unwrap_or(i64::MAX)),
         );
         // The interrupted turn ends here; the frame that interrupted it opens the next one, and
-        // carries the fact that says which one it took over from.
-        let _ = state.close_turn();
+        // carries the fact that says which one it took over from. The interrupted turn is superseded,
+        // not answered: no usage report ever meters it, so its counters — the audio the caller
+        // already spoke and the tool calls the upstream already opened — are CARRIED onto the turn
+        // that takes over rather than reset with the correlation. Resetting them here dropped every
+        // barged-in second and call from the ledger; carried, each is emitted exactly once, on
+        // whichever terminal (usage, error or `stop`) next closes a turn on this state.
+        let carried = state.close_turn();
+        state.turn = carried;
     }
     if !state.turn_open {
         // The opening frame becomes the unit's own egress body rather than travelling through the
@@ -1160,6 +1173,29 @@ fn open_or_relay<'u>(
             facts: Box::new(facts),
         })
     }
+}
+
+/// Write a closed turn's own counters under the keys `meter` reads them back from.
+///
+/// One writer for every ending that takes the counters out of the state — a usage report, an upstream
+/// error and a carrier `stop` — so no ending can take them and forget to say what they were.
+fn set_counter_facts(
+    facts: &mut Facts<'_>,
+    counters: crate::session::TurnCounters,
+) -> Result<(), Decode> {
+    facts
+        .set(
+            meta::FACT_AUDIO_MS_IN,
+            FactValue::Int(i64::try_from(counters.audio_ms_in).unwrap_or(i64::MAX)),
+        )
+        .map_err(|_| Decode::Oversize)?;
+    facts
+        .set(
+            meta::FACT_TOOL_CALLS,
+            FactValue::Int(i64::try_from(counters.tool_calls).unwrap_or(i64::MAX)),
+        )
+        .map_err(|_| Decode::Oversize)?;
+    Ok(())
 }
 
 /// Turn one decoded server→client IR event into a `Progress` answer, rendering the client-shaped
@@ -1405,18 +1441,7 @@ fn progress_from_server_event<'u>(
             facts
                 .set(meta::FACT_ERROR_MESSAGE, FactValue::Str(message_arena))
                 .map_err(|_| Decode::Oversize)?;
-            facts
-                .set(
-                    meta::FACT_AUDIO_MS_IN,
-                    FactValue::Int(i64::try_from(counters.audio_ms_in).unwrap_or(i64::MAX)),
-                )
-                .map_err(|_| Decode::Oversize)?;
-            facts
-                .set(
-                    meta::FACT_TOOL_CALLS,
-                    FactValue::Int(i64::try_from(counters.tool_calls).unwrap_or(i64::MAX)),
-                )
-                .map_err(|_| Decode::Oversize)?;
+            set_counter_facts(&mut facts, counters)?;
             Ok(Progress::Terminal {
                 for_,
                 r: Box::new(Response {

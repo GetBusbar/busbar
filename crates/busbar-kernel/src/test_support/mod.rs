@@ -15,21 +15,6 @@
 
 //! In-crate mock-upstream test harness.
 
-/// A data-plane `AuthMiddleware` whose chain is `[keys]` — the built-in signed-key verifier. Since
-/// 1.5.2 virtual-key ENFORCEMENT is driven by the chain shape, not the admin token, so any e2e
-/// fixture that mints a vkey and expects it to authenticate must run `keys` in the chain. Used by
-/// the `minimal_app()`-style governed fixtures (which set `inner.auth = keys_chain_auth()`) and,
-/// via `TestApp::keys_chain()`, by the builder fixtures.
-pub fn keys_chain_auth() -> std::sync::Arc<crate::auth::AuthMiddleware> {
-    let cfg = crate::config::AuthCfg {
-        chain: vec![crate::config::AuthChainEntry::bare(
-            crate::config::KEYS_MODULE,
-        )],
-        ..crate::config::AuthCfg::default_none()
-    };
-    std::sync::Arc::new(crate::auth::AuthMiddleware::new_builtin(&cfg))
-}
-
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Mutex;
@@ -941,10 +926,6 @@ pub struct TestApp {
     /// naming a plane-typed config section. Resolving at build time (not in the test-kit) keeps the
     /// resolution reading the same registry/env the fixture was given, regardless of builder order.
     container_hooks: PlaneContainerHooks,
-    /// POST-BUILD hooks a plane's test-kit registers to run against the finished `App` (e.g. the MCP
-    /// plane's durable-demotion replay, which names `mcp::demotion` and so cannot live in core).
-    #[allow(clippy::type_complexity)]
-    post_build: Vec<Box<dyn FnOnce(&std::sync::Arc<crate::state::App>)>>,
     /// TYPE-ERASED per-plane accumulator scratch. A plane's test-kit stashes its own builder state here
     /// (keyed by plane key) across the fluent chain — `.mcp(cfg)`, `.mcp_server(def)`, … each mutate
     /// ONE `McpScratch` — so core never names the plane's config types. Downcast back by the test-kit
@@ -953,7 +934,7 @@ pub struct TestApp {
     /// PER-PLANE FINALIZERS run at the TOP of `build()`. Each is registered ONCE by a plane's test-kit
     /// (via [`TestApp::register_plane_finalizer`]); it reads its accumulated [`plane_scratch`] and
     /// drives the neutral install seams (`install_plane_runtime`, `mount_plane`/`admit_plane`,
-    /// `set_container_hooks`, `set_plane_defs_any`, `on_built`). This is the doorway that keeps the
+    /// `set_container_hooks`, `set_plane_defs_any`). This is the doorway that keeps the
     /// fluent `.mcp(...).mcp_server(...).build()` call shape working while the runtime/resource
     /// construction that NAMES plane types lives entirely in the plane crate's test-kit.
     #[allow(clippy::type_complexity)]
@@ -1026,7 +1007,6 @@ impl TestApp {
             plane_dispatch: crate::plane::PlaneDispatch::default(),
             plane_defs_any: std::collections::BTreeMap::new(),
             container_hooks: std::collections::BTreeMap::new(),
-            post_build: Vec::new(),
             plane_scratch: std::collections::HashMap::new(),
             plane_finalizers: Vec::new(),
         }
@@ -1113,18 +1093,6 @@ impl TestApp {
         defs: std::sync::Arc<dyn std::any::Any + Send + Sync>,
     ) -> &mut Self {
         self.plane_defs_any.insert(plane_key, defs);
-        self
-    }
-
-    /// NEUTRAL POST-BUILD SEAM — register a closure to run against the finished `App`. A plane's
-    /// test-kit uses this for steps that name plane types (e.g. the MCP plane's durable-demotion
-    /// replay), keeping them out of core's `build()`.
-    #[allow(clippy::type_complexity)]
-    pub fn on_built(
-        &mut self,
-        f: Box<dyn FnOnce(&std::sync::Arc<crate::state::App>)>,
-    ) -> &mut Self {
-        self.post_build.push(f);
         self
     }
 
@@ -2003,18 +1971,12 @@ impl TestApp {
         app.versions
             .record(0, "system", "boot", &app.hook_registry, &app.global_hooks);
         // Mirror main's durable-MCP-trust boot block: attach the plane sinks BEFORE the app is handed
-        // to a caller. The MCP-specific demotion REPLAY that follows sink-attach in production is
-        // registered by the MCP test-kit as a `post_build` hook (it names `mcp::demotion`), run below.
+        // to a caller.
         if let Some(durable) = mcp_durable_store {
             // Narrowed to the plane surface exactly as boot does — these are plane sinks.
             let plane_store = crate::plane::store::PlaneStoreView::narrow(durable);
             app.spent_token_ledger.set_sink(plane_store.clone());
             app.demotion_record.set_sink(plane_store);
-        }
-        // Run each plane test-kit's POST-BUILD hooks against the finished App (e.g. the MCP plane's
-        // durable-demotion replay), the doorway for steps that name plane types without core doing so.
-        for f in self.post_build.drain(..) {
-            f(&app);
         }
         // Register the process-wide admin `audit` seam stream ONCE (no-sink), the way the call/task
         // streams' front-door harnesses do. Production boots this through `register_and_migrate`; the

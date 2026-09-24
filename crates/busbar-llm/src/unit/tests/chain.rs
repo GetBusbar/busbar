@@ -10,8 +10,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 
 use busbar_contract::caps::{
-    Admission, Admittance, Approve, Audit, Authenticate, Consumption, Dial, Grant, KernelSeal,
-    OpClassId, Outcome, Pass, PrincipalId, Route, VerifiedDestination, Verify,
+    Approve, Audit, Authenticate, Consumption, Dial, Grant, KernelSeal, OpClassId, Outcome, Pass,
+    PrincipalId, Route, VerifiedDestination, Verify,
 };
 use busbar_kernel::plane_host::EngineTablesView;
 use busbar_kernel::proxy::reqlog::REQUESTS;
@@ -314,6 +314,7 @@ async fn rig_inner(fixture: Fixture, billed: bool) -> Rig {
             output_utok: 0.0,
             cache_read_utok: 0.0,
             cache_write_utok: 0.0,
+            ..Default::default()
         },
     )]);
     let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(
@@ -641,9 +642,9 @@ struct Metering {
     fee_count: u32,
     refund: bool,
     /// What the METER step was bound to, as the Route step handed it over: the serving lane, the
-    /// reported split, and whether those figures are evidence rather than a charge. Empty while
-    /// the answer was still in flight when the step ran, which is every stream.
-    bound: (Option<usize>, Option<(u64, u64)>, bool),
+    /// reported split, which is the charge on every end (#62). Empty while the answer was still in
+    /// flight when the step ran, which is every stream.
+    bound: (Option<usize>, Option<(u64, u64)>),
     /// How the AUDIT step sealed the end, at the moment it really runs.
     finish: Option<busbar_contract::FinishClass>,
     /// What the walk's tap reported, read AFTER the body was drained — which for a stream is the
@@ -659,7 +660,7 @@ impl Metering {
             posted_here: false,
             fee_count: 0,
             refund: false,
-            bound: (None, None, false),
+            bound: (None, None),
             finish: None,
             tap: None,
         }
@@ -861,8 +862,6 @@ async fn drive(
 
     // ---- STEP 4, ADMIT ----------------------------------------------------------------------
     let admitted = admit::admit(
-        &Pass::mint(seal),
-        &Grant::<Admittance>::mint(seal),
         &admit::AdmitCtx {
             host,
             gov,
@@ -870,7 +869,6 @@ async fn drive(
             destination: &model,
             charged_at,
         },
-        &principal,
         &destinations,
     );
     let charged = admitted.charged;
@@ -883,7 +881,7 @@ async fn drive(
     // the Audit step — and the unit that was turned away has exactly one link on its chain, named
     // with the pool it asked for.
     if let Some(resp) = admitted.refusal {
-        let _ = admitted.decision;
+        let _ = admitted.verdict;
         return audit::audit_refused(
             &Pass::mint(seal),
             &audit_ctx(host, gov, &model, started, charged_at),
@@ -892,12 +890,11 @@ async fn drive(
         .response
         .into_response();
     }
-    let hold = match admitted.decision.into_result(seal) {
-        Ok(Admission::Own(hold)) => Some(hold),
-        Ok(Admission::Accrual(_)) => panic!("a client unit holds its own admission"),
-        Ok(Admission::ZeroHold) => None,
-        Err(_) => unreachable!("a refusal carries its rendered bytes and returned above"),
-    };
+    // The door said yes. The hold that yes entitles the unit to is the kernel's to open, and this
+    // rehearsal is not the kernel: it drives the plane's steps and keeps no books.
+    if admitted.verdict.is_err() {
+        unreachable!("a refusal carries its rendered bytes and returned above");
+    }
 
     // ---- STEP 5, ROUTE ----------------------------------------------------------------------
     // THE READER'S COPY of the meter half, taken before the walk takes it — the same move the
@@ -950,13 +947,11 @@ async fn drive(
     let ctx = meter::MeterCtx::bind(host, meter_sink.as_ref(), lane, &facts, charged);
     // The rehearsal drives this plane's steps and keeps no books. The step names no price and works
     // out no amount: it assembles what the unit consumed and hands it back on its report, and what
-    // the money actually comes to is the composition root's, proven where the card is. The hold
-    // below reaches no exit path here anyway.
+    // the money actually comes to is the composition root's, proven where the card is.
     let metered = meter::meter(
         &Pass::mint(seal),
         &Grant::<Consumption>::mint(seal),
         &ctx,
-        hold,
         &Outcome::Completed,
     );
     metering.reached = true;
@@ -967,14 +962,7 @@ async fn drive(
     metering.refund = metered.refund;
     // What the step was actually BOUND to, read off the facts rather than off the response: the
     // three figures Route folds out of the tap where the tap had already finished.
-    metering.bound = (
-        facts.lane,
-        split(facts.usage.as_ref()),
-        facts.billing_failed,
-    );
-    // The hold reaches no exit path in this rehearsal: the exit is the kernel's, and there is no
-    // plane-side settle. Held to the end of the unit so the accounting is not silently dropped.
-    let _hold = metered.hold;
+    metering.bound = (facts.lane, split(facts.usage.as_ref()));
     let _usage = metered.decision;
 
     // ---- STEP 7, AUDIT ----------------------------------------------------------------------
@@ -1051,7 +1039,8 @@ const TAP_CASES: [Fixture; 2] = [Fixture::StreamCut, Fixture::StreamFailedTransf
 /// Both fixtures are served on 2xx headers and neither delivers the answer, so the status line
 /// says the same thing about both and about a stream that succeeded — which is precisely why the
 /// tap has to report a CLASS. The cut relayed a frame and stopped: `Partial`. The failed transfer
-/// relayed nothing at all: `Error`. Both bill zero tokens, both name the lane that served them,
+/// relayed nothing at all: `Error`. Both bill the tokens that streamed before them (#62) — zero
+/// here, because neither streamed a usage frame — both name the lane that served them,
 /// and the legacy plane and the chained steps still leave a client and an operator looking at the
 /// same thing on both.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1088,13 +1077,17 @@ async fn the_tap_reports_the_end_a_status_line_cannot() {
             report.lane, 0,
             "{fixture:?}: and the lane that served it, which is what the accrual is keyed on"
         );
-        assert!(
-            report.billing_failed,
-            "{fixture:?}: an answer that never finished bills zero — the figures are evidence"
+        // Both ends bill what STREAMED before them (#62), and on these two fixtures that is zero
+        // tokens because no usage frame had arrived: the cut relayed one content chunk and no usage,
+        // the failed transfer relayed nothing. The charge follows the report, not the end.
+        assert_eq!(
+            split(report.usage.as_ref()).map_or(0, |(i, o)| i + o),
+            0,
+            "{fixture:?}: no usage frame streamed before the end, so there is no token to bill"
         );
 
         // And nothing was billed, on either leg: the ledger and the metering series are empty
-        // for a token charge that the report says must not be made.
+        // because nothing that streamed carried a token count.
         fn field(o: &Observed, k: &str) -> String {
             o.0.iter()
                 .find(|(f, _)| *f == k)
@@ -1120,7 +1113,7 @@ async fn the_tap_reports_the_end_a_status_line_cannot() {
             "{fixture:?}: the terminal ran at the head, on a 2xx, exactly as it always has"
         );
         assert_eq!(
-            (metering.bound.0, metering.bound.1),
+            metering.bound,
             (None, None),
             "{fixture:?}: and the Meter step was bound to nothing, because nothing existed yet"
         );
@@ -1475,7 +1468,8 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
     });
     walk.keep_arrival(arrived);
 
-    let principal: PrincipalId = {
+    // Authenticated as the root does, though its answer is the kernel's to hold the unit's hold for.
+    let _principal: PrincipalId = {
         let token: Pass<Authenticate> = Pass::mint(&seal);
         authenticate::authenticate(&token, &gov)
             .into_result(&seal)
@@ -1491,12 +1485,10 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
     let destinations = sealed_destinations(&seal, &configured_lane);
 
     // THE DOOR. Its answer's plane half — the meter half, the charge flag, the effective pool —
-    // stays on the carry, exactly as the root's Admit step leaves it. The kernel half carries the
-    // unit's reservation and is what the loop puts in its own cell, so it is dropped here: this test
-    // is not a loop and has no cell to put one in.
+    // stays on the carry, exactly as the root's Admit step leaves it. The verdict is what the
+    // kernel seals and opens the unit's hold on, so it is dropped here: this test is not a loop and
+    // has no cell to put one in.
     let admitted = admit::admit(
-        &Pass::mint(&seal),
-        &Grant::<Admittance>::mint(&seal),
         &admit::AdmitCtx {
             host: &host,
             gov: &gov,
@@ -1504,7 +1496,6 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
             destination: &model,
             charged_at: rig.charged_at,
         },
-        &principal,
         &destinations,
     );
     assert!(
@@ -1650,31 +1641,31 @@ async fn the_verify_step_reads_a_live_deployment_through_a_pool_view() {
     rig.server.shutdown().await;
 }
 
-/// GAP 4b, CLOSED — the plane can read whether a rate card is present.
+/// GAP 4b, CLOSED — the plane reads the unpriced VERDICT, never the card.
 ///
-/// The two questions VERIFY's third guard asks are answered through the host's cost seam over the
-/// opaque handle, so the guard that refuses an unbillable name is answered from the plane side
-/// without the plane ever reading a rate. The fixtures configure no card, and the seam says so —
-/// which is the difference between an answer and a fixture-shaped guess.
+/// VERIFY's third guard asks one question — does a present card leave this name unpriced? — and the
+/// host answers it as a bool, so the guard that refuses an unbillable name runs plane-side without
+/// the plane ever reading a rate or learning whether a card exists (#43: the plane-facing seam
+/// carries no cost handle and no card posture any more). The fixtures configure no card, so nothing
+/// is unpriced — which is the difference between an answer and a fixture-shaped guess.
 #[tokio::test]
-async fn the_plane_reads_whether_a_rate_card_is_present() {
+async fn the_plane_reads_the_unpriced_verdict_never_the_card() {
     use verify::PoolView as _;
 
     let rig = rig(Fixture::BufferedOk).await;
     let (host, rt) = crate::engine::test_host_rt(&rig.app);
-    let cost = host.cost();
     assert!(
-        !host.cost_pricing_enabled(&cost),
-        "these fixtures configure no rate card"
+        !host.cost_model_unpriced("made-up-name"),
+        "these fixtures configure no rate card, so no name is unpriced"
     );
-    assert!(!host.cost_model_unpriced(&cost, "made-up-name"));
 
     let gov = rig.gov();
     let view = verify::HostPoolView::new(&*host, &*rt, gov.key.as_deref());
-    assert_eq!(view.pricing_enabled(), host.cost_pricing_enabled(&cost));
+    // The view asks the ONE question guard three needs; whether billing is on at all is the
+    // kernel's, answered inside `cost_model_unpriced` (no card => false), never the plane's (#43).
     assert_eq!(
         view.is_unpriced("made-up-name"),
-        host.cost_model_unpriced(&cost, "made-up-name")
+        host.cost_model_unpriced("made-up-name")
     );
     rig.server.shutdown().await;
 }

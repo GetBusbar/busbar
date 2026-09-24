@@ -79,7 +79,7 @@ fn editing_a_sealed_figure_is_caught() {
         .unwrap();
     entry.settled += 1;
     assert!(!checkpoint.body_hash_verifies());
-    let findings = verify(&checkpoint, &BTreeMap::new(), &AllWindowsOpen);
+    let findings = verify(&checkpoint, &BTreeMap::new(), &AllWindowsOpen, None);
     assert!(findings
         .iter()
         .any(|f| matches!(f, Finding::CheckpointEdited { .. })));
@@ -198,7 +198,13 @@ fn verification_closes_the_window_when_the_books_balance_and_opens_it_when_they_
     let checkpoint = seal(&ledger, 1);
 
     // Nothing has happened since: the delta is zero, which balances.
-    assert!(verify(&checkpoint, &ledger.book().snapshot(), &AllWindowsOpen).is_empty());
+    assert!(verify(
+        &checkpoint,
+        &ledger.book().snapshot(),
+        &AllWindowsOpen,
+        None
+    )
+    .is_empty());
 
     // More work, properly recorded: still balances.
     let mut ledger = ledger;
@@ -207,11 +213,22 @@ fn verification_closes_the_window_when_the_books_balance_and_opens_it_when_they_
     ledger.record_hold_opened(&k, 1, 200);
     ledger.record_slice_spent(&k, 1, 200);
     ledger.settle(&k, 1, hold("a", 200), 200, &usage("tokens", 200), &token);
-    assert!(verify(&checkpoint, &ledger.book().snapshot(), &AllWindowsOpen).is_empty());
+    assert!(verify(
+        &checkpoint,
+        &ledger.book().snapshot(),
+        &AllWindowsOpen,
+        None
+    )
+    .is_empty());
 
     // One figure edited by hand: does not.
     ledger.book_mut().entry(k.clone(), 1).settled += 5;
-    let findings = verify(&checkpoint, &ledger.book().snapshot(), &AllWindowsOpen);
+    let findings = verify(
+        &checkpoint,
+        &ledger.book().snapshot(),
+        &AllWindowsOpen,
+        None,
+    );
     assert_eq!(findings.len(), 1);
     match &findings[0] {
         Finding::Imbalanced(i) => assert_eq!(i.residual.amount(), 5),
@@ -232,7 +249,12 @@ fn a_closed_window_that_keeps_posting_is_reported_as_such() {
     let mut ledger = ledger;
     ledger.book_mut().entry(key("b"), 1).settled += 25;
 
-    let findings = verify(&checkpoint, &ledger.book().snapshot(), &EverythingClosed);
+    let findings = verify(
+        &checkpoint,
+        &ledger.book().snapshot(),
+        &EverythingClosed,
+        None,
+    );
     match findings.as_slice() {
         [Finding::ClosedWindowMoved(c)] => assert_eq!(c.moved, 25),
         other => panic!("expected one closed-window finding, got {other:?}"),
@@ -252,11 +274,22 @@ fn a_closed_window_that_keeps_posting_is_reported_as_such() {
 fn a_balance_the_book_retired_is_named_as_retired_and_not_as_an_imbalance() {
     let mut ledger = book_with_a_settlement();
     let checkpoint = seal(&ledger, 1);
-    assert!(verify(&checkpoint, &ledger.book().snapshot(), &AllWindowsOpen).is_empty());
+    assert!(verify(
+        &checkpoint,
+        &ledger.book().snapshot(),
+        &AllWindowsOpen,
+        None
+    )
+    .is_empty());
 
     // The window is sealed, so the book lets it go.
     assert_eq!(ledger.book_mut().retain_from(2), 1);
-    let findings = verify(&checkpoint, &ledger.book().snapshot(), &AllWindowsOpen);
+    let findings = verify(
+        &checkpoint,
+        &ledger.book().snapshot(),
+        &AllWindowsOpen,
+        None,
+    );
     match findings.as_slice() {
         [Finding::Retired { key: k, window }] => {
             assert_eq!(k, &key("b"));
@@ -277,7 +310,12 @@ fn a_balance_the_book_retired_is_named_as_retired_and_not_as_an_imbalance() {
             false
         }
     }
-    let closed = verify(&checkpoint, &ledger.book().snapshot(), &EverythingClosed);
+    let closed = verify(
+        &checkpoint,
+        &ledger.book().snapshot(),
+        &EverythingClosed,
+        None,
+    );
     assert!(matches!(closed.as_slice(), [Finding::Retired { .. }]));
 }
 
@@ -294,7 +332,7 @@ fn a_balance_that_appeared_after_the_checkpoint_is_still_checked() {
             ..Totals::zero()
         },
     );
-    let findings = verify(&checkpoint, &now, &AllWindowsOpen);
+    let findings = verify(&checkpoint, &now, &AllWindowsOpen, None);
     assert_eq!(findings.len(), 1, "a new unbalanced key must be found");
 }
 
@@ -431,4 +469,79 @@ fn the_body_re_encodes_deterministically_with_the_heads_sorted_at_a_snapshot_too
     let mut shuffled = one.clone();
     shuffled.heads.reverse();
     assert!(shuffled.body_hash_verifies());
+}
+
+/// ITEM 132: a ROLLED-BACK checkpoint is detected.
+///
+/// A node restored from an old backup verifies perfectly against the old checkpoint it came back
+/// with — the digest checks, the books balance — and the one fact that says the history went
+/// backwards is the anchor's. `Finding::AnchorHeadDiffers` was declared, rendered and never
+/// constructed, and `verify` took no anchor at all, so the rollback could not be seen.
+#[test]
+fn a_rolled_back_checkpoint_is_detected_against_the_anchor() {
+    let mut anchor = SelfAttestingAnchor::new();
+    let mut ledger = book_with_a_settlement();
+    let first = seal(&ledger, 1);
+    anchor.anchor(&first).unwrap();
+
+    // Verified against the checkpoint the anchor holds: nothing to report.
+    let head = anchor.head().unwrap();
+    assert!(verify(
+        &first,
+        &ledger.book().snapshot(),
+        &AllWindowsOpen,
+        head.as_ref()
+    )
+    .is_empty());
+
+    // More work, a second seal, anchored.
+    let token = ledger_token();
+    let k = key("b");
+    ledger.record_hold_opened(&k, 1, 100);
+    ledger.record_slice_spent(&k, 1, 100);
+    ledger.settle(&k, 1, hold("a", 100), 100, &usage("tokens", 100), &token);
+    let second = seal(&ledger, 2);
+    anchor.anchor(&second).unwrap();
+
+    // The node is rolled back to the first checkpoint and its books. Everything it holds is
+    // self-consistent — and the anchor says the history has moved past it.
+    let rolled_back = book_with_a_settlement();
+    let head = anchor.head().unwrap();
+    let findings = verify(
+        &first,
+        &rolled_back.book().snapshot(),
+        &AllWindowsOpen,
+        head.as_ref(),
+    );
+    assert_eq!(
+        findings,
+        vec![Finding::AnchorHeadDiffers {
+            anchored: 2,
+            expected: 1
+        }],
+        "a rolled-back checkpoint verified clean"
+    );
+    assert!(findings[0]
+        .to_string()
+        .contains("the anchor holds checkpoint 2, not 1"));
+
+    // Same sequence number, different figures: a checkpoint re-sealed over other books under the
+    // anchored number is not the anchored checkpoint either.
+    let mut forged_book = book_with_a_settlement();
+    forged_book.record_draw(&k, 1, 7);
+    let forged = seal(&forged_book, 2);
+    assert!(forged.body_hash_verifies());
+    let findings = verify(
+        &forged,
+        &forged_book.book().snapshot(),
+        &AllWindowsOpen,
+        head.as_ref(),
+    );
+    assert!(findings.iter().any(|f| matches!(
+        f,
+        Finding::AnchorHeadDiffers {
+            anchored: 2,
+            expected: 2
+        }
+    )));
 }

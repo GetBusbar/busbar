@@ -108,6 +108,10 @@ pub struct TestUnits {
     /// The capped group this door enforces on its own counter, when it has one. `None` is a door
     /// whose cap is somebody else's, which is every case that predates the grant.
     pub capped: Option<Arc<CappedGroup>>,
+    /// The ends of units a caller went away from, as the loop handed them to the leg's plane. What
+    /// a plane does with one is post it; what this harness does is keep it, so a cell can post it
+    /// onto a real ledger and read the books.
+    pub abandoned: Mutex<Vec<busbar_kernel::teller::Ended>>,
 }
 
 impl Default for TestUnits {
@@ -125,6 +129,7 @@ impl Default for TestUnits {
             seated_principals: Mutex::new(Vec::new()),
             groups: Vec::new(),
             capped: None,
+            abandoned: Mutex::new(Vec::new()),
         }
     }
 }
@@ -242,6 +247,10 @@ impl busbar_kernel::teller::RouteAwait for NeverRoutes<'_> {
         Box::pin(Never {
             dropped: self.dropped,
         })
+    }
+
+    fn abandoned(&self, _ctx: &UnitCtx, ended: busbar_kernel::teller::Ended) {
+        self.units.abandoned.lock().unwrap().push(ended);
     }
 }
 

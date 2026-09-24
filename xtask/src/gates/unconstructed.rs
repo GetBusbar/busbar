@@ -159,7 +159,7 @@ pub const KNOWN_UNSHIPPED: &[&str] = &[
     "plane-plugin-open",
     "export-plugin-open",
     "wal-corruption-verdict",
-    "crash-recovery-open-holds",
+    // `crash-recovery-open-holds` STRUCK 2026-09-24 (item 127): the boot path calls `recover_all`.
     "breaker-pool-observation",
     "plugin-abi-keyed-units",
     "hold-late-accrual-parent-exit",

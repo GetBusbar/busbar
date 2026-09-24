@@ -163,3 +163,67 @@ fn a_refusal_names_nothing() {
     assert_eq!(grant.held(), 1);
     assert_eq!(grant.group_leases(), ["team"]);
 }
+
+/// ITEM 140 — THE CAS UNDER A REAL RACE. The concurrent hold is a compare-and-swap loop
+/// (`decide.rs`, `fetch_update` over the group's gauge) documented as guaranteeing that N racing
+/// admissions can never jointly overshoot the cap. Every other case here drives the door from one
+/// thread, where a plain load-then-store would pass them all; this one races real OS threads.
+///
+/// Each round releases `THREADS` threads through one barrier onto `try_admit` against a group capped
+/// at `CAP`, and every thread HOLDS whatever grant it got until the round is judged. So in a round
+/// exactly `CAP` admissions may succeed: more is the overshoot the CAS exists to rule out (a
+/// check-then-increment admits two threads that both read `CAP - 1`), fewer is a lost update
+/// refusing room that was free. Grants are dropped between rounds and the gauge must read zero,
+/// so a leaked hold shows up as a round that admits too few.
+#[test]
+fn racing_admissions_never_jointly_overshoot_the_concurrent_cap() {
+    use std::sync::{Arc, Barrier};
+
+    const CAP: u64 = 3;
+    const THREADS: usize = 16;
+    const ROUNDS: usize = 400;
+
+    let d = Arc::new(door());
+    let p = Arc::new(card(0, &[]));
+    let t = GroupTable::new(vec![capped("team", Some("team"), CAP, None)]);
+    let chain = Arc::new(super::chain(&t, "vk_race", Some("team")));
+
+    for round in 0..ROUNDS {
+        let barrier = Arc::new(Barrier::new(THREADS));
+        let handles: Vec<_> = (0..THREADS)
+            .map(|_| {
+                let (d, p, chain, barrier) = (
+                    Arc::clone(&d),
+                    Arc::clone(&p),
+                    Arc::clone(&chain),
+                    Arc::clone(&barrier),
+                );
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    d.try_admit(&p, &chain, "", 0).ok()
+                })
+            })
+            .collect();
+        let grants: Vec<_> = handles
+            .into_iter()
+            .filter_map(|h| h.join().expect("an admitting thread panicked"))
+            .collect();
+        assert_eq!(
+            grants.len() as u64,
+            CAP,
+            "round {round}: {THREADS} racing admissions against a cap of {CAP} admitted {}",
+            grants.len()
+        );
+        assert_eq!(
+            d.gauges().in_flight("team"),
+            CAP as i64,
+            "round {round}: the gauge reads the holds that were granted"
+        );
+        drop(grants);
+        assert_eq!(
+            d.gauges().in_flight("team"),
+            0,
+            "round {round}: every hold was given back"
+        );
+    }
+}

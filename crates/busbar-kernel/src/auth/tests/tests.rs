@@ -250,6 +250,73 @@ fn test_nonempty_chain_fails_closed_on_all_pass() {
     assert!(!mw.validate_token(Some(""))); // empty token never matches
 }
 
+/// ITEM 144 — an IDENTIFIED principal that earns no governance key is REFUSED, never admitted
+/// `key: None` (no pool ACL, no budget, spend booked to `anonymous`). The guard is "no key" alone:
+/// a ROLELESS principal, a role principal under a module with NO `role_bindings` table, and a role
+/// principal whose roles are unbound under a module that HAS one are all `NoGrant`. The two admitted
+/// shapes stay admitted: `Open` (anonymous by explicit `chain: []`) and a principal that earned a key.
+#[test]
+fn a_principal_without_a_governance_key_is_refused() {
+    let identified = |module: &str, principal: Principal| ChainVerdict::Identified {
+        module: module.to_string(),
+        principal,
+        resolved: None,
+    };
+    let refused =
+        |app: &crate::state::App, v: ChainVerdict, why: &str| match resolve_data_plane_identity(
+            app, v,
+        ) {
+            Err(IdentityRefusal::NoGrant) => {}
+            Ok((_, gov)) => panic!(
+                "{why}: admitted with key {:?} — fails open",
+                gov.key.map(|k| k.id.clone())
+            ),
+            Err(other) => panic!("{why}: expected NoGrant, got {other:?}"),
+        };
+
+    // No bindings table for any module.
+    let bare = crate::test_support::TestApp::new().build();
+    refused(
+        &bare,
+        identified("test-groups-module", grp_principal("test:nobody", &[])),
+        "a roleless principal",
+    );
+    refused(
+        &bare,
+        identified("test-groups-module", grp_principal("test:dev", &["dev"])),
+        "a role principal under a module with no role_bindings table",
+    );
+
+    // A bindings table for the module: an unbound role (and no role) still earns nothing.
+    let table = bindings_for(
+        "test-groups-module",
+        &[("dev", binding(Some(&["pa"]), None, None))],
+    );
+    let governed = crate::test_support::TestApp::new()
+        .role_bindings(table)
+        .build();
+    refused(
+        &governed,
+        identified("test-groups-module", grp_principal("test:nobody", &[])),
+        "a roleless principal under a governed module",
+    );
+    refused(
+        &governed,
+        identified("test-groups-module", grp_principal("test:ops", &["ops"])),
+        "an unbound role under a governed module",
+    );
+
+    // Positive controls: the bound role earns a key and is admitted under it; `Open` is anonymous.
+    let (who, gov) = resolve_data_plane_identity(
+        &governed,
+        identified("test-groups-module", grp_principal("test:dev", &["dev"])),
+    )
+    .expect("a bound role earns a key and is admitted");
+    assert!(who.0.is_some() && gov.key.is_some());
+    let (who, gov) = resolve_data_plane_identity(&bare, ChainVerdict::Open).expect("open door");
+    assert!(who.0.is_none() && gov.key.is_none());
+}
+
 /// The EMPTY chain is the open front door (the old `none`/`passthrough` modes): every request is
 /// admitted anonymously (`ChainVerdict::Open`), with or without a credential.
 #[test]

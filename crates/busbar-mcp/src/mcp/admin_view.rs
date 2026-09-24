@@ -364,9 +364,17 @@ impl PlaneTrust for McpServers {
         // could not clear a quarantine.
         // Settle the durable demotion through the host `drift_quarantine` slot, which carries the
         // observed state and pulls the demotion store host-side — the same one settle rule the
-        // verify-on-call path reaches, so an operator's `approved` clears what the sweep demoted. The
-        // settle is fire-and-forget, so the durability bool is not a refusal.
-        let _ = host.quarantine_settle(&subject.entry.id, report.state);
+        // verify-on-call path reaches, so an operator's `approved` clears what the sweep demoted.
+        // CHECKED, not fire-and-forget: a failed durable write here means the operator's own
+        // clearance never survives a restart, silently reverting a rug-pull quarantine or an
+        // operator's clearance while the admin API told them it worked. `Internal` (500) so the
+        // operator is TOLD — the one case this look-verb refuses with (see `PlaneTrust::look`)
+        // rather than answering `200` with a view the durable store disagrees with. Routed through
+        // `settle_checked` (a pure fn over the bool) so the branch is unit-testable without a host.
+        settle_checked(
+            host.quarantine_settle(&subject.entry.id, report.state),
+            &subject.entry.id,
+        )?;
         // AND THE SAME LEDGER STAMP, for the same one-observation-one-set-of-books reason. Without
         // it a registration the operator just looked at was still `NeverChecked` to the unattended
         // timer, which re-fetched it on its very next tick — a second contact the operator's look
@@ -382,6 +390,26 @@ impl PlaneTrust for McpServers {
         Ok(trust_view(&report, &subject.entry, &subject.cfg))
     }
 }
+
+/// CHECK the durable-settle bool `EngineHost::quarantine_settle` answers with, rather than
+/// discarding it (`let _ = ...`). ITEM 150: a failed durable write plus a restart would silently
+/// revert a rug-pull quarantine or an operator's clearance — an operator pressing "connect" must
+/// never be told `200` while the clearance the button promised was never made durable. Pure over
+/// the bool (rather than inlined in [`McpServers::look`]) so the branch is provable without minting
+/// a host.
+fn settle_checked(settled: bool, subject: &str) -> Result<(), PlaneVerbError> {
+    if settled {
+        Ok(())
+    } else {
+        Err(PlaneVerbError::Internal(format!(
+            "durable quarantine settle failed for MCP server `{subject}`; clearance not recorded"
+        )))
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/settle_checked_tests.rs"]
+mod settle_checked_tests;
 
 /// `GET /api/v1/admin/tools/{name}/changes` — the changes queue, derived, contacting nothing. A
 /// neutral [`AdminReqCtx`] handler: the core adapter mints the host and frames the reply, so this

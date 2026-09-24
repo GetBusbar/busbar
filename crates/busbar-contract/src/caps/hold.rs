@@ -518,8 +518,8 @@ impl HoldCell {
     ///
     /// The state that decides the answer and the answer itself come out of the same critical
     /// section. Asking the cell what state it is in and then building the posting from what the
-    /// answer used to be leaves a gap, and the take key is held by two callers — the exit path and
-    /// the node's sweep — so the gap is one a real thread lands in: a clean in-parent posting
+    /// answer used to be leaves a gap, and the take key is held on both of a unit's ends — its exit
+    /// path and the node's sweep — so the gap is one a real thread lands in: a clean in-parent posting
     /// written against a slot that had already been emptied. Here there is no gap to land in.
     ///
     /// The refusal hands the accrual back rather than consuming it, because a child that missed

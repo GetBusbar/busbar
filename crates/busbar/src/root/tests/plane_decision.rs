@@ -70,6 +70,15 @@ fn the_boot_fold_keeps_the_decision_plane() {
     );
 }
 
+// `PLANE_DECL` is a `const`, so `PLANE_DECL.fallback` is known at compile time and an `assert!` on
+// it in a `#[test]` is dead weight (clippy: assertion has a constant value) — a `const _` check
+// keeps the exact same guarantee (this plane never sets the LLM plane's fallback flag) enforced at
+// compile time instead, which is strictly earlier than a test run would catch it.
+const _: () = assert!(
+    !PLANE_DECL.fallback,
+    "the fallback catch-all is the LLM plane's flag and exactly one plane sets it"
+);
+
 /// IDENTITY ONLY. Installing this declaration must mount no route, bind no audience and contribute
 /// no runtime slot — the plane has no unit path in `root/` to answer from yet, and a mounted door
 /// with nothing behind it is the one shape the admission ratchets exist to refuse.
@@ -82,10 +91,6 @@ fn the_declaration_mounts_nothing_and_admits_nobody() {
     assert!(PLANE_DECL.admin_routes.is_none());
     assert!(PLANE_DECL.hydrate.is_none());
     assert!(PLANE_DECL.start.is_none());
-    assert!(
-        !PLANE_DECL.fallback,
-        "the fallback catch-all is the LLM plane's flag and exactly one plane sets it"
-    );
 }
 
 /// ONE WIRE FORMAT, so the plane earns no superset IR. jev names its operation in the request line,

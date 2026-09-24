@@ -1084,3 +1084,62 @@ impl BodyWriter {
         self.bytes
     }
 }
+
+/// The reading half of [`BodyWriter`]: the same fields, in the same order, read back.
+///
+/// It exists because a journal nobody reads back is a journal nothing is ever recovered from. A
+/// hold that must survive a restart is a record a boot has to READ, and so is every posting the
+/// book is rebuilt from — so the one encoding a unit writes has one decoder beside it rather than a
+/// hand-rolled offset table at each reader.
+///
+/// Every read answers `None` rather than panicking on a body that is short or not what the caller
+/// expected, because "this record is not one of mine" is an ordinary answer on a chain every unit
+/// writes to.
+#[derive(Debug, Clone)]
+pub struct BodyReader<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl<'a> BodyReader<'a> {
+    /// Read `bytes` from the start.
+    #[must_use]
+    pub fn new(bytes: &'a [u8]) -> Self {
+        BodyReader { bytes, at: 0 }
+    }
+
+    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+        let end = self.at.checked_add(n)?;
+        let out = self.bytes.get(self.at..end)?;
+        self.at = end;
+        Some(out)
+    }
+
+    /// Read a byte field.
+    pub fn bytes(&mut self) -> Option<&'a [u8]> {
+        let len = usize::try_from(self.num()?).ok()?;
+        self.take(len)
+    }
+
+    /// Read a text field. `None` for bytes that are not text.
+    pub fn text(&mut self) -> Option<&'a str> {
+        std::str::from_utf8(self.bytes()?).ok()
+    }
+
+    /// Read an unsigned number.
+    pub fn num(&mut self) -> Option<u64> {
+        Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?))
+    }
+
+    /// Read a signed ledger figure.
+    pub fn figure(&mut self) -> Option<i128> {
+        Some(i128::from_le_bytes(self.take(16)?.try_into().ok()?))
+    }
+
+    /// Whether every byte has been read. A reader that stops short has not read the body it
+    /// thinks it has.
+    #[must_use]
+    pub fn is_done(&self) -> bool {
+        self.at == self.bytes.len()
+    }
+}

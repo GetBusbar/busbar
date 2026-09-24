@@ -107,28 +107,6 @@ pub trait PluginHttpDispatch: Send + Sync {
     }
 }
 
-/// A loader `DynExport` presented as a [`PluginHttpDispatch`]: the production bridge from the engine's
-/// route table to the ABI. A transport failure (the plugin panicked / returned an unexpected arm) is
-/// relayed as a `502` rather than tearing anything down — the route is off the data-plane hot path.
-///
-/// Constructed once an export plugin is loaded INTO the App snapshot (a later wave); until then the
-/// live table is empty and this bridge is exercised only by the route-dispatch tests.
-#[allow(dead_code)]
-pub struct ExportDispatch(pub Arc<busbar_plugin_loader::DynExport>);
-
-impl PluginHttpDispatch for ExportDispatch {
-    fn handle_http(&self, req: &EndpointRequest) -> EndpointResponse {
-        match self.0.handle_http(req) {
-            Ok(resp) => resp,
-            Err(msg) => EndpointResponse {
-                status: 502,
-                headers: Vec::new(),
-                body: msg.into_bytes(),
-            },
-        }
-    }
-}
-
 /// One plugin's route registration input, BEFORE collision + confinement resolution.
 pub struct RouteDecl {
     /// The declaring plugin's config name (the namespace root for confinement + the collision owner).

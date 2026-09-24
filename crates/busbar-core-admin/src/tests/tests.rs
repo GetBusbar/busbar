@@ -608,11 +608,14 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
         output_utok: 500.0,
         cache_read_utok: 500.0,
         cache_write_utok: 500.0,
+        ..Default::default()
     };
-    let rate_card: std::collections::BTreeMap<String, busbar_kernel::config::RateEntryCfg> =
-        [("model-1".to_string(), rate), ("model-2".to_string(), rate)]
-            .into_iter()
-            .collect();
+    let rate_card: std::collections::BTreeMap<String, busbar_kernel::config::RateEntryCfg> = [
+        ("model-1".to_string(), rate.clone()),
+        ("model-2".to_string(), rate),
+    ]
+    .into_iter()
+    .collect();
     let cost = busbar_kernel::cost::CostModel::resolve_parts(
         Some(&rate_card),
         1,

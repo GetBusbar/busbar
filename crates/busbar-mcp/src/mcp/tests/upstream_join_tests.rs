@@ -551,3 +551,211 @@ async fn a_metadata_url_hidden_in_the_tool_arguments_is_refused_and_never_sent()
         "the refusal happens before any outbound traffic, the token exchange included"
     );
 }
+
+// ── ITEM 136: MCP tool calls reach the budget ledger — priced by the MCP plane's card, never the llm's ──
+//
+// MCP used to put nothing into the budget ledger: its one charge was a `Queries` meter at amount 0,
+// so the declared `tool_calls` class was never counted. An answered `tools/call` now ledgers ONE
+// `tool_calls` on the caller's chain through the host `meter_ledger` seam (#71, unconditional #43).
+// The row's lane is plane-qualified, so the view prices it with the MCP plane's OWN card (#42
+// "scoped per plane", #47) — and no `tools` section can author one yet, so MCP billing is OFF: the
+// count reads 0 even beside an llm card, and nothing refuses. A deployment's `rate_card` is the llm
+// (`pools`) plane's card only; applying it to an MCP class was the ratecard fault these pin.
+
+type Card = std::collections::BTreeMap<String, busbar_kernel::config::sections::RateEntryCfg>;
+
+/// A governed app whose group `g` carries `limits`, priced by `card` (`None` = no card at all), no
+/// flat fee. Hands back the app, the registry and the cost model so a test can read the ledger and
+/// drive the llm door directly.
+fn budgeted_app(
+    peer: &Peer,
+    server: &str,
+    card: Option<&Card>,
+    limits: Vec<busbar_kernel::config::groups::LimitCfg>,
+) -> (
+    std::sync::Arc<dyn EngineApp>,
+    std::sync::Arc<dyn busbar_kernel::test_support::engine_kit::GovKit>,
+    std::sync::Arc<dyn busbar_kernel::test_support::engine_kit::CostKit>,
+) {
+    let store = std::sync::Arc::new(busbar_store_memory::MemoryStore::new());
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        busbar_kernel::governance::signing::DEFAULT_KID,
+    );
+    let gov = engine()
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
+    let groups: std::collections::BTreeMap<String, busbar_kernel::config::GroupCfg> = [(
+        "g".to_string(),
+        busbar_kernel::config::GroupCfg {
+            limits,
+            ..Default::default()
+        },
+    )]
+    .into();
+    let cost = engine().cost_parts(card, 0, &groups);
+    let app = test_app()
+        .mcp(&mcp_cfg(CANONICAL))
+        .mcp_server(server, exchanging_server(peer, SUBJECT))
+        .cost(cost.clone())
+        .governance(gov.clone())
+        .build();
+    (app, gov, cost)
+}
+
+fn per_day(
+    metric: busbar_kernel::config::groups::LimitMetric,
+    amount: u64,
+) -> busbar_kernel::config::groups::LimitCfg {
+    busbar_kernel::config::groups::LimitCfg {
+        metric,
+        amount,
+        per: Some(busbar_kernel::config::groups::LimitWindow::Day),
+        scope: None,
+        on_exhaust: None,
+        downgrade_to: None,
+    }
+}
+
+/// The caller: a key in group `g`, granted the one tool.
+fn budgeted_key(id: &str, server: &str) -> busbar_api::VirtualKey {
+    let tool = format!("{server}_read");
+    let mut key = super::upstream_support::key_with_scopes(
+        id,
+        &[("mcp_server", server), ("mcp_tool", tool.as_str())],
+    );
+    key.group = Some("g".to_string());
+    key
+}
+
+async fn read_once(
+    app: &std::sync::Arc<dyn EngineApp>,
+    key: &busbar_api::VirtualKey,
+    server: &str,
+) -> (u16, serde_json::Value) {
+    let g = busbar_api::PlaneRequestCtx {
+        key: Some(std::sync::Arc::new(key.clone())),
+    };
+    call(
+        app,
+        &g,
+        "tools/call",
+        serde_json::json!({ "name": format!("{server}_read"), "arguments": { "path": "/p" } }),
+    )
+    .await
+}
+
+fn answered(status: u16, body: &serde_json::Value) -> bool {
+    status == 200 && body.pointer("/result/content/0/text").is_some()
+}
+
+/// THE RULING'S CASE: an llm card PRESENT, no `tools` card, a group `budget:` of 1 cent a day. Every
+/// MCP call is served; each one's `tool_calls` is ledgered on the group bucket; the bucket's usage read
+/// prices it at 0 rather than failing; and llm traffic in the same group still passes the door.
+/// At 6a32b3a67 the llm card was applied to the MCP class: call 2 was refused on budget, the read
+/// failed "cannot be priced", and the llm door blocked the whole group.
+#[tokio::test]
+async fn an_llm_card_does_not_price_mcp_tool_calls_they_are_ledgered_and_nothing_refuses() {
+    use busbar_kernel::config::groups::LimitMetric;
+    metrics_init();
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let server = "llmcardfs";
+    let llm_card: Card =
+        serde_yaml::from_str("gpt-x: { input_utok: 1 }\n").expect("an llm card parses");
+    let (app, gov, cost) = budgeted_app(
+        &peer,
+        server,
+        Some(&llm_card),
+        vec![per_day(LimitMetric::Budget, 1)],
+    );
+    let key = budgeted_key("k-mcp-llm-card", server);
+
+    for n in 1..=5 {
+        let (status, body) = read_once(&app, &key, server).await;
+        assert!(
+            answered(status, &body),
+            "call {n}: the llm card does not price MCP, so nothing refuses: {status} {body}"
+        );
+    }
+    assert_eq!(peer.mcp_hits(), 5);
+
+    let now = busbar_kernel::store::now();
+    let read = gov
+        .derived_bucket_usage(&*cost, "group:g@day", "day", true, now)
+        .expect("the group's usage read is NOT refused: the MCP rows price at 0");
+    assert_eq!(read.spend_cents, 0, "MCP billing is off: its counts read 0");
+
+    gov.flush_budgets();
+    let window = busbar_kernel::governance::budget_window("day", now);
+    let ledger = gov
+        .store()
+        .get_usage("group:g@day", window)
+        .expect("the group bucket was flushed");
+    let lane = format!(
+        "{}{}{server}_read",
+        crate::PLANE_KEY,
+        busbar_kernel::governance::PLANE_LANE_SEP
+    );
+    let row = ledger
+        .models
+        .iter()
+        .find(|m| m.model == lane)
+        .unwrap_or_else(|| panic!("the MCP lane is ledgered: {ledger:?}"));
+    assert_eq!(
+        row.usage_units.get("tool_calls"),
+        Some(&5),
+        "every answered call is counted verbatim (#71): {ledger:?}"
+    );
+
+    gov.try_admit(&*cost, &key, "gpt-x", now)
+        .expect("llm traffic in the same group still passes the budget door");
+}
+
+/// THE POSITIVE CONTROL while no MCP card can be expressed: a `requests:` COUNT cap of 3 trips on
+/// call 4, beside an llm card and a group `budget:` that MCP's unpriced counts must NOT trip first. At
+/// 6a32b3a67 call 2 was refused on budget. With no card at all the same traffic is served (reads 0).
+#[tokio::test]
+async fn a_requests_cap_trips_on_mcp_tool_calls_and_the_llm_budget_does_not() {
+    use busbar_kernel::config::groups::LimitMetric;
+    metrics_init();
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let server = "countfs";
+    let llm_card: Card =
+        serde_yaml::from_str("gpt-x: { input_utok: 1 }\n").expect("an llm card parses");
+    let (app, _gov, _cost) = budgeted_app(
+        &peer,
+        server,
+        Some(&llm_card),
+        vec![
+            per_day(LimitMetric::Budget, 1_000),
+            per_day(LimitMetric::Requests, 3),
+        ],
+    );
+    let key = budgeted_key("k-mcp-requests-cap", server);
+    for n in 1..=3 {
+        let (status, body) = read_once(&app, &key, server).await;
+        assert!(
+            answered(status, &body),
+            "call {n} is under the cap: {status} {body}"
+        );
+    }
+    let (status, body) = read_once(&app, &key, server).await;
+    assert!(
+        !answered(status, &body) && body.to_string().contains("requests"),
+        "call 4 trips the requests cap, not the budget: {status} {body}"
+    );
+    assert_eq!(peer.mcp_hits(), 3, "the refused call never left");
+
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let server = "freefs";
+    let (app, _gov, _cost) =
+        budgeted_app(&peer, server, None, vec![per_day(LimitMetric::Budget, 1)]);
+    let key = budgeted_key("k-mcp-budget-free", server);
+    for n in 1..=5 {
+        let (status, body) = read_once(&app, &key, server).await;
+        assert!(
+            answered(status, &body),
+            "billing off reads 0 (call {n}): {status} {body}"
+        );
+    }
+}

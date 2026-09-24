@@ -21,6 +21,14 @@
 //! into one stream count). Each accept loop runs on a plain OS thread — no runtime coupling with
 //! the client under test — and each connection is served on its own thread so a pooled client
 //! holding one connection open never blocks the next one.
+//!
+//! The gate below restates, on the file itself, the `#[cfg(any(test, feature = "test-support"))]`
+//! that `egress/mod.rs` already puts on `pub mod fixtures;` — it changes nothing the compiler builds.
+//! It is written here so a per-file reader (`cargo xtask loc`, which classifies a file by its own
+//! attributes and path, never by the `mod` item that declares it) counts this test machinery as the
+//! `test` bucket it is rather than billing 391 lines of fixture servers to the kernel's production
+//! LOC ceiling (`loc-ceilings:kernel`).
+#![cfg(any(test, feature = "test-support"))]
 
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};

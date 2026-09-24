@@ -38,9 +38,6 @@ impl PoolView for View {
     fn is_configured(&self, name: &str) -> bool {
         self.configured.iter().any(|c| c == name)
     }
-    fn pricing_enabled(&self) -> bool {
-        self.card
-    }
     fn is_unpriced(&self, name: &str) -> bool {
         self.card && !self.priced_names.iter().any(|p| p == name)
     }

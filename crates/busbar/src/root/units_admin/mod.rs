@@ -58,6 +58,7 @@ use busbar_core_admin::{
     verb_name, ApprovalState, KernelVerb, PostureCtx, VerbScope, AUDIT_VERBS, LEDGER_VERBS,
     LEGACY_VERBS, NAMED_SURFACES, NEW_VERBS,
 };
+use busbar_kernel_ledger::cost::{Money, MoneyError};
 
 /// The transport an admin claim is declared over, and therefore the one a sealed destination for an
 /// admin verb carries.
@@ -297,8 +298,10 @@ pub trait LedgerView: Send + Sync {
     /// What the ledger posted, by row — the ledger side of the reconciliation identity.
     fn ledger_rows(&self) -> crate::root::ledger_identity::LedgerSnapshot;
 
-    /// What the previous release's rows carry for the same cells — the other side of it.
-    fn legacy_rows(&self) -> crate::root::ledger_identity::LegacySnapshot;
+    /// What the previous release's rows carry for the same cells — the other side of it. `Err` when
+    /// a row's figure cannot be projected into the `i64` that row carries (item 28): refused, never
+    /// pinned at `i64::MAX`.
+    fn legacy_rows(&self) -> Result<crate::root::ledger_identity::LegacySnapshot, MoneyError>;
 
     /// The sealed checkpoints, oldest first.
     fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint>;
@@ -319,11 +322,14 @@ pub trait LedgerView: Send + Sync {
     /// them behind, which is the only place that guarantee can be made.
     fn identity_snapshot(
         &self,
-    ) -> (
-        crate::root::ledger_identity::LedgerSnapshot,
-        crate::root::ledger_identity::LegacySnapshot,
-    ) {
-        (self.ledger_rows(), self.legacy_rows())
+    ) -> Result<
+        (
+            crate::root::ledger_identity::LedgerSnapshot,
+            crate::root::ledger_identity::LegacySnapshot,
+        ),
+        MoneyError,
+    > {
+        Ok((self.ledger_rows(), self.legacy_rows()?))
     }
 
     /// SEAM `booked-lines`: the lines this view can price, each carrying ITS OWN ARRIVAL INSTANT.
@@ -355,6 +361,24 @@ pub trait LedgerView: Send + Sync {
     fn rate_history(&self) -> Option<crate::root::kernel::PinnedHistory> {
         None
     }
+
+    /// Does this node's book hold a counts row whose pricing REFUSED (#42/#71)?
+    ///
+    /// A refused row moves no balance — [`Durability::post_counts`] is why one can exist at all
+    /// without a figure behind it — so it is invisible to [`LedgerView::ledger_rows`], which only
+    /// ever walks settled balances, and to a booked line the totals derivation prices. A served
+    /// totals or reconciliation figure that silently skipped such a row would be exactly the silent
+    /// zero #42 forbids, just moved from the pricing read to the admin read beside it. So the two
+    /// reads ask this FIRST and refuse the whole read (`GovernanceError::Store`, the same path
+    /// 69c58179a refuses an out-of-range figure through) rather than serve a table with a hole in it.
+    ///
+    /// The default is `false`: [`UnopenedLedger`] and a view with no book behind it genuinely hold no
+    /// refused row, and saying so is the true and honest answer for them.
+    ///
+    /// [`Durability::post_counts`]: crate::root::durability::Durability::post_counts
+    fn has_refused_rows(&self) -> bool {
+        false
+    }
 }
 
 /// The view a node has before a ledger is bound behind it.
@@ -374,8 +398,8 @@ impl LedgerView for UnopenedLedger {
         crate::root::ledger_identity::LedgerSnapshot::new()
     }
 
-    fn legacy_rows(&self) -> crate::root::ledger_identity::LegacySnapshot {
-        crate::root::ledger_identity::LegacySnapshot::new()
+    fn legacy_rows(&self) -> Result<crate::root::ledger_identity::LegacySnapshot, MoneyError> {
+        Ok(crate::root::ledger_identity::LegacySnapshot::new())
     }
 
     fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint> {
@@ -505,7 +529,7 @@ impl NodeLedger {
     /// The dual write happens inside the ledger's one book-moving function, which the node calls
     /// under this same lock — so a reader holding it sees a settlement's two halves together or
     /// neither, and never the ledger's half alone.
-    fn legacy_rows_under_lock(&self) -> LegacySnapshot {
+    fn legacy_rows_under_lock(&self) -> Result<LegacySnapshot, MoneyError> {
         use crate::root::ledger_identity::{LegacyRow, RowKey};
 
         // Nano-units accumulate per row and the projection to micro-units happens ONCE over the sum,
@@ -527,16 +551,19 @@ impl NodeLedger {
             let entry = nanos.entry(row).or_default();
             *entry = entry.saturating_add(u128::from(posting.settled));
         });
+        // THE ONE PROJECTION, CHECKED (item 28): a row past the `i64` it is served in refuses the
+        // whole read. It was pinned at `i64::MAX`, a figure nobody posted.
         nanos
             .into_iter()
             .map(|(row, nanos)| {
-                (
+                let spend_micros = Money::of_nanos(nanos)?.micros_i64()?;
+                Ok((
                     row,
                     LegacyRow {
-                        spend_micros: busbar_kernel_ledger::cost::micros_of(nanos),
+                        spend_micros,
                         billable_requests: 0,
                     },
-                )
+                ))
             })
             .collect()
     }
@@ -550,18 +577,18 @@ impl LedgerView for NodeLedger {
         NodeLedger::rows_of(&self.lock())
     }
 
-    fn legacy_rows(&self) -> LegacySnapshot {
+    fn legacy_rows(&self) -> Result<LegacySnapshot, MoneyError> {
         let _durability = self.lock();
         self.legacy_rows_under_lock()
     }
 
     /// Both sides under ONE hold, which is what makes the served residual a fact rather than a race.
-    fn identity_snapshot(&self) -> (LedgerSnapshot, LegacySnapshot) {
+    fn identity_snapshot(&self) -> Result<(LedgerSnapshot, LegacySnapshot), MoneyError> {
         let durability = self.lock();
-        (
+        Ok((
             NodeLedger::rows_of(&durability),
-            self.legacy_rows_under_lock(),
-        )
+            self.legacy_rows_under_lock()?,
+        ))
     }
 
     fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint> {
@@ -601,6 +628,12 @@ impl LedgerView for NodeLedger {
     /// line would not be.
     fn booked_lines(&self) -> Vec<busbar_kernel_ledger::Posting> {
         Vec::new()
+    }
+
+    /// Off the same lock every other read of this node's durability takes, so a row posted between
+    /// this check and the read it guards cannot slip through either side of the race.
+    fn has_refused_rows(&self) -> bool {
+        !self.lock().refused_rows().is_empty()
     }
 }
 
@@ -881,6 +914,11 @@ pub struct CoreGovernance {
     /// per unit rather than sharing one across them.
     request: AdminRequest,
     verb: KernelVerb,
+    /// Where a sealed rate-card amendment is made durable, where a root bound one. `None` refuses
+    /// `amend_rate_history` (`Store`): a correction nothing can record is not applied.
+    amendments: Option<Arc<AmendmentJournal>>,
+    /// Who submitted this unit's call and under which dual-control posture it was admitted.
+    attribution: AmendAttribution,
 }
 
 impl CoreGovernance {
@@ -899,7 +937,24 @@ impl CoreGovernance {
             audit,
             request,
             verb,
+            amendments: None,
+            attribution: AmendAttribution {
+                principal: String::new(),
+                dual_control: None,
+            },
         }
+    }
+
+    /// Bind where an amendment is recorded and who is asking for it.
+    #[must_use]
+    pub fn amending(
+        mut self,
+        amendments: Option<Arc<AmendmentJournal>>,
+        attribution: AmendAttribution,
+    ) -> Self {
+        self.amendments = amendments;
+        self.attribution = attribution;
+        self
     }
 
     /// Run the operation and pack its whole answer.
@@ -974,9 +1029,11 @@ impl busbar_core_admin::Governance for CoreGovernance {
         if verb == KernelVerb::AmendRateHistory {
             return amend_rate_history_effect(
                 &crate::root::kernel::ROOT_CARD,
+                self.amendments.as_deref(),
                 request,
                 self.request.at,
                 operator,
+                &self.attribution,
             );
         }
         Ok(self.run())
@@ -992,8 +1049,7 @@ impl busbar_core_admin::Governance for CoreGovernance {
         // path, so a body would be an argument to an operation that takes none — and an operation
         // that quietly read one would have a second way to be asked a question, which is exactly the
         // kind of surface a closed table exists to prevent.
-        let body = render_ledger_view(verb, self.ledger.as_ref())
-            .ok_or(busbar_core_admin::GovernanceError::NotFound)?;
+        let body = render_ledger_view(verb, self.ledger.as_ref())?;
         Ok(json_answer(body).pack())
     }
 
@@ -1059,9 +1115,11 @@ fn json_answer(body: Vec<u8>) -> AdminAnswer {
 /// the window it corrected, who signed it and the digest of why.
 fn amend_rate_history_effect(
     history: &crate::root::kernel::RootHistory,
+    journal: Option<&AmendmentJournal>,
     body: &[u8],
     arrival_secs: u64,
     operator: busbar_core_admin::OperatorState,
+    attribution: &AmendAttribution,
 ) -> Result<Vec<u8>, busbar_core_admin::GovernanceError> {
     use busbar_core_admin::GovernanceError;
     use sha2::Digest as _;
@@ -1127,9 +1185,22 @@ fn amend_rate_history_effect(
     // The corrected card. The fee defaults to zero. A correction must move at least one figure — a
     // rate or the fee — because an amendment that changes no price is a history append and nothing
     // else.
+    //
+    // A NEGATIVE FEE IS REFUSED HERE, at the signing door, and never reaches the card (item 29). The
+    // card's constructor clamps a fee at zero, so a `-5` used to be SEALED into the append-only
+    // history as a card charging `0` under a signature that covers `per_request_fee=-5`: an entry
+    // whose figure is not the figure its signer signed, and a window silently repriced to free. A
+    // fee below zero is not a price; the correction naming one is malformed, and a refusal appends
+    // nothing.
     let per_request_fee = match obj.get("per_request_fee") {
         None | Some(serde_json::Value::Null) => None,
-        Some(v) => Some(v.as_i64().ok_or(GovernanceError::Validation)?),
+        Some(v) => {
+            let fee = v.as_i64().ok_or(GovernanceError::Validation)?;
+            if fee < 0 {
+                return Err(GovernanceError::Validation);
+            }
+            Some(fee)
+        }
     };
     let mut entries: Vec<(busbar_kernel_ledger::cost::LaneClass, f64)> = Vec::new();
     if let Some(rates) = obj.get("rates") {
@@ -1161,6 +1232,12 @@ fn amend_rate_history_effect(
     if entries.is_empty() && per_request_fee.is_none() {
         return Err(GovernanceError::Validation);
     }
+    // The cells the correction names, captured before the card consumes them, so the durable record
+    // can state the figure the card SEALED for each — not the decimal the body spelt.
+    let cells: std::collections::BTreeSet<(String, String)> = entries
+        .iter()
+        .map(|(cell, _)| (cell.lane.clone(), cell.class.clone()))
+        .collect();
     let card = busbar_kernel_ledger::cost::RateCard::from_micro_rates(
         entries,
         per_request_fee.unwrap_or(0),
@@ -1204,6 +1281,48 @@ fn amend_rate_history_effect(
     // The append. Milliseconds, because the history dates every instant in them; a correction written
     // "now" is written at the arrival it was admitted under, never a fresh clock read.
     let appended_at_ms = arrival_secs.saturating_mul(1000);
+
+    // THE DURABLE RECORD, WRITTEN AHEAD OF THE APPEND (item 30). The only trail an amendment used to
+    // leave was the root's legacy admin ring: a thousand in-memory entries behind a seam that does
+    // nothing, four strings and no figure — erased by a thousand admin calls or one restart. The
+    // record now goes onto the node's one journal, carrying every figure the correction sealed, the
+    // signer, the dual-control posture it was admitted under and the exact signed bytes with their
+    // signature, so an auditor can re-verify it without trusting this node.
+    //
+    // AHEAD, not after: an amendment the journal will not take is REFUSED (`Store`) and the history
+    // is not touched, so no correction can price a window without its durable record. A history with
+    // no opening entry is refused first, so a record is never written for a correction that would
+    // then not apply (the holder never returns to empty once resolved).
+    if history.is_empty() {
+        return Err(GovernanceError::NotFound);
+    }
+    let dual_control = attribution
+        .dual_control
+        .ok_or(GovernanceError::Validation)?;
+    let journal = journal.ok_or(GovernanceError::Store)?;
+    let record = AmendmentRecord {
+        effective_from,
+        effective_until,
+        amended_at_ms: appended_at_ms,
+        sealed_fee: card.fee(),
+        rates: cells
+            .into_iter()
+            .map(|(lane, class)| {
+                let nanos = card
+                    .lane_rates(&lane)
+                    .map_or(0, |rates| rates.nanos_per_unit(&class));
+                (lane, class, nanos)
+            })
+            .collect(),
+        operator_fingerprint: operator_fingerprint.clone(),
+        reason_hash,
+        principal: attribution.principal.clone(),
+        dual_control: dual_control_word(dual_control).to_string(),
+        signed_payload: canonical_amend_payload(obj),
+        signature: signature.to_string(),
+    };
+    journal.record(&record, arrival_secs)?;
+
     let seq = history
         .amend(
             card,
@@ -1233,6 +1352,212 @@ fn amend_rate_history_effect(
     json_string(&hex::encode(reason_hash), &mut out);
     out.push('}');
     Ok(json_answer(out.into_bytes()).pack())
+}
+
+/// Who asked for a correction and under which dual-control posture it was admitted — the two facts
+/// the verbs unit resolved at Route and the durable amendment record states.
+///
+/// `dual_control` is an option because the posture seam may fail to resolve; the verbs unit refuses
+/// such a call before the effect, so `None` here is refused rather than recorded as a guess.
+#[derive(Debug, Clone)]
+pub struct AmendAttribution {
+    /// The authenticated principal that submitted the correction (not the signer — that is the
+    /// operator key the body's fingerprint names).
+    pub principal: String,
+    /// The dual-control posture the verb was admitted under. This release seals no dual-control
+    /// posture (see [`SealedPosture`]), so a production record says `single`: one signer, no
+    /// checker — stated on the record rather than implied.
+    pub dual_control: Option<busbar_core_admin::DualControl>,
+}
+
+/// The word a durable record uses for a dual-control posture.
+fn dual_control_word(dual_control: busbar_core_admin::DualControl) -> &'static str {
+    match dual_control {
+        busbar_core_admin::DualControl::Single => "single",
+        busbar_core_admin::DualControl::Required => "required",
+    }
+}
+
+/// The domain tag every durable amendment record's body opens with, so a `Policy`-class journal
+/// record is recognisable as a rate-card amendment without guessing.
+pub const AMENDMENT_RECORD_TAG: &str = "busbar/rate-amendment/v1";
+
+/// One sealed rate-card amendment, as the node's journal keeps it: every figure the correction put
+/// on the history, who signed it, who submitted it, under which posture, and the exact bytes the
+/// signature covers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AmendmentRecord {
+    /// Start of the corrected window, milliseconds.
+    pub effective_from: u64,
+    /// End of the corrected window, milliseconds; `None` is open-ended.
+    pub effective_until: Option<u64>,
+    /// When the correction was admitted, milliseconds.
+    pub amended_at_ms: u64,
+    /// THE SEALED CARD'S FEE, MINOR UNITS — named `sealed_fee` and not the wire spelling.
+    ///
+    /// This is the journal's own internal record shape, not the wire: it stores what the sealed
+    /// [`busbar_kernel_ledger::cost::RateCard`] already resolved (`card.fee()`), never the
+    /// operator's raw JSON field. Kept off the `per_request_fee`/`fee_cents` spellings on purpose —
+    /// `[rules.one-pricing-site.fee_allowed.amend-rate-history]` reviews exactly four reads of that
+    /// wire name in this file (the parse, the shape refusal, the relay to `from_micro_rates`, and
+    /// the signed payload's own key literal); a durable record's encode/decode is not one of them,
+    /// and giving it the wire's own name would silently spend two of the grant's four slots on a
+    /// binary journal format that was never reviewed as a wire reader.
+    pub sealed_fee: i64,
+    /// `(lane, class, nanos_per_unit)` for every cell the correction named, as the card sealed it.
+    pub rates: Vec<(String, String, u64)>,
+    /// The signer: `sha256(operator key)`, hex.
+    pub operator_fingerprint: String,
+    /// `sha256(reason)`.
+    pub reason_hash: [u8; 32],
+    /// The authenticated principal that submitted it.
+    pub principal: String,
+    /// `single` or `required`.
+    pub dual_control: String,
+    /// The canonical payload the signature covers.
+    pub signed_payload: Vec<u8>,
+    /// The detached ed25519 signature, hex.
+    pub signature: String,
+}
+
+/// The journal body of an [`AmendmentRecord`]: length-prefixed fields in a fixed order.
+#[must_use]
+pub fn amendment_body(record: &AmendmentRecord) -> Vec<u8> {
+    let mut body = busbar_kernel_wal::BodyWriter::new();
+    body.text(AMENDMENT_RECORD_TAG);
+    body.num(record.effective_from);
+    body.num(u64::from(record.effective_until.is_some()));
+    body.num(record.effective_until.unwrap_or(0));
+    body.num(record.amended_at_ms);
+    body.figure(i128::from(record.sealed_fee));
+    body.num(record.rates.len() as u64);
+    for (lane, class, nanos) in &record.rates {
+        body.text(lane);
+        body.text(class);
+        body.num(*nanos);
+    }
+    body.text(&record.operator_fingerprint);
+    body.bytes(&record.reason_hash);
+    body.text(&record.principal);
+    body.text(&record.dual_control);
+    body.bytes(&record.signed_payload);
+    body.text(&record.signature);
+    body.finish()
+}
+
+/// Read an [`AmendmentRecord`] back off a journal body, or `None` for a body that is not one.
+#[must_use]
+pub fn amendment_from_body(body: &[u8]) -> Option<AmendmentRecord> {
+    struct Reader<'a>(&'a [u8]);
+    impl<'a> Reader<'a> {
+        fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+            if self.0.len() < n {
+                return None;
+            }
+            let (head, tail) = self.0.split_at(n);
+            self.0 = tail;
+            Some(head)
+        }
+        fn num(&mut self) -> Option<u64> {
+            Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?))
+        }
+        fn figure(&mut self) -> Option<i128> {
+            Some(i128::from_le_bytes(self.take(16)?.try_into().ok()?))
+        }
+        fn bytes(&mut self) -> Option<&'a [u8]> {
+            let len = usize::try_from(self.num()?).ok()?;
+            self.take(len)
+        }
+        fn text(&mut self) -> Option<String> {
+            String::from_utf8(self.bytes()?.to_vec()).ok()
+        }
+    }
+    let mut r = Reader(body);
+    if r.text()? != AMENDMENT_RECORD_TAG {
+        return None;
+    }
+    let effective_from = r.num()?;
+    let has_until = r.num()?;
+    let until = r.num()?;
+    let amended_at_ms = r.num()?;
+    let sealed_fee = i64::try_from(r.figure()?).ok()?;
+    let n = r.num()?;
+    let mut rates = Vec::new();
+    for _ in 0..n {
+        rates.push((r.text()?, r.text()?, r.num()?));
+    }
+    let record = AmendmentRecord {
+        effective_from,
+        effective_until: (has_until == 1).then_some(until),
+        amended_at_ms,
+        sealed_fee,
+        rates,
+        operator_fingerprint: r.text()?,
+        reason_hash: r.bytes()?.try_into().ok()?,
+        principal: r.text()?,
+        dual_control: r.text()?,
+        signed_payload: r.bytes()?.to_vec(),
+        signature: r.text()?,
+    };
+    r.0.is_empty().then_some(record)
+}
+
+/// Where a sealed rate-card amendment is made durable: the node's ONE journal, as a `Policy`-class
+/// record (a card entry is a pricing-policy generation), through the same token-gated append every
+/// other journal record takes.
+///
+/// Not the admin ring and not a store of its own. The journal is on disk where the operator named a
+/// data directory and shipped to the configured store otherwise; it is never pruned by volume, it
+/// replays after a restart, and it gives the amendment a POSITION relative to the postings it
+/// reprices.
+pub struct AmendmentJournal {
+    book: Arc<Mutex<crate::root::durability::Durability>>,
+    token: Grant<busbar_contract::caps::DurableWrite>,
+}
+
+impl std::fmt::Debug for AmendmentJournal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AmendmentJournal").finish_non_exhaustive()
+    }
+}
+
+impl AmendmentJournal {
+    /// Record amendments onto `book`'s journal under `token`.
+    #[must_use]
+    pub fn new(
+        book: Arc<Mutex<crate::root::durability::Durability>>,
+        token: Grant<busbar_contract::caps::DurableWrite>,
+    ) -> Self {
+        AmendmentJournal { book, token }
+    }
+
+    /// Append one amendment record, dated `wall_secs`.
+    ///
+    /// # Errors
+    ///
+    /// `Store` when the journal could not make the record durable — the caller then refuses the
+    /// amendment rather than applying a correction nothing recorded.
+    pub fn record(
+        &self,
+        record: &AmendmentRecord,
+        wall_secs: u64,
+    ) -> Result<(), busbar_core_admin::GovernanceError> {
+        let entry = busbar_kernel_wal::Entry::new(
+            busbar_kernel_wal::RecordClass::Policy,
+            amendment_body(record),
+        )
+        .at(wall_secs, 0);
+        let mut durability = self.book.lock().unwrap_or_else(|p| p.into_inner());
+        durability
+            .journal
+            .append(
+                &self.token,
+                busbar_contract::caps::StepName::Route,
+                &[entry],
+            )
+            .map(|_| ())
+            .map_err(|_| busbar_core_admin::GovernanceError::Store)
+    }
 }
 
 /// The exact bytes the operator's detached signature is verified over.
@@ -1271,13 +1596,20 @@ fn canonical_amend_payload(obj: &serde_json::Map<String, serde_json::Value>) -> 
     payload.into_bytes()
 }
 
-/// The bytes one ledger view answers with, or `None` for a verb that is not one.
+/// The bytes one ledger view answers with, or `NotFound` for a verb that is not one.
 ///
-/// `None` is reachable only if the closed table and this match ever disagree, which is a defect in
-/// this file rather than a request to forgive — so it becomes a `NotFound` at the call site rather
-/// than a body invented for a verb nobody wrote one for.
-fn render_ledger_view(verb: KernelVerb, view: &dyn LedgerView) -> Option<Vec<u8>> {
-    Some(match verb {
+/// `NotFound` is reachable only if the closed table and this match ever disagree, which is a defect
+/// in this file rather than a request to forgive — so it is a refusal rather than a body invented
+/// for a verb nobody wrote one for. A money figure the view cannot project (item 28: past the range
+/// it is served in) fails the read as `Store` — refused, never served pinned at `i64::MAX`. The
+/// totals and reconciliation arms refuse the same way, for the same reason, where the book holds a
+/// counts row a present card refused to price (#42): see [`LedgerView::has_refused_rows`].
+fn render_ledger_view(
+    verb: KernelVerb,
+    view: &dyn LedgerView,
+) -> Result<Vec<u8>, busbar_core_admin::GovernanceError> {
+    let refused = |_: MoneyError| busbar_core_admin::GovernanceError::Store;
+    Ok(match verb {
         // THE MONEY IS DERIVED HERE, NOT READ. The rows the totals view renders are the lines
         // priced through the dated history at each line's OWN arrival instant (#77(3)/#79), and
         // the book's balance only where this view has no line to resolve. The reconciliation arm
@@ -1285,17 +1617,36 @@ fn render_ledger_view(verb: KernelVerb, view: &dyn LedgerView) -> Option<Vec<u8>
         // the PREVIOUS release's rows, which are what that release's read-time derivation produced
         // at settlement and are never repriced, so the two sides of it have to be read at the same
         // vintage or an amendment would report every row on a healthy node as out.
-        KernelVerb::GetLedgerTotals => render_totals(&totals_rows(view)).into_bytes(),
+        KernelVerb::GetLedgerTotals => {
+            // A refused counts row (#42) moves no balance, so it is invisible to both arms of
+            // `totals_rows` — the derivation prices booked lines and the balance fallback walks
+            // settled cells, and a refused row is neither. Ask FIRST and refuse the whole read
+            // rather than serve a table quietly missing the row: the same `Store` path 69c58179a
+            // refuses an out-of-range figure through.
+            if view.has_refused_rows() {
+                return Err(busbar_core_admin::GovernanceError::Store);
+            }
+            render_totals(&totals_rows(view))
+                .map_err(refused)?
+                .into_bytes()
+        }
         KernelVerb::GetLedgerCheckpoints => render_checkpoints(&view.checkpoints()).into_bytes(),
         KernelVerb::GetLedgerReconciliation => {
-            let (ledger, legacy) = view.identity_snapshot();
-            render_reconciliation(&ledger, &legacy).into_bytes()
+            // As the totals arm above: a refused row is off the ledger side of the identity too,
+            // since `NodeLedger::rows_of` walks the same settled cells.
+            if view.has_refused_rows() {
+                return Err(busbar_core_admin::GovernanceError::Store);
+            }
+            let (ledger, legacy) = view.identity_snapshot().map_err(refused)?;
+            render_reconciliation(&ledger, &legacy)
+                .map_err(refused)?
+                .into_bytes()
         }
         KernelVerb::GetLedgerMigration => {
             render_migration(view.migration_marker().as_ref()).into_bytes()
         }
         KernelVerb::GetLedgerOpenapiJson => LEDGER_OPENAPI_ADDITIVE.as_bytes().to_vec(),
-        _ => return None,
+        _ => return Err(busbar_core_admin::GovernanceError::NotFound),
     })
 }
 
@@ -1493,7 +1844,9 @@ fn derived_totals_rows(
 /// the reconciliation view keeps by calling `ledger_identity::reconcile` instead of re-deriving the
 /// identity. An endpoint that did its own arithmetic could disagree with the code that gates the
 /// release, and then there would be two answers and no way to tell which one was the money.
-fn render_totals(rows: &crate::root::ledger_identity::LedgerSnapshot) -> String {
+fn render_totals(
+    rows: &crate::root::ledger_identity::LedgerSnapshot,
+) -> Result<String, MoneyError> {
     let mut out = String::from("{\"rows\":[");
     for (i, (row, figures)) in rows.iter().enumerate() {
         if i > 0 {
@@ -1510,13 +1863,13 @@ fn render_totals(rows: &crate::root::ledger_identity::LedgerSnapshot) -> String 
         out.push_str(",\"priced_nanos\":\"");
         out.push_str(&figures.priced_nanos.to_string());
         out.push_str("\",\"priced_micros\":");
-        json_amount(i128::from(figures.micros()), &mut out);
+        json_amount(i128::from(figures.micros()?), &mut out);
         out.push_str(",\"fee_count\":");
         out.push_str(&figures.fee_count.to_string());
         out.push('}');
     }
     out.push_str("]}");
-    out
+    Ok(out)
 }
 
 /// `GET /api/v1/admin/ledger/checkpoints` — the sealed figures, and whether each seal verifies.
@@ -1643,8 +1996,8 @@ fn render_totals_cell(
 fn render_reconciliation(
     ledger: &crate::root::ledger_identity::LedgerSnapshot,
     legacy: &crate::root::ledger_identity::LegacySnapshot,
-) -> String {
-    let discrepancies = crate::root::ledger_identity::reconcile(ledger, legacy);
+) -> Result<String, MoneyError> {
+    let discrepancies = crate::root::ledger_identity::reconcile(ledger, legacy)?;
     let mut out = String::from("{\"holds\":");
     out.push_str(if discrepancies.is_empty() {
         "true"
@@ -1677,7 +2030,7 @@ fn render_reconciliation(
         out.push('}');
     }
     out.push_str("]}");
-    out
+    Ok(out)
 }
 
 /// `GET /api/v1/admin/ledger/migration` — the marker the first boot after the upgrade sealed.
@@ -1875,6 +2228,10 @@ pub struct AdminBinding {
     /// holds is entitled to decide them. Bound to [`UnsealedPosture`] until a root binds a reader for
     /// the journal the ceremony writes.
     pub posture: Arc<dyn PostureView>,
+    /// Where a sealed rate-card amendment is made durable: the node's own journal. `None` until a
+    /// root binds one, and `amend_rate_history` refuses while it is `None` — an amendment is never
+    /// applied without its durable record (item 30).
+    pub amendments: Option<Arc<AmendmentJournal>>,
     /// The requests currently being walked.
     pub units: AdminUnits,
 }
@@ -2004,6 +2361,7 @@ impl AdminBinding {
             ledger: Arc::new(UnopenedLedger),
             audit: None,
             posture: Arc::new(UnsealedPosture),
+            amendments: None,
             units: AdminUnits::new(),
         }
     }
@@ -2022,6 +2380,13 @@ impl AdminBinding {
     #[must_use]
     pub fn with_audit_view(mut self, audit: Arc<dyn AuditView>) -> Self {
         self.audit = Some(audit);
+        self
+    }
+
+    /// Bind the journal a sealed rate-card amendment is recorded on.
+    #[must_use]
+    pub fn with_amendment_journal(mut self, journal: Arc<AmendmentJournal>) -> Self {
+        self.amendments = Some(journal);
         self
     }
 
@@ -2326,20 +2691,6 @@ pub(crate) fn route(
         return Decision::proceed(token, busbar_contract::RoutePlan::default());
     }
 
-    let verbs = busbar_core_admin::Verbs::new(
-        CoreGovernance::new(
-            Arc::clone(&binding.dispatch),
-            Arc::clone(&binding.ledger),
-            binding.audit.clone(),
-            verb,
-            request.clone(),
-        ),
-        StoreRef(store),
-        ArrivalNonce(request.at),
-        PackedReplay,
-        CONFIG_CLASS_RULES,
-    );
-
     // The same identity the record attributes to, so the rate-limit bucket, the audit row and the
     // maker half of the maker-checker rule all name one actor. Keying any of them on the credential
     // instead let one principal be two by presenting a second token.
@@ -2353,6 +2704,27 @@ pub(crate) fn route(
         Some((posture, approval)) => (Some(posture), approval),
         None => (None, busbar_core_admin::ApprovalState::NotYetApproved),
     };
+
+    let verbs = busbar_core_admin::Verbs::new(
+        CoreGovernance::new(
+            Arc::clone(&binding.dispatch),
+            Arc::clone(&binding.ledger),
+            binding.audit.clone(),
+            verb,
+            request.clone(),
+        )
+        .amending(
+            binding.amendments.clone(),
+            AmendAttribution {
+                principal: actor.clone(),
+                dual_control: posture.map(|p| p.dual_control),
+            },
+        ),
+        StoreRef(store),
+        ArrivalNonce(request.at),
+        PackedReplay,
+        CONFIG_CLASS_RULES,
+    );
 
     // THE THREE DISASTER-RECOVERY VERBS REACH THE STORE, not the governance seam. They are new
     // verbs and are admitted exactly as every other new verb is — scope, rate class, then the

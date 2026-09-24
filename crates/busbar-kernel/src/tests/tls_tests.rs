@@ -391,12 +391,12 @@ async fn plain_http_still_works_without_tls() {
     let _ = tx.send(());
 }
 
-/// TEST 4b — fail-fast: a bad cert path produces a clear, file-named error from
-/// `busbar_core_connsec::build_server_config` (which `main` turns into `die`). MOVED to
-/// `busbar-core-connsec`'s own test suite (DECISIONS #40): that crate now owns the function and
-/// its exact error-message format, so its error-path coverage belongs there, not a second copy
-/// here pointed at this file's test-only fixture (whose error strings intentionally do not try to
-/// match production's byte-for-byte). See `busbar_core_connsec::tests::prepare_fails_closed_on_missing_cert`.
+// TEST 4b — fail-fast: a bad cert path produces a clear, file-named error from
+// `busbar_core_connsec::build_server_config` (which `main` turns into `die`). MOVED to
+// `busbar-core-connsec`'s own test suite (DECISIONS #40): that crate now owns the function and
+// its exact error-message format, so its error-path coverage belongs there, not a second copy
+// here pointed at this file's test-only fixture (whose error strings intentionally do not try to
+// match production's byte-for-byte). See `busbar_core_connsec::tests::prepare_fails_closed_on_missing_cert`.
 
 /// TEST 5 - REGRESSION (slow-loris BODY): the inbound body-read timeout trips on a stalled
 /// request body. Before the fix, only the header-read phase was bounded; a client that finished

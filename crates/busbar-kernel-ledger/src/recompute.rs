@@ -268,6 +268,17 @@ pub enum Divergence {
         /// The lane the card is silent about.
         lane: String,
     },
+    /// The card in force names the line's lane but not a class the line hit (#42).
+    ClassUnpriced {
+        /// The entry that was in force.
+        card_seq: HistorySeq,
+        /// The lane the class was reported on.
+        lane: String,
+        /// The class the card is silent about.
+        class: String,
+    },
+    /// The line's figure does not fit the arithmetic — a refusal, never a pinned figure (item 28).
+    Overflow,
     /// The entry the line says it resolved to is not the entry the snapshot resolves to.
     CardSeq {
         /// What the line says.
@@ -311,6 +322,15 @@ impl std::fmt::Display for Divergence {
                 f,
                 "the card at history entry {card_seq} names no rate for lane {lane}"
             ),
+            Divergence::ClassUnpriced {
+                card_seq,
+                lane,
+                class,
+            } => write!(
+                f,
+                "the card at history entry {card_seq} names no rate for class {class} on lane {lane}"
+            ),
+            Divergence::Overflow => f.write_str("the line's figure leaves the representable range"),
             Divergence::CardSeq { posted, resolved } => write!(
                 f,
                 "the line was priced under history entry {posted}; the snapshot resolves {resolved}"
@@ -547,6 +567,16 @@ pub fn divergence_of(why: Unpriceable) -> Divergence {
     match why {
         Unpriceable::NoCardInForce { at } => Divergence::NoCardInForce { at },
         Unpriceable::LaneUnpriced { card_seq, lane } => Divergence::LaneUnpriced { card_seq, lane },
+        Unpriceable::ClassUnpriced {
+            card_seq,
+            lane,
+            class,
+        } => Divergence::ClassUnpriced {
+            card_seq,
+            lane,
+            class,
+        },
+        Unpriceable::Overflow => Divergence::Overflow,
     }
 }
 

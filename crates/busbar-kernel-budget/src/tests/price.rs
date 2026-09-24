@@ -1,17 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The money fold, at the top of its range.
+//! The door's money derivation — THE ONE FUNCTION (`busbar_kernel_ledger::cost::Tally`) over the
+//! pricer's card — at the top of its range and on the #42 positions.
 //!
-//! The derivation above this one already saturates: the cross-model sum uses `saturating_add`, and
-//! the cent projection saturates rather than casting. This file pins the arithmetic INSIDE one
-//! model's fold, which is the last place a plain operator could still wrap or panic before the
-//! saturating layers ever see the number.
+//! This crate used to carry its own fold (`RateNanos::reserved_nanos`), which SATURATED: a maximal
+//! ledger pinned at `u128::MAX` and the cent projection pinned at `i64::MAX`, a spend nobody
+//! consumed standing in for a refusal. The fold is gone (items 104, 25) and an overflow is now the
+//! one function's refusal (item 28), which the door blocks on.
 
 use std::collections::BTreeMap;
 
+use busbar_kernel_ledger::cost::MoneyError;
+
 use crate::price::{
-    RateNanos, RESERVED_UNITS, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
+    Pricer, RateNanos, RESERVED_UNITS, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
 };
 
 /// A unit map holding the largest count each of the four reserved keys can carry.
@@ -22,39 +25,44 @@ fn maximal_units() -> BTreeMap<String, u64> {
         .collect()
 }
 
-/// The four reserved keys at the largest count and the largest rate the types allow.
-///
-/// Each of the four products is very nearly the whole width of the accumulator, so their sum is
-/// past the top of it. A plain add panics on overflow in a debug build and wraps in a release one,
-/// and a wrapped total lands back near zero — an over-the-top ledger deriving as nearly FREE and
-/// escaping every budget cap. Saturating instead pins at the maximum, which is an astronomical
-/// spend that blocks, and which the cent projection above then pins at the signed maximum.
+/// A pricer whose one model `m` carries these rates, with no fee.
+fn pricer_for(rate: RateNanos) -> Pricer {
+    Pricer::with_card(0, BTreeMap::from([("m".to_string(), rate)]))
+}
+
+/// The four reserved keys at the largest count and the largest rate the types allow. The true
+/// figure is past every integer the money path holds, so it is REFUSED — neither wrapped toward
+/// free (the defect saturation was added to stop) nor pinned at a ceiling nobody consumed (the
+/// defect saturation introduced).
 #[test]
-fn a_maximal_ledger_saturates_the_money_fold_rather_than_wrapping() {
+fn a_maximal_ledger_is_refused_rather_than_wrapped_or_pinned() {
     let rate = RateNanos {
         input: u64::MAX,
         output: u64::MAX,
         cache_read: u64::MAX,
         cache_write: u64::MAX,
     };
-    assert_eq!(rate.reserved_nanos(&maximal_units()), u128::MAX);
+    assert_eq!(
+        pricer_for(rate).derive_spend_cents([("m", &maximal_units())].into_iter(), 0, false),
+        Err(MoneyError::Overflow)
+    );
 }
 
-/// One key at the maximum is representable exactly: a u64 count times a u64 rate fits the wide
-/// accumulator with room to spare, so the saturation above is the SUM saturating, not a single
-/// product being clipped. Without this, a fold that returned the maximum for everything large
-/// would pass the case above while quietly destroying ordinary arithmetic.
+/// Below the range, the one function is exact: a large-but-representable figure is not clipped,
+/// so the refusal above is about the range and not about being large.
 #[test]
-fn one_key_at_the_maximum_is_exact_and_does_not_saturate() {
+fn a_large_representable_figure_is_exact() {
     let rate = RateNanos {
-        input: u64::MAX,
+        input: 1_000_000_000, // a thousand units a token
         ..RateNanos::default()
     };
     let mut units = BTreeMap::new();
-    units.insert(UNIT_INPUT.to_string(), u64::MAX);
-    let expected = u128::from(u64::MAX) * u128::from(u64::MAX);
-    assert_eq!(rate.reserved_nanos(&units), expected);
-    assert!(expected < u128::MAX);
+    units.insert(UNIT_INPUT.to_string(), 1_000_000_000_000u64);
+    // 1e12 tokens × 1e9 nano-units = 1e21 nano-units = 1e14 minor units, exactly.
+    assert_eq!(
+        pricer_for(rate).derive_spend_cents([("m", &units)].into_iter(), 0, false),
+        Ok(100_000_000_000_000)
+    );
 }
 
 /// A NEGATIVE CONFIGURED FEE IS NOT A DISCOUNT, and it is clamped where the rate table is
@@ -85,7 +93,7 @@ fn a_negative_configured_fee_is_clamped_at_resolve_and_can_never_credit_a_bucket
     units.insert(UNIT_INPUT.to_string(), 1_000_000u64);
     assert_eq!(
         pricer.derive_spend_cents([("m", &units)].into_iter(), 100, true),
-        100,
+        Ok(100),
         "the tokens are the spend; the clamped fee adds nothing and takes nothing away"
     );
 }
@@ -112,24 +120,26 @@ fn each_configured_rate_lands_in_its_own_slot() {
     );
 }
 
-/// Ordinary figures are untouched by the change: the fold is still an exact sum of four
-/// multiply-adds everywhere below the top of the range.
+/// Ordinary figures are untouched by the change: the one function is an exact sum of four
+/// multiply-adds everywhere below the top of the range, byte-identical to the fold it replaced.
 #[test]
 fn ordinary_counts_still_sum_exactly() {
     let rate = RateNanos {
-        input: 3,
-        output: 5,
-        cache_read: 7,
-        cache_write: 11,
+        input: 3_000,
+        output: 5_000,
+        cache_read: 7_000,
+        cache_write: 11_000,
     };
     let mut units = BTreeMap::new();
-    units.insert(UNIT_INPUT.to_string(), 100);
-    units.insert(UNIT_OUTPUT.to_string(), 200);
-    units.insert(UNIT_CACHE_READ.to_string(), 300);
-    units.insert(UNIT_CACHE_WRITE.to_string(), 400);
+    units.insert(UNIT_INPUT.to_string(), 10_000);
+    units.insert(UNIT_OUTPUT.to_string(), 20_000);
+    units.insert(UNIT_CACHE_READ.to_string(), 30_000);
+    units.insert(UNIT_CACHE_WRITE.to_string(), 40_000);
+    // (10_000×3_000 + 20_000×5_000 + 30_000×7_000 + 40_000×11_000) nano = 780_000_000 nano
+    // = 78 minor units.
     assert_eq!(
-        rate.reserved_nanos(&units),
-        100 * 3 + 200 * 5 + 300 * 7 + 400 * 11
+        pricer_for(rate).derive_spend_cents([("m", &units)].into_iter(), 0, false),
+        Ok(78)
     );
 }
 
@@ -166,8 +176,8 @@ fn a_million_each() -> BTreeMap<String, u64> {
 ///
 /// This derivation GATES ADMISSION against a group's `budget:` cap, so the old answer — the flat
 /// fee and not one nano-unit of the tokens — let an unpriced model run uncapped on spend forever.
-/// It pins at the top instead, which is the fail-closed value this same function already uses for
-/// its overflow arm.
+/// Its first repair pinned the figure at `i64::MAX`; the refusal now arrives AS a refusal (the one
+/// function's `LaneUnpriced`), and the door blocks on it (item 124).
 #[test]
 fn a_present_card_silent_about_the_model_blocks_rather_than_deriving_free() {
     let pricer = card_naming_only_priced();
@@ -178,7 +188,10 @@ fn a_present_card_silent_about_the_model_blocks_rather_than_deriving_free() {
     );
     assert_eq!(
         pricer.derive_spend_cents([("nobody-priced-me", &units)].into_iter(), 1, true),
-        i64::MAX,
+        Err(MoneyError::LaneUnpriced {
+            card_seq: busbar_kernel_ledger::cost::HistorySeq::OPENING,
+            lane: "nobody-priced-me".to_string(),
+        }),
         "#42: an unpriced model on a billed node is a refusal, never a silent 0 — and on THIS \
          path the silent 0 was an admission"
     );
@@ -208,7 +221,7 @@ fn a_model_the_card_prices_at_explicit_zero_is_free_and_does_not_block() {
             1,
             true
         ),
-        2,
+        Ok(2),
         "two million tokens at an explicit zero rate cost the flat fee and nothing else"
     );
 }
@@ -228,7 +241,7 @@ fn with_no_card_at_all_an_unknown_model_still_reads_the_fee_alone() {
             1,
             true
         ),
-        2,
+        Ok(2),
         "#42: a silent 0 is correct — and only correct — when rate_card is absent"
     );
 }

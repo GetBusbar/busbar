@@ -326,3 +326,121 @@ fn the_handle_carries_no_material() {
         "the handle's debug output should say it carries none: {rendered}"
     );
 }
+
+// ── the audit journal actually gets written on a real listener bring-up ────────────────────────
+//
+// Everything above proves `provision_servers` against recording doubles. Neither proves the thing
+// this module exists for: that `crate::provision_root_listeners` — the function `run()` actually
+// calls before either listener binds — writes onto the node's REAL journal when it runs. A double
+// standing in for the journal would pass even if the real `BookAccessJournal` never got wired to
+// the real `Durability` book at all, which is exactly the defect this closes.
+
+/// The whole wiring `main.rs` boots with: an env-backed [`busbar_kernel::config::secret::SecretResolver`]
+/// (not a map double), a real sealed [`crate::root::registry::BootRegistry`], and a real
+/// [`crate::root::durability::Durability`] book, all handed to `crate::provision_root_listeners` the
+/// same way `run()` hands them. What is asserted afterward is that node's own journal.
+#[cfg(all(
+    feature = "root-voice",
+    any(feature = "root-admin", feature = "root-llm")
+))]
+#[test]
+fn a_real_listener_bring_up_journals_the_access_the_boot_path_makes() {
+    let (cert_pem, key_pem, _) = self_signed();
+    let cert_var = format!("BUSBAR_PROVISION_TEST_CERT_{}", std::process::id());
+    let key_var = format!("BUSBAR_PROVISION_TEST_KEY_{}", std::process::id());
+    std::env::set_var(&cert_var, String::from_utf8(cert_pem).expect("pem is utf8"));
+    std::env::set_var(&key_var, String::from_utf8(key_pem).expect("pem is utf8"));
+
+    let resolver = busbar_kernel::config::secret::SecretResolver::builtins_only();
+    let sealed = crate::root::registry::seal(busbar_transport_http::ClientSettings::default())
+        .expect("a default composition seals");
+    let book = crate::root::durability::node_book();
+
+    let tls_cfg = busbar_kernel::config::TlsCfg {
+        cert: busbar_kernel::config::SecretRef::env(&cert_var),
+        key: busbar_kernel::config::SecretRef::env(&key_var),
+        client_ca: None,
+    };
+
+    crate::provision_root_listeners(
+        &sealed,
+        &resolver,
+        &book.durability,
+        ("127.0.0.1:0", Some(&tls_cfg)),
+        // The admin listener declares no TLS of its own in this boot: the other half of what
+        // this test proves is that reading nothing writes nothing.
+        ("127.0.0.1:0", None),
+    );
+
+    std::env::remove_var(&cert_var);
+    std::env::remove_var(&key_var);
+
+    let records = book
+        .durability
+        .lock()
+        .expect("book lock")
+        .journal
+        .replay()
+        .expect("replay is an in-memory read")
+        .expect("a fresh journal has no chain break");
+    let access: Vec<_> = records
+        .iter()
+        .filter(|r| r.class == busbar_kernel_wal::RecordClass::Access)
+        .collect();
+
+    assert_eq!(
+        access.len(),
+        2,
+        "exactly the data listener's cert and key, journaled: {records:?}"
+    );
+    assert!(
+        access
+            .iter()
+            .any(|r| String::from_utf8_lossy(&r.body).contains("tls.cert")),
+        "no entry names the data listener's cert location: {records:?}"
+    );
+    assert!(
+        access
+            .iter()
+            .any(|r| String::from_utf8_lossy(&r.body).contains("tls.key")),
+        "no entry names the data listener's key location: {records:?}"
+    );
+}
+
+/// The other half: a boot where NEITHER listener carries TLS reads no secret and journals
+/// nothing at all. A shadow provisioning pass that journaled regardless of whether it read
+/// anything would be recording intentions, not reads.
+#[cfg(all(
+    feature = "root-voice",
+    any(feature = "root-admin", feature = "root-llm")
+))]
+#[test]
+fn a_plain_boot_with_no_tls_configured_journals_nothing() {
+    let sealed = crate::root::registry::seal(busbar_transport_http::ClientSettings::default())
+        .expect("a default composition seals");
+    let book = crate::root::durability::node_book();
+    let resolver = busbar_kernel::config::secret::SecretResolver::builtins_only();
+
+    crate::provision_root_listeners(
+        &sealed,
+        &resolver,
+        &book.durability,
+        ("127.0.0.1:0", None),
+        ("127.0.0.1:0", None),
+    );
+
+    let records = book
+        .durability
+        .lock()
+        .expect("book lock")
+        .journal
+        .replay()
+        .expect("replay is an in-memory read")
+        .expect("a fresh journal has no chain break");
+    assert!(
+        records
+            .iter()
+            .all(|r| r.class != busbar_kernel_wal::RecordClass::Access),
+        "no secret was read, so no Access entry may exist: {records:?}"
+    );
+}

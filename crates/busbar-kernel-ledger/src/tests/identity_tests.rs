@@ -347,3 +347,117 @@ fn an_estimated_usage_report_still_settles_and_still_balances() {
         .contains(busbar_contract::caps::PostingFlags::ESTIMATED));
     assert!(residual(&Totals::zero(), &ledger.book().get(&k, 1)).holds());
 }
+
+/// ITEMS 105/131: a maximally broken book FAILS verification rather than wrapping into a clean one.
+///
+/// `settled = i128::MAX`, `open_holds = i128::MAX`, `open_slice_remainders = 2` sums to exactly
+/// 2^128. A bare `+` panicked on these figures in a debug build and, in a release one, wrapped the
+/// accounted side to ZERO — against zero drawn, a residual of zero and a book that verified clean.
+/// Measured in both directions of the delta and through the verifier as well as the bare residual,
+/// so the answer cannot depend on which door a caller reads it through.
+#[test]
+fn a_maximally_broken_book_fails_verification_instead_of_wrapping() {
+    let broken = Totals {
+        settled: i128::MAX,
+        open_holds: i128::MAX,
+        open_slice_remainders: 2,
+        ..Totals::zero()
+    };
+    let r = residual(&Totals::zero(), &broken);
+    assert!(
+        !r.holds(),
+        "a book summing to 2^128 wrapped to balanced: {r}"
+    );
+    assert_ne!(r.amount(), 0);
+
+    // The other direction: a checkpoint at the ceiling and a book at the floor.
+    let floor = Totals {
+        settled: i128::MIN,
+        drawn: i128::MAX,
+        ..Totals::zero()
+    };
+    assert!(!residual(&broken, &floor).holds());
+    assert!(!residual(&floor, &broken).holds());
+
+    // And a closed window over the same figures reports that it moved.
+    assert!(closed_window_is_settled(&Totals::zero(), &broken).is_err());
+
+    // The ordinary case is untouched: a balanced book still balances.
+    let fine = Totals {
+        drawn: 1_000,
+        settled: 400,
+        open_holds: 200,
+        open_slice_remainders: 400,
+        ..Totals::zero()
+    };
+    assert!(residual(&Totals::zero(), &fine).holds());
+}
+
+/// ITEMS 127/128: a posting REPLAYED off the journal moves the book exactly as the live posting did.
+///
+/// A restart rebuilds the book by replaying what the journal holds, and a replay that moved the
+/// figures by a second copy of the arithmetic would be a second answer to the identity. Both doors
+/// go through one function; this says so with the figures, including an overdraft and the dual
+/// write the reconciliation reads.
+#[test]
+fn a_replayed_posting_moves_the_book_exactly_as_the_live_one_did() {
+    let token = ledger_token();
+    let k = key("replayed");
+    for (reserved, used) in [(1_000u64, 900u64), (500, 800), (0, 0), (0, 250)] {
+        let live_rows = crate::legacy::RecordingRows::new();
+        let replay_rows = crate::legacy::RecordingRows::new();
+        let mut live = Ledger::dual_writing(Box::new(live_rows.clone()));
+        let mut replayed = Ledger::dual_writing(Box::new(replay_rows.clone()));
+        let mut h = hold("p", reserved);
+        if used > reserved {
+            h.record_overdraft(used - reserved);
+        }
+        let posted = live.settle(&k, 1, h, u128::from(used), &usage("tokens", used), &token);
+        replayed.replay_post(
+            &k,
+            1,
+            "p",
+            posted.reserved(),
+            posted.settled(),
+            posted.overdraft(),
+        );
+        assert_eq!(
+            live.book().snapshot(),
+            replayed.book().snapshot(),
+            "{reserved}/{used}"
+        );
+        assert_eq!(
+            live_rows.written(),
+            replay_rows.written(),
+            "the dual write is fed on replay as it was live"
+        );
+    }
+}
+
+/// ITEM 26 (a deletion, so the replacing behaviour is asserted): `record_adjustment_releasing` had
+/// no caller anywhere — not in production and not in a test — and is gone. A correction is
+/// `record_adjustment`: it moves value between `settled` and `adjustments` and hands NOTHING back to
+/// the store, so `drawn` and the slice do not move and the identity stays closed.
+#[test]
+fn a_correction_moves_settled_into_adjustments_and_releases_nothing() {
+    let token = ledger_token();
+    let mut ledger = Ledger::new();
+    let k = key("corrected");
+    ledger.record_draw(&k, 1, 1_000);
+    ledger.record_hold_opened(&k, 1, 1_000);
+    ledger.record_slice_spent(&k, 1, 1_000);
+    ledger.settle(&k, 1, hold("p", 1_000), 800, &usage("tokens", 800), &token);
+    let before = ledger.book().get(&k, 1);
+
+    ledger.record_adjustment(&k, 1, 300);
+    let after = ledger.book().get(&k, 1);
+    assert_eq!(after.settled, before.settled - 300);
+    assert_eq!(after.adjustments, before.adjustments + 300);
+    assert_eq!(
+        after.drawn, before.drawn,
+        "a correction releases nothing to the store"
+    );
+    assert_eq!(after.released, before.released);
+    assert_eq!(after.open_slice_remainders, before.open_slice_remainders);
+    assert!(residual(&Totals::zero(), &after).holds());
+}

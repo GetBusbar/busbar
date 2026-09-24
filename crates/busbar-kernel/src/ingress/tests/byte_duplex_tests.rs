@@ -273,6 +273,60 @@ fn a_finished_handler_leaves_the_inflight_registry_empty() {
     );
 }
 
+/// A plane whose handler PANICS — plane code this transport does not control the inside of.
+struct PanickingPlane;
+
+#[async_trait::async_trait]
+impl DuplexPlane for PanickingPlane {
+    fn classify(&self, _frame: &[u8]) -> Option<CallRef> {
+        None
+    }
+    async fn handle(self: Arc<Self>, _frame: Vec<u8>, _out: DuplexHandle) {
+        panic!("a plane callback panicked (deliberate, for the in-flight release test)");
+    }
+}
+
+/// A PANICKING HANDLER RELEASES ITS IN-FLIGHT SLOT. The slot is reserved before the handler runs;
+/// a release written as a statement after `plane.handle(..).await` is skipped by the unwind, and the
+/// leaked key then makes every later EOF drain wait out the full `EOF_DRAIN` and log a phantom
+/// straggler. The release must run on unwind too.
+#[tokio::test]
+async fn a_panicking_handler_releases_its_inflight_slot() {
+    let (_near, far) = tokio::io::duplex(64);
+    let (_r, w) = tokio::io::split(far);
+    let shared = new_shared(Box::new(NewlineSink { writer: w }));
+    let handle = DuplexHandle {
+        shared: shared.clone(),
+    };
+    let plane = Arc::new(PanickingPlane);
+
+    let permit = shared
+        .handlers
+        .clone()
+        .acquire_owned()
+        .await
+        .expect("a handler permit");
+    shared
+        .queued
+        .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    spawn_handler(&shared, &handle, &plane, b"frame".to_vec(), permit);
+
+    // Far inside `EOF_DRAIN`: a released slot is gone within a few scheduler turns.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while !shared.inflight.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert!(
+        shared.inflight.lock().unwrap().is_empty(),
+        "a handler that panicked must still release its in-flight slot"
+    );
+    assert_eq!(
+        shared.handlers.available_permits(),
+        MAX_INFLIGHT_HANDLERS,
+        "the panicking handler's permit is returned too"
+    );
+}
+
 /// An `issue` that is ABANDONED — cancelled at its await, as any caller wrapping it in a
 /// `tokio::time::timeout` does — must leave the correlation table exactly as it found it. Its
 /// registration goes in before the frame is written, so nothing but the dropped future itself can

@@ -639,6 +639,9 @@ pub(crate) struct Runner {
     /// refresh has since replaced it with.
     pub(crate) input_schema: Option<serde_json::Value>,
     pub(crate) server_id: String,
+    /// The NAMESPACED tool the task was admitted on — the pool and model an answered leg is
+    /// ledgered under (item 136), exactly as the synchronous path keys it.
+    pub(crate) namespaced: String,
     pub(crate) max_rounds: u32,
     /// The rounds of input busbar asks its caller for from inside the task, already filtered to
     /// what this caller declared it can answer.
@@ -856,15 +859,31 @@ async fn dispatch(task: Arc<McpTask>, runner: Runner) {
         // sites, and keeps the runner's future small; see the walk.rs precedent.
         let leg: super::inputreq::ErasedRoundFut<'_> = Box::pin(async move {
             let mut leg_outcome = super::upstream::LegOutcome::Nothing;
+            // The dispatch id is the round number, minted through the ONE function that defines
+            // the dispatch id range — the handshake's id is the first value above it, and that
+            // disjointness is only a fact while this is the only way in. See the id-space block in
+            // `super::client::jsonrpc`.
             let result = super::upstream::call(
                 &runner.pool,
                 &runner.authorised,
                 arguments,
-                u64::from(round),
+                super::client::jsonrpc::dispatch_request_id(round),
                 satisfaction,
                 &mut leg_outcome,
             )
             .await;
+            // ITEM 136: an ANSWERED leg is one tool call this node made, ledgered on the declared
+            // class against the principal the task was admitted as. This is the usage FACT, not a
+            // second admission: the budget door ran once at creation and is not re-asked here; the
+            // count lands in the window the leg was answered in, as a streamed LLM response's
+            // tokens land at stream end.
+            if result.is_ok() {
+                super::method::ledger_tool_call(
+                    &*engine,
+                    Some(&*runner.authorised.caller),
+                    &runner.namespaced,
+                );
+            }
             // SETTLE this leg's classified outcome through the runner's durable host route
             // (CLUSTER-1). The single durable probe is settled on the first round; later
             // input-required rounds record in place against the same cell.
