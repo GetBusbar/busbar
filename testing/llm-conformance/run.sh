@@ -162,6 +162,19 @@ for e in entries:
         record("FAIL", title, f"entry {e.get('cells', '?')!r} needs cells, owner and rationale — a gap with no owner is a gap nobody is fixing")
         sys.exit(0)
 
+# `gaps` (the FAIL -> named-gap list validate.py's NamedGaps.partition reads) names rows EXACTLY,
+# not by regex: a SKIP the validator produced by downgrading a judged violation is, by construction,
+# one of the exact ids listed in some entry's `cells`. Reconcile THOSE against `gaps`; everything
+# else (a cell the recorder never made at all, or the binary-eventstream/skip-desc paths) is a row
+# the validator never judged and reconciles against the separate `accepted` ceiling instead, by
+# regex, same as before. Mixing the two up is exactly the bug this block exists to not have: a row
+# `gaps` names correctly used to be checked against `accepted` alone and came back "NO entry names".
+gap_entries = doc.get("gaps") or []
+gap_rows = {}
+for e in gap_entries:
+    for c in e.get("cells") or []:
+        gap_rows[c] = e
+
 with open(observed_path) as f:
     observed = [ln.strip() for ln in f if ln.strip()]
 
@@ -174,6 +187,10 @@ with open(ledger_path) as f:
 
 problems = []
 for gid in observed:
+    if gid in gap_rows:
+        if not reasons.get(gid):
+            problems.append(f"{gid} is a gap whose own row carries no reason")
+        continue
     if not any(re.search(e["cells"], gid) for e in entries):
         problems.append(f"{gid} is a gap NO entry names (reason on the row: {reasons.get(gid, '(none)')!r})")
     elif not reasons.get(gid):

@@ -276,6 +276,45 @@ else
   say FAIL "(j) partial gap rc=$rc fails=$(count "$W/j" FAIL): $(fail_rows "$W/j")"
 fi
 
+# ── RECONCILIATION: A SKIP RECONCILES AGAINST THE SECTION THAT PRODUCED IT (P2-conformfix) ─────
+# named-gaps.json carries two SKIP shapes, one per section. A judged violation the validator
+# downgraded FAIL -> SKIP because a `gaps` entry named it is, BY CONSTRUCTION, one of the exact ids
+# listed in that entry's `cells` — reconcile it against `gaps`. A row the validator never got to
+# judge at all (the recorder made no cell, or a binary-eventstream/skip-desc path) reconciles
+# against the separate `accepted` ceiling instead, by regex. Case (i) above names the same row in
+# BOTH sections at once, which cannot tell the two mechanisms apart; these two isolate each side.
+
+# (i2) a gaps-named SKIP with NO matching `accepted` entry -> still GREEN. This is the regression
+# case for the reconciliation bug: before the fix, step 3b checked every SKIP id against `accepted`
+# alone, so a real gaps-named row like this one came back "a gap NO entry names" and the whole run
+# went RED even though `gaps` named it correctly (the gemini-vertex-* rows, in production).
+GAP_GAPS_ONLY='{"gaps":[{"id":"selftest-cohere-usage-gapsonly","owner":"the selftest","rule":"type",
+  "detail_contains":"expected number, got string",
+  "cells":["llm|cohere|cohere|request|ok#response"],
+  "why":"a planted gap used only by the selftest, to prove a gaps-named SKIP reconciles against the gaps section even when nothing in the accepted ceiling names it"}],
+  "expected":1,
+  "accepted":[]}'
+g="$(gapfile gapsonly "$GAP_GAPS_ONLY")"
+rc="$(run_gaps "$W/b-rec" "$W/i2" "$W/b-rec/cells.json" "$g")"
+if [ "$rc" = 0 ] && [ "$(count "$W/i2" FAIL)" = 0 ] && [ "$(count "$W/i2" SKIP)" = 1 ] \
+   && grep -q 'each named by' "$W/i2/ledger.tsv"; then
+  say PASS "(i2) a gaps-named SKIP with no matching accepted entry -> GREEN, reconciled against gaps not accepted"
+else
+  say FAIL "(i2) gaps-only reconciliation rc=$rc fail=$(count "$W/i2" FAIL) skip=$(count "$W/i2" SKIP)"; tail -10 "$W/i2.log"
+fi
+
+# (j2) the mirror: a SKIP named by NEITHER section -> still RED. The reconciliation fix must not
+# turn into "any SKIP passes": an unrecorded cell that no `accepted` entry admits (and that no
+# `gaps` entry could ever name, since it never reached the validator's judging step) still fails.
+RUN_ARGS="--gaps $W/no-gaps.json"
+rc="$(run "$W/f-rec" "$W/j2")"
+RUN_ARGS=""
+if [ "$rc" != 0 ] && [ "$(count "$W/j2" SKIP)" = 2 ] && grep -q 'is a gap NO entry names' "$W/j2/ledger.tsv"; then
+  say PASS "(j2) an unrecorded-cell SKIP (neither gaps nor accepted names it) -> still RED"
+else
+  say FAIL "(j2) unnamed SKIP rc=$rc skip=$(count "$W/j2" SKIP)"; tail -8 "$W/j2.log"
+fi
+
 # (k) the same gap against the UNMUTATED fixture: the row is judged and comes back clean, so the
 #     entry forgives nothing -> STALE, and stale is RED. This is what stops a fixed gap from sitting
 #     in the file as the place a future real failure would land unseen.
