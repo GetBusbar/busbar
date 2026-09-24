@@ -65,13 +65,20 @@ pub const ROW_MEMBER_FLOOR: &str = "workspace-deps:member-floor";
 pub const ROW_INHERITED_FLOOR: &str = "workspace-deps:inherited-floor";
 pub const ROW_DISCOVERY: &str = "workspace-deps:discovery";
 
-/// Floors. Deliberately well under today's counts (63 members, ~200 inherited declarations, 62
+/// Floors. Deliberately well under today's counts (~50 members, ~200 inherited declarations, 49
 /// manifests under `crates/`) so ordinary work never trips them, but far enough above zero that a
 /// discovery bug cannot pass. They are `const`s with no environment override: the only way to lower
 /// one is a reviewable source edit.
 pub const MIN_MEMBERS: usize = 8;
 pub const MIN_INHERITED: usize = 40;
-pub const MIN_CRATE_MANIFESTS: usize = 40;
+/// 30, not 40 (item F0). The crate fold's planned end state is 35 crates under `crates/`, 34 if
+/// `busbar-core-connsec` folds, and the roster's 33 (docs/design/1.6.0-TODO.md Phase 4, "THE FOLD";
+/// docs/design/BUSBAR-1.6.0.md, the crate roster) — at 40 this row went RED at 39 crates, i.e. at
+/// fold #10, against a planned shrink. The floor guards against a BLIND walk (a moved or emptied
+/// `crates/`, a filter that stopped matching), which finds a handful or nothing; it is not a
+/// ratchet on the roster. 30 sits three under the smallest roster variant, so no planned fold
+/// trips it, while any walk that loses more than a sixth of the smallest roster is still RED.
+pub const MIN_CRATE_MANIFESTS: usize = 30;
 
 const SECTIONS: &[&str] = &["dependencies", "dev-dependencies", "build-dependencies"];
 
@@ -1154,6 +1161,47 @@ mod tests {
             vec![ROW_DISCOVERY.to_string()],
             "an emptied crates/ must be named by the walk and by nothing else"
         );
+    }
+
+    /// The real `crates/` walk thinned to exactly `n` manifests, every other file removed.
+    fn crates_walk_holding(n: usize) -> Ctx {
+        let cx = cx();
+        let real = cx
+            .walk(&WalkSpec::new(["crates"]).ext("toml"))
+            .expect("the real crates/ walk");
+        assert!(
+            real.len() >= n,
+            "the tree holds {} manifests; this fixture needs {n}",
+            real.len()
+        );
+        let mut ov = Overlay::new();
+        for f in real.iter().skip(n) {
+            ov.remove(&f.rel);
+        }
+        cx.with_overlay(ov)
+    }
+
+    /// ITEM F0. The floor is a guard against a BLIND walk, not a ratchet on the roster: the fold's
+    /// planned end state (35 crates, and the 34 / 33 roster variants) must pass it, and a walk that
+    /// finds a handful must not. At 40 the floor errored at 39 crates, i.e. at fold #10.
+    #[test]
+    fn the_crates_walk_floor_admits_the_fold_end_state_and_rejects_a_collapse() {
+        for n in [35, 34, 33] {
+            let row = rule_discovery(&crates_walk_holding(n));
+            assert_eq!(
+                row.status,
+                crate::ledger::Status::Pass,
+                "a crates/ of {n} manifests is a planned fold end state, not a collapse: {row:?}"
+            );
+        }
+        for n in [0, 5, 20] {
+            let row = rule_discovery(&crates_walk_holding(n));
+            assert_ne!(
+                row.status,
+                crate::ledger::Status::Pass,
+                "a crates/ walk that found {n} manifests is a collapse and must be RED"
+            );
+        }
     }
 
     #[test]
