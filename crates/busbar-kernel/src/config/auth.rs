@@ -299,9 +299,8 @@ pub struct AuthDeployCfg {
     /// See [`AuthCfg::signing_key`].
     #[serde(default)]
     pub signing_key: Option<SecretRef>,
-    /// See [`AuthCfg::operator_pub`]. A 1.6.0 key, so a CARRIER lifted by the config pre-pass like
-    /// `policy` below — as a field it joined the `auth:` unknown-key refusal's list.
-    #[serde(skip)]
+    /// See [`AuthCfg::operator_pub`].
+    #[serde(default)]
     pub operator_pub: Option<SecretRef>,
     /// The DATA-PLANE authentication chain, as ordered PROVIDER NAMES. Empty (the default) is the
     /// open front door. `keys` is the built-in signed-key verifier, referenced bare.

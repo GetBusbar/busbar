@@ -116,13 +116,6 @@ impl LiftableSection for crate::config::AuthPolicyCfg {
     }
 }
 
-impl LiftableSection for Option<busbar_api::SecretRef> {
-    const KEY: &'static str = "operator_pub";
-    fn bank(self, into: &mut Lifted) {
-        into.auth_operator_pub = self;
-    }
-}
-
 /// The TOP-LEVEL keys that exist only in 1.6.0 and must never reach the frozen top-level struct.
 ///
 /// This list is the authoritative enumeration of the 1.6.0-additive top-level grammar: every entry
@@ -137,10 +130,9 @@ impl LiftableSection for Option<busbar_api::SecretRef> {
 pub(crate) const LIFTED_TOP_LEVEL_KEYS: &[&str] =
     &["mcp", "oauth_as", "tools", "agents", "streams", "decisions"];
 
-/// The keys lifted out of the `auth:` block. `policy:` (token-mint caps) and `operator_pub:` (D38's
-/// sealed operator key) are 1.6.0 additions; the five keys around them are 1.5.5's and stay in the
-/// frozen struct.
-pub(crate) const LIFTED_AUTH_KEYS: &[&str] = &["policy", "operator_pub"];
+/// The keys lifted out of the `auth:` block. `policy:` is a 1.6.0 addition (token-mint caps); the
+/// five keys around it are 1.5.5's and stay in the frozen struct.
+pub(crate) const LIFTED_AUTH_KEYS: &[&str] = &["policy"];
 
 /// The top-level key whose VALUE carries a nested lift of its own.
 const NESTED_TOP_LEVEL_KEY: &str = "auth";
@@ -158,7 +150,6 @@ pub(crate) struct Lifted {
     streams: Option<StreamsSection>,
     decisions: Option<DecisionsSection>,
     auth_policy: Option<crate::config::AuthPolicyCfg>,
-    auth_operator_pub: Option<busbar_api::SecretRef>,
     plane_rate_cards: super::PlaneRateCards,
     plane_fees: super::PlaneFeesMap,
 }
@@ -194,9 +185,6 @@ impl Lifted {
                 auth.policy = v;
             }
         }
-        if let (Some(v), Some(auth)) = (self.auth_operator_pub, deploy.auth.as_mut()) {
-            auth.operator_pub = Some(v);
-        }
     }
 }
 
@@ -227,9 +215,6 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
             k if k == DecisionsSection::KEY => lift_plane::<DecisionsSection, D>(de, self.lifted)?,
             k if k == crate::config::AuthPolicyCfg::KEY => {
                 crate::config::AuthPolicyCfg::deserialize(de)?.bank(self.lifted)
-            }
-            k if k == <Option<busbar_api::SecretRef> as LiftableSection>::KEY => {
-                Option::<busbar_api::SecretRef>::deserialize(de)?.bank(self.lifted)
             }
             other => {
                 // Unreachable while the two key lists and this match agree; a hard error rather
