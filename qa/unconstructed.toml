@@ -289,15 +289,8 @@ unshipped = true
 switch    = "STRIKE THIS ROW in the commit that builds the root's BreakerPolicy from configured pools. It belongs with the three breaker rows above — they are one seam and should land together."
 
 # THE ABI MINOR WAS BUMPED 19->20 FOR A CAPABILITY WITH NO PRODUCER AND NO CONSUMER.
-[[capability]]
-id        = "plugin-abi-keyed-units"
-built     = "crates/busbar-plugin/src/hot/pod.rs"
-symbol    = "decode_usage_units"
-construct = ["decode_usage_units("]
-scope     = ["crates"]
-why       = "The host-side decoder for ABI v20 keyed usage units has no production caller, and neither does the producer side, so every dlopen plugin still bills through the frozen amount x unit_cost_micros path and the ABI minor bump bought nothing that runs."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that makes the host decode keyed units on the real metering path. MONEY-ADJACENT: it changes how a plugin's usage becomes a charge, so an owner signs it."
+# `plugin-abi-keyed-units` STRUCK 2026-09-24 by OWNER RULING (Q33d/Q35): item 123 (d10cf4147) made the host
+# decode keyed units on the real metering path (plane_host/govern.rs decode_usage_units).
 
 # MONEY — the late-accrual mechanism is back to being an assertion.
 [[capability]]

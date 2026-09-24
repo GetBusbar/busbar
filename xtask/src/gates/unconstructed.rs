@@ -161,7 +161,7 @@ pub const KNOWN_UNSHIPPED: &[&str] = &[
     "wal-corruption-verdict",
     // `crash-recovery-open-holds` STRUCK 2026-09-24 (item 127): the boot path calls `recover_all`.
     "breaker-pool-observation",
-    "plugin-abi-keyed-units",
+    // `plugin-abi-keyed-units` STRUCK 2026-09-24 (owner ruling Q33d/Q35; item 123).
     "hold-late-accrual-parent-exit",
     "rate-card-multi-currency",
 ];
