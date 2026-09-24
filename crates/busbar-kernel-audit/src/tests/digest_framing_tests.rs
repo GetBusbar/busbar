@@ -9,8 +9,11 @@
 //! a field can contain the separator, because a bar the caller put inside one field moves the
 //! boundary the join relies on.
 //!
-//! This crate carries TWO framings, and which one a record uses is not data:
-//! [`ChainedRecord::FRAMING`] is an associated const, a wire fact of the records already on disk.
+//! This crate carries TWO framings. [`ChainedRecord::FRAMING`] is an associated const naming each
+//! record type's DEFAULT framing, and for every type but one it is the framing, full stop. The
+//! exception is [`AuditEntry`]: it carries a per-record `scheme` byte, on the wire, and its
+//! [`ChainedRecord::framing`] override reads that byte to choose the framing each entry is checked
+//! under, because one live chain mixes entries sealed before and after the length-framed scheme.
 //!
 //! * [`crate::record::AuditRecord`], the NEW fixed record, is [`Framing::LengthPrefixed`]. Every
 //!   field in it can hold arbitrary caller-influenced text, so the boundary is made unforgeable.
@@ -22,9 +25,9 @@
 //!
 //! 1. **NO TWO DISTINCT MUTATIONS SHARE A DIGEST** under the length-framed scheme, demonstrated on
 //!    the exact pair a separator join collides.
-//! 2. **THE FRAMING IS NOT A FIELD.** It is a per-type const, so there is no byte a tamper can flip
-//!    to move a record into the other preimage space. Both consts are pinned here, because nothing
-//!    else in the crate fails if one of them changes.
+//! 2. **A FLIPPED SCHEME BYTE IS A DETECTED TAMPER, NOT A CHOICE.** The type's default framing is
+//!    pinned, and so is the per-record byte's effect: `scheme` is not itself a digested field, but
+//!    it selects the preimage, so flipping it recomputes a digest the stored hash does not match.
 //! 3. **A LEGACY CHAIN STILL VERIFIES**, and is still tamper-evident: the old framing is ambiguous,
 //!    not absent.
 //! 4. **EVERY FIELD CARRIES ITS OWN LENGTH**, checked on the preimage bytes themselves rather than
@@ -283,15 +286,18 @@ fn a_bar_moved_between_two_caller_named_fields_of_the_new_record_changes_its_dig
     );
 }
 
-/// THE FRAMING IS A PROPERTY OF THE RECORD TYPE, NOT A FIELD A TAMPER CAN FLIP.
+/// EACH RECORD TYPE NAMES ITS DEFAULT FRAMING AT THE TYPE, and the two streams do not agree.
 ///
-/// There is no per-record scheme byte. Which framing a stream uses is [`ChainedRecord::FRAMING`],
-/// fixed at the type, so an attacker who can edit a stored record cannot move it into whichever
-/// preimage space suits them — the choice is not in the bytes to edit. That safety is structural,
-/// which is precisely why it needs pinning: nothing else in this crate fails if either const is
-/// changed, and changing one silently re-frames a stream that already has records on disk.
+/// [`ChainedRecord::FRAMING`] is the type's DEFAULT — for [`AuditEntry`] it is scheme 1's framing,
+/// which is what an entry with no `scheme` key on the wire reads as. It is NOT what governs a live
+/// entry's digest: `AuditEntry` carries a per-record `pub scheme: u8`, serialized, and its
+/// [`ChainedRecord::framing`] override reads it. The byte is in the stored bytes a tamper can edit;
+/// what makes editing it useless is pinned by
+/// `a_flipped_scheme_byte_is_a_detected_tamper_not_a_reframing`. The const still needs pinning
+/// here, because nothing else in this crate fails if it changes, and changing it silently re-frames
+/// every pre-scheme entry already on disk.
 #[test]
-fn each_stream_names_its_framing_at_the_type_and_the_two_do_not_agree() {
+fn each_stream_names_its_default_framing_at_the_type_and_the_two_do_not_agree() {
     assert_eq!(
         <AuditEntry as ChainedRecord>::FRAMING,
         Framing::PipeSeparated,
@@ -694,4 +700,67 @@ fn a_chain_mixing_scheme_one_and_scheme_two_records_verifies_end_to_end() {
         verify_chain(&tampered).is_err(),
         "a tamper on the scheme-2 half of a mixed chain went undetected"
     );
+}
+
+/// A FLIPPED SCHEME BYTE IS A DETECTED TAMPER, NOT A RE-FRAMING.
+///
+/// `scheme` is a per-record byte in the stored bytes, and it is not one of the digested fields: it
+/// SELECTS the preimage instead. So an edit that flips it cannot move an entry into whichever
+/// preimage space suits the editor while still verifying — the recomputed digest is taken over the
+/// other framing's bytes and no longer matches the hash the entry was sealed with. Pinned in every
+/// direction a tamper can take the byte: 2 → 1, 1 → 2, and to a value this build never mints (which
+/// falls back to scheme 1's framing rather than being promoted).
+#[test]
+fn a_flipped_scheme_byte_is_a_detected_tamper_not_a_reframing() {
+    let fresh: AuditEntry = seal(
+        ADMIN_LOG,
+        1,
+        String::new(),
+        AuditInput {
+            ts: 1_700_000_000,
+            action: "hook.register".to_string(),
+            resource: "hook:x".to_string(),
+            outcome: OUTCOME_APPLIED.to_string(),
+            principal: "alice".to_string(),
+        },
+    );
+    assert_eq!(fresh.scheme, AUDIT_SCHEME_LENGTH_PREFIXED);
+    assert_eq!(digest(&fresh), fresh.hash);
+    assert_eq!(fresh.framing(), Framing::LengthPrefixed);
+
+    for flipped_to in [AUDIT_SCHEME_PIPE, 0, 99] {
+        let mut flipped = fresh.clone();
+        flipped.scheme = flipped_to;
+        assert_eq!(
+            flipped.framing(),
+            Framing::PipeSeparated,
+            "scheme byte {flipped_to} is not scheme 2, so it must read as the legacy framing"
+        );
+        assert_ne!(
+            digest(&flipped),
+            flipped.hash,
+            "flipping a sealed entry's scheme byte to {flipped_to} still verified"
+        );
+        assert!(verify_chain(std::slice::from_ref(&flipped)).is_err());
+    }
+
+    let legacy = sealed(unsealed(
+        1,
+        1_700_000_000,
+        "",
+        "hook.register",
+        "hook:compress",
+        OUTCOME_APPLIED,
+        "admin",
+    ));
+    assert_eq!(legacy.scheme, AUDIT_SCHEME_PIPE);
+    let mut promoted = legacy.clone();
+    promoted.scheme = AUDIT_SCHEME_LENGTH_PREFIXED;
+    assert_eq!(promoted.framing(), Framing::LengthPrefixed);
+    assert_ne!(
+        digest(&promoted),
+        promoted.hash,
+        "promoting a scheme-1 entry's byte to scheme 2 still verified"
+    );
+    assert!(verify_chain(std::slice::from_ref(&promoted)).is_err());
 }
