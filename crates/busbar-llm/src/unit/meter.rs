@@ -140,6 +140,10 @@ pub(crate) struct MeterFacts {
     /// usage frame has not arrived when Route returns, so the snapshot is empty and the cell is what
     /// answers later.
     pub(crate) usage: Option<busbar_substrate_values::billing::TokenUsage>,
+    /// Every OPEN class the response billed beside the token split (a rerank's search units), as
+    /// the tap reported it — the same map the governance ledger accrued. Same source and timing as
+    /// `usage`, and empty until the tap has reported.
+    pub(crate) open_units: std::collections::BTreeMap<String, u64>,
     /// The status the CLIENT saw — the fee basis, decided at the frame that carried it.
     pub(crate) status: u16,
     /// Whether the unit reached an upstream at all, which is what makes it a fee-bearing client
@@ -166,7 +170,32 @@ impl MeterFacts {
     pub(crate) fn fold(&mut self, report: &crate::engine::TapReport) {
         self.lane = Some(report.lane);
         self.usage = report.usage.clone();
+        self.open_units = report.open_units.clone();
     }
+}
+
+/// **EVERY CLASS THE UNIT BILLED**, as one neutral class map: the reserved token split and every
+/// open class beside it (#71: the ledger event is the raw counts per class — every class). Zero
+/// counts are left off, as the token projection leaves them.
+///
+/// The one reading both reports are built from — the Meter step's at step 6 and the late reading
+/// after the body drained — so a unit cannot report its search units at one and not the other. The
+/// token split is projected exactly as before; an open class never collides with a reserved one (a
+/// codec names its counted class, and none names a token tier), and if one ever did the TOKEN
+/// figure stands, so no token figure can move through this function.
+pub(crate) fn billed_classes(
+    usage: Option<&busbar_substrate_values::billing::TokenUsage>,
+    open_units: &std::collections::BTreeMap<String, u64>,
+) -> busbar_substrate_values::billing::Usage {
+    let mut billed = usage
+        .map(busbar_llm_codec::wire_shim::tier_usage)
+        .unwrap_or_default();
+    for (class, count) in open_units {
+        if *count > 0 {
+            billed.usage_units.entry(class.clone()).or_insert(*count);
+        }
+    }
+    billed
 }
 
 /// What the accrual needs that the step shape has nowhere to put.
@@ -179,6 +208,8 @@ pub struct MeterCtx<'a> {
     sink: Option<&'a crate::engine::UsageSink>,
     lane: Option<&'a crate::engine::Lane>,
     usage: Option<&'a busbar_substrate_values::billing::TokenUsage>,
+    /// The open classes beside the token split; `None` where nothing reported any.
+    open_units: Option<&'a std::collections::BTreeMap<String, u64>>,
     status: u16,
     charged: bool,
     upstream_leg: bool,
@@ -212,6 +243,7 @@ impl<'a> MeterCtx<'a> {
             sink,
             lane,
             usage,
+            open_units: None,
             status,
             charged,
             upstream_leg,
@@ -239,6 +271,7 @@ impl<'a> MeterCtx<'a> {
             sink,
             lane,
             usage: facts.usage.as_ref(),
+            open_units: Some(&facts.open_units),
             status: facts.status,
             charged,
             upstream_leg: facts.upstream_leg,
@@ -356,9 +389,12 @@ pub fn meter(
         // The tier split, projected once and read twice: the ledger accrues against it, and the
         // card prices the same counts. Hoisted out of the accrual arm so a unit the walk already
         // posted still prices what it delivered — sealing is not a reason to spend nothing.
-        let tier = reported
-            .map(busbar_llm_codec::wire_shim::tier_usage)
-            .unwrap_or_default();
+        //
+        // EVERY class the unit billed, the open ones included (a rerank's search units): the same
+        // map the walk's tap accrued, so a unit this step posts ledgers what a unit the tap posted
+        // ledgers, and the report hands the card every count (#71).
+        let no_open = std::collections::BTreeMap::new();
+        let tier = billed_classes(reported, ctx.open_units.unwrap_or(&no_open));
         if !ctx.tap_posts {
             crate::engine::usage::ledger_and_meter(ctx.host, sink, lane, reported, &tier);
             posted = true;

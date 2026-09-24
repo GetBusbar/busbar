@@ -141,8 +141,9 @@ pub struct Tap(crate::engine::TapCell);
 /// invented.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LateReport {
-    /// The tier split the tap reported, by neutral unit class — the same counts the governance
-    /// ledger accrued when the cell filled. Empty for a response that billed nothing.
+    /// Every class the tap reported, by neutral unit class — the reserved token split and every open
+    /// class beside it (a rerank's search units): the same counts the governance ledger accrued when
+    /// the cell filled. Empty for a response that billed nothing.
     pub usage: busbar_substrate_values::billing::Usage,
     /// How many billable requests this unit is: one for a delivered client request that reached an
     /// upstream, zero otherwise. It is the Meter step's own count, on the same base the previous
@@ -487,11 +488,12 @@ impl Walk {
         // that request in its billable count and does not refund it. The count is the Meter step's
         // own, on the same base the legacy accounting charges on, and it is read here rather than
         // decided a second time.
-        let usage = facts
-            .usage
-            .as_ref()
-            .map(busbar_llm_codec::wire_shim::tier_usage)
-            .unwrap_or_default();
+        //
+        // EVERY class the tap reported — the token split AND every open class beside it (a rerank's
+        // search units, item 134). The governance ledger accrued all of them when the cell filled;
+        // this reading used to carry the token split alone, so the second book never saw a rerank's
+        // search units (#71: the ledger event is the raw counts per class, every class).
+        let usage = crate::unit::meter::billed_classes(facts.usage.as_ref(), &facts.open_units);
         Some(LateReport {
             usage,
             fee_count: carry.fee_count,

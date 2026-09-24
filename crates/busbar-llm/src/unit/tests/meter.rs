@@ -541,6 +541,7 @@ fn the_step_says_whether_it_posted_or_only_sealed() {
     let facts = MeterFacts {
         lane: Some(0),
         usage: Some(reported.clone()),
+        open_units: Default::default(),
         status: 200,
         upstream_leg: true,
         tap_posts: true,

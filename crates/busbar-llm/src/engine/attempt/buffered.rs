@@ -67,8 +67,9 @@ fn token_usage_of(
     match usage {
         Some(Billing::Tokens(t)) => Some(t.clone()),
         // A COUNTED unit (a rerank's search units, item 134) is not a token figure either, and is
-        // NOT dropped: `record_resp_usage`, reading the same `usage` right after the report, ledgers
-        // it as its open class, where the card prices it.
+        // NOT dropped: it rides the report's `open_units` (`open_units_of`), and
+        // `record_resp_usage`, reading the same `usage` right after the report, ledgers that same
+        // map as its open class, where the card prices it.
         Some(Billing::Duration { .. })
         | Some(Billing::Characters { .. })
         | Some(Billing::Images { .. })
@@ -312,6 +313,8 @@ fn try_deliver_opaque(
             tap.report(TapReport {
                 lane: i,
                 usage: token_usage_of(&usage),
+                // Every open class, from the one projection the governance accrual below ledgers.
+                open_units: crate::engine::usage::open_units_of(&usage),
                 finish: TapFinish::Complete,
             });
             record_resp_usage(
@@ -336,6 +339,7 @@ fn failed_transfer(i: usize) -> TapReport {
     TapReport {
         lane: i,
         usage: None,
+        open_units: Default::default(),
         finish: TapFinish::Error,
     }
 }
@@ -550,6 +554,8 @@ fn deliver_json(
         tap.report(TapReport {
             lane: i,
             usage: token_usage_of(&usage),
+            // Every open class, from the one projection the governance accrual below ledgers.
+            open_units: crate::engine::usage::open_units_of(&usage),
             finish: TapFinish::Complete,
         });
         record_resp_usage(
@@ -577,6 +583,7 @@ fn deliver_json(
             tap.report(TapReport {
                 lane: i,
                 usage: None,
+                open_units: Default::default(),
                 finish: TapFinish::Error,
             });
             Some(ingress_error(

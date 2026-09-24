@@ -3442,15 +3442,24 @@ fn every_cell_agrees(
 /// `search_units` is `Some` — the open class `search_units` at that many nano-units per unit
 /// (the `units:` grammar, item 123). `None` is a present card SILENT about search units.
 fn rerank_history(fee: i64, search_units: Option<u64>) -> crate::root::kernel::PinnedHistory {
+    rerank_history_on("lane", fee, search_units)
+}
+
+/// [`rerank_history`], over the lane named `lane`.
+fn rerank_history_on(
+    lane: &str,
+    fee: i64,
+    search_units: Option<u64>,
+) -> crate::root::kernel::PinnedHistory {
     use busbar_kernel_ledger::cost::{History, HistorySeq, LaneClass, RateCard};
     let card = RateCard::from_micro_rates(
         [
-            (LaneClass::new("lane", busbar_api::UNIT_INPUT), 3.0),
-            (LaneClass::new("lane", busbar_api::UNIT_OUTPUT), 16.0),
+            (LaneClass::new(lane, busbar_api::UNIT_INPUT), 3.0),
+            (LaneClass::new(lane, busbar_api::UNIT_OUTPUT), 16.0),
         ],
         fee,
     )
-    .with_unit_rates(search_units.map(|nanos| (LaneClass::new("lane", SEARCH_UNITS), nanos)));
+    .with_unit_rates(search_units.map(|nanos| (LaneClass::new(lane, SEARCH_UNITS), nanos)));
     crate::root::kernel::PinnedHistory::for_test(
         std::sync::Arc::new(History::opening(card, 0)),
         HistorySeq(0),
@@ -3684,4 +3693,231 @@ fn a_planted_open_class_divergence_goes_red() {
         .is_err(),
         "a second book with no counts was NOT caught"
     );
+}
+
+/// The serving lane of the served-rerank fixture: a Cohere lane, the one dialect whose rerank reader
+/// reads `meta.billed_units.search_units`.
+const RERANK_LANE: &str = "rerank-v3.5";
+/// The pool the rerank fixture's caller names.
+const RERANK_POOL: &str = "rr";
+/// The search units the scripted Cohere upstream bills.
+const RERANK_UNITS: u64 = 50;
+
+/// **A SERVED RERANK, THROUGH THE REAL WALK, PUTS IDENTICAL SEARCH UNITS ON BOTH BOOKS** (#71/#43,
+/// follows 15d23bb90 and item 134).
+///
+/// A Bedrock-dialect rerank (`/model/{model}/invoke` with `query` + `documents`) served by a Cohere
+/// lane whose upstream bills 50 search units: the real loop over the real steps, the real
+/// cross-protocol buffered tap, and the REAL late arm — the node's own `attach_late_accrual`, fired by
+/// draining the body the client is handed, onto a bound book. Nothing is hand-built between the
+/// upstream's bytes and either book.
+///
+/// The governance side is read off the governance ledger itself (the key's bucket, flushed to its
+/// store), not derived from the report the second book was posted from — so the agreement is two
+/// books compared, not one report compared with itself.
+///
+/// RED before the tap carried open classes: `TapReport.usage` was a `TokenUsage` and the buffered
+/// tap's projection dropped `Billing::Counted`, so the late report carried no classes, the second
+/// book's row held no `search_units` and priced the fee alone, while the governance ledger held 50.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_served_rerank_puts_identical_search_units_on_both_books() {
+    busbar_llm::testkit::install_test_seams();
+    busbar_kernel::metrics::init();
+
+    let state = Arc::new(MockServerState::new());
+    for _ in 0..4 {
+        state.push(MockResponse::Ok {
+            status: reqwest::StatusCode::OK,
+            body: serde_json::json!({
+                "id": "rr-1",
+                "results": [{"index": 0, "relevance_score": 0.9}],
+                "meta": {"billed_units": {"search_units": RERANK_UNITS}}
+            }),
+        });
+    }
+    let server = MockServer::new(Arc::clone(&state)).await;
+    let store = Arc::new(busbar_kernel::governance::MemoryStore::new());
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
+        &SIGNING_SECRET,
+        busbar_kernel::governance::signing::DEFAULT_KID,
+    );
+    let gov = Arc::new(
+        busbar_kernel::governance::GovState::new_with_signer(store, None, Some(signer))
+            .expect("governance"),
+    );
+    let (key, _token) = gov
+        .mint_signed(
+            busbar_kernel::governance::NewKeySpec {
+                name: unique("root-rerank"),
+                ..Default::default()
+            },
+            LIVE_EXP,
+            MINTED_AT,
+        )
+        .expect("mint the deployment's key");
+    // No `rate_card:` on the governance side: its ledger accrues the raw counts either way (#43),
+    // and the agreement check prices the governance row through the SAME history the second book
+    // is priced against, below.
+    let cost = busbar_kernel::cost::CostModel::resolve_parts(None, FEE_CENTS, &Default::default());
+    gov.hydrate_budgets(&cost, 0).expect("hydrate");
+    let app = TestApp::new()
+        .keys_chain()
+        .lane(
+            LaneSpec::new(
+                RERANK_LANE,
+                busbar_llm::proto_codec::PROTO_COHERE,
+                &server.base_url(),
+            )
+            .provider("cohere"),
+        )
+        .pool(RERANK_POOL, &[(0, 1)])
+        .governance(Arc::clone(&gov))
+        .cost(cost)
+        .build();
+    let key = Arc::new(key);
+    let gov_ctx = busbar_api::PlaneRequestCtx {
+        key: Some(Arc::clone(&key)),
+    };
+
+    // 2,000 micro-units per search unit and a 3-unit fee, over the serving lane.
+    let history = rerank_history_on(RERANK_LANE, 3, Some(2_000_000));
+    let node = LlmNode::new();
+    let book = crate::root::durability::node_book();
+    node.bind_book(Arc::clone(&book.durability));
+
+    let arrival = WalkArrival {
+        host: busbar_kernel::plane_host::engine_host(&app),
+        gov: gov_ctx.clone(),
+        proto: BEDROCK,
+        operation: busbar_api::operation::Operation::RERANK,
+        caller_token: None,
+        headers: json_headers(),
+        body: Bytes::from_static(br#"{"query":"which is fastest","documents":["a","b","c"]}"#),
+        path: Some(PathFacts {
+            operation: busbar_api::operation::Operation::RERANK,
+            stream: false,
+            gemini_json_array: false,
+            model_not_found_message: None,
+            model: RERANK_POOL.to_string(),
+        }),
+    };
+    let arrived = Arrived::at(EPOCH * 1_000, 0);
+    let key_n = UnitKey::new(node.next_key.fetch_add(1, Ordering::Relaxed));
+    let principal = authenticate::principal_id(&arrival.gov);
+    let meter = Arc::new(AccrualMeter::new());
+    let unit = LlmUnit {
+        node: &node,
+        seats: NATIVE_SEATS,
+        meter: Arc::clone(&meter),
+        op_class: OpClassId::new(arrival.operation.name()),
+        model_hint: None,
+        started: Instant::now(),
+        charged_at: EPOCH,
+        // THE PIN the node's own drive takes off `ROOT_CARD` at admission, handed in: the process
+        // holder is empty in a test, and the late arm posts nothing without a pinned history.
+        history: Some(history.clone()),
+        arrived,
+        principal: principal.clone(),
+        deferred: Mutex::new(None),
+        model: Mutex::new(String::new()),
+        walk: Walk::open(arrival),
+    };
+    let hold = busbar_kernel::inflight::arrival_hold(&node.kernel, &node.door, principal.clone());
+    let slot = node
+        .inflight
+        .insert(busbar_kernel::inflight::Enter {
+            key: key_n,
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            provider_of_open_session: false,
+            zero_hold_tick: false,
+            arrival: hold,
+            now: arrived.ms(),
+        })
+        .expect("the uncapped table takes the unit");
+    let ctx = UnitCtx {
+        key: key_n,
+        origin: OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: false,
+        kernel_verb_only: false,
+    };
+    let _ended = busbar_kernel::teller::run_unit_async(
+        &node.kernel,
+        &unit,
+        &ctx,
+        busbar_kernel::teller::Run {
+            cell: slot.cell(),
+            parent: None,
+            leases: slot.leases(),
+            gauge: &node.gauge,
+            canary: &node.canary,
+            meter: &meter,
+        },
+        &unit,
+    )
+    .await;
+    node.inflight.remove(key_n);
+    // THE NODE'S OWN TAIL, as `answer_arriving_at` runs it: the terminal's bytes, wrapped by the
+    // late arm, drained the way a client drains them.
+    let walk = unit.walk;
+    let response = walk
+        .take_terminal()
+        .map(audit::Served::into_response)
+        .expect("the served unit posted its terminal");
+    assert_eq!(response.status(), StatusCode::OK, "the rerank was served");
+    let response =
+        node.attach_late_accrual(response, walk, &principal, arrived, Some(history.clone()));
+    let _body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("the served body drains");
+    server.shutdown().await;
+
+    // THE GOVERNANCE LEDGER: the key's bucket, flushed to its store and read back.
+    gov.flush_budgets();
+    let ledger = gov
+        .store()
+        .get_usage(
+            &key.id,
+            busbar_kernel_budget::budget_window(busbar_kernel_budget::window::WINDOW_TOTAL, EPOCH),
+        )
+        .expect("the governance ledger reads");
+    let classes = ledger
+        .models
+        .iter()
+        .find(|m| m.model == RERANK_LANE)
+        .map(|m| {
+            m.usage_units
+                .iter()
+                .filter(|(_, count)| **count > 0)
+                .map(|(class, count)| (class.clone(), *count))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    // NON-VACUITY: the governance ledger holds the search units, so an agreement below is an
+    // agreement ON them.
+    assert_eq!(
+        classes.get(SEARCH_UNITS),
+        Some(&RERANK_UNITS),
+        "the governance ledger accrued the rerank's search units: {classes:?}"
+    );
+    let governance = crate::root::durability::UnitCounts {
+        lane: RERANK_LANE.to_string(),
+        fee_count: ledger.billable_requests,
+        classes,
+    };
+
+    // THE SECOND BOOK: the late arm's row.
+    let rows = second_book_rows(&book);
+    assert_eq!(
+        rows.first()
+            .and_then(|row| row.counts.as_ref())
+            .and_then(|counts| counts.classes.get(SEARCH_UNITS)),
+        Some(&RERANK_UNITS),
+        "the durable book's row carries the rerank's search units: {rows:?}"
+    );
+    every_cell_agrees("served rerank", &rows, &governance, &history, arrived.ms())
+        .expect("both books hold the same search units and the same figure");
 }

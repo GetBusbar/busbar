@@ -89,6 +89,13 @@ pub(crate) struct TapReport {
     /// cut is an interruption, not a reversal of incurred cost, so what streamed before it bills
     /// (#62). A transfer that delivered nothing has nothing read here, which is what bills it zero.
     pub(crate) usage: Option<busbar_substrate_values::billing::TokenUsage>,
+    /// EVERY OPEN CLASS the response billed beside the token split — a rerank's search units
+    /// (item 134) — as the class map the governance ledger accrued them under
+    /// ([`crate::engine::usage::open_units_of`], the one projection both books read). Empty where the
+    /// response billed tokens only or nothing. It used to be absent: the governance ledger held a
+    /// rerank's search units and the late reading handed the durable book none (#71: the ledger event
+    /// is the raw counts per class, every class).
+    pub(crate) open_units: std::collections::BTreeMap<String, u64>,
     /// How the response ENDED, as the plane says it.
     pub(crate) finish: TapFinish,
 }
@@ -554,6 +561,8 @@ where
                         this.tap.report(TapReport {
                             lane: this.lane_idx,
                             usage: this.translate.as_ref().and_then(|t| t.usage()),
+                            // This end reads usage through a TOKEN reader only, so no counted class reaches it.
+                            open_units: Default::default(),
                             finish: TapFinish::Partial,
                         });
                         // The raw reqwest/transport error (`e`) must NEVER reach the client body: its
@@ -674,6 +683,8 @@ where
                         this.tap.report(TapReport {
                             lane: this.lane_idx,
                             usage: this.translate.as_ref().and_then(|t| t.usage()),
+                            // This end reads usage through a TOKEN reader only, so no counted class reaches it.
+                            open_units: Default::default(),
                             finish: if had_first {
                                 TapFinish::Partial
                             } else {
@@ -928,6 +939,8 @@ where
                     this.tap.report(TapReport {
                         lane: this.lane_idx,
                         usage: token_usage,
+                        // This end reads usage through a TOKEN reader only, so no counted class reaches it.
+                        open_units: Default::default(),
                         finish: if stream_failed {
                             TapFinish::Error
                         } else {
@@ -972,6 +985,8 @@ impl<S, P> Drop for FirstByteBody<S, P> {
             self.tap.report(TapReport {
                 lane: self.lane_idx,
                 usage: self.translate.as_ref().and_then(|t| t.usage()),
+                // This end reads usage through a TOKEN reader only, so no counted class reaches it.
+                open_units: Default::default(),
                 finish: TapFinish::Partial,
             });
         }

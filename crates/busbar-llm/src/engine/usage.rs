@@ -39,10 +39,11 @@ pub(crate) fn record_resp_usage(
             // its open class (#71) against the key's budget chain, in the fee's window — where the
             // card prices it; a present card silent about it refuses (#42); an absent card reads 0.
             // The metering row below is untouched: the request counts with no token split.
-            if let Some(busbar_substrate_values::billing::Billing::Counted { class, count }) =
-                &usage
-            {
-                let usage_units = std::collections::BTreeMap::from([(class.clone(), *count)]);
+            //
+            // The class map is [`open_units_of`]'s — the SAME map the tap reports back for the
+            // durable book (#71), so the two books are handed one set of counts from one function.
+            if let Some(busbar_substrate_values::billing::Billing::Counted { .. }) = &usage {
+                let usage_units = open_units_of(&usage);
                 host.meter_ledger(
                     &sink.pin,
                     &sink.key,
@@ -61,6 +62,37 @@ pub(crate) fn record_resp_usage(
                 sink.charged_at,
             );
         }
+    }
+}
+
+/// **EVERY OPEN CLASS a delivery billed**, as the class map it is ledgered under (#71): a COUNTED
+/// non-token unit (a rerank's search units, item 134) VERBATIM as its open class, and nothing for any
+/// other shape.
+///
+/// ONE function, read twice: [`record_resp_usage`] ledgers exactly this map onto the governance
+/// ledger, and the buffered tap reports exactly this map back
+/// ([`crate::engine::TapReport::open_units`]) so the late reading hands the durable (second) book
+/// the same counts. Two spellings of this projection are how the two books came to disagree.
+///
+/// Every variant is spelled, as in the tap's token projection: `Billing` is closed, and a wildcard
+/// here would quietly report nothing for a counted shape added after this was written. The token
+/// split rides [`crate::engine::TapReport::usage`]; duration, characters, images and the flat fee are
+/// not ledgered as a class today, so reporting one here would put a count on the durable book the
+/// governance ledger does not hold.
+pub(crate) fn open_units_of(
+    usage: &Option<busbar_substrate_values::billing::Billing>,
+) -> std::collections::BTreeMap<String, u64> {
+    use busbar_substrate_values::billing::Billing;
+    match usage {
+        Some(Billing::Counted { class, count }) => {
+            std::collections::BTreeMap::from([(class.clone(), *count)])
+        }
+        Some(Billing::Tokens(_))
+        | Some(Billing::Duration { .. })
+        | Some(Billing::Characters { .. })
+        | Some(Billing::Images { .. })
+        | Some(Billing::Flat)
+        | None => std::collections::BTreeMap::new(),
     }
 }
 

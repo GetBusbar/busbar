@@ -295,6 +295,7 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
                 // No lane answered and none could: the name resolved to nothing.
                 lane: None,
                 usage: None,
+                open_units: Default::default(),
                 status: response.status().as_u16(),
                 // Nothing was dialled, so this is not a fee-bearing upstream leg.
                 upstream_leg: false,
@@ -462,6 +463,7 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
         // Empty until the tap says otherwise, which is the state a stream leaves them in.
         lane: None,
         usage: None,
+        open_units: Default::default(),
         // The status the CLIENT saw, which is the fee basis and is known at the head either way.
         status: resp.status().as_u16(),
         // The walk resolved candidates and dialled, so this is a fee-bearing client request.
