@@ -5756,7 +5756,7 @@ category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
 
-# ── ARMED 2026-09-24 AT TODAY'S COUNT (item 197; KICKOFF §9.4 — a new row, not a raised one) ──────────
+# ── ARMED 2026-09-24 AT TODAY'S COUNT (a new row, not a raised one) ──────────────────────────────────
 # The store kind's two in-tree crates and the hook kind's one in-tree plugin had no Noun, so their
 # names were unpoliced. Measured at e970ed0ae with the emitter, rows for the three new nouns only:
 # `memory` (busbar_store_memory) 43 files, `store` (busbar_store_example_plugin) 3, `ranking`

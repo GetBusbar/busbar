@@ -248,8 +248,8 @@ pub enum Excuse {
 }
 
 /// The arms of a release script that do NOT run the gates it names. `--selftest` proves the
-/// script's own plumbing, `--help` prints, and `--fast` is PROVISIONAL by its own contract (exit 3,
-/// KICKOFF §17.1) — none of them is the DONE run a [`Excuse::ReleaseRun`] entry rests on.
+/// script's own plumbing, `--help` prints, and `--fast` is PROVISIONAL by its own contract (it
+/// exits 3) — none of them is the DONE run a [`Excuse::ReleaseRun`] entry rests on.
 const NOT_A_GATE_RUN: &[&str] = &["--selftest", "--help", "-h", "--fast"];
 
 /// WHERE A WORKFLOW RUNS `script` IN A FORM THAT EXECUTES ITS GATES — `Ok(<file>: <line>)`, or the

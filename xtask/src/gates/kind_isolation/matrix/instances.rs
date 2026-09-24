@@ -46,7 +46,7 @@
 //! ## ARMED AT TODAY'S NUMBER
 //!
 //! Every non-zero cell carries an `[[instance]]` row in `qa/kind-isolation.toml` with TODAY'S
-//! measured count (Law 9 / §9.4 — a first measurement, not a raise). The ratchet is exact in both
+//! measured count (a first measurement, not a raise). The ratchet is exact in both
 //! directions like `[[cell]]`: a rise is the landing that grew the naming, a fall with the row left
 //! standing is stale slack, and a row over a zero cell is dead. The ship twin owes zero in every
 //! neutral crate through the Law 0 class. The drain is Phase 4's.

@@ -71,9 +71,8 @@ pub const ROW_DISCOVERY: &str = "workspace-deps:discovery";
 /// one is a reviewable source edit.
 pub const MIN_MEMBERS: usize = 8;
 pub const MIN_INHERITED: usize = 40;
-/// 30, not 40 (item F0). The crate fold's planned end state is 35 crates under `crates/`, 34 if
-/// `busbar-core-connsec` folds, and the roster's 33 (docs/design/1.6.0-TODO.md Phase 4, "THE FOLD";
-/// docs/design/BUSBAR-1.6.0.md, the crate roster) — at 40 this row went RED at 39 crates, i.e. at
+/// 30, not 40. The crate fold's planned end state is 35 crates under `crates/`, 34 if
+/// `busbar-core-connsec` folds, and the architecture's crate roster names 33 — at 40 this row went RED at 39 crates, i.e. at
 /// fold #10, against a planned shrink. The floor guards against a BLIND walk (a moved or emptied
 /// `crates/`, a filter that stopped matching), which finds a handful or nothing; it is not a
 /// ratchet on the roster. 30 sits three under the smallest roster variant, so no planned fold

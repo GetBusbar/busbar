@@ -259,7 +259,7 @@ def verdict_plane_neutrality(root, hits_dir):
                 total += 1
     sources.append({
         "id": "plane-purity-lint",
-        # The shell lint was retired into `cargo xtask gate plane-purity` (4b11e2f19); the evidence is
+        # The shell lint was retired into `cargo xtask gate plane-purity`; the evidence is
         # the gate that ran, not the script that no longer exists.
         "evidence": "xtask/src/gates/plane_purity/mod.rs",
         "evidence_present": (root / "xtask/src/gates/plane_purity/mod.rs").is_file(),

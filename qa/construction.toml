@@ -209,10 +209,9 @@ busbar-voice = ["busbar-voice-codec"]
 # ── ITEMS 376 + 381 (Q11/Q32, OWNER-SIGNED 2026-09-24) ──────────────────────────────────────────
 #
 # Both fixes are NEEDLE repairs whose true measurement exceeds the existing ceiling, formally a
-# RAISE that §9.4 forbids an agent from making on its own. The owner ruled (Q32, in-session
-# 2026-09-24, recorded at docs/design/1.6.0-QUESTIONS.md Q11/Q32): "approve re-pinning 376/381
-# needle repairs at their TRUE counts (then downward only)". Measured on the committed tree at
-# HEAD b091b4e83 in a clean detached worktree (`cargo xtask gate construction --report`).
+# RAISE, which only an owner signature may make. The owner signed on 2026-09-24: re-pin both
+# needle repairs at their TRUE counts, and from there the ceilings move downward only. Measured on
+# the committed tree in a clean detached worktree (`cargo xtask gate construction --report`).
 #
 # 376: `[rules.ports-only]`/`[rules.ports-only-tests]` named the needle `busbar_core::`, a crate
 # 673ecdaaa absorbed into busbar-kernel — the row measured a false zero against a crate that no
@@ -292,7 +291,7 @@ because = "item 381 (Q11/Q32): the prefix table drops busbar_core and busbar_sub
 # plane 3294->3877, secret 13->14}, busbar-plane-a2a x {plane 77->90, transport 103->110},
 # busbar-plane-mcp x plane 37->49. Each said it "expires by itself the moment this commit reaches
 # the base, and the commit after that strikes it". It reached the base: at origin/predev
-# (b7200b496) every one of the ten cells already reads its `to` value, so `ceiling-rose` reported
+# every one of the ten cells already reads its `to` value, so `ceiling-rose` reported
 # all ten as "a declared raise ... that is not a raise at the base". This is the commit after.
 # Nothing here moved a ceiling; the numbers live in qa/kind-isolation.toml and did not change.
 

@@ -776,7 +776,7 @@ fn ceiling_cases<'a>(
 
     // THE CONTRACT CRATE, READ FROM THE KEY THE ROW READS. This planted into `caps_crate`, falling
     // back to `busbar-caps` — a key struck from the ceilings file and a crate folded into
-    // busbar-contract (2c9eddecf) — so the plant landed in a crate no row measures, and
+    // busbar-contract — so the plant landed in a crate no row measures, and
     // `loc-ceilings:caps-contract` looked proven only because it was already over its ceiling.
     // On the green fixture it is at its ceiling, and this plant is what has to move it.
     let contract = cfg

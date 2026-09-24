@@ -222,8 +222,8 @@ unshipped = true
 switch    = "STRIKE THIS ROW when the amend-rate-history effect books the adjusting entries it derives. This is a BILLED-BYTE change and needs an owner signature before it lands."
 
 # MONEY — the #79 exact pricing view has no production producer.
-# `money-one-function-view` STRUCK 2026-09-24 by OWNER RULING (Q12/Q25c): the one function is the
-# production money path (789d55a78) and GET /admin/usage prices through price_in_view.
+# `money-one-function-view` STRUCK 2026-09-24 by owner ruling: the one function is the production
+# money path and GET /admin/usage prices through price_in_view.
 
 # ─── SECURITY AND DURABILITY, from the same sweep ───────────────────────────────────────────────
 
@@ -289,8 +289,8 @@ unshipped = true
 switch    = "STRIKE THIS ROW in the commit that builds the root's BreakerPolicy from configured pools. It belongs with the three breaker rows above — they are one seam and should land together."
 
 # THE ABI MINOR WAS BUMPED 19->20 FOR A CAPABILITY WITH NO PRODUCER AND NO CONSUMER.
-# `plugin-abi-keyed-units` STRUCK 2026-09-24 by OWNER RULING (Q33d/Q35): item 123 (d10cf4147) made the host
-# decode keyed units on the real metering path (plane_host/govern.rs decode_usage_units).
+# `plugin-abi-keyed-units` STRUCK 2026-09-24 by owner ruling: the host decodes keyed units on the
+# real metering path (plane_host/govern.rs decode_usage_units), so the capability has a consumer.
 
 # MONEY — the late-accrual mechanism is back to being an assertion.
 [[capability]]

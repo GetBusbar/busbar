@@ -939,7 +939,7 @@ mod tests {
         );
     }
 
-    /// `--execute` builds the EXECUTING hot-path gates (9bb473f04), whose owed set carries the
+    /// `--execute` builds the EXECUTING hot-path gates, whose owed set carries the
     /// `:executed` rows the registry's text-only build does not.
     #[test]
     fn execute_builds_the_executing_hot_path_gates() {

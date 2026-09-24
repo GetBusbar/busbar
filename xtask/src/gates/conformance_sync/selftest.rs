@@ -41,9 +41,10 @@ const OTHER_COMMIT: &str = "0000000000000000000000000000000000000000";
 /// [`FIXTURE_RELEASE`] (the anchor suite's written outright, so the base is armed whatever the tree
 /// holds), and the release commit planted as that same sha.
 ///
-/// WHY A FIXTURE AND NOT THE REAL TREE (item 89's rule). The freshness row judges every armed pass
-/// against the commit of the checkout under judgement (item 165). On any commit but the one the
-/// suites ran on, the real tree is RED on that row — that is the rule working (KICKOFF §7.3), and
+/// WHY A FIXTURE AND NOT THE REAL TREE. A red proof needs a row that is green before the plant. The
+/// freshness row judges every armed pass against the commit of the checkout under judgement. On any
+/// commit but the one the suites ran on, the real tree is RED on that row — that is the rule
+/// working (every commit invalidates every conformance pass), and
 /// it stays RED on `cargo xtask gate conformance-sync`. Measured from the real tree, every
 /// freshness red proof would be PROOF IMPOSSIBLE. Measured from this base, the unplanted row is
 /// honestly green (the fixture control proves it) and each plant is the base with exactly one
@@ -278,7 +279,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     // Every case is measured from the fixture base, whose freshness row is green by construction.
     //
     // A pass carried over from an older sha: the anchor's verdict claims green on a commit that is
-    // not the release commit, while every other suite's is about it. Fail-closed staleness (§5.2).
+    // not the release commit, while every other suite's is about it. Staleness fails closed.
     let mut ov = freshness_base(cx);
     ov.set(
         format!("{VERDICT_DIR}/{ANCHOR}.json"),
