@@ -6,22 +6,22 @@ impl ProtocolReader for ResponsesReader {
         tail: &[u8],
     ) -> Option<busbar_substrate_values::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
-        let u64_field = |k: &str| v.get(k).and_then(read_count_u64);
-        let cached = v
-            .get("input_tokens_details")
-            .and_then(|d| d.get("cached_tokens"))
-            .and_then(read_count_u64);
+        // Every count that reaches the bill is read through `billed`/`billed_opt`: an unreadable
+        // one yields NO recovered usage, never a zero one (#42), and the caller then bills its
+        // conservative floor estimate for the truncated body instead of $0.
+        let u = Some(&v);
+        let cached = billed_opt(v.get("input_tokens_details"), "cached_tokens").ok()?;
         // A truncated body bills the same cache tiers an untruncated one does: `cache_write_tokens`
         // is the OTHER slice of `input_tokens`, priced at the cache-WRITE tier. See
         // `read_cache_write_tokens`.
         let cache_write = super::read_cache_write_tokens(&v);
         Some(
             crate::ir::IrUsage {
-                input_tokens: u64_field("input_tokens")
-                    .unwrap_or(0)
+                input_tokens: billed(u, "input_tokens")
+                    .ok()?
                     .saturating_sub(cached.unwrap_or(0))
                     .saturating_sub(cache_write.unwrap_or(0)),
-                output_tokens: u64_field("output_tokens").unwrap_or(0),
+                output_tokens: billed(u, "output_tokens").ok()?,
                 cache_creation_input_tokens: cache_write,
                 cache_read_input_tokens: cached,
                 detail: crate::ir::IrUsageDetail::default(),
@@ -1198,30 +1198,26 @@ impl ProtocolReader for ResponsesReader {
                             stop_reason
                         };
 
+                    // BILLED COUNTS: absent is zero, a present-but-UNREADABLE count REFUSES (#42)
+                    // — the stream ends in an error instead of ledgering zero tokens.
                     let usage = response_obj
                         .get("usage")
-                        .map(|u| {
+                        .map(|u| -> Result<crate::ir::IrUsage, IrError> {
                             let cached = read_cached_tokens(u);
                             // `cache_write_tokens` rides the STREAM's terminal usage object exactly
                             // as `cached_tokens` does — the OTHER slice of `input_tokens`, priced at
                             // the cache-WRITE tier. See `read_cache_write_tokens`.
                             let cache_write = read_cache_write_tokens(u);
-                            crate::ir::IrUsage {
+                            Ok(crate::ir::IrUsage {
                                 // NORMALIZE to the additive-cache convention: the Responses API's
                                 // `input_tokens` is a TOTAL that already INCLUDES the cached prefix
                                 // and the cache-write slice, so subtract both to leave only the
                                 // uncached input. `saturating_sub` guards an odd upstream where the
                                 // slices exceed the total.
-                                input_tokens: u
-                                    .get("input_tokens")
-                                    .and_then(read_count_u64)
-                                    .unwrap_or(0)
+                                input_tokens: billed(Some(u), "input_tokens")?
                                     .saturating_sub(cached.unwrap_or(0))
                                     .saturating_sub(cache_write.unwrap_or(0)),
-                                output_tokens: u
-                                    .get("output_tokens")
-                                    .and_then(read_count_u64)
-                                    .unwrap_or(0),
+                                output_tokens: billed(Some(u), "output_tokens")?,
                                 cache_creation_input_tokens: cache_write,
                                 // Carry the streamed prompt-cache hit count
                                 // (`usage.input_tokens_details.cached_tokens`) into the IR's
@@ -1240,15 +1236,22 @@ impl ProtocolReader for ResponsesReader {
                                         .and_then(read_count_u64),
                                     ..Default::default()
                                 },
-                            }
+                            })
                         })
-                        .unwrap_or(crate::ir::IrUsage {
+                        .transpose();
+                    let usage = match usage {
+                        Ok(usage) => usage.unwrap_or(crate::ir::IrUsage {
                             input_tokens: 0,
                             output_tokens: 0,
                             cache_creation_input_tokens: None,
                             cache_read_input_tokens: None,
                             detail: crate::ir::IrUsageDetail::default(),
-                        });
+                        }),
+                        Err(refusal) => {
+                            out.push(IrStreamEvent::Error(refusal));
+                            return out;
+                        }
+                    };
 
                     // Close any still-open content blocks BEFORE the MessageDelta so the emitted
                     // order is BlockStop* → MessageDelta → MessageStop, mirroring Anthropic's
@@ -1573,16 +1576,12 @@ impl ProtocolReader for ResponsesReader {
             // TOTAL that already INCLUDES the cached prefix and the cache-write slice, so subtract
             // both to leave only the uncached input. `saturating_sub` guards an odd upstream where
             // the slices exceed the total.
-            input_tokens: usage_val
-                .and_then(|u| u.get("input_tokens"))
-                .and_then(read_count_u64)
-                .unwrap_or(0)
+            //
+            // BILLED COUNTS: absent is zero, a present-but-UNREADABLE count REFUSES (#42).
+            input_tokens: billed(usage_val, "input_tokens")?
                 .saturating_sub(cached.unwrap_or(0))
                 .saturating_sub(cache_write.unwrap_or(0)),
-            output_tokens: usage_val
-                .and_then(|u| u.get("output_tokens"))
-                .and_then(read_count_u64)
-                .unwrap_or(0),
+            output_tokens: billed(usage_val, "output_tokens")?,
             // `input_tokens_details.cache_write_tokens` is the CACHE-WRITE tier's count; leaving it
             // inside the plain input total (hardcoded `None`) charged a cache-writing turn at the
             // wrong rate — and the writer has always emitted the member, so the reader was the only
@@ -1717,3 +1716,51 @@ fn tool_input_from_arguments(v: Option<&serde_json::Value>) -> serde_json::Value
         None => serde_json::json!({}),
     }
 }
+
+// ── BILLED COUNTS (#42) ──────────────────────────────────────────────────────────────────────────
+
+/// Read one BILLED count off a usage object under `usage_count::billed_count`'s contract: an absent
+/// usage object, an absent field or a JSON `null` is 0 (exactly as before), a readable count is the
+/// count (through the crate's one seam, `read_count_u64`), and a present-but-UNREADABLE count
+/// REFUSES. The lenient read this replaces defaulted an unreadable count to zero, so a stringified
+/// `"1500"` was ledgered as no work at all.
+fn billed(usage: Option<&serde_json::Value>, field: &'static str) -> Result<u64, IrError> {
+    Ok(billed_opt(usage, field)?.unwrap_or_default())
+}
+
+/// [`billed`] for a count whose ABSENCE the IR keeps distinct from zero (a cache tier): absent or
+/// `null` is `None`, readable is `Some`, unreadable REFUSES.
+fn billed_opt(
+    usage: Option<&serde_json::Value>,
+    field: &'static str,
+) -> Result<Option<u64>, IrError> {
+    match usage.and_then(|u| u.get(field)) {
+        None => Ok(None),
+        Some(v) if v.is_null() => Ok(None),
+        Some(v) => crate::usage_count::read_count_u64(v)
+            .map(Some)
+            .ok_or_else(|| refuse_unreadable_count(field, v)),
+    }
+}
+
+/// The refusal a present-but-unreadable billed count becomes — the same `ir_parse` shape as every
+/// other response this reader cannot read, with the field and a BOUNDED spelling on the operator's
+/// log (cut on a character, never a byte, so a hostile multi-byte spelling cannot panic the cut).
+fn refuse_unreadable_count(field: &'static str, v: &serde_json::Value) -> IrError {
+    let spelling: String = v.to_string().chars().take(64).collect();
+    tracing::warn!(
+        protocol = "openai_responses",
+        field,
+        spelling = %spelling,
+        "usage count is present but unreadable; refusing rather than billing it as zero (#42)"
+    );
+    IrError {
+        class: StatusClass::ClientError,
+        provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.into()),
+        retry_after: None,
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/unreadable_count_refusal_tests.rs"]
+mod unreadable_count_refusal_tests;

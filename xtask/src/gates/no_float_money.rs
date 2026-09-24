@@ -100,6 +100,10 @@
 //! not because the sites did. [`COUNT_HELPERS`] makes them visible; the 32 it found are armed as
 //! pending under [`PENDING_CEILING`], which may only fall.
 //!
+//! AND IT FELL TO ZERO (item 133). All 32 LLM-codec reads and the voice codec's billed reads now
+//! refuse an unreadable count; the voice `u64_at` was measured to read no billed count and is a
+//! [`AllowClass::NotACount`]. No pending allowance remains, and the ceiling holds it at none.
+//!
 //! # THE THIRD BAN: A PERSISTED COUNT WITHOUT ITS SCALE (#81a)
 //!
 //! A count is written down as its MANTISSA, which is meaningless without the scale beside it. #81a
@@ -587,8 +591,11 @@ const ALLOW_WINDOW: usize = 200;
 /// number measured the day [`COUNT_HELPERS`] made the codec's 32 helper reads visible: 5 in the
 /// voice codec plus those 32. A needle names a site's shape, not its count, so without this a
 /// second defaulted read beside an allowed one rode the same allowance for free. It may only go
-/// DOWN, in the diff that converts a site; a run above it is a finding.
-pub const PENDING_CEILING: usize = 37;
+/// DOWN, in the diff that converts a site; a run above it is a finding. LOWERED 37 → 0 on
+/// 2026-09-24 (items 133 + the voice twins): every LLM-codec billed read now goes through the
+/// refusing `billed`/`billed_opt` readers, every duplex billed read through the voice codec's
+/// `billed_count`, and `u64_at` was measured to read no billed count at all.
+pub const PENDING_CEILING: usize = 0;
 
 /// THE SURVIVING SITES, EVERY ONE NAMED AND REASONED. Measured 2026-09-22 against this tree.
 ///
@@ -659,87 +666,13 @@ pub const ALLOWED_COUNT_READS: &[Allow] = &[
         why:
             "the #44 config boundary: a configured decimal read once at parse, not a runtime count",
     },
-    // ── A real count, owed to the #81 conversion wave ─────────────────────────────────────────
     Allow {
         file: "crates/busbar-voice-codec/src/ir/codec/mod.rs",
         needle: "fn u64_at",
-        class: AllowClass::PendingConversion,
-        why: "the crate's own count helper — every billed read in it defaults to zero",
-    },
-    Allow {
-        file: "crates/busbar-voice-codec/src/ir/codec/mod.rs",
-        needle: "let field =",
-        class: AllowClass::PendingConversion,
-        why: "the crate's own count helper — every billed read in it defaults to zero",
-    },
-    Allow {
-        file: "crates/busbar-voice-codec/src/ir/codec/mod.rs",
-        needle: "let stated =",
-        class: AllowClass::PendingConversion,
-        why: "the crate's own count helper — every billed read in it defaults to zero",
-    },
-    Allow {
-        file: "crates/busbar-voice-codec/src/ir/codec/gemini/mod.rs",
-        needle: "let stated_total =",
-        class: AllowClass::PendingConversion,
-        why: "the crate's own count helper — every billed read in it defaults to zero",
-    },
-    Allow {
-        file: "crates/busbar-voice-codec/src/ir/codec/gemini/mod.rs",
-        needle: "get(\"cachedContentTokenCount\")",
-        class: AllowClass::PendingConversion,
-        why: "a billed count that reads zero when the provider spells it as a float",
-    },
-    // ── ARMED 2026-09-23 (item 178): the LLM codec's billed reads through its own helper ───────
-    //
-    // Invisible to this row until the helper joined [`COUNT_HELPERS`]: every one of them is
-    // `.and_then(read_count_u64).unwrap_or(0)`, which records ZERO for a usage count that was
-    // present and unreadable. Measured on the day the row learned to see them: 32 sites across
-    // these seven files, every one a real billed count. They are armed here at that number — the
-    // row could not see them, so this is the first measurement, not a relaxation — and
-    // [`PENDING_CEILING`] holds the total so no file on this list can add one. The fix each one is
-    // owed is `usage_count::billed_count`, which keeps absent-is-zero and REFUSES unreadable.
-    Allow {
-        file: "crates/busbar-llm-codec/src/anthropic/reader.rs",
-        needle: "read_count_u64",
-        class: AllowClass::PendingConversion,
-        why: "a billed count defaulted to zero through the codec's own helper; owed billed_count",
-    },
-    Allow {
-        file: "crates/busbar-llm-codec/src/bedrock/reader.rs",
-        needle: "read_count_u64",
-        class: AllowClass::PendingConversion,
-        why: "a billed count defaulted to zero through the codec's own helper; owed billed_count",
-    },
-    Allow {
-        file: "crates/busbar-llm-codec/src/cohere/reader.rs",
-        needle: "read_count_u64",
-        class: AllowClass::PendingConversion,
-        why: "a billed count defaulted to zero through the codec's own helper; owed billed_count",
-    },
-    Allow {
-        file: "crates/busbar-llm-codec/src/gemini/mod.rs",
-        needle: "read_count_u64",
-        class: AllowClass::PendingConversion,
-        why: "a billed count defaulted to zero through the codec's own helper; owed billed_count",
-    },
-    Allow {
-        file: "crates/busbar-llm-codec/src/gemini/reader.rs",
-        needle: "read_count_u64",
-        class: AllowClass::PendingConversion,
-        why: "a billed count defaulted to zero through the codec's own helper; owed billed_count",
-    },
-    Allow {
-        file: "crates/busbar-llm-codec/src/openai_chat/reader.rs",
-        needle: "read_count_u64",
-        class: AllowClass::PendingConversion,
-        why: "a billed count defaulted to zero through the codec's own helper; owed billed_count",
-    },
-    Allow {
-        file: "crates/busbar-llm-codec/src/openai_responses/reader.rs",
-        needle: "read_count_u64",
-        class: AllowClass::PendingConversion,
-        why: "a billed count defaulted to zero through the codec's own helper; owed billed_count",
+        class: AllowClass::NotACount,
+        why: "measured 2026-09-24: its only callers are a truncate's content_index and three audio \
+              timings (audio_end_ms, audio_start_ms) — an index and timing metadata, never metered; \
+              every billed duplex count reads through `billed_count`, which refuses",
     },
 ];
 

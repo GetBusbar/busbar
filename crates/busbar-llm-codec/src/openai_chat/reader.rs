@@ -6,22 +6,22 @@ impl ProtocolReader for OpenAiReader {
         tail: &[u8],
     ) -> Option<busbar_substrate_values::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
-        let u64_field = |k: &str| v.get(k).and_then(read_count_u64);
-        let cached = v
-            .get("prompt_tokens_details")
-            .and_then(|d| d.get("cached_tokens"))
-            .and_then(read_count_u64);
+        // Every count that reaches the bill is read through `billed`/`billed_opt`: an unreadable
+        // one yields NO recovered usage, never a zero one (#42), and the caller then bills its
+        // conservative floor estimate for the truncated body instead of $0.
+        let u = Some(&v);
+        let cached = billed_opt(v.get("prompt_tokens_details"), "cached_tokens").ok()?;
         // `cache_write_tokens` is the OTHER slice of `prompt_tokens`, priced at the cache-WRITE
         // tier. A truncated body must price it like an untruncated one. See
         // `read_cache_write_tokens`.
         let cache_write = super::read_cache_write_tokens(&v);
         Some(
             crate::ir::IrUsage {
-                input_tokens: u64_field("prompt_tokens")
-                    .unwrap_or(0)
+                input_tokens: billed(u, "prompt_tokens")
+                    .ok()?
                     .saturating_sub(cached.unwrap_or(0))
                     .saturating_sub(cache_write.unwrap_or(0)),
-                output_tokens: u64_field("completion_tokens").unwrap_or(0),
+                output_tokens: billed(u, "completion_tokens").ok()?,
                 cache_creation_input_tokens: cache_write,
                 cache_read_input_tokens: cached,
                 detail: crate::ir::IrUsageDetail::default(),
@@ -916,17 +916,17 @@ impl ProtocolReader for OpenAiReader {
         // so a naive `.map(...)` would synthesize `Some(IrUsage{0,0,..})` on every content chunk and
         // (via the trailing-usage branch below) emit a spurious mid-stream `MessageDelta` per chunk.
         // Filter to a real usage OBJECT so `usage: null` reads as `None`.
+        //
+        // BILLED COUNTS: absent is zero, a present-but-UNREADABLE count REFUSES (#42) — the stream
+        // ends in an error instead of ledgering zero tokens.
         let chunk_usage = data.get("usage").filter(|u| u.is_object()).map(|u| {
-            let prompt_tokens = u.get("prompt_tokens").and_then(read_count_u64).unwrap_or(0);
-            let cached = u
-                .get("prompt_tokens_details")
-                .and_then(|d| d.get("cached_tokens"))
-                .and_then(read_count_u64);
+            let prompt_tokens = billed(Some(u), "prompt_tokens")?;
+            let cached = billed_opt(u.get("prompt_tokens_details"), "cached_tokens")?;
             // `cache_write_tokens` rides the STREAM's usage chunk exactly as `cached_tokens` does —
             // the OTHER slice of `prompt_tokens`, priced at the cache-WRITE tier. See
             // `read_cache_write_tokens`.
             let cache_write = super::read_cache_write_tokens(u);
-            IrUsage {
+            Ok::<_, IrError>(IrUsage {
                 // NORMALIZE to the additive-cache convention: OpenAI's `prompt_tokens` is a
                 // TOTAL that already INCLUDES the cached prefix and the cache-write slice, so
                 // subtract both to leave only the uncached input. `saturating_sub` guards a
@@ -935,10 +935,7 @@ impl ProtocolReader for OpenAiReader {
                 input_tokens: prompt_tokens
                     .saturating_sub(cached.unwrap_or(0))
                     .saturating_sub(cache_write.unwrap_or(0)),
-                output_tokens: u
-                    .get("completion_tokens")
-                    .and_then(read_count_u64)
-                    .unwrap_or(0),
+                output_tokens: billed(Some(u), "completion_tokens")?,
                 cache_creation_input_tokens: cache_write,
                 cache_read_input_tokens: cached,
                 // The sub-bucket is on the STREAM's usage chunk too (a `stream_options:
@@ -974,8 +971,15 @@ impl ProtocolReader for OpenAiReader {
                         .and_then(read_count_u64),
                     ..Default::default()
                 },
-            }
+            })
         });
+        let chunk_usage = match chunk_usage.transpose() {
+            Ok(usage) => usage,
+            Err(refusal) => {
+                out.push(IrStreamEvent::Error(refusal));
+                return out;
+            }
+        };
 
         // 5. finish_reason → close open blocks (text first, then tools ascending), MessageDelta, MessageStop.
         let finish_reason = choice0
@@ -1254,10 +1258,12 @@ impl ProtocolReader for OpenAiReader {
         // Cohere readers tolerate the same condition with a zero-usage fallback. `usage_val` is an
         // `Option`, so each token lookup below already defaults to 0.
         let usage_val = obj.get("usage");
-        let cache_read_input_tokens = usage_val
-            .and_then(|u| u.get("prompt_tokens_details"))
-            .and_then(|d| d.get("cached_tokens"))
-            .and_then(read_count_u64);
+        //
+        // BILLED COUNTS: absent is zero, a present-but-UNREADABLE count REFUSES (#42).
+        let cache_read_input_tokens = billed_opt(
+            usage_val.and_then(|u| u.get("prompt_tokens_details")),
+            "cached_tokens",
+        )?;
         // `prompt_tokens_details.cache_write_tokens` — the OTHER slice of `prompt_tokens`, priced at
         // the cache-WRITE tier. See `read_cache_write_tokens`.
         let cache_write_input_tokens = usage_val.and_then(super::read_cache_write_tokens);
@@ -1267,16 +1273,10 @@ impl ProtocolReader for OpenAiReader {
             // already INCLUDES the cached prefix and the cache-write slice, so subtract both to
             // leave only the uncached input. `saturating_sub` guards an odd upstream where the
             // slices exceed the total.
-            input_tokens: usage_val
-                .and_then(|u| u.get("prompt_tokens"))
-                .and_then(read_count_u64)
-                .unwrap_or(0)
+            input_tokens: billed(usage_val, "prompt_tokens")?
                 .saturating_sub(cache_read_input_tokens.unwrap_or(0))
                 .saturating_sub(cache_write_input_tokens.unwrap_or(0)),
-            output_tokens: usage_val
-                .and_then(|u| u.get("completion_tokens"))
-                .and_then(read_count_u64)
-                .unwrap_or(0),
+            output_tokens: billed(usage_val, "completion_tokens")?,
             // `prompt_tokens_details.cache_write_tokens` is the cache-WRITE tier's count; hardcoded
             // `None` ("OpenAI doesn't provide this split" — it does), a cache-writing turn billed
             // the write at the plain input rate. Map it to the IR's ADDITIVE
@@ -1380,3 +1380,51 @@ fn tool_input_from_arguments(v: Option<&serde_json::Value>) -> serde_json::Value
         None => serde_json::json!({}),
     }
 }
+
+// ── BILLED COUNTS (#42) ──────────────────────────────────────────────────────────────────────────
+
+/// Read one BILLED count off a usage object under `usage_count::billed_count`'s contract: an absent
+/// usage object, an absent field or a JSON `null` is 0 (exactly as before), a readable count is the
+/// count (through the crate's one seam, `read_count_u64`), and a present-but-UNREADABLE count
+/// REFUSES. The lenient read this replaces defaulted an unreadable count to zero, so a stringified
+/// `"1500"` was ledgered as no work at all.
+fn billed(usage: Option<&serde_json::Value>, field: &'static str) -> Result<u64, IrError> {
+    Ok(billed_opt(usage, field)?.unwrap_or_default())
+}
+
+/// [`billed`] for a count whose ABSENCE the IR keeps distinct from zero (a cache tier): absent or
+/// `null` is `None`, readable is `Some`, unreadable REFUSES.
+fn billed_opt(
+    usage: Option<&serde_json::Value>,
+    field: &'static str,
+) -> Result<Option<u64>, IrError> {
+    match usage.and_then(|u| u.get(field)) {
+        None => Ok(None),
+        Some(v) if v.is_null() => Ok(None),
+        Some(v) => crate::usage_count::read_count_u64(v)
+            .map(Some)
+            .ok_or_else(|| refuse_unreadable_count(field, v)),
+    }
+}
+
+/// The refusal a present-but-unreadable billed count becomes — the same `ir_parse` shape as every
+/// other response this reader cannot read, with the field and a BOUNDED spelling on the operator's
+/// log (cut on a character, never a byte, so a hostile multi-byte spelling cannot panic the cut).
+fn refuse_unreadable_count(field: &'static str, v: &serde_json::Value) -> IrError {
+    let spelling: String = v.to_string().chars().take(64).collect();
+    tracing::warn!(
+        protocol = "openai",
+        field,
+        spelling = %spelling,
+        "usage count is present but unreadable; refusing rather than billing it as zero (#42)"
+    );
+    IrError {
+        class: StatusClass::ClientError,
+        provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.into()),
+        retry_after: None,
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/unreadable_count_refusal_tests.rs"]
+mod unreadable_count_refusal_tests;

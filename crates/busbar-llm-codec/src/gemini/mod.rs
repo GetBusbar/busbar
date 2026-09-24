@@ -373,10 +373,15 @@ fn gemini_usage_identity_note(
     // gap is in the normalization rather than on the wire (e.g. an upstream that reports more cached
     // tokens than prompt tokens). The two demand completely different responses, so an operator
     // reading this line should not have to guess which one they are looking at.
+    //
+    // Read through `billed_count`, the same seam the billed terms were read through: the caller has
+    // already refused an unreadable term (#42), so every term here is a count or absent (zero).
     let wire_sum: u64 = GEMINI_USAGE_ADDITIVE_TERMS
         .iter()
-        .map(|k| u.get(*k).and_then(read_count_u64).unwrap_or(0))
-        .sum();
+        .try_fold(0u64, |sum, k| {
+            crate::usage_count::billed_count(u, k).map(|n| sum.saturating_add(n))
+        })
+        .ok()?;
     let unmodelled_term = wire_sum != reported_total;
     tracing::warn!(
         identity = GEMINI_USAGE_IDENTITY,
@@ -1667,45 +1672,34 @@ fn resolve_gemini_schema_refs(schema: &serde_json::Value) -> serde_json::Value {
 }
 
 /// Parse a Gemini `usageMetadata` block into `IrUsage`, defaulting every counter to 0 when the
-/// field (or an individual counter) is absent. Shared by the streaming and prompt-block paths so
-/// usage accounting stays identical regardless of how a response terminates.
+/// field (or an individual counter) is absent — and REFUSING (#42) when a billed counter is present
+/// but unreadable, where the old read defaulted it to zero and ledgered no work for work that
+/// happened. Shared by the streaming and prompt-block paths so usage accounting stays identical
+/// regardless of how a response terminates.
 ///
 /// Cache tokens: Gemini reports context-cache hits as `usageMetadata.cachedContentTokenCount`
 /// (the google-genai SDK's `cached_content_token_count`). Map it into the IR's
 /// `cache_read_input_tokens` — the SAME field Bedrock's `cacheReadInputTokens` and Anthropic's
 /// `cache_read_input_tokens` populate — so cached-prompt accounting survives the cross-protocol seam
 /// instead of being dropped. `None` when absent (no cache hit / older response).
-fn gemini_usage(data: &serde_json::Value) -> crate::ir::IrUsage {
+fn gemini_billed_usage(data: &serde_json::Value) -> Result<crate::ir::IrUsage, IrError> {
     let u = data.get(FIELD_USAGE_METADATA);
-    let prompt = u
-        .and_then(|u| u.get(FIELD_PROMPT_TOKEN_COUNT))
-        .and_then(read_count_u64)
-        .unwrap_or(0);
-    let cached = u
-        .and_then(|u| u.get(FIELD_CACHED_CONTENT_TOKEN_COUNT))
-        .and_then(read_count_u64);
+    let prompt = billed(u, FIELD_PROMPT_TOKEN_COUNT)?;
+    let cached = billed_opt(u, FIELD_CACHED_CONTENT_TOKEN_COUNT)?;
     // What this turn will BILL, computed here so the identity cross-check below can compare it
     // against Google's own stated total. Mirrors the field construction that follows exactly:
     // uncached input + cache read + visible output + thinking output.
-    let candidates = u
-        .and_then(|u| u.get(FIELD_CANDIDATES_TOKEN_COUNT))
-        .and_then(read_count_u64)
-        .unwrap_or(0);
-    let thoughts = u
-        .and_then(|u| u.get(FIELD_THOUGHTS_TOKEN_COUNT))
-        .and_then(read_count_u64)
-        .unwrap_or(0);
+    let candidates = billed(u, FIELD_CANDIDATES_TOKEN_COUNT)?;
+    let thoughts = billed_opt(u, FIELD_THOUGHTS_TOKEN_COUNT)?;
     // THE FOURTH ADDITIVE TERM. `toolUsePromptTokenCount` is not a slice of `promptTokenCount` —
     // see [`GEMINI_USAGE_ADDITIVE_TERMS`] for the recording that settles it — and Google charges it
     // at the INPUT rate, so it belongs in `input_tokens` beside the uncached prompt.
-    let tool_use = u
-        .and_then(|u| u.get(FIELD_TOOL_USE_PROMPT_TOKEN_COUNT))
-        .and_then(read_count_u64);
-    let billed = prompt
+    let tool_use = billed_opt(u, FIELD_TOOL_USE_PROMPT_TOKEN_COUNT)?;
+    let billed_total = prompt
         .saturating_add(candidates)
-        .saturating_add(thoughts)
+        .saturating_add(thoughts.unwrap_or(0))
         .saturating_add(tool_use.unwrap_or(0));
-    crate::ir::IrUsage {
+    Ok(crate::ir::IrUsage {
         // NORMALIZE to the additive-cache convention: Gemini's `promptTokenCount` is a TOTAL that
         // already INCLUDES `cachedContentTokenCount`, so subtract the cached tokens to leave only
         // the uncached input. `saturating_sub` guards an odd upstream where cached > prompt.
@@ -1737,15 +1731,7 @@ fn gemini_usage(data: &serde_json::Value) -> crate::ir::IrUsage {
         // before), which is the number clients reconcile against a bill. Same-protocol Gemini
         // traffic passes through byte-for-byte and never reaches the writer, so no native client
         // sees a reshaped `usageMetadata`.
-        output_tokens: u
-            .and_then(|u| u.get(FIELD_CANDIDATES_TOKEN_COUNT))
-            .and_then(read_count_u64)
-            .unwrap_or(0)
-            .saturating_add(
-                u.and_then(|u| u.get(FIELD_THOUGHTS_TOKEN_COUNT))
-                    .and_then(read_count_u64)
-                    .unwrap_or(0),
-            ),
+        output_tokens: candidates.saturating_add(thoughts.unwrap_or(0)),
         cache_creation_input_tokens: None,
         cache_read_input_tokens: cached,
         // The thinking tokens are ALSO recorded as the reasoning sub-bucket. They are already folded
@@ -1754,9 +1740,7 @@ fn gemini_usage(data: &serde_json::Value) -> crate::ir::IrUsage {
         // total: it is what lets a Gemini-backed request answer "how many of those output tokens
         // were thinking?" on an OpenAI-dialect egress, which previously returned a hard 0.
         detail: crate::ir::IrUsageDetail {
-            reasoning_tokens: u
-                .and_then(|u| u.get(FIELD_THOUGHTS_TOKEN_COUNT))
-                .and_then(read_count_u64),
+            reasoning_tokens: thoughts,
             // Gemini's `toolUsePromptTokenCount`, kept here as ATTRIBUTION: it answers "how many of
             // those input tokens were server-side tool use?" and it is what lets the Gemini writer
             // put the term back BESIDE `promptTokenCount` on the wire instead of inside it.
@@ -1772,9 +1756,60 @@ fn gemini_usage(data: &serde_json::Value) -> crate::ir::IrUsage {
             tool_use_prompt_tokens: tool_use,
             // The cross-check that makes the paragraph above impossible to lose again: Google's own
             // `totalTokenCount` versus the counters busbar decoded. `None` when they agree.
-            usage_identity_note: gemini_usage_identity_note(u, billed),
+            usage_identity_note: gemini_usage_identity_note(u, billed_total),
             ..Default::default()
         },
+    })
+}
+
+/// [`gemini_billed_usage`] for a fixture the test already knows carries readable counts. Test-only:
+/// production goes through the refusing form, never through a read that could default a count.
+#[cfg(test)]
+fn gemini_usage(data: &serde_json::Value) -> crate::ir::IrUsage {
+    gemini_billed_usage(data).expect("test fixture carries readable usage counts")
+}
+
+// ── BILLED COUNTS (#42) ──────────────────────────────────────────────────────────────────────────
+
+/// Read one BILLED count off a usage object under `usage_count::billed_count`'s contract: an absent
+/// usage object, an absent field or a JSON `null` is 0 (exactly as before), a readable count is the
+/// count (through the crate's one seam, `read_count_u64`), and a present-but-UNREADABLE count
+/// REFUSES. The lenient read this replaces defaulted an unreadable count to zero, so a stringified
+/// `"1500"` was ledgered as no work at all.
+fn billed(usage: Option<&serde_json::Value>, field: &'static str) -> Result<u64, IrError> {
+    Ok(billed_opt(usage, field)?.unwrap_or_default())
+}
+
+/// [`billed`] for a count whose ABSENCE the IR keeps distinct from zero (a cache tier): absent or
+/// `null` is `None`, readable is `Some`, unreadable REFUSES.
+fn billed_opt(
+    usage: Option<&serde_json::Value>,
+    field: &'static str,
+) -> Result<Option<u64>, IrError> {
+    match usage.and_then(|u| u.get(field)) {
+        None => Ok(None),
+        Some(v) if v.is_null() => Ok(None),
+        Some(v) => crate::usage_count::read_count_u64(v)
+            .map(Some)
+            .ok_or_else(|| refuse_unreadable_count(field, v)),
+    }
+}
+
+/// The refusal a present-but-unreadable billed count becomes — the same `ir_parse` shape as every
+/// other response this reader cannot read, with the field and a BOUNDED spelling on the operator's
+/// log (cut on a character, never a byte, so a hostile multi-byte spelling cannot panic the cut).
+fn refuse_unreadable_count(field: &'static str, v: &serde_json::Value) -> IrError {
+    let spelling: String = v.to_string().chars().take(64).collect();
+    tracing::warn!(
+        protocol = "gemini",
+        field,
+        spelling = %spelling,
+        "usage count is present but unreadable; refusing rather than billing it as zero (#42)"
+    );
+    IrError {
+        class: StatusClass::ClientError,
+        provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.into()),
+        retry_after: None,
     }
 }
 

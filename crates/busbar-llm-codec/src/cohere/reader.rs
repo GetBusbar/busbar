@@ -14,34 +14,31 @@ impl ProtocolReader for CohereReader {
         // counts while the identical untruncated body billed the BILLED ones: one completion, two
         // invoices, decided by nothing but whether the tail fit the reassembly cap. `search_units`
         // (a separately billed unit that is not a token count at all) was lost outright on this path.
-        let billed = v.get("billed_units");
+        let billed_units = v.get("billed_units");
         let billed_u64 = |k: &str| {
-            billed
+            billed_units
                 .and_then(|b| b.get(k))
                 .and_then(crate::usage_count::read_count_u64)
         };
         // A truncated body must price the cache hit like an untruncated one; see `read_response`
         // for why a Cohere `cached_tokens` count belongs in `cache_read_input_tokens`.
-        let cached = v
-            .get("cached_tokens")
-            .and_then(crate::usage_count::read_count_u64);
+        //
+        // Every count that reaches the bill is read through `billed`/`billed_opt`: an unreadable
+        // one yields NO recovered usage, never a zero one (#42), and the caller then bills its
+        // conservative floor estimate for the truncated body instead of $0.
+        let cached = billed_opt(Some(&v), "cached_tokens").ok()?;
         Some(
             crate::ir::IrUsage {
-                input_tokens: tokens
-                    .and_then(|t| t.get("input_tokens"))
-                    .and_then(crate::usage_count::read_count_u64)
-                    .unwrap_or(0)
+                input_tokens: billed(tokens, "input_tokens")
+                    .ok()?
                     .saturating_sub(cached.unwrap_or(0)),
-                output_tokens: tokens
-                    .and_then(|t| t.get("output_tokens"))
-                    .and_then(crate::usage_count::read_count_u64)
-                    .unwrap_or(0),
+                output_tokens: billed(tokens, "output_tokens").ok()?,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: cached,
                 detail: crate::ir::IrUsageDetail {
                     search_units: billed_u64("search_units"),
-                    billed_input_tokens: billed_u64("input_tokens"),
-                    billed_output_tokens: billed_u64("output_tokens"),
+                    billed_input_tokens: billed_opt(billed_units, "input_tokens").ok()?,
+                    billed_output_tokens: billed_opt(billed_units, "output_tokens").ok()?,
                     billed_classifications: billed_u64("classifications"),
                     ..Default::default()
                 },
@@ -940,31 +937,21 @@ impl ProtocolReader for CohereReader {
                     ));
                 }
 
+                // BILLED COUNTS: absent is zero, a present-but-UNREADABLE count REFUSES (#42) —
+                // the stream ends in an error instead of ledgering zero tokens.
                 let usage = data
                     .get("delta")
                     .and_then(|d| d.get("usage"))
-                    .map(|u| {
-                        let tokens_map: serde_json::Map<String, serde_json::Value> = u
-                            .get("tokens")
-                            .and_then(|t| t.as_object())
-                            .cloned()
-                            .unwrap_or_default();
+                    .map(|u| -> Result<crate::ir::IrUsage, IrError> {
+                        let tokens = u.get("tokens");
                         // `cached_tokens` rides the STREAM's terminal `message-end.delta.usage`
                         // object exactly as it rides the buffered `usage`. See the buffered site
                         // for why a prompt-cache hit belongs in `cache_read_input_tokens`.
-                        let cached = u
-                            .get("cached_tokens")
-                            .and_then(crate::usage_count::read_count_u64);
-                        crate::ir::IrUsage {
-                            input_tokens: tokens_map
-                                .get("input_tokens")
-                                .and_then(crate::usage_count::read_count_u64)
-                                .unwrap_or(0)
+                        let cached = billed_opt(Some(u), "cached_tokens")?;
+                        Ok(crate::ir::IrUsage {
+                            input_tokens: billed(tokens, "input_tokens")?
                                 .saturating_sub(cached.unwrap_or(0)),
-                            output_tokens: tokens_map
-                                .get("output_tokens")
-                                .and_then(crate::usage_count::read_count_u64)
-                                .unwrap_or(0),
+                            output_tokens: billed(tokens, "output_tokens")?,
                             cache_creation_input_tokens: None,
                             cache_read_input_tokens: cached,
                             // `billed_units.search_units` rides the STREAM's terminal
@@ -982,29 +969,36 @@ impl ProtocolReader for CohereReader {
                                 // ride the STREAM's terminal `message-end.delta.usage` exactly as
                                 // `search_units` does; reading them only on the buffered path meant
                                 // a streamed call silently dropped the billed attribution.
-                                billed_input_tokens: u
-                                    .get("billed_units")
-                                    .and_then(|b| b.get("input_tokens"))
-                                    .and_then(crate::usage_count::read_count_u64),
-                                billed_output_tokens: u
-                                    .get("billed_units")
-                                    .and_then(|b| b.get("output_tokens"))
-                                    .and_then(crate::usage_count::read_count_u64),
+                                billed_input_tokens: billed_opt(
+                                    u.get("billed_units"),
+                                    "input_tokens",
+                                )?,
+                                billed_output_tokens: billed_opt(
+                                    u.get("billed_units"),
+                                    "output_tokens",
+                                )?,
                                 billed_classifications: u
                                     .get("billed_units")
                                     .and_then(|b| b.get("classifications"))
                                     .and_then(crate::usage_count::read_count_u64),
                                 ..Default::default()
                             },
-                        }
+                        })
                     })
-                    .unwrap_or(crate::ir::IrUsage {
+                    .transpose();
+                let usage = match usage {
+                    Ok(usage) => usage.unwrap_or(crate::ir::IrUsage {
                         input_tokens: 0,
                         output_tokens: 0,
                         cache_creation_input_tokens: None,
                         cache_read_input_tokens: None,
                         detail: crate::ir::IrUsageDetail::default(),
-                    });
+                    }),
+                    Err(refusal) => {
+                        out.push(IrStreamEvent::Error(refusal));
+                        return out;
+                    }
+                };
 
                 out.push(IrStreamEvent::MessageDelta {
                     stop_reason,
@@ -1265,21 +1259,12 @@ impl ProtocolReader for CohereReader {
         // Cohere cache hit was billed as ordinary input. The IR keeps `input_tokens` UNCACHED and
         // the cache fields ADDITIVE, so the two reconstruct exactly the reported `input_tokens`:
         // the TOTAL is unchanged and only the tier the cached share prices at moves.
-        let cached = usage_val
-            .and_then(|u| u.get("cached_tokens"))
-            .and_then(crate::usage_count::read_count_u64);
+        //
+        // BILLED COUNTS: absent is zero, a present-but-UNREADABLE count REFUSES (#42).
+        let cached = billed_opt(usage_val, "cached_tokens")?;
         let usage = crate::ir::IrUsage {
-            input_tokens: tokens_val
-                .and_then(|t| t.as_object())
-                .and_then(|t_obj| t_obj.get("input_tokens"))
-                .and_then(crate::usage_count::read_count_u64)
-                .unwrap_or(0)
-                .saturating_sub(cached.unwrap_or(0)),
-            output_tokens: tokens_val
-                .and_then(|t| t.as_object())
-                .and_then(|t_obj| t_obj.get("output_tokens"))
-                .and_then(crate::usage_count::read_count_u64)
-                .unwrap_or(0),
+            input_tokens: billed(tokens_val, "input_tokens")?.saturating_sub(cached.unwrap_or(0)),
+            output_tokens: billed(tokens_val, "output_tokens")?,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: cached,
             // `billed_units.search_units` is a SEPARATELY BILLED unit that is not a token count at
@@ -1295,14 +1280,14 @@ impl ProtocolReader for CohereReader {
                 // billed attribution here so a Cohere->Cohere read->write does not drop it (the raw
                 // totals reconcile perfectly, so a lost billed count is invisible — the same trap
                 // `search_units` sits in). No cross-protocol analog: a foreign writer never emits it.
-                billed_input_tokens: usage_val
-                    .and_then(|u| u.get("billed_units"))
-                    .and_then(|b| b.get("input_tokens"))
-                    .and_then(crate::usage_count::read_count_u64),
-                billed_output_tokens: usage_val
-                    .and_then(|u| u.get("billed_units"))
-                    .and_then(|b| b.get("output_tokens"))
-                    .and_then(crate::usage_count::read_count_u64),
+                billed_input_tokens: billed_opt(
+                    usage_val.and_then(|u| u.get("billed_units")),
+                    "input_tokens",
+                )?,
+                billed_output_tokens: billed_opt(
+                    usage_val.and_then(|u| u.get("billed_units")),
+                    "output_tokens",
+                )?,
                 billed_classifications: usage_val
                     .and_then(|u| u.get("billed_units"))
                     .and_then(|b| b.get("classifications"))
@@ -1358,3 +1343,51 @@ impl ProtocolReader for CohereReader {
         })
     }
 }
+
+// ── BILLED COUNTS (#42) ──────────────────────────────────────────────────────────────────────────
+
+/// Read one BILLED count off a usage object under `usage_count::billed_count`'s contract: an absent
+/// usage object, an absent field or a JSON `null` is 0 (exactly as before), a readable count is the
+/// count (through the crate's one seam, `read_count_u64`), and a present-but-UNREADABLE count
+/// REFUSES. The lenient read this replaces defaulted an unreadable count to zero, so a stringified
+/// `"1500"` was ledgered as no work at all.
+fn billed(usage: Option<&serde_json::Value>, field: &'static str) -> Result<u64, IrError> {
+    Ok(billed_opt(usage, field)?.unwrap_or_default())
+}
+
+/// [`billed`] for a count whose ABSENCE the IR keeps distinct from zero (a cache tier): absent or
+/// `null` is `None`, readable is `Some`, unreadable REFUSES.
+fn billed_opt(
+    usage: Option<&serde_json::Value>,
+    field: &'static str,
+) -> Result<Option<u64>, IrError> {
+    match usage.and_then(|u| u.get(field)) {
+        None => Ok(None),
+        Some(v) if v.is_null() => Ok(None),
+        Some(v) => crate::usage_count::read_count_u64(v)
+            .map(Some)
+            .ok_or_else(|| refuse_unreadable_count(field, v)),
+    }
+}
+
+/// The refusal a present-but-unreadable billed count becomes — the same `ir_parse` shape as every
+/// other response this reader cannot read, with the field and a BOUNDED spelling on the operator's
+/// log (cut on a character, never a byte, so a hostile multi-byte spelling cannot panic the cut).
+fn refuse_unreadable_count(field: &'static str, v: &serde_json::Value) -> IrError {
+    let spelling: String = v.to_string().chars().take(64).collect();
+    tracing::warn!(
+        protocol = "cohere",
+        field,
+        spelling = %spelling,
+        "usage count is present but unreadable; refusing rather than billing it as zero (#42)"
+    );
+    IrError {
+        class: StatusClass::ClientError,
+        provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.into()),
+        retry_after: None,
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/unreadable_count_refusal_tests.rs"]
+mod unreadable_count_refusal_tests;

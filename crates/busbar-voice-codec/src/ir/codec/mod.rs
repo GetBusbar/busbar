@@ -442,6 +442,36 @@ fn u64_at(v: &Value, key: &str) -> u64 {
     v.get(key).and_then(Value::as_u64).unwrap_or_default()
 }
 
+/// The wire error code a present-but-unreadable BILLED count surfaces as on the session.
+const USAGE_UNREADABLE: &str = "usage_unreadable";
+
+/// Read one BILLED count: an absent object, an absent field or a JSON `null` is 0 (no such quantity
+/// was reported), a readable count is the count (through the crate's one seam,
+/// [`crate::ir::usage::read_count_u64`]), and a present-but-UNREADABLE count is a REFUSAL (#42) —
+/// the old `unwrap_or_default` metered a count the provider really sent as zero, and every money view
+/// over that turn was then faithfully wrong. The error is the operator-facing message: the field and
+/// a BOUNDED spelling (cut on a character, so a hostile multi-byte spelling cannot panic the cut).
+fn billed_count(o: Option<&Value>, key: &str) -> Result<u64, String> {
+    match o.and_then(|x| x.get(key)) {
+        None => Ok(0),
+        Some(v) if v.is_null() => Ok(0),
+        Some(v) => crate::ir::usage::read_count_u64(v).ok_or_else(|| {
+            let spelling: String = v.to_string().chars().take(64).collect();
+            format!("usage field `{key}` is present but is not a count: {spelling}")
+        }),
+    }
+}
+
+/// The session event a refused usage report becomes: an upstream error on the turn — whose message,
+/// naming the field and its spelling, the plane records as the turn's error fact — never a `Usage`
+/// event carrying zero for work that happened.
+fn usage_refusal(message: String) -> IrServerEvent {
+    IrServerEvent::Error {
+        code: USAGE_UNREADABLE.to_string(),
+        message,
+    }
+}
+
 /// Read the item correlation this dialect states on a downlink audio event. Each field is carried only
 /// when the wire actually said it — an absent field stays absent rather than becoming an empty string
 /// or a zero index, which name a different (real) item.
@@ -769,12 +799,17 @@ impl DuplexReader for OpenAiRealtimeCodec {
                 out
             }
             wire::RESPONSE_DONE => {
-                let usage = v
+                // An absent `usage` is no report (zero, as before); a present-but-unreadable billed
+                // count REFUSES the turn (#42) instead of metering it at zero.
+                match v
                     .get("response")
                     .and_then(|r| r.get("usage"))
                     .map(extract_usage)
-                    .unwrap_or_default();
-                vec![IrServerEvent::Usage(usage)]
+                    .transpose()
+                {
+                    Ok(usage) => vec![IrServerEvent::Usage(usage.unwrap_or_default())],
+                    Err(message) => vec![usage_refusal(message)],
+                }
             }
             wire::RATE_LIMITS_UPDATED => vec![IrServerEvent::RateLimits],
             wire::ERROR => {
@@ -804,45 +839,41 @@ impl DuplexReader for OpenAiRealtimeCodec {
 /// This is the exact twin of the Gemini Live dialect's `usage_from_metadata` fallback (D26, in
 /// `gemini/mod.rs`): the same defect was fixed there and left standing here, so one session metered
 /// at zero on this dialect and correctly on the other.
-fn extract_usage(u: &Value) -> IrDuplexUsage {
+///
+/// Every count is a BILLED count and is read through [`billed_count`]: absent is zero, and a
+/// present-but-unreadable one is an `Err` the caller turns into a refusal (#42).
+fn extract_usage(u: &Value) -> Result<IrDuplexUsage, String> {
     let ind = u.get("input_token_details");
     let outd = u.get("output_token_details");
-    // BILLED COUNTS, so both closures read through the crate's one count seam
-    // (`crate::ir::usage::read_count_u64`) rather than a bare `as_u64`, which returns `None` for a
-    // float-spelled count and then defaults it to zero.
-    let field = |o: Option<&Value>, k: &str| {
-        o.and_then(|x| x.get(k))
-            .and_then(crate::ir::usage::read_count_u64)
-            .unwrap_or_default()
-    };
-    let stated = |k: &str| {
-        u.get(k)
-            .and_then(crate::ir::usage::read_count_u64)
-            .unwrap_or_default()
-    };
     let (audio_in, text_in) = {
-        let (a, t) = (field(ind, "audio_tokens"), field(ind, "text_tokens"));
+        let (a, t) = (
+            billed_count(ind, "audio_tokens")?,
+            billed_count(ind, "text_tokens")?,
+        );
         if a.saturating_add(t) == 0 {
-            (0, stated("input_tokens"))
+            (0, billed_count(Some(u), "input_tokens")?)
         } else {
             (a, t)
         }
     };
     let (audio_out, text_out) = {
-        let (a, t) = (field(outd, "audio_tokens"), field(outd, "text_tokens"));
+        let (a, t) = (
+            billed_count(outd, "audio_tokens")?,
+            billed_count(outd, "text_tokens")?,
+        );
         if a.saturating_add(t) == 0 {
-            (0, stated("output_tokens"))
+            (0, billed_count(Some(u), "output_tokens")?)
         } else {
             (a, t)
         }
     };
-    IrDuplexUsage {
+    Ok(IrDuplexUsage {
         audio_in,
         audio_out,
         text_in,
         text_out,
-        cached: field(ind, "cached_tokens"),
-    }
+        cached: billed_count(ind, "cached_tokens")?,
+    })
 }
 
 // ── writer ──────────────────────────────────────────────────────────────────────────────────────
@@ -1053,3 +1084,7 @@ pub mod gemini;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "usage_refusal_tests.rs"]
+mod usage_refusal_tests;

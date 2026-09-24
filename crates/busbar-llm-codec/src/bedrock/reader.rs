@@ -6,16 +6,18 @@ impl ProtocolReader for BedrockReader {
         tail: &[u8],
     ) -> Option<busbar_substrate_values::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
-        let u64_field = |k: &str| v.get(k).and_then(crate::usage_count::read_count_u64);
+        // An unreadable billed count yields NO recovered usage, never a zero one (#42): the caller
+        // then bills its conservative floor estimate for the truncated body instead of $0.
+        let u = Some(&v);
         // The per-TTL cache-write split rides the same `usage` object a truncated body still
         // carries, so a body too large to buffer whole reports the same breakdown a small one does.
         let (cache_5m, cache_1h) = super::read_cache_details(Some(&v));
         Some(
             crate::ir::IrUsage {
-                input_tokens: u64_field("inputTokens").unwrap_or(0),
-                output_tokens: u64_field("outputTokens").unwrap_or(0),
-                cache_creation_input_tokens: u64_field("cacheWriteInputTokens"),
-                cache_read_input_tokens: u64_field("cacheReadInputTokens"),
+                input_tokens: billed(u, "inputTokens").ok()?,
+                output_tokens: billed(u, "outputTokens").ok()?,
+                cache_creation_input_tokens: billed_opt(u, "cacheWriteInputTokens").ok()?,
+                cache_read_input_tokens: billed_opt(u, "cacheReadInputTokens").ok()?,
                 detail: crate::ir::IrUsageDetail {
                     cache_creation_5m_input_tokens: cache_5m,
                     cache_creation_1h_input_tokens: cache_1h,
@@ -1145,15 +1147,21 @@ impl ProtocolReader for BedrockReader {
                 // total made the same turn's bill reconcilable buffered and not reconcilable
                 // streamed.
                 let (cache_5m, cache_1h) = super::read_cache_details(data.get("usage"));
+                // BILLED COUNTS: absent is zero (as above), a present-but-UNREADABLE count REFUSES
+                // (#42) — the stream ends in an error instead of ledgering zero tokens.
+                let usage_val = data.get("usage");
+                let (input_tokens, output_tokens) = match billed(usage_val, "inputTokens")
+                    .and_then(|i| Ok((i, billed(usage_val, "outputTokens")?)))
+                {
+                    Ok(counts) => counts,
+                    Err(refusal) => {
+                        out.push(IrStreamEvent::Error(refusal));
+                        return out;
+                    }
+                };
                 let usage = crate::ir::IrUsage {
-                    input_tokens: usage_obj
-                        .and_then(|u| u.get("inputTokens"))
-                        .and_then(crate::usage_count::read_count_u64)
-                        .unwrap_or(0),
-                    output_tokens: usage_obj
-                        .and_then(|u| u.get("outputTokens"))
-                        .and_then(crate::usage_count::read_count_u64)
-                        .unwrap_or(0),
+                    input_tokens,
+                    output_tokens,
                     cache_creation_input_tokens,
                     cache_read_input_tokens,
                     detail: crate::ir::IrUsageDetail {
@@ -1370,15 +1378,10 @@ impl ProtocolReader for BedrockReader {
         // PRICED DIFFERENTLY, so the total alone leaves a bill that reconciles in aggregate and
         // cannot be reconciled per line. See `read_cache_details`.
         let (cache_5m, cache_1h) = super::read_cache_details(usage_obj);
+        // BILLED COUNTS: absent is zero, a present-but-UNREADABLE count REFUSES (#42).
         let usage = crate::ir::IrUsage {
-            input_tokens: usage_obj
-                .and_then(|u| u.get("inputTokens"))
-                .and_then(crate::usage_count::read_count_u64)
-                .unwrap_or(0),
-            output_tokens: usage_obj
-                .and_then(|u| u.get("outputTokens"))
-                .and_then(crate::usage_count::read_count_u64)
-                .unwrap_or(0),
+            input_tokens: billed(usage_obj, "inputTokens")?,
+            output_tokens: billed(usage_obj, "outputTokens")?,
             cache_creation_input_tokens,
             cache_read_input_tokens,
             detail: crate::ir::IrUsageDetail {
@@ -1415,3 +1418,51 @@ impl ProtocolReader for BedrockReader {
         Box::new(self.clone())
     }
 }
+
+// ── BILLED COUNTS (#42) ──────────────────────────────────────────────────────────────────────────
+
+/// Read one BILLED count off a usage object under `usage_count::billed_count`'s contract: an absent
+/// usage object, an absent field or a JSON `null` is 0 (exactly as before), a readable count is the
+/// count (through the crate's one seam, `read_count_u64`), and a present-but-UNREADABLE count
+/// REFUSES. The lenient read this replaces defaulted an unreadable count to zero, so a stringified
+/// `"1500"` was ledgered as no work at all.
+fn billed(usage: Option<&serde_json::Value>, field: &'static str) -> Result<u64, IrError> {
+    Ok(billed_opt(usage, field)?.unwrap_or_default())
+}
+
+/// [`billed`] for a count whose ABSENCE the IR keeps distinct from zero (a cache tier): absent or
+/// `null` is `None`, readable is `Some`, unreadable REFUSES.
+fn billed_opt(
+    usage: Option<&serde_json::Value>,
+    field: &'static str,
+) -> Result<Option<u64>, IrError> {
+    match usage.and_then(|u| u.get(field)) {
+        None => Ok(None),
+        Some(v) if v.is_null() => Ok(None),
+        Some(v) => crate::usage_count::read_count_u64(v)
+            .map(Some)
+            .ok_or_else(|| refuse_unreadable_count(field, v)),
+    }
+}
+
+/// The refusal a present-but-unreadable billed count becomes — the same `ir_parse` shape as every
+/// other response this reader cannot read, with the field and a BOUNDED spelling on the operator's
+/// log (cut on a character, never a byte, so a hostile multi-byte spelling cannot panic the cut).
+fn refuse_unreadable_count(field: &'static str, v: &serde_json::Value) -> IrError {
+    let spelling: String = v.to_string().chars().take(64).collect();
+    tracing::warn!(
+        protocol = "bedrock",
+        field,
+        spelling = %spelling,
+        "usage count is present but unreadable; refusing rather than billing it as zero (#42)"
+    );
+    IrError {
+        class: StatusClass::ClientError,
+        provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.into()),
+        retry_after: None,
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/unreadable_count_refusal_tests.rs"]
+mod unreadable_count_refusal_tests;
