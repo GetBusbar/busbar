@@ -22,6 +22,45 @@ REPO="$(cd "$HERE/.." && pwd)"
 # shellcheck source=scripts/ci-remote-lib.sh
 . "$HERE/ci-remote-lib.sh"
 
+# fetch_result <host> <remote .result> <local .result> — bring the batch's per-line outcomes back.
+# target/gate/landq3.sh reads <batch>.result and nothing else, so a missing one is worse than a red
+# (item 496): the stale local copy is removed FIRST, so a failed copy can never leave a previous
+# run's rows at the path, and a failed copy escalates a green RC to 2 exactly as the landed-tip
+# branch below does. A non-zero RC the box already reported is kept, never masked.
+fetch_result() {
+  rm -f "$3"
+  if rcp_back "$1" "$2" "$3" && [ -f "$3" ]; then
+    rlog "per-line outcomes: $3"
+    sed 's/^/  /' "$3" >&2
+  else
+    rm -f "$3"
+    rlog "ERROR: no $2 came back from $1 — the batch did not reach its reporting stage; no verdict"
+    [ "$RC" = 0 ] && RC=2
+  fi
+  return 0
+}
+
+selftest() {
+  local tmp fail=0
+  tmp="$(mktemp -d)"
+  rcp_back() { [ "$STUB_RCP" = ok ] && printf 'line1 LANDED\n' >"$3"; [ "$STUB_RCP" = ok ]; }
+  rlog() { :; }
+  printf 'stale rows from a previous run\n' >"$tmp/b.result"
+  RC=0; STUB_RCP=fail; fetch_result h r "$tmp/b.result"
+  if [ "$RC" = 2 ] && [ ! -e "$tmp/b.result" ]; then echo "ok: a result that never came back turns a green run RED (2) and leaves no stale rows"
+  else fail=1; echo "FAIL: missing result -> RC=$RC, stale file $([ -e "$tmp/b.result" ] && echo KEPT || echo removed)"; fi
+  RC=1; STUB_RCP=fail; fetch_result h r "$tmp/b.result"
+  if [ "$RC" = 1 ]; then echo "ok: the box's own red (1) is kept, not rewritten"
+  else fail=1; echo "FAIL: box RC 1 became $RC"; fi
+  RC=0; STUB_RCP=ok; fetch_result h r "$tmp/b.result"
+  if [ "$RC" = 0 ] && grep -q LANDED "$tmp/b.result"; then echo "ok: a result that came back leaves RC 0 and the rows in place"
+  else fail=1; echo "FAIL: copied result -> RC=$RC"; fi
+  rm -rf "$tmp"
+  if [ "$fail" = 0 ]; then echo "land-remote selftest: PASS"; else echo "land-remote selftest: FAIL"; fi
+  return "$fail"
+}
+if [ "${1:-}" = "--selftest" ]; then selftest; exit $?; fi
+
 HOST=""
 ARGS=()
 while [ $# -gt 0 ]; do
@@ -178,12 +217,7 @@ END=$(date +%s)
 # <batch>.result and nothing else; if it is not here, the queue runner reads a landing that never
 # reported, which is worse than a red.
 if [ -n "$BATCH" ]; then
-  if rcp_back "$HOST" "$RBATCH.result" "$REPO/$BATCH.result"; then
-    rlog "per-line outcomes: $REPO/$BATCH.result"
-    sed 's/^/  /' "$REPO/$BATCH.result" >&2
-  else
-    rlog "WARNING: no $RBATCH.result on $HOST — the batch did not reach its reporting stage"
-  fi
+  fetch_result "$HOST" "$RBATCH.result" "$REPO/$BATCH.result"
   # land.sh on the box appended its rows to the box's land-done.txt; they belong in ours.
   rcp_back "$HOST" "busbar-prove/target/gate/land-done.txt" "$REPO/$BATCH.remote-done" 2>/dev/null \
     && { grep -F -v -x -f "$REPO/target/gate/land-done.txt" "$REPO/$BATCH.remote-done" >>"$REPO/target/gate/land-done.txt" 2>/dev/null || true; rm -f "$REPO/$BATCH.remote-done"; }
