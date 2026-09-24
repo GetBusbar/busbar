@@ -61,15 +61,24 @@ note() { printf '  %s\n' "$*"; }
 hdr()  { printf '\n== %s ==\n' "$*"; }
 
 # ── THE NEUTRAL SURFACE (the ABI side; the only place these nouns are a leak) ─────────────────────
-# The four ABI-side roots are single-sourced from scripts/plane-keys.sh — the same list
+# The ABI-side roots are single-sourced from scripts/plane-keys.sh — the same list
 # plane-purity-lint.sh and the plane-transport-neutrality gate scan, so they cannot disagree about
-# what "neutral" means and a drained crate leaves the set by ONE named deletion there. THIS gate adds
-# `crates/busbar-plugin/src`: the plugin ABI is the surface a third-party plugin compiles against, so
-# an LLM noun frozen into it is the same leak as one in busbar-core, and it is measured here alone.
+# what "neutral" means and a drained crate leaves the set by ONE named deletion there.
+#
+# NO ROOT IS HAND-ADDED HERE ANY MORE. This line used to append `crates/busbar-plugin/src` on the
+# ground that "the plugin ABI is the surface a third-party plugin compiles against" -- and on that
+# same ground omitted `crates/busbar-contract/src`, which is the other half of that surface and
+# carried 14 real leak lines (records.rs `ModelTokens`, config.rs `default_max_tokens`) that this
+# meter reported as zero. A per-gate addition is a second list, and a second list is what drifted.
+# Both ABI crates are in the one list now; the self-test's ABI-SURFACE case holds that.
 # shellcheck source=scripts/plane-keys.sh
 . "$(dirname "$0")/plane-keys.sh"
+# The ABI surfaces a third-party plugin compiles against. The default root set MUST carry each of
+# them exactly once (absent = its leaks read 0; twice = its raw hits double).
+ABI_SURFACE_ROOTS="crates/busbar-contract/src crates/busbar-plugin/src"
+default_neutral_roots() { neutral_src_roots; }
 # The env override exists for ONE caller: the --selftest fixtures below. Nothing in CI sets it.
-NEUTRAL_ROOTS="${PLANE_NOUN_NEUTRAL_ROOTS:-$(neutral_src_roots) crates/busbar-plugin/src}"
+NEUTRAL_ROOTS="${PLANE_NOUN_NEUTRAL_ROOTS:-$(default_neutral_roots)}"
 
 # ── THE ROOT GUARD — a missing root is RED, never silence ──────────────────────────────────────────
 # `find $ROOTS … 2>/dev/null` swallows the diagnostic for a root that has been renamed, split or
@@ -86,7 +95,7 @@ require_roots() {
   red "plane-noun gate: FAIL — neutral root(s) listed but not present on disk: $missing"
   note "A listed root that does not exist is scanned as ZERO files, and zero is this meter's CLEAN."
   note "If the crate is legitimately gone, DELETE its entry from scripts/plane-keys.sh in a reviewed"
-  note "diff that says so (busbar-plugin is added by this script and is deleted here). Never leave a"
+  note "diff that says so. Never leave a"
   note "stale root in the list: the meter must not be able to read 0 by accident."
   exit 1
 }
@@ -274,6 +283,21 @@ PATHCTX
   else
     fail=1; note "PATH CONTROL FAILED: a real pricing-context line stopped counting"
   fi
+
+  # ── ABI SURFACE: the DEFAULT root set (the one CI meters) carries every ABI crate exactly once. ──
+  # The fixtures above all override the roots, so none of them can see what the real run scans. The
+  # contract crate was missing from it while the plugin crate was hand-added, and the meter read 0
+  # for the contract's leaks.
+  local abi n
+  for abi in $ABI_SURFACE_ROOTS; do
+    # shellcheck disable=SC2046
+    n="$(printf '%s\n' $(default_neutral_roots) | grep -cxF "$abi" || true)"
+    if [ "$n" -eq 1 ]; then
+      note "ABI SURFACE: the default neutral roots scan $abi exactly once"
+    else
+      fail=1; note "ABI SURFACE FAILED: the default neutral roots list $abi $n time(s), not once"
+    fi
+  done
 
   # ── THE BLIND-SCAN CASES: the meter must not be able to read 0 by scanning NOTHING ──────────────
   # A 0 here is the "arm the hard gate" signal, so a 0 produced by an empty file list is the worst
