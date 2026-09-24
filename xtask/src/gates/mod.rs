@@ -226,6 +226,25 @@ pub const REPORT_ONLY: &[Posture] = &[
         }),
     },
     Posture {
+        name: "conformance-sync",
+        why: "RED ON ONE NAMED ROW, AND IT IS THE TRUE FINDING. `conformance:freshness` honours a \
+              pass only if its verdict commit IS the commit under judgement (item 165), and \
+              KICKOFF 7.3 rules that every commit to predev invalidates every conformance pass: \
+              STALE is normal in flight, shown on every push and not blocking it. DRAIN: KICKOFF \
+              7.4, Phase 5, on the release sha, where the suites are re-run on that sha and the \
+              row goes green; strike the name from CONFORMANCE_SYNC_STANDING_REDS in that commit. \
+              Every OTHER row of this gate (registry, manifest-drift, coverage, readme-drift, \
+              no-orphan-claim) is scored like any gate's, so a drifted manifest or a hand-added \
+              claim reds `--all` and `--posture` alike. \
+              `posture_tests::the_conformance_sync_posture_holds_on_the_tree` runs the real gate \
+              and holds this entry to what it says.",
+        excuse: Excused::OnlyRows(StandingReds {
+            rows: CONFORMANCE_SYNC_STANDING_REDS,
+            list: "CONFORMANCE_SYNC_STANDING_REDS",
+            mirror: None,
+        }),
+    },
+    Posture {
         name: "ship-ready",
         why: "THE SHIP CRITERION, and the integration line is not the ship SHA. Every one of its \
               rows is a claim about a tree that is ready to promote — the twin at zero, the \
@@ -359,6 +378,16 @@ pub const MONEY_INVARIANTS_STANDING_REDS: &[&str] = &[
     // in the signed audit digest is item 34, owner-owed. Strike this line in the commit that
     // turns the row green.
     "money-invariants:no-stored-price",
+];
+
+/// THE CONFORMANCE-SYNC GATE'S STANDING REDS, BY NAME. Same contract as
+/// [`QA_NAMES_STANDING_REDS`]: a red this list does not name is scored, and a name on this list that
+/// has gone green is STALE and is scored too.
+pub const CONFORMANCE_SYNC_STANDING_REDS: &[&str] = &[
+    // Item 165 (2026-09-24): freshness is judged against the checkout's own commit, so every
+    // carried-over pass is STALE on the dev line (KICKOFF 7.3). Drained in Phase 5 on the release
+    // sha (KICKOFF 7.4). Strike this line in the commit that turns the row green.
+    "conformance:freshness",
 ];
 
 /// One entry of [`REPORT_ONLY`].
@@ -3705,12 +3734,16 @@ mod posture_tests {
             })
             .collect::<Vec<_>>()
             .join(" ");
-        let lists: [(&str, &[&str]); 3] = [
+        let lists: [(&str, &[&str]); 4] = [
             ("CONSTRUCTION_STANDING_REDS", CONSTRUCTION_STANDING_REDS),
             ("QA_NAMES_STANDING_REDS", QA_NAMES_STANDING_REDS),
             (
                 "MONEY_INVARIANTS_STANDING_REDS",
                 MONEY_INVARIANTS_STANDING_REDS,
+            ),
+            (
+                "CONFORMANCE_SYNC_STANDING_REDS",
+                CONFORMANCE_SYNC_STANDING_REDS,
             ),
         ];
         let mut offenders = Vec::new();
@@ -3821,6 +3854,38 @@ mod posture_tests {
         assert!(
             only_rows_unexplained(&sr, &v).is_empty(),
             "MONEY_INVARIANTS_STANDING_REDS carries a row that is not red (stale) or misses one \
+             that is: {:?}",
+            only_rows_unexplained(&sr, &v)
+        );
+    }
+
+    /// ITEM 165 (posture): the conformance-sync posture holds on the tree — the exact check
+    /// ci.yml's blocking `cargo xtask gate conformance-sync --posture` step makes — and the
+    /// standing list names exactly the rows that are red: a NEW red on any other row, or a
+    /// freshness row that has gone green without its name being struck, fails here.
+    #[test]
+    fn the_conformance_sync_posture_holds_on_the_tree() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let reg = find("conformance-sync").expect("conformance-sync is registered");
+        let v = execute(&*(reg.build)(), &cx);
+        assert!(
+            excused_from_all("conformance-sync", &cx, &v).is_some() || !v.red,
+            "conformance-sync is red beyond CONFORMANCE_SYNC_STANDING_REDS: {:?} {:?}",
+            v.rows
+                .iter()
+                .filter(|r| r.status != crate::ledger::Status::Pass)
+                .map(|r| format!("{} {}", r.id, r.detail))
+                .collect::<Vec<_>>(),
+            v.problems
+        );
+        let sr = StandingReds {
+            rows: CONFORMANCE_SYNC_STANDING_REDS,
+            list: "CONFORMANCE_SYNC_STANDING_REDS",
+            mirror: None,
+        };
+        assert!(
+            only_rows_unexplained(&sr, &v).is_empty(),
+            "CONFORMANCE_SYNC_STANDING_REDS carries a row that is not red (stale) or misses one \
              that is: {:?}",
             only_rows_unexplained(&sr, &v)
         );

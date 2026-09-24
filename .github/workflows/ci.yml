@@ -563,7 +563,7 @@ jobs:
       - name: Conformance-sync self-test
         run: cargo xtask gate conformance-sync --selftest
       - name: Conformance-sync
-        run: cargo xtask gate conformance-sync
+        run: cargo xtask gate conformance-sync --posture
       # THE GATE SET ITSELF, checked against this file. Every step above runs ONE gate; nothing
       # asked whether the set of steps still covers the set of registered gates. That question lives
       # in `full-gate --selftest` — the registry-vs-ci.yml set equality, both directions, plus the
