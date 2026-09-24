@@ -406,6 +406,7 @@ impl RootHistory {
                         rest.push(draft);
                     }
                 }
+                JournalledCard::Amended(draft) => rest.push(draft),
             }
         }
         let mut write = Vec::new();
@@ -970,6 +971,10 @@ fn journal_card(
 pub(crate) enum JournalledCard {
     /// A config apply ([`CardApplied`]).
     Applied(CardApplied),
+    /// A signed back-dated correction, as `amend_rate_history` journalled it ahead of its append
+    /// (item 30) — its window, its sealed card, its signer. Without it a restart dropped the
+    /// correction and its window repriced at the card it had corrected.
+    Amended(busbar_kernel_ledger::cost::CardEntryDraft),
 }
 
 /// Every entry of the dated history on `records`, in the order the chain holds them.
@@ -979,8 +984,46 @@ pub(crate) fn journalled_cards(
     records
         .iter()
         .filter(|r| r.class == busbar_kernel_wal::RecordClass::Policy)
-        .filter_map(|r| CardApplied::from_body(&r.body).map(JournalledCard::Applied))
+        .filter_map(|r| {
+            CardApplied::from_body(&r.body)
+                .map(JournalledCard::Applied)
+                .or_else(|| journalled_amendment(&r.body))
+        })
         .collect()
+}
+
+/// A journalled signed correction, as the history entry its effect appended: the window it named,
+/// the card it sealed (every named cell at the integer rate the card held, and the fee), appended
+/// at its admission instant, authored by its signer.
+#[cfg(feature = "root-admin")]
+fn journalled_amendment(body: &[u8]) -> Option<JournalledCard> {
+    let amendment = crate::root::units_admin::amendment_from_body(body)?;
+    Some(JournalledCard::Amended(
+        busbar_kernel_ledger::cost::CardEntryDraft {
+            effective_from: amendment.effective_from,
+            effective_until: amendment.effective_until,
+            card: busbar_kernel_ledger::cost::RateCard::from_nano_rates(
+                amendment.rates.iter().map(|(lane, class, nanos)| {
+                    (
+                        busbar_kernel_ledger::cost::LaneClass::new(lane.as_str(), class.as_str()),
+                        *nanos,
+                    )
+                }),
+                amendment.sealed_fee,
+            ),
+            appended_at: amendment.amended_at_ms,
+            author: busbar_kernel_ledger::cost::Author::Amend {
+                operator_fingerprint: amendment.operator_fingerprint,
+                reason_hash: amendment.reason_hash,
+            },
+        },
+    ))
+}
+
+/// A build without the admin plane has no correction verb, so its chain holds no correction.
+#[cfg(not(feature = "root-admin"))]
+fn journalled_amendment(_body: &[u8]) -> Option<JournalledCard> {
+    None
 }
 
 /// **THE ROOT, DATING A PRICE** — the read-side twin of the apply above.

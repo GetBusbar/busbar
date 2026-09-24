@@ -1175,3 +1175,105 @@ fn an_applied_card_round_trips_the_journal_as_the_same_card_on_every_plane() {
         Some(11)
     );
 }
+
+/// **A SIGNED BACK-DATED CORRECTION SURVIVES A RESTART** (#79). `amend_rate_history` journals its
+/// record ahead of its append (item 30), and the boot's rebuild reads it back as the entry it
+/// appended. Card A prices [`FLAT_LANE`] at 3; a million tokens arrive at 10,000 ms; a correction
+/// signed at 20,000 ms reprices `[5,000, 15,000)` at 4. After a restart the rebuilt book prices that
+/// unit at the correction, 4,000,000,000 nano-units, and a unit outside the window stays at A.
+/// Before the rebuild read corrections, a restart dropped it: the history was the boot card alone
+/// and the same unit replayed at 3,000,000,000.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_back_dated_correction_survives_a_restart() {
+    use busbar_contract::caps::{DurableWrite, KernelSeal};
+    const CORRECTED: (u64, u64) = (5_000, 15_000);
+    const SIGNED_AT: u64 = 20_000;
+    let dir = journal_dir("amended");
+    {
+        let holder = process_holder();
+        apply_at(holder, 3.0, BOOT_A);
+        let book = boot_book(holder, &dir);
+        settle(
+            &book,
+            "inside",
+            FLAT_LANE,
+            1_000_000,
+            3_000_000_000,
+            EARNED_A,
+        );
+        settle(
+            &book,
+            "outside",
+            FLAT_LANE,
+            1_000_000,
+            3_000_000_000,
+            EARNED_B,
+        );
+        // The effect half of the verb, as `amend_rate_history_effect` runs it: the record first,
+        // then the append.
+        let corrected = busbar_kernel_ledger::cost::RateCard::from_nano_rates(
+            [(
+                busbar_kernel_ledger::cost::LaneClass::new(FLAT_LANE, "input"),
+                4_000,
+            )],
+            0,
+        );
+        crate::root::units_admin::AmendmentJournal::new(
+            Arc::clone(&book),
+            Grant::<DurableWrite>::mint(&KernelSeal::acquire_for_kernel()),
+        )
+        .record(
+            &crate::root::units_admin::AmendmentRecord {
+                effective_from: CORRECTED.0,
+                effective_until: Some(CORRECTED.1),
+                amended_at_ms: SIGNED_AT,
+                sealed_fee: 0,
+                rates: vec![(FLAT_LANE.to_string(), "input".to_string(), 4_000)],
+                operator_fingerprint: "op".to_string(),
+                reason_hash: [9; 32],
+                principal: "admin".to_string(),
+                dual_control: "single".to_string(),
+                signed_payload: b"signed".to_vec(),
+                signature: "00".to_string(),
+            },
+            SIGNED_AT / 1_000,
+        )
+        .expect("the journal takes the correction");
+        holder
+            .amend(
+                corrected,
+                CORRECTED.0,
+                Some(CORRECTED.1),
+                SIGNED_AT,
+                "op".to_string(),
+                [9; 32],
+            )
+            .expect("a resolved history takes a correction");
+    }
+
+    let holder = process_holder();
+    apply_at(holder, 3.0, REBOOT);
+    let book = boot_book(holder, &dir);
+    assert_eq!(
+        (settled(&book, "inside"), settled(&book, "outside")),
+        (4_000_000_000, 3_000_000_000),
+        "the correction reprices exactly its window after a restart, and nothing outside it"
+    );
+    assert_eq!(holder.len(), 2, "the opening card and the correction");
+    let history = holder.history().expect("a history");
+    let view = history.current();
+    let entry = view
+        .entry_at(EARNED_A)
+        .expect("the correction covers its window");
+    assert_eq!(
+        (entry.appended_at(), entry.effective_until()),
+        (SIGNED_AT, Some(CORRECTED.1))
+    );
+    assert!(matches!(
+        entry.author(),
+        busbar_kernel_ledger::cost::Author::Amend { operator_fingerprint, .. } if operator_fingerprint == "op"
+    ));
+    drop(book);
+    let _ = std::fs::remove_dir_all(&dir);
+}
