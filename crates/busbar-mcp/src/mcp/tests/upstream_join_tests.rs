@@ -551,3 +551,160 @@ async fn a_metadata_url_hidden_in_the_tool_arguments_is_refused_and_never_sent()
         "the refusal happens before any outbound traffic, the token exchange included"
     );
 }
+
+// ── ITEM 136: a `budget:` cap trips on MCP traffic ──────────────────────────────────────────────
+//
+// MCP used to put nothing into the budget ledger: its one charge was a `Queries` meter at amount 0,
+// so the declared `tool_calls` class was never counted and a money cap could only ever see the flat
+// fee. An answered `tools/call` now ledgers ONE `tool_calls` on the caller's chain through the host
+// `meter_ledger` seam, and the one function (Tally) prices it — so the cap trips exactly as it does
+// for an llm token or a rerank search unit. The three #42 arms are pinned together.
+
+/// A governed app whose `groups:` tree holds one group `g` with a `budget:` cap of `cap_cents` per
+/// day, priced by `card` (`None` = billing off), no flat fee — the only thing the cap can see is the
+/// class this item makes the plane ledger.
+fn budgeted_app(
+    peer: &Peer,
+    server: &str,
+    card: Option<
+        &std::collections::BTreeMap<String, busbar_kernel::config::sections::RateEntryCfg>,
+    >,
+    cap_cents: u64,
+) -> std::sync::Arc<dyn EngineApp> {
+    let store = std::sync::Arc::new(busbar_store_memory::MemoryStore::new());
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        busbar_kernel::governance::signing::DEFAULT_KID,
+    );
+    let gov_state = engine()
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
+    let groups: std::collections::BTreeMap<String, busbar_kernel::config::GroupCfg> = [(
+        "g".to_string(),
+        busbar_kernel::config::GroupCfg {
+            limits: vec![busbar_kernel::config::groups::LimitCfg {
+                metric: busbar_kernel::config::groups::LimitMetric::Budget,
+                amount: cap_cents,
+                per: Some(busbar_kernel::config::groups::LimitWindow::Day),
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+            }],
+            ..Default::default()
+        },
+    )]
+    .into();
+    test_app()
+        .mcp(&mcp_cfg(CANONICAL))
+        .mcp_server(server, exchanging_server(peer, SUBJECT))
+        .cost(engine().cost_parts(card, 0, &groups))
+        .governance(gov_state)
+        .build()
+}
+
+/// The caller: a key in group `g`, granted the one tool.
+fn budgeted_caller(id: &str, server: &str) -> busbar_api::PlaneRequestCtx {
+    let tool = format!("{server}_read");
+    let mut key = super::upstream_support::key_with_scopes(
+        id,
+        &[("mcp_server", server), ("mcp_tool", tool.as_str())],
+    );
+    key.group = Some("g".to_string());
+    busbar_api::PlaneRequestCtx {
+        key: Some(std::sync::Arc::new(key)),
+    }
+}
+
+async fn read_once(
+    app: &std::sync::Arc<dyn EngineApp>,
+    g: &busbar_api::PlaneRequestCtx,
+    server: &str,
+) -> (u16, serde_json::Value) {
+    call(
+        app,
+        g,
+        "tools/call",
+        serde_json::json!({ "name": format!("{server}_read"), "arguments": { "path": "/p" } }),
+    )
+    .await
+}
+
+fn answered(status: u16, body: &serde_json::Value) -> bool {
+    status == 200 && body.pointer("/result/content/0/text").is_some()
+}
+
+/// THE POSITIVE CONTROL. A card pricing `tool_calls` at 1 cent a call (10,000 micro-units) and a
+/// `budget:` cap of 3 cents: calls 1–3 are answered, call 4 is REFUSED by the budget, and the
+/// upstream saw exactly three calls. Before the fix every call was answered — the cap never saw the
+/// class.
+#[tokio::test]
+async fn a_budget_cap_trips_on_mcp_tool_calls() {
+    metrics_init();
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let server = "budgetfs";
+    let card: std::collections::BTreeMap<String, busbar_kernel::config::sections::RateEntryCfg> =
+        serde_yaml::from_str("budgetfs_read: { input_utok: 0, units: { tool_calls: 10000 } }\n")
+            .expect("the card prices the declared class");
+    let app = budgeted_app(&peer, server, Some(&card), 3);
+    let g = budgeted_caller("k-mcp-budget-trips", server);
+
+    for n in 1..=3 {
+        let (status, body) = read_once(&app, &g, server).await;
+        assert!(
+            answered(status, &body),
+            "call {n} is under the cap: {status} {body}"
+        );
+    }
+    let (status, body) = read_once(&app, &g, server).await;
+    assert!(
+        !answered(status, &body),
+        "call 4: three priced tool_calls spent the 3-cent budget, so the cap must trip: {status} \
+         {body}"
+    );
+    assert!(
+        body.to_string().contains("budget"),
+        "the refusal names the budget metric: {body}"
+    );
+    assert_eq!(
+        peer.mcp_hits(),
+        3,
+        "the refused fourth call never reached the upstream"
+    );
+}
+
+/// #42's other two arms over the same traffic. A PRESENT card silent about the tool REFUSES — the
+/// first call is answered (nothing is ledgered yet), and its unpriceable count then blocks the
+/// group's budget door; an ABSENT card reads the class as 0, so a 1-cent cap never trips.
+#[tokio::test]
+async fn an_unpriced_tool_call_refuses_under_a_present_card_and_reads_zero_without_one() {
+    metrics_init();
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let server = "silentfs";
+    let silent: std::collections::BTreeMap<String, busbar_kernel::config::sections::RateEntryCfg> =
+        serde_yaml::from_str("some_model: { input_utok: 1 }\n").expect("parses");
+    let app = budgeted_app(&peer, server, Some(&silent), 1_000);
+    let g = budgeted_caller("k-mcp-budget-silent", server);
+    let (status, body) = read_once(&app, &g, server).await;
+    assert!(
+        answered(status, &body),
+        "nothing ledgered yet: {status} {body}"
+    );
+    let (status, body) = read_once(&app, &g, server).await;
+    assert!(
+        !answered(status, &body) && body.to_string().contains("budget"),
+        "a present card silent about the class refuses on the budget, never a silent 0: {status} \
+         {body}"
+    );
+
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let server = "freefs";
+    let app = budgeted_app(&peer, server, None, 1);
+    let g = budgeted_caller("k-mcp-budget-free", server);
+    for n in 1..=5 {
+        let (status, body) = read_once(&app, &g, server).await;
+        assert!(
+            answered(status, &body),
+            "billing off reads 0 (call {n}): {status} {body}"
+        );
+    }
+}
