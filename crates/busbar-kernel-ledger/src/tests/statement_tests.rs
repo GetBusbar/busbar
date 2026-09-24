@@ -10,8 +10,6 @@
 //! than by editing a line — so `settled` does not move, `adjustments` does, and the identity's
 //! residual is zero on both sides of it with no new term.
 
-use std::collections::BTreeMap;
-
 use crate::cost::{Author, CardEntryDraft, History, HistorySeq, LaneClass, RateCard};
 use busbar_contract::caps::MeterClassId;
 
@@ -71,9 +69,7 @@ fn amended() -> History {
 }
 
 fn archive_of(history: History) -> SealedHistory {
-    let mut tiers = BTreeMap::new();
-    tiers.insert(key("b"), TIER_BP);
-    SealedHistory { history, tiers }
+    SealedHistory::new(history)
 }
 
 /// A line arriving at `arrived_ms`, with its cache filled from the history it is settled under.

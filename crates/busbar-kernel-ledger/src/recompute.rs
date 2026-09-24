@@ -66,7 +66,7 @@ use crate::totals::TotalsKey;
 /// Ten thousand basis points is full price.
 pub const BASIS_POINTS: u32 = 10_000;
 
-/// The dated card history the recompute reads, and the tier each bucket's chain is on.
+/// The dated card history the recompute reads.
 ///
 /// A trait so the recompute reads a SEALED history rather than live configuration: pricing a
 /// two-day-old line against today's card would report every price change as a defect. Under the
@@ -81,32 +81,28 @@ pub trait HistoryArchive {
     /// The head the history has reached NOW. This is what decides whether a stale cache is an
     /// ordinary consequence of an amendment or a line somebody edited.
     fn head(&self) -> Option<HistorySeq>;
-
-    /// The tier for `key`, in basis points. Ten thousand when none was sealed, which is full price.
-    fn tier_bp(&self, key: &TotalsKey) -> u32;
 }
 
-/// A history with the tiers that went with it — the archive the recompute reads.
+/// A sealed history — the archive the recompute reads.
 ///
-/// The tier is a property of the chain a request was admitted through rather than of the card, so
-/// it cannot live inside a `CardEntry`; it is sealed beside the history for the same reason the
-/// history is sealed at all, which is that repricing against a tier somebody changed yesterday
-/// would report every tier change as a defect.
+/// It holds cards and nothing else. The TIER is not here, and that is the rule rather than an
+/// omission: a tier is a property of the chain a request was admitted through, the line records it
+/// as it records its quantities (the ledger is what happened, KICKOFF §8.4), and the statement
+/// ([`crate::totals_as_of`]) and the adjusting entries ([`crate::adjusting_entries`]) both price at
+/// the line's own tier. An archive-held tier was a second source of the same fact that nothing in
+/// production ever filled, so the recompute — the arbiter — priced by a different rule from the
+/// bill it arbitrates, and an archive built with no tiers repriced every discounted line at full
+/// price and wrote that figure back into the cache (item 435).
 #[derive(Debug, Clone, Default)]
 pub struct SealedHistory {
     /// The dated cards.
     pub history: History,
-    /// The tier in basis points, per bucket key. Absent means full price.
-    pub tiers: BTreeMap<TotalsKey, u32>,
 }
 
 impl SealedHistory {
-    /// An archive over a history with no tiers sealed — every bucket at full price.
+    /// An archive over a history.
     pub fn new(history: History) -> Self {
-        SealedHistory {
-            history,
-            tiers: BTreeMap::new(),
-        }
+        SealedHistory { history }
     }
 }
 
@@ -118,10 +114,6 @@ impl HistoryArchive for SealedHistory {
 
     fn head(&self) -> Option<HistorySeq> {
         self.history.head()
-    }
-
-    fn tier_bp(&self, key: &TotalsKey) -> u32 {
-        self.tiers.get(key).copied().unwrap_or(BASIS_POINTS)
     }
 }
 
@@ -202,7 +194,8 @@ pub struct Posting {
     pub lines: Vec<PricedLine>,
     /// How many request fees the line carries.
     pub fee_count: u64,
-    /// The tier applied, in basis points, as the line recorded it.
+    /// The tier applied, in basis points, as the line recorded it. A ledger fact like the
+    /// quantities: every path that prices this line prices at THIS tier.
     pub tier_bp: u32,
     /// The instant it happened, in wall-clock milliseconds. The scale the history resolves at.
     pub arrived_ms: u64,
@@ -293,13 +286,6 @@ pub enum Divergence {
         /// What the lookup makes it.
         recomputed: i128,
     },
-    /// The tier the line recorded is not the tier the archive holds.
-    Tier {
-        /// What the line says.
-        posted: u32,
-        /// What the archive says.
-        sealed: u32,
-    },
     /// The cached priced figure does not match the lookup. This is the one that moves money.
     Priced {
         /// What the cache says.
@@ -338,10 +324,6 @@ impl std::fmt::Display for Divergence {
             Divergence::PreTier { posted, recomputed } => write!(
                 f,
                 "the pre-tier amount is {posted} in the cache and {recomputed} on the lookup"
-            ),
-            Divergence::Tier { posted, sealed } => write!(
-                f,
-                "the line recorded a tier of {posted} basis points; the archive holds {sealed}"
             ),
             Divergence::Priced { posted, recomputed } => write!(
                 f,
@@ -526,7 +508,8 @@ impl Pass {
     }
 }
 
-/// The lookup's answer for one line under one snapshot, at the archive's tier.
+/// The lookup's answer for one line under one snapshot, at `tier_bp` — which every caller passes
+/// as the line's own [`Posting::tier_bp`].
 ///
 /// This is the single place the ledger asks what a line costs. It builds the cost unit's posting
 /// from the line's own quantities and hands it to the one lookup, rather than re-deriving a product
@@ -633,8 +616,10 @@ pub fn recheck(posting: &Posting, archive: &dyn HistoryArchive) -> Recheck {
         return refuse(Divergence::HistoryMissing { seq: head });
     };
 
-    let sealed_tier = archive.tier_bp(&posting.key);
-    let priced = match price_line(posting, &view, sealed_tier) {
+    // The line's own tier, as the statement and the adjusting entries price it: the arbiter judges
+    // the cache by the rule the bill is computed with. A tier edited by hand under an unmoved head
+    // still alarms, through the priced figure, exactly as an edited quantity does.
+    let priced = match price_line(posting, &view, posting.tier_bp) {
         Ok(priced) => priced,
         Err(why) => return refuse(divergence_of(why)),
     };
@@ -652,13 +637,6 @@ pub fn recheck(posting: &Posting, archive: &dyn HistoryArchive) -> Recheck {
         divergences.push(Divergence::PreTier {
             posted: posting.cached.pre_tier_nanos,
             recomputed: pre_tier,
-        });
-    }
-
-    if sealed_tier != posting.tier_bp {
-        divergences.push(Divergence::Tier {
-            posted: posting.tier_bp,
-            sealed: sealed_tier,
         });
     }
 

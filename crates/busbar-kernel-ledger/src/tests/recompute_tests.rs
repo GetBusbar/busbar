@@ -4,8 +4,6 @@
 //! The recompute as an arbiter: the lookup wins, the cache is corrected, and a head that did not
 //! move is what tells a hand edit from an amendment.
 
-use std::collections::BTreeMap;
-
 use crate::cost::{Author, CardEntryDraft, History, HistorySeq, LaneClass, RateCard};
 use busbar_contract::caps::MeterClassId;
 
@@ -51,12 +49,7 @@ fn amended_card() -> RateCard {
 
 /// A one-entry history: the opening card, effective from instant zero, open-ended.
 fn archive() -> SealedHistory {
-    let mut tiers = BTreeMap::new();
-    tiers.insert(key("b"), DISCOUNT_TIER_BP);
-    SealedHistory {
-        history: History::opening(opening_card(), 0),
-        tiers,
-    }
+    SealedHistory::new(History::opening(opening_card(), 0))
 }
 
 /// The same archive with a second entry appended over the instant the fixture's lines arrive at —
@@ -113,7 +106,7 @@ fn correct_line(node_seq: u64) -> Posting {
 fn refresh(line: &mut Posting, archive: &SealedHistory) {
     let head = archive.head().expect("the fixture's archive has a head");
     let view = archive.view_at(head).expect("and a snapshot at it");
-    let priced = price_line(line, &view, archive.tier_bp(&line.key)).expect("the fixture prices");
+    let priced = price_line(line, &view, line.tier_bp).expect("the fixture prices");
     line.cached = DerivedPrice {
         history_seq: head,
         card_seq: priced.card_seq,
@@ -222,23 +215,54 @@ fn a_hand_corrupted_quantity_moves_both_figures() {
     );
 }
 
+/// A tier edited by hand under an unmoved head is still found — through the priced figure, the
+/// same way an edited quantity is, because the tier is a ledger fact on the line like a quantity.
 #[test]
 fn a_tier_the_line_invented_is_found() {
     let mut line = correct_line(1);
-    line.tier_bp = BASIS_POINTS;
+    line.tier_bp = 5_000;
     let outcome = recheck(&line, &archive());
-    assert!(outcome
-        .divergences
-        .iter()
-        .any(|d| matches!(d, Divergence::Tier { .. })));
-    // And the money does NOT move, which is the point: the lookup priced at the SEALED tier rather
-    // than at the one the line asserted, so the cached amount is still right and only the claim
-    // about the tier is wrong. A recompute that had priced at the line's own tier would have agreed
-    // with a line that invented a discount for itself.
-    assert!(!outcome
-        .divergences
-        .iter()
-        .any(|d| matches!(d, Divergence::Priced { .. })));
+    assert_eq!(
+        outcome.verdict,
+        Verdict::Alarm,
+        "nothing legitimate moved it"
+    );
+    assert!(
+        outcome
+            .divergences
+            .iter()
+            .any(|d| matches!(d, Divergence::Priced { .. })),
+        "the invented discount shows as a priced disagreement: {outcome:?}"
+    );
+}
+
+/// **THE ARBITER PRICES BY THE RULE THE BILL IS COMPUTED WITH (item 435).**
+///
+/// The statement a customer is served ([`crate::totals_as_of`]) prices a line at the line's OWN
+/// tier. The recompute used to price at a tier held beside the archive's history, keyed by bucket,
+/// which nothing in production ever filled — so over [`SealedHistory::new`] every discounted line
+/// repriced at full price: a 9,000bp line whose statement figure is 90% of list was "corrected" to
+/// 100% of list and alarmed. Here the two paths must give the same figure for the same line.
+#[test]
+fn the_recompute_and_the_statement_price_a_discounted_line_alike() {
+    let archive = SealedHistory::new(History::opening(opening_card(), 0));
+    let line = correct_line(1);
+    assert_eq!(line.tier_bp, DISCOUNT_TIER_BP);
+
+    let outcome = recheck(&line, &archive);
+    assert!(
+        outcome.agrees(),
+        "a correct discounted line agrees: {outcome:?}"
+    );
+
+    let head = archive.head().expect("the archive has a head");
+    let view = archive.view_at(head).expect("and a snapshot at it");
+    let statement = crate::totals_as_of(&view, line.window_start, [&line]);
+    assert_eq!(
+        outcome.corrected.map(|p| p.priced_nanos),
+        Some(statement.row(&line.key).priced_nanos),
+        "the arbiter's figure is the statement's figure"
+    );
 }
 
 #[test]
