@@ -1,6 +1,7 @@
-//! THE PLANE-KEYS / PLANE-ROOTS CONTRACT — `scripts/plane-keys.sh` (WHICH planes exist) and
-//! `scripts/plane-roots.sh` (WHERE a plane lives) as one Rust module, so no gate restates the plane
-//! set or guesses its addresses.
+//! THE PLANE-KEYS / PLANE-ROOTS CONTRACT — `scripts/plane-keys.sh` (WHICH planes exist) and WHERE
+//! a plane lives, as one Rust module, so no gate restates the plane set or guesses its addresses.
+//! This module is the ONLY home of the roots half: its shell twin `scripts/plane-roots.sh` was
+//! sourced by nothing and was deleted in eec209ae4 (item 549).
 //!
 //! The resolution rule is deliberately mechanical and unchanged: a plane's root is the directory
 //! that OWNS it — found by name, then narrowed by ownership. A name match is not an ownership

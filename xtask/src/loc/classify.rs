@@ -34,8 +34,8 @@
 //! Every line lands in exactly one, and the ORDER is the definition:
 //!
 //! 1. `blank`   — whitespace only. A blank line is a blank line wherever it sits.
-//! 2. `doc`     — the line carries doc-comment text and no other token: `///`, `//!`, `/** */`,
-//!               `/*! */`.
+//! 2. `doc`     — the line carries doc-comment text and no other token: `///`, `//!`,
+//!    `/** */`, `/*! */`.
 //! 3. `comment` — the line carries no token at all and is not blank: `//`, `/* */`.
 //! 4. `test`    — what is left, in a test PATH or inside a `#[cfg(test)]` item span.
 //! 5. `code`    — what is left. **This is the number the invariant is about.**
