@@ -157,6 +157,14 @@ fn admin_error_codes_and_statuses_are_frozen() {
         (AdminError::RateLimited, "rate_limited", 429),
         (AdminError::Internal, "internal", 500),
         (AdminError::Unavailable("busy".into()), "unavailable", 503),
+        (
+            AdminError::UnpricedClass {
+                lane: "m".into(),
+                class: Some("output".into()),
+            },
+            "unpriced_class",
+            409,
+        ),
     ];
     for (e, code, status) in cases {
         assert_eq!(e.code(), code, "frozen error code changed");

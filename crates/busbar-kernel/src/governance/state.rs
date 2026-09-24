@@ -1613,36 +1613,51 @@ impl GovState {
         include_request_fee: bool,
         now: u64,
     ) -> StoreResult<DerivedUsage> {
+        self.derived_bucket_usage_priced(cost, bucket_id, budget_period, include_request_fee, now)?
+            .map_err(|e| money_refusal(bucket_id, &e))
+    }
+
+    /// [`Self::derived_bucket_usage`] with the one function's refusal kept TYPED — the outer error
+    /// is the store's, the inner one the `MoneyError` itself — so an admin read can NAME an
+    /// unpriced class (`unpriced_class`, OWNER RULING Q25b) rather than flatten it into a store
+    /// failure.
+    pub fn derived_bucket_usage_priced(
+        &self,
+        cost: &crate::cost::CostModel,
+        bucket_id: &str,
+        budget_period: &str,
+        include_request_fee: bool,
+        now: u64,
+    ) -> StoreResult<Result<DerivedUsage, busbar_kernel_ledger::cost::MoneyError>> {
         let window = budget_window(budget_period, now);
         if let Some(cell) = self.budget.read(bucket_id).get(bucket_id) {
             if cell.window_start == window {
-                return Ok(DerivedUsage {
-                    // Fee derives from the BILLABLE (2xx-only) count; `requests` reports the
-                    // admission count (the requests-limit truth).
-                    spend_cents: cell
-                        .spend(cost, include_request_fee)
-                        .and_then(Money::minor_i64)
-                        .map_err(|e| money_refusal(bucket_id, &e))?,
+                // Fee derives from the BILLABLE (2xx-only) count; `requests` reports the
+                // admission count (the requests-limit truth).
+                let spend = cell
+                    .spend(cost, include_request_fee)
+                    .and_then(Money::minor_i64);
+                return Ok(spend.map(|spend_cents| DerivedUsage {
+                    spend_cents,
                     tokens: cell.total_tokens(),
                     requests: cell.requests,
-                });
+                }));
             }
         }
         let ledger = self.store.get_usage(bucket_id, window)?;
-        Ok(DerivedUsage {
-            spend_cents: cost
-                .derive_spend_cents(
-                    ledger
-                        .models
-                        .iter()
-                        .map(|m| (m.model.as_str(), &m.usage_units)),
-                    ledger.billable_requests,
-                    include_request_fee,
-                )
-                .map_err(|e| money_refusal(bucket_id, &e))?,
+        let spend = cost.derive_spend_cents(
+            ledger
+                .models
+                .iter()
+                .map(|m| (m.model.as_str(), &m.usage_units)),
+            ledger.billable_requests,
+            include_request_fee,
+        );
+        Ok(spend.map(|spend_cents| DerivedUsage {
+            spend_cents,
             tokens: ledger.total_tokens(),
             requests: ledger.requests,
-        })
+        }))
     }
 
     /// SCRAPE-TIME view of one bucket's per-(model, tier) token counters for its CURRENT window:

@@ -722,6 +722,131 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
     handle.abort();
 }
 
+/// OWNER RULING Q25b (#42): with a rate card PRESENT, a usage read over a class the card does not
+/// price answers a NAMED `409 unpriced_class` whose message names the lane and the class — on all
+/// three usage reads — instead of the bare `500 internal` they answered after 789d55a78.
+///
+/// The card prices lane `m`'s `input` class and holds its `output` class UNPRICED (a negative
+/// rate is not a rate the card can represent, item 22). One response of 700 input + 200 output
+/// tokens is accrued to key `k` (bucket `k`, window total) and its group `team` (budget, total),
+/// and metered into today's `/usage` bucket. Returns `(path, status, body)` for each read, and
+/// is the witness the declared-error audit drives for the three `unpriced_class` declarations.
+async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
+    busbar_kernel::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let card: std::collections::BTreeMap<String, busbar_kernel::config::RateEntryCfg> =
+        std::collections::BTreeMap::from([(
+            "m".to_string(),
+            busbar_kernel::config::RateEntryCfg {
+                input_utok: 500.0,
+                output_utok: -1.0,
+                ..Default::default()
+            },
+        )]);
+    let groups = std::collections::BTreeMap::from([(
+        "team".to_string(),
+        busbar_kernel::config::GroupCfg {
+            enabled: true,
+            limits: vec![busbar_kernel::config::groups::LimitCfg {
+                metric: busbar_kernel::config::groups::LimitMetric::Budget,
+                amount: 1_000_000,
+                per: Some(busbar_kernel::config::groups::LimitWindow::Total),
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+            }],
+            ..Default::default()
+        },
+    )]);
+    let cost = busbar_kernel::cost::CostModel::resolve_parts(Some(&card), 0, &groups);
+    let now = busbar_kernel::store::now();
+    let (minted, _secret) = gov
+        .create_key(
+            NewKeySpec {
+                name: "k".to_string(),
+                ..Default::default()
+            },
+            now,
+        )
+        .unwrap();
+    // Accrue through the group chain the way the engine does (the chain reads `key.group`).
+    let mut in_team = minted.clone();
+    in_team.group = Some("team".to_string());
+    let units = std::collections::BTreeMap::from([
+        (busbar_api::UNIT_INPUT.to_string(), 700u64),
+        (busbar_api::UNIT_OUTPUT.to_string(), 200u64),
+    ]);
+    gov.record_usage(&cost, &in_team, "", "m", &units, now);
+    let usage = busbar_kernel::billing::TokenUsage {
+        input: 700,
+        output: 200,
+        ..Default::default()
+    };
+    gov.record_metering(&minted.id, "m", "vendor", Some(&usage), now);
+    gov.flush_metering();
+    let app = crate::new_test_app().governance(gov).cost(cost).build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let mut out = Vec::new();
+    for path in [
+        format!("/api/v1/admin/keys/{}/usage", minted.id),
+        "/api/v1/admin/groups/team/usage".to_string(),
+        "/api/v1/admin/usage".to_string(),
+    ] {
+        let resp = client
+            .get(format!("http://{addr}{path}"))
+            .header("x-admin-token", "admintok")
+            .send()
+            .await
+            .unwrap();
+        let status = resp.status().as_u16();
+        let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+        out.push((path, status, body));
+    }
+    handle.abort();
+    out
+}
+
+/// The read of [`drive_unpriced_usage_reads`] whose path starts with `prefix`, asserted: `409`, `code = unpriced_class`, and a
+/// message naming the lane `m` and the class `output`.
+async fn assert_unpriced_usage_read_is_named(prefix: &str) {
+    let reads = drive_unpriced_usage_reads().await;
+    let (path, status, body) = reads
+        .iter()
+        .find(|(p, _, _)| p.starts_with(prefix))
+        .expect("the driver reads every usage path");
+    assert_eq!(
+        *status, 409,
+        "{path}: an unpriced class under a present rate card is a NAMED 409 (Q25b), not a bare \
+         500: {body}"
+    );
+    assert_eq!(body["error"]["code"], "unpriced_class", "{path}: {body}");
+    let message = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("`m`") && message.contains("`output`"),
+        "{path}: the refusal names the lane and the class: {body}"
+    );
+}
+
+#[tokio::test]
+async fn key_usage_over_an_unpriced_class_answers_named_409() {
+    assert_unpriced_usage_read_is_named("/api/v1/admin/keys/").await;
+}
+
+#[tokio::test]
+async fn group_usage_over_an_unpriced_class_answers_named_409() {
+    assert_unpriced_usage_read_is_named("/api/v1/admin/groups/").await;
+}
+
+#[tokio::test]
+async fn admin_usage_over_an_unpriced_class_answers_named_409() {
+    assert_unpriced_usage_read_is_named("/api/v1/admin/usage").await;
+}
+
 /// END-TO-END config apply: `POST /api/v1/admin/hooks` registers a hook at runtime (201), and a
 /// subsequent `GET /api/v1/admin/hooks` SEES it — proving the AppHandle swap took effect AND the
 /// per-request service reads the CURRENT snapshot. Invalid definitions reject with invalid_request.
@@ -12866,6 +12991,7 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     drive_plugin_inspect_errors().await;
     drive_key_cap_and_delegation_errors().await;
     drive_named_map_errors().await;
+    drive_unpriced_usage_reads().await;
     // The MCP trust verbs' own drivers, called here for the same reason as every line above it: a
     // condition witnessed only by a sibling test is witnessed nowhere.
     busbar_mcp::mcp::admin_view::adminverbs_tests::drive_mcp_verb_errors().await;

@@ -365,7 +365,7 @@ impl AdminService {
                     // match ENFORCEMENT (`try_admit` counts the fee for EVERY chain bucket, groups
                     // included). Passing `false` here understated spend and overstated remaining
                     // budget, so operators saw more headroom than the enforcer actually allows.
-                    .derived_bucket_usage(&self.app.cost, &b.bucket_id, b.window, true, now)
+                    .derived_bucket_usage_priced(&self.app.cost, &b.bucket_id, b.window, true, now)
                     .map_err(|e| {
                         busbar_kernel::diagnostics::diag_error!(
                             busbar_kernel::diagnostics::GROUP_USAGE_READ_FAILED,
@@ -373,7 +373,9 @@ impl AdminService {
                             "group usage read failed"
                         );
                         AdminError::Internal
-                    })?,
+                    })?
+                    // An unpriced lane or class is NAMED (`unpriced_class`, 409 — Q25b).
+                    .map_err(|e| usage_refusal("group_usage", &e))?,
                 None => Default::default(),
             };
             buckets.push(GroupBucketUsageView {
@@ -1486,17 +1488,10 @@ impl AdminService {
             // silent about this row's model or class, no entry covers the row's instant, or the
             // figure left the range (item 28). The response does not carry a number nobody
             // priced; the refusal is logged with the row it came from.
+            // An unpriced lane or class is NAMED (`unpriced_class`, 409 — Q25b).
             let row_spend = match row_spend {
                 Ok(spend) => spend,
-                Err(e) => {
-                    diag_error!(
-                        ADMIN_STORE_OPERATION_FAILED,
-                        operation = "usage.price",
-                        error = %e,
-                        "admin store operation failed"
-                    );
-                    return Err(AdminError::Internal);
-                }
+                Err(e) => return Err(usage_refusal("usage.price", &e)),
             };
             for b in [
                 &mut total,

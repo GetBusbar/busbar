@@ -809,7 +809,8 @@
                   "version_conflict",
                   "conflict",
                   "rate_limited",
-                  "internal"
+                  "internal",
+                  "unpriced_class"
                 ],
                 "type": "string"
               },
@@ -6146,6 +6147,16 @@
             },
             "description": "`not_found`: unknown resource"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`unpriced_class`: a rate card is configured and names no price for a class this usage reached (an unpriced class refuses; it never reads 0)"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -8378,6 +8389,16 @@
             },
             "description": "`not_found`: unknown resource, governance is not enabled on this server"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`unpriced_class`: a rate card is configured and names no price for a class this usage reached (an unpriced class refuses; it never reads 0)"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -10428,6 +10449,16 @@
               }
             },
             "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`unpriced_class`: a rate card is configured and names no price for a class this usage reached (an unpriced class refuses; it never reads 0)"
           },
           "500": {
             "content": {

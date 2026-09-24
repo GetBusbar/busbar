@@ -39,13 +39,13 @@ fn the_envelope_is_the_frozen_bytes_and_not_merely_the_frozen_document() {
     );
 }
 
-/// Every one of the ten frozen codes renders, and renders only itself.
+/// Every one of the eleven frozen codes renders, and renders only itself.
 ///
-/// The ten are `busbar-core`'s own `AdminError` set, which is what an operator's tooling matches
+/// The eleven are `busbar-core`'s own `AdminError` set, which is what an operator's tooling matches
 /// on. The assertion is that the envelope is transparent to the code it was handed — it neither
 /// normalises one code onto another nor carries a default of its own.
 #[test]
-fn all_ten_frozen_codes_render_verbatim() {
+fn all_eleven_frozen_codes_render_verbatim() {
     const FROZEN_CODES: &[&str] = &[
         "not_found",
         "unauthorized",
@@ -57,8 +57,9 @@ fn all_ten_frozen_codes_render_verbatim() {
         "rate_limited",
         "internal",
         "unavailable",
+        "unpriced_class",
     ];
-    assert_eq!(FROZEN_CODES.len(), 10, "the frozen set is ten and only ten");
+    assert_eq!(FROZEN_CODES.len(), 11, "the frozen set is eleven and only eleven");
     for code in FROZEN_CODES {
         let parsed: serde_json::Value =
             serde_json::from_str(&envelope_of(code, code)).expect("valid json");

@@ -1786,24 +1786,35 @@ pub(crate) async fn key_usage(
     // in-memory `rate_headroom` read, which needs the configured caps).
     let cost = app.cost.clone();
     let res = tokio::task::spawn_blocking(move || {
-        // DERIVED at read time: spend_cents = ledger x CURRENT rate card (+ fee x requests) - a
-        // rate-card correction changes this number on the very next read (tokens are the truth).
-        let usage = gov2.usage_for(&cost, &id2, now)?;
         // O(1) row lookup instead of a full-table `all_keys()` scan filtered by id.
         let key = gov2.store().get_key(&id2)?;
-        // TOMBSTONE (1.5.0): `get_key` (and `usage_for`, which may still find a residual/derived
-        // bucket) can both still answer for a deleted key — attribution rows survive on purpose.
-        // The admin-facing "does this key exist" surface must not, though: a tombstoned key reads
-        // as absent here, same as an unknown id, so DELETE stays a real removal from every reader's
-        // point of view.
-        if key.as_ref().is_some_and(|k| k.deleted_at.is_some()) {
+        // TOMBSTONE (1.5.0): `get_key` can still answer for a deleted key — attribution rows
+        // survive on purpose. The admin-facing "does this key exist" surface must not, though: a
+        // tombstoned key reads as absent here, same as an unknown id, so DELETE stays a real
+        // removal from every reader's point of view.
+        let Some(key) = key.filter(|k| k.deleted_at.is_none()) else {
             return Ok::<_, busbar_kernel::governance::StoreError>(None);
-        }
-        Ok::<_, busbar_kernel::governance::StoreError>(usage.map(|u| (u, key)))
+        };
+        // DERIVED at read time: spend_cents = ledger x CURRENT rate card (+ fee x requests) - a
+        // rate-card correction changes this number on the very next read (tokens are the truth).
+        // The key's own attribution bucket, exactly as `usage_for` reads it, with the money
+        // refusal kept TYPED so an unpriced class is named below (Q25b).
+        let usage = gov2.derived_bucket_usage_priced(
+            &cost,
+            &id2,
+            busbar_kernel::governance::WINDOW_TOTAL,
+            true,
+            now,
+        )?;
+        Ok::<_, busbar_kernel::governance::StoreError>(Some((usage, Some(key))))
     })
     .await;
     match res {
-        Ok(Ok(Some((u, key)))) => {
+        Ok(Ok(Some((Err(refused), _)))) => busbar_kernel::admin::v1::json::err_json_cond(
+            &crate::v1::service::usage_refusal("key_usage", &refused),
+            Cond::Unpriced,
+        ),
+        Ok(Ok(Some((Ok(u), key)))) => {
             // Headroom derives from the key's GROUP CHAIN (keys carry no caps of their own):
             // the tightest requests/tokens limit across the chain, `null` when unlimited.
             // Pool-less read: a per-pool cap is not a property of the key as a whole, so

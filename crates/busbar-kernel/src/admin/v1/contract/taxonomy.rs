@@ -63,6 +63,8 @@ pub enum ErrKind {
     /// rather than deleting a kind the frozen taxonomy still recognizes.
     #[cfg_attr(not(test), allow(dead_code))]
     Forbidden,
+    /// A usage read over a class the rate card in force does not price (`unpriced_class`, 409).
+    UnpricedClass,
 }
 
 #[cfg(any(test, feature = "openapi-schema", feature = "test-support"))]
@@ -77,6 +79,10 @@ impl ErrKind {
             ErrKind::Conflict => AdminError::Conflict(String::new()),
             ErrKind::Forbidden => AdminError::Forbidden {
                 needed: Scope::Full,
+            },
+            ErrKind::UnpricedClass => AdminError::UnpricedClass {
+                lane: String::new(),
+                class: None,
             },
         }
     }
@@ -120,6 +126,7 @@ pub fn err_kind_of(e: &AdminError) -> Option<ErrKind> {
         // be one entry with no cross-endpoint reuse, so it rides the same global 5xx bucket as
         // `Internal` rather than growing the declared-error machinery for a single call site.
         AdminError::Unavailable(_) => None,
+        AdminError::UnpricedClass { .. } => Some(ErrKind::UnpricedClass),
     }
 }
 
@@ -182,6 +189,8 @@ pub enum Cond {
     /// A named-map DELETE would leave a DANGLING REFERENCE: another config site still names the
     /// definition by bare name (e.g. `auth.chain`).
     StillReferenced,
+    /// A usage read reached a class the rate card in force does not price (#42).
+    Unpriced,
 }
 
 impl Cond {
@@ -256,6 +265,10 @@ impl Cond {
             Cond::StillReferenced => {
                 "another config section still references this definition by bare name (remove the \
                  reference first)"
+            }
+            Cond::Unpriced => {
+                "a rate card is configured and names no price for a class this usage reached \
+                 (an unpriced class refuses; it never reads 0)"
             }
             Cond::NameCollision => {
                 "the plugin name/alias collides with an already-installed plugin under a different \
@@ -537,7 +550,10 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
         (Get, "/config/versions") => de![Validation / MalformedCursor],
         (Get, "/plugins") => de![Validation / MissingRequiredQuery],
         (Get, "/pools") => de![Validation / InvalidQueryValue],
-        (Get, "/usage") => de![Validation / InvalidQueryValue],
+        (Get, "/usage") => de![Validation / InvalidQueryValue, UnpricedClass / Unpriced],
+        (Get, "/groups/{name}/usage") => {
+            de![NotFound / UnknownResource, UnpricedClass / Unpriced]
+        }
         // ── Virtual keys (unified onto this taxonomy) ─────────────────────────────────────────
         (Get, "/keys") => de![Validation / MalformedCursor, Validation / InvalidQueryValue,],
         (Post, "/keys") => de![
@@ -579,6 +595,7 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
             Validation / Overlong,
             NotFound / UnknownResource,
             NotFound / GovernanceOff,
+            UnpricedClass / Unpriced,
         ],
         (Post, "/keys/{id}/rotate") => de![
             Validation / Overlong,

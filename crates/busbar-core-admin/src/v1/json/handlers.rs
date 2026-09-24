@@ -4982,7 +4982,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                         "code": {"type": "string",
                             "enum": ["not_found", "unauthorized", "method_not_allowed", "forbidden",
                                      "invalid_request", "version_conflict", "conflict",
-                                     "rate_limited", "internal"]},
+                                     "rate_limited", "internal", "unpriced_class"]},
                         "message": {"type": "string"}
                     },
                     "required": ["code", "message"]

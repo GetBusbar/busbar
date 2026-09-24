@@ -129,6 +129,30 @@ pub fn derive_spend_micros_row(
     cost.derive_spend_micros([(resolved, &units)].into_iter(), b.requests, true)
 }
 
+/// A usage read the one function REFUSED, as the admin wire answers it (OWNER RULING Q25b). A card
+/// that is present and silent about a lane or a class is the operator's to fix and is NAMED —
+/// `unpriced_class` (409) with the lane and the class in the message — rather than hidden behind a
+/// bare 500. The other refusals (no card in force for the instant, a figure out of range) stay
+/// `internal`. Every refusal is logged under `operation`, as before.
+pub(crate) fn usage_refusal(
+    operation: &'static str,
+    e: &busbar_kernel_ledger::cost::MoneyError,
+) -> AdminError {
+    use busbar_kernel_ledger::cost::MoneyError;
+    diag_error!(ADMIN_STORE_OPERATION_FAILED, operation, error = %e, "admin store operation failed");
+    match e {
+        MoneyError::ClassUnpriced { lane, class, .. } => AdminError::UnpricedClass {
+            lane: lane.clone(),
+            class: Some(class.clone()),
+        },
+        MoneyError::LaneUnpriced { lane, .. } => AdminError::UnpricedClass {
+            lane: lane.clone(),
+            class: None,
+        },
+        MoneyError::NoCardInForce { .. } | MoneyError::Overflow => AdminError::Internal,
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // THE DATED RATE-CARD HISTORY, ON THE READ PATH — DECISION #79
 //
