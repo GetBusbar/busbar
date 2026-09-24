@@ -101,8 +101,9 @@
 //!    cell, and hands back the message stream/sink pair the pump consumes.
 //! 2. [`SessionPump`] — `busbar_voice::runtime::{SessionCore, VoiceSession, UplinkForwarder,
 //!    Outbound}`, the per-frame loop over a byte duplex.
-//! 3. [`SessionLease`] — `busbar_voice::runtime::{MeteringPort, MeteringLease, LeaseState,
-//!    LeaseCloseGuard}`, the reserve-then-settle object the hold is driven through.
+//! 3. [`SessionLease`] — `busbar_voice::runtime::{SessionMeter, SessionLease, TurnVerdict,
+//!    LeaseCloseGuard}`: the plane reports each turn's raw counts to a kernel session meter, which
+//!    prices them against the session's budget and answers only whether the carrier may stay open.
 //! 4. [`Carrier`] — `busbar_voice::topology::telephony` and `busbar_voice::runtime::carrier`, the
 //!    inbound telephony leg.
 //!
@@ -320,7 +321,8 @@ pub trait SessionPump: Send + Sync {
 
 /// **Seam 3 — the metering lease.** Reserve at open, settle per turn, close once.
 ///
-/// Satisfied by `busbar_voice::runtime::{MeteringPort, MeteringLease, LeaseState, LeaseCloseGuard}`.
+/// Satisfied by `busbar_voice::runtime::{SessionMeter, SessionLease, TurnVerdict, LeaseCloseGuard}`
+/// — the plane holds the lease and reports counts; the pricing is the kernel meter's.
 /// This is not a second ledger: the reservation it drives IS the unit's hold, the settlements it
 /// takes are what the usage and cost units folded, and the close is the exit path. The seam exists
 /// because the object that has to be told those three things lives on the far side of the async

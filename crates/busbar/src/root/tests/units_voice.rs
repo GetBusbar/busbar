@@ -2520,3 +2520,57 @@ fn two_turns_of_one_session_are_handed_the_same_chain() {
         "and it is the session's own value"
     );
 }
+
+/// Every runtime item this module's docs name as a seam's implementor exists (item (d), after
+/// 1ee8dac1d).
+///
+/// The seam docs named a metering port and a lease-state enum the runtime removed when the plane
+/// went pricing-blind, so a reader following them to the implementor found nothing. This reads the
+/// runtime's own source for each name the docs cite in a `…::runtime::{…}` list, so a rename there
+/// goes red here instead of leaving the doc pointing at an item that is gone.
+#[test]
+fn every_runtime_item_the_seam_docs_cite_is_exported_by_the_runtime() {
+    let stem = module_path!()
+        .rsplit("::")
+        .nth(1)
+        .expect("a test module sits inside its parent");
+    let family = stem.strip_prefix("units_").expect("a unit module");
+    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the crates directory")
+        .to_path_buf();
+    let own = std::fs::read_to_string(crates.join("busbar/src/root").join(format!("{stem}.rs")))
+        .expect("the module's own source");
+    let doc: String = own
+        .lines()
+        .filter_map(|l| {
+            let t = l.trim_start();
+            t.strip_prefix("//!").or_else(|| t.strip_prefix("///"))
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let runtime_dir = crates.join(format!("busbar-{family}/src/runtime"));
+    // What the runtime exports, as whole words: `MeteringPort` must not pass because
+    // `HostMeteringPort` is exported.
+    let exported: std::collections::BTreeSet<String> =
+        std::fs::read_to_string(runtime_dir.join("mod.rs"))
+            .expect("the runtime's mod")
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .map(str::to_string)
+            .collect();
+
+    let opener = format!("busbar_{family}::runtime::{{");
+    let mut cited = Vec::new();
+    for (at, _) in doc.match_indices(&opener) {
+        let rest = &doc[at + opener.len()..];
+        let list = &rest[..rest.find('}').expect("a closed list")];
+        cited.extend(list.split(',').map(|n| n.trim().to_string()));
+    }
+    assert!(!cited.is_empty(), "the seam docs cite the runtime");
+    for name in cited {
+        assert!(
+            exported.contains(&name),
+            "the docs cite `{name}` and the runtime does not export it"
+        );
+    }
+}
