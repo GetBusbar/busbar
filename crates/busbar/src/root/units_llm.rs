@@ -487,6 +487,36 @@ impl LlmNode {
         );
     }
 
+    /// Record on the book that this unit DISPATCHED, before its leg leaves the node.
+    ///
+    /// On the balance, window and arrival reading its hold was opened under ([`Self::open_on_book`]),
+    /// so the record names that hold: a node killed after this is durable recovers the hold as a
+    /// unit that sent something — posted at its last accrual checkpoint and marked recovered —
+    /// rather than voiding it as a unit that never left. A journal that will not take it is not a
+    /// refusal of the dispatch: the log retains the record and offers it again.
+    fn dispatch_on_book(&self, principal: &PrincipalId, arrived: Arrived) {
+        let Some(book) = self.book.get() else {
+            return;
+        };
+        let key = balance(principal);
+        let at = crate::root::durability::Settling {
+            key: &key,
+            window: busbar_kernel_budget::budget_window(
+                busbar_kernel_budget::window::WINDOW_DAY,
+                arrived.secs(),
+            ),
+            durability: &self.durability_token,
+            step: busbar_contract::caps::StepName::Route,
+            stamp: crate::root::durability::PostingStamp {
+                rate_card_version: 0,
+                wall: arrived.secs(),
+                mono: arrived.mono(),
+            },
+        };
+        let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
+        let _dispatched = durability.journal_dispatch(&at);
+    }
+
     /// THE SWEEP: the second holder of a key to every unit's hold cell, run over the slots the drop
     /// guard MARKED (item 129).
     ///
@@ -1819,6 +1849,9 @@ impl busbar_kernel::teller::RouteAwait for LlmUnit<'_> {
         // A unit refused at Authenticate, Verify, Approve or Admit never reaches Route, so it never
         // reaches this line, and the count says so rather than a rendered refusal having to be told
         // apart from an upstream's own.
+        // THE DISPATCH, ON THE JOURNAL, before the leg leaves: what a recovery reads to tell a unit
+        // that sent something from one that never did.
+        self.node.dispatch_on_book(&self.principal, self.arrived);
         self.node.dispatch.execute(
             self.op_class,
             Box::pin(async move { self.walk.route(token, &destination).await }),

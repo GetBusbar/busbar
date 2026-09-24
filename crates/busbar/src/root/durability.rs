@@ -154,6 +154,9 @@ pub struct Durability {
     pub restart_findings: Vec<JournalDisagreement>,
     /// How many holds a predecessor left open that this boot RECOVERED and posted (item 127).
     pub recovered_holds: usize,
+    /// The idempotency claims a predecessor took with no hold ever made durable behind them, VOIDED
+    /// at this boot so a client's retry is not answered with a unit that never ran. Oldest first.
+    pub voided_claims: Vec<String>,
     /// THE COUNTS ROWS WHOSE PRICING REFUSED (#42, #43, #71): a unit's raw counts, on the chain,
     /// that the card in force could not price. The fact is kept — the counts are what the unit did
     /// — and the money is not: no figure moved the book for them. Every read of the balance and
@@ -440,7 +443,12 @@ impl Durability {
     /// through the recovery table, then post that settlement onto the book and the chain as if the
     /// unit had ended — under the incarnation and arrival reading that OPENED it, so the posting
     /// closes that hold and no later boot recovers it twice.
-    fn recover(&mut self, open: Vec<HoldOpened>) {
+    ///
+    /// The table reads what the chain says the unit did. A unit whose dispatch record was durable
+    /// had something leave the node, so its posting is the last accrual checkpoint it made — its
+    /// counts, priced at their epoch, and none if it never checkpointed — marked RECOVERED. A unit
+    /// with no dispatch record sent nothing: zero, marked VOIDED. Neither guesses upward.
+    fn recover(&mut self, open: Vec<Recoverable>) {
         if open.is_empty() {
             return;
         }
@@ -450,23 +458,34 @@ impl Durability {
         let current = busbar_contract::slice::Epoch(self.incarnation);
         let pinned = (self.history)();
         let view = pinned.as_ref().map(PinnedHistory::view);
+        // The checkpoint's figure, derived from its counts like every figure on this book. One the
+        // card refuses is kept as a refused row and posts nothing.
+        let checkpointed: Vec<Result<u64, String>> = open
+            .iter()
+            .map(|held| match &held.checkpoint {
+                None => Ok(0),
+                Some((counts, arrived_ms)) => price_counts(view.as_ref(), counts, *arrived_ms)
+                    .and_then(|nanos| u64::try_from(nanos).map_err(|_| MoneyError::Overflow))
+                    .map_err(|refused| format!("{refused:?}")),
+            })
+            .collect();
         let records: Vec<busbar_kernel::recovery::HoldRecord> = open
             .iter()
-            .map(|hold| busbar_kernel::recovery::HoldRecord {
-                unit: busbar_contract::UnitKey::new(hold.mono),
-                principal: busbar_contract::caps::PrincipalId::new(hold.principal.as_str()),
+            .zip(&checkpointed)
+            .map(|(held, checkpointed)| busbar_kernel::recovery::HoldRecord {
+                unit: busbar_contract::UnitKey::new(held.hold.mono),
+                principal: busbar_contract::caps::PrincipalId::new(held.hold.principal.as_str()),
                 // The reservation as the replay derived it from the hold's counts — the same
                 // figure the rebuilt book already holds open for it.
-                reserved: hold.reserved(view.as_ref()),
-                // No accrual checkpoint and no dispatch record is journalled, so the table's
-                // recovery row posts zero, marked void: a crash is not evidence of consumption.
-                checkpointed: 0,
-                dispatched: false,
-                lease_epoch: busbar_contract::slice::Epoch(hold.incarnation),
+                reserved: held.hold.reserved(view.as_ref()),
+                checkpointed: checkpointed.as_ref().copied().unwrap_or(0),
+                dispatched: held.dispatched,
+                lease_epoch: busbar_contract::slice::Epoch(held.hold.incarnation),
             })
             .collect();
         let posted = busbar_kernel::recovery::recover_all(&kernel, &records, current, &canary);
-        for (hold, posted) in open.iter().zip(posted) {
+        for ((held, checkpointed), posted) in open.iter().zip(checkpointed).zip(posted) {
+            let hold = &held.hold;
             let at = Settling {
                 key: &hold.key,
                 window: hold.window,
@@ -478,12 +497,149 @@ impl Durability {
                     mono: hold.mono,
                 },
             };
-            let settlement = self.ledger.post(at.key, at.window, posted);
-            // A durability loss here is retained and re-offered like any other; the book has
-            // moved and the hold is settled in memory either way.
-            let _ = self.journal_settlement_as(&at, settlement, hold.incarnation);
+            // What the posting is evidence FOR: the checkpoint's counts, where the table posted
+            // them. A unit the table voided posts nothing and carries nothing.
+            let evidence = held
+                .checkpoint
+                .as_ref()
+                .filter(|_| held.dispatched)
+                .map(|(counts, arrived_ms)| (counts.clone(), *arrived_ms));
+            let fee_count = evidence.as_ref().map_or(0, |(counts, _)| counts.fee_count);
+            let settlement = self
+                .ledger
+                .post_counted(at.key, at.window, posted, fee_count);
+            let recovered = self.journal_settlement_counted(
+                &at,
+                settlement,
+                hold.incarnation,
+                evidence.as_ref().map(|(counts, _)| counts),
+                evidence.as_ref().map_or(0, |(_, arrived_ms)| *arrived_ms),
+            );
+            // A checkpoint the card refuses to price is kept, as every refused row is, and every
+            // read over its balance refuses — the same row a replay of this chain rebuilds.
+            if let (Err(why), Some((counts, arrived_ms))) = (checkpointed, evidence) {
+                if let Ok(Settled { mut posting, .. }) = recovered {
+                    posting.refusal = Some(why);
+                    posting.counts = Some(counts);
+                    posting.arrived_ms = arrived_ms;
+                    self.refused.push(posting);
+                }
+            }
             self.recovered_holds = self.recovered_holds.saturating_add(1);
         }
+    }
+
+    /// VOID every idempotency claim a predecessor took with no hold made durable behind it.
+    ///
+    /// A claim whose unit no hold record names died between the claim and the hold — the one kill
+    /// point at which [`busbar_kernel::recovery::voids_claim`] says the claim must go: kept, it is
+    /// a key that would answer the client's retry with a unit that never ran. The void is a record
+    /// of its own on the chain, so no later boot voids it again and a reader can see it happened.
+    fn void_claims(&mut self, unheld: Vec<ClaimTaken>) {
+        let point = busbar_kernel::recovery::KillPoint::BetweenClaimAndHold;
+        if unheld.is_empty() || !busbar_kernel::recovery::voids_claim(point) {
+            return;
+        }
+        let token = busbar_kernel::teller::Kernel::new().durability_token();
+        for taken in unheld {
+            let record = ClaimRecord {
+                taken,
+                voided: true,
+            };
+            let entry = Entry::new(RecordClass::Transaction, record.body())
+                .at(record.taken.wall, record.taken.mono);
+            // A durability loss is retained and re-offered like any other append; the claim is
+            // void in this process either way, and a boot that finds no void record voids it again.
+            let _ = self.journal.append(&token, StepName::Admit, &[entry]);
+            self.voided_claims.push(record.taken.claim);
+        }
+    }
+
+    /// RECORD THAT A UNIT DISPATCHED — something left the node for it.
+    ///
+    /// Written before the dispatch, on the unit's balance and window and under its arrival
+    /// reading, so it names the hold [`Durability::open_hold`] opened. A node killed after this
+    /// record is durable recovers the unit's hold as consumed up to its last accrual checkpoint and
+    /// marked RECOVERED; one killed before it recovers the hold as nothing, marked VOIDED.
+    ///
+    /// # Errors
+    ///
+    /// As [`Durability::journal_audit`]. A failed append is retained and re-offered by the log — it
+    /// is never a refusal of the dispatch.
+    pub fn journal_dispatch(&mut self, at: &Settling<'_>) -> Result<JournalAck, DurabilityLost> {
+        self.journal_mark(at, Mark::Dispatched)
+    }
+
+    /// RECORD A UNIT'S ACCRUAL SO FAR, as counts and the instant they price at (#71, #79) — never a
+    /// figure. The last one a unit makes is what a recovery posts for it if the node dies before
+    /// the unit settles.
+    ///
+    /// # Errors
+    ///
+    /// As [`Durability::journal_dispatch`].
+    pub fn checkpoint_accrual(
+        &mut self,
+        at: &Settling<'_>,
+        counts: &UnitCounts,
+        arrived_ms: u64,
+    ) -> Result<JournalAck, DurabilityLost> {
+        self.journal_mark(
+            at,
+            Mark::Accrued {
+                counts: counts.clone(),
+                arrived_ms,
+            },
+        )
+    }
+
+    /// RECORD AN IDEMPOTENCY CLAIM a unit took, on its balance and window and under its arrival
+    /// reading, before its hold is made durable. A boot that finds the claim with no hold behind it
+    /// voids it ([`Durability::voided_claims`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Durability::journal_dispatch`].
+    pub fn journal_claim(
+        &mut self,
+        at: &Settling<'_>,
+        claim: &str,
+    ) -> Result<JournalAck, DurabilityLost> {
+        let record = ClaimRecord {
+            taken: ClaimTaken {
+                claim: claim.to_string(),
+                key: at.key.clone(),
+                window: at.window,
+                incarnation: self.incarnation,
+                wall: at.stamp.wall,
+                mono: at.stamp.mono,
+            },
+            voided: false,
+        };
+        let entry =
+            Entry::new(RecordClass::Transaction, record.body()).at(at.stamp.wall, at.stamp.mono);
+        let appended = self.journal.append(at.durability, at.step, &[entry]);
+        self.confirm(appended.as_ref().ok());
+        appended
+    }
+
+    fn journal_mark(
+        &mut self,
+        at: &Settling<'_>,
+        mark: Mark,
+    ) -> Result<JournalAck, DurabilityLost> {
+        let record = UnitMark {
+            key: at.key.clone(),
+            window: at.window,
+            incarnation: self.incarnation,
+            wall: at.stamp.wall,
+            mono: at.stamp.mono,
+            mark,
+        };
+        let entry =
+            Entry::new(RecordClass::Transaction, record.body()).at(record.wall, record.mono);
+        let appended = self.journal.append(at.durability, at.step, &[entry]);
+        self.confirm(appended.as_ref().ok());
+        appended
     }
 
     /// Settle a hold and put what it produced on the journal, in that order.
@@ -1510,6 +1666,182 @@ impl HoldOpened {
     }
 }
 
+/// The tag a dispatch mark's record opens with.
+const UNIT_DISPATCHED: &str = "unit.dispatched";
+
+/// The tag an accrual checkpoint's record opens with.
+const UNIT_ACCRUED: &str = "unit.accrued";
+
+/// The tag an idempotency claim's record opens with.
+const CLAIM_TAKEN: &str = "claim.taken";
+
+/// The tag the record voiding an idempotency claim opens with.
+const CLAIM_VOIDED: &str = "claim.voided";
+
+/// What a mark on a unit's open hold says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Mark {
+    /// Something left the node for the unit.
+    Dispatched,
+    /// The unit's accrual so far: counts and the instant they price at, never a figure.
+    Accrued {
+        /// The counts.
+        counts: UnitCounts,
+        /// The card epoch.
+        arrived_ms: u64,
+    },
+}
+
+/// A mark on a unit, as the journal carries it: named by the same four things that name its hold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnitMark {
+    /// The balance.
+    pub key: TotalsKey,
+    /// The window.
+    pub window: WindowStart,
+    /// Which boot of this node's journal wrote it.
+    pub incarnation: u64,
+    /// The unit's arrival, whole seconds.
+    pub wall: u64,
+    /// The unit's arrival on the node's monotonic clock.
+    pub mono: u64,
+    /// What it says.
+    pub mark: Mark,
+}
+
+impl UnitMark {
+    /// Its journal body.
+    #[must_use]
+    pub fn body(&self) -> Vec<u8> {
+        let mut body = BodyWriter::new();
+        match &self.mark {
+            Mark::Dispatched => {
+                body.text(UNIT_DISPATCHED);
+            }
+            Mark::Accrued { .. } => {
+                body.text(UNIT_ACCRUED);
+            }
+        }
+        body.num(self.incarnation);
+        write_key(&mut body, &self.key);
+        body.num(self.window);
+        if let Mark::Accrued { counts, arrived_ms } = &self.mark {
+            body.num(*arrived_ms);
+            write_counts(&mut body, Some(counts));
+        }
+        body.finish()
+    }
+
+    /// Read one back. `None` for a record that is not a mark.
+    #[must_use]
+    pub fn from_record(record: &JournalRecord) -> Option<UnitMark> {
+        if record.class != RecordClass::Transaction {
+            return None;
+        }
+        let mut body = BodyReader::new(&record.body);
+        let tag = body.text()?;
+        if tag != UNIT_DISPATCHED && tag != UNIT_ACCRUED {
+            return None;
+        }
+        let incarnation = body.num()?;
+        let key = read_key(&mut body)?;
+        let window = body.num()?;
+        let mark = if tag == UNIT_ACCRUED {
+            let arrived_ms = body.num()?;
+            Mark::Accrued {
+                counts: read_counts_block(&mut body)??,
+                arrived_ms,
+            }
+        } else {
+            Mark::Dispatched
+        };
+        body.is_done().then_some(UnitMark {
+            key,
+            window,
+            incarnation,
+            wall: record.wall,
+            mono: record.mono,
+            mark,
+        })
+    }
+
+    fn unit(&self) -> (u64, TotalsKey, WindowStart, u64) {
+        (self.incarnation, self.key.clone(), self.window, self.mono)
+    }
+}
+
+/// An idempotency claim a unit took, named by the same four things that name its hold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimTaken {
+    /// The claim — the idempotency key.
+    pub claim: String,
+    /// The balance.
+    pub key: TotalsKey,
+    /// The window.
+    pub window: WindowStart,
+    /// Which boot of this node's journal took it.
+    pub incarnation: u64,
+    /// The unit's arrival, whole seconds.
+    pub wall: u64,
+    /// The unit's arrival on the node's monotonic clock.
+    pub mono: u64,
+}
+
+impl ClaimTaken {
+    fn unit(&self) -> (u64, TotalsKey, WindowStart, u64) {
+        (self.incarnation, self.key.clone(), self.window, self.mono)
+    }
+}
+
+/// A claim's record: taken, or voided at recovery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClaimRecord {
+    taken: ClaimTaken,
+    voided: bool,
+}
+
+impl ClaimRecord {
+    fn body(&self) -> Vec<u8> {
+        let mut body = BodyWriter::new();
+        body.text(if self.voided {
+            CLAIM_VOIDED
+        } else {
+            CLAIM_TAKEN
+        });
+        body.num(self.taken.incarnation);
+        write_key(&mut body, &self.taken.key);
+        body.num(self.taken.window);
+        body.text(&self.taken.claim);
+        body.finish()
+    }
+
+    fn from_record(record: &JournalRecord) -> Option<ClaimRecord> {
+        if record.class != RecordClass::Transaction {
+            return None;
+        }
+        let mut body = BodyReader::new(&record.body);
+        let tag = body.text()?;
+        if tag != CLAIM_TAKEN && tag != CLAIM_VOIDED {
+            return None;
+        }
+        let incarnation = body.num()?;
+        let key = read_key(&mut body)?;
+        let window = body.num()?;
+        let claim = body.text()?.to_string();
+        body.is_done().then_some(ClaimRecord {
+            taken: ClaimTaken {
+                claim,
+                key,
+                window,
+                incarnation,
+                wall: record.wall,
+                mono: record.mono,
+            },
+            voided: tag == CLAIM_VOIDED,
+        })
+    }
+}
+
 /// A balance as fields: bucket, then dimension and scope as a tag and a name each.
 fn write_key(body: &mut BodyWriter, key: &TotalsKey) {
     body.text(key.bucket.as_str());
@@ -1558,12 +1890,29 @@ fn apply_opened(ledger: &mut Ledger, key: &TotalsKey, window: WindowStart, reser
 struct OpenHold {
     hold: HoldOpened,
     reserved: u64,
+    /// Whether a dispatch record for the unit was durable.
+    dispatched: bool,
+    /// The unit's last durable accrual checkpoint: its counts and their epoch.
+    checkpoint: Option<(UnitCounts, u64)>,
+}
+
+/// A hold a predecessor left open, with what the chain says happened to its unit before the crash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Recoverable {
+    /// The hold.
+    pub hold: HoldOpened,
+    /// Whether a dispatch record for the unit was durable: something left the node.
+    pub dispatched: bool,
+    /// The unit's last durable accrual checkpoint — counts and their epoch — if it made one.
+    pub checkpoint: Option<(UnitCounts, u64)>,
 }
 
 /// What replaying a chain into a book left over.
 struct Replayed {
     /// Holds opened and closed by no posting of the same unit, in chain order.
-    open: Vec<HoldOpened>,
+    open: Vec<Recoverable>,
+    /// Idempotency claims taken, not voided, whose unit no hold record ever names, in chain order.
+    unheld_claims: Vec<ClaimTaken>,
     /// The highest incarnation any record carried; 0 on a chain with none.
     incarnation: u64,
     /// Records that look like this build's money records and could not be read.
@@ -1580,6 +1929,7 @@ impl Replayed {
     fn nothing() -> Self {
         Replayed {
             open: Vec::new(),
+            unheld_claims: Vec::new(),
             incarnation: 0,
             unreadable: Vec::new(),
             refused: Vec::new(),
@@ -1606,6 +1956,9 @@ fn replay_into(
     keep: bool,
 ) -> Replayed {
     let mut open: Vec<OpenHold> = Vec::new();
+    let mut held_units: std::collections::BTreeSet<(u64, TotalsKey, WindowStart, u64)> =
+        std::collections::BTreeSet::new();
+    let mut claims: Vec<ClaimTaken> = Vec::new();
     let mut incarnation = 0;
     let mut unreadable = Vec::new();
     let mut refused = Vec::new();
@@ -1618,7 +1971,32 @@ fn replay_into(
             incarnation = incarnation.max(hold.incarnation);
             let reserved = hold.reserved(history);
             apply_opened(ledger, &hold.key, hold.window, reserved);
-            open.push(OpenHold { hold, reserved });
+            held_units.insert(hold.unit());
+            open.push(OpenHold {
+                hold,
+                reserved,
+                dispatched: false,
+                checkpoint: None,
+            });
+        } else if let Some(mark) = UnitMark::from_record(record) {
+            incarnation = incarnation.max(mark.incarnation);
+            // A mark names the unit whose hold it marks; one for a unit whose hold is closed, or
+            // was never opened, marks nothing a recovery could act on.
+            if let Some(held) = open.iter_mut().find(|held| held.hold.unit() == mark.unit()) {
+                match mark.mark {
+                    Mark::Dispatched => held.dispatched = true,
+                    Mark::Accrued { counts, arrived_ms } => {
+                        held.checkpoint = Some((counts, arrived_ms));
+                    }
+                }
+            }
+        } else if let Some(claim) = ClaimRecord::from_record(record) {
+            incarnation = incarnation.max(claim.taken.incarnation);
+            if claim.voided {
+                claims.retain(|taken| *taken != claim.taken);
+            } else {
+                claims.push(claim.taken);
+            }
         } else if let Some(mut posting) = Posting::from_record(record) {
             incarnation = incarnation.max(posting.incarnation);
             if posting.kind == PostingKind::Carry {
@@ -1692,7 +2070,18 @@ fn replay_into(
         }
     }
     Replayed {
-        open: open.into_iter().map(|held| held.hold).collect(),
+        open: open
+            .into_iter()
+            .map(|held| Recoverable {
+                hold: held.hold,
+                dispatched: held.dispatched,
+                checkpoint: held.checkpoint,
+            })
+            .collect(),
+        unheld_claims: claims
+            .into_iter()
+            .filter(|claim| !held_units.contains(&claim.unit()))
+            .collect(),
         incarnation,
         unreadable,
         refused,
@@ -2111,6 +2500,7 @@ pub fn build_priced(
         incarnation: 0,
         restart_findings: Vec::new(),
         recovered_holds: 0,
+        voided_claims: Vec::new(),
         refused: Vec::new(),
         unconfirmed: Vec::new(),
         history,
@@ -2145,6 +2535,10 @@ pub fn build_priced(
     // mid-unit was never posted by anybody. Each is posted per the recovery table and closed on the
     // chain under the incarnation that opened it.
     durability.recover(replayed.open);
+
+    // AND EVERY IDEMPOTENCY CLAIM A PREDECESSOR TOOK WITH NO HOLD BEHIND IT IS VOIDED, so a client's
+    // retry is answered by running the unit rather than by a unit that never ran.
+    durability.void_claims(replayed.unheld_claims);
 
     // AND THE RESTART RECONCILIATION RUNS OVER THE REAL BOOK: what is in memory now, against what
     // the chain rebuilds. It is a comparison of two things that can disagree, reported rather than

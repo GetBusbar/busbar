@@ -1629,3 +1629,177 @@ fn the_reconciliation_names_a_refused_row_the_node_lost() {
         }]
     );
 }
+
+/// A HOLD WHOSE UNIT DISPATCHED IS RECOVERED AT ITS LAST ACCRUAL CHECKPOINT, MARKED RECOVERED — and
+/// one whose unit never dispatched is recovered at nothing, marked VOIDED.
+///
+/// Two units open holds on a node with a data directory. The first records that it dispatched and
+/// checkpoints an accrual of 300 input units; the second dispatches nothing. The process is killed
+/// with both holds open. The next boot reads the dispatch and the checkpoint back off the chain,
+/// and the recovery table posts what they support: 300 for the unit that sent something, marked
+/// recovered, and zero for the one that did not, marked void. Before the dispatch and the checkpoint
+/// were on the chain the boot could only ever post zero, marked void, for a unit killed after its
+/// answer was relayed.
+#[test]
+fn a_unit_killed_after_it_dispatched_is_recovered_at_its_checkpoint_and_not_voided() {
+    use busbar_contract::caps::PrincipalId;
+    let scratch = ScratchDir::new("recovered-not-voided");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let sent = totals_key("vk_sent");
+    let idle = totals_key("vk_idle");
+    {
+        let mut durability = boot(&cfg, 11).expect("the directory is writable");
+        let durability_token = token();
+        let mut at = settling(&sent, &durability_token);
+        at.stamp.mono = 77;
+        durability
+            .open_hold(
+                &at,
+                &PrincipalId::new("vk_sent"),
+                &inputs(2_000),
+                ARRIVED_MS,
+            )
+            .expect("the hold goes on the chain");
+        durability
+            .journal_dispatch(&at)
+            .expect("the dispatch goes on the chain");
+        durability
+            .checkpoint_accrual(&at, &inputs(300), ARRIVED_MS)
+            .expect("the checkpoint goes on the chain");
+        let mut quiet = settling(&idle, &durability_token);
+        quiet.stamp.mono = 78;
+        durability
+            .open_hold(
+                &quiet,
+                &PrincipalId::new("vk_idle"),
+                &inputs(500),
+                ARRIVED_MS,
+            )
+            .expect("the hold goes on the chain");
+        // kill -9: no settle, no destructor, nothing flushed on the way out.
+        std::mem::forget(durability);
+    }
+
+    let restarted = boot(&cfg, 11).expect("the journal reopens");
+    assert_eq!(restarted.recovered_holds, 2);
+    assert!(
+        restarted.restart_findings.is_empty(),
+        "{:?}",
+        restarted.restart_findings
+    );
+    let posted = restarted.read_back();
+    let of = |key: &TotalsKey| {
+        posted
+            .iter()
+            .find(|p| p.kind == PostingKind::Settlement && p.key == *key)
+            .cloned()
+            .expect("the recovery posted onto the chain")
+    };
+    let recovered = of(&sent);
+    assert!(
+        recovered.flags.contains(PostingFlags::RECOVERED),
+        "a unit that dispatched is recovered, not voided: {:?}",
+        recovered.flags
+    );
+    assert!(!recovered.flags.contains(PostingFlags::VOIDED));
+    assert_eq!(
+        recovered.settled, 300,
+        "the last checkpoint, priced at its epoch"
+    );
+    assert_eq!(recovered.counts, Some(inputs(300)));
+    let voided = of(&idle);
+    assert!(
+        voided.flags.contains(PostingFlags::VOIDED),
+        "a unit that never dispatched owes nothing: {:?}",
+        voided.flags
+    );
+    assert_eq!(voided.settled, 0);
+
+    let figures = restarted.ledger.book().get(&sent, 86_400);
+    assert_eq!(figures.settled, 300);
+    assert_eq!(figures.open_holds, 0, "the recovered hold is closed");
+    assert_eq!(
+        figures.open_slice_remainders, 1_700,
+        "the unconsumed reservation went back"
+    );
+    assert_eq!(restarted.ledger.book().get(&idle, 86_400).settled, 0);
+    let before = restarted.ledger.book().snapshot();
+    drop(restarted);
+
+    let third = boot(&cfg, 11).expect("the journal reopens again");
+    assert_eq!(
+        third.recovered_holds, 0,
+        "a recovered hold is not recovered twice"
+    );
+    assert_eq!(
+        third.ledger.book().snapshot(),
+        before,
+        "the recovered postings rebuild the same book"
+    );
+    assert!(
+        third.restart_findings.is_empty(),
+        "{:?}",
+        third.restart_findings
+    );
+}
+
+/// AN IDEMPOTENCY CLAIM TAKEN WITH NO HOLD MADE DURABLE BEHIND IT IS VOIDED AT RECOVERY — once — and
+/// a claim whose hold was made durable is not.
+///
+/// The kill point between the claim and the hold is the one at which the recovery table voids the
+/// claim: kept, it is a key that would answer the client's retry with a unit that never ran. The
+/// void goes on the chain, so the boot after does not void it again.
+#[test]
+fn an_idempotency_claim_with_no_hold_behind_it_is_voided_at_recovery() {
+    use busbar_contract::caps::PrincipalId;
+    let scratch = ScratchDir::new("claim-voided");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let key = totals_key("vk_claims");
+    {
+        let mut durability = boot(&cfg, 12).expect("the directory is writable");
+        let durability_token = token();
+        let mut orphan = settling(&key, &durability_token);
+        orphan.stamp.mono = 5;
+        durability
+            .journal_claim(&orphan, "idem-orphan")
+            .expect("the claim goes on the chain");
+        let mut backed = settling(&key, &durability_token);
+        backed.stamp.mono = 6;
+        durability
+            .journal_claim(&backed, "idem-backed")
+            .expect("the claim goes on the chain");
+        durability
+            .open_hold(
+                &backed,
+                &PrincipalId::new("vk_claims"),
+                &inputs(10),
+                ARRIVED_MS,
+            )
+            .expect("the hold goes on the chain");
+        std::mem::forget(durability);
+    }
+
+    let restarted = boot(&cfg, 12).expect("the journal reopens");
+    assert_eq!(
+        restarted.voided_claims,
+        vec!["idem-orphan".to_string()],
+        "the claim with no hold behind it is voided; the backed one is not"
+    );
+    assert!(
+        restarted.restart_findings.is_empty(),
+        "{:?}",
+        restarted.restart_findings
+    );
+    drop(restarted);
+
+    let third = boot(&cfg, 12).expect("the journal reopens again");
+    assert!(
+        third.voided_claims.is_empty(),
+        "a voided claim is not voided twice: {:?}",
+        third.voided_claims
+    );
+}
