@@ -1588,7 +1588,13 @@ symbol = "take(&Grant::<Exit>::mint("
 confined_to = "kernel/src"
 # The scope resolved against this tree, matched as path prefixes.
 confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-kernel/src/tick.rs"]
-because = "there are three take sites -- the exit path, the sweep and the tick -- and no fourth"
+# COUNTED, not only confined (item 130). The three are teller.rs's exit path and a child unit's end,
+# and tick.rs's sweep. The sweep used to take through a named grant (`take(&exit)`), which this
+# literal cannot see, so confinement guarded two of the three and "no fourth" was guarded by
+# nothing: a fourth take written inside teller.rs sat inside the home and the row stayed PASS.
+# The sweep now spells the literal, and `sites` holds the home to exactly three.
+sites = 3
+because = "there are three take sites -- the exit path and a child unit's end in teller.rs, and the sweep in tick.rs -- and no fourth"
 
 # ── 28. plane-no-money ───────────────────────────────────────────────────────────────────────────
 [rules.plane-no-money]

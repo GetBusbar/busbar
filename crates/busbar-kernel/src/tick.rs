@@ -283,10 +283,13 @@ pub fn sweep_settle(
     match sweep_outcome(verdict) {
         None => None,
         Some(outcome) => {
-            // One token witnesses both ends of this path: the take and the seal are the same
-            // exit, and the token carries no state that could tell them apart.
-            let exit = Grant::<Exit>::mint(kernel.seal());
-            let taken = slot.cell().take(&exit);
+            // The take is spelled the way the exit path spells it — the grant minted IN the
+            // argument — and that is load-bearing rather than style (item 130). The construction
+            // gate's `seal-sites` row confines and COUNTS that literal spelling: there are exactly
+            // three take sites, and a take through a named grant (`let exit = ...; take(&exit)`,
+            // which is how this line used to read) is a take the gate cannot see, so the sweep was
+            // the one site the "no fourth" guarantee was blind to.
+            let taken = slot.cell().take(&Grant::<Exit>::mint(kernel.seal()));
             // A lost task holds its concurrency leases until somebody gives them back, and the
             // exit path it would have used is never going to run. The rule is that leases go back
             // on every end; this is one of the two ends, so they go back here, in the same breath
@@ -319,7 +322,7 @@ pub fn sweep_settle(
                 let posted =
                     Posted::settle(hold, u128::from(amount), &usage, &ledger).flagged(flags);
                 canary.settled();
-                UnitEnd::seal(&exit, outcome, Ok(posted))
+                UnitEnd::seal(&Grant::<Exit>::mint(kernel.seal()), outcome, Ok(posted))
             })
         }
     }
