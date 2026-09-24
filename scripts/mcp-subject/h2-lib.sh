@@ -368,7 +368,15 @@ print(sum(1 for r in items if r.get('seq',0) > since and r.get('action')==action
 # simply "not equal", so it fails closed. Pinned by `--selftest`.
 h2_int_is() {
   [[ "${1:-}" =~ ^-?[0-9]+$ ]] || return 1
-  [ "$1" "$2" "$3" ]
+  case "$2" in
+    -eq) [ "$1" -eq "$3" ] ;;
+    -ne) [ "$1" -ne "$3" ] ;;
+    -gt) [ "$1" -gt "$3" ] ;;
+    -ge) [ "$1" -ge "$3" ] ;;
+    -lt) [ "$1" -lt "$3" ] ;;
+    -le) [ "$1" -le "$3" ] ;;
+    *) return 2 ;;
+  esac
 }
 
 # Emit a PASS/FAIL verdict line and EXIT the rig: 0 on PASS, 1 on FAIL or on any other outcome word
@@ -444,10 +452,10 @@ _h2_st_case_verdict_exits() {
   local out st
   out="$( (h2_verdict FAIL "selftest" >/dev/null; echo REACHED) )"; st=$?
   _h2_st_want "verdict-exits: FAIL ends the rig red" red "$st"
-  _h2_st_want "verdict-exits: nothing after a FAIL verdict runs" 0 "$([ -z "$out" ]; echo $?)"
+  _h2_st_want "verdict-exits: nothing after a FAIL verdict runs" 0 "${#out}"
   out="$( (h2_verdict PASS "selftest" >/dev/null; echo REACHED; exit 7) )"; st=$?
   _h2_st_want "verdict-exits: PASS ends the rig green" 0 "$st"
-  _h2_st_want "verdict-exits: nothing after a PASS verdict runs" 0 "$([ -z "$out" ]; echo $?)"
+  _h2_st_want "verdict-exits: nothing after a PASS verdict runs" 0 "${#out}"
   ( h2_verdict MAYBE "selftest" >/dev/null ); st=$?
   _h2_st_want "verdict-exits: an unknown outcome word is red" red "$st"
 }
