@@ -1229,7 +1229,7 @@ fn a_back_dated_correction_survives_a_restart() {
                 effective_until: Some(CORRECTED.1),
                 amended_at_ms: SIGNED_AT,
                 sealed_fee: 0,
-                rates: vec![(FLAT_LANE.to_string(), "input".to_string(), 4_000)],
+                rates: vec![(FLAT_LANE.to_string(), "input".to_string(), Some(4_000))],
                 operator_fingerprint: "op".to_string(),
                 reason_hash: [9; 32],
                 principal: "admin".to_string(),

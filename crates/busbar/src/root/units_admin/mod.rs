@@ -1313,9 +1313,13 @@ fn amend_rate_history_effect(
         rates: cells
             .into_iter()
             .map(|(lane, class)| {
+                // A cell the card could not represent (a sub-quantum rate) is UNPRICED on the live
+                // card and refuses a hit (#42); the record says so rather than writing a zero the
+                // signer never sealed, so the entry a restart rebuilds refuses it too.
                 let nanos = card
                     .lane_rates(&lane)
-                    .map_or(0, |rates| rates.nanos_per_unit(&class));
+                    .filter(|rates| rates.class_priced(&class))
+                    .map(|rates| rates.nanos_per_unit(&class));
                 (lane, class, nanos)
             })
             .collect(),
@@ -1385,7 +1389,14 @@ fn dual_control_word(dual_control: busbar_core_admin::DualControl) -> &'static s
 
 /// The domain tag every durable amendment record's body opens with, so a `Policy`-class journal
 /// record is recognisable as a rate-card amendment without guessing.
-pub const AMENDMENT_RECORD_TAG: &str = "busbar/rate-amendment/v1";
+///
+/// `v2` states, per cell, whether the sealed card PRICED it: a `v1` record wrote an unpriced cell
+/// as nanos 0, which a restart read back as a free cell where the live card refused it (#42).
+pub const AMENDMENT_RECORD_TAG: &str = "busbar/rate-amendment/v2";
+
+/// The tag a record written before [`AMENDMENT_RECORD_TAG`] carried, still read: every cell on it
+/// reads back as the figure it holds, which is all a `v1` record can say.
+const AMENDMENT_RECORD_TAG_V1: &str = "busbar/rate-amendment/v1";
 
 /// One sealed rate-card amendment, as the node's journal keeps it: every figure the correction put
 /// on the history, who signed it, who submitted it, under which posture, and the exact bytes the
@@ -1410,7 +1421,9 @@ pub struct AmendmentRecord {
     /// binary journal format that was never reviewed as a wire reader.
     pub sealed_fee: i64,
     /// `(lane, class, nanos_per_unit)` for every cell the correction named, as the card sealed it.
-    pub rates: Vec<(String, String, u64)>,
+    /// `None` is a cell the card could not represent: UNPRICED, so a hit on it refuses (#42) — never
+    /// a zero.
+    pub rates: Vec<(String, String, Option<u64>)>,
     /// The signer: `sha256(operator key)`, hex.
     pub operator_fingerprint: String,
     /// `sha256(reason)`.
@@ -1439,7 +1452,8 @@ pub fn amendment_body(record: &AmendmentRecord) -> Vec<u8> {
     for (lane, class, nanos) in &record.rates {
         body.text(lane);
         body.text(class);
-        body.num(*nanos);
+        body.num(u64::from(nanos.is_some()));
+        body.num(nanos.unwrap_or(0));
     }
     body.text(&record.operator_fingerprint);
     body.bytes(&record.reason_hash);
@@ -1478,9 +1492,11 @@ pub fn amendment_from_body(body: &[u8]) -> Option<AmendmentRecord> {
         }
     }
     let mut r = Reader(body);
-    if r.text()? != AMENDMENT_RECORD_TAG {
-        return None;
-    }
+    let v2 = match r.text()?.as_str() {
+        AMENDMENT_RECORD_TAG => true,
+        AMENDMENT_RECORD_TAG_V1 => false,
+        _ => return None,
+    };
     let effective_from = r.num()?;
     let has_until = r.num()?;
     let until = r.num()?;
@@ -1489,7 +1505,15 @@ pub fn amendment_from_body(body: &[u8]) -> Option<AmendmentRecord> {
     let n = r.num()?;
     let mut rates = Vec::new();
     for _ in 0..n {
-        rates.push((r.text()?, r.text()?, r.num()?));
+        let (lane, class) = (r.text()?, r.text()?);
+        let priced = if v2 { r.num()? } else { 1 };
+        let nanos = r.num()?;
+        let nanos = match priced {
+            0 => None,
+            1 => Some(nanos),
+            _ => return None,
+        };
+        rates.push((lane, class, nanos));
     }
     let record = AmendmentRecord {
         effective_from,

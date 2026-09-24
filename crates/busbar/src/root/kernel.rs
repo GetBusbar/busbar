@@ -1002,12 +1002,19 @@ fn journalled_amendment(body: &[u8]) -> Option<JournalledCard> {
         busbar_kernel_ledger::cost::CardEntryDraft {
             effective_from: amendment.effective_from,
             effective_until: amendment.effective_until,
+            // An UNPRICED cell (`None`) is left off the rebuilt card, so a hit on it refuses (#42)
+            // exactly as it did on the card the correction sealed — never priced at a zero.
             card: busbar_kernel_ledger::cost::RateCard::from_nano_rates(
-                amendment.rates.iter().map(|(lane, class, nanos)| {
-                    (
-                        busbar_kernel_ledger::cost::LaneClass::new(lane.as_str(), class.as_str()),
-                        *nanos,
-                    )
+                amendment.rates.iter().filter_map(|(lane, class, nanos)| {
+                    nanos.map(|nanos| {
+                        (
+                            busbar_kernel_ledger::cost::LaneClass::new(
+                                lane.as_str(),
+                                class.as_str(),
+                            ),
+                            nanos,
+                        )
+                    })
                 }),
                 amendment.sealed_fee,
             ),
