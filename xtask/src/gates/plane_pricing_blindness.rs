@@ -1546,8 +1546,8 @@ impl Gate for PlanePricingBlindnessGate {
 }
 
 /// Run the gate over `fixture` with `plant` applied and report GREEN iff none of `covers` is red.
-fn green_over_fixture<'a>(
-    gate: &'a PlanePricingBlindnessGate,
+fn green_over_fixture(
+    gate: &PlanePricingBlindnessGate,
     cx: &Ctx,
     fixture: &str,
     name: &str,

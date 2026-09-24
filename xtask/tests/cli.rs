@@ -73,8 +73,12 @@ fn the_registry_and_the_workflow_still_name_the_same_gates() {
     assert_eq!(run(&["full-gate", "--selftest"]), 0);
 }
 
-/// THE AUDIT REGISTER, ON THE PER-PUSH PATH.
-///
+/// THE DENYLIST GATE, ON THE PER-PUSH PATH. No workflow names `denylist`: this test is its route.
+/// It drives the pre-registry `cargo xtask denylist` spelling through the dispatcher and pins the
+/// verdict, the self-test and the TSV arm at 0, and `full_gate::REGISTRY_NOT_IN_CI`'s `denylist`
+/// entry rests on the `run(&["denylist"])` call below being an executed line of this file. (This
+/// comment used to read "THE AUDIT REGISTER" — the gate that register became was deleted, and the
+/// heading outlived it on a test about something else.)
 #[test]
 fn the_pre_registry_denylist_spelling_still_works_unchanged() {
     assert_eq!(run(&["denylist"]), 0);
