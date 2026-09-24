@@ -48,13 +48,39 @@ jobs:
           # -max_total_time bounds each target; -rss_limit_mb turns runaway memory into a reported
           # failure instead of a silent OOM. A crash/panic makes cargo-fuzz exit non-zero -> the
           # gate fails, and the crashing input is written under fuzz/artifacts for the upload below.
-          for target in $(cargo +nightly fuzz list); do
+          #
+          # THE TARGET LIST IS ASSERTED, NOT ITERATED BLIND. `for t in $(cargo fuzz list)` swallows
+          # the command's exit status and iterates zero times over empty output, so a broken or
+          # empty list used to end this step GREEN having fuzzed nothing. The list is captured on
+          # its own line (errexit applies to a failing assignment), must be non-empty, and must
+          # name exactly the `[[bin]]` targets fuzz/Cargo.toml declares; the loop then has to have
+          # run every one of them.
+          listed="$(cargo +nightly fuzz list)"
+          n_listed="$(printf '%s\n' "$listed" | grep -c . || true)"
+          n_declared="$(grep -c '^\[\[bin\]\]' fuzz/Cargo.toml || true)"
+          if [ "$n_listed" -lt 1 ]; then
+            echo "::error::cargo fuzz list returned no targets; refusing to report a fuzz gate that fuzzed nothing."
+            exit 1
+          fi
+          if [ "$n_listed" != "$n_declared" ]; then
+            echo "::error::cargo fuzz list names ${n_listed} target(s) but fuzz/Cargo.toml declares ${n_declared} [[bin]] target(s); the gate would not fuzz what the tree declares."
+            exit 1
+          fi
+          mapfile -t targets < <(printf '%s\n' "$listed" | grep .)
+          ran=0
+          for target in "${targets[@]}"; do
             echo "::group::fuzz ${target}"
             cargo +nightly fuzz run "${target}" -- \
               -max_total_time="${FUZZ_MAX_TOTAL_TIME}" \
               -rss_limit_mb=4096
             echo "::endgroup::"
+            ran=$((ran + 1))
           done
+          if [ "$ran" != "$n_listed" ]; then
+            echo "::error::fuzzed ${ran} of ${n_listed} listed target(s)."
+            exit 1
+          fi
+          echo "fuzzed ${ran} target(s): ${targets[*]}"
 
       - name: Upload crashing inputs
         if: failure()
