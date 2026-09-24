@@ -4,6 +4,7 @@
 #   ./scripts/ci-runners-down.sh          # the SPOT boxes; the on-demand floor SURVIVES
 #   ./scripts/ci-runners-down.sh --all    # everything, floor included
 #   CI_RUNNER_DRY_RUN=1 ./scripts/ci-runners-down.sh
+#   ./scripts/ci-runners-down.sh --selftest   # the --all sweep's selection, over fixtures; no AWS/gh
 #
 # THE FLOOR SURVIVES A PLAIN `down`, AND THAT IS THE POINT OF IT. `down` is what an operator runs
 # to stop paying for a burst, to get a clean slate after a disk-full box, or at the end of a long
@@ -21,11 +22,49 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/ci-runners-lib.sh
 . "$HERE/ci-runners-lib.sh"
 
+# select_all_sweep "<terminated instance ids>"  (stdin: "<runner-id> <runner-name>" per OFFLINE
+# registration in the org). Prints the lines --all may delete: ONLY registrations this fleet minted
+# (`ec2-<id-minus-i->-<n>`, the bootstrap's naming) for a box THIS RUN terminated. The org pool also
+# serves sibling repos (ci-runners-register.sh: "one pool serves busbar and every sibling repo"), so
+# an offline registration that is not ours -- a sibling's box mid-OS-upgrade, a hand-registered
+# runner -- is not busbar's to delete, --all or not (item 489).
+select_all_sweep() {
+  local ids rid rname iid
+  ids=" $(printf '%s' "$1" | tr -s '\t\n' '  ') "   # fleet_instance_ids may be newline-separated
+  while read -r rid rname; do
+    [ -n "$rid" ] || continue
+    printf '%s' "$rname" | grep -qE '^ec2-[0-9a-f]+-[0-9]+$' || continue
+    iid="i-$(printf '%s' "$rname" | sed -E 's/^ec2-([0-9a-f]+)-[0-9]+$/\1/')"
+    case "$ids" in *" $iid "*) printf '%s %s\n' "$rid" "$rname" ;; esac
+  done
+}
+
+selftest() {
+  local got want fail=0
+  got="$(printf '%s\n' \
+    "11 ec2-0abc123-1" "12 ec2-0abc123-4" "13 ec2-0def456-2" \
+    "21 sibling-repo-builder" "22 ec2-0999999-1" "23 ec2-0abc123-x" "24 laptop-runner" \
+    | select_all_sweep "$(printf 'i-0abc123\ni-0def456')")"
+  want="$(printf '%s\n' "11 ec2-0abc123-1" "12 ec2-0abc123-4" "13 ec2-0def456-2")"
+  if [ "$got" = "$want" ]; then
+    echo "ok: --all sweeps exactly the offline registrations of the boxes it terminated"
+  else
+    fail=1; echo "FAIL: --all sweep selected:"; printf '%s\n' "$got" | sed 's/^/    /'
+    echo "      expected only:"; printf '%s\n' "$want" | sed 's/^/    /'
+  fi
+  got="$(printf '%s\n' "31 sibling-repo-builder" "32 ec2-0abc123-1" | select_all_sweep "")"
+  if [ -z "$got" ]; then echo "ok: with no box terminated, --all deletes no registration"
+  else fail=1; echo "FAIL: deleted with no box terminated: $got"; fi
+  [ "$fail" = 0 ] && echo "ci-runners-down selftest: PASS" || echo "ci-runners-down selftest: FAIL"
+  return "$fail"
+}
+
 ALL=0
 case "${1:-}" in
   --all) ALL=1 ;;
+  --selftest) selftest; exit $? ;;
   "")    ;;
-  *)     die "unknown argument '$1' (expected --all)" ;;
+  *)     die "unknown argument '$1' (expected --all or --selftest)" ;;
 esac
 
 require_aws
@@ -76,15 +115,19 @@ fi
 # a box that died mid-job — an OFFLINE org runner is a routing black hole. Delete every one.
 #
 # TWO SWEEPS, BECAUSE `--all` AND A PARTIAL DOWN ARE DIFFERENT FACTS. Under `--all` there is no
-# fleet left, so "offline" and "dead" are the same word and the blanket delete is correct. Without
-# it the floor is still standing, and a floor box whose agents are mid-restart is offline and very
+# fleet left, so for OUR registrations "offline" and "dead" are the same word -- but the org pool is
+# shared with sibling repos, so the --all sweep deletes only the fleet-named registrations of the
+# boxes this run terminated (select_all_sweep), plus the existence-checked ghost sweep for boxes
+# that died earlier. It never deletes a registration it did not mint. Without --all the floor is
+# still standing, and a floor box whose agents are mid-restart is offline and very
 # much alive — deleting its registration would make a real box unreachable. So the partial path
 # uses the existence-checked sweep (shared with ci-runners-reconcile.sh), which only removes a
 # registration whose INSTANCE EC2 no longer lists.
 if [ "$ALL" = 1 ]; then
-  log "sweeping every offline org runner"
+  log "sweeping the offline registrations of the boxes this run terminated"
   gh api --paginate "/orgs/${ORG}/actions/runners?per_page=100" --jq \
     '.runners[] | select(.status=="offline") | "\(.id) \(.name)"' 2>/dev/null \
+  | select_all_sweep "$IDS" \
   | while read -r rid rname; do
       log "  removing offline runner $rname"
       if dry; then
@@ -94,6 +137,8 @@ if [ "$ALL" = 1 ]; then
           || log "  (delete failed for $rname)"
       fi
     done
+  sweep_ghost_runners
+  log "swept $SWEPT_GHOSTS older ghost registration(s) whose instance no longer exists"
 else
   sweep_ghost_runners
   log "swept $SWEPT_GHOSTS ghost registration(s) whose instance no longer exists"

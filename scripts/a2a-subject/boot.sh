@@ -544,7 +544,7 @@ busbar built FROM THIS COMMIT; if the build step did not produce one, that is th
   # against.
   testing/a2a-tck/scenario-agent/serve.sh "$agent_port" \
     >"$dir/scenario-agent.log" 2>&1 &
-  SUBJECT_PIDS="${SUBJECT_PIDS:-}$!"
+  subject_track_pid "$!"
   subject_await "http://127.0.0.1:$agent_port/.well-known/agent-card.json" \
     "the TCK scenario agent" "$dir/scenario-agent.log"
 
@@ -561,7 +561,7 @@ busbar built FROM THIS COMMIT; if the build step did not produce one, that is th
   A2A_VENDOR_RECORD="$SUBJECT_UPSTREAM_RECORD" \
   node scripts/a2a-subject/signing-vendor.mjs "$vendor_port" "$agent_port" "$dir/issuer.spki" \
     >"$dir/signing-vendor.log" 2>&1 &
-  SUBJECT_PIDS="$SUBJECT_PIDS $!"
+  subject_track_pid "$!"
   subject_await "http://127.0.0.1:$vendor_port/.well-known/agent-card.json" \
     "the signing vendor" "$dir/signing-vendor.log"
   local issuer
@@ -590,7 +590,7 @@ for this registration and busbar would correctly refuse to approve it."
   ( cd "$dir" && BUSBAR_CONFIG="$dir/config.yaml" BUSBAR_ADMIN_TOKEN="$admin_token" \
       exec "$bin" ) >"$dir/busbar.log" 2>&1 &
   local busbar_pid=$!
-  SUBJECT_PIDS="$SUBJECT_PIDS $busbar_pid"
+  subject_track_pid "$busbar_pid"
 
   # READINESS BY OBSERVATION, on the plane's OWN unauthenticated metadata document rather than on
   # `/healthz` — `/healthz` answers 503 on a deployment with no pools, which is correct and says
@@ -712,7 +712,7 @@ vacuously."
   if [ "$credential_held_by" = "shim" ]; then
     node scripts/a2a-subject/binding-shim.mjs "$suite_port" "$data_port" "$bound" \
       >"$dir/credential-shim.log" 2>&1 &
-    SUBJECT_PIDS="$SUBJECT_PIDS $!"
+    subject_track_pid "$!"
 
     waited=0
     until [ "$(subject_probe_status "$through")" = "$SUBJECT_ADMITTED_STATUS" ]; do
@@ -785,6 +785,12 @@ PY
     && say "   busbar publishes its agent-card issuer key: ${SUBJECT_ISSUER_KEY:0:24}..." \
     || say "   NOTE: busbar published no agent-card issuer key in its log on this boot."
 }
+
+# Append one pid to the reaper's list, SPACE-SEPARATED whether or not the list is empty on entry.
+# Every boot step goes through here: a hand-written append that forgot the separator on the first
+# pid fused it with whatever was already listed, `kill` then failed on one garbage word, and the
+# subject (and every process appended after it) leaked, holding its loopback port.
+subject_track_pid() { SUBJECT_PIDS="${SUBJECT_PIDS:+$SUBJECT_PIDS }$1"; }
 
 reap_subject() { [ -n "${SUBJECT_PIDS:-}" ] && kill $SUBJECT_PIDS 2>/dev/null || true; }
 
@@ -935,7 +941,14 @@ leg_tck() {
 # THE GATE NOW READS `reports/compatibility.json`'s `per_requirement` map (the same file
 # `check-baseline.py` diffs the control legs against), which reports ONE status per requirement
 # rather than one row per transport parameterisation, and separates truly `NOT TESTED` from `FAIL`.
-# `NOT TESTED` requirements are reported, never gated on: they are not evidence about busbar.
+# `NOT TESTED` requirements are not evidence about busbar, so they are not counted as failures --
+# BUT ONLY THE ONES THE PINNED CONTROL ALSO COULD NOT TEST. A requirement is excused as a suite
+# limitation only when at least one control baseline in `testing/a2a-tck/baselines/` reports it
+# `NOT TESTED` too; a `NOT TESTED` the reference implementation DID execute is something the suite
+# could have run against busbar and did not, and that is RED. Without that counterweight a run in
+# which every MUST degraded to `NOT TESTED` (a TCK pin bump, an undialable transport, a subject that
+# never served) exited 0 reading "0 FAIL" -- the skipped-while-green failure this file exists to
+# refuse, reached by a different door. A run that executed no MUST at all is RED outright.
 # `FAIL` requirements are gated on the PINNED SET in `testing/a2a-tck/subject-waivers.json` --
 # anything failing OUTSIDE that pin is RED. `WAIVERS.md` documents more than that pin
 # (`CARD-EXT-001` is also marked waived there); this gate deliberately pins only the LOCKED
@@ -944,10 +957,11 @@ leg_tck() {
 assert_tck_number() {
   local out="$1" report_json="$2"
   local waivers="${3:-testing/a2a-tck/subject-waivers.json}"
-  python3 - "$out" "$report_json" "$waivers" <<'PY'
-import json, re, sys
+  local baselines="${4:-testing/a2a-tck/baselines}"
+  python3 - "$out" "$report_json" "$waivers" "$baselines" <<'PY'
+import json, os, re, sys
 
-out_path, report_path, waivers_path = sys.argv[1], sys.argv[2], sys.argv[3]
+out_path, report_path, waivers_path, baselines_dir = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 
 text = open(out_path, encoding="utf-8", errors="replace").read()
 
@@ -1001,14 +1015,43 @@ failing = sorted(k for k, v in must.items() if v.get("status") == "FAIL")
 unwaived = sorted(k for k in failing if k not in waived)
 waived_and_failing = sorted(k for k in failing if k in waived)
 waived_but_passing = sorted(k for k in waived if must.get(k, {}).get("status") not in (None, "FAIL"))
+executed = sorted(k for k, v in must.items() if v.get("status") in ("PASS", "FAIL"))
+
+# THE CONTROL'S OWN NOT-TESTED SET: the only NOT TESTED this gate may excuse. Union over every
+# pinned control, because a requirement one transport's control cannot test (e.g. HTTP_JSON-SVC-001)
+# is still a suite limitation, not a busbar gap.
+try:
+    control_files = sorted(f for f in os.listdir(baselines_dir) if f.endswith(".json"))
+except OSError as exc:
+    sys.exit("\nno control baselines at %s (%s). Without the control's NOT TESTED set there is no way\n"
+             "to tell a suite limitation from a requirement that simply never ran against busbar."
+             % (baselines_dir, exc))
+control_not_tested = set()
+for f in control_files:
+    with open(os.path.join(baselines_dir, f), encoding="utf-8") as fh:
+        cper = json.load(fh).get("per_requirement")
+    if not isinstance(cper, dict) or not cper:
+        sys.exit("\ncontrol baseline %s carries no `per_requirement` map." % f)
+    control_not_tested |= {k for k, v in cper.items()
+                           if (v.get("status") if isinstance(v, dict) else v) == "NOT TESTED"}
+if not control_files:
+    sys.exit("\n%s holds no control baseline; refusing to excuse any NOT TESTED requirement blind."
+             % baselines_dir)
+not_tested_unexcused = sorted(k for k in not_tested if k not in control_not_tested)
 
 print("")
 print("  REQUIREMENT-LEVEL BREAKDOWN (%d MUST requirements, %d NOT TESTED, %d FAIL):"
       % (len(must), len(not_tested), len(failing)))
-print("    NOT TESTED (suite limitation, not busbar evidence -- confirmed identical against the")
-print("    pinned a2a-go control in testing/a2a-tck/baselines/, so this is not gated):")
+print("    NOT TESTED, ALSO NOT TESTED BY THE PINNED CONTROL (suite limitation, not busbar evidence --")
+print("    checked against %s on this run, so this is not gated):" % baselines_dir)
 for r in not_tested:
+    if r not in not_tested_unexcused:
+        print("      %s" % r)
+print("    NOT TESTED HERE, BUT EXECUTED AGAINST THE PINNED CONTROL (RED):")
+for r in not_tested_unexcused:
     print("      %s" % r)
+if not not_tested_unexcused:
+    print("      (none)")
 print("    FAIL, PINNED WAIVED (see WAIVERS.md; expected, not gated):")
 for r in waived_and_failing:
     print("      %s" % r)
@@ -1023,6 +1066,17 @@ for r in unwaived:
 if not unwaived:
     print("      (none)")
 
+if not executed:
+    sys.exit(
+        "\nNOT ONE of %d MUST requirements executed (PASS or FAIL) against busbar. A run that tested\n"
+        "nothing has no number; it is not a pass." % len(must)
+    )
+if not_tested_unexcused:
+    sys.exit(
+        "\n%d MUST requirement(s) went NOT TESTED against busbar that the pinned control DID execute:\n"
+        "%s.\nThat is not the suite's limitation -- the suite could run them and did not run them here."
+        % (len(not_tested_unexcused), ", ".join(not_tested_unexcused))
+    )
 if unwaived:
     sys.exit(
         "\nbusbar failed %d MUST requirement(s) outside the pinned waiver set: %s.\n"
@@ -1117,7 +1171,7 @@ execute. Read the table above; that is the number this leg exists to produce." ;
 # A THIN WRAPPER so the self-test can hand `assert_tck_number` a disposable pin, without the real
 # `testing/a2a-tck/subject-waivers.json` (or the real report path arithmetic) anywhere near it.
 _assert_tck_number_with_pin() {
-  assert_tck_number "$1" "$2" "$3"
+  assert_tck_number "$1" "$2" "$3" "${4:-testing/a2a-tck/baselines}"
 }
 
 # --selftest: prove the arming rule and the boundary proof BITE, before any verdict from this
@@ -1192,6 +1246,16 @@ PY
   fi
   kill "$fake" 2>/dev/null || true
 
+  # RED 4b: the reaper's pid list. A non-empty list on entry (a second boot in one process) must
+  # still split into one word per pid, or `kill` fails on a fused word and the subject leaks.
+  if ( SUBJECT_PIDS="111"; subject_track_pid 222; subject_track_pid 333
+       [ "$SUBJECT_PIDS" = "111 222 333" ] ) && ( unset SUBJECT_PIDS; subject_track_pid 222
+       [ "$SUBJECT_PIDS" = "222" ] ); then
+    say "  ok: every tracked pid is its own word in the reaper's list"
+  else
+    say "  MISS: a tracked pid was fused into the reaper's list"; failures=$((failures+1))
+  fi
+
   # RED 5: TCK output with NO MUST row. This is what a suite that never reported looks like, and it
   # is the one shape that would otherwise let an armed leg pass having produced no number.
   local tmp; tmp="$(mktemp)"
@@ -1218,6 +1282,17 @@ PY
   local pin; pin="$(mktemp)"
   printf '{"waived": ["PUSH-DELIVER-001"]}\n' > "$pin"
   local report; report="$(mktemp)"
+  # A disposable CONTROL baseline, same reasoning: the NOT TESTED excuse is read against it, never
+  # against the real testing/a2a-tck/baselines/. It names exactly the 21 ids GREEN 2 plants, as the
+  # a2a-go control does for the real 21.
+  local ctl; ctl="$(mktemp -d)"
+  python3 -c "
+import json
+per = {'NOT-TESTED-%03d' % i: 'NOT TESTED' for i in range(21)}
+per.update({'SOME-REQ-001': 'PASS', 'PUSH-DELIVER-001': 'FAIL'})
+per.update({'EXEC-%03d' % i: 'PASS' for i in range(114)})
+json.dump({'per_requirement': per}, open('$ctl/control-fixture.json', 'w'))
+"
 
   # RED 7: an UNWAIVED MUST requirement reports FAIL. Red regardless of the suite's own row, and
   # regardless of how many other requirements pass.
@@ -1228,7 +1303,7 @@ json.dump({'per_requirement': {
     'SOME-REQ-001': {'level': 'MUST', 'status': 'FAIL'},
 }}, open('$report', 'w'))
 "
-  if _assert_tck_number_with_pin "$tmp" "$report" "$pin"; then
+  if _assert_tck_number_with_pin "$tmp" "$report" "$pin" "$ctl"; then
     say "  MISS: an unwaived FAIL requirement was accepted"; failures=$((failures+1))
   else
     say "  ok: an unwaived FAIL requirement is RED"
@@ -1242,7 +1317,7 @@ json.dump({'per_requirement': {
     'PUSH-DELIVER-001': {'level': 'MUST', 'status': 'FAIL'},
 }}, open('$report', 'w'))
 "
-  if _assert_tck_number_with_pin "$tmp" "$report" "$pin"; then
+  if _assert_tck_number_with_pin "$tmp" "$report" "$pin" "$ctl"; then
     say "  ok: a FAIL requirement inside the pinned waiver set is accepted"
   else
     say "  MISS: a pinned, waived FAIL requirement was refused"; failures=$((failures+1))
@@ -1257,11 +1332,67 @@ per = {'NOT-TESTED-%03d' % i: {'level': 'MUST', 'status': 'NOT TESTED'} for i in
 per['PUSH-DELIVER-001'] = {'level': 'MUST', 'status': 'FAIL'}
 json.dump({'per_requirement': per}, open('$report', 'w'))
 "
-  if _assert_tck_number_with_pin "$tmp" "$report" "$pin"; then
+  if _assert_tck_number_with_pin "$tmp" "$report" "$pin" "$ctl"; then
     say "  ok: NOT TESTED requirements are reported, not gated on"
   else
     say "  MISS: NOT TESTED requirements were treated as failures"; failures=$((failures+1))
   fi
+
+  # RED 9: EVERY MUST degraded to NOT TESTED -- the pin bump / undialable transport / never-served
+  # subject shape. The suite's own row still says 114, so the `total == 0` floor does not see it;
+  # 114 NOT TESTED that the control executed must be RED, not "0 FAIL, (none) unwaived".
+  printf '| MUST | 0 | 114 | 0 | 114 |\n' > "$tmp"
+  python3 -c "
+import json
+json.dump({'per_requirement': {'EXEC-%03d' % i: {'level': 'MUST', 'status': 'NOT TESTED'}
+                                for i in range(114)}}, open('$report', 'w'))
+"
+  if _assert_tck_number_with_pin "$tmp" "$report" "$pin" "$ctl"; then
+    say "  MISS: a run where every MUST went NOT TESTED was accepted"; failures=$((failures+1))
+  else
+    say "  ok: a run where every MUST went NOT TESTED is RED"
+  fi
+
+  # RED 10: ONE NOT TESTED the control executed, among otherwise excused ones. The excuse is per
+  # requirement, not a count.
+  python3 -c "
+import json
+per = {'NOT-TESTED-%03d' % i: {'level': 'MUST', 'status': 'NOT TESTED'} for i in range(21)}
+per['EXEC-000'] = {'level': 'MUST', 'status': 'NOT TESTED'}
+per['SOME-REQ-001'] = {'level': 'MUST', 'status': 'PASS'}
+json.dump({'per_requirement': per}, open('$report', 'w'))
+"
+  if _assert_tck_number_with_pin "$tmp" "$report" "$pin" "$ctl"; then
+    say "  MISS: a NOT TESTED requirement the control executed was excused"; failures=$((failures+1))
+  else
+    say "  ok: a NOT TESTED requirement the control executed is RED"
+  fi
+
+  # RED 11: nothing executed at all, even though every NOT TESTED is one the control also could not
+  # test. Zero executed MUSTs is no number.
+  python3 -c "
+import json
+json.dump({'per_requirement': {'NOT-TESTED-%03d' % i: {'level': 'MUST', 'status': 'NOT TESTED'}
+                                for i in range(21)}}, open('$report', 'w'))
+"
+  if _assert_tck_number_with_pin "$tmp" "$report" "$pin" "$ctl"; then
+    say "  MISS: a run that executed no MUST at all was accepted"; failures=$((failures+1))
+  else
+    say "  ok: a run that executed no MUST at all is RED"
+  fi
+
+  # RED 12: no control baseline to read the excuse from. Refused, not read as "nothing to excuse".
+  local noctl; noctl="$(mktemp -d)"
+  python3 -c "
+import json
+json.dump({'per_requirement': {'SOME-REQ-001': {'level': 'MUST', 'status': 'PASS'}}}, open('$report', 'w'))
+"
+  if _assert_tck_number_with_pin "$tmp" "$report" "$pin" "$noctl"; then
+    say "  MISS: a gate with no control baseline to read was accepted"; failures=$((failures+1))
+  else
+    say "  ok: a gate with no control baseline is refused"
+  fi
+  rmdir "$noctl"
 
   # RED 8: an empty pin is refused outright -- an empty waiver file would silently exempt nothing
   # while looking configured, which is a gate that always passes for the wrong reason.
@@ -1272,7 +1403,7 @@ json.dump({'per_requirement': {
     'SOME-REQ-001': {'level': 'MUST', 'status': 'PASS'},
 }}, open('$report', 'w'))
 "
-  if _assert_tck_number_with_pin "$tmp" "$report" "$pin"; then
+  if _assert_tck_number_with_pin "$tmp" "$report" "$pin" "$ctl"; then
     say "  MISS: an empty waiver pin was accepted"; failures=$((failures+1))
   else
     say "  ok: an empty waiver pin is refused"
@@ -1290,12 +1421,13 @@ json.dump({'per_requirement': {
     'SOME-REQ-001': {'level': 'MUST', 'status': 'PASS'},
 }}, open('$report2', 'w'))
 "
-  if _assert_tck_number_with_pin "$tmp2" "$report2" "$pin2"; then
+  if _assert_tck_number_with_pin "$tmp2" "$report2" "$pin2" "$ctl"; then
     say "  ok: a clean requirement-level report is accepted"
   else
     say "  MISS: a clean requirement-level report was refused"; failures=$((failures+1))
   fi
   rm -f "$tmp2" "$report2" "$pin2"
+  rm -rf "$ctl"
 
   [ "$failures" -eq 0 ] || die "$failures self-test expectation(s) did not hold. No verdict from \
 this script means anything until they do."

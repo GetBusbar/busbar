@@ -9,6 +9,10 @@
 //! function and reaches all of it through `busbar_kernel::test_support::engine_kit::EngineTestKit` —
 //! the plane names this crate in exactly that one binding line and nowhere else.
 
+use super::{
+    AdminScope, CostKit, EngineApp, EngineHandle, EngineTestKit, GovKit, HookEnvHandle, HookNeed,
+    TestAppKit,
+};
 use crate::test_support::TestApp;
 use busbar_api::{AuditRecord, MeteringRow, Store, VirtualKey};
 use busbar_kernel::governance::signing::TokenSigner;
@@ -17,10 +21,6 @@ use busbar_kernel::plane::calllog::CallRecorded;
 use busbar_kernel::plane::store::PlaneStore;
 use busbar_kernel::plane_host::{EngineHost, LiveHostFactory};
 use busbar_kernel::store::BreakerState;
-use super::{
-    AdminScope, CostKit, EngineApp, EngineHandle, EngineTestKit, GovKit, HookEnvHandle, HookNeed,
-    TestAppKit,
-};
 use std::any::Any;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -333,7 +333,9 @@ impl TestAppKit for TestApp {
         *self = std::mem::take(self).tool_pool(name, members, repeatable);
     }
     fn add_lane(&mut self, model: &str, protocol: &'static str, base_url: &str) {
-        *self = std::mem::take(self).lane(crate::test_support::LaneSpec::new(model, protocol, base_url));
+        *self = std::mem::take(self).lane(crate::test_support::LaneSpec::new(
+            model, protocol, base_url,
+        ));
     }
     fn set_durable_store(&mut self, store: Arc<dyn Store>) {
         *self = std::mem::take(self).mcp_durable_store(store);

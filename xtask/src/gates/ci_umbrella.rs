@@ -189,7 +189,7 @@ impl Gate for CiUmbrellaGate {
         rows.push(rule_label(&results));
         rows.push(rule_ref_job(&results, &jobs));
         rows.push(rule_ref_needs(&results, &jobs, &needs));
-        rows.push(rule_tier(&results, &wf));
+        rows.push(rule_tier(&results, &wf, full_tier_disjuncts(umbrella)));
         rows.push(rule_scored(&results, &needs, &report_only));
 
         Verdict::of(rows)
@@ -318,6 +318,28 @@ impl Gate for CiUmbrellaGate {
             "windows|full|${{ needs.windows.result }}",
             "windows|fast|${{ needs.windows.result }}",
             &["windows", "carries the full-tier guard"],
+        ));
+
+        // ITEM 187: THE MIRROR, READ. FULL_TIER drops a promotion branch while every job guard keeps
+        // it; the umbrella would then forgive a full-tier skip on a push to `qa`. Before this case
+        // the tier rule never read FULL_TIER, so nothing reddened.
+        report.push(plant_subst(
+            cx,
+            self,
+            "FULL_TIER drops a promotion branch its jobs' guards still name",
+            &[ROW_TIER],
+            "\"refs/heads/dev\", \"refs/heads/qa\"]'), github.ref) }}",
+            "\"refs/heads/dev\"]'), github.ref) }}",
+            &["windows", "carries no full-tier guard"],
+        ));
+        report.push(plant_subst(
+            cx,
+            self,
+            "the umbrella's FULL_TIER env is gone",
+            &[ROW_TIER],
+            "      FULL_TIER: ",
+            "      NOT_FULL_TIER: ",
+            &["carries no `env.FULL_TIER`"],
         ));
 
         // THE THREE FLOORS, EACH DRIVEN ALONE. Each case plants a workflow that is genuinely under
@@ -666,12 +688,97 @@ fn is_job_key(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')
 }
 
-/// Whether a job carries the FULL-TIER GUARD: the `if:` expression the umbrella's `FULL_TIER` env
-/// mirrors — everything except a push, plus pushes to the three promotion branches.
-fn is_full_tier_guarded(cond: Option<&String>) -> bool {
+/// The umbrella env var whose expression IS the full tier. The umbrella forgives a `full` row's
+/// skip exactly when this evaluates false, so the guard a job carries and this expression are one
+/// fact written twice, and the tier rule compares the two rather than either against a constant.
+const FULL_TIER_ENV: &str = "FULL_TIER";
+
+/// Split an Actions expression into its top-level `||` disjuncts, each whitespace-collapsed and
+/// stripped of a wrapping `${{ … }}` and of balanced outer parentheses — so
+/// `(github.event_name != 'push')` and `github.event_name != 'push'` are one disjunct.
+fn disjuncts(expr: &str) -> Vec<String> {
+    let flat = expr.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut e = flat.trim();
+    if let Some(inner) = e.strip_prefix("${{").and_then(|x| x.strip_suffix("}}")) {
+        e = inner.trim();
+    }
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut quote = false;
+    let mut cur = String::new();
+    let chars: Vec<char> = e.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '\'' => quote = !quote,
+            '(' if !quote => depth += 1,
+            ')' if !quote => depth -= 1,
+            '|' if !quote && depth == 0 && chars.get(i + 1) == Some(&'|') => {
+                out.push(cur.clone());
+                cur.clear();
+                i += 2;
+                continue;
+            }
+            _ => {}
+        }
+        cur.push(c);
+        i += 1;
+    }
+    out.push(cur);
+    out.into_iter()
+        .map(|d| strip_outer_parens(d.trim()).to_string())
+        .filter(|d| !d.is_empty())
+        .collect()
+}
+
+/// `(x)` → `x`, repeatedly, only when the opening paren closes at the very end.
+fn strip_outer_parens(mut s: &str) -> &str {
+    loop {
+        let Some(inner) = s.strip_prefix('(').and_then(|x| x.strip_suffix(')')) else {
+            return s;
+        };
+        let mut depth = 0i32;
+        let balanced = inner.chars().all(|c| {
+            match c {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                _ => {}
+            }
+            depth >= 0
+        });
+        if !balanced || depth != 0 {
+            return s;
+        }
+        s = inner.trim();
+    }
+}
+
+/// The umbrella's `FULL_TIER` expression as disjuncts, or why it cannot be read (item 187: the rule
+/// used to test two hard-coded substrings and never read this at all, so FULL_TIER could drop a
+/// promotion branch with every row green).
+fn full_tier_disjuncts(umbrella: &yaml_lite::Job) -> Result<Vec<String>, String> {
+    let raw = umbrella.env.get(FULL_TIER_ENV).ok_or_else(|| {
+        format!(
+            "`{UMBRELLA}` carries no `env.{FULL_TIER_ENV}`, so no job's tier can be compared with \
+             the expression that decides whether its skip is forgiven"
+        )
+    })?;
+    let d = disjuncts(raw);
+    if d.is_empty() {
+        return Err(format!("`{UMBRELLA}.env.{FULL_TIER_ENV}` is empty"));
+    }
+    Ok(d)
+}
+
+/// Whether a job carries the FULL-TIER GUARD: its `if:` contains, as top-level `||` disjuncts,
+/// EVERY disjunct of the umbrella's own `FULL_TIER` expression. A guard may add disjuncts (a job
+/// that also runs when its paths changed); it may not drop or alter one, because then the job and
+/// the umbrella disagree about when it was required to run.
+fn is_full_tier_guarded(cond: Option<&String>, full_tier: &[String]) -> bool {
     let Some(cond) = cond else { return false };
-    let flat = cond.split_whitespace().collect::<Vec<_>>().join(" ");
-    flat.contains("github.event_name != 'push'") && flat.contains("refs/heads/main")
+    let mine = disjuncts(cond);
+    full_tier.iter().all(|d| mine.contains(d))
 }
 
 // ── the rules ───────────────────────────────────────────────────────────────────────────────────
@@ -968,13 +1075,27 @@ fn rule_ref_needs(results: &[ResultRow], jobs: &[String], needs: &BTreeSet<Strin
     }
 }
 
-fn rule_tier(results: &[ResultRow], wf: &yaml_lite::Workflow) -> Row {
+fn rule_tier(
+    results: &[ResultRow],
+    wf: &yaml_lite::Workflow,
+    full_tier: Result<Vec<String>, String>,
+) -> Row {
+    let full_tier = match full_tier {
+        Ok(d) => d,
+        Err(why) => {
+            return Row::fail(
+                ROW_TIER,
+                "the umbrella's FULL_TIER expression could not be read",
+                why,
+            );
+        }
+    };
     let mut offenders = Vec::new();
     for (job, tier, referenced) in results.iter().filter_map(|r| r.parsed.as_ref()) {
         let Some(target) = wf.job(referenced) else {
             continue;
         };
-        let guarded = is_full_tier_guarded(target.cond.as_ref());
+        let guarded = is_full_tier_guarded(target.cond.as_ref(), &full_tier);
         match (tier.as_str(), guarded) {
             ("full", false) => offenders.push(format!(
                 "`{job}` is scored as full tier but `{referenced}` carries no full-tier guard, so \
@@ -1098,7 +1219,10 @@ fn synthetic(jobs: usize, needs: usize, results: usize) -> String {
     for job in &waited {
         out.push_str(&format!("      - {job}\n"));
     }
-    out.push_str("    runs-on: ubuntu-latest\n    env:\n      RESULTS: |\n");
+    out.push_str(
+        "    runs-on: ubuntu-latest\n    env:\n      FULL_TIER: ${{ (github.event_name != 'push') \
+         || contains(fromJSON('[\"refs/heads/main\"]'), github.ref) }}\n      RESULTS: |\n",
+    );
     for job in waited.iter().take(results) {
         out.push_str(&format!(
             "        {job}|fast|${{{{ needs.{job}.result }}}}\n"

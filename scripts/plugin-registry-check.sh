@@ -42,8 +42,24 @@ MODE="${1:-}"
 # Each case asserts on the check-5 line specifically, not on the exit code: the stub cannot know
 # each plugin's version_line, so check 4 is noisy under it and is not what these cases are about.
 if [ "$MODE" = "--selftest" ]; then
-  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+  tmp="$(mktemp -d)"
   rc=0
+  # EVERY DECLARED CASE MUST RUN (item 509). An early `exit 0` once ended this selftest after check
+  # 5's cases, so check 2's fail-injection below never executed on the happy path and could not
+  # change the outcome on the unhappy one. The EXIT trap counts the cases that actually ran and
+  # turns a green exit with any case unrun into RED.
+  SELFTEST_CASES=7
+  ran=0
+  selftest_exit() {
+    local st=$?
+    rm -rf "$tmp"
+    if [ "$st" = 0 ] && [ "$ran" != "$SELFTEST_CASES" ]; then
+      echo "plugin-registry-check selftest: FAILED -- only $ran of $SELFTEST_CASES declared case(s) ran;"
+      echo "  a selftest that exits before its cases is not a pass."
+      exit 1
+    fi
+  }
+  trap selftest_exit EXIT
   mk_stub() {  # mk_stub <orgs-behaviour-script>
     mkdir -p "$tmp/bin"
     { printf '#!/usr/bin/env bash\ncase "$2" in\n  */releases/latest) echo %s ;;\n  orgs/*)\n' \
@@ -54,6 +70,7 @@ if [ "$MODE" = "--selftest" ]; then
     chmod +x "$tmp/bin/gh"
   }
   probe() {  # probe <label> <want-present|want-absent> <pattern>
+    ran=$((ran + 1))
     local out; out="$(PATH="$tmp/bin:$PATH" "$0" 2>&1 || true)"
     if [ "$2" = want-present ]; then
       if printf '%s' "$out" | grep -qF "$3"; then printf '  [ok]     %s\n' "$1"
@@ -63,6 +80,17 @@ if [ "$MODE" = "--selftest" ]; then
       else printf '  [ok]     %s\n' "$1"; fi
     fi
   }
+  # The org listing a stub serves, as PAGES, the way the real API answers: `gh api --paginate
+  # --slurp` gets every page wrapped in one outer array, a bare `gh api` gets page 1 and nothing more.
+  cat >"$tmp/pages.py" <<'PAGES'
+import json, sys
+spec, argv = json.loads(sys.argv[1]), sys.argv[2:]
+pages = [[{"name": n} for n in page] for page in spec]
+if "--paginate" in argv:
+    print(json.dumps(pages if "--slurp" in argv else [r for p in pages for r in p]))
+else:
+    print(json.dumps(pages[0] if pages else []))
+PAGES
   echo "plugin-registry-check selftest (check 5, the reverse org sweep)"
 
   # CASE 1: gh cannot answer at all — an expired token, no read:org, a rate limit.
@@ -71,22 +99,27 @@ if [ "$MODE" = "--selftest" ]; then
     want-present "the reverse org sweep (check 5) COULD NOT RUN"
 
   # CASE 2: gh answers, with nothing. An empty answer from an API is not an empty org.
-  mk_stub '    echo "[]"'
+  mk_stub "    python3 '$tmp/pages.py' '[[]]' \"\$@\""
   probe "an empty org listing REDS the sweep rather than passing it vacuously" \
     want-present "the reverse org sweep (check 5) saw only 0 org repo(s)"
 
   # CASE 3: a real-shaped listing containing an unregistered plugin-shaped repo — the sweep's whole
   # purpose. This is the half that proves the guards above did not just disable the check.
-  mk_stub '    python3 -c "import json;print(json.dumps([{\"name\":\"r\"+str(i)} for i in range(40)]+[{\"name\":\"store-bogus\"}]))"'
+  mk_stub "    python3 '$tmp/pages.py' '[[$(python3 -c 'print(",".join(f"\"r{i}\"" for i in range(40)))'),\"store-bogus\"]]' \"\$@\""
   probe "a plausible listing still catches an unregistered plugin-shaped repo" \
     want-present "org repo 'store-bogus' matches plugin naming"
 
   # CASE 4: the same listing without the stray repo must not manufacture a finding.
-  mk_stub '    python3 -c "import json;print(json.dumps([{\"name\":\"r\"+str(i)} for i in range(40)]))"'
+  mk_stub "    python3 '$tmp/pages.py' '[[$(python3 -c 'print(",".join(f"\"r{i}\"" for i in range(40)))')]]' \"\$@\""
   probe "a clean listing produces no sweep finding" want-absent "matches plugin naming but is not in plugins.yaml"
 
-  echo
-  [ "$rc" = 0 ] && { echo "plugin-registry-check selftest: the org sweep fails loud and still finds strays"; exit 0; }
+  # CASE 5 (item 510): the org is bigger than one page, and the stray is on PAGE 2. A sweep that
+  # reads one page of at most 100 repos clears the floor (the registry's own count, ~11) on page 1
+  # alone and never sees it -- a truncated answer indistinguishable from a complete one.
+  mk_stub "    python3 '$tmp/pages.py' '[[$(python3 -c 'print(",".join(f"\"r{i}\"" for i in range(100)))')],[\"r100\",\"store-on-page-two\"]]' \"\$@\""
+  probe "a plugin-shaped repo on the SECOND page of the org listing is still caught" \
+    want-present "org repo 'store-on-page-two' matches plugin naming"
+
   # ── CHECK 2, FAIL-INJECTED. A COMMENT MENTIONING THE LOOP IS NOT THE LOOP ──────────────────────
   # Check 2 asserted only that the string `plugin-registry-check.sh --list` appeared SOMEWHERE in
   # the qa-gate surface, and scripts/qa-gate-run.sh's header documents that loop in prose. Deleting
@@ -115,6 +148,7 @@ if [ "$MODE" = "--selftest" ]; then
 
   # CONTROL: the unmutated copy must still pass check 2, so a RED below is the mutation talking.
   cp scripts/qa-gate-run.sh "$c2/scripts/qa-gate-run.sh"
+  ran=$((ran + 1))
   if c2_says "$C2_NEEDLE"; then
     printf '  [FAILED] %s\n' "control: the UNMUTATED tree failed check 2 (the check is broken, not the subject)"; rc=1
   else
@@ -132,6 +166,7 @@ for ln in open(p, encoding="utf-8"):
     out.append(ln)
 open(p, "w", encoding="utf-8").write("".join(out))
 MUT
+  ran=$((ran + 1))
   if c2_says "$C2_NEEDLE"; then
     printf '  [ok]     %s\n' "deleting the loop but keeping the comment that describes it is RED"
   else
@@ -318,19 +353,27 @@ if not offline:
     #
     # So: the call reports WHY it failed, and both callers below treat "could not ask" as RED with
     # that reason attached, distinct from "asked, and the answer was no".
-    def gh(path):
-        """-> (data, error). Exactly one is non-None."""
+    def gh(path, paginate=False):
+        """-> (data, error). Exactly one is non-None. `paginate` walks EVERY page (`--paginate
+        --slurp` answers an array of pages, flattened here) -- a list endpoint read without it is
+        page 1 only, which is indistinguishable from the whole list."""
+        cmd = ["gh", "api", path] + (["--paginate", "--slurp"] if paginate else [])
         try:
-            r = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+            r = subprocess.run(cmd, capture_output=True, text=True)
         except FileNotFoundError:
             return None, "the `gh` CLI is not on PATH"
         if r.returncode != 0:
             why = (r.stderr or r.stdout or "").strip().replace("\n", " ")[:300]
             return None, f"`gh api {path}` exited {r.returncode}: {why or '<no output>'}"
         try:
-            return json.loads(r.stdout), None
+            data = json.loads(r.stdout)
         except json.JSONDecodeError as e:
             return None, f"`gh api {path}` returned output that is not JSON ({e})"
+        if paginate:
+            if not isinstance(data, list) or not all(isinstance(pg, list) for pg in data):
+                return None, f"`gh api --paginate --slurp {path}` did not answer an array of pages"
+            data = [item for pg in data for item in pg]
+        return data, None
 
     for p in plugins:
         # Pre-release entry (a new plugin whose FIRST release is cut together with the core version it
@@ -362,7 +405,9 @@ if not offline:
     # Derived means it tracks the registry: adding a plugin raises the floor by one, automatically.
     ORG_REPO_FLOOR = len(plugins) + len(excluded)
 
-    repos, err = gh("orgs/GetBusbar/repos?per_page=100")
+    # EVERY PAGE (item 510). One page holds at most 100 repos, and the floor above is ~11, so a
+    # single-page read of a bigger org clears the floor while never seeing page 2 onward.
+    repos, err = gh("orgs/GetBusbar/repos?per_page=100", paginate=True)
     if repos is None:
         fail.append("the reverse org sweep (check 5) COULD NOT RUN — " + str(err) + ". This is RED, "
                     "not a pass: the sweep is the only check that can see a plugin-shaped repo "

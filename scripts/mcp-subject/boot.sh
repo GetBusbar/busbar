@@ -37,6 +37,14 @@
 # three would answer 200 and this function would fail the job. A leg that authenticated itself by
 # breaking the thing under test is worth less than an unarmed one, so the disproof runs first.
 
+# THE SHELL OPTIONS THIS FILE'S CORRECTNESS DEPENDS ON, DECLARED HERE rather than inherited. Several
+# guards below are pipelines ending `|| die` (e.g. the fixture digests in `subject_collect_digests`:
+# `node tool-digest.mjs ... | sed ... >> file || die`), and without `pipefail` such a pipeline's
+# status is `sed`'s, so `die` is unreachable. This file is SOURCED by scripts/mcp-conformance.sh,
+# which sets the identical options first, so for that caller this line changes nothing; it exists so
+# the file cannot be sourced into a shell that silently disarms those guards. Pinned by `--selftest`.
+set -euo pipefail
+
 # ---------------------------------------------------------------------------------------------
 # Configuration knobs. All optional; the defaults are what CI uses.
 #   MCP_SUBJECT_BUSBAR_BIN   the busbar binary to boot. THIS IS WHAT ARMS THE LEG.
@@ -1184,3 +1192,34 @@ same token directly. That is a finding about the shim, not about busbar."
   # shellcheck disable=SC2034
   SUBJECT_ADMIN_TOKEN="$admin_token"
 }
+
+# ── --selftest ─────────────────────────────────────────────────────────────────────────────────────
+# `./scripts/mcp-subject/boot.sh --selftest` -- no busbar, no node, no network. Sources this file into
+# a fresh shell with every option OFF and proves it leaves errexit, nounset and pipefail ON, and that
+# a failing producer in a pipeline is then a failure the `|| die` guards can see.
+boot_selftest() {
+  local self="${BASH_SOURCE[0]}" opts pipe failed=0
+  opts="$(bash -c 'set +e +u +o pipefail; . "$1"; o=""; [[ -o errexit ]] && o="${o}e"; [[ -o nounset ]] && o="${o}u"; [[ -o pipefail ]] && o="${o}p"; echo "$o"' _ "$self")"
+  if [ "$opts" = "eup" ]; then
+    printf 'ok\tsourcing boot.sh sets errexit, nounset and pipefail\n'
+  else
+    printf 'FAIL\tsourcing boot.sh left the options as [%s] (want e, u and p)\n' "$opts"
+    failed=1
+  fi
+  pipe="$(bash -c 'set +e +u +o pipefail; . "$1"; set +e; false | cat >/dev/null || { echo guarded; exit 0; }; echo unguarded' _ "$self")"
+  if [ "$pipe" = "guarded" ]; then
+    printf 'ok\ta failing producer trips the pipeline || die guard\n'
+  else
+    printf 'FAIL\ta failing producer did NOT trip the pipeline guard (got %s)\n' "$pipe"
+    failed=1
+  fi
+  [ "$failed" -eq 0 ] && printf 'PASS\tboot.sh selftest\n' || printf 'FAIL\tboot.sh selftest\n'
+  [ "$failed" -eq 0 ]
+}
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  case "${1:-}" in
+    --selftest) boot_selftest; exit $? ;;
+    *) echo "usage: $0 --selftest  (this file is otherwise sourced by scripts/mcp-conformance.sh)" >&2; exit 2 ;;
+  esac
+fi

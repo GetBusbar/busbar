@@ -216,35 +216,59 @@ jobs:
           [ "$state" = "true" ] && echo "::notice::A DRAFT release for v$V already exists; this run will reuse and re-fill it."
 
           # IMMUTABILITY PRE-FLIGHT. Anonymous pull token -> HEAD the manifest. A 200 means the tag
-          # is taken, permanently, and this version can never be published correctly.
-          tok="$(curl -fsS --max-time 30 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:getbusbar/busbar:pull' | jq -r '.token // .access_token' || true)"
-          if [ -n "${tok:-}" ] && [ "$tok" != "null" ]; then
-            code="$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' -I \
+          # is taken, permanently, and this version can never be published correctly. ONLY A 404 IS
+          # "FREE". Every other answer -- the `000` a network failure produces, a 429 rate limit, a
+          # 5xx, a failed token fetch -- is UNKNOWN, and unknown is refused exactly as branch-green
+          # below refuses an unreadable API: a free tag is a claim this step prints and the promote
+          # relies on, so it is never printed without a 404 behind it.
+          tok=""
+          for attempt in 1 2 3; do
+            tok="$(curl -fsS --max-time 30 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:getbusbar/busbar:pull' | jq -r '.token // .access_token' || true)"
+            [ -n "$tok" ] && [ "$tok" != "null" ] && break
+            tok=""
+            echo "  anonymous Docker Hub pull token not obtained (attempt ${attempt}/3)"
+            sleep $(( attempt * 10 ))
+          done
+          if [ -z "$tok" ]; then
+            echo "::error::REFUSING TO STAGE: no anonymous Docker Hub pull token after 3 attempts, so whether getbusbar/busbar:${V} is already taken is UNKNOWN. Unknown is not free: Docker Hub tags are immutable, and a taken tag is a release that can never finish. Nothing has been built. Re-run when auth.docker.io is answering."
+            exit 1
+          fi
+          # head_code <tag>: the HTTP status of a HEAD on that manifest. curl's `-w '%{http_code}'`
+          # already prints 000 when it got no answer at all, so the `|| true` only keeps a failed
+          # request from aborting the step before the case below can name it.
+          head_code() {
+            curl -sS --max-time 30 -o /dev/null -w '%{http_code}' -I \
               -H "Authorization: Bearer $tok" \
               -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.index.v1+json' \
-              "https://registry-1.docker.io/v2/getbusbar/busbar/manifests/$V" || echo 000)"
-            if [ "$code" = "200" ]; then
+              "https://registry-1.docker.io/v2/getbusbar/busbar/manifests/$1" || true
+          }
+          code="$(head_code "$V")"
+          case "$code" in
+            200)
               echo "::error::getbusbar/busbar:${V} ALREADY EXISTS on Docker Hub, and Docker Hub tag immutability means it can never be overwritten. Refusing to start a release that could not finish. Fix: bump to the next patch version on dev (prepare-release.yml) and promote that, or have an owner delete the tag first."
-              exit 1
-            fi
-            echo "Docker Hub tag ${V} is free (HTTP ${code} on HEAD manifest)."
-            # Same pre-flight for the rc pin this staging offers. `1.6.0-rc.1` is as immutable as
-            # `1.6.0`, so a taken rc name is a release candidate that could never be promoted, and
-            # finding that out here costs one HEAD request instead of a full staging run.
-            if [ -n "$RC_TAG" ]; then
-              rcv="${RC_TAG#v}"
-              rccode="$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' -I \
-                -H "Authorization: Bearer $tok" \
-                -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.index.v1+json' \
-                "https://registry-1.docker.io/v2/getbusbar/busbar/manifests/${rcv}" || echo 000)"
-              if [ "$rccode" = "200" ]; then
+              exit 1 ;;
+            404)
+              echo "Docker Hub tag ${V} is free (HTTP 404 on HEAD manifest)." ;;
+            *)
+              echo "::error::REFUSING TO STAGE: HEAD on getbusbar/busbar:${V} answered HTTP ${code}, which is neither 200 (taken) nor 404 (free), so whether the tag is taken is UNKNOWN. Nothing has been built. Re-run when registry-1.docker.io is answering."
+              exit 1 ;;
+          esac
+          # Same pre-flight for the rc pin this staging offers. `1.6.0-rc.1` is as immutable as
+          # `1.6.0`, so a taken rc name is a release candidate that could never be promoted, and
+          # finding that out here costs one HEAD request instead of a full staging run.
+          if [ -n "$RC_TAG" ]; then
+            rcv="${RC_TAG#v}"
+            rccode="$(head_code "$rcv")"
+            case "$rccode" in
+              200)
                 echo "::error::getbusbar/busbar:${rcv} ALREADY EXISTS on Docker Hub and cannot be overwritten. Refusing to stage a release candidate whose image name could never be published. Fix: dispatch with the next rc counter."
-                exit 1
-              fi
-              echo "Docker Hub tag ${rcv} is free (HTTP ${rccode} on HEAD manifest)."
-            fi
-          else
-            echo "::warning::could not obtain an anonymous Docker Hub pull token; skipping the tag-immutability pre-flight. The promote step will still refuse to overwrite an existing tag, just later."
+                exit 1 ;;
+              404)
+                echo "Docker Hub tag ${rcv} is free (HTTP 404 on HEAD manifest)." ;;
+              *)
+                echo "::error::REFUSING TO STAGE: HEAD on getbusbar/busbar:${rcv} answered HTTP ${rccode}, which is neither 200 (taken) nor 404 (free), so whether the rc tag is taken is UNKNOWN. Nothing has been built. Re-run when registry-1.docker.io is answering."
+                exit 1 ;;
+            esac
           fi
           echo "release=1" >> "$GITHUB_OUTPUT"
           echo "::notice::Cutting v$V from ${SHA:0:7}. Staging name: staging-${SHA:0:12}. Nothing public until verification is green."
@@ -347,18 +371,27 @@ jobs:
       # vacuous-pass trap: no runs found reads as "nothing is red". These names are asserted
       # PRESENT, so a commit that CI never saw is refused rather than waved through.
       REQUIRED_WORKFLOWS: "CI"
-      # NO NOT_COMMIT_CHECKS LIST HERE, AND ITS ABSENCE IS STRUCTURAL, NOT AN OMISSION. The
-      # promote's gate filters runs by EXCLUSION (everything except the runs that are not checks
-      # of the commit), so it needs to name Release and Verify deploy. This gate filters by
-      # INCLUSION -- only the required names above are waited on and judged -- so there is nothing
-      # to except: this run, qa-gate, and verify-deploy's schedule runs simply are not in the set.
-      # The full-population judgment happens at promote time in release.yml, where every one of
-      # those runs has long since concluded and CAN be judged without a deadlock.
+      # TWO SETS, AND THEY ARE DIFFERENT ON PURPOSE. The WAIT is by INCLUSION: only the required
+      # names above are waited on, because qa-gate's ~2h soak and the conformance batteries are
+      # still running when this fires, and waiting on them here would deadlock the stage behind
+      # itself. The RED SWEEP is by EXCLUSION, the same shape as release.yml's promote gate: every
+      # run on this sha that has CONCLUDED is judged, whatever its name, except the runs that are
+      # not checks of the commit -- this workflow (a re-run must not be refused by its own earlier
+      # attempt), Release and Verify deploy. A sweep over the waited-on set alone could only ever
+      # name CI, so a commit already known red on Security, Fuzz or CodeQL was built anyway -- the
+      # exact expense this gate exists to refuse. Runs still in progress are not red; they are
+      # judged at promote time in release.yml, where every one of them has concluded.
+      NOT_COMMIT_CHECKS: "Release stage,Release,Verify deploy"
     steps:
       - name: Every check on this commit must have concluded, and every conclusion must be green
         shell: bash
         run: |
-          set -uo pipefail   # deliberately NOT -e: an API hiccup must be RETRIED, then refused.
+          # `shell: bash` runs this as `bash -eo pipefail`, so errexit IS on and `set -uo pipefail`
+          # does not clear it. That is safe here only because every API read below sits inside a
+          # tested context (`if ! x="$(api ...)"`) or inside api()'s own `out=...; rc=$?` capture,
+          # where a failing command substitution does not abort the step: an API hiccup is RETRIED,
+          # then refused with a named error, never a bare exit.
+          set -uo pipefail
 
           # THE API IS THE ONE THING HERE THAT CAN FAIL FOR REASONS UNRELATED TO THE SOFTWARE, so it
           # is retried properly rather than trusted once. Bounded retries, then refusal: a lookup
@@ -389,6 +422,12 @@ jobs:
                 | map(select(.id != (env.GITHUB_RUN_ID | tonumber) and (.name | IN($want[]))))
                 | unique_by(.name)
                 | map({name, status, conclusion, url: .html_url})' > /tmp/runs.json
+            # THE RED SWEEP'S INPUT: every run on the sha, by EXCLUSION (see NOT_COMMIT_CHECKS).
+            echo "$runs" | jq -s --arg skip "$NOT_COMMIT_CHECKS" '
+                ($skip | split(",")) as $not
+                | [.[] | .workflow_runs[]?]
+                | map(select(.id != (env.GITHUB_RUN_ID | tonumber) and (.name | IN($not[]) | not)))
+                | map({name, status, conclusion, url: .html_url})' > /tmp/all-runs.json
             total="$(jq 'length' /tmp/runs.json)"
             pending="$(jq '[.[] | select(.status != "completed")] | length' /tmp/runs.json)"
             echo "checks on ${SHA:0:7}: ${total} workflow(s), ${pending} still running"
@@ -417,10 +456,12 @@ jobs:
           # commit (path filters, an `if:` that was false) has not failed. `cancelled`, `failure`,
           # `timed_out`, `action_required` and `stale` are all RED, and `stale` especially so: it
           # means GitHub never ran the check, which is the unknown case wearing a conclusion.
-          red="$(jq -r '.[] | select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral") | "  RED: \(.name) -> \(.conclusion // "no conclusion") \(.url)"' /tmp/runs.json)"
+          # Judged over EVERY concluded run on the sha (/tmp/all-runs.json), not only the waited-on
+          # set: a run still in progress has no conclusion yet and is left to the promote gate.
+          red="$(jq -r '.[] | select(.status == "completed" and .conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral") | "  RED: \(.name) -> \(.conclusion // "no conclusion") \(.url)"' /tmp/all-runs.json)"
           if [ -n "$red" ]; then
             echo "$red"
-            names="$(jq -r '[.[] | select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral") | .name] | join(", ")' /tmp/runs.json)"
+            names="$(jq -r '[.[] | select(.status == "completed" and .conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral") | .name] | unique | join(", ")' /tmp/all-runs.json)"
             echo "::error::REFUSING TO STAGE FROM A RED COMMIT. ${SHA:0:7} is red on: ${names}. There is no override, no waiver and no exception list, and that is deliberate: 'unrelated to my change' and 'known, tracked, not blocking' are how a red release shipped. If one of these checks should not block a release, change or delete the CHECK - do not bypass it here. Nothing has been built, no tag exists, no release is listed and nothing was fanned out."
             fail=1
           fi
@@ -585,8 +626,8 @@ jobs:
           RELEASE_EXPECTED_TESTS: "4783"
         run: |
           set -uo pipefail
-          cargo test --workspace --locked --verbose 2>&1 | tee "$RUNNER_TEMP/release-test.log"
-          rc=${PIPESTATUS[0]}
+          rc=0
+          cargo test --workspace --locked --verbose 2>&1 | tee "$RUNNER_TEMP/release-test.log" || rc=${PIPESTATUS[0]}
           total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/release-test.log" \
                   | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
                   | awk '{s+=$1} END {print s+0}')
@@ -918,10 +959,11 @@ jobs:
           # image_version_anchored, image_matches_packaged_binary). They are `published: false`, so
           # the verify matrix above -- which is the PUBLISHED set, correctly -- never enumerated
           # them, and those five rows had never executed once:
-          # `scripts/verify-artifact.py --coverage` names all five as gaps, by id. Every reader of
+          # `scripts/verify-artifact.py --coverage` named all five as gaps, by id. Every reader of
           # .github/artifact-contract.json saw fourteen properties asserted about what ships; nine
           # were. `verify-image` below is the leg that runs them, against the digest this run
-          # staged.
+          # staged -- and ci.yml's structure-lint job now runs `--coverage` on every push, so a row
+          # that stops being executed by any verified target goes red there, not at release time.
           #
           # Each image needs three things this file already knows: the NATIVE runner for its
           # architecture (an image row that boots the image has to run it, not emulate it), the OCI
@@ -1355,8 +1397,9 @@ jobs:
   # it and would have failed the run otherwise), which is exactly why nothing noticed:
   # `image_boots_documented_quickstart`, `image_runs_as_nonroot`, `image_release_pubkey`,
   # `image_version_anchored` and `image_matches_packaged_binary` are written, reviewed, correct, and
-  # were executed by nothing. `scripts/verify-artifact.py --coverage` names all five, by id, and
-  # exits non-zero; every artifact-contract run prints them as GAPs in its own summary. That is
+  # were executed by nothing. `scripts/verify-artifact.py --coverage` names such rows, by id, and
+  # exits non-zero -- ci.yml's structure-lint job runs it on every push, so a GAP is a red there --
+  # and every artifact-contract run prints them as GAPs in its own summary. That is
   # worse than an absent check, because a reader of the contract counts fourteen properties asserted
   # about what ships and nine hold.
   #

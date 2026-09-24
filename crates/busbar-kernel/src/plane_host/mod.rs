@@ -3087,8 +3087,16 @@ pub trait IdentityHost: Send + Sync {
     /// exercise the routing-policy seam WITHOUT building a full `PlaneRequestCtx` (production always
     /// threads a resolved key, so this never runs there). Gated to test / `test-support` builds so no
     /// production binary carries a raw-token verifier on the neutral seam.
+    ///
+    /// DEFAULT `None` (resolves nothing): the method exists only when THIS crate's `test-support` is
+    /// on, and a downstream implementor cannot see that feature — cargo may unify it on through some
+    /// other crate's dev-deps. A default lets an implementor compile either way; a host that actually
+    /// verifies tokens overrides it (item 115).
     #[cfg(any(test, feature = "test-support"))]
-    fn verify_token_test(&self, token: &str) -> Option<Arc<busbar_api::VirtualKey>>;
+    fn verify_token_test(&self, token: &str) -> Option<Arc<busbar_api::VirtualKey>> {
+        let _ = token;
+        None
+    }
 
     /// Establish what can be established about a presented bearer's RFC 8707 audience binding against
     /// `expected_aud` — the fail-closed pre-filter a plane runs BEFORE the auth chain, for credentials

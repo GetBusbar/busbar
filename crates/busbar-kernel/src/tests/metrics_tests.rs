@@ -617,3 +617,81 @@ fn only_gauges_are_expired() {
         "an idle histogram must survive, got:\n{after}"
     );
 }
+
+/// Item 24: the money gauges moved into `metrics/money.rs` and now reach the recorder through ONE
+/// named boundary, `money::set_gauge`, instead of an inline `as f64` at each site. The served
+/// `/metrics` text must be the text 1.5.5 served. For every probe value the SAME family is written
+/// once the 1.5.5 way (the direct cast, kept here as the reference) and once through the boundary,
+/// under two distinct `key` labels, and the rendered value text of the two lines must be identical
+/// byte for byte — including above 2^53 and at the type extremes, where the float rounds. For every
+/// value whose magnitude is at most 2^53 the rendered text must also be exactly the integer's
+/// decimal digits: the served figure is the exact integer.
+#[test]
+fn money_gauge_bytes_are_the_1_5_5_bytes() {
+    init();
+    const P53: i64 = 1 << 53;
+    let cents: &[i64] = &[
+        0,
+        1,
+        -1,
+        200,
+        123_456_789,
+        P53 - 1,
+        P53,
+        -P53,
+        P53 + 1,
+        i64::MAX,
+        i64::MIN,
+    ];
+    let counts: &[u64] = &[0, 1, 5000, (1u64 << 53) + 1, u64::MAX];
+
+    fn value_of(out: &str, family: &str, key: &str) -> String {
+        let needle = format!("key=\"{key}\"");
+        let line = out
+            .lines()
+            .find(|l| l.starts_with(family) && l.contains(&needle))
+            .unwrap_or_else(|| panic!("no `{family}` line for {key}; got:\n{out}"));
+        line.rsplit(' ').next().unwrap().to_string()
+    }
+
+    let mut probes: Vec<(&str, String, String, i128)> = Vec::new();
+    for (i, &v) in cents.iter().enumerate() {
+        for family in [
+            KEY_SPEND_CENTS,
+            BUCKET_SPEND_CENTS,
+            BUCKET_BUDGET_REMAINING_CENTS,
+        ] {
+            let old = format!("vk_pin24_old_c{i}");
+            let new = format!("vk_pin24_new_c{i}");
+            metrics::gauge!(family, "key" => old.clone()).set(v as f64);
+            money::set_gauge(metrics::gauge!(family, "key" => new.clone()), v);
+            probes.push((family, old, new, i128::from(v)));
+        }
+    }
+    for (i, &v) in counts.iter().enumerate() {
+        for family in [KEY_TOKENS_TOTAL, BUCKET_TOKENS] {
+            let old = format!("vk_pin24_old_t{i}");
+            let new = format!("vk_pin24_new_t{i}");
+            metrics::gauge!(family, "key" => old.clone()).set(v as f64);
+            money::set_gauge(metrics::gauge!(family, "key" => new.clone()), v);
+            probes.push((family, old, new, i128::from(v)));
+        }
+    }
+
+    let out = render();
+    for (family, old, new, v) in &probes {
+        let was = value_of(&out, family, old);
+        let now = value_of(&out, family, new);
+        assert_eq!(
+            was, now,
+            "`{family}` for {v}: 1.5.5 served `{was}`, the money boundary serves `{now}`"
+        );
+        if v.unsigned_abs() <= 1u128 << 53 {
+            assert_eq!(
+                now,
+                v.to_string(),
+                "`{family}` for {v}: below 2^53 the served figure must be the exact integer"
+            );
+        }
+    }
+}

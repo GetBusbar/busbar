@@ -97,7 +97,9 @@ total="$(h2_usage_field "$kid" spend_cents)"
 # does not have to guess which one moved. Units differ by construction: cents here, micro-units there
 # (1 cent = 10000 micro-units), so 8 cents is 80000 micros.
 other="$(h2_admin_usage_total spend_micros)"
-if [ "$total" -ne 8 ]; then
+# Asked through h2_int_is so an empty or non-numeric read is a FAILURE: the bare `[ "$total" -ne 8 ]`
+# errored on one, took the false arm and let the leg PASS on money it never read (item 498).
+if ! h2_int_is "$total" -eq 8; then
   failures=$((failures+1))
   case "$total" in
     14) why="every posting priced at the NEWEST card ever authored" ;;

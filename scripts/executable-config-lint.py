@@ -165,23 +165,47 @@ CONFIG_ROOT_KEYS = {
     "security", "limits", "health", "routing",
     # 1.6.0 — the plane sections. Absent until this commit; see the note above.
     "agents", "mcp", "oauth_as", "streams", "tools",
+    # The fifth plane's section. Missing while the snapshot path below still named the deleted
+    # crates/busbar-core/, so the mirror check read no snapshot and reported "the mirror holds"
+    # over a mirror that had rotted by exactly this key (item 473).
+    "decisions",
 }
 
 # The generated schema snapshot, and the type in it whose fields ARE the root keys.
-SCHEMA_SNAPSHOT_REL = os.path.join("crates", "busbar-core", "src", "config",
-                                   "config-schema.snapshot.json")
+#
+# WHERE THE SNAPSHOT LIVES IS NOT THIS FILE'S TO SAY. It used to hard-code
+# crates/busbar-core/src/config/…; that crate was absorbed into crates/busbar-kernel/, the file
+# stopped resolving, snapshot_root_keys() returned None, and assert_key_mirror() read None as "the
+# mirror holds" — in the one tree where it can run. The mirror rotted by `decisions` behind it
+# (item 473). The path is now read from the config-schema gate's own constant
+# (xtask/src/gates/config_schema/schema.rs `SNAPSHOT`), the same authority that renders and
+# byte-compares the file, and a tree that HAS that authority but no readable snapshot is RED.
+SCHEMA_AUTHORITY_REL = os.path.join("xtask", "src", "gates", "config_schema", "schema.rs")
+SCHEMA_AUTHORITY_RE = re.compile(r'pub\s+const\s+SNAPSHOT\s*:\s*&str\s*=\s*"([^"]+)"')
 SCHEMA_ROOT_TYPE = "DeployCfg"
+
+
+def schema_snapshot_rel(root):
+    """-> (relative snapshot path or None, whether `root` is busbar's own tree).
+
+    busbar's own tree is the one carrying the config-schema gate (SCHEMA_AUTHORITY_REL). There the
+    snapshot path is whatever that gate's SNAPSHOT constant says, and failing to read the constant
+    is itself a finding (None, True). Anywhere else — a PLUGIN repo scanned through plugin-ci — there
+    is no snapshot and no mirror to rot: (None, False)."""
+    auth = os.path.join(root, SCHEMA_AUTHORITY_REL)
+    if not os.path.isfile(auth):
+        return None, False
+    m = SCHEMA_AUTHORITY_RE.search(open(auth, encoding="utf-8").read())
+    return (m.group(1) if m else None), True
 
 
 def snapshot_root_keys(root):
     """The DeployCfg root keys as the committed schema snapshot records them, or None when there is
-    no snapshot to read.
-
-    None is a legitimate answer, not a failure: this same lint runs over every PLUGIN repo through
-    the plugin-ci reusable workflow, and a plugin repo has no busbar-core. Where the snapshot IS
-    present — busbar's own tree, the only place the list can rot against anything — it is the
-    authority."""
-    path = os.path.join(root, SCHEMA_SNAPSHOT_REL)
+    no snapshot to read. Whether None is legitimate is assert_key_mirror()'s call, not this one's."""
+    rel, _ = schema_snapshot_rel(root)
+    if rel is None:
+        return None
+    path = os.path.join(root, rel)
     if not os.path.isfile(path):
         return None
     try:
@@ -194,16 +218,31 @@ def snapshot_root_keys(root):
 
 
 def assert_key_mirror(root):
-    """-> list of complaint lines (empty when the mirror holds)."""
+    """-> list of complaint lines (empty when the mirror holds).
+
+    A plugin repo (no config-schema gate) has nothing to mirror: []. busbar's own tree with no
+    readable snapshot is NOT "the mirror holds" — it is a mirror check that compared nothing, and
+    it is refused."""
+    rel, own_tree = schema_snapshot_rel(root)
     snap = snapshot_root_keys(root)
     if snap is None:
-        return []
+        if not own_tree:
+            return []
+        return [
+            "  executable-config-lint FAILED — THE ROOT-KEY MIRROR COMPARED NOTHING",
+            "  %s is present (this is busbar's own tree) but %s" % (
+                SCHEMA_AUTHORITY_REL,
+                "its SNAPSHOT constant could not be read" if rel is None else
+                "the snapshot it names, %s, is not a readable %s schema" % (rel, SCHEMA_ROOT_TYPE)),
+            "  With no snapshot the mirror check has nothing to diff CONFIG_ROOT_KEYS against, and",
+            "  a rotted mirror drops configs from this scan silently. Fix the path, not this check.",
+        ]
     missing = sorted(snap - CONFIG_ROOT_KEYS)
     if not missing:
         return []
     return [
         "  executable-config-lint FAILED — THE ROOT-KEY MIRROR HAS ROTTED",
-        "  %s names root key(s) CONFIG_ROOT_KEYS does not: %s" % (SCHEMA_SNAPSHOT_REL,
+        "  %s names root key(s) CONFIG_ROOT_KEYS does not: %s" % (rel,
                                                                   ", ".join(missing)),
         "  classify() requires `keys <= CONFIG_ROOT_KEYS`, so every config carrying one of those",
         "  keys is read as NOT A BUSBAR CONFIG and validated by nothing. It does not fail here; it",
@@ -1366,17 +1405,38 @@ def _mirror_drift_is_red():
     happened: five 1.6.0 keys were missing and every config carrying one silently disappeared."""
     import json
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    real = os.path.join(repo, SCHEMA_SNAPSHOT_REL)
-    if not os.path.isfile(real):
+    rel, own_tree = schema_snapshot_rel(repo)
+    if not own_tree:
         return True  # nothing to drift against (a plugin repo); the mirror rule does not apply
-    doc = json.load(open(real, encoding="utf-8"))
+    if rel is None or not os.path.isfile(os.path.join(repo, rel)):
+        return False  # busbar's tree with no snapshot: the RED control has nothing to plant into
+    doc = json.load(open(os.path.join(repo, rel), encoding="utf-8"))
     doc["types"][SCHEMA_ROOT_TYPE]["fields"]["a_root_key_the_mirror_never_heard_of"] = {
         "optional": True, "type": "String"}
     fake = tempfile.mkdtemp(prefix="ecfg-mirror-")
     try:
-        target = os.path.join(fake, SCHEMA_SNAPSHOT_REL)
+        write(os.path.join(fake, SCHEMA_AUTHORITY_REL),
+              open(os.path.join(repo, SCHEMA_AUTHORITY_REL), encoding="utf-8").read())
+        target = os.path.join(fake, rel)
         os.makedirs(os.path.dirname(target), exist_ok=True)
         json.dump(doc, open(target, "w", encoding="utf-8"))
+        return assert_key_mirror(fake) != []
+    finally:
+        shutil.rmtree(fake, ignore_errors=True)
+
+
+def _mirror_needs_a_snapshot():
+    """(item 473) busbar's own tree must RESOLVE the snapshot the mirror is diffed against, and a
+    tree carrying the config-schema gate with no snapshot at the path it names must be RED — the
+    missing file is how the mirror check went vacuous once already."""
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _, own_tree = schema_snapshot_rel(repo)
+    if own_tree and snapshot_root_keys(repo) is None:
+        return False
+    fake = tempfile.mkdtemp(prefix="ecfg-mirror-")
+    try:
+        write(os.path.join(fake, SCHEMA_AUTHORITY_REL),
+              'pub const SNAPSHOT: &str = "crates/gone/config-schema.snapshot.json";\n')
         return assert_key_mirror(fake) != []
     finally:
         shutil.rmtree(fake, ignore_errors=True)
@@ -1486,6 +1546,8 @@ def selftest(busbar, out=sys.stdout):
              assert_key_mirror(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) == []),
             ("a root key the snapshot has and the mirror lacks is REFUSED",
              _mirror_drift_is_red()),
+            ("busbar's tree resolves its schema snapshot; one that cannot is REFUSED, not 'holds'",
+             _mirror_needs_a_snapshot()),
         ]
         for label, held in checks:
             if held:

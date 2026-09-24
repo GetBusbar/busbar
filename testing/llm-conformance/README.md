@@ -42,6 +42,22 @@ fetches with curl into `~/.cache/busbar-llm-specs/<spec>/<digest>/` and **refuse
 (exit 3, download deleted), exactly as `testing/shadow-oracle/fetch-golden.sh` pins the 1.5.5
 binary. The documents are not vendored into the repository (about 7 MB); the digests are.
 
+**Except gemini, which is vendored.** Google serves only the live discovery document and bumps its
+`revision` field every few days, so a URL pin turned the gate RED on every branch at every bump and
+the judge could judge nothing (item 116). The reviewed copy is committed at
+`specs/gemini-v1beta-20260923.json`; its row reads `vendored:specs/...` with the live URL in a fifth
+column. The digest pins the committed file (the whole document, canonicalized), `vendor.sh` installs
+it from the tree with **no network**, and the same refusal applies to a committed copy that is not
+the document the pin names. Upstream movement is a **separate** check:
+
+```
+testing/llm-conformance/vendor.sh --drift   # live upstream vs the committed copy: 0 in sync, 5 DRIFT, 4 unreachable
+```
+
+A drift report means: diff the live document against the committed one, commit the reviewed
+replacement under `specs/`, and point the row at it (`vendor.sh --repin gemini` keeps the download
+and prints the row). The judge's verdict never depends on what Google serves today.
+
 **The pin is re-measured on every run, by both halves.** `vendor.sh` digests the cached file itself
 rather than reading a note it wrote beside it, so `--check` names cache drift as drift and fetch
 mode re-downloads what no longer matches; `validate.py` sha256s the document again before parsing

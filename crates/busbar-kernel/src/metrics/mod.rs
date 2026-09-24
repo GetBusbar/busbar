@@ -44,12 +44,13 @@
 
 use std::sync::OnceLock;
 
-use crate::diagnostics::{
-    diag_debug, diag_warn, METRICS_KEY_GAUGE_LIMIT_EXCEEDED,
-    METRICS_SCRAPE_GROUP_LEDGER_READ_FAILED, METRICS_SCRAPE_KEY_USAGE_READ_FAILED,
-    METRICS_SCRAPE_LIST_KEYS_FAILED,
-};
+use crate::diagnostics::diag_warn;
 use crate::state::App;
+
+/// THE MONEY GAUGES — per-key and per-bucket spend, budget-remaining and token counts. A file of its
+/// own because it is money end to end and `no-float-money` scans it WHOLE (`KERNEL_MONEY_FILES`);
+/// the rest of this module is routing weights, durations and lane health, all legitimate floats.
+mod money;
 
 // ── THE RECORDER INSTALL, RE-EXPORTED BY IDENTITY FROM THE NEUTRAL SUBSTRATE ─────────────────────
 //
@@ -318,173 +319,10 @@ pub fn refresh_scrape_gauges(app: &App) {
     let now = busbar_kernel::store::now();
 
     // ── Governance: per-key spend, budget-remaining, tokens ────────────────────────────────────
-    if let Some(gov) = &app.governance {
-        // `all_keys()` lists every VirtualKey from the SQLite store; this is a low-frequency scrape
-        // path. On error we skip only the PER-KEY gauge refresh below (by treating the key list as
-        // empty) rather than returning a stale/wrong per-key value. This must NOT `return` out of
-        // the whole function: the group-bucket loop just below does not consume `keys` at all (it
-        // walks `app.cost.groups()` and has its own per-bucket error handling), and the lane-health
-        // gauges further down don't touch governance at all — an unrelated governance-store hiccup
-        // must not blind Prometheus to a breaker tripping during that exact window (see
-        // GAUGE_IDLE_TIMEOUT: a skipped refresh leaves the last-known value looking "current" for up
-        // to 24h).
-        let keys = match gov.all_keys() {
-            Ok(ks) => ks,
-            Err(e) => {
-                diag_debug!(METRICS_SCRAPE_LIST_KEYS_FAILED, error = %e, "metrics scrape: failed to list virtual keys; skipping per-key spend/token gauges");
-                Vec::new()
-            }
-        };
-        // Cap per-key gauge emission. Above this many keys, emitting one series per key per scrape
-        // (×3 gauges) would blow up Prometheus cardinality AND walk the store once per key on every
-        // scrape. Bound BOTH by emitting at most `key_gauge_limit` keys; warn when truncating so the
-        // condition is visible. Generous default — normal deployments never reach it. (A configurable
-        // limit / top-N-by-spend selection is a v1.x refinement.)
-        // Operator-tunable via `metrics.key_gauge_limit` (default 2000).
-        let key_gauge_limit = crate::limits::key_gauge_limit();
-        // Warn-once latch: the key count exceeding the gauge limit is an actionable but STABLE
-        // condition (it persists across every scrape until the operator tunes
-        // `metrics.key_gauge_limit` or the key count drops), and this scrape runs on every /metrics
-        // pull. Warn on the TRANSITION into the over-limit state; hold subsequent scrapes at debug so
-        // a busy scrape cadence cannot spam. Cleared when the count falls back under the limit so a
-        // future breach re-warns.
-        static KEY_GAUGE_LIMIT_WARNED: std::sync::atomic::AtomicBool =
-            std::sync::atomic::AtomicBool::new(false);
-        if keys.len() > key_gauge_limit {
-            if !KEY_GAUGE_LIMIT_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                diag_warn!(
-                    METRICS_KEY_GAUGE_LIMIT_EXCEEDED,
-                    key_count = keys.len(),
-                    limit = key_gauge_limit,
-                    "metrics scrape: virtual-key count exceeds per-key gauge limit; emitting gauges \
-                     for only the first `limit` keys to bound cardinality and scrape-path DB load",
-                );
-            } else {
-                diag_debug!(
-                    METRICS_KEY_GAUGE_LIMIT_EXCEEDED,
-                    key_count = keys.len(),
-                    limit = key_gauge_limit,
-                    "metrics scrape: virtual-key count still exceeds per-key gauge limit; emitting \
-                     gauges for only the first `limit` keys to bound cardinality and scrape-path DB \
-                     load",
-                );
-            }
-        } else {
-            KEY_GAUGE_LIMIT_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
-        }
-        for key in keys.iter().take(key_gauge_limit) {
-            // `usage_for` queries the SQLite store for the key's current-window counters.
-            let usage = match gov.usage_for(&app.cost, &key.id, now) {
-                Ok(Some(u)) => u,
-                Ok(None) => continue, // key vanished between list and get — skip
-                Err(e) => {
-                    diag_debug!(METRICS_SCRAPE_KEY_USAGE_READ_FAILED, key = %key.id, error = %e, "metrics scrape: usage read failed; skipping key");
-                    continue;
-                }
-            };
-            // key label = the operator-visible virtual-key id (`vk_<hex>`), never the bearer
-            // secret. The key's MINT-TIME labels (e.g. team=growth) are echoed onto every series
-            // so external Grafana can `sum by (team)` and Alertmanager can fire per team WITHOUT
-            // busbar knowing what "team" means. Label KEYS are operator-chosen at mint (bounded by
-            // the admin surface), never request bytes.
-            let base_labels = |extra: &[(&'static str, String)]| -> Vec<metrics::Label> {
-                let mut labels: Vec<metrics::Label> =
-                    vec![metrics::Label::new("key", key.id.clone())];
-                for (k, v) in &key.labels {
-                    labels.push(metrics::Label::new(k.clone(), v.clone()));
-                }
-                for (k, v) in extra {
-                    labels.push(metrics::Label::new(*k, v.clone()));
-                }
-                labels
-            };
-            metrics::gauge!(KEY_SPEND_CENTS, base_labels(&[])).set(usage.spend_cents as f64);
-            metrics::gauge!(KEY_TOKENS_TOTAL, base_labels(&[])).set(usage.tokens as f64);
-            // 1.5.0: keys are PURE AUTH (no inline budget cap), so there is no per-key
-            // budget-remaining gauge; remaining/limit headroom lives on the GROUP buckets below.
-            // Per-(bucket, model, tier) token gauges from the key bucket's ledger (the raw
-            // material any external per-model cost dashboard multiplies by its own catalog). The
-            // key's attribution bucket accrues in the all-time window.
-            for (model, tokens) in
-                gov.bucket_model_tokens(&key.id, crate::governance::WINDOW_TOTAL, now)
-            {
-                let tier_v = |u: &str| tokens.get(u).copied().unwrap_or(0);
-                for (tier, v) in [
-                    ("input", tier_v(busbar_api::UNIT_INPUT)),
-                    ("output", tier_v(busbar_api::UNIT_OUTPUT)),
-                    ("cache_read", tier_v(busbar_api::UNIT_CACHE_READ)),
-                    ("cache_write", tier_v(busbar_api::UNIT_CACHE_WRITE)),
-                ] {
-                    let mut labels: Vec<metrics::Label> =
-                        vec![metrics::Label::new("bucket", key.id.clone())];
-                    for (k, val) in &key.labels {
-                        labels.push(metrics::Label::new(k.clone(), val.clone()));
-                    }
-                    labels.push(metrics::Label::new("model", model.clone()));
-                    labels.push(metrics::Label::new("tier", tier));
-                    metrics::gauge!(BUCKET_TOKENS, labels).set(v as f64);
-                }
-            }
-        }
-
-        // ── GROUP buckets: derived spend + remaining + per-(model, tier) tokens, one series per
-        // (group, window) enforcement bucket. Bounded by |groups| x |windows-in-use| (operator-
-        // owned names + the fixed window vocabulary). Spend derives fresh from the ledger x the
-        // CURRENT rate card (reprice-on-read), fee included (each bucket counts its own requests).
-        // The `group` and `window` labels are the 1.5.0 limit dimensions; `bucket` stays the raw
-        // ledger id for join-ability with the store.
-        for group in app.cost.groups() {
-            for bucket in &group.buckets {
-                let derived = match gov.derived_bucket_usage(
-                    &app.cost,
-                    &bucket.bucket_id,
-                    bucket.window,
-                    true,
-                    now,
-                ) {
-                    Ok(u) => u,
-                    Err(e) => {
-                        diag_debug!(METRICS_SCRAPE_GROUP_LEDGER_READ_FAILED, bucket = %bucket.bucket_id, error = %e, "metrics scrape: group ledger read failed; skipping");
-                        continue;
-                    }
-                };
-                let dims = |extra: &[(&'static str, String)]| -> Vec<metrics::Label> {
-                    let mut labels = vec![
-                        metrics::Label::new("bucket", bucket.bucket_id.clone()),
-                        metrics::Label::new("group", group.name.clone()),
-                        metrics::Label::new("window", bucket.window),
-                    ];
-                    for (k, v) in extra {
-                        labels.push(metrics::Label::new(*k, v.clone()));
-                    }
-                    labels
-                };
-                metrics::gauge!(BUCKET_SPEND_CENTS, dims(&[])).set(derived.spend_cents as f64);
-                // Budget-remaining: only for a bucket that carries a `budget` cap.
-                if let Some(cap) = bucket.budget_cap {
-                    let remaining = cap.saturating_sub(derived.spend_cents).max(0);
-                    metrics::gauge!(BUCKET_BUDGET_REMAINING_CENTS, dims(&[])).set(remaining as f64);
-                }
-                for (model, tokens) in
-                    gov.bucket_model_tokens(&bucket.bucket_id, bucket.window, now)
-                {
-                    let tier_v = |u: &str| tokens.get(u).copied().unwrap_or(0);
-                    for (tier, v) in [
-                        ("input", tier_v(busbar_api::UNIT_INPUT)),
-                        ("output", tier_v(busbar_api::UNIT_OUTPUT)),
-                        ("cache_read", tier_v(busbar_api::UNIT_CACHE_READ)),
-                        ("cache_write", tier_v(busbar_api::UNIT_CACHE_WRITE)),
-                    ] {
-                        metrics::gauge!(
-                            BUCKET_TOKENS,
-                            dims(&[("model", model.clone()), ("tier", tier.to_string())])
-                        )
-                        .set(v as f64);
-                    }
-                }
-            }
-        }
-    }
+    // The MONEY gauges (spend, budget-remaining and the token counts they are priced from) are
+    // published by [`money`], a file of its own so `no-float-money` can scan it whole: every figure
+    // stays an integer there up to ONE named exporter boundary. Same `now` as the lane gauges below.
+    money::refresh_money_gauges(app, now);
 
     // ── Lane health: per-(pool, lane-index) breaker state ──────────────────────────────────────
     // For each configured pool, iterate the pool's lane members. The lane state is derived from
@@ -641,7 +479,7 @@ fn emit_lane_gauges(
 // derivation) stays core.
 
 #[cfg(test)]
-#[path = "tests/metrics_tests.rs"]
+#[path = "../tests/metrics_tests.rs"]
 mod tests;
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
@@ -731,7 +569,7 @@ pub fn enabled() -> bool {
 /// ([`observe::admits_metric_name`]) is the rule this crate applies to every series it exposes.
 /// Its file stays at `src/observe.rs` — the path attribute says so — because a module's home in the
 /// tree is a statement about what it belongs to, and a module's home on disk is not.
-#[path = "observe.rs"]
+#[path = "../observe.rs"]
 pub mod observe;
 
 pub fn configure(buffer: Option<Duration>) {

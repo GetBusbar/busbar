@@ -111,8 +111,8 @@ require_forbidden_set() {
   [ "$count" -ge "$MIN_FORBIDDEN" ] || die "discovery found only $count forbidden \`test_*\` \
 identifier(s), below the floor of $MIN_FORBIDDEN. An empty or collapsed forbidden set makes every \
 assertion below trivially true, which is a false green and not a clean tree."
-  say "  discovered $count forbidden identifier(s):"
-  printf '%s\n' "$set" | sed 's/^/    /'
+  say "  discovered $count forbidden identifier(s):" >&2
+  printf '%s\n' "$set" | sed 's/^/    /' >&2
   printf '%s\n' "$set"
 }
 
@@ -288,11 +288,15 @@ run_gate() {
   # Read with `read -r` rather than `mapfile`, which is bash 4+ and absent from the bash macOS
   # ships. A gate that only runs on the CI runner cannot be exercised by hand, and a gate nobody
   # can watch fail is a gate nobody has evidence works.
-  local -a forbidden=()
-  local line
-  while IFS= read -r line; do
-    [ -n "$line" ] && forbidden+=("$line")
-  done < <(require_forbidden_set | grep -E '^test_')
+  # THE SET COMES FROM `load_forbidden_set`, IN THIS SHELL. This used to read
+  # `done < <(require_forbidden_set | grep -E '^test_')` -- the exact shape the comment above
+  # `require_forbidden_set` names as the old bug, still live here after the fix was written: the
+  # floor's refusal died in a CHILD (so a collapsed set reached both axes as an empty array and
+  # read clean), and the `^test_` filter threw away every hyphenated name the widened discovery
+  # exists to catch (37 of 43 on the tree it was measured on). `load_forbidden_set` dies in the
+  # calling shell and filters through `is_fixture_name`, the one written-down shape.
+  load_forbidden_set
+  local -a forbidden=("${FORBIDDEN[@]}")
 
   hdr "building the release artifact (default features, exactly as a release builds it)"
   cargo build --release --locked -p "$BIN_NAME" 2>&1 | tail -5
@@ -423,8 +427,47 @@ run_selftest() {
     say "  ok: a hyphenated fixture name is discovered, kept, and caught by axis 1"
   fi
 
+  # RED 7: THE GATE ITSELF, not just its helpers. Every case above drives a helper directly, and
+  # the helpers were right while `run_gate` bypassed them -- it collected its own set through a
+  # process substitution and a `^test_` filter, so the floor never reached it and 37 of 43
+  # hyphenated names never reached either axis. So `run_gate` is driven here with the build and
+  # both axes stubbed to RECORD what they were handed: (a) the set the axes receive must be the
+  # whole discovered set, hyphenated names included; (b) a set below the floor must stop
+  # `run_gate` before either axis runs.
+  local expected got
+  expected="$(discover_forbidden | grep -c . || true)"
+  : >"$tmp/axis-args"
+  if ( cargo() { :; }
+       axis_artifact() { shift; printf '%s\n' "$@" >>"$tmp/axis-args"; }
+       axis_wire() { :; }
+       run_gate ) >/dev/null 2>&1; then
+    got="$(grep -c . "$tmp/axis-args" || true)"
+    if [ "$got" -ne "$expected" ]; then
+      say "  MISS: run_gate handed the axes $got identifier(s) of the $expected discovered"
+      failures=$((failures+1))
+    elif ! grep -qx -- 'test-hook' "$tmp/axis-args"; then
+      say "  MISS: run_gate dropped the hyphenated fixture names before the axes"; failures=$((failures+1))
+    else
+      say "  ok: run_gate hands the axes all $got discovered identifier(s), hyphenated included"
+    fi
+  else
+    say "  MISS: run_gate failed with the build and both axes stubbed green"; failures=$((failures+1))
+  fi
+  : >"$tmp/axis-ran"
+  if ( MIN_FORBIDDEN=999999
+       cargo() { :; }
+       axis_artifact() { echo ran >>"$tmp/axis-ran"; }
+       axis_wire() { echo ran >>"$tmp/axis-ran"; }
+       run_gate ) >/dev/null 2>&1; then
+    say "  MISS: run_gate passed over a forbidden set below the floor"; failures=$((failures+1))
+  elif [ -s "$tmp/axis-ran" ]; then
+    say "  MISS: run_gate refused, but only after an axis ran over the collapsed set"; failures=$((failures+1))
+  else
+    say "  ok: a forbidden set below the floor stops run_gate before either axis runs"
+  fi
+
   [ "$failures" -eq 0 ] || die "$failures self-test fixture(s) did not behave as declared"
-  say "  self-test: 9 fixture(s) passed"
+  say "  self-test: 11 fixture(s) passed"
 }
 
 case "${1:---help}" in

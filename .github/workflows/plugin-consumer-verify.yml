@@ -256,8 +256,24 @@ jobs:
             record "Release ${TAG} assets" "one archive per platform in: ${TARGETS}" "ZERO assets" \
               "PHANTOM RELEASE: the tag and the Release object exist and there is nothing in them to download. This is webrequest-hook v1.0.4 verbatim. Fix: every leg of the release build matrix failed to upload - check the cdylib build and the sibling busbar checkout pin in .busbar-ref."
           fi
+          # THE TARGET LIST ITSELF IS ASSERTED FIRST. `targets` is free text from the caller: an
+          # empty or whitespace-only value made the loop below iterate ZERO times, C4 then had no
+          # archive to open, and the step printed its success prose having checked no platform at
+          # all. So the list must name at least one target, every entry must be shaped like a
+          # platform triple (arch-vendor-os[-env]).
+          read -r -a target_arr <<< "$TARGETS"
+          if [ "${#target_arr[@]}" -lt 1 ]; then
+            record "targets input" "at least one platform triple" "<empty>" \
+              "The caller passed an empty \`targets\`, so no platform archive would be checked and C4 would have nothing to open. Fix: drop the \`targets\` override to use the default five, or list the triples this repo's release builds."
+          fi
+          for t in "${target_arr[@]}"; do
+            if ! [[ "$t" =~ ^[a-z0-9_]+-[a-z0-9_]+-[a-z0-9_]+(-[a-z0-9_]+)?$ ]]; then
+              record "targets entry '${t}'" "a platform triple like x86_64-unknown-linux-gnu" "${t}" \
+                "A malformed target names an archive no release could publish. Fix: correct the caller's \`targets\` input."
+            fi
+          done
           first_archive=""
-          for t in $TARGETS; do
+          for t in "${target_arr[@]}"; do
             a="${ASSET_PREFIX}-${V}-${t}.tar.gz"
             sz="$(printf '%s\n' "$listed" | awk -F'\t' -v n="$a" '$1==n{print $2; exit}')"
             if [ -z "${sz:-}" ]; then

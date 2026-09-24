@@ -37,6 +37,7 @@
 #   siblings              registry-driven sibling checkouts (plugins.yaml + busbar-admin).
 #   segment ID            run exactly one segment by id (delegates to qa-segments.sh).
 #   loader                the loader-mechanism tests against the real sibling-built sqlite plugin.
+#   selftest              prove the sibling policy on fixtures (no network, no real cargo build).
 #
 # Every subcommand is runnable locally, which is the other half of the point: the gate is no longer
 # a thing that only exists inside GitHub's YAML.
@@ -64,6 +65,20 @@ export BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS="${BUSBAR_RELEASE_CHECK_REQUIRE_SIB
 log()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 note() { printf '  %s\n' "$*"; }
 die()  { printf '\033[31mqa-gate-run: %s\033[0m\n' "$*" >&2; exit 1; }
+
+# Where the siblings live: next to this checkout. Overridable only so `selftest` can point the
+# sibling policy at fixtures; CI never sets it. Read at CALL time, so a per-call override reaches it.
+sibling_root() { printf '%s' "${QA_GATE_SIBLING_ROOT:-..}"; }
+
+# A sibling that is missing, unbuildable or not what the gate asked for is a HOLE in the soak's
+# evidence, so it obeys the policy above: fatal under BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS=1 (this
+# script's default), a loud ::warning:: only when a caller has explicitly turned that off. A
+# ::warning:: alone never fails a job, which is how the loader leg used to go green without the
+# plugin it exists to load (item 520).
+sibling_gap() {
+  if [ "${BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS:-1}" = "1" ]; then die "$*"; fi
+  echo "::warning::$*"
+}
 
 # Echo `-p <crate>` for every workspace member that builds a cdylib, DERIVED from cargo metadata.
 #
@@ -389,14 +404,46 @@ SIBLING_DEFAULT_REF=dev
 # not exist. The fallback is what keeps the new default safe: `gh repo clone -- --branch dev` is a
 # hard failure on a repo with no `dev`, and silently losing a sibling is the failure mode this whole
 # registry-driven loop was written to end. Warn-and-continue on top of that, as before.
+# AN ALREADY-PRESENT SIBLING IS JUDGED, NOT TRUSTED (item 537). Reusing a directory that happens
+# to exist skips every ref decision above: a checkout left on `main`, one that is commits behind
+# `dev`, or one carrying local edits would be tested as if it were the sibling this gate asked for.
+# So it must be a git checkout, on the branch the clone arms would have chosen (the asked ref, or
+# the origin's default branch when a `dev` default does not exist there), at exactly origin's tip
+# of that branch, with a clean tree. Anything else is a sibling gap under the soak policy.
+sibling_present_ok() {
+  local path="$1" ref="$2" want branch head tip lsrc=0
+  git -C "$path" rev-parse --git-dir >/dev/null 2>&1 \
+    || { sibling_gap "${path} exists but is not a git checkout - it cannot be the sibling at '${ref}'"; return 0; }
+  git -C "$path" ls-remote --exit-code --heads origin "$ref" >/dev/null 2>&1 || lsrc=$?
+  want="$ref"
+  if [ "$lsrc" = 2 ] && [ "$ref" = "$SIBLING_DEFAULT_REF" ]; then
+    want="$(git -C "$path" ls-remote --symref origin HEAD 2>/dev/null \
+            | awk '$1 == "ref:" { sub("refs/heads/", "", $2); print $2; exit }')"
+    [ -n "$want" ] || { sibling_gap "${path}: origin has no '${ref}' and its default branch could not be read"; return 0; }
+  elif [ "$lsrc" != 0 ]; then
+    sibling_gap "${path}: could not verify '${ref}' against its origin (git ls-remote exit ${lsrc})"; return 0
+  fi
+  branch="$(git -C "$path" symbolic-ref --short -q HEAD || true)"
+  [ "$branch" = "$want" ] \
+    || { sibling_gap "${path} is already present on '${branch:-a detached HEAD}', not '${want}' - reusing it would test a different sibling than this gate asked for"; return 0; }
+  head="$(git -C "$path" rev-parse HEAD)"
+  tip="$(git -C "$path" ls-remote origin "refs/heads/${want}" 2>/dev/null | cut -f1)"
+  [ -n "$tip" ] && [ "$head" = "$tip" ] \
+    || { sibling_gap "${path} is on '${want}' at ${head:0:12} but origin's '${want}' is ${tip:0:12} - a stale sibling"; return 0; }
+  [ -z "$(git -C "$path" status --porcelain 2>/dev/null)" ] \
+    || { sibling_gap "${path} carries local modifications - it is not origin's '${want}' at ${head:0:12}"; return 0; }
+  note "already present: ${path} on '${want}' at ${head:0:12}, matching origin"
+}
+
 clone_sibling() {
-  local repo="$1" dir="$2" ref="$3" why="$4"
+  local repo="$1" dir="$2" ref="$3" why="$4" root
+  root="$(sibling_root)"
   echo "::group::clone GetBusbar/${repo} -> ${dir} (ref: ${ref})"
-  if [ -d "../${dir}" ]; then
-    note "already present: ../${dir}"
-  elif (cd .. && gh repo clone "GetBusbar/${repo}" "${dir}" -- --depth 1 --branch "${ref}"); then
+  if [ -d "${root}/${dir}" ]; then
+    sibling_present_ok "${root}/${dir}" "$ref"
+  elif (cd "$root" && gh repo clone "GetBusbar/${repo}" "${dir}" -- --depth 1 --branch "${ref}"); then
     note "cloned GetBusbar/${repo} at ${ref}"
-  elif [ "$ref" = "$SIBLING_DEFAULT_REF" ] && (cd .. && gh repo clone "GetBusbar/${repo}" "${dir}" -- --depth 1); then
+  elif [ "$ref" = "$SIBLING_DEFAULT_REF" ] && (cd "$root" && gh repo clone "GetBusbar/${repo}" "${dir}" -- --depth 1); then
     echo "::warning::GetBusbar/${repo} has no '${ref}' branch - fell back to its default branch, which for a release-only \`main\` may predate the core change this gate is testing"
   else
     echo "::warning::clone of GetBusbar/${repo} failed - ${why}"
@@ -444,15 +491,23 @@ cmd_segment() {
 # constraint here, wall clock only the objective, so they get their own job. It is cheap: it
 # hydrates the same build-once artifact, so the only real work is the sibling sqlite cdylib and the
 # scoped loader test.
+# The REAL sqlite cdylib the loader tests dlopen, built from THIS run's sibling checkout. Missing, or
+# a build that failed (leaving whatever an EARLIER build put in its target/), is a sibling gap: the
+# loader tests would skip (off CI) or dlopen a stale artifact, and the leg would still report green.
+loader_sibling_cdylib() {
+  local root; root="$(sibling_root)"
+  if [ ! -d "${root}/store-sqlite" ]; then
+    sibling_gap "no ${root}/store-sqlite sibling checkout - the loader leg cannot load the real sqlite plugin it exists to prove"
+    return 0
+  fi
+  # package-selector: busbar-store-sqlite-plugin -- scripts/qa-gate-run.sh -- store-sqlite left this tree and lives in a sibling checkout; this `cd ../store-sqlite` resolves the selector against THAT workspace, not this one
+  (cd "${root}/store-sqlite" && cargo build --release -p busbar-store-sqlite-plugin) || \
+    sibling_gap "the store-sqlite sibling cdylib build FAILED - any cdylib in its target/ is from an earlier build, not this run's"
+}
+
 cmd_loader() {
   log "build the sibling store-sqlite-plugin cdylib (the loader tests dlopen the REAL one)"
-  if [ -d ../store-sqlite ]; then
-    # package-selector: busbar-store-sqlite-plugin -- scripts/qa-gate-run.sh -- store-sqlite left this tree and lives in a sibling checkout; this `cd ../store-sqlite` resolves the selector against THAT workspace, not this one
-    (cd ../store-sqlite && cargo build --release -p busbar-store-sqlite-plugin) || \
-      echo "::warning::store-sqlite sibling cdylib build failed"
-  else
-    echo "::warning::no ../store-sqlite sibling checkout - loader tests will fall back"
-  fi
+  loader_sibling_cdylib
 
   # Hydration should already have supplied these, but build them explicitly anyway: these crates
   # hard-panic via their own path-discovery helpers under CI if they are ever missing, so a future
@@ -470,7 +525,74 @@ cmd_loader() {
   DEV_GATE=1 cargo test --release -p busbar-plugin-loader
 }
 
+# ── selftest: the sibling policy, proven on fixtures ─────────────────────────────────────────────
+# Every case runs in a SUBSHELL, because `die` exits and a selftest that cannot observe its own
+# REDs proves nothing. `cargo` is a stub on PATH, so nothing is built and nothing is fetched.
+cmd_selftest() {
+  local tmp fails=0 ran=0
+  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
+  mkdir -p "$tmp/bin"
+  st() { # name, want-rc, command...
+    local nm="$1" want="$2" got=0; shift 2; ran=$((ran + 1))
+    ( "$@" ) >"$tmp/out" 2>&1 || got=$?
+    if [ "$got" = "$want" ]; then
+      printf '  ok   %s (rc %s)\n' "$nm" "$got"
+    else printf '  FAIL %s (rc %s, wanted %s)\n' "$nm" "$got" "$want"; sed 's/^/       /' "$tmp/out"; fails=$((fails + 1)); fi
+  }
+  cargo_stub() { printf '#!/usr/bin/env bash\nexit %s\n' "$1" >"$tmp/bin/cargo"; chmod +x "$tmp/bin/cargo"; }
+  in_root() { # root, require, fn...
+    local root="$1" req="$2"; shift 2
+    PATH="$tmp/bin:$PATH" QA_GATE_SIBLING_ROOT="$root" BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS="$req" "$@"
+  }
+  echo "qa-gate-run selftest"
+
+  # ITEM 520: the loader leg's sibling cdylib. Missing or unbuildable is a hole in the soak.
+  mkdir -p "$tmp/none" "$tmp/have/store-sqlite"
+  cargo_stub 0
+  st "loader: no ../store-sqlite on the soak is RED"          1 in_root "$tmp/none" 1 loader_sibling_cdylib
+  st "loader: a sibling that builds is green"                 0 in_root "$tmp/have" 1 loader_sibling_cdylib
+  cargo_stub 101
+  st "loader: a sibling whose cdylib build FAILS is RED"      1 in_root "$tmp/have" 1 loader_sibling_cdylib
+  st "loader: off the soak (REQUIRE_SIBLINGS=0) it only warns" 0 in_root "$tmp/none" 0 loader_sibling_cdylib
+
+  # ITEM 537: a sibling that is ALREADY PRESENT is judged, not trusted. Origins are local bare
+  # repositories (file://), so every case is offline and exact.
+  local G=(git -c user.email=selftest@example.invalid -c user.name=selftest -c commit.gpgsign=false
+           -c init.defaultBranch=main -c advice.detachedHead=false -c core.hooksPath=/dev/null)
+  mkorigin() { # name, with-dev(0|1) -> bare origin at $tmp/origins/<name>.git
+    local work="$tmp/work-$1"
+    "${G[@]}" init -q "$work"; "${G[@]}" -C "$work" commit -q --allow-empty -m base
+    if [ "$2" = 1 ]; then "${G[@]}" -C "$work" checkout -q -b dev; "${G[@]}" -C "$work" commit -q --allow-empty -m dev1
+                          "${G[@]}" -C "$work" checkout -q main; fi
+    "${G[@]}" clone -q --bare "$work" "$tmp/origins/$1.git"
+  }
+  mkdir -p "$tmp/origins" "$tmp/sib"
+  mkorigin withdev 1; mkorigin nodev 0
+  "${G[@]}" clone -q --branch main "file://$tmp/origins/withdev.git" "$tmp/sib/at-main"
+  "${G[@]}" clone -q "file://$tmp/origins/nodev.git" "$tmp/sib/nodev"
+  "${G[@]}" clone -q --branch dev "file://$tmp/origins/withdev.git" "$tmp/sib/stale"
+  "${G[@]}" clone -q --branch dev "file://$tmp/origins/withdev.git" "$tmp/sib/dirty"
+  echo scribble >"$tmp/sib/dirty/untracked-edit"
+  mkdir -p "$tmp/sib/not-git"
+  # advance origin dev AFTER `stale` was cloned
+  "${G[@]}" clone -q --branch dev "file://$tmp/origins/withdev.git" "$tmp/adv"
+  "${G[@]}" -C "$tmp/adv" commit -q --allow-empty -m dev2; "${G[@]}" -C "$tmp/adv" push -q origin dev
+  "${G[@]}" clone -q --branch dev "file://$tmp/origins/withdev.git" "$tmp/sib/at-dev"
+  st "present: on the asked ref, at origin's tip, is reused"          0 in_root "$tmp/sib" 1 clone_sibling x at-dev dev why
+  st "present: on main while origin HAS dev is RED"                   1 in_root "$tmp/sib" 1 clone_sibling x at-main dev why
+  st "present: on dev but BEHIND origin's dev is RED (stale)"         1 in_root "$tmp/sib" 1 clone_sibling x stale dev why
+  st "present: repo with no dev, on its default branch, is reused"    0 in_root "$tmp/sib" 1 clone_sibling x nodev dev why
+  st "present: a checkout with local modifications is RED"            1 in_root "$tmp/sib" 1 clone_sibling x dirty dev why
+  st "present: a directory that is not a git checkout is RED"         1 in_root "$tmp/sib" 1 clone_sibling x not-git dev why
+  st "present: off the soak a wrong ref only warns"                   0 in_root "$tmp/sib" 0 clone_sibling x at-main dev why
+
+  [ "$ran" -ge 11 ] || { echo "qa-gate-run selftest: only $ran case(s) ran"; return 1; }
+  [ "$fails" = 0 ] || { echo "qa-gate-run selftest: $fails FAILED"; return 1; }
+  echo "qa-gate-run selftest: all $ran case(s) green"
+}
+
 case "${1:-}" in
+  selftest) cmd_selftest ;;
   matrix)   cmd_matrix ;;
   fast)     cmd_fast ;;
   build)    shift; cmd_build "$@" ;;

@@ -23,6 +23,8 @@ use std::sync::Arc;
 // tests, so gate the imports to match — otherwise a `runtime`-without-`test-support` build (the
 // workspace clippy default now that voice ships default-on) sees them as unused.
 #[cfg(feature = "test-support")]
+use crate::testkit::fixture_host::FixtureHost;
+#[cfg(feature = "test-support")]
 use crate::topology::dial_provider;
 #[cfg(feature = "test-support")]
 use busbar_kernel::ingress::byte_duplex::{CallRef, DuplexHandle, DuplexPlane};
@@ -30,8 +32,6 @@ use busbar_kernel::ingress::byte_duplex::{CallRef, DuplexHandle, DuplexPlane};
 use busbar_kernel::ingress::duplex_ws as ws_ingress;
 #[cfg(feature = "test-support")]
 use busbar_kernel::net_guard::GuardPolicy;
-#[cfg(feature = "test-support")]
-use crate::testkit::fixture_host::FixtureHost;
 #[cfg(feature = "test-support")]
 use futures::SinkExt;
 

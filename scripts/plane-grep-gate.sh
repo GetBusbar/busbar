@@ -36,7 +36,7 @@
 #   * comments + doc-comments + block comments — stripped before matching (respecting string literals,
 #     so a token INSIDE a string literal is KEPT and a `//` inside a string is NOT a comment). This is
 #     the same strip() the sibling plane-purity-lint.sh uses.
-#   * test code — a `*/tests/*` or `*_test(s).rs` file, and a `#[cfg(test)] mod … { … }` block.
+#   * test code — a `*/tests/*`, `test(s).rs` or `*_test(s).rs` file, and a `#[cfg(test)] mod … { … }` block.
 #   * TEST-SUPPORT SCAFFOLDING — the fixture surface compiled only under the `test-support` feature is
 #     not production debt, so it is excluded two ways, mirroring the existing `#[cfg(test)]` handling:
 #       - test-support MODULES: a brace-less `mod NAME;` whose `#[cfg(…)]` predicate NAMES `test-support`
@@ -200,7 +200,7 @@ compute_mod_excludes() {
   # Per file: pair a pending `#[cfg(…)]` attr with the next brace-less `mod NAME;`, classify test-only
   # vs production, then keep only names that are test-only with no production sibling in that file.
   decls="$(
-    for f in $(find $roots -name '*.rs' 2>/dev/null | grep -v '/tests/' | grep -Ev '_tests?\.rs$'); do
+    for f in $(find $roots -name '*.rs' 2>/dev/null | grep -v '/tests/' | grep -Ev "$TEST_FILE_RE"); do
       awk -v dir="$(dirname "$f")" '
         /#\[cfg\(/ { pendcfg = $0; pend = 1 }
         {
@@ -265,10 +265,19 @@ require_files() {
   exit 1
 }
 
+# THE TEST-FILE SHAPE, written down once. It used to be `_tests?\.rs$` -- a literal underscore
+# before `test` -- and this repo's module-style test files are named plain `tests.rs` (`#[cfg(test)]
+# mod tests;` beside the parent). Every one of them was metered as production: 102 of the 271 hits
+# this gate reported were in `*/tests.rs` (one voice-codec fixture file alone contributed 74), a
+# permanent floor on a meter whose ZERO is the signal to arm the hard gate. The separator is now
+# `/` OR `_`, so `tests.rs`, `test.rs`, `foo_tests.rs` and `foo_test.rs` are all test code, and a
+# production `latest.rs` / `contests.rs` (no separator) is still scanned.
+TEST_FILE_RE='(^|[/_])tests?\.rs$'
+
 prod_files() {
   local out; out="$(find $* -name '*.rs' \
     | grep -v '/tests/' \
-    | grep -Ev '_tests?\.rs$' \
+    | grep -Ev "$TEST_FILE_RE" \
     | grep -vxF "$OPERATION_EXCLUDE")"
   local m
   for m in $MOD_EXCLUDE; do
@@ -457,6 +466,22 @@ VOICE
   if [ "$voice_hit_voice" -eq 0 ]; then note "SYMMETRIC voice: did NOT flag its own \`voice\` name"; else fail=1; note "SYMMETRIC voice FAILED: flagged its own \`voice\`"; fi
   if [ "$voice_hit_mcp"   -ge 1 ]; then note "SYMMETRIC voice: flagged the foreign \`mcp\` plane key"; else fail=1; note "SYMMETRIC voice FAILED: foreign mcp not flagged"; fi
   if [ "$voice_hit_a2a"   -ge 1 ]; then note "SYMMETRIC voice: flagged the foreign \`a2a\` plane key SUBSTRING in a2a_bridge"; else fail=1; note "SYMMETRIC voice FAILED: foreign a2a not flagged"; fi
+
+  # ── TEST FILES ARE NOT PRODUCTION: `prod_files` (the one list every group is metered over) must
+  # drop a module-style `tests.rs` / `test.rs` exactly as it drops `foo_tests.rs`, and must KEEP a
+  # production file whose name merely ends in `test.rs` with no separator.
+  mkdir -p "$tmp/tf/sub/tests"
+  local f want got
+  for f in prod.rs latest.rs contests.rs tests.rs test.rs foo_tests.rs foo_test.rs sub/tests.rs sub/tests/x.rs; do
+    printf 'pub fn f() {}\n' >"$tmp/tf/$f"
+  done
+  want="$(printf '%s\n' "$tmp/tf/contests.rs" "$tmp/tf/latest.rs" "$tmp/tf/prod.rs" | sort)"
+  got="$(prod_files "$tmp/tf")"
+  if [ "$got" = "$want" ]; then
+    note "TEST FILES: tests.rs / test.rs / *_test(s).rs / tests/ are dropped; latest.rs and contests.rs are kept"
+  else
+    fail=1; note "TEST FILES FAILED: prod_files kept/dropped the wrong files:"; printf '%s\n' "$got" | sed 's/^/    /'
+  fi
 
   # ── THE BLIND-SCAN CASES: the gate must not be able to report clean by scanning NOTHING ─────────
   # Every fixture above proves what the scanner SEES. These prove what happens when a group is handed

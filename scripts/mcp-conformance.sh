@@ -217,6 +217,95 @@ A verdict that skipped part of the required set is not a verdict about that set.
   say "  ok: $count required scenarios, all executed"
 }
 
+# THE BASELINE IS EVIDENCE, NOT A SWITCH (item 534). `--expected-failures` turns named failures
+# into a green exit, so a baseline that is empty, unexplained, names scenarios the revision does not
+# require, or excuses the WHOLE required set is a way to make the subject leg green over nothing.
+# The house format is the suite's own (`server:` / `client:` lists of `<scenario>` or
+# `<scenario>:<check-id>`), one entry per line, and EVERY entry carries its reason as a trailing
+# comment:
+#     server:
+#       - tools-call-error:some-check   # reason: <why this is accepted, and where it is tracked>
+assert_baseline() {
+  local file="$1"
+  python3 - "$file" "$(required_server_scenarios)" <<'PY' || exit 1
+import re, sys
+path, required = sys.argv[1], set(filter(None, sys.argv[2].split("\n")))
+if not required:
+    raise SystemExit(f"FAIL: baseline {path}: the required scenario set is empty; nothing to check it against.")
+entries, errs, section = [], [], None
+for n, line in enumerate(open(path, encoding="utf-8"), 1):
+    body = line.rstrip("\n")
+    if not body.strip() or body.lstrip().startswith("#"):
+        continue
+    m = re.fullmatch(r"(server|client):\s*(#.*)?", body)
+    if m:
+        section = m.group(1); continue
+    m = re.fullmatch(r"\s+-\s+([^\s#]+)\s*(?:#\s*(.*))?", body)
+    if not m or section is None:
+        errs.append(f"line {n}: not a '<section>:' header or a '  - <entry>  # reason' line: {body!r}"); continue
+    entry, reason = m.group(1), (m.group(2) or "").strip()
+    if not reason:
+        errs.append(f"line {n}: '{entry}' carries no reason comment"); continue
+    scen = entry.split(":", 1)[0]
+    if section == "server" and scen not in required:
+        errs.append(f"line {n}: '{scen}' is not a scenario the revision requires of a server")
+    entries.append((section, entry))
+if not entries and not errs:
+    errs.append("the file is present but lists no entries -- delete it, or say what it accepts and why")
+whole = {e for s, e in entries if s == "server" and ":" not in e}
+if required and whole >= required:
+    errs.append(f"it excuses EVERY one of the {len(required)} required scenarios -- that is not a baseline, it is the leg switched off")
+if errs:
+    raise SystemExit(f"FAIL: baseline {path} is not acceptable evidence:\n  " + "\n  ".join(errs))
+print(f"  ok: baseline {path}: {len(entries)} reasoned entr{'y' if len(entries) == 1 else 'ies'}")
+PY
+}
+
+# EXECUTED IS NOT PASSED (item 534). `assert_covered` proves each required scenario RAN; this proves
+# enough of them PASSED, read from each scenario's own `checks.json` rather than from the suite's
+# exit code: every required scenario the baseline does not name must have a checks.json with no
+# FAILURE check in it.
+assert_passed() {
+  local dir="$1" label="$2" bl="${3:-}"
+  python3 - "$dir" "$label" "$(required_server_scenarios)" "$bl" <<'PY' || exit 1
+import json, os, re, sys
+d, label, required, bl = sys.argv[1], sys.argv[2], sorted(set(filter(None, sys.argv[3].split("\n")))), sys.argv[4]
+excused = set()
+if bl:
+    for line in open(bl, encoding="utf-8"):
+        m = re.fullmatch(r"\s+-\s+([^\s#]+).*\n?", line)
+        if m:
+            excused.add(m.group(1).split(":", 1)[0])
+stamp = re.compile(r"-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{3}Z$")
+by_scen = {}
+for name in os.listdir(d):
+    if name.startswith("server-") and os.path.isdir(os.path.join(d, name)):
+        by_scen.setdefault(stamp.sub("", name[len("server-"):]), []).append(os.path.join(d, name))
+bad = []
+for scen in required:
+    if scen in excused:
+        continue
+    dirs = by_scen.get(scen, [])
+    checks = []
+    for sd in dirs:
+        try:
+            got = json.load(open(os.path.join(sd, "checks.json")))
+        except (OSError, ValueError):
+            got = None
+        if not isinstance(got, list):
+            bad.append(f"{scen}: no readable checks.json in {sd}"); break
+        checks += got
+    else:
+        if not dirs:
+            bad.append(f"{scen}: no result directory")
+        elif any(str(c.get("status", "")).upper() == "FAILURE" for c in checks if isinstance(c, dict)):
+            bad.append(f"{scen}: FAILED and is not in the baseline")
+if bad:
+    raise SystemExit(f"FAIL: {label}: required scenarios did not pass, whatever the exit code said:\n  " + "\n  ".join(bad))
+print(f"  ok: {len(required) - len(excused & set(required))} required scenarios passed ({len(excused & set(required))} baselined)")
+PY
+}
+
 # The control peer: the spec authors' own TypeScript SDK, running its conformance fixture server.
 #
 # Driven DIRECTLY rather than through the suite's `sdk` subcommand, and the reason is a defect that
@@ -363,8 +452,13 @@ official_subject() {
   local out="${MCP_SUBJECT_OUT:-.mcp-conformance/subject}"
   rm -rf "$out"
   mkdir -p "$out"
-  local baseline=()
-  [ -f qa/mcp-conformance-baseline.yml ] && baseline=(--expected-failures qa/mcp-conformance-baseline.yml)
+  local baseline=() bl="${MCP_CONFORMANCE_BASELINE:-qa/mcp-conformance-baseline.yml}"
+  if [ -e "$bl" ]; then
+    assert_baseline "$bl"
+    baseline=(--expected-failures "$bl")
+  else
+    bl=""
+  fi
   local rc=0
   npx --yes "$CONFORMANCE_PIN" server \
       --url "$target" --requirements "$REVISION" \
@@ -372,6 +466,7 @@ official_subject() {
   # THE ARMED GUARD, and it runs BEFORE the exit code is honoured. An armed run that executed
   # nothing is the state the skip above would otherwise rot into: configured, green, and vacuous.
   assert_covered "$out" "official subject"
+  assert_passed "$out" "official subject" "$bl"
   [ "$rc" -eq 0 ] || die "busbar failed scenarios the $REVISION requirement set demands. If a \
 failure is known and accepted, it belongs in qa/mcp-conformance-baseline.yml with a reason — never \
 absorbed by loosening the gate."
@@ -398,20 +493,34 @@ the tree is wrong and no verdict from this script means anything."
   ( cd "$MCP_BATTERY_DIR" && ./scripts/setup-control.sh && ./scripts/run-control.sh push,pr ) \
     || die "the in-house battery could not judge its own pinned control peer. A finding about the \
 harness, not about busbar."
-  [ -f "$report" ] || die "the control run did not write $report. It cannot have executed, and no \
+  assert_battery_report "$report" "control"
+}
+
+# THE BATTERY'S ANTI-VACUITY ASSERTION, shared by both battery legs so neither can drift from the
+# other. The report must exist (the caller DELETED it before the run, so an existing one is this
+# run's), and it must record at least BATTERY_MIN_EXECUTED executed tests — a run that skipped
+# almost everything proves nothing about the harness (control) or about busbar (subject).
+BATTERY_MIN_EXECUTED=20
+assert_battery_report() {
+  local report="$1" label="$2"
+  [ -f "$report" ] || die "the $label run did not write $report. It cannot have executed, and no \
 other report file is an acceptable substitute — reading one from a previous run is how a gate \
 reports a state it never reached."
-  python3 - "$report" <<'PY'
+  python3 - "$report" "$label" "$BATTERY_MIN_EXECUTED" <<'PY' || exit 1
 import json, sys
-r = json.load(open(sys.argv[1]))
+path, label, floor = sys.argv[1], sys.argv[2], int(sys.argv[3])
+try:
+    r = json.load(open(path))
+except (OSError, ValueError) as e:
+    raise SystemExit(f"FAIL: the {label} report {path} is not readable JSON: {e}")
 tests = r.get("tests") or r.get("results") or []
 ran = [t for t in tests if str(t.get("verdict", t.get("status", ""))).upper() not in ("SKIP", "SKIPPED")]
-if len(ran) < 20:
+if len(ran) < floor:
     raise SystemExit(
-        f"FAIL: the control report contains only {len(ran)} executed tests. A control leg that "
-        f"skipped almost everything proves nothing about the harness."
+        f"FAIL: the {label} report contains only {len(ran)} executed tests (floor {floor}). A leg "
+        f"that skipped almost everything is not a verdict."
     )
-print(f"  ok: {len(ran)} control tests executed")
+print(f"  ok: {len(ran)} {label} tests executed")
 PY
 }
 
@@ -543,6 +652,13 @@ battery_subject() {
   fi
 
   require_armed "battery subject" MCP_SUBJECT_BUSBAR_BIN MCP_SUBJECT_SERVER_CMD MCP_SUBJECT_CLIENT_CMD
+  # THE CALLEE'S EXIT CODE IS NOT THE VERDICT (item 497) — the control leg above has never trusted
+  # it, and this leg is the one that judges busbar. The reports are DELETED FIRST, so the checks
+  # after the run can only ever read what THIS run wrote: `run-subject.sh` never removes them, and
+  # a report from a previous run is exactly the evidence a gate must not believe.
+  local subj_report="$MCP_BATTERY_DIR/reports/subject.json"
+  local subj_diff="$MCP_BATTERY_DIR/reports/differential.json"
+  rm -f "$subj_report" "$subj_diff"
   # MCP_NO_SKIPS: a skipping test is not a passing test. Set HERE and not on the control legs,
   # because on the control legs a skip is the harness telling the truth about a peer it was never
   # pointed at, whereas here it is a green tick over a surface of BUSBAR that nobody touched.
@@ -565,6 +681,9 @@ battery_subject() {
       2) die "the differential did not run, so this leg proves nothing. See the reason above; it is not a verdict about busbar." ;;
       *) die "the in-house battery found a defect in busbar." ;;
     esac
+  assert_battery_report "$subj_report" "battery subject"
+  [ -f "$subj_diff" ] || die "the battery subject run exited 0 but wrote no $subj_diff — the \
+differential against the control did not run, so this leg proves nothing."
 }
 
 # --selftest: prove the anti-vacuity assertions BITE, before any verdict from this script is
@@ -746,6 +865,135 @@ selftest() {
   else
     say "  ok: a non-existent subject binary is refused"
   fi
+
+  # ---------------------------------------------------------------------------------------------
+  # THE BATTERY SUBJECT LEG DOES NOT TRUST ITS CALLEE'S EXIT CODE (item 497), exactly as the control
+  # leg never did. Driven against a FAKE battery directory whose `run-subject.sh` is the fixture, so
+  # the real leg function runs end to end with no busbar and no node.
+  bat_fixture() { # $1 dir, $2 what run-subject.sh does (shell body)
+    mkdir -p "$1/scripts" "$1/reports"
+    printf '#!/usr/bin/env bash\ncd "$(dirname "$0")/.."\n%s\n' "$2" >"$1/scripts/run-subject.sh"
+    chmod +x "$1/scripts/run-subject.sh"
+  }
+  bat_report() { # $1 path, $2 executed count, $3 skipped count
+    python3 - "$1" "$2" "$3" <<'PY'
+import json, sys
+p, ran, skip = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+res = [{"id": f"T{i}", "verdict": "PASS"} for i in range(ran)] + \
+      [{"id": f"S{i}", "verdict": "SKIP"} for i in range(skip)]
+json.dump({"results": res}, open(p, "w"))
+PY
+  }
+  bat_probe() { ( MCP_BATTERY_DIR="$1" MCP_SUBJECT_SERVER_CMD="fixture" MCP_SUBJECT_BUSBAR_BIN="" \
+                  battery_subject ) >/dev/null 2>&1; }
+
+  # RED 10: the callee exits 0 and writes NOTHING, over a STALE report from a previous run.
+  bat_fixture "$tmp/bat-stale" 'exit 0'
+  bat_report "$tmp/bat-stale/reports/subject.json" 50 0
+  printf '{}' >"$tmp/bat-stale/reports/differential.json"
+  if bat_probe "$tmp/bat-stale"; then
+    say "  MISS: a battery subject run that wrote no report was accepted on a STALE one"
+    failures=$((failures+1))
+  else
+    say "  ok: a stale subject report from a previous run is not evidence"
+  fi
+
+  # RED 11: the callee exits 0 over a report that executed almost nothing.
+  bat_fixture "$tmp/bat-thin" 'python3 - <<PY
+import json; json.dump({"results": [{"verdict": "PASS"}]*3 + [{"verdict": "SKIP"}]*40}, open("reports/subject.json", "w"))
+PY
+printf "{}" >reports/differential.json; exit 0'
+  if bat_probe "$tmp/bat-thin"; then
+    say "  MISS: a battery subject report with 3 executed tests was accepted"
+    failures=$((failures+1))
+  else
+    say "  ok: a battery subject report under the executed-test floor is refused"
+  fi
+
+  # GREEN 6: a fresh report with a real executed count and a differential is accepted.
+  bat_fixture "$tmp/bat-good" 'python3 - <<PY
+import json; json.dump({"results": [{"verdict": "PASS"}]*25}, open("reports/subject.json", "w"))
+PY
+printf "{}" >reports/differential.json; exit 0'
+  if bat_probe "$tmp/bat-good"; then
+    say "  ok: a fresh, non-vacuous battery subject report is accepted"
+  else
+    say "  MISS: a fresh, non-vacuous battery subject report was refused"; failures=$((failures+1))
+  fi
+
+  # ---------------------------------------------------------------------------------------------
+  # THE OFFICIAL SUBJECT LEG JUDGES PASSES, NOT ONLY EXECUTION, AND ITS BASELINE IS EVIDENCE TOO
+  # (item 534). Driven through the REAL `official_subject`, with `npx` stubbed to write the result
+  # directories a suite run leaves behind and exit 0 — the exit a baseline that excuses everything
+  # would produce.
+  required_server_scenarios() { printf 'alpha\nbeta\ngamma\ndelta\nepsilon\n'; }
+  MIN_SERVER_SCENARIOS=5
+  os_probe() ( # $1 per-scenario check status, $2 baseline file ('' = none)
+    local st="$1" bl="$2" out="$tmp/os-$RANDOM"
+    npx() {
+      local n
+      for n in alpha beta gamma delta epsilon; do
+        mkdir -p "$out/server-$n-$STAMP"
+        printf '[{"id":"c1","status":"%s"}]' "$st" >"$out/server-$n-$STAMP/checks.json"
+      done
+      return 0
+    }
+    MCP_SUBJECT_BUSBAR_BIN="" MCP_CONFORMANCE_SUBJECT_URL="http://127.0.0.1:1/mcp" \
+      MCP_SUBJECT_OUT="$out" MCP_CONFORMANCE_BASELINE="${bl:-$tmp/no-such-baseline.yml}" \
+      official_subject >/dev/null 2>&1
+  )
+
+  # GREEN 7: every scenario passed, no baseline.
+  if os_probe SUCCESS ""; then say "  ok: an official subject run whose scenarios passed is accepted"
+  else say "  MISS: an official subject run whose scenarios all passed was refused"; failures=$((failures+1)); fi
+
+  # RED 12: the suite exited 0 but every scenario's checks FAILED and no baseline excuses them.
+  if os_probe FAILURE ""; then
+    say "  MISS: an official subject run whose every scenario FAILED was accepted on exit 0"
+    failures=$((failures+1))
+  else say "  ok: executed-but-failed scenarios are refused whatever the exit code"; fi
+
+  # RED 13: a baseline that excuses the WHOLE required set — every entry reasoned, all failing.
+  printf 'server:\n' >"$tmp/bl-all.yml"
+  for n in alpha beta gamma delta epsilon; do printf '  - %s  # reason: fixture\n' "$n" >>"$tmp/bl-all.yml"; done
+  if os_probe FAILURE "$tmp/bl-all.yml"; then
+    say "  MISS: a baseline excusing every required scenario was accepted"; failures=$((failures+1))
+  else say "  ok: a baseline cannot excuse the whole required set"; fi
+
+  # RED 14: a present-but-EMPTY baseline file.
+  : >"$tmp/bl-empty.yml"
+  if os_probe SUCCESS "$tmp/bl-empty.yml"; then
+    say "  MISS: an empty baseline file was accepted"; failures=$((failures+1))
+  else say "  ok: an empty baseline file is refused"; fi
+
+  # RED 15: an entry with no reason.
+  printf 'server:\n  - alpha\n' >"$tmp/bl-noreason.yml"
+  if os_probe SUCCESS "$tmp/bl-noreason.yml"; then
+    say "  MISS: a baseline entry with no reason was accepted"; failures=$((failures+1))
+  else say "  ok: a baseline entry with no reason is refused"; fi
+
+  # RED 16: an entry naming a scenario the revision does not require.
+  printf 'server:\n  - zeta  # reason: fixture\n' >"$tmp/bl-unknown.yml"
+  if os_probe SUCCESS "$tmp/bl-unknown.yml"; then
+    say "  MISS: a baseline naming an unknown scenario was accepted"; failures=$((failures+1))
+  else say "  ok: a baseline naming a scenario outside the required set is refused"; fi
+
+  # GREEN 8: one reasoned entry, and the other four scenarios pass. Written as the suite would
+  # leave it: alpha FAILED (excused), the rest SUCCESS.
+  printf 'server:\n  - alpha  # reason: fixture, tracked upstream\n' >"$tmp/bl-one.yml"
+  if ( out="$tmp/os-one"
+       npx() {
+         local n st
+         for n in alpha beta gamma delta epsilon; do
+           st=SUCCESS; [ "$n" = alpha ] && st=FAILURE
+           mkdir -p "$out/server-$n-$STAMP"
+           printf '[{"id":"c1","status":"%s"}]' "$st" >"$out/server-$n-$STAMP/checks.json"
+         done
+       }
+       MCP_SUBJECT_BUSBAR_BIN="" MCP_CONFORMANCE_SUBJECT_URL="http://127.0.0.1:1/mcp" \
+         MCP_SUBJECT_OUT="$out" MCP_CONFORMANCE_BASELINE="$tmp/bl-one.yml" official_subject ) >/dev/null 2>&1
+  then say "  ok: one reasoned baseline entry excuses exactly its own failure"
+  else say "  MISS: a valid one-entry baseline over a matching run was refused"; failures=$((failures+1)); fi
 
   # RED 6: the battery must be IN THIS REPOSITORY. It was moved here so no leg needs a secret or a
   # reachable private host; if the directory is gone, every battery verdict is vacuous, and the

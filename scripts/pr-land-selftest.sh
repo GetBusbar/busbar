@@ -36,7 +36,15 @@ printf '%s\n' "$*" >>"$GH_LOG"
 case "$1" in
   auth) exit 0 ;;
   repo) echo "acme/thing"; exit 0 ;;
-  api)  echo "true"; exit 0 ;;
+  api)
+    # Branch protection's required contexts come from $GH_REQUIRED (one per line); an absent file is
+    # a protection read that failed. Every other api call is the allow_auto_merge probe.
+    case "$2" in
+      */protection/required_status_checks)
+        [ -f "${GH_REQUIRED:-/nonexistent}" ] || exit 1
+        cat "$GH_REQUIRED"; exit 0 ;;
+    esac
+    echo "true"; exit 0 ;;
   run)  echo "2026-09-06T00:00:00Z build\tFAILED: the canned first failing line"; exit 0 ;;
   pr)
     case "$2" in
@@ -89,6 +97,9 @@ mk_repo() {
 }
 
 checks_json() { printf '%s\n' "$1" >"$root/checks.json"; }
+export GH_REQUIRED="$root/required.txt"
+required() { printf '%s\n' "$@" >"$GH_REQUIRED"; }
+required "ci umbrella" "A2A conformance verdict" "MCP conformance verdict" "Voice conformance verdict"
 GREEN_JSON='[{"name":"ci umbrella","state":"SUCCESS","link":"https://github.com/acme/thing/actions/runs/11"},
 {"name":"A2A conformance verdict","state":"SUCCESS","link":"https://github.com/acme/thing/actions/runs/12"},
 {"name":"MCP conformance verdict","state":"SUCCESS","link":"https://github.com/acme/thing/actions/runs/13"},
@@ -164,8 +175,34 @@ grep -q 'pr create' "$GH_LOG" && bad "--dry-run opened a PR" || ok "--dry-run op
 git -C "$wt" ls-remote --heads origin 'land/*' | grep -q . && bad "--dry-run pushed" || ok "--dry-run pushed nothing"
 case "$out" in *"+ git -C"*) ok "printed the commands it would run" ;; *) bad "printed no commands" ;; esac
 
+# ── CASE F: THE REQUIRED SET IS BRANCH PROTECTION'S, NOT A LIST IN THE SCRIPT ─────────────────────
+# Protection lists a FIFTH context that never reported. Every context the script used to hardcode is
+# green, so a hardcoded list would print GREEN; the protection-read list must not.
+echo "case F — a required context added to protection is waited on, not skipped"
+wt="$root/f"; mk_repo "$wt"
+export GH_LOG="$root/f.log" GH_BODY="$root/f.body"
+: >"$GH_LOG"; checks_json "$GREEN_JSON"
+required "ci umbrella" "A2A conformance verdict" "MCP conformance verdict" "Voice conformance verdict" "Streaming conformance verdict"
+out="$( (cd "$wt" && PR_LAND_POLL_SECONDS=1 PR_LAND_WAIT_LIMIT=1 bash "$here/scripts/pr-land.sh" "$CLEAN1" --base dev --wait) 2>&1 )"; rc=$?
+[ "$rc" -ne 0 ] && ok "exit non-zero ($rc)" || bad "GREEN with a required context that never reported: $out"
+case "$out" in *"GREEN —"*) bad "printed a GREEN verdict over a missing required context" ;; *) ok "no GREEN verdict" ;; esac
+grep -q 'protection/required_status_checks' "$GH_LOG" && ok "read the contexts from branch protection" \
+  || bad "never asked branch protection for its required contexts"
+grep -q 'Streaming conformance verdict' "$GH_BODY" 2>/dev/null && ok "PR body lists protection's contexts" \
+  || bad "PR body does not list the context protection added"
+
+# ── CASE G: UNREADABLE PROTECTION IS A REFUSAL ────────────────────────────────────────────────────
+echo "case G — protection that cannot be read refuses before anything is picked"
+wt="$root/g"; mk_repo "$wt"
+export GH_LOG="$root/g.log" GH_BODY="$root/g.body"
+: >"$GH_LOG"; checks_json "$GREEN_JSON"; rm -f "$GH_REQUIRED"
+out="$( (cd "$wt" && bash "$here/scripts/pr-land.sh" "$CLEAN1" --base dev --wait) 2>&1 )"; rc=$?
+[ "$rc" -ne 0 ] && ok "exit non-zero ($rc)" || bad "landed with branch protection unreadable: $out"
+grep -q 'pr create' "$GH_LOG" && bad "opened a PR with no readable required contexts" || ok "no PR was opened"
+required "ci umbrella" "A2A conformance verdict" "MCP conformance verdict" "Voice conformance verdict"
+
 if [ "$fails" -eq 0 ]; then
-  echo "pr-land-selftest: GREEN — 5 cases, conflict/body/red/green/dry-run all discriminate"
+  echo "pr-land-selftest: GREEN — 7 cases, conflict/body/red/green/dry-run/protection-drift/unreadable all discriminate"
   exit 0
 fi
 echo "pr-land-selftest: RED — $fails assertion(s) failed" >&2

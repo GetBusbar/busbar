@@ -163,6 +163,21 @@ plugin_fanout_available() {
   [ "$PLUGIN_FANOUT_CACHE" = yes ]
 }
 
+# ── THE ID IS THE KEY: a resolved feed with two rows under one id is REFUSED (item 521). ─────────
+# Every consumer addresses a segment BY ID — run_all re-resolves each row through `run_one "$id"`,
+# `--segment ID` selects by id, and qa-gate.yml builds its matrix from `--list` and runs each leg as
+# `--segment <id>`. With two rows sharing an id, every one of those lookups lands on the FIRST row:
+# the second row's command never executed, yet run_all counted it as executed and printed PASS for it
+# twice. Refusing at the feed (all-or-nothing, like a registry failure) closes it for every consumer
+# at once, including a template expansion that collides with a plain segment's id.
+refuse_duplicate_ids() {
+  local dups
+  dups="$(printf '%s' "$1" | awk -F'\t' 'NF && $1!="" {c[$1]++} END{for (k in c) if (c[k]>1) print k}' | sort | tr '\n' ' ')"
+  [ -z "$dups" ] && return 0
+  echo "qa-segments: DUPLICATE segment id(s) in the resolved feed: ${dups% } — every consumer selects a segment by id, so the second row would never run. Give each segment a unique id." >&2
+  return 1
+}
+
 # ── feed(): the resolved 4-column TSV (id \t status \t tier \t run). ──────────────────────────────
 # Expands each [[segment_template]] against its registry, and SUPPRESSES any [[segment]] whose
 # `fallback_for` names a template that expanded. Exactly one of {aggregate fallback, expanded set} is
@@ -202,6 +217,7 @@ feed() {
 
   # 2. template expansion (only when the fan-out can actually run)
   if [ "$fanout" != yes ]; then
+    refuse_duplicate_ids "$out" || return 1
     printf '%s' "$out"
     return 0
   fi
@@ -223,6 +239,7 @@ feed() {
       out+="$(printf '%s-%s\t%s\t%s\t%s' "$id" "$p_repo" "$status" "$tier" "$erun")"$'\n'
     done <<<"$reg"
   done <<<"$raw"
+  refuse_duplicate_ids "$out" || return 1
   printf '%s' "$out"
 }
 
@@ -720,6 +737,53 @@ TOML
     fails=$((fails+1))
   fi
   rm -rf "$rtmp"
+
+  # (k) DUPLICATE IDS ARE REFUSED (item 521). Two ACTIVE rows share id `selftest-dup`; each row's run
+  # writes its own sentinel. Before the fix run_all resolved both rows to the FIRST row's command, the
+  # second sentinel never appeared, and the umbrella printed GREEN. The run must be RED and neither
+  # command may execute (the feed is refused before anything runs). Control: the same manifest with
+  # distinct ids is GREEN and BOTH sentinels appear — so the refusal is about the key, not the rows.
+  local dtmp
+  dtmp="$(mktemp -d)"
+  cat >"$dtmp/segments.toml" <<TOML
+[[segment]]
+id     = "selftest-dup"
+status = "active"
+tier   = "fast"
+run    = "touch '$dtmp/FIRST-RAN'"
+
+[[segment]]
+id     = "selftest-dup"
+status = "active"
+tier   = "fast"
+run    = "touch '$dtmp/SECOND-RAN'"
+TOML
+  if QA_SEGMENTS_MANIFEST="$dtmp/segments.toml" "$0" --run >"$dtmp/out" 2>&1; then
+    red "  FAIL  two segments sharing an id reported GREEN (second row ran: $( [ -f "$dtmp/SECOND-RAN" ] && echo yes || echo NO ))"
+    fails=$((fails+1))
+  elif [ -f "$dtmp/FIRST-RAN" ] || [ -f "$dtmp/SECOND-RAN" ]; then
+    red "  FAIL  a duplicate-id feed was RED but still executed a segment — the refusal must precede any run"
+    fails=$((fails+1))
+  else
+    note "PASS  two segments sharing one id are REFUSED before anything runs"
+  fi
+  if QA_SEGMENTS_MANIFEST="$dtmp/segments.toml" "$0" --list >/dev/null 2>&1; then
+    red "  FAIL  --list (the CI matrix source) emitted a feed with a duplicate id"
+    fails=$((fails+1))
+  else
+    note "PASS  --list refuses a duplicate-id feed, so no CI matrix can be built from it"
+  fi
+  sed 's/^id     = "selftest-dup"$/id     = "selftest-dup-X"/' "$dtmp/segments.toml" \
+    | awk '/selftest-dup-X/{n++; if (n==2) sub(/selftest-dup-X/, "selftest-dup-Y")} {print}' >"$dtmp/distinct.toml"
+  rm -f "$dtmp/FIRST-RAN" "$dtmp/SECOND-RAN"
+  if QA_SEGMENTS_MANIFEST="$dtmp/distinct.toml" "$0" --run >/dev/null 2>&1 \
+     && [ -f "$dtmp/FIRST-RAN" ] && [ -f "$dtmp/SECOND-RAN" ]; then
+    note "PASS  control: the same two rows under DISTINCT ids are GREEN and BOTH commands execute"
+  else
+    red "  FAIL  control: two distinct-id segments did not both run green — the refusal over-fires"
+    fails=$((fails+1))
+  fi
+  rm -rf "$dtmp"
 
   if [ "$fails" -eq 0 ]; then
     grn "qa-gate segmentation self-test: ALL GREEN (shape + preserved coverage + inert reserved + registry-exact fan-out + every active segment proven red-then-green)"

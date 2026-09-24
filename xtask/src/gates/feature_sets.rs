@@ -364,10 +364,58 @@ fn rig_scripts(cx: &Ctx) -> Vec<String> {
     out
 }
 
+/// Is this `if:` guard a literal never-run? `false`, `${{ false }}`, quoted or not.
+fn never_runs(cond: Option<&str>) -> bool {
+    let Some(c) = cond else { return false };
+    let c = c.trim().trim_matches(['"', '\'']).trim();
+    let c = c
+        .strip_prefix("${{")
+        .and_then(|c| c.strip_suffix("}}"))
+        .unwrap_or(c)
+        .trim();
+    c == "false"
+}
+
+/// The shell lines a step of this workflow EXECUTES (item 193). A rig is "run by a step" only if
+/// its path is on one of these: inside a step's `run:` body, with shell comments stripped, in a
+/// step and job whose `if:` is not a literal `false`. A YAML comment, a shell comment, prose in a
+/// header block or a step behind `if: false` names a path and runs nothing — and a raw-bytes
+/// `contains` over the workflow accepted all four.
+fn executed_run_lines(workflow: &str) -> Result<Vec<String>, String> {
+    let wf = crate::yaml_lite::parse_workflow(workflow)?;
+    let mut out = Vec::new();
+    for job in wf.jobs() {
+        if never_runs(job.cond.as_deref()) {
+            continue;
+        }
+        for step in &job.steps {
+            if never_runs(step.cond.as_deref()) {
+                continue;
+            }
+            let Some(run) = &step.run else { continue };
+            for line in run.lines() {
+                let t = line.trim_start();
+                if t.starts_with('#') {
+                    continue;
+                }
+                let code = match t.find(" #") {
+                    Some(at) => &t[..at],
+                    None => t,
+                };
+                if !code.trim().is_empty() {
+                    out.push(code.to_string());
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// The rig row: every scenario is NAMED by a step of the workflow, and enough of them were found for
 /// that to mean anything.
 ///
-/// "Named" is a literal path match against the workflow text on purpose. A
+/// "Named" is a literal path match against the lines a step EXECUTES ([`executed_run_lines`]) on
+/// purpose. A
 /// `for f in scripts/*-subject/h2-*.sh` loop would run them all and name none, and a glob expands on
 /// the runner where nobody reads the expansion — so a scenario added tomorrow would be covered by a
 /// loop that never listed it and no diff would show the difference. A step per scenario is a line a
@@ -385,9 +433,19 @@ fn rig_row(rigs: &[String], workflow: &str) -> Row {
             ),
         );
     }
+    let executed = match executed_run_lines(workflow) {
+        Ok(lines) => lines,
+        Err(e) => {
+            return Row::fail(
+                ROW_RIGS_RUN,
+                "the workflow could not be parsed, so no step can be shown to run a rig",
+                format!("{WORKFLOW}: {e}"),
+            );
+        }
+    };
     let unrun: Vec<&str> = rigs
         .iter()
-        .filter(|r| !workflow.contains(r.as_str()))
+        .filter(|r| !executed.iter().any(|l| l.contains(r.as_str())))
         .map(String::as_str)
         .collect();
     if unrun.is_empty() {
@@ -815,6 +873,52 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
             ov
         });
 
+    // ITEM 193: THE PATH STILL IN THE BYTES, THE STEP NOT RUN. Two shapes that leave the rig's path
+    // in `ci.yml` while nothing executes it: every line naming it commented out, and every step
+    // naming it put behind `if: false`. A raw-bytes `contains` called both "run".
+    let commented_rig = workflow
+        .as_ref()
+        .zip(rig_scripts(cx).first().cloned())
+        .map(|(t, rig)| {
+            let mut ov = Overlay::new();
+            ov.set(
+                WORKFLOW,
+                t.lines()
+                    .map(|l| {
+                        if l.contains(rig.as_str()) {
+                            let indent = l.len() - l.trim_start().len();
+                            format!("{}# {}", &l[..indent], l.trim_start())
+                        } else {
+                            l.to_string()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+            ov
+        });
+    let disabled_rig = workflow
+        .as_ref()
+        .zip(rig_scripts(cx).first().cloned())
+        .map(|(t, rig)| {
+            let mut out: Vec<String> = Vec::new();
+            for l in t.lines() {
+                let trimmed = l.trim_start();
+                let indent = l.len() - trimmed.len();
+                if l.contains(rig.as_str()) && trimmed.starts_with("run:") {
+                    out.push(format!("{}if: false", &l[..indent]));
+                } else if l.contains(rig.as_str()) && trimmed.starts_with("- run:") {
+                    out.push(l.to_string());
+                    out.push(format!("{}if: false", " ".repeat(indent + 2)));
+                    continue;
+                }
+                out.push(l.to_string());
+            }
+            let mut ov = Overlay::new();
+            ov.set(WORKFLOW, out.join("\n"));
+            ov
+        });
+
     // THE ROOT MANIFEST GONE. Everything below rule 1 is UNPROVEN, never passed.
     let mut no_root = Overlay::new();
     no_root.remove(ROOT_MANIFEST);
@@ -861,6 +965,18 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
             rule: ROW_RIGS_RUN,
             naming: vec!["run by no step".to_string()],
             overlay: unrun_rig,
+        },
+        Plant {
+            label: "a rig whose every naming line is commented out is run by no step",
+            rule: ROW_RIGS_RUN,
+            naming: vec!["run by no step".to_string()],
+            overlay: commented_rig,
+        },
+        Plant {
+            label: "a rig whose step is behind `if: false` is run by no step",
+            rule: ROW_RIGS_RUN,
+            naming: vec!["run by no step".to_string()],
+            overlay: disabled_rig,
         },
         Plant {
             label: "the root manifest is unreadable",
@@ -996,7 +1112,13 @@ mod tests {
         let full: Vec<String> = (0..RIG_FLOOR)
             .map(|i| format!("scripts/mcp-subject/h2-{i}.sh"))
             .collect();
-        let text = full.join("\n");
+        let text = format!(
+            "jobs:\n  rigs:\n    runs-on: ubuntu-latest\n    steps:\n{}\n",
+            full.iter()
+                .map(|r| format!("      - run: ./{r}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
         assert_eq!(
             rig_row(&full, &text).status,
             crate::ledger::Status::Pass,

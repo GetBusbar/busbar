@@ -21,7 +21,8 @@ const MIGRATED_FILES: &[&str] = &[
     // plane-purity lint forbids core naming a plane path — and that plugin crate carries its own
     // uncoded-diagnostic floor, so these are no longer listed here (mirroring the substrate/plane note).
     "src/handlers/mod.rs",
-    "src/metrics.rs",
+    "src/metrics/mod.rs",
+    "src/metrics/money.rs",
     "src/auth/exchange.rs",
     "src/auth/token.rs",
     "src/auth/mod.rs",

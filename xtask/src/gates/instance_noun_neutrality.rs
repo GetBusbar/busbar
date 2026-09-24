@@ -61,6 +61,13 @@ pub fn row_id(key: &str) -> String {
 pub const ROW_SCAN_FLOOR: &str = "instance-noun-neutrality:scan-floor";
 pub const ROW_UNDOCUMENTED: &str = "instance-noun-neutrality:undocumented";
 pub const ROW_STALE: &str = "instance-noun-neutrality:stale-baseline";
+/// THE ZERO-MATCH REFUSAL. A baseline row whose `file` is not a Rust file the census scanned — a
+/// path that was deleted, renamed, or split into a DIRECTORY (`engine_kit.rs` -> `engine_kit/`) —
+/// names nothing the gate can measure, so it can only ever read as "zero leaks here". That is a
+/// false zero inside the census, and this row refuses it BY PATH, distinct from `:stale-baseline`
+/// (a real file whose leak is gone). A row missing its `noun` or `file` key is the same false zero
+/// (it used to be dropped silently) and is refused here too.
+pub const ROW_DEAD_PATH: &str = "instance-noun-neutrality:dead-path";
 
 /// THE NEEDLE every per-noun census row carries. `--all` excuses this gate's standing red only when
 /// every red row names it (see the REPORT_ONLY posture); the `:undocumented` and `:stale-baseline`
@@ -439,14 +446,17 @@ fn categorize(krate: &str, file: &str) -> (&'static str, &'static str) {
 }
 
 /// THE SCAN. Walks every `.rs` under `crates/`, strips comments (test code kept), and records one
-/// entry per (noun, file) where a non-family crate names the noun.
-fn census(cx: &Ctx) -> Result<Vec<Leak>, String> {
+/// entry per (noun, file) where a non-family crate names the noun. Also returns every path it
+/// scanned, so a baseline row can be checked against what the census can actually measure.
+fn census(cx: &Ctx) -> Result<(Vec<Leak>, std::collections::BTreeSet<String>), String> {
     let files = cx
         .walk(&WalkSpec::new(["crates"]).ext("rs").min_files(1))
         .map_err(|e| e.to_string())?;
     let mut leaks: Vec<Leak> = Vec::new();
+    let mut scanned: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for f in &files {
         let rel = f.rel_str();
+        scanned.insert(rel.to_string());
         let Some(krate) = crate_of(&rel) else {
             continue;
         };
@@ -487,29 +497,63 @@ fn census(cx: &Ctx) -> Result<Vec<Leak>, String> {
         }
     }
     leaks.sort_by(|a, b| (a.noun, &a.file).cmp(&(b.noun, &b.file)));
-    Ok(leaks)
+    Ok((leaks, scanned))
 }
 
-/// The baseline as a set of `<noun>\t<file>` keys plus the raw entry list (for the stale check).
-fn baseline_keys(cx: &Ctx) -> Vec<(String, String)> {
+/// One baseline `[[leak]]` row: its `(noun, file)` key and the `count` it recorded. A row with no
+/// integer `count` records ZERO — it authorises no references at all, so any live count in that
+/// file is growth. It is never read as "unbounded".
+type BaselineRow = ((String, String), usize);
+
+/// The baseline rows, plus the 1-based ordinal of every `[[leak]]` row that lacks a `noun` or a
+/// `file` (such a row names nothing and is refused by `:dead-path`). The count is READ (item 198):
+/// the ledger records one per row and nothing compared it, so a baselined file was an unbounded
+/// growth zone.
+fn baseline_keys(cx: &Ctx) -> (Vec<BaselineRow>, Vec<usize>) {
     let Ok(text) = cx.read(BASELINE) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let Ok(doc) = crate::toml_doc::parse_str(&text) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
-    doc.array_of_tables("leak")
-        .into_iter()
-        .filter_map(|t| {
-            let noun = t.str_of("noun")?;
-            let file = t.str_of("file")?;
-            Some((noun.to_string(), file.to_string()))
-        })
-        .collect()
+    let mut keys = Vec::new();
+    let mut malformed = Vec::new();
+    for (i, t) in doc.array_of_tables("leak").into_iter().enumerate() {
+        let count = t
+            .int_of("count")
+            .and_then(|c| usize::try_from(c).ok())
+            .unwrap_or(0);
+        match (t.str_of("noun"), t.str_of("file")) {
+            (Some(noun), Some(file)) => keys.push(((noun.to_string(), file.to_string()), count)),
+            _ => malformed.push(i + 1),
+        }
+    }
+    (keys, malformed)
 }
 
 fn leak_key(l: &Leak) -> (String, String) {
     (l.noun.to_string(), l.file.clone())
+}
+
+/// The live leaks the baseline does not cover: a `(noun, file)` pair it does not name, OR a pair it
+/// names whose live count EXCEEDS the recorded count (item 198). The ledger is a burndown: a count
+/// may fall without an edit, but a baselined file may not quietly take on more coupling.
+fn undocumented_leaks(leaks: &[Leak], baseline: &[BaselineRow]) -> Vec<String> {
+    let mut out: Vec<String> = leaks
+        .iter()
+        .filter_map(|l| {
+            let key = leak_key(l);
+            match baseline.iter().find(|(k, _)| *k == key) {
+                None => Some(format!("{}@{}", l.noun, l.file)),
+                Some((_, recorded)) if l.count > *recorded => {
+                    Some(format!("{}@{} grew {recorded}→{}", l.noun, l.file, l.count))
+                }
+                Some(_) => None,
+            }
+        })
+        .collect();
+    out.sort();
+    out
 }
 
 /// The baseline TOML for the current census — mechanical category/wave, one `[[leak]]` per pair.
@@ -546,11 +590,12 @@ impl Gate for InstanceNounNeutralityGate {
         ids.push(ROW_SCAN_FLOOR.to_string());
         ids.push(ROW_UNDOCUMENTED.to_string());
         ids.push(ROW_STALE.to_string());
+        ids.push(ROW_DEAD_PATH.to_string());
         ids
     }
 
     fn run(&self, cx: &Ctx) -> Verdict {
-        let leaks = match census(cx) {
+        let (leaks, scanned) = match census(cx) {
             Ok(l) => l,
             Err(e) => {
                 let mut rows = vec![Row::fail(
@@ -571,6 +616,11 @@ impl Gate for InstanceNounNeutralityGate {
                     DID_NOT_RUN,
                 ));
                 rows.push(Row::fail(ROW_STALE, "the scan did not run", DID_NOT_RUN));
+                rows.push(Row::fail(
+                    ROW_DEAD_PATH,
+                    "the scan did not run",
+                    DID_NOT_RUN,
+                ));
                 return Verdict::of(rows);
             }
         };
@@ -581,7 +631,7 @@ impl Gate for InstanceNounNeutralityGate {
             eprint!("{}", emit_baseline(&leaks));
         }
 
-        let baseline: Vec<(String, String)> = baseline_keys(cx);
+        let (baseline, malformed) = baseline_keys(cx);
         let mut rows = Vec::new();
 
         rows.push(Row::pass(
@@ -632,12 +682,7 @@ impl Gate for InstanceNounNeutralityGate {
         }
 
         // Undocumented: a live leak the baseline does not name. This is what bites a NEW coupling.
-        let mut undocumented: Vec<String> = leaks
-            .iter()
-            .filter(|l| !baseline.contains(&leak_key(l)))
-            .map(|l| format!("{}@{}", l.noun, l.file))
-            .collect();
-        undocumented.sort();
+        let undocumented = undocumented_leaks(&leaks, &baseline);
         rows.push(if undocumented.is_empty() {
             Row::pass(
                 ROW_UNDOCUMENTED,
@@ -647,7 +692,7 @@ impl Gate for InstanceNounNeutralityGate {
         } else {
             Row::fail(
                 ROW_UNDOCUMENTED,
-                "a live instance-noun leak is NOT in the baseline",
+                "a live instance-noun leak is NOT in the baseline, or outgrew its baselined count",
                 format!(
                     "{} undocumented leak(s): {} — a NEW cross-family coupling landed. Neutralize \
                      it, or (if it is genuine debt) record it in {BASELINE} with its owning wave.",
@@ -662,6 +707,7 @@ impl Gate for InstanceNounNeutralityGate {
             leaks.iter().map(leak_key).collect();
         let mut stale: Vec<String> = baseline
             .iter()
+            .map(|(k, _)| k)
             .filter(|k| !live.contains(*k))
             .map(|(n, f)| format!("{n}@{f}"))
             .collect();
@@ -681,6 +727,41 @@ impl Gate for InstanceNounNeutralityGate {
                      the same commit that neutralized it.",
                     stale.len(),
                     stale.join(", ")
+                ),
+            )
+        });
+
+        // Dead path: a baseline row whose file the census did not scan (gone, renamed, a directory,
+        // not Rust, outside `crates/`) — or a row with no file at all. It measures nothing, so it
+        // can only read as a zero; refuse it by path rather than let it sit in the ledger.
+        let mut dead: Vec<String> = baseline
+            .iter()
+            .map(|(k, _)| k)
+            .filter(|(_, f)| !scanned.contains(f))
+            .map(|(n, f)| format!("{n}@{f}"))
+            .collect();
+        dead.sort();
+        dead.extend(
+            malformed
+                .iter()
+                .map(|i| format!("[[leak]] #{i} has no `noun` or no `file`")),
+        );
+        rows.push(if dead.is_empty() {
+            Row::pass(
+                ROW_DEAD_PATH,
+                "every baseline row names a Rust file the census scanned",
+                CLEAN,
+            )
+        } else {
+            Row::fail(
+                ROW_DEAD_PATH,
+                "a baseline row names a path the census cannot scan",
+                format!(
+                    "{} zero-match row(s): {} — the path matches no scanned `.rs` file (deleted, \
+                     renamed, or now a directory), so the row can only ever measure zero. Repoint it \
+                     at the file(s) that now hold the code, or strike it, in {BASELINE}.",
+                    dead.len(),
+                    dead.join(", ")
                 ),
             )
         });
@@ -750,6 +831,53 @@ impl Gate for InstanceNounNeutralityGate {
             FIX_EMPTY,
             &["could not be scanned"],
         ));
+
+        // THE DEAD-PATH ROW. The fixture baseline's ghost row names a file that does not exist.
+        report.push(prove_rows_red_at(
+            cx,
+            self,
+            "a baseline row naming a nonexistent file reds the dead-path row",
+            &[ROW_DEAD_PATH],
+            FIX,
+            &["crates/ghost-nonexistent.rs"],
+        ));
+
+        // The item-113 shape exactly: a row naming a path that is now a DIRECTORY. Transition-proved
+        // over the fixture: a baseline naming only the real file is GREEN on `:dead-path`; adding a
+        // row whose `file` is the directory `crates/busbar-core/src` turns it RED, naming that path.
+        const LIVE_ROW: &str =
+            "[[leak]]\nnoun = \"mcp\"\nfile = \"crates/busbar-core/src/lib.rs\"\n\n";
+        report.push(Case {
+            name: "a baseline row naming a directory (zero files) reds the dead-path row"
+                .to_string(),
+            covers: vec![ROW_DEAD_PATH.to_string()],
+            expected: Expect::Red {
+                naming: vec!["mcp@crates/busbar-core/src".to_string()],
+            },
+            got: dead_path_transition(
+                self,
+                cx,
+                FIX,
+                LIVE_ROW,
+                &format!("{LIVE_ROW}[[leak]]\nnoun = \"mcp\"\nfile = \"crates/busbar-core/src\"\n"),
+            ),
+        });
+
+        // A row with no `file` key names nothing either; it used to be dropped silently.
+        report.push(Case {
+            name: "a baseline row missing its file key reds the dead-path row".to_string(),
+            covers: vec![ROW_DEAD_PATH.to_string()],
+            expected: Expect::Red {
+                naming: vec!["[[leak]] #2 has no `noun` or no `file`".to_string()],
+            },
+            got: dead_path_transition(
+                self,
+                cx,
+                FIX,
+                LIVE_ROW,
+                &format!("{LIVE_ROW}[[leak]]\nnoun = \"mcp\"\n"),
+            ),
+        });
 
         // GREEN CONTROL 1 — COMMENTS ARE NEVER A LEAK. Over the fixture, replace busbar-core with a
         // file whose only `mysql` is in comments: the mysql row goes GREEN, while the RED case above
@@ -832,5 +960,79 @@ fn green_over_fixture(
         }
     } else {
         Expect::Green
+    }
+}
+
+/// A `:dead-path` TRANSITION over `fixture`: with `clean_baseline` the row must be GREEN (else the
+/// case reports a red naming the broken control), and with `planted_baseline` the row's RED detail
+/// is returned for the case to match its naming against.
+fn dead_path_transition(
+    gate: &InstanceNounNeutralityGate,
+    cx: &Ctx,
+    fixture: &str,
+    clean_baseline: &str,
+    planted_baseline: &str,
+) -> Expect {
+    let Ok(fcx) = Ctx::at(cx.abs(fixture), cx.scratch().to_path_buf()) else {
+        return Expect::Skipped;
+    };
+    let dead_row = |baseline: &str| {
+        let mut ov = Overlay::new();
+        ov.set(BASELINE, baseline.to_string());
+        let verdict = execute(gate, &fcx.with_overlay(ov));
+        verdict
+            .rows
+            .iter()
+            .find(|r| r.id == ROW_DEAD_PATH)
+            .map(|r| (r.status != Status::Pass, r.detail.clone()))
+    };
+    match (dead_row(clean_baseline), dead_row(planted_baseline)) {
+        (Some((false, _)), Some((true, detail))) => Expect::Red {
+            naming: vec![detail],
+        },
+        (clean, planted) => Expect::Red {
+            naming: vec![format!(
+                "no GREEN->RED transition on {ROW_DEAD_PATH}: clean={clean:?} planted={planted:?}"
+            )],
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn leak(file: &str, count: usize) -> Leak {
+        Leak {
+            noun: "a2a",
+            kind: "plane",
+            file: file.to_string(),
+            count,
+            category: "c",
+            wave: "w",
+        }
+    }
+
+    /// ITEM 198: the burndown ledger's `count` is compared. Forty more references in a baselined
+    /// file used to leave `:undocumented` byte-identical because only `(noun, file)` was a key.
+    #[test]
+    fn a_baselined_file_that_grew_its_leak_count_is_undocumented() {
+        let baseline: Vec<BaselineRow> = vec![
+            (("a2a".to_string(), "crates/x/src/lib.rs".to_string()), 1),
+            (("a2a".to_string(), "crates/y/src/lib.rs".to_string()), 5),
+        ];
+        let leaks = vec![
+            leak("crates/x/src/lib.rs", 41),
+            leak("crates/y/src/lib.rs", 3),
+            leak("crates/z/src/lib.rs", 1),
+        ];
+        assert_eq!(
+            undocumented_leaks(&leaks, &baseline),
+            vec![
+                "a2a@crates/x/src/lib.rs grew 1→41".to_string(),
+                "a2a@crates/z/src/lib.rs".to_string(),
+            ],
+            "growth past the recorded count must be named; a shrink must not"
+        );
     }
 }

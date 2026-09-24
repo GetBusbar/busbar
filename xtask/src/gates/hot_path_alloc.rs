@@ -10,9 +10,13 @@
 //!
 //! | row | the claim it holds |
 //! | --- | --- |
-//! | `:instrument-present` | the criterion bench exists AND is registered `harness = false` |
+//! | `:instrument-present` | the criterion bench exists AND its OWN `[[bench]]` block says `harness = false` |
 //! | `:global-allocator` | it installs a counting `#[global_allocator]` |
-//! | `:pod-batch-zero` | it asserts that counter is `== 0` across the isolated `PlaneHostVtable` POD batch |
+//! | `:pod-batch-zero` | it asserts `allocations == 0` across the isolated `PlaneHostVtable` POD batch |
+//!
+//! Each row holds its own comparison as lexed CODE clauses, and the registration is read from this
+//! bench's own `[[bench]]` block — the matchers are `hot-path-perf`'s (see its header for why a
+//! whole-file `contains` per token held neither).
 //!
 //! WHY A SOURCE GATE. Same reason as `hot-path-perf`: `xtask` depends on no product crate
 //! (`segregation`) and a Tier::Fast gate builds nothing, so the allocation count is the bench's
@@ -29,6 +33,9 @@
 //! made. This gate is GREEN now and stays green across that transition.
 
 use crate::ctx::{Ctx, Overlay};
+use crate::gates::hot_path_perf::{
+    bench_block_is_harness_false, claim_row_over, code_tokens, strike_clause, Claim,
+};
 use crate::gates::{prove_green, prove_red, Gate, Report};
 use crate::ledger::{Row, Verdict};
 
@@ -40,28 +47,26 @@ const BENCH_REL: &str = "crates/busbar-kernel/benches/plane_host_vtable_alloc.rs
 const MANIFEST_REL: &str = "crates/busbar-kernel/Cargo.toml";
 const BENCH_NAME: &str = "plane_host_vtable_alloc";
 
-struct Claim {
-    row: &'static str,
-    markers: &'static [&'static str],
-    ok: &'static str,
-    bad: &'static str,
-}
-
 const CLAIMS: &[Claim] = &[
     Claim {
         row: ROW_GLOBAL_ALLOCATOR,
-        markers: &["#[global_allocator]", "GlobalAlloc", "ALLOC_COUNT"],
+        clauses: &[
+            "#[global_allocator]",
+            "impl GlobalAlloc for",
+            "ALLOC_COUNT.fetch_add(1,",
+        ],
         ok: "the instrument installs a counting #[global_allocator]",
         bad: "the instrument no longer installs a counting global allocator",
     },
     Claim {
         row: ROW_POD_BATCH,
-        markers: &[
+        clauses: &[
+            "use busbar_plugin::hot::host::{",
             "PlaneHostVtable",
-            "busbar_plugin::hot::host",
-            "POD_HOST_CALL_BATCH",
-            "ALLOC_COUNT",
-            "assert_eq!",
+            "bench_function(\"POD_HOST_CALL_BATCH\"",
+            "ALLOC_COUNT.store(0,",
+            "let allocations = ALLOC_COUNT.load(",
+            "assert_eq!(allocations, 0,",
         ],
         ok: "the instrument asserts zero allocations across the isolated PlaneHostVtable POD batch",
         bad: "the instrument no longer asserts zero allocations across the isolated POD batch",
@@ -77,50 +82,21 @@ fn instrument_row(cx: &Ctx) -> Row {
         );
     }
     let manifest = cx.read(MANIFEST_REL).unwrap_or_default();
-    let registered = manifest.contains(&format!("name = \"{BENCH_NAME}\""))
-        && manifest.contains("harness = false");
-    if registered {
-        Row::pass(
-            ROW_INSTRUMENT,
-            "the alloc instrument exists and is a registered criterion bench",
-            format!("{BENCH_REL}, registered harness = false in {MANIFEST_REL}"),
-        )
-    } else {
-        Row::fail(
+    if let Err(why) = bench_block_is_harness_false(&manifest, BENCH_NAME) {
+        return Row::fail(
             ROW_INSTRUMENT,
             "the alloc instrument is not a registered criterion bench",
             format!(
-                "{MANIFEST_REL} does not register `name = \"{BENCH_NAME}\"` with `harness = false` \
-                 — an unregistered criterion bench is built as a libtest harness and never runs the \
-                 budget measurement"
+                "{MANIFEST_REL}: {why} — an unregistered criterion bench is built as a libtest \
+                 harness and never runs the budget measurement"
             ),
-        )
+        );
     }
-}
-
-fn claim_row(claim: &Claim, bench: &str) -> Row {
-    let missing: Vec<&str> = claim
-        .markers
-        .iter()
-        .copied()
-        .filter(|m| !bench.contains(m))
-        .collect();
-    if missing.is_empty() {
-        Row::pass(
-            claim.row,
-            claim.ok,
-            format!("{BENCH_REL}: all markers present"),
-        )
-    } else {
-        Row::fail(
-            claim.row,
-            claim.bad,
-            format!(
-                "{BENCH_REL} is missing {missing:?} — a budget claim was dropped from the alloc \
-                 instrument"
-            ),
-        )
-    }
+    Row::pass(
+        ROW_INSTRUMENT,
+        "the alloc instrument exists and is a registered criterion bench",
+        format!("{BENCH_REL}, its own [[bench]] block sets harness = false in {MANIFEST_REL}"),
+    )
 }
 
 pub struct HotPathAllocGate;
@@ -138,10 +114,10 @@ impl Gate for HotPathAllocGate {
 
     fn run(&self, cx: &Ctx) -> Verdict {
         let mut rows = vec![instrument_row(cx)];
-        let bench = cx.read(BENCH_REL);
+        let bench = cx.read(BENCH_REL).and_then(|t| code_tokens(&t));
         for claim in CLAIMS {
             match &bench {
-                Ok(text) => rows.push(claim_row(claim, text)),
+                Ok(code) => rows.push(claim_row_over(claim, BENCH_REL, code, "alloc")),
                 Err(e) => rows.push(Row::fail(
                     claim.row,
                     claim.bad,
@@ -176,21 +152,96 @@ impl Gate for HotPathAllocGate {
             &["not a registered criterion bench"],
         ));
 
+        // HARNESS HALF: strike `harness = false` from THIS bench's block only; the sibling
+        // `[[bench]]` blocks keep theirs.
+        let mut ov = Overlay::new();
+        ov.set(
+            MANIFEST_REL,
+            manifest.replace(
+                &format!("name = \"{BENCH_NAME}\"\nharness = false"),
+                &format!("name = \"{BENCH_NAME}\""),
+            ),
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "an instrument whose own block drops `harness = false` is RED while siblings keep theirs",
+            &[ROW_INSTRUMENT],
+            ov,
+            &["does not itself set `harness = false`"],
+        ));
+
+        // One RED plant per CLAUSE of every claim, not per claim's first token.
         let bench = cx.read(BENCH_REL).unwrap_or_default();
         for claim in CLAIMS {
-            let marker = claim.markers[0];
-            let mut ov = Overlay::new();
-            ov.set(BENCH_REL, bench.replace(marker, "__struck__"));
-            report.push(prove_red(
-                cx,
-                self,
-                format!("an alloc instrument that drops `{marker}` is RED"),
-                &[claim.row],
-                ov,
-                &[marker],
-            ));
+            for clause in claim.clauses {
+                let mut ov = Overlay::new();
+                ov.set(BENCH_REL, strike_clause(&bench, clause));
+                report.push(prove_red(
+                    cx,
+                    self,
+                    format!("an alloc instrument that drops `{clause}` is RED"),
+                    &[claim.row],
+                    ov,
+                    &[*clause],
+                ));
+            }
         }
 
         report
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ledger::Status;
+
+    fn cx() -> Ctx {
+        Ctx::workspace().expect("the workspace opens")
+    }
+
+    fn status_with(rel: &str, from: &str, to: &str, row: &str) -> Status {
+        let cx = cx();
+        let text = cx.read(rel).expect("the subject file reads");
+        let planted = text.replacen(from, to, 1);
+        assert_ne!(
+            planted, text,
+            "the rewrite of {rel} must bite: `{from}` not found"
+        );
+        let mut ov = Overlay::new();
+        ov.set(rel, planted);
+        let verdict = HotPathAllocGate.run(&cx.with_overlay(ov));
+        verdict
+            .rows
+            .iter()
+            .find(|r| r.id == row)
+            .map(|r| r.status)
+            .expect("the gate emits the row")
+    }
+
+    /// Item 170: `harness = false` struck from THIS bench's own block is an unregistered instrument,
+    /// whatever the sibling blocks carry.
+    #[test]
+    fn harness_false_is_read_from_this_benchs_own_block() {
+        let st = status_with(
+            MANIFEST_REL,
+            "name = \"plane_host_vtable_alloc\"\nharness = false",
+            "name = \"plane_host_vtable_alloc\"",
+            ROW_INSTRUMENT,
+        );
+        assert_eq!(st, Status::Fail);
+    }
+
+    /// Item 169: `assert_eq!(allocations, allocations)` keeps every token and asserts nothing.
+    #[test]
+    fn a_self_compared_allocation_count_is_red() {
+        let st = status_with(
+            BENCH_REL,
+            "allocations, 0,",
+            "allocations, allocations,",
+            ROW_POD_BATCH,
+        );
+        assert_eq!(st, Status::Fail);
     }
 }

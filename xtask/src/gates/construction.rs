@@ -260,16 +260,33 @@ impl ConstructionGate {
             Ok(out)
         };
 
-        // THE SAME SEVEN-COLLAPSED-TO-SIX KEYS `manifest_allowlist` ITSELF READS, and they must
-        // stay the same keys: this is the rule's COMPLETENESS ORACLE, the list that decides which
+        // THE KEYS `manifest_allowlist` OUGHT TO READ — NOT A COPY OF THE ONES IT DOES. This is the
+        // rule's COMPLETENESS ORACLE, the list that decides which
         // `manifest-allowlist:<crate>` rows a run is OWED. It carried `pure_auth`/`egress_auth`
         // too, so the oracle expected exactly the rows the buggy rule produced and the two auth
         // crates were missing from both sides at once. Checker and checked shared the bug, which
         // is the one arrangement in which a reconciliation proves nothing.
-        let manifest_kinds: Vec<String> = ["plane", "store", "auth", "hook", "export", "secret"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        //
+        // AND IT WAS THAT ARRANGEMENT AGAIN, ONE KIND OVER (item 166). Both lists omitted
+        // `transport`, so no `manifest-allowlist:busbar-transport-*` row was owed, a missing one
+        // was not even DID NOT RUN, and seven transport crates were measured by nothing — while
+        // `busbar-transport-tls` path-depends on `busbar-unit-transport-key`, a dep the rule scores
+        // RED. So the oracle no longer copies the rule's list: it names all seven plugin kinds of
+        // `[gate.plugin_kinds]` (`unit`, `loader` and `abi` are the kernel side of the wall, not
+        // plugins behind it), and a kind the rule forgets is a DID NOT RUN row until the rule
+        // reads it. (The rule's own list is item 120, in `rules2.rs`.)
+        let manifest_kinds: Vec<String> = [
+            "plane",
+            "store",
+            "auth",
+            "hook",
+            "export",
+            "secret",
+            "transport",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         let manifest_crates = crates_of(&manifest_kinds)?;
         if manifest_crates.is_empty() {
             ids.push("manifest-allowlist".to_string());
@@ -487,18 +504,9 @@ impl ConstructionGate {
         // row that legitimately has no subject must say so with a ceiling and a measurement, not by
         // passing on absence.
         //
-        // Zero rows on this tree are vacuous, measured 2026-09-09, so this costs nothing today and
-        // is entirely a guard on the direction of travel.
         // An INFORMATIONAL row is PASS by construction and its title carries `WARN ` — it is a
         // report, not a claim, so there is nothing for a floor to hold it to.
-        for r in &mut rows {
-            if r.detail.starts_with(model::VACUOUS)
-                && !r.informational
-                && r.status == crate::ledger::Status::Pass
-            {
-                r.status = crate::ledger::Status::Fail;
-            }
-        }
+        score_absent_subjects(&mut rows);
 
         // THE CENSUS BEFORE THE ROSE. It counts the rule tables the rest of the gate was derived
         // from, so a run that lost one says so next to the ceilings that went with it.
@@ -507,6 +515,43 @@ impl ConstructionGate {
         let slack = ceilings::ceiling_slack(&cfg, &rows);
         rows.extend(slack);
         Ok((rows, problems))
+    }
+}
+
+/// Every spelling a rule uses to say "my subject is not in this tree", and the floor reads them
+/// all (item 189).
+///
+/// The floor used to match the `vacuous: ` PREFIX only, and the comment above it said zero rows on
+/// this tree were vacuous. Two rows were, spelled as a SUFFIX: `loc-ceilings:kernel:slice` (`-- no
+/// matching file under busbar-kernel/src yet (vacuous 0)`) and `loc-ceilings:unit-verbs` (`-- busbar-
+/// unit-verbs does not exist yet (vacuous 0)`), each measuring 0 against a ceiling of 0 and
+/// PASSING — two of the nine named pieces of the kernel's section 1.1 size budget asserting nothing.
+/// Two more sites append `glob(s) matching no file yet (not a finding)`: a scope glob that names
+/// nothing is a scope narrowed to less than it claims, which is the shape this floor refuses.
+///
+/// Each needle is a DECLARATION the rule writes about itself, so matching it anywhere in the detail
+/// is safe: no rule prints one to describe something else.
+pub const ABSENCE_DECLARATIONS: &[&str] = &[model::VACUOUS, "(vacuous 0)", "matching no file yet"];
+
+/// Does this row's detail declare that its subject is absent, in any of the spellings in
+/// [`ABSENCE_DECLARATIONS`]?
+pub fn declares_absent_subject(detail: &str) -> bool {
+    detail.starts_with(model::VACUOUS)
+        || ABSENCE_DECLARATIONS[1..]
+            .iter()
+            .any(|needle| detail.contains(needle))
+}
+
+/// THE SCAN-SET FLOOR: a gating row that PASSED while declaring an absent subject is a FAIL. See
+/// the block in [`ConstructionGate::measure`] that calls this, and [`ABSENCE_DECLARATIONS`].
+pub fn score_absent_subjects(rows: &mut [CRow]) {
+    for r in rows {
+        if declares_absent_subject(&r.detail)
+            && !r.informational
+            && r.status == crate::ledger::Status::Pass
+        {
+            r.status = crate::ledger::Status::Fail;
+        }
     }
 }
 
@@ -641,4 +686,94 @@ fn legacy_out_dir(scratch: &std::path::Path) -> std::path::PathBuf {
 /// The measured rows keyed by id, for the self-test's own arithmetic.
 pub fn by_id(rows: &[CRow]) -> BTreeMap<&str, &CRow> {
     rows.iter().map(|r| (r.id.as_str(), r)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ledger::Status;
+
+    fn passing(detail: &str) -> CRow {
+        plain("rule:row", true, "a rule", detail, 0, 0, vec![])
+    }
+
+    /// ITEM 189: EVERY SPELLING OF AN ABSENT SUBJECT IS SCORED, not only the prefix. The two
+    /// suffix spellings below are the live `loc-ceilings` details, verbatim.
+    #[test]
+    fn a_passing_row_that_declares_an_absent_subject_in_any_spelling_fails() {
+        let mut rows = vec![
+            passing("vacuous: crates/x does not exist yet; nothing to seal"),
+            passing(
+                "slice/lease (slice.rs): 0 line(s) (ceiling 0) -- no matching file under \
+                 busbar-kernel/src yet (vacuous 0)",
+            ),
+            passing(
+                "busbar-unit-verbs: 0 line(s) (ceiling 0) -- busbar-unit-verbs does not exist yet \
+                 (vacuous 0)",
+            ),
+            passing("0 function(s) over 60 lines; worst none: glob(s) matching no file yet (not a finding): a/*.rs"),
+            passing("teller (teller.rs): 812 line(s) (ceiling 900)"),
+        ];
+        score_absent_subjects(&mut rows);
+        let got: Vec<Status> = rows.iter().map(|r| r.status).collect();
+        assert_eq!(
+            got,
+            vec![
+                Status::Fail,
+                Status::Fail,
+                Status::Fail,
+                Status::Fail,
+                Status::Pass
+            ]
+        );
+    }
+
+    /// ITEM 189, OVER THE REAL TREE: no gating row the gate emits passes while declaring an absent
+    /// subject. On the unfixed floor the two `loc-ceilings` rows did exactly that.
+    #[test]
+    fn no_row_on_the_tree_passes_over_an_absent_subject() {
+        let cx = Ctx::workspace().expect("workspace");
+        let (rows, _) = ConstructionGate::measure(&cx).expect("the construction gate measures");
+        let passing_over_nothing: Vec<&str> = rows
+            .iter()
+            .filter(|r| {
+                !r.informational
+                    && r.status == Status::Pass
+                    && (r.detail.starts_with(model::VACUOUS)
+                        || r.detail.contains("(vacuous 0)")
+                        || r.detail.contains("matching no file yet"))
+            })
+            .map(|r| r.id.as_str())
+            .collect();
+        assert!(
+            passing_over_nothing.is_empty(),
+            "rows PASS over an absent subject: {passing_over_nothing:?}"
+        );
+    }
+    /// ITEM 166: THE COMPLETENESS ORACLE OWES A `manifest-allowlist` ROW FOR EVERY TRANSPORT CRATE.
+    /// It shared the rule's six-kind list, so no transport row was owed, a missing one was not even
+    /// DID NOT RUN, and checker and checked agreed on the bug.
+    #[test]
+    fn the_manifest_allowlist_oracle_owes_every_transport_crate() {
+        let cx = Ctx::workspace().expect("workspace");
+        let owed = ConstructionGate::ids(&cx).expect("the owed set derives");
+        let cfg = ConstructionGate::cfg(&cx).expect("ceilings");
+        let transports: Vec<String> =
+            dirs_for_globs(&cx, &cfg.kind_globs("transport").expect("kind"))
+                .iter()
+                .map(|d| crate_name_of_dir(d))
+                .collect();
+        assert!(
+            !transports.is_empty(),
+            "the control needs transport crates on disk"
+        );
+        let unowed: Vec<&String> = transports
+            .iter()
+            .filter(|c| !owed.contains(&format!("manifest-allowlist:{c}")))
+            .collect();
+        assert!(
+            unowed.is_empty(),
+            "no manifest-allowlist row is owed for {unowed:?}"
+        );
+    }
 }

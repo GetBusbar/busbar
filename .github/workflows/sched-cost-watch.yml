@@ -31,7 +31,8 @@ permissions:
 
 jobs:
   cost-watch:
-    name: cost-watch (DECISIONS #78 -- $50 soft-alarm / $80 review / $100 hard cap)
+    # QUOTED: an unquoted ` #` starts a YAML comment, which cut this name to `cost-watch (DECISIONS`.
+    name: "cost-watch (DECISIONS #78 -- $50 soft-alarm / $80 review / $100 hard cap)"
     runs-on: latchkey-small
     timeout-minutes: 10
     steps:
@@ -56,6 +57,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PERIOD_DAYS: ${{ inputs.period_days || '7' }}
         run: |
+          # `set +e` FIRST, AND IT IS LOAD-BEARING. GitHub runs this block as `bash -e {0}`, so
+          # errexit is ALREADY ON and `set -uo pipefail` does not clear it: with pipefail the
+          # pipeline below exits 2 or 3 on a soft-alarm/review and errexit killed the step there,
+          # turning the two documented WARNING bands red before the `case` could read them.
+          set +e
           set -uo pipefail
           python3 scripts/cost-watch.py --repo "${GITHUB_REPOSITORY}" --period "${PERIOD_DAYS}" \
             | tee "${GITHUB_STEP_SUMMARY}"

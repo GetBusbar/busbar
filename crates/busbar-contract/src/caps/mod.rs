@@ -36,8 +36,8 @@
 //! | A unit cannot answer a step it was not asked | the token names the step and so does the answer | compile-time |
 //! | A unit cannot skip a step | a step's facts are the next step's input, and only a decision produces them | compile-time |
 //! | A unit cannot read back its own answer | opening a decision needs the kernel's seal | compile-time |
-//! | No one but the admission unit opens a hold | `Hold::open` demands an `AdmitToken` | compile-time |
-//! | No one but the ledger settles one | `Posted::settle` demands a `LedgerToken` and takes the hold by value | compile-time |
+//! | No one but the admission unit opens a hold | `Hold::open` demands a `Grant<Admittance>` | compile-time |
+//! | No one but the ledger settles one | `Posted::settle` demands a `Grant<WriteMoney>` and takes the hold by value | compile-time |
 //! | A hold is settled at most once | settling consumes the hold; there is no second one to settle | compile-time |
 //! | A hold cannot cross a `catch_unwind` | a hold is deliberately not unwind-safe | compile-time |
 //! | A hold cannot be duplicated | no `Clone`, no `Copy` | compile-time |
@@ -50,7 +50,7 @@
 //! | A hold DELIBERATELY forgotten, leaked or `ManuallyDrop`ped is caught | the construction gate's `hold-escapes` rule, over the list in `fixtures/lint_rules.rs` | CI |
 //! | Only the kernel mints tokens | one audited symbol, [`KernelSeal::acquire_for_kernel`] | CI |
 //! | The recovery token stays in the recovery module | source scan over the seal-site list, same file | CI |
-//! | There are exactly two take sites | source scan, plus a fixture | CI |
+//! | A hold is taken only in the kernel, at exactly three sites | the construction gate confines the literal `take(&Grant::<Exit>::mint(` to the kernel — confinement, not a count, and the sweep's take through a named grant does not spell that literal; the count is held by the take-site census in `caps::hold`'s tests, which reads the kernel's own source | CI |
 //! | Every unit that was admitted actually settled | the two-sided [`canary::Canary`] | runtime + CI |
 //!
 //! The row that matters most is the one that is NOT compile-time: Rust has no linear types, so
@@ -98,3 +98,86 @@ pub use usage::{LocatorPtr, QuantitySource, Usage, UsageError, UsageLine, MAX_US
 
 #[cfg(test)]
 mod tests;
+
+/// The honesty table names only types that exist (items 319, 327). It is the file's own ground
+/// truth for what is enforced, so a type it names has to be a type a real signature takes.
+#[cfg(test)]
+mod honesty_table {
+    /// The pre-#73 proof-type names, none of which survives as a type — read from the one list
+    /// that defines them, `seal-witness`'s `ZOO` (xtask/src/gates/seal_witness.rs), rather than
+    /// spelled here: that gate scans test code and string literals, so a second copy of the names
+    /// in this file would be the very survival it reports. Its scan strips comments, which is why
+    /// this test exists at all: the table below is a doc comment the gate never reads.
+    ///
+    /// An empty or unparsable list fails loudly, because an empty list would pass vacuously.
+    fn zoo() -> Vec<&'static str> {
+        const SOURCE: &str = include_str!("../../../../xtask/src/gates/seal_witness.rs");
+        const OPEN: &str = "pub const ZOO: &[&str] = &[";
+        let start = SOURCE
+            .find(OPEN)
+            .expect("seal_witness.rs declares `pub const ZOO: &[&str] = &[` — the list moved")
+            + OPEN.len();
+        let len = SOURCE[start..]
+            .find("];")
+            .expect("seal_witness.rs's ZOO list is closed by `];`");
+        let names: Vec<&str> = SOURCE[start..start + len]
+            .split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(|item| {
+                let name = item
+                    .strip_prefix('"')
+                    .and_then(|i| i.strip_suffix('"'))
+                    .unwrap_or_else(|| panic!("ZOO entry is not a plain string literal: {item}"));
+                assert!(
+                    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                    "ZOO entry is not an identifier: {item}"
+                );
+                name
+            })
+            .collect();
+        assert!(
+            names.len() >= 2,
+            "ZOO parsed to {names:?}; an empty list passes vacuously"
+        );
+        names
+    }
+
+    fn table_rows() -> Vec<&'static str> {
+        include_str!("mod.rs")
+            .lines()
+            .filter(|l| l.starts_with("//! |"))
+            .collect()
+    }
+
+    #[test]
+    fn no_row_names_a_deleted_proof_type() {
+        for row in table_rows() {
+            for name in zoo() {
+                assert!(!row.contains(name), "`{name}` does not exist: {row}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_grants_the_table_names_are_the_ones_the_signatures_take() {
+        let rows = table_rows().join("\n");
+        let hold = include_str!("hold.rs");
+        for (row, signature) in [
+            (
+                "`Hold::open` demands a `Grant<Admittance>`",
+                "pub fn open(_token: &Grant<Admittance>,",
+            ),
+            (
+                "`Posted::settle` demands a `Grant<WriteMoney>`",
+                "_token: &Grant<WriteMoney>,\n    ) -> Self {\n        // Read the figures out",
+            ),
+        ] {
+            assert!(rows.contains(row), "the table states: {row}");
+            assert!(
+                hold.contains(signature),
+                "the signature takes it: {signature}"
+            );
+        }
+    }
+}

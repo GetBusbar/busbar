@@ -354,8 +354,8 @@ jobs:
             fi
             if [ "$mine" -eq 1 ]; then
               echo "=== shard ${SHARD}: ${bin}"
-              timeout --signal=KILL "$BINARY_TIMEOUT_SECS" "$bin" 2>&1 | tee -a "$log"
-              rc=${PIPESTATUS[0]}
+              rc=0
+              timeout --signal=KILL "$BINARY_TIMEOUT_SECS" "$bin" 2>&1 | tee -a "$log" || rc=${PIPESTATUS[0]}
               if [ "$rc" -eq 137 ]; then
                 echo "::error::${bin} was killed after ${BINARY_TIMEOUT_SECS}s — that is a hang, not a slow suite."
                 rc_all=1
@@ -372,8 +372,8 @@ jobs:
           # summed total silently loses every doctest in the workspace.
           if [ "$SHARD" = "1" ]; then
             echo "=== shard 1 also runs the doctests"
-            cargo test --workspace --locked --doc 2>&1 | tee -a "$log"
-            rc=${PIPESTATUS[0]}
+            rc=0
+            cargo test --workspace --locked --doc 2>&1 | tee -a "$log" || rc=${PIPESTATUS[0]}
             [ "$rc" -eq 0 ] || { echo "::error::the doctests FAILED (exit ${rc})."; rc_all=1; }
           fi
 
@@ -492,20 +492,15 @@ jobs:
     # set-equality rule to learn about a second workflow, which is Rust, not workflow data.
     timeout-minutes: 45
     steps:
-      # FULL HISTORY: the audit-ledger gate resolves the COMMIT each register row stamps, and a
-      # depth-1 clone cannot. It is red on a stamp it cannot check rather than passing over it.
+      # FULL HISTORY: `gate --all` runs the gates that measure against a base commit
+      # (`kind-isolation`, the construction ceilings -- `base_ref` in
+      # xtask/src/gates/construction/ceilings.rs: `HEAD~1` or the merge-base with the line's remote
+      # tip), and a depth-1 clone carries neither. (The audit-pins fetch that used to follow served
+      # the `audit-ledger` gate, deleted with qa/audit-ledger.json in 647f2fae9, and is gone.)
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.ref || github.ref }}
           fetch-depth: 0
-      # THE AUDIT PINS, WHICH NO CHECKOUT CARRIES. See the identical step in ci.yml for the
-      # measurement: pins live under `refs/audit-pins/*` locally and are mirrored to
-      # `refs/backup/audit-pins/*`, and `actions/checkout` carries neither — so without this fetch
-      # `audit-ledger` here degenerates to "an ancestor of HEAD" and 13 of the 23 records are red
-      # for a reason that is about this runner rather than about the register. `fetch-depth: 0` is
-      # depth, not namespace.
-      - name: Fetch the audit pins (no checkout carries refs/audit-pins/*)
-        run: git fetch origin '+refs/backup/audit-pins/*:refs/audit-pins/*' || true
       - name: Install Rust toolchain (the gate runner)
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
@@ -686,11 +681,26 @@ jobs:
       # nobody can size: "0 divergences" over one family and over twenty-six look identical.
       - name: The scope this hand-back declares
         id: scope
+        # The ref comes in as ENV, never spliced into the script text: it is a dispatch input.
+        env:
+          PROVE_REF: ${{ inputs.ref || github.ref }}
         run: |
           set -euo pipefail
           fam='.'
           tests=''
+          # A SCOPE FILE NARROWS THE PROOF, SO IT IS HONOURED ON A keep-* BRANCH ONLY -- the same
+          # guard as scripts/prove-remote.sh `resolve_scope`. Off a keep branch (predev, an
+          # integration line, a tag, a bare sha) a committed .keep-proof.toml is a silent hole: the
+          # oracle and the test legs would cover only the families it names while the run reads as
+          # a proof of the whole tree. Refused, exit 3, with the fix named.
+          branch="${PROVE_REF#refs/heads/}"; branch="${branch#refs/remotes/}"; branch="${branch#origin/}"
           if [ -f .keep-proof.toml ]; then
+            case "$branch" in
+              keep-*) ;;
+              *)
+                echo "::error::SCOPE REFUSED: this tree carries .keep-proof.toml but '${PROVE_REF}' is not a keep-* branch. That file narrows the oracle and the test legs; off a keep branch it is a silent hole in the proof. Delete it from the branch (snapshot it first), or prove from a keep-* branch."
+                exit 3 ;;
+            esac
             got=$(sed -n "s/^[[:space:]]*families[[:space:]]*=[[:space:]]*['\"]\(.*\)['\"][[:space:]]*\$/\1/p" .keep-proof.toml | head -1)
             [ -n "$got" ] && fam="$got"
             tests=$(sed -n 's/^[[:space:]]*tests[[:space:]]*=[[:space:]]*\[\(.*\)\].*/\1/p' .keep-proof.toml \

@@ -245,6 +245,10 @@ selftest() {
     --profdata "$work/roster.profdata" --folded "$work/ancestors.folded" --top 3
   probe 0 "control: the same pair passes when the ceiling is lifted above it" \
     --profdata "$work/roster.profdata" --folded "$work/ancestors.folded" --top 3 --max-miss-share 100
+  # THE VACUOUS CASE: 100% overlap, and every production leaf has NO profdata entry at all, so every
+  # row is INVIS, MISS_SHARE is 0 and the second gate had nothing to measure. It used to exit 0 "OK".
+  probe 2 "env: every production-hot symbol is instrumentation-invisible (the miss gate examined nothing)" \
+    --profdata "$work/trained.profdata" --folded "$work/ancestors.folded" --top 3
 
   echo "-- fail-closed on inputs it cannot read (exit 2, never 'no drift') --"
   probe 2 "env: the profdata file is absent" \
@@ -528,5 +532,16 @@ if [ "$MISS_SHARE" -gt "$MAX_MISS_SHARE" ]; then
   DRIFTED=1
 fi
 [ "$DRIFTED" -eq 0 ] || exit 1
+# THE MISS-SHARE GATE CAN ONLY SEE WHAT IT CAN CLASSIFY. MISS_SHARE sums MISS rows only, so when
+# every production-hot symbol is INSTRUMENTATION-INVISIBLE it is 0 and the second gate passes having
+# examined nothing -- the case the "no scenario gaps" wording below was already scoped for, while the
+# exit code still said OK. A demangler change, an --emit-relocs or inlining shift that flips the
+# whole top-N to INVIS is an instrument that can no longer read one of its two measures, which is
+# exit 2 ("could not actually read"), never "no drift". Checked AFTER both gates: a red overlap gate is
+# a real measurement and still exits 1; only a run that would otherwise print OK is refused here.
+EXAMINED=$((PROD_N - INVIS_COUNT))
+[ "$EXAMINED" -gt 0 ] || die "all $PROD_N of production's self-weight top-$TOP symbols are instrumentation-invisible \
+(no profdata entry), so the missing-table gate examined nothing and its 0% untrained share is vacuous. \
+Check the demangler/normalization against this profile before trusting any verdict from it."
 echo "[pgo-drift] OK: overlap ${OVERLAP_PCT}% >= ${MIN_OVERLAP}%, untrained self weight ${MISS_SHARE}% <= ${MAX_MISS_SHARE}%"
 exit 0

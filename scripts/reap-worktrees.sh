@@ -30,6 +30,7 @@
 #   scripts/reap-worktrees.sh            # report only, changes nothing
 #   scripts/reap-worktrees.sh --reap     # remove what it proved dead
 #   scripts/reap-worktrees.sh --reap --idle-hours 6
+#   scripts/reap-worktrees.sh --selftest # prove the counters and the cold rule can go red
 set -euo pipefail
 
 REPO="$(git rev-parse --show-toplevel)"
@@ -45,11 +46,145 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --reap) REAP=1 ;;
     --idle-hours) IDLE_HOURS="$2"; shift ;;
-    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+    --selftest) SELFTEST=1 ;;
+    -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
     *) echo "reap-worktrees: unknown argument '$1'" >&2; exit 2 ;;
   esac
   shift
 done
+
+# ---------------------------------------------------------------------------
+# SHARED INSTRUMENTS -- defined once, before anything uses them, so the guard, the
+# `load:` line and the selftest all read the same counters.
+# ---------------------------------------------------------------------------
+
+# The process table as the counters see it.  REAP_PS_FIXTURE substitutes a file of
+# command lines -- the selftest's only way to plant a process table it controls.
+ps_commands() {
+  if [ -n "${REAP_PS_FIXTURE:-}" ]; then cat "$REAP_PS_FIXTURE"; else ps -eo command 2>/dev/null; fi
+}
+
+# Count RUNNING EXECUTABLES, not mentions: field 1 of the command line, which a
+# wrapper shell cannot forge by talking about a path (see the `load:` line below).
+# `grep -c` prints 0 AND exits 1 when it matches nothing, so under
+# `set -euo pipefail` a bare assignment from it aborts the script on the HEALTHY
+# path. Swallow the status inside the helper, never at the call site.
+live() { local n; n=$(ps_commands | awk '{print $1}' | grep -cE "$1" || true); echo "${n:-0}"; }
+
+# The five columns the `load:` line reports.  ONE definition: the cargo-clean guard
+# sums every one of them (item 522) and the product column is an executable match
+# like the other four, never `pgrep -fc` over whole command lines (item 523).
+PAT_RUSTC='/bin/rustc$'
+PAT_CARGO='/bin/cargo$'
+PAT_TESTS='/(debug|release)/deps/[a-z_]+-[0-9a-f]{8,}$'
+PAT_TOOLS='/(debug|release)/[a-z_-]+$'
+PAT_PRODUCT='release/busbar'
+load_counts() {
+  n_rustc=$(live "$PAT_RUSTC")
+  n_cargo=$(live "$PAT_CARGO")
+  n_tests=$(live "$PAT_TESTS")
+  n_tools=$(live "$PAT_TOOLS")
+  n_product=$(live "$PAT_PRODUCT")
+  n_busy=$(( n_rustc + n_cargo + n_tests + n_tools + n_product ))
+}
+
+# Accumulated cpu time of one pid, empty if it is gone.
+cpu_time_of() { ps -o time= -p "$1" 2>/dev/null | tr -d ' ' || true; }
+
+# pid and every descendant, one per line, children after their parent.
+proc_tree() {
+  local p="$1" c
+  echo "$p"
+  for c in $(pgrep -P "$p" 2>/dev/null || true); do proc_tree "$c"; done
+}
+
+# One "pid cputime" line per member of pid's process tree, sorted by pid.
+tree_snapshot() {
+  local q
+  for q in $(proc_tree "$1"); do printf '%s %s\n' "$q" "$(cpu_time_of "$q")"; done | sort -n
+}
+
+# Of the given pids, print those whose WHOLE process tree is frozen: every member's
+# cpu time identical across two samples COLD_SAMPLE_SECS apart, and no member
+# appearing or vanishing between them.  Sampling the candidate alone (item 479) let an
+# orphaned parent parked waiting on a LIVE child read as stalled, and the reap then
+# kill -9'd the child it never looked at.  Output: "root member..." one tree per line,
+# members listed children-first so the kill order can come straight off the line.
+cold_frozen_trees() {
+  local d p
+  d=$(mktemp -d "${TMPDIR:-/tmp}/reap-cold.XXXXXX")
+  for p in "$@"; do tree_snapshot "$p" > "$d/$p.t0"; done
+  sleep "$COLD_SAMPLE_SECS"
+  for p in "$@"; do
+    [ -s "$d/$p.t0" ] || continue
+    tree_snapshot "$p" > "$d/$p.t1"
+    # a member whose cpu time could not be read is not proof of a stall
+    awk 'NF < 2 {bad=1} END {exit bad}' "$d/$p.t0" || continue
+    cmp -s "$d/$p.t0" "$d/$p.t1" || continue
+    printf '%s %s\n' "$p" "$(proc_tree "$p" | sed '1!G;h;$!d' | tr '\n' ' ')"
+  done
+  rm -rf "$d"
+}
+
+COLD_SAMPLE_SECS=${COLD_SAMPLE_SECS:-6}
+
+if [ "${SELFTEST:-0}" = "1" ]; then
+  st_fail=0
+  st() { if [ "$1" = "ok" ]; then echo "  PASS $2"; else echo "  FAIL $2"; st_fail=1; fi; }
+  fx=$(mktemp "${TMPDIR:-/tmp}/reap-selftest.XXXXXX")
+
+  echo "S1 (item 522) -- the cargo-clean guard counts every load: column"
+  printf '/Users/x/busbar/target/debug/xtask\n' > "$fx"
+  REAP_PS_FIXTURE="$fx" load_counts
+  [ "$n_tools" = 1 ] && st ok "S1.pre tool-bins column sees target/debug/xtask ($n_tools)" \
+                     || st fail "S1.pre tool-bins column sees target/debug/xtask ($n_tools)"
+  [ "$n_busy" -gt 0 ] && st ok "S1 guard busy with only a tool binary live (n_busy=$n_busy)" \
+                      || st fail "S1 guard busy with only a tool binary live (n_busy=$n_busy)"
+  printf '/Users/x/busbar/target/release/busbar serve --port 1\n' > "$fx"
+  REAP_PS_FIXTURE="$fx" load_counts
+  [ "$n_busy" -gt 0 ] && st ok "S1 guard busy with only the product live (n_busy=$n_busy)" \
+                      || st fail "S1 guard busy with only the product live (n_busy=$n_busy)"
+  : > "$fx"
+  REAP_PS_FIXTURE="$fx" load_counts
+  [ "$n_busy" = 0 ] && st ok "S1 negative control: empty table -> n_busy 0" \
+                    || st fail "S1 negative control: empty table -> n_busy=$n_busy"
+
+  echo "S2 (item 523) -- the product column counts executables, not mentions"
+  printf '/bin/zsh -c until ! pgrep -f target/release/busbar; do sleep 30; done\ngrep -cE release/busbar\n' > "$fx"
+  REAP_PS_FIXTURE="$fx" load_counts
+  [ "$n_product" = 0 ] && st ok "S2 a shell that NAMES release/busbar is not the product ($n_product)" \
+                       || st fail "S2 a shell that NAMES release/busbar is not the product ($n_product)"
+  printf '/Users/x/busbar/target/release/busbar serve\n' > "$fx"
+  REAP_PS_FIXTURE="$fx" load_counts
+  [ "$n_product" = 1 ] && st ok "S2 positive control: the product executable counts ($n_product)" \
+                       || st fail "S2 positive control: the product executable counts ($n_product)"
+  rm -f "$fx"
+
+  echo "S3 (item 479) -- the cold rule samples the whole tree it would kill"
+  COLD_SAMPLE_SECS=2
+  bash -c 'bash -c "while :; do :; done" & wait' & busy_parent=$!
+  bash -c 'sleep 30 & wait' & idle_parent=$!
+  sleep 1
+  frozen=$(cold_frozen_trees "$busy_parent" "$idle_parent")
+  kids_busy=$(proc_tree "$busy_parent" | sed 1d | tr '\n' ' ')
+  for q in $(proc_tree "$busy_parent" | sed '1!G;h;$!d') $(proc_tree "$idle_parent" | sed '1!G;h;$!d'); do
+    kill -9 "$q" 2>/dev/null || true
+  done
+  wait "$busy_parent" "$idle_parent" 2>/dev/null || true
+  [ -n "$kids_busy" ] && st ok "S3.pre the parked parent has a live child ($kids_busy)" \
+                      || st fail "S3.pre the parked parent has a live child"
+  case " $(printf '%s\n' "$frozen" | awk '{print $1}' | tr '\n' ' ') " in
+    *" $busy_parent "*) st fail "S3 parent parked on a BUSY child declared frozen" ;;
+    *)                  st ok   "S3 parent parked on a BUSY child is not frozen" ;;
+  esac
+  case " $(printf '%s\n' "$frozen" | awk '{print $1}' | tr '\n' ' ') " in
+    *" $idle_parent "*) st ok   "S3 positive control: a wholly idle tree IS frozen" ;;
+    *)                  st fail "S3 positive control: a wholly idle tree IS frozen" ;;
+  esac
+
+  if [ "$st_fail" = 0 ]; then echo "reap-worktrees selftest: PASS"; exit 0; fi
+  echo "reap-worktrees selftest: FAIL"; exit 1
+fi
 
 now=$(date +%s)
 idle_cutoff=$(( IDLE_HOURS * 3600 ))
@@ -132,18 +267,11 @@ awk -v r="$reclaimable" -v m="$main_kb" -v n="$reaped" -v k="$kept" 'BEGIN{
 #     so the process count was stale by the time the sentence printed.
 # Both are fixed here: every column the `load:` line reports is counted, by the
 # same `live()` helper, and counted IMMEDIATELY before the advice is given.
-# `grep -c` prints 0 AND exits 1 when it matches nothing, so under
-# `set -euo pipefail` a bare assignment from it aborts the script on the HEALTHY
-# path. Swallow the status inside the helper, never at the call site.
-live() { local n; n=$(ps -eo command 2>/dev/null | awk '{print $1}' | grep -cE "$1" || true); echo "${n:-0}"; }
-
-n_rustc=$(live '/bin/rustc$')
-n_cargo=$(live '/bin/cargo$')
-n_tests=$(live '/(debug|release)/deps/[a-z_]+-[0-9a-f]{8,}$')
-n_busy=$(( n_rustc + n_cargo + n_tests ))
+# (`live()` and `load_counts` are defined once, at the top.)
+load_counts
 
 if [ "$n_busy" -gt 0 ]; then
-  echo "main target/: NOT cleaning — rustc $n_rustc, cargo $n_cargo, test-bins $n_tests live. Re-run when the wave drains."
+  echo "main target/: NOT cleaning — rustc $n_rustc, cargo $n_cargo, test-bins $n_tests, tool-bins $n_tools, product $n_product live. Re-run when the wave drains."
 elif [ "$main_kb" -gt 52428800 ]; then
   echo "main target/: over 50 GB and nothing is building — 'cargo clean' is safe now."
 fi
@@ -366,7 +494,7 @@ fi
 # `xtask`, which the orphan rule dares not, without ever killing a live worker.
 COLD_PATTERNS='xtask|[c]argo|rustc|release/busbar|busbar-oracle'
 COLD_MIN_AGE_SECS=${COLD_MIN_AGE_SECS:-3600}
-COLD_SAMPLE_SECS=6
+# (COLD_SAMPLE_SECS and cold_frozen_trees are defined at the top.)
 
 cold_candidates=$(ps -eo pid,ppid,etime,command 2>/dev/null \
   | grep -E "$COLD_PATTERNS" | grep -v grep \
@@ -378,29 +506,23 @@ cold_candidates=$(ps -eo pid,ppid,etime,command 2>/dev/null \
                  if (secs > '"$COLD_MIN_AGE_SECS"') print $1 }' || true)
 
 cold_stuck=''
+cold_trees=''
 if [ -n "$cold_candidates" ]; then
-  # snapshot, wait, snapshot again -- only a pid whose cpu time is IDENTICAL in
-  # both samples is declared stuck.
-  for p in $cold_candidates; do
-    printf '%s %s\n' "$p" "$(ps -o time= -p "$p" 2>/dev/null | tr -d ' ')"
-  done > /tmp/.reap-cold-t0
-  sleep "$COLD_SAMPLE_SECS"
-  while read -r p t0; do
-    [ -n "$t0" ] || continue
-    t1=$(ps -o time= -p "$p" 2>/dev/null | tr -d ' ')
-    [ -n "$t1" ] || continue
-    [ "$t0" = "$t1" ] && cold_stuck="$cold_stuck $p"
-  done < /tmp/.reap-cold-t0
-  rm -f /tmp/.reap-cold-t0
+  # snapshot the candidate's WHOLE TREE, wait, snapshot again -- only a tree in which
+  # no member's cpu time moved (and no member came or went) is declared stuck.
+  # shellcheck disable=SC2086
+  cold_trees=$(cold_frozen_trees $cold_candidates)
+  cold_stuck=$(printf '%s\n' "$cold_trees" | awk 'NF {printf " %s", $1}')
 fi
 
 if [ -n "${cold_stuck# }" ]; then
   n=$(echo "$cold_stuck" | tr ' ' '\n' | grep -c .)
   if [ "$REAP" = "1" ]; then
-    # children first: a stalled parent's children are stalled with it.
-    for p in $cold_stuck; do pgrep -P "$p" 2>/dev/null | xargs kill -9 2>/dev/null; done
-    echo "$cold_stuck" | tr ' ' '\n' | grep . | xargs kill -9 2>/dev/null
-    echo "abandoned cold tools: reaped $n (orphaned >1h, cpu time did not advance over ${COLD_SAMPLE_SECS}s)"
+    # children first, and ONLY members that were sampled frozen in both snapshots.
+    printf '%s\n' "$cold_trees" | while read -r _root members; do
+      for q in $members; do kill -9 "$q" 2>/dev/null || true; done
+    done
+    echo "abandoned cold tools: reaped $n (orphaned >1h, cpu time of the whole tree did not advance over ${COLD_SAMPLE_SECS}s)"
   else
     echo "abandoned cold tools: WOULD REAP $n ($(echo "$cold_stuck" | tr -s ' '))"
   fi
@@ -476,15 +598,11 @@ reap_runaways
 # line, which a wrapper shell cannot forge by talking about it. (`pgrep -fc`
 # looks tidier and was tried first; it silently missed a live
 # `./target/debug/turnstile-web`, and a quieter wrong answer is worse.)
-live() { ps -eo command 2>/dev/null | awk '{print $1}' | grep -cE "$1"; }
-
+# (`live()` / `load_counts` at the top apply that to all five columns, product included.)
+load_counts
 printf 'load: %s | rustc %s, cargo %s, test-bins %s, tool-bins %s, product %s\n' \
   "$(uptime | sed 's/.*load averages*: //')" \
-  "$(live '/bin/rustc$')" \
-  "$(live '/bin/cargo$')" \
-  "$(live '/(debug|release)/deps/[a-z_]+-[0-9a-f]{8,}$')" \
-  "$(live '/(debug|release)/[a-z_-]+$')" \
-  "$(pgrep -fc 'release/busbar' 2>/dev/null || echo 0)"
+  "$n_rustc" "$n_cargo" "$n_tests" "$n_tools" "$n_product"
 
 # ---------------------------------------------------------------------------
 # /private/tmp SWEEP (owner instruction 2026-09-22). Dead agent scratch dirs and

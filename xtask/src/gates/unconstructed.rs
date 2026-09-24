@@ -131,6 +131,41 @@ const DID_NOT_RUN: &str = "DID NOT RUN";
 pub const ROW_SCAN_FLOOR: &str = "unconstructed:scan-floor";
 pub const ROW_STALE: &str = "unconstructed:stale-declaration";
 
+/// THE REVIEWED REGISTER OF UNSHIPPED CAPABILITIES — the ratchet the `unshipped` flag never had
+/// (item 230).
+///
+/// `unshipped = true` in [`DECLARATIONS`] used to be the whole of the bargain, and the site row it
+/// governs was `Row::pass` in BOTH branches, so it could not fail at all. A new money capability
+/// found unconstructed could therefore be silenced BY ITS OWN AUTHOR in the commit that introduced
+/// it — five lines of TOML with two 40-character sentences — and it would self-register as owed,
+/// self-register as informational, and pass forever. Nothing capped how many rows carried the flag.
+///
+/// So the flag is honoured only for an id NAMED HERE. An `unshipped` declaration this list does not
+/// name is RED on its own site row: a new "does not ship" is an edit to the gate, reviewed as one,
+/// never a sentence in the file the gate reads. And the list cannot outlive its facts: an id here
+/// that [`DECLARATIONS`] no longer declares `unshipped` reds [`ROW_STALE`], so the list only
+/// shrinks as the debts drain. Armed 2026-09-23 at the eighteen the file declares today.
+pub const KNOWN_UNSHIPPED: &[&str] = &[
+    "audit-chain-signing",
+    "breaker-request-budget",
+    "breaker-error-map",
+    "breaker-with-limits",
+    "budget-pricer-card",
+    "ledger-checkpoint-seal",
+    "ledger-checkpoint-journal",
+    "ledger-adjusting-entries",
+    "money-one-function-view",
+    "voice-denied-destinations",
+    "plane-plugin-open",
+    "export-plugin-open",
+    "wal-corruption-verdict",
+    "crash-recovery-open-holds",
+    "breaker-pool-observation",
+    "plugin-abi-keyed-units",
+    "hold-late-accrual-parent-exit",
+    "rate-card-multi-currency",
+];
+
 /// The per-capability row id.
 pub fn row_site(id: &str) -> String {
     format!("unconstructed:site:{id}")
@@ -317,7 +352,12 @@ impl Mention {
     fn cite(&self) -> String {
         match &self.rejected {
             None => format!("{}:{} `{}`", self.rel, self.no, self.text),
-            Some(why) => format!("{}:{} ({why}) `{}`", self.rel, self.no, why_free(&self.text)),
+            Some(why) => format!(
+                "{}:{} ({why}) `{}`",
+                self.rel,
+                self.no,
+                why_free(&self.text)
+            ),
         }
     }
 }
@@ -485,18 +525,19 @@ impl Gate for UnconstructedGate {
         ids
     }
 
-    /// THE DECLARED-UNSHIPPED ROWS, and only those.
+    /// THE REVIEWED DECLARED-UNSHIPPED ROWS, and only those.
     ///
-    /// A row for a capability declared `unshipped` PASSES whether a construction site is found or
-    /// not — that is the whole bargain — so no plant can drive it RED and demanding a RED case for
-    /// it could only be met dishonestly. It is still exercised by the green case, still reconciled,
-    /// and the day it acquires a site [`ROW_STALE`] reds instead. The list shrinks every time a
-    /// declaration is retired.
+    /// A row for a capability declared `unshipped` AND named in [`KNOWN_UNSHIPPED`] PASSES whether
+    /// a construction site is found or not — that is the whole bargain — so no plant over the tree
+    /// can drive it RED. It is still exercised by the green case, still reconciled, and the day it
+    /// acquires a site [`ROW_STALE`] reds instead. An `unshipped` row the register does NOT name is
+    /// not informational: it is red, and the self-test proves it.
     fn informational(&self) -> Vec<String> {
         match Ctx::workspace().and_then(|cx| declarations(&cx)) {
             Ok(caps) => caps
                 .iter()
                 .filter(|c| c.unshipped && !c.id.is_empty())
+                .filter(|c| KNOWN_UNSHIPPED.contains(&c.id.as_str()))
                 .map(|c| row_site(&c.id))
                 .collect(),
             Err(_) => Vec::new(),
@@ -626,7 +667,23 @@ impl Gate for UnconstructedGate {
                     },
                     c.why
                 );
-                if c.unshipped {
+                if c.unshipped && !KNOWN_UNSHIPPED.contains(&c.id.as_str()) {
+                    rows.push(Row::fail(
+                        id,
+                        format!(
+                            "`{}` is declared unshipped but is NOT on the reviewed register",
+                            c.id
+                        ),
+                        format!(
+                            "SELF-DECLARED UNSHIPPED: `{}` carries `unshipped = true` in \
+                             {DECLARATIONS} and is not named in KNOWN_UNSHIPPED \
+                             (xtask/src/gates/unconstructed.rs). A declaration may not silence its \
+                             own capability: a new \"does not ship\" is an edit to the gate's \
+                             register, reviewed as one. {} REASON: {} SWITCH: {}",
+                            c.id, detail, c.why, c.switch
+                        ),
+                    ));
+                } else if c.unshipped {
                     rows.push(Row::pass(
                         id,
                         format!("`{}` — DECLARED UNSHIPPED, tracked", c.id),
@@ -665,9 +722,24 @@ impl Gate for UnconstructedGate {
                         sites.len(),
                         c.symbol,
                         cites.join("; "),
-                        if sites.len() > cites.len() { ", …" } else { "" },
+                        if sites.len() > cites.len() {
+                            ", …"
+                        } else {
+                            ""
+                        },
                         rejected.len()
                     ),
+                ));
+            }
+        }
+
+        // STALENESS, half three: the register cannot outlive the declarations it reviews.
+        for known in KNOWN_UNSHIPPED {
+            if !caps.iter().any(|c| c.unshipped && c.id == *known) {
+                stale.push(format!(
+                    "`{known}` is on the KNOWN_UNSHIPPED register and {DECLARATIONS} no longer \
+                     declares it `unshipped` — strike it from the register in the same commit, or \
+                     the register becomes room for the next self-declared debt"
                 ));
             }
         }
@@ -908,6 +980,26 @@ impl Gate for UnconstructedGate {
             &["defines no such item"],
         ));
 
+        // ── CONTROL 12 — A SELF-DECLARED UNSHIPPED CAPABILITY IS RED (item 230). ────────────
+        // The five-line silencing, planted: a new capability declared `unshipped` with a full
+        // reason and switch, in the declaration file only. Its row must RED, because the register
+        // the gate holds does not name it.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "an `unshipped` declaration the reviewed register does not name reds its own row",
+            &[&row_site(PLANTED_UNSHIPPED)],
+            {
+                let mut ov = Overlay::new();
+                ov.set(
+                    DECLARATIONS,
+                    format!("{decls}\n{}", planted_unshipped_toml()),
+                );
+                ov
+            },
+            &["SELF-DECLARED UNSHIPPED", PLANTED_UNSHIPPED],
+        ));
+
         // ── CONTROL 11 — RESTORING THE SITE RETURNS THE ROW TO GREEN. ───────────────────────
         // Control 2's overlay with the call put back. This is what proves control 2's RED is about
         // THE MISSING CALL and not about the edit, the overlay, or the file having been touched.
@@ -918,11 +1010,79 @@ impl Gate for UnconstructedGate {
             &[&row_site("ledger-dual-write")],
             {
                 let mut ov = Overlay::new();
-                ov.set(DURABILITY, gone.replace("ledger: Ledger::new(),", REAL_SITE));
+                ov.set(
+                    DURABILITY,
+                    gone.replace("ledger: Ledger::new(),", REAL_SITE),
+                );
                 ov
             },
         ));
 
         report
+    }
+}
+
+/// The id of the self-test's planted, self-declared unshipped capability.
+const PLANTED_UNSHIPPED: &str = "planted-self-silenced-money";
+
+/// A well-formed `unshipped` declaration naming a real, unconstructed symbol, and naming an id the
+/// register does not carry — the five-line silencing item 230 describes.
+fn planted_unshipped_toml() -> String {
+    format!(
+        "[[capability]]\n\
+         id        = \"{PLANTED_UNSHIPPED}\"\n\
+         built     = \"crates/busbar-kernel-ledger/src/settle.rs\"\n\
+         symbol    = \"dual_writing\"\n\
+         construct = [\"Ledger::planted_never_called(\"]\n\
+         scope     = [\"crates\"]\n\
+         why       = \"a money capability found unconstructed and silenced by its own author in one commit\"\n\
+         unshipped = true\n\
+         switch    = \"the commit that wires it at the composition root and strikes this declaration\"\n"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ledger::Status;
+
+    /// ITEM 230: an `unshipped` declaration the reviewed register does not name is RED on its own
+    /// site row — the flag no longer silences a capability its author just introduced.
+    #[test]
+    fn a_self_declared_unshipped_capability_is_red() {
+        let cx = Ctx::workspace().expect("workspace context");
+        let decls = cx.read(DECLARATIONS).expect("declarations");
+        let mut ov = Overlay::new();
+        ov.set(
+            DECLARATIONS,
+            format!("{decls}\n{}", planted_unshipped_toml()),
+        );
+        let verdict = UnconstructedGate.run(&cx.with_overlay(ov));
+        let row = verdict
+            .rows
+            .iter()
+            .find(|r| r.id == row_site(PLANTED_UNSHIPPED))
+            .expect("the planted capability has a row");
+        assert_eq!(row.status, Status::Fail, "{}", row.detail);
+        assert!(
+            row.detail.contains("SELF-DECLARED UNSHIPPED"),
+            "{}",
+            row.detail
+        );
+    }
+
+    /// The register and the declaration file agree today: every id on the register is declared
+    /// `unshipped`, and every `unshipped` declaration is on the register.
+    #[test]
+    fn the_register_matches_the_declarations() {
+        let cx = Ctx::workspace().expect("workspace context");
+        let caps = declarations(&cx).expect("declarations");
+        let declared: BTreeSet<&str> = caps
+            .iter()
+            .filter(|c| c.unshipped)
+            .map(|c| c.id.as_str())
+            .collect();
+        let known: BTreeSet<&str> = KNOWN_UNSHIPPED.iter().copied().collect();
+        assert_eq!(declared, known);
     }
 }

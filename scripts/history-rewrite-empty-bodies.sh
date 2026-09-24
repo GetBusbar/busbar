@@ -429,15 +429,22 @@ EOF
   new_tip="$(git -C "$repo" rev-parse main)"
   [ "$new_tip" != "$tip" ] && pass "ref moved to a new tip" || fail "ref tip unchanged after real run"
 
-  # c1 is not a descendant of any rewritten commit's ancestor chain start... actually c1 IS an
-  # ancestor of c2/c3 so it is untouched only if it precedes every named sha, which it does here:
-  # c1 itself was never named and has no named ancestor, so it must be byte-identical, same sha.
-  git -C "$repo" cat-file -e "$c1" 2>/dev/null && pass "c1 (non-listed, no listed ancestor) sha unchanged" || fail "c1 sha vanished"
-
   # Walk the new history and check trees.
   local new_c2 new_c3
   new_c2="$(git -C "$repo" log --format='%H' main | tail -3 | sed -n '2p')"
   new_c3="$(git -C "$repo" rev-parse main)"
+
+  # c1 was never named and has no named ancestor, so it must be untouched: the SAME sha, still ON
+  # main, as the root and as new c2's parent. Object EXISTENCE (`cat-file -e`) cannot say no here --
+  # a rewritten original stays in the object database, and the dry run above writes rebuilt objects
+  # into it too -- so the question asked is REACHABILITY from the rewritten ref (item 495).
+  if git -C "$repo" merge-base --is-ancestor "$c1" main \
+     && [ "$(git -C "$repo" rev-list --max-parents=0 main)" = "$c1" ] \
+     && [ "$(git -C "$repo" rev-parse "${new_c2}^")" = "$c1" ]; then
+    pass "c1 (non-listed, no listed ancestor) is still on main, same sha, as new c2's parent"
+  else
+    fail "c1 was rewritten: $c1 is not the root of main / new c2's parent"
+  fi
   [ "$(git -C "$repo" rev-parse "${new_c2}^{tree}")" = "$c2_tree" ] && pass "c2 tree unchanged" || fail "c2 tree changed"
   [ "$(git -C "$repo" rev-parse "${new_c3}^{tree}")" = "$c3_tree" ] && pass "c3 tree unchanged" || fail "c3 tree changed"
 

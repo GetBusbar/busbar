@@ -29,17 +29,12 @@
 # each is an exit, never a fallback. A courier that guesses is worse than no courier.
 set -uo pipefail
 
-# The required contexts this script waits on. Overridable so a fork or a rehearsal repo can name its
-# own; the default is the four the protections on dev/qa/main actually list.
-#
-#   ci umbrella                 .github/workflows/ci.yml — the single umbrella over every CI job,
-#                               so protection never drifts when a job is renamed.
-#   {A2A,MCP,Voice} conformance verdict
-#                               the three protocol conformance workflows' terminal `verdict` jobs.
-PR_LAND_CHECKS="${PR_LAND_CHECKS:-ci umbrella
-A2A conformance verdict
-MCP conformance verdict
-Voice conformance verdict}"
+# THE REQUIRED CONTEXTS ARE READ FROM BRANCH PROTECTION, BY NAME, EVERY RUN (see the preflight).
+# This used to be a hardcoded four-name default ("the four the protections on dev/qa/main actually
+# list" -- a claim nothing verified), so a fifth context added to protection was never polled and
+# --wait printed "GREEN -- every required context succeeded" while it was red or had never reported.
+# scripts/promote.sh already reads the destination's protection for the same reason; this is that.
+PR_LAND_CHECKS=""
 
 # How long --wait will poll before it gives up and says so (it says "unsettled", never "green").
 PR_LAND_POLL_SECONDS="${PR_LAND_POLL_SECONDS:-20}"
@@ -102,6 +97,16 @@ automerge="$(gh api "repos/$slug" --jq '.allow_auto_merge' 2>/dev/null || echo "
 [ "$automerge" = "true" ] \
   || refuse "auto-merge is not available on $slug (allow_auto_merge=$automerge)" \
             "Enable it in repository settings; this script will not merge by hand."
+
+# The contexts protection will actually enforce on $base. Unreadable or empty is a refusal, never an
+# empty loop that passes: `--wait` with nothing to wait on would print GREEN over zero contexts.
+if [ "$slug" != "<unresolved>" ]; then
+  PR_LAND_CHECKS="$(gh api "repos/$slug/branches/$base/protection/required_status_checks" \
+                      --jq '.contexts[]' 2>/dev/null)" || PR_LAND_CHECKS=""
+fi
+[ -n "$(printf '%s' "$PR_LAND_CHECKS" | tr -d '[:space:]')" ] \
+  || refuse "cannot read the required status checks for '$base' from branch protection on $slug" \
+            "refusing to land blind: the verdict is only as good as the list of contexts it reads."
 
 # ── THE BRANCH ────────────────────────────────────────────────────────────────────────────────────
 run $G fetch origin "$base" || { echo "pr-land.sh: RED — cannot fetch origin/$base" >&2; exit 1; }

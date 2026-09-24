@@ -413,11 +413,26 @@ fn load_waivers(cx: &Ctx) -> Result<Vec<Waiver>, String> {
                  permanent unreviewed exemption."
             ));
         };
-        if !tracker_has_row(&tracker, &id) {
-            return Err(format!(
-                "waiver names expiry `{id}`, which is not a row in {TRACKER}: '{t}'. The waiver \
-                 outlived the work that was supposed to retire it, or the id is a typo."
-            ));
+        match tracker_row_open(&tracker, &id) {
+            None => {
+                return Err(format!(
+                    "waiver names expiry `{id}`, which is not a row in {TRACKER}: '{t}'. The \
+                     waiver outlived the work that was supposed to retire it, or the id is a typo."
+                ));
+            }
+            // THE EXPIRY FIRED (item 212). A ticked row is the authorisation withdrawn: the work
+            // that was to retire this marker is recorded as done, and the marker is still here.
+            // Accepting `- [x]` as well as `- [ ]` meant no state existed in which a waiver was
+            // expired.
+            Some(false) => {
+                return Err(format!(
+                    "waiver's expiry `{id}` is EXPIRED — {TRACKER} carries it ticked closed \
+                     (`- [x] {id}`), yet the waiver still excuses a marker: '{t}'. Resolve the \
+                     marker and drop the row, or re-open / re-point the tracker row that \
+                     authorises it."
+                ));
+            }
+            Some(true) => {}
         }
         out.push(Waiver {
             hot: matcher.contains("/hot/"),
@@ -453,20 +468,26 @@ fn expiry_id(reason: &str) -> Option<String> {
     Some(id.to_string())
 }
 
-/// `^- \[[ x]\] <id>\s` in the tracker.
-fn tracker_has_row(tracker: &str, id: &str) -> bool {
-    tracker.lines().any(|l| {
-        for head in ["- [ ] ", "- [x] "] {
+/// The tracker row `^- \[[ xX]\] <id>\s`: `Some(true)` while it is OPEN (`- [ ]`), `Some(false)`
+/// once it is ticked (`- [x]` / `- [X]`), `None` when no such row exists. An open row anywhere wins,
+/// so a duplicated id is judged by whichever copy still authorises the waiver.
+fn tracker_row_open(tracker: &str, id: &str) -> Option<bool> {
+    let mut state = None;
+    for l in tracker.lines() {
+        for (head, open) in [("- [ ] ", true), ("- [x] ", false), ("- [X] ", false)] {
             if let Some(rest) = l.strip_prefix(head) {
                 if let Some(tail) = rest.strip_prefix(id) {
                     if tail.starts_with([' ', '\t']) {
-                        return true;
+                        if open {
+                            return Some(true);
+                        }
+                        state = Some(false);
                     }
                 }
             }
         }
-        false
-    })
+    }
+    state
 }
 
 // ── THE ROWS ─────────────────────────────────────────────────────────────────────────────────────
@@ -894,6 +915,30 @@ impl Gate for NoDeferralGate {
             waivers_overlay(cx, "crates/x/src/a.rs:1\ta reason [retires: ZZ999]"),
             &["not a row in"],
         ));
+        // ── ITEM 212: A WAIVER WHOSE EXPIRY FIRED. Tick the tracker row every `hot/*` waiver names
+        //    while the 52 markers stay; before this case the ticked row still "resolved" and the
+        //    waivers could never expire.
+        {
+            let tracker = cx.read(TRACKER).unwrap_or_default();
+            let ticked: String = tracker
+                .lines()
+                .map(|l| match l.strip_prefix("- [ ] H5 ") {
+                    Some(rest) => format!("- [x] H5 {rest}"),
+                    None => l.to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut ov = Overlay::new();
+            ov.set(TRACKER, ticked);
+            report.push(prove_red(
+                cx,
+                self,
+                "a waiver whose [retires: …] row is ticked closed is EXPIRED, not resolved",
+                &[ROW_WAIVER_SHAPE],
+                ov,
+                &["EXPIRED", "H5"],
+            ));
+        }
         report.push(prove_red(
             cx,
             self,

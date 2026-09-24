@@ -192,19 +192,43 @@ const REGEN_TITLE: &str = "the committed ledger is what Appendix B derives";
 const REGEN_CLEAN_DETAIL: &str =
     "a fresh derivation from Appendix B reproduces both artifacts byte for byte";
 
+/// The row a ledger that could not be read is owed, and never emits.
+const ROW_LEDGER_UNREADABLE: &str = "design-bindings:ledger-unreadable";
+
+impl DesignBindingsGate {
+    /// THE ROWS THE LEDGER DECIDES: one per committed binding, plus REGEN-CLEAN. Every one of them
+    /// moves when `qa/design-bindings.json` is rewritten, which is what makes this the `covers` of
+    /// every ledger-rewrite case in the self-test.
+    ///
+    /// [`ROW_NOTE_WITNESS`] IS OWED AND IS NOT IN THIS SET, AND THAT IS ITEM 88. It reads the NOTE
+    /// table and the tree's symbols, never the ledger, so no ledger plant can move it. When it was
+    /// appended to `owed()` the self-test's `covers` grew with it, and every ledger-rewrite case
+    /// began asking a row it cannot touch to go red: the cases passed only on PB-58's standing red,
+    /// and the one plant that swaps in a clean note table ("a binding the ledger's own note calls
+    /// UNPROVEN is refused") came back GREEN with its binding row plainly FAIL. The witness rule is
+    /// proven by its own two cases, over planted note tables.
+    pub fn ledger_owed() -> Vec<String> {
+        let mut ids = DesignBindingsGate::binding_ids(|_| true);
+        if ids.is_empty() {
+            // A ledger that could not be read owes one row it will never emit, so the
+            // reconciliation says DID NOT RUN rather than passing over an empty set.
+            return vec![ROW_LEDGER_UNREADABLE.to_string()];
+        }
+        ids.push(ROW_REGEN.to_string());
+        ids
+    }
+}
+
 impl Gate for DesignBindingsGate {
     fn name(&self) -> &'static str {
         "design-bindings"
     }
 
     fn owed(&self) -> Vec<String> {
-        let mut ids = DesignBindingsGate::binding_ids(|_| true);
-        if ids.is_empty() {
-            // A ledger that could not be read owes one row it will never emit, so the
-            // reconciliation says DID NOT RUN rather than passing over an empty set.
-            return vec!["design-bindings:ledger-unreadable".to_string()];
+        let mut ids = DesignBindingsGate::ledger_owed();
+        if ids.first().map(String::as_str) == Some(ROW_LEDGER_UNREADABLE) {
+            return ids;
         }
-        ids.push(ROW_REGEN.to_string());
         ids.push(ROW_NOTE_WITNESS.to_string());
         ids
     }
@@ -221,7 +245,7 @@ impl Gate for DesignBindingsGate {
             Ok(i) => i,
             Err(e) => {
                 return Verdict::of(vec![Row::fail(
-                    "design-bindings:ledger-unreadable",
+                    ROW_LEDGER_UNREADABLE,
                     "the design bindings ledger could not be read",
                     e,
                 )])

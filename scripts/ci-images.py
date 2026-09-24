@@ -44,6 +44,14 @@ WORKFLOWS = ".github/workflows"
 # The workflows whose service containers are mirrored, and the job each pin must live in. Both are
 # named so a pin appearing in only one of them is caught rather than silently accepted.
 SOURCES = ("ci.yml", "release-stage.yml")
+# THE AGREEMENT RULE'S SCOPE, EXPLICIT. The rule is "ci.yml's `check` and release-stage.yml's `gate`
+# run the identical test command, so they must run it against identical services". It compares THOSE
+# TWO JOBS and nothing else. It used to compare every pin in both whole files, so a service that
+# lives only in an unrelated job (mysql:8, booted by ci.yml's shadow-oracle job alone) read as a
+# check/gate divergence and held the baseline RED on a comparison the rule never meant to make
+# (item 532 follow-up). Every OTHER rule -- a pin must be digest-pinned, one file must not pin one
+# image at two digests, the mirror list -- still covers every job in both files.
+AGREEMENT_JOBS = {"ci.yml": "check", "release-stage.yml": "gate"}
 
 # `image: <repo>:<tag>@sha256:<64 hex>` -- the digest half is REQUIRED by this pattern, so an
 # unpinned `image: postgres:16` does not match and is reported as missing rather than parsed as
@@ -80,11 +88,14 @@ def consumer_state(root: str) -> str:
     `image:` lines means the guard arms itself AS A CONSEQUENCE of the consumer moving, which is the
     same "consumer moves last, on proof" ordering the release promote uses.
 
-    Returns 'mirrored' once ci.yml pulls its service containers from GHCR, else 'upstream'.
+    Returns 'mirrored' once ci.yml pulls its service containers from GHCR, else 'upstream', and
+    None when ci.yml is not there to read. A missing consumer is NOT 'upstream' (item 532): that
+    answer disarms the anonymous-pull hard failure, so a renamed ci.yml or a partial checkout
+    would switch the guard off for good. The caller refuses on None, as collect() does.
     """
     path = os.path.join(root, WORKFLOWS, "ci.yml")
     if not os.path.exists(path):
-        return "upstream"
+        return None
     text = open(path, encoding="utf-8").read()
     for m in ANY_IMAGE.finditer(text):
         if _is_mirror(m.group("ref").split(":")[0].split("@")[0]):
@@ -92,10 +103,40 @@ def consumer_state(root: str) -> str:
     return "upstream"
 
 
+def job_block(text: str, job: str):
+    """The text of `jobs.<job>` (its header line through the line before the next job or the next
+    top-level key), or None when the workflow has no such job."""
+    lines = text.splitlines(True)
+    in_jobs, start, end = False, None, None
+    for i, line in enumerate(lines):
+        if re.match(r"^jobs:\s*$", line):
+            in_jobs = True
+            continue
+        if not in_jobs:
+            continue
+        if re.match(r"^[^\s#]", line):   # a column-0 comment does not end `jobs:`
+            if start is not None:
+                end = i
+                break
+            in_jobs = False
+            continue
+        m = re.match(r"^  ([A-Za-z0-9_-]+):\s*$", line)
+        if m:
+            if start is not None:
+                end = i
+                break
+            if m.group(1) == job:
+                start = i
+    if start is None:
+        return None
+    return "".join(lines[start:end])
+
+
 def collect(root: str):
     """Return (images, problems). `images` is one dict per distinct pinned image."""
     problems: list[str] = []
     per_file: dict[str, dict[str, str]] = {}
+    agree_pins: dict[str, dict[str, str]] = {}   # file -> pins inside its AGREEMENT_JOBS job only
 
     for name in SOURCES:
         path = os.path.join(root, WORKFLOWS, name)
@@ -120,6 +161,17 @@ def collect(root: str):
                 )
             pinned[key] = m.group("digest")
         per_file[name] = pinned
+
+        job = AGREEMENT_JOBS[name]
+        block = job_block(text, job)
+        if block is None:
+            problems.append(
+                "%s has no `%s` job, so the check/gate service agreement cannot be stated. The "
+                "rule names that job explicitly (AGREEMENT_JOBS); a renamed job must be renamed "
+                "there too, never silently compared as nothing." % (name, job))
+        else:
+            agree_pins[name] = {"%s:%s" % (m.group("repo"), m.group("tag")): m.group("digest")
+                                for m in PINNED.finditer(block)}
 
         # An `image:` that is NOT digest-pinned is the defect this whole exercise removes, so it is
         # named rather than skipped. Container-build `image:` lines do not appear in these files;
@@ -160,7 +212,7 @@ def collect(root: str):
         return (("%s:%s" % (upstream, tag)) if upstream else None), True
 
     effective = {}               # file -> {logical key -> (digest, via_mirror)}
-    for fname, pinned in per_file.items():
+    for fname, pinned in agree_pins.items():
         eff = {}
         for key, digest in pinned.items():
             lk, via = logical(key)
@@ -174,15 +226,18 @@ def collect(root: str):
             eff[lk] = (digest, via)
         effective[fname] = eff
 
-    if len(per_file) == len(SOURCES):
+    if len(agree_pins) == len(SOURCES):
         a, b = effective[SOURCES[0]], effective[SOURCES[1]]
         for lk in sorted(set(a) | set(b)):
             if lk not in a or lk not in b:
                 missing = SOURCES[0] if lk not in a else SOURCES[1]
                 problems.append(
-                    "`%s` is pinned in one workflow but reached by neither pin nor mirror in %s. "
-                    "ci.yml's `check` and release-stage.yml's `gate` run the identical test command and "
-                    "must run it against the identical services." % (lk, missing)
+                    "`%s` is pinned in %s's `%s` job but reached by neither pin nor mirror in %s's "
+                    "`%s` job. ci.yml's `check` and release-stage.yml's `gate` run the identical "
+                    "test command and must run it against the identical services."
+                    % (lk, SOURCES[1] if missing == SOURCES[0] else SOURCES[0],
+                       AGREEMENT_JOBS[SOURCES[1] if missing == SOURCES[0] else SOURCES[0]],
+                       missing, AGREEMENT_JOBS[missing])
                 )
             elif a[lk][0] != b[lk][0]:
                 problems.append(
@@ -262,6 +317,20 @@ MUTATIONS = [
         "reached by neither pin nor mirror",
     ),
 ]
+
+
+def consumer_state_main(root: str, out=sys.stdout, err=sys.stderr) -> int:
+    """--consumer-state: print the state, or refuse (exit 1) when it cannot be derived."""
+    state = consumer_state(root)
+    if state is None:
+        msg = ("%s is missing, so whether it consumes the mirrors cannot be derived; refusing to "
+               "answer 'upstream', which would disarm the anonymous-pull check."
+               % os.path.join(WORKFLOWS, "ci.yml"))
+        print("::error::ci-images: " + msg, file=err)
+        print("ci-images: " + msg, file=err)
+        return 1
+    print(state, file=out)
+    return 0
 
 
 def selftest(root: str) -> int:
@@ -345,6 +414,83 @@ def selftest(root: str) -> int:
                   "Got: %s" % (got or "nothing"))
             failures += 1
 
+    # THE AGREEMENT RULE'S SCOPE (item 532 follow-up), proven both ways with the SAME planted
+    # service: an image only an out-of-scope job boots is not a check/gate finding; the identical
+    # image planted in `check` alone IS one.
+    extra = ("      scope-probe:\n        image: redis:7@sha256:" + "a" * 64 + "\n")
+
+    def _plant_in_job(text, job):
+        block = job_block(text, job)
+        assert block is not None, "job %r not found; this arm's anchor has moved" % job
+        m = re.search(r"^\s*image: valkey/valkey:8@sha256:[0-9a-f]{64}\s*\n", block, flags=re.M)
+        assert m, "no valkey pin in job %r; this arm's anchor has moved" % job
+        new_block = block[:m.end()] + extra + block[m.end():]
+        return text.replace(block, new_block, 1)
+
+    for job, want_finding in (("coverage", False), (AGREEMENT_JOBS["ci.yml"], True)):
+        with tempfile.TemporaryDirectory() as tmp:
+            shutil.copytree(os.path.join(root, WORKFLOWS), os.path.join(tmp, WORKFLOWS))
+            cip = os.path.join(tmp, WORKFLOWS, "ci.yml")
+            planted = _plant_in_job(open(cip, encoding="utf-8").read(), job)
+            open(cip, "w", encoding="utf-8").write(planted)
+            _, got = collect(tmp)
+            hit = any("redis:7" in g and "reached by neither" in g for g in got)
+            if hit == want_finding and (want_finding or not got):
+                print("  %s: redis:7 planted only in ci.yml's `%s` job %s"
+                      % ("RED as required" if want_finding else "GREEN twin", job,
+                         "is a check/gate divergence" if want_finding else "is not a finding"))
+            else:
+                print("  SELFTEST FAILED: redis:7 planted in `%s`: expected %s. Got: %s"
+                      % (job, "a finding" if want_finding else "no finding", got or "nothing"))
+                failures += 1
+
+    # job_block survives a column-0 comment between jobs (YAML allows it; `jobs:` does not end).
+    synthetic = "on: push\njobs:\n  a:\n    runs-on: x\n# note\n  gate:\n    runs-on: y\n"
+    if (job_block(synthetic, "gate") or "").startswith("  gate:"):
+        print("  GREEN: a column-0 comment inside `jobs:` does not hide the jobs after it")
+    else:
+        print("  SELFTEST FAILED: a column-0 comment ended `jobs:` early")
+        failures += 1
+
+    # A RENAMED AGREEMENT JOB is a finding, never a comparison over nothing.
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copytree(os.path.join(root, WORKFLOWS), os.path.join(tmp, WORKFLOWS))
+        rsp = os.path.join(tmp, WORKFLOWS, "release-stage.yml")
+        before = open(rsp, encoding="utf-8").read()
+        after = re.sub(r"^  gate:\s*$", "  gate-renamed:", before, count=1, flags=re.M)
+        assert after != before, "no `gate:` job header; this arm's anchor has moved"
+        open(rsp, "w", encoding="utf-8").write(after)
+        _, got = collect(tmp)
+        if any("has no `gate` job" in g for g in got):
+            print("  RED as required: release-stage.yml with no `gate` job is a finding, not a silent skip")
+        else:
+            print("  SELFTEST FAILED: a renamed `gate` job was not reported. Got: %s" % (got or "nothing"))
+            failures += 1
+
+    # --consumer-state WITH NO ci.yml TO READ (item 532) refuses, never prints 'upstream'; the real
+    # tree's answer is one of the two states and exits 0.
+    import io
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copytree(os.path.join(root, WORKFLOWS), os.path.join(tmp, WORKFLOWS))
+        os.remove(os.path.join(tmp, WORKFLOWS, "ci.yml"))
+        o, e = io.StringIO(), io.StringIO()
+        rc = consumer_state_main(tmp, o, e)
+        if rc != 0 and o.getvalue() == "" and "is missing" in e.getvalue():
+            print("  RED as required: --consumer-state with ci.yml missing refuses instead of "
+                  "answering 'upstream'")
+        else:
+            print("  SELFTEST FAILED: --consumer-state with ci.yml missing: rc=%d out=%r"
+                  % (rc, o.getvalue()))
+            failures += 1
+        o, e = io.StringIO(), io.StringIO()
+        rc = consumer_state_main(root, o, e)
+        if rc == 0 and o.getvalue().strip() in ("upstream", "mirrored"):
+            print("  GREEN twin: --consumer-state on the real tree answers %r" % o.getvalue().strip())
+        else:
+            print("  SELFTEST FAILED: --consumer-state on the real tree: rc=%d out=%r err=%r"
+                  % (rc, o.getvalue(), e.getvalue()))
+            failures += 1
+
     # THE VACUOUS-PASS RULE, proven by removing the pins entirely rather than by argument.
     with tempfile.TemporaryDirectory() as tmp:
         shutil.copytree(os.path.join(root, WORKFLOWS), os.path.join(tmp, WORKFLOWS))
@@ -379,8 +525,7 @@ def main() -> int:
     if args.selftest:
         return selftest(args.root)
     if args.consumer_state:
-        print(consumer_state(args.root))
-        return 0
+        return consumer_state_main(args.root)
     images, problems = collect(args.root)
     if problems:
         for p in problems:

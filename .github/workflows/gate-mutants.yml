@@ -1,4 +1,4 @@
-# gate-mutants — THE RATCHET IS ITSELF UNDER TEST, MECHANICALLY, ON EVERY PUSH.
+# gate-mutants — THE RATCHET IS ITSELF UNDER TEST, MECHANICALLY, ON DEMAND.
 #
 # THE LAW THIS WORKFLOW HOLDS. Every rule in this tree is enforced by a gate, and every gate is a
 # program that says NO. The only way a gate fails is by SAYING NOTHING: delete a check's body,
@@ -6,24 +6,27 @@
 # prints PASS, and nothing notices. A hand audit found 53 such holes in four gates in one pass. A
 # hand audit is not a gate. This is.
 #
-# WHAT IT DOES. On any push that touches gate code, gate data, the landing runner or the workflows,
-# it runs `cargo-mutants` over the CHANGED RUST ONLY, with the four gates' own `--selftest` as the
-# test command. A mutant that survives that command is a line of gate code no self-test case holds
-# down. Any survivor makes `gate-mutants` red, and `gate-mutants` is a required check on `qa` and
-# `main` (scripts/ci-branch-protection.sh). There is no human step between the red and the fix.
+# WHAT IT DOES. When DISPATCHED, it scopes the diff against `predev` for gate code, gate data, the
+# landing runner and the workflows, and runs `cargo-mutants` over the CHANGED RUST ONLY, with the
+# four gates' own `--selftest` as the test command. A mutant that survives that command is a line of
+# gate code no self-test case holds down. Any survivor makes the `gate-mutants` job red.
+#
+# IT IS NOT A REQUIRED CHECK AND DOES NOT RUN ON PUSH. Per owner ruling (BUSBAR-1.6.0.md DECISIONS
+# #78) mutation testing is TEST-ENHANCING, not release-breaking: the workflow is
+# `workflow_dispatch`-only (see `on:` below), `scripts/ci-branch-protection.sh` strips `gate-mutants`
+# OUT of `qa`/`main` branch protection, `.github/required-status-checks.md` lists it as deliberately
+# not required, and `ship-ready` (xtask/src/gates/ship_ready.rs) no longer owes a mutation verdict.
+# A red here is a finding to act on by writing tests, not a merge block.
 #
 # WHY IT IS ITS OWN WORKFLOW AND NOT A JOB IN ci.yml. Its shape is different from every job there:
-# a fan-out matrix whose WIDTH is computed at run time from the diff, on a trigger whose work is
-# path-scoped. Folding that into ci.yml would put a dynamic matrix inside the umbrella's `needs:`
-# accounting, where `ci-umbrella`'s membership rules cannot read it. The umbrella stays a fixed list
-# of fixed jobs; this stays a required check of its own, named in branch protection alongside it.
+# a fan-out matrix whose WIDTH is computed at run time from the diff and the `shards` input.
+# Folding that into ci.yml would put a dynamic matrix inside the umbrella's `needs:` accounting,
+# where `ci-umbrella`'s membership rules cannot read it. The umbrella stays a fixed list of fixed
+# jobs; this stays a manual workflow of its own.
 #
-# WHY THE REQUIRED CHECK IS NOT PATH-FILTERED. A required status that a `paths:` filter can decline
-# to report is a required status that blocks every unrelated pull request forever, which is how
-# required checks get removed. So the WORKFLOW always runs and the required job `gate-mutants`
-# always reports; the expensive WORK is what the scope decides. A push with no gate Rust in it gets
-# a green `gate-mutants` in about a minute, honestly, having measured that there was nothing to
-# measure.
+# THE FINAL `gate-mutants` JOB ALWAYS REPORTS (`if: always()`) so a dispatched run ends in ONE
+# verdict: a dispatch whose diff carries no gate Rust gets an honest green in about a minute,
+# having measured that there was nothing to measure, and a scope that failed is red, not silent.
 name: gate-mutants
 
 on:
@@ -61,7 +64,8 @@ env:
 
 jobs:
   # -------------------------------------------------------------------------------------------
-  # WHAT THIS PUSH ACTUALLY CHANGED. Cheap, and the only job that decides whether the rest runs.
+  # WHAT THIS BRANCH ACTUALLY CHANGED against `predev`. Cheap, and the only job that decides
+  # whether the rest runs.
   # -------------------------------------------------------------------------------------------
   scope:
     name: gate-mutants scope
@@ -98,7 +102,7 @@ jobs:
         run: |
           set -euo pipefail
           files="$(scripts/gate-mutants.sh --scope)"
-          echo "in scope on this push:"
+          echo "in scope on this branch:"
           printf '%s\n' "$files" | sed 's/^/  /'
           if [ -n "$files" ]; then in=yes; else in=no; fi
           n="${{ github.event.inputs.shards || env.SHARD_COUNT }}"
@@ -303,11 +307,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # -------------------------------------------------------------------------------------------
-  # THE REQUIRED CHECK. Named `gate-mutants` and nothing else, because that is the string branch
-  # protection holds. It runs on every event, including the ones where there was no work, so the
-  # status always reports.
-  # -------------------------------------------------------------------------------------------
       - name: Latchkey Fast Cache (cargo registry + target, save)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
@@ -317,6 +316,12 @@ jobs:
             ${{ env.CARGO_HOME }}/registry
             ${{ env.CARGO_HOME }}/git
             target
+
+  # -------------------------------------------------------------------------------------------
+  # THE VERDICT. One job that folds scope, baseline and shards into a single result for the
+  # dispatched run. `if: always()` so it reports even when no work was in scope or an upstream job
+  # failed. NOT a required check: branch protection does not hold this name (see the header).
+  # -------------------------------------------------------------------------------------------
   gate-mutants:
     name: gate-mutants
     needs: [scope, baseline, shard]
@@ -344,7 +349,7 @@ jobs:
 
           if [ "$IN_SCOPE" != "yes" ]; then
             # Honest green: the diff touched no gate source, gate data, landing runner or workflow.
-            echo "GREEN: nothing in the mutation scope changed on this push."
+            echo "GREEN: nothing in the mutation scope changed on this branch."
             exit 0
           fi
 

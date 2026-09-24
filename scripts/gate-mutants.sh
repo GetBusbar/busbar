@@ -25,7 +25,7 @@
 # comfortable number. The command below is the four gates' own proof, plus the library unit tests.
 #
 # USAGE
-#   scripts/gate-mutants.sh --scope            print the in-scope changed files; exit 0 always
+#   scripts/gate-mutants.sh --scope            print the in-scope changed files; exit 2 if the base ref does not resolve
 #   scripts/gate-mutants.sh --gates            print the gate self-proofs this diff needs
 #   scripts/gate-mutants.sh --diff FILE        write the scoped merge-base..HEAD diff to FILE
 #   scripts/gate-mutants.sh --shard K/N        run shard K of N; red if any mutant SURVIVES
@@ -236,6 +236,34 @@ did not run is not a shard that found nothing." >&2
     echo "unmutated selftest is genuinely near the ceiling; otherwise these are survivors:"
     sed 's/^/  /' "$timedout"
   fi
+  # THE TOOL'S EXIT STATUS IS EVIDENCE TOO (item 494). cargo-mutants finishes a campaign with
+  # exactly one of: 0 (nothing survived), 2 (survivors), 3 (timeouts), 4 (baseline red). Anything
+  # else -- a usage error, an internal error, a panic, an OOM kill or a cancel signal -- is a run
+  # that did NOT finish, and the empty outcome files it leaves behind look exactly like a clean
+  # shard. And 2/3 must agree with the files: the tool saying "survivors" over an empty
+  # missed.txt means the files are not the record of this run.
+  case "$rc" in
+    0|2|3|4) : ;;
+    *)
+      red=1
+      echo ""
+      echo "cargo-mutants exited ${rc:-<none>} -- the tool did not finish the campaign, so its outcome"
+      echo "files (caught=$n_caught surviving=$n_missed timeout=$n_timeout) are not a verdict. A run"
+      echo "that did not finish is not a run that found nothing."
+      ;;
+  esac
+  if [ "$rc" = "2" ] && [ "$n_missed" = "0" ]; then
+    red=1
+    echo ""
+    echo "cargo-mutants exited 2 (surviving mutants) but missed.txt is empty -- the outcome files"
+    echo "are not the record of this run."
+  fi
+  if [ "$rc" = "3" ] && [ "$n_timeout" = "0" ]; then
+    red=1
+    echo ""
+    echo "cargo-mutants exited 3 (timeouts) but timeout.txt is empty -- the outcome files are not"
+    echo "the record of this run."
+  fi
   # rc 4 is cargo-mutants' "the tests failed in the UNMUTATED tree" — a broken baseline, which says
   # nothing about mutants either way and must never read as a clean shard.
   if [ "$rc" = "4" ]; then
@@ -367,6 +395,13 @@ gm_selftest() {
       _with_base refs/heads/no-such-base-ever gm_scope "$here"
   _c "a base that does not resolve refuses the DIFF too" 2 \
       _with_base refs/heads/no-such-base-ever gm_diff "$root/d.diff" "$here"
+  # -- the USAGE the script prints must promise what the case above pins (item 545): --scope
+  #    refuses (exit 2) on an unresolvable base, so no usage line may say "exit 0 always".
+  _c "--help prints the usage"                       2 bash "$here/scripts/gate-mutants.sh" --help
+  if grep -qiE 'exit 0 always' "$GM_OUT"; then
+    printf '  FAIL %-58s\n' "USAGE does not promise 'exit 0 always'"; fails=$((fails+1))
+  else printf '  ok   %-58s\n' "USAGE does not promise 'exit 0 always'"; fi
+  _g "USAGE names --scope's exit 2 on an unresolvable base" "$GM_OUT" '[-]-scope .*exit 2'
 
   # -- the real base resolves to a commit
   if base="$(gm_base "$here" 2>/dev/null)" && [ ${#base} -ge 7 ]; then
@@ -443,6 +478,19 @@ gm_selftest() {
   _g "the baseline red is named"                     "$GM_OUT" "BASELINE RED"
   _c "a shard that produced no output at all is red" 1 gm_verdict "$root/never-ran" 0
   _g "the missing-output red says it did not run"    "$GM_OUT" "did not run"
+
+  # -- THE TOOL'S OWN EXIT STATUS IS PART OF THE VERDICT (item 494). A cargo-mutants that died
+  #    mid-run (a panic, an OOM kill, a usage error) leaves EMPTY outcome files behind, and empty
+  #    files are what a clean shard looks like. Only 0/2/3/4 are statuses the tool finishes with.
+  : >"$o/caught.txt"; : >"$o/missed.txt"; : >"$o/timeout.txt"; : >"$o/unviable.txt"
+  local drc
+  for drc in 1 5 70 101 137 143; do
+    _c "empty outcomes + tool rc $drc (did not finish) is red" 1 gm_verdict "$o" "$drc"
+  done
+  _g "the unfinished-tool red says it did not finish"  "$GM_OUT" "exited 143.*did not finish"
+  _c "tool rc 2 (survivors) with an EMPTY missed.txt is red" 1 gm_verdict "$o" 2
+  _c "tool rc 3 (timeouts) with an EMPTY timeout.txt is red" 1 gm_verdict "$o" 3
+  _c "a non-numeric tool status is red"              1 gm_verdict "$o" ""
 
   rm -rf "$root"
   if [ "$fails" != "0" ]; then echo "gate-mutants --selftest: $fails FAILED"; return 1; fi

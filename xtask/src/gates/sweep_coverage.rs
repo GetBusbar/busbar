@@ -29,7 +29,7 @@
 //! with `VERDICT` one of `CLEAN`, `FINDING`, `DELETABLE`, `UNREADABLE`. Anything else is not a
 //! verdict, and this gate says so rather than counting it.
 //!
-//! # The five rows, and the NO each one can produce
+//! # The seven rows, and the NO each one can produce
 //!
 //! | row | goes red when |
 //! |---|---|
@@ -38,6 +38,11 @@
 //! | `no-phantoms` | a verdict line names a file that is not in the tree |
 //! | `verdicts-legal` | a verdict line carries a word that is not one of the four |
 //! | `disjoint` | two slices both claim the same file — the partition stopped being a partition |
+//! | `reachability-axis` | a tracked `.rs` file carries no verdict in the prior reachability sweep, or the population is empty |
+//! | `compiles-and-tracked` | an untracked `.rs` file is declared by a `mod` or `#[path]` statement — it compiles here and not on a clean checkout, so on a fresh clone no gate runs at all |
+//!
+//! The table is the gate's [`Gate::owed`] set, row for row; a unit test holds the two equal so a
+//! row added to one cannot be missing from the other.
 //!
 //! The `denominator` row deserves its own note. Every glob in `DENOMINATOR_GLOBS` has bitten
 //! somebody in this repository: unquoted `--include=*.rs` is eaten by zsh and dies with no
@@ -154,6 +159,154 @@ pub fn denominator(cx: &Ctx) -> Result<BTreeSet<String>, String> {
         .collect())
 }
 
+/// The reachability axis's population: every tracked `.rs` file in the denominator. Derived from
+/// the one git answer the gate already refuses on failure and floors, so this row has no oracle of
+/// its own to swallow (item 225).
+pub fn rs_population(denom: &BTreeSet<String>) -> BTreeSet<String> {
+    denom
+        .iter()
+        .filter(|f| f.ends_with(".rs"))
+        .cloned()
+        .collect()
+}
+
+/// Does `text` declare module `name` with a `mod name;` statement, in ANY spelling Rust accepts
+/// (items 226, 227)?
+///
+/// The probe this replaces stripped the literal `"pub "` and looked for `mod name;` — so
+/// `pub(crate) mod name;` (86 live declarations in this tree) and `pub(super) mod name;` were
+/// invisible, and so was a declaration behind an attribute on the same line (`#[cfg(test)] mod
+/// name;`). This strips leading attributes, then any visibility (`pub`, `pub(crate)`,
+/// `pub(super)`, `pub(self)`, `pub(in path)`), then asks for `mod name` followed by `;`.
+pub fn declares_mod(text: &str, name: &str) -> bool {
+    text.lines().any(|line| {
+        let mut l = line.trim_start();
+        // Leading attributes on the same line: `#[cfg(test)] #[path = "x.rs"] mod name;`.
+        while l.starts_with("#[") {
+            let mut depth = 0i32;
+            let mut end = None;
+            for (i, c) in l.char_indices() {
+                match c {
+                    '[' => depth += 1,
+                    ']' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = Some(i + 1);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            match end {
+                Some(e) => l = l[e..].trim_start(),
+                None => return false,
+            }
+        }
+        if let Some(rest) = l
+            .strip_prefix("pub")
+            .filter(|r| r.starts_with(|c: char| c == '(' || c.is_whitespace()))
+        {
+            let rest = rest.trim_start();
+            l = match rest.strip_prefix('(') {
+                Some(inner) => match inner.find(')') {
+                    Some(close) => inner[close + 1..].trim_start(),
+                    None => return false,
+                },
+                None => rest,
+            };
+        }
+        l.strip_prefix("mod")
+            .filter(|r| r.starts_with(char::is_whitespace))
+            .map(str::trim_start)
+            .and_then(|r| r.strip_prefix(name))
+            .is_some_and(|r| r.trim_start().starts_with(';'))
+    })
+}
+
+/// `a/b/../c` → `a/c`, for resolving a `#[path]` against its declaring file's directory.
+fn normalize(path: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in path.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            s => parts.push(s),
+        }
+    }
+    parts.join("/")
+}
+
+fn parent_of(path: &str) -> &str {
+    path.rsplit_once('/').map(|(d, _)| d).unwrap_or("")
+}
+
+fn join(dir: &str, file: &str) -> String {
+    if dir.is_empty() {
+        file.to_string()
+    } else {
+        format!("{dir}/{file}")
+    }
+}
+
+/// WHERE, IF ANYWHERE, THE UNTRACKED FILE `f` IS DECLARED — so it compiles here (items 226, 227).
+///
+/// Three spellings reach a file, and the probe this replaces knew one of them:
+///
+/// * `mod name;` in the directory's `mod.rs` / `lib.rs` / `main.rs`, or in the NON-`mod.rs` parent
+///   `<dir>.rs` beside the directory (the 2018 layout) — with any visibility, see [`declares_mod`];
+/// * an untracked `<dir>/mod.rs`, which is module `<dir>` declared one directory UP (the old probe
+///   looked for `mod mod;` inside the untracked file's own directory);
+/// * `#[path = "rel"]`, resolved against the declaring file's directory, from any file in
+///   `path_declarers` — the form the row's own doc promised and nothing implemented.
+pub fn ghost_site(
+    f: &str,
+    read: &dyn Fn(&str) -> Option<String>,
+    path_declarers: &[(String, String)],
+) -> Option<String> {
+    let dir = parent_of(f);
+    let stem = f.rsplit('/').next().unwrap_or(f).trim_end_matches(".rs");
+    let (search_dir, name) = if stem == "mod" {
+        (parent_of(dir), dir.rsplit('/').next().unwrap_or(dir))
+    } else {
+        (dir, stem)
+    };
+    let mut probes = vec![
+        join(search_dir, "mod.rs"),
+        join(search_dir, "lib.rs"),
+        join(search_dir, "main.rs"),
+    ];
+    if !search_dir.is_empty() {
+        probes.push(format!("{search_dir}.rs"));
+    }
+    for probe in probes {
+        if probe == f {
+            continue;
+        }
+        if read(&probe).is_some_and(|text| declares_mod(&text, name)) {
+            return Some(probe);
+        }
+    }
+    for (declarer, text) in path_declarers {
+        let base = parent_of(declarer);
+        for chunk in text.split("#[path").skip(1) {
+            let Some(open) = chunk.find('"') else {
+                continue;
+            };
+            let Some(len) = chunk[open + 1..].find('"') else {
+                continue;
+            };
+            let rel = &chunk[open + 1..open + 1 + len];
+            if normalize(&join(base, rel)) == f {
+                return Some(declarer.clone());
+            }
+        }
+    }
+    None
+}
+
 /// Every verdict line across every slice document.
 ///
 /// A markdown table row is `| a | b | c | d |`. Splitting on `|` yields a leading and trailing
@@ -161,7 +314,26 @@ pub fn denominator(cx: &Ctx) -> Result<BTreeSet<String>, String> {
 /// separator rows (`---`) are skipped by shape rather than by position, so a slice that adds a
 /// preamble does not silently lose its first file.
 pub fn claims(cx: &Ctx, denom: &BTreeSet<String>) -> Result<Vec<Claim>, String> {
-    let docs = cx.git_lines(&["ls-files", SWEEP_DIR])?;
+    // THE SUBPROCESS CANNOT SEE THE PLANT.
+    //
+    // `git ls-files` shells out and reads the real filesystem, so a slice document planted into
+    // an Overlay is invisible to it. Taking it as the only source made every falsification case
+    // here INERT: the plant wrote a phantom, a prose verdict and a double claim, the gate saw
+    // none of them, and all three cases came back GREEN where RED was owed. A rule whose only
+    // input is a subprocess is falsifiable in CI and unfalsifiable on the bench — which is the
+    // half that gets run while the rule is being written.
+    //
+    // The tracked set is still the claim (committed evidence is the standard the `swept` row
+    // holds everyone to); the overlay is unioned on top so a plant is reachable.
+    let mut docs: Vec<String> = cx.git_lines(&["ls-files", SWEEP_DIR])?;
+    if let Some(ov) = cx.overlay() {
+        for p in ov.paths() {
+            let rel = p.to_string_lossy().to_string();
+            if rel.starts_with(SWEEP_DIR) && rel.ends_with(".md") && !docs.contains(&rel) {
+                docs.push(rel);
+            }
+        }
+    }
     let mut out = Vec::new();
     for doc in docs {
         let doc = doc.trim();
@@ -392,10 +564,12 @@ impl SweepCoverageGate {
         });
 
         // --- reachability axis -------------------------------------------------------------
-        let rs: BTreeSet<String> = match cx.git_lines(&["ls-files", "*.rs"]) {
-            Ok(v) => v.into_iter().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect(),
-            Err(_) => BTreeSet::new(),
-        };
+        // THE POPULATION IS THE DENOMINATOR'S `.rs` HALF, NOT A SECOND GIT QUERY (item 225). The
+        // row used to ask git again and turn an Err into an EMPTY set — an empty set has nothing
+        // missing, so an unanswerable question and a clean tree printed the same PASS. The
+        // denominator above is the same `ls-files '*.rs'` answer, already refused on Err and
+        // already held to its floor, so the row reads that one and cannot fake an answer.
+        let rs = rs_population(&denom);
         let prior = cx.read(PRIOR_SWEEP).unwrap_or_default();
         let mut verdicted: BTreeSet<String> = BTreeSet::new();
         for line in prior.lines() {
@@ -414,7 +588,16 @@ impl SweepCoverageGate {
             }
         }
         let missing: Vec<String> = rs.difference(&verdicted).cloned().collect();
-        rows.push(if missing.is_empty() {
+        rows.push(if rs.is_empty() {
+            Row::fail(
+                ROW_REACHABILITY,
+                "the reachability population is empty — the question went unanswered, and an \
+                 unanswered question is not a clean tree",
+                format!(
+                    "git listed no tracked .rs file; nothing was compared against {PRIOR_SWEEP}"
+                ),
+            )
+        } else if missing.is_empty() {
             Row::pass(
                 ROW_REACHABILITY,
                 "every tracked .rs file carries a reachability verdict in the prior sweep",
@@ -437,32 +620,40 @@ impl SweepCoverageGate {
 
         // --- compiles-and-tracked ------------------------------------------------------------
         // An untracked file that some module declares is a file that exists here and nowhere else.
-        let untracked = cx
-            .git_lines(&["ls-files", "--others", "--exclude-standard", "*.rs"])
-            .unwrap_or_default();
+        // The untracked listing is an ORACLE like any other: a git that could not answer is a row
+        // that could not run, never an empty list with no ghosts in it.
+        let untracked = match cx.git_lines(&["ls-files", "--others", "--exclude-standard", "*.rs"])
+        {
+            Ok(v) => v,
+            Err(e) => {
+                rows.push(Row::fail(
+                    ROW_TRACKED,
+                    "the untracked-file listing could not be read from git — an unanswered \
+                     question is not a clean tree",
+                    e,
+                ));
+                return rows;
+            }
+        };
+        let untracked: Vec<String> = untracked
+            .into_iter()
+            .map(|f| f.trim().to_string())
+            .filter(|f| !f.is_empty())
+            .collect();
+        // THE `#[path]` DECLARERS, read only when there is an untracked file to resolve: every
+        // tracked or untracked `.rs` whose text carries a `#[path` attribute.
+        let path_declarers: Vec<(String, String)> = if untracked.is_empty() {
+            Vec::new()
+        } else {
+            rs.iter()
+                .chain(untracked.iter())
+                .filter_map(|f| cx.read(f).ok().map(|t| (f.clone(), t)))
+                .filter(|(_, t)| t.contains("#[path"))
+                .collect()
+        };
         let mut ghosts: Vec<String> = Vec::new();
-        for f in untracked {
-            let f = f.trim();
-            if f.is_empty() {
-                continue;
-            }
-            let (dir, file) = match f.rsplit_once('/') {
-                Some((d, b)) => (d, b),
-                None => ("", f),
-            };
-            let stem = file.trim_end_matches(".rs");
-            // Search the sibling directory and its parent for a declaration of this module.
-            let mut declared_in: Option<String> = None;
-            for probe in [format!("{dir}/mod.rs"), format!("{dir}/lib.rs"), format!("{dir}/main.rs")] {
-                if let Ok(text) = cx.read(&probe) {
-                    let needle = format!("mod {stem};");
-                    if text.lines().any(|l| l.trim_start().trim_start_matches("pub ").starts_with(&needle)) {
-                        declared_in = Some(probe);
-                        break;
-                    }
-                }
-            }
-            if let Some(site) = declared_in {
+        for f in &untracked {
+            if let Some(site) = ghost_site(f, &|p| cx.read(p).ok(), &path_declarers) {
                 ghosts.push(format!("{f} (declared in {site})"));
             }
         }
@@ -565,5 +756,131 @@ impl Gate for SweepCoverageGate {
         ));
 
         report
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ITEM 225: the reachability population is the denominator's `.rs` half, so it is exactly as
+    /// answerable as the denominator — which is refused on Err and floored — and never an empty
+    /// stand-in for a failed query.
+    #[test]
+    fn the_reachability_population_is_the_denominators_rs_half() {
+        let denom: BTreeSet<String> = ["a/lib.rs", "Cargo.toml", "b/c.rs", "scripts/x.sh"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let rs = rs_population(&denom);
+        assert_eq!(
+            rs.into_iter().collect::<Vec<_>>(),
+            vec!["a/lib.rs".to_string(), "b/c.rs".to_string()]
+        );
+    }
+
+    fn reader<'a>(files: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |p: &str| {
+            files
+                .iter()
+                .find(|(f, _)| *f == p)
+                .map(|(_, t)| (*t).to_string())
+        }
+    }
+
+    /// ITEMS 226, 227: EVERY SPELLING OF A MODULE DECLARATION IS SEEN. The old probe stripped the
+    /// literal `"pub "` and saw only `mod x;` / `pub mod x;`.
+    #[test]
+    fn a_module_declared_with_any_visibility_or_attribute_is_declared() {
+        for line in [
+            "mod ghost;",
+            "pub mod ghost;",
+            "pub(crate) mod ghost;",
+            "pub(super) mod ghost;",
+            "pub(in crate::a) mod ghost;",
+            "#[cfg(test)] mod ghost;",
+            "    #[cfg(test)] pub(crate) mod ghost ;",
+        ] {
+            assert!(declares_mod(line, "ghost"), "{line}");
+        }
+        for line in [
+            "mod ghostly;",
+            "// mod ghost;",
+            "mod ghost {",
+            "pubmod ghost;",
+            "use ghost;",
+        ] {
+            assert!(!declares_mod(line, "ghost"), "{line}");
+        }
+    }
+
+    /// ITEMS 226, 227: THE GHOST IS FOUND WHEREVER IT IS DECLARED FROM — a restricted visibility in
+    /// the sibling `mod.rs`, the 2018 `<dir>.rs` parent, an untracked `<dir>/mod.rs` declared one
+    /// level up, and a `#[path]` attribute.
+    #[test]
+    fn an_untracked_file_declared_in_any_spelling_is_a_ghost() {
+        let files = [
+            ("crates/a/src/a2a/mod.rs", "pub(crate) mod ghost;\n"),
+            ("crates/b/src/cost.rs", "pub(super) mod repricer;\n"),
+            ("crates/c/src/lib.rs", "mod inner;\n"),
+        ];
+        let read = reader(&files);
+        assert_eq!(
+            ghost_site("crates/a/src/a2a/ghost.rs", &read, &[]).as_deref(),
+            Some("crates/a/src/a2a/mod.rs")
+        );
+        assert_eq!(
+            ghost_site("crates/b/src/cost/repricer.rs", &read, &[]).as_deref(),
+            Some("crates/b/src/cost.rs")
+        );
+        assert_eq!(
+            ghost_site("crates/c/src/inner/mod.rs", &read, &[]).as_deref(),
+            Some("crates/c/src/lib.rs")
+        );
+        let declarers = vec![(
+            "crates/d/src/runtime/mod.rs".to_string(),
+            "#[cfg(test)]\n#[path = \"../oracle/voice_oracle.rs\"]\nmod voice_oracle;\n"
+                .to_string(),
+        )];
+        assert_eq!(
+            ghost_site("crates/d/src/oracle/voice_oracle.rs", &read, &declarers).as_deref(),
+            Some("crates/d/src/runtime/mod.rs")
+        );
+        assert_eq!(
+            ghost_site("crates/a/src/a2a/stray.rs", &read, &declarers),
+            None
+        );
+    }
+
+    /// ITEM 234: THE HEADER TABLE NAMES EVERY OWED ROW. It listed five of seven, and one of the two
+    /// it left out is the highest-severity check in the file.
+    #[test]
+    fn the_header_table_names_every_owed_row() {
+        let src = include_str!("sweep_coverage.rs");
+        let header: Vec<&str> = src.lines().take_while(|l| l.starts_with("//!")).collect();
+        for id in SweepCoverageGate.owed() {
+            let short = id.trim_start_matches("sweep-coverage:");
+            let cell = format!("//! | `{short}` |");
+            assert!(
+                header.iter().any(|l| l.starts_with(&cell)),
+                "the module header's row table does not name `{short}`"
+            );
+        }
+    }
+
+    /// ITEM 225, ON THE REAL TREE: the row's population is the same set a direct `ls-files '*.rs'`
+    /// gives, so deriving it moved nothing.
+    #[test]
+    fn the_derived_population_equals_git_on_the_tree() {
+        let cx = Ctx::workspace().expect("workspace");
+        let denom = denominator(&cx).expect("the denominator");
+        let direct: BTreeSet<String> = cx
+            .git_lines(&["ls-files", "*.rs"])
+            .expect("git")
+            .into_iter()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        assert_eq!(rs_population(&denom), direct);
     }
 }

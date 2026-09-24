@@ -17,9 +17,9 @@
 
 use crate::mount::{open_governed, GovernedOpen, Ingress};
 use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
+use crate::testkit::fixture_host::{FixtureHost, GateScript};
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use busbar_kernel::plane_host::{EngineHost, GateOutcome};
-use crate::testkit::fixture_host::{FixtureHost, GateScript};
 use std::sync::Arc;
 
 /// The `streams:` container the voice plane files its operator hooks under.

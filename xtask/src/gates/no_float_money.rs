@@ -94,6 +94,12 @@
 //! ruling implemented twice, which is resolved to one implementation and not to a shim, and which
 //! is not touched here because that crate is inside a live crate fold.
 //!
+//! AND THE LIST GREW ONCE, BY MEASUREMENT (item 178). The "fixed" codec reads had moved their
+//! silent zero one call down, into `.and_then(read_count_u64).unwrap_or(0)`, and the accessor
+//! needles could not see the helper — so the allowances went away because the detector went blind,
+//! not because the sites did. [`COUNT_HELPERS`] makes them visible; the 32 it found are armed as
+//! pending under [`PENDING_CEILING`], which may only fall.
+//!
 //! # THE THIRD BAN: A PERSISTED COUNT WITHOUT ITS SCALE (#81a)
 //!
 //! A count is written down as its MANTISSA, which is meaningless without the scale beside it. #81a
@@ -193,6 +199,45 @@ pub const MONEY_INTAKE: &[MoneyIntake] = &[
         why: "The admission door's intake of the same configured figures: four micro-unit decimals               in, four integer nano-rates out, each one through the ledger's `nano_rate` so the               clamp and the rounding are the card's and not a second copy of them.",
     },
 ];
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// THE MONEY-EGRESS BOUNDARIES — WHERE A STORED INTEGER IS HANDED TO A FLOAT-ONLY SINK
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// ONE PLACE A MONEY FIGURE LEAVES THIS SYSTEM THROUGH AN API THAT ONLY TAKES A FLOAT.
+///
+/// The mirror of [`MoneyIntake`]. The `/metrics` exposition is the case that made this table: the
+/// `metrics` facade stores every gauge as floating-point bits (`Gauge::set<T: IntoF64>`, with no
+/// `IntoF64` for a 64-bit integer) and the Prometheus exporter prints that value, so the served
+/// spend figure has been a float since 1.5.x through no arithmetic of busbar's. The money stays an
+/// integer right up to that sink, and the conversion is ONE named function per listed file. The
+/// file is scanned whole; a float anywhere outside the named body — including a second function
+/// that does the same conversion under another name — is a finding.
+///
+/// AND THE RULE THAT MAKES "AT THE BOUNDARY" MEAN SOMETHING, mirrored from the intake's return-type
+/// rule: an egress boundary's PARAMETERS are checked, and a float in them is a finding. Integers go
+/// in; a boundary that TAKES a float was handed a figure that was already a float before it got
+/// there, which is a float on the money path one frame down the stack.
+pub struct MoneyEgress {
+    /// The repo-relative file the boundary lives in. It must also be in a scan set — an egress
+    /// exemption over a file nobody scans exempts nothing and hides that nobody scans it.
+    pub file: &'static str,
+    /// The FUNCTION that is the boundary, found by name. Absent is REFUSED, never "exempts nothing".
+    pub boundary: &'static str,
+    /// Why this sink forces a float at all.
+    pub why: &'static str,
+}
+
+/// EVERY MONEY-EGRESS BOUNDARY IN THE TREE, at most one per file. Read this table and [`MONEY_INTAKE`]
+/// and you have read the gate's whole exempt surface.
+pub const MONEY_EGRESS: &[MoneyEgress] = &[MoneyEgress {
+    file: "crates/busbar-kernel/src/metrics/money.rs",
+    boundary: "set_gauge",
+    why: "The `/metrics` money gauges (spend, budget-remaining, token counts): an `i64`/`u64` figure \
+          widened to `i128`, then handed to the `metrics` facade, whose gauge stores and the \
+          Prometheus exporter prints a float. Byte-identical to 1.5.5, which cast the same integer \
+          into the same gauge (item 24).",
+}];
 
 /// The `*_tests.rs` sibling, the `tests.rs` module and the `/tests/` tree are fixtures: a float in a
 /// test is a test's number, not the money path's, and a wire value a fixture spells any way it likes
@@ -324,6 +369,13 @@ const WAL_FLOOR: usize = 6;
 /// (`5fa320208`, R100) and was in no money scan set on either side of the move. MEASURED: zero
 /// `f64`/`f32` in it today.
 ///
+/// THE FOURTH ENTRY, ADDED 2026-09-23 (item 24): `metrics/money.rs` — THE SERVED MONEY GAUGES.
+/// `busbar_key_spend_cents`, `busbar_bucket_spend_cents` and `busbar_bucket_budget_remaining_cents`
+/// are money a customer scrapes, and they were published from `metrics.rs`, a file of routing
+/// weights and durations this list could not take whole (armed over it, it named fourteen floats,
+/// three of them money). The money gauges were split into their own file so it could be taken whole,
+/// and the one conversion the `metrics` facade forces is the declared [`MONEY_EGRESS`] boundary in it.
+///
 /// THE REST OF THE KERNEL STAYS OFF THIS LIST for the reason the paragraph above gives, and the
 /// measurement backs it: the kernel is 350-odd files of routing weights, health scores and backoff
 /// curves, all of them legitimate floats. PARK: this is SHAPE D and it is unclosed — nothing in the
@@ -332,6 +384,7 @@ const KERNEL_MONEY_FILES: &[&str] = &[
     "crates/busbar-kernel/src/billing.rs",
     "crates/busbar-kernel/src/cost.rs",
     "crates/busbar-kernel/src/rate_apply.rs",
+    "crates/busbar-kernel/src/metrics/money.rs",
 ];
 
 /// The float tokens a money path may not name. Word-boundary matched so `nf64` or an identifier that
@@ -462,6 +515,18 @@ const SUPERSEDED_SEAM: &str = "crates/busbar-llm-codec/src/usage_count.rs";
 /// pair because a count that arrives through a double has already lost the exactness #81 requires.
 pub const NUMBER_ACCESSORS: &[&str] = &["as_u64", "as_i64", "as_f64", "as_u128", "as_i128"];
 
+/// THE HOUSE COUNT READERS: a helper that answers `Option<count>` for a JSON value, where `None`
+/// means "present and unreadable" as well as "absent". Defaulting one to zero is the SAME silent
+/// zero the accessors above produce — the helper only moved it one call down (item 178).
+///
+/// `read_count_u64` is the LLM codec's own seam, and every billed read in that crate goes through
+/// it. The accessor list alone could not see a single one of them: the needle is `read_count_u64`,
+/// not `as_u64`, so 32 live `.and_then(read_count_u64).unwrap_or(0)` sites read as a clean tree
+/// while the row's title promised the opposite. The seam's own doc names the idiom as the defect
+/// (`usage_count.rs`: "Why this exists rather than `.and_then(read_count_u64).unwrap_or(0)`") and
+/// points at `billed_count`, which keeps absent-is-zero and makes unreadable a refusal.
+pub const COUNT_HELPERS: &[&str] = &["read_count_u64"];
+
 /// A default's argument, whitespace removed, that silently substitutes NOTHING for a count. A
 /// NON-zero default (`unwrap_or(idx as u64)`) is deliberately out of scope: it substitutes a value
 /// the author chose and named, which is a different act from recording that no work happened.
@@ -517,6 +582,13 @@ pub struct Allow {
 
 /// How far back from a match the allowance needle is looked for.
 const ALLOW_WINDOW: usize = 200;
+
+/// THE MOST [`AllowClass::PendingConversion`] HITS THE ROW WILL CARRY. Armed 2026-09-23 at the
+/// number measured the day [`COUNT_HELPERS`] made the codec's 32 helper reads visible: 5 in the
+/// voice codec plus those 32. A needle names a site's shape, not its count, so without this a
+/// second defaulted read beside an allowed one rode the same allowance for free. It may only go
+/// DOWN, in the diff that converts a site; a run above it is a finding.
+pub const PENDING_CEILING: usize = 37;
 
 /// THE SURVIVING SITES, EVERY ONE NAMED AND REASONED. Measured 2026-09-22 against this tree.
 ///
@@ -617,6 +689,57 @@ pub const ALLOWED_COUNT_READS: &[Allow] = &[
         needle: "get(\"cachedContentTokenCount\")",
         class: AllowClass::PendingConversion,
         why: "a billed count that reads zero when the provider spells it as a float",
+    },
+    // ── ARMED 2026-09-23 (item 178): the LLM codec's billed reads through its own helper ───────
+    //
+    // Invisible to this row until the helper joined [`COUNT_HELPERS`]: every one of them is
+    // `.and_then(read_count_u64).unwrap_or(0)`, which records ZERO for a usage count that was
+    // present and unreadable. Measured on the day the row learned to see them: 32 sites across
+    // these seven files, every one a real billed count. They are armed here at that number — the
+    // row could not see them, so this is the first measurement, not a relaxation — and
+    // [`PENDING_CEILING`] holds the total so no file on this list can add one. The fix each one is
+    // owed is `usage_count::billed_count`, which keeps absent-is-zero and REFUSES unreadable.
+    Allow {
+        file: "crates/busbar-llm-codec/src/anthropic/reader.rs",
+        needle: "read_count_u64",
+        class: AllowClass::PendingConversion,
+        why: "a billed count defaulted to zero through the codec's own helper; owed billed_count",
+    },
+    Allow {
+        file: "crates/busbar-llm-codec/src/bedrock/reader.rs",
+        needle: "read_count_u64",
+        class: AllowClass::PendingConversion,
+        why: "a billed count defaulted to zero through the codec's own helper; owed billed_count",
+    },
+    Allow {
+        file: "crates/busbar-llm-codec/src/cohere/reader.rs",
+        needle: "read_count_u64",
+        class: AllowClass::PendingConversion,
+        why: "a billed count defaulted to zero through the codec's own helper; owed billed_count",
+    },
+    Allow {
+        file: "crates/busbar-llm-codec/src/gemini/mod.rs",
+        needle: "read_count_u64",
+        class: AllowClass::PendingConversion,
+        why: "a billed count defaulted to zero through the codec's own helper; owed billed_count",
+    },
+    Allow {
+        file: "crates/busbar-llm-codec/src/gemini/reader.rs",
+        needle: "read_count_u64",
+        class: AllowClass::PendingConversion,
+        why: "a billed count defaulted to zero through the codec's own helper; owed billed_count",
+    },
+    Allow {
+        file: "crates/busbar-llm-codec/src/openai_chat/reader.rs",
+        needle: "read_count_u64",
+        class: AllowClass::PendingConversion,
+        why: "a billed count defaulted to zero through the codec's own helper; owed billed_count",
+    },
+    Allow {
+        file: "crates/busbar-llm-codec/src/openai_responses/reader.rs",
+        needle: "read_count_u64",
+        class: AllowClass::PendingConversion,
+        why: "a billed count defaulted to zero through the codec's own helper; owed billed_count",
     },
 ];
 
@@ -743,10 +866,14 @@ type IntakeSpans = std::collections::BTreeMap<String, Vec<(usize, usize)>>;
 fn scan_file(rel: &str, text: &str, exempt: &IntakeSpans, offenders: &mut Vec<String>) {
     let spans = exempt.get(rel).map(Vec::as_slice).unwrap_or(&[]);
     let mut in_block = false;
+    let mut lex = scan::LexState::default();
     for (i, raw) in text.lines().enumerate() {
         // Comments stripped, string literals intact — a float in prose about the ban is exempt, a
         // float in code is not.
         let code = scan::strip_comment_line(raw, &mut in_block);
+        // The SAME line with every literal's contents blanked too, for the spellings below: a
+        // version string `"1.0"` is not a float, and `1.0` in code is.
+        let blanked = scan::blank_code(raw, &mut lex);
         let line = i + 1;
         if spans
             .iter()
@@ -759,7 +886,98 @@ fn scan_file(rel: &str, text: &str, exempt: &IntakeSpans, offenders: &mut Vec<St
                 offenders.push(finding(rel, line, token));
             }
         }
+        for spelled in float_spellings(&blanked) {
+            offenders.push(finding(rel, line, &spelled));
+        }
     }
+}
+
+/// EVERY OTHER WAY A FLOAT IS SPELLED ON A LINE (item 213). [`FLOAT_TOKENS`] is a case-sensitive
+/// whole-word match on `f64`/`f32`, and a float does not have to be written that way to be on the
+/// line: `(factor * 1_000_000_000.0) as u128` names no float type and IS float arithmetic, and so
+/// is `let mut acc = 0.0;`. Four spellings, each a real Rust float:
+///
+/// * a FLOAT LITERAL — `1.0`, `1_000.5`, `0.25` (a digit, a dot, a digit; a tuple index `x.0.1`
+///   and a range `0..5` are not);
+/// * an EXPONENT LITERAL — `1e9`, `2.5E-3`, which Rust types as a float with no dot at all;
+/// * a SUFFIXED LITERAL — `0f64`, `1_f32`, `2.5f64`, where the word match misses because the digit
+///   before the `f` is part of the same word;
+/// * a float TYPE NAMED INSIDE AN IDENTIFIER — `SignalValue::F64`, `as_f64`, `to_f32`, where one
+///   `_`-separated segment is `f64`/`f32` in either case. The bare `f64`/`f32` is left to
+///   [`FLOAT_TOKENS`], so one token is never reported twice.
+///
+/// Reads a line whose literals and comments [`scan::blank_code`] has already blanked.
+fn float_spellings(blanked: &str) -> Vec<String> {
+    let chars: Vec<char> = blanked.chars().collect();
+    let wordy = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let prev = i.checked_sub(1).map(|p| chars[p]);
+        if !wordy(c) || prev.is_some_and(wordy) {
+            i += 1;
+            continue;
+        }
+        // A token begins here. A number directly after a `.` is a tuple index or a field, never a
+        // literal, so it is read and skipped as one.
+        let start = i;
+        while i < chars.len() && wordy(chars[i]) {
+            i += 1;
+        }
+        if c.is_ascii_digit() {
+            if prev == Some('.') {
+                continue;
+            }
+            let mut dotted = false;
+            if i + 1 < chars.len() && chars[i] == '.' && chars[i + 1].is_ascii_digit() {
+                dotted = true;
+                i += 1;
+                while i < chars.len() && wordy(chars[i]) {
+                    i += 1;
+                }
+            }
+            // `1e-9` / `1.5E+3`: the sign splits the word, so the exponent is read through it.
+            if i + 1 < chars.len()
+                && matches!(chars[i], '+' | '-')
+                && matches!(chars[i - 1], 'e' | 'E')
+                && chars[i + 1].is_ascii_digit()
+            {
+                i += 1;
+                while i < chars.len() && wordy(chars[i]) {
+                    i += 1;
+                }
+            }
+            let lit: String = chars[start..i].iter().collect();
+            let lower = lit.to_ascii_lowercase();
+            let radix =
+                lower.starts_with("0x") || lower.starts_with("0o") || lower.starts_with("0b");
+            let suffixed = lower.ends_with("f64") || lower.ends_with("f32");
+            let exponent = !radix
+                && lower.char_indices().any(|(k, ch)| {
+                    ch == 'e'
+                        && k > 0
+                        && lower[..k]
+                            .chars()
+                            .all(|d| d.is_ascii_digit() || d == '_' || d == '.')
+                });
+            if (!radix && (dotted || exponent)) || (!radix && suffixed) {
+                out.push(lit);
+            }
+            continue;
+        }
+        let ident: String = chars[start..i].iter().collect();
+        if FLOAT_TOKENS.contains(&ident.as_str()) {
+            continue;
+        }
+        if ident
+            .split('_')
+            .any(|seg| FLOAT_TOKENS.contains(&seg.to_ascii_lowercase().as_str()))
+        {
+            out.push(ident);
+        }
+    }
+    out
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -773,6 +991,8 @@ struct Boundary {
     last_line: usize,
     /// The return type as declared, or `""` for a boundary that returns unit.
     returns: String,
+    /// The parameter list as declared, from the first `(` to the last `)` of the header.
+    params: String,
 }
 
 /// Is this line the declaration of `fn <name>`?
@@ -839,10 +1059,17 @@ fn find_boundary(text: &str, name: &str) -> Option<Boundary> {
         .map(|at| header[at..].trim().to_string())
         .unwrap_or_default();
 
+    // THE PARAMETERS are the header from its first `(` to that same last `)`.
+    let params = match (header.find('('), header.rfind(')')) {
+        (Some(open), Some(close)) if open < close => header[open..=close].to_string(),
+        _ => String::new(),
+    };
+
     Some(Boundary {
         first_line: start + 1,
         last_line: last? + 1,
         returns,
+        params,
     })
 }
 
@@ -856,6 +1083,17 @@ fn returns_float(intake: &MoneyIntake, b: &Boundary) -> Option<String> {
          INTEGER; a float returned from the intake is a float that survived it, and every caller of \
          it is runtime money path",
         intake.file, b.first_line, intake.boundary, b.returns, token
+    ))
+}
+
+/// THE EGRESS MIRROR OF [`returns_float`]: integers go IN to an egress boundary. A boundary that
+/// takes a float was handed a figure that was already a float, which is the finding one frame down.
+fn takes_float(egress: &MoneyEgress, b: &Boundary) -> Option<String> {
+    let token = FLOAT_TOKENS.iter().find(|t| word_hit(&b.params, t))?;
+    Some(format!(
+        "{}:{}: the money-egress boundary `fn {}` TAKES a float (`{}` in `{}`) — money reaches an \
+         egress boundary as an INTEGER; a float handed to it is a float on the money path before it",
+        egress.file, b.first_line, egress.boundary, token, b.params
     ))
 }
 
@@ -991,7 +1229,7 @@ fn zero_default_after(flat: &Flat, i: usize) -> Option<usize> {
 fn scan_count_reads(text: &str) -> Vec<CountHit> {
     let flat = flatten(text);
     let mut hits = Vec::new();
-    for &accessor in NUMBER_ACCESSORS {
+    for &accessor in NUMBER_ACCESSORS.iter().chain(COUNT_HELPERS) {
         for start in word_positions(&flat.text, accessor) {
             let Some(end) = zero_default_after(&flat, start + accessor.len()) else {
                 continue;
@@ -1029,6 +1267,18 @@ fn row_count_read(scan: &CountReadScan) -> Row {
                  read records zero for work that really happened",
                 scan.offenders.len(),
                 scan.offenders.join(" | ")
+            ),
+        );
+    }
+    if scan.pending > PENDING_CEILING {
+        return Row::fail(
+            ROW_COUNT_READ,
+            "a count is read with a silent zero default instead of a refusal (#81)",
+            format!(
+                "{} defaulted count read(s) ride a pending-conversion allowance, above the armed \
+                 ceiling of {PENDING_CEILING} — a NEW silent zero landed beside an allowed one; \
+                 read it through `billed_count` so an unreadable count REFUSES",
+                scan.pending
             ),
         );
     }
@@ -1117,7 +1367,16 @@ fn row_count_scale(offenders: &[String]) -> Row {
 ///
 /// The floor is applied to the UNION, not to each home, so a file that moved from one home in the
 /// group to another is invisible here and a set that emptied out of all of them is not.
+///
+/// THE UNION IS A SET OF PATHS, NOT A SUM OF WALKS (item 214). A group may name one home inside
+/// another — the agent group names `crates/busbar-a2a/src/a2a` AND `crates/busbar-a2a/src` — and
+/// summing one walk per home counted the 34 nested files twice: 85 against a floor of 40 where the
+/// distinct count is 51. A whole home could then leave the tree and the doubled remainder still
+/// cleared the floor, so the area never went red for the move its own doc says it reds for. Each
+/// file is kept once, by its repo-relative path, and the floor is held against that count. The
+/// same dedup keeps a nested file from being SCANNED twice, which doubled its findings.
 fn walk_area(cx: &Ctx, area: &CountRoot) -> Result<Vec<crate::ctx::SourceFile>, String> {
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut files = Vec::new();
     for home in area.homes {
         let spec = WalkSpec::new([*home]).ext("rs").exclude([
@@ -1128,12 +1387,12 @@ fn walk_area(cx: &Ctx, area: &CountRoot) -> Result<Vec<crate::ctx::SourceFile>, 
         // A home that is not there is a home the fold has already emptied; the floor over the union
         // is what says whether the AREA is still being scanned.
         if let Ok(found) = cx.walk(&spec) {
-            files.extend(found);
+            files.extend(found.into_iter().filter(|f| seen.insert(f.rel_str())));
         }
     }
     if files.len() < area.floor {
         return Err(format!(
-            "{}: {} production file(s) across {}, below the floor of {}",
+            "{}: {} distinct production file(s) across {}, below the floor of {}",
             area.area,
             files.len(),
             area.homes.join(" + "),
@@ -1357,6 +1616,55 @@ impl Gate for NoFloatMoneyGate {
             }
         }
 
+        // ── THE MONEY-EGRESS BOUNDARIES ───────────────────────────────────────────────────────
+        //
+        // Each one is FOUND by name in its file, holds to "integers go in", and exempts exactly its
+        // own body. Its file must already be in a scan set: the exemption is a span inside a scanned
+        // file, never a way to name a file nobody reads. One boundary per file — a second row for the
+        // same file would be a second exempt conversion, which is what the table exists to refuse.
+        let mut egress_seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        for egress in MONEY_EGRESS {
+            if !egress_seen.insert(egress.file) {
+                float_scan_problems.push(format!(
+                    "{}: declares a SECOND money-egress boundary (`fn {}`) — one conversion per \
+                     file, and a second is a float outside the first",
+                    egress.file, egress.boundary
+                ));
+                continue;
+            }
+            let Some(src) = named_files
+                .iter()
+                .chain(ledger_files.iter())
+                .chain(budget_files.iter())
+                .chain(whole_crate_files.iter())
+                .find(|f| f.rel_str() == egress.file)
+            else {
+                float_scan_problems.push(format!(
+                    "{}: a declared money-egress boundary in a file no money scan set reads (or a \
+                     file that is not there) — add the file to a scan set, or move the row with \
+                     the file",
+                    egress.file
+                ));
+                continue;
+            };
+            let Some(b) = find_boundary(&src.text, egress.boundary) else {
+                float_scan_problems.push(format!(
+                    "{}: the declared money-egress boundary `fn {}` is not in that file — the \
+                     exemption names a function that is not there, so either the boundary moved \
+                     (move this row with it, in the diff that moves it) or the table is stale",
+                    egress.file, egress.boundary
+                ));
+                continue;
+            };
+            if let Some(escaped) = takes_float(egress, &b) {
+                offenders.push(escaped);
+            }
+            intake_spans
+                .entry(egress.file.to_string())
+                .or_default()
+                .push((b.first_line, b.last_line));
+        }
+
         for f in &ledger_files {
             scan_file(&f.rel_str(), &f.text, &intake_spans, &mut offenders);
         }
@@ -1514,6 +1822,21 @@ impl Gate for NoFloatMoneyGate {
             &[&float_ty],
         ));
 
+        // ITEM 213: A FLOAT THAT NEVER SPELLS ITS TYPE IS FLAGGED. A signal variant, a float
+        // literal and an inferred accumulator — the line names neither type word.
+        report.push(plant(
+            cx,
+            self,
+            "a float spelled as a literal and a signal variant, never as the type word, is flagged",
+            &[ROW_NO_FLOAT],
+            &format!("{LEDGER_SRC}/planted_unspelled_float.rs"),
+            Edit::Create(
+                "pub fn drift(v: Signal) -> u128 {\n    match v { Signal::F64(k) => (k * 1_000_000_000.0) as u128, _ => 0 }\n}\n"
+                    .to_string(),
+            ),
+            &["planted_unspelled_float", "1_000_000_000.0"],
+        ));
+
         // A FLOAT IN A NAMED BINARY MONEY FILE IS FLAGGED.
         report.push(plant(
             cx,
@@ -1657,6 +1980,123 @@ impl Gate for NoFloatMoneyGate {
             )),
         }
 
+        // ── THE MONEY-EGRESS BOUNDARY (`metrics/money.rs` :: `set_gauge`, item 24) ─────────────
+        //
+        // Six claims, one case each: the file is scanned and a float outside the boundary goes red;
+        // a SECOND conversion under another name goes red; the boundary's own body does not; the
+        // boundary must still be where the table says; integers go in; and the file itself cannot
+        // drop out of the scan set.
+        let egress = &MONEY_EGRESS[0];
+
+        // 1. A FLOAT IN THE EGRESS FILE, OUTSIDE ITS BOUNDARY, IS FLAGGED. This is the case that
+        //    could not exist before item 24: the served spend gauges were in no scan set at all.
+        report.push(plant(
+            cx,
+            self,
+            "a float in the money-egress file, outside its boundary, is flagged",
+            &[ROW_NO_FLOAT],
+            egress.file,
+            Edit::Append(format!(
+                "\npub fn planted_spend(cents: i64) -> {float_ty} {{ cents as {float_ty} / 100.0 }}\n"
+            )),
+            &[&float_ty, "metrics/money.rs"],
+        ));
+
+        // 2. A SECOND BOUNDARY — the same conversion under another name — IS FLAGGED. One named
+        //    function is the exemption; a copy of it beside the original is a float outside it.
+        report.push(plant(
+            cx,
+            self,
+            "a second conversion function beside the money-egress boundary is flagged",
+            &[ROW_NO_FLOAT],
+            egress.file,
+            Edit::Append(format!(
+                "\npub(super) fn set_gauge_too(gauge: metrics::Gauge, value: i64) {{\n    gauge.set(value as {float_ty});\n}}\n"
+            )),
+            &[&float_ty, "metrics/money.rs"],
+        ));
+
+        // 3. A FLOAT INSIDE THE BOUNDARY'S OWN BODY STAYS GREEN — that is the one conversion the
+        //    float-only sink forces. Planted inside the measured span, so this and case 1 differ in
+        //    exactly where in the file the float sits.
+        match body_plant(
+            cx,
+            egress.file,
+            egress.boundary,
+            &format!("let _planted_again: {float_ty} = exact as {float_ty};"),
+        ) {
+            Ok(ov) => report.push(Case {
+                name:
+                    "a float INSIDE the money-egress boundary stays green (the sink's conversion)"
+                        .to_string(),
+                covers: vec![ROW_NO_FLOAT.to_string()],
+                expected: crate::gates::Expect::Green,
+                got: verdict_expect(self, &cx.with_overlay(ov)),
+            }),
+            Err(e) => report.note_infra_failure(format!(
+                "no-float-money selftest: could not plant inside {}'s egress boundary ({e})",
+                egress.file
+            )),
+        }
+
+        // 4. A DECLARED EGRESS BOUNDARY THAT IS NOT THERE EXEMPTS NOTHING AND IS REFUSED.
+        match rename_fn(cx, egress.file, egress.boundary) {
+            Ok(ov) => report.push(prove_red(
+                cx,
+                self,
+                "a declared money-egress boundary that is no longer in its file is refused",
+                &[ROW_SCAN_FLOOR],
+                ov,
+                &["is not in that file"],
+            )),
+            Err(e) => report.note_infra_failure(format!(
+                "no-float-money selftest: could not rename {}'s egress boundary ({e})",
+                egress.file
+            )),
+        }
+
+        // 5. AN EGRESS BOUNDARY THAT TAKES A FLOAT WAS HANDED ONE: the money was a float before it.
+        match cx.read(egress.file) {
+            Ok(text) => {
+                let from = "value: impl Into<i128>)";
+                let to = format!("value: {float_ty})");
+                if text.contains(from) {
+                    let mut ov = Overlay::new();
+                    ov.set(egress.file, text.replacen(from, &to, 1));
+                    report.push(prove_red(
+                        cx,
+                        self,
+                        "a money-egress boundary that TAKES a float is refused",
+                        &[ROW_NO_FLOAT],
+                        ov,
+                        &["TAKES"],
+                    ));
+                } else {
+                    report.note_infra_failure(format!(
+                        "no-float-money selftest: {}'s boundary no longer spells `{from}`, so the \
+                         float-parameter plant has nothing to replace",
+                        egress.file
+                    ));
+                }
+            }
+            Err(e) => report.note_infra_failure(format!(
+                "no-float-money selftest: could not read the egress file {} ({e})",
+                egress.file
+            )),
+        }
+
+        // 6. AND THE EGRESS FILE VANISHING IS A SCAN-SET INTEGRITY FAILURE, not an empty scan.
+        let mut ov = Overlay::new();
+        ov.remove(std::path::Path::new(egress.file));
+        report.push(prove_red(
+            cx,
+            self,
+            "the money-egress file dropping out of the tree is refused",
+            &[ROW_SCAN_FLOOR],
+            ov,
+            &["metrics/money.rs"],
+        ));
+
         // A FLOAT UNDER A `/tests/` DIRECTORY IS A FIXTURE'S NUMBER, not the money path's.
         let mut ov = Overlay::new();
         ov.set(
@@ -1725,6 +2165,17 @@ impl Gate for NoFloatMoneyGate {
             ("the as_i64 sibling", "v.as_i64().unwrap_or(0)"),
             ("the as_f64 sibling", "v.as_f64().unwrap_or(0.0)"),
             ("an unwrap_or_else zero", "v.as_u64().unwrap_or_else(|| 0)"),
+            // ITEM 178: THE CODEC'S OWN COUNT HELPER. Its `None` means "present and unreadable"
+            // as well as "absent", so a zero default on it is the same silent zero — and every
+            // billed read in the codec is spelled this way, none of which the row could see.
+            (
+                "the count helper, path form",
+                "Some(v).and_then(crate::usage_count::read_count_u64).unwrap_or(0)",
+            ),
+            (
+                "the count helper, call form",
+                "read_count_u64(v).unwrap_or_default()",
+            ),
             (
                 "a line break inside the chain",
                 "v\n        .as_u64()\n        .unwrap_or(0)",
@@ -1897,42 +2348,45 @@ const CARD_BUILD_BOUNDARY_REL: &str = "crates/busbar-kernel-ledger/src/cost/rate
 /// before the line the body closes on. Textual, like the scan it is planted for: the point is where
 /// the line SITS, not what it compiles to.
 fn intake_body_plant(cx: &Ctx, intake: &MoneyIntake, stmt: &str) -> Result<Overlay, String> {
-    let text = cx.read(intake.file)?;
-    let b = find_boundary(&text, intake.boundary).ok_or_else(|| {
-        format!(
-            "{}: `fn {}` is not in the file, so there is no body to plant inside",
-            intake.file, intake.boundary
-        )
+    body_plant(cx, intake.file, intake.boundary, stmt)
+}
+
+/// The same plant for any named boundary — intake or egress.
+fn body_plant(cx: &Ctx, file: &str, boundary: &str, stmt: &str) -> Result<Overlay, String> {
+    let text = cx.read(file)?;
+    let b = find_boundary(&text, boundary).ok_or_else(|| {
+        format!("{file}: `fn {boundary}` is not in the file, so there is no body to plant inside")
     })?;
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
     if b.last_line == 0 || b.last_line > lines.len() {
-        return Err(format!(
-            "{}: the boundary's body has no last line",
-            intake.file
-        ));
+        return Err(format!("{file}: the boundary's body has no last line"));
     }
     lines.insert(b.last_line - 1, format!("    {stmt}"));
     let mut ov = Overlay::new();
-    ov.set(intake.file, format!("{}\n", lines.join("\n")));
+    ov.set(file, format!("{}\n", lines.join("\n")));
     Ok(ov)
 }
 
 /// An overlay in which the declared boundary has been renamed out from under the table row that
 /// names it.
 fn rename_boundary(cx: &Ctx, intake: &MoneyIntake) -> Result<Overlay, String> {
-    let text = cx.read(intake.file)?;
+    rename_fn(cx, intake.file, intake.boundary)
+}
+
+/// The same rename for any named boundary — intake or egress.
+fn rename_fn(cx: &Ctx, file: &str, boundary: &str) -> Result<Overlay, String> {
+    let text = cx.read(file)?;
     let renamed = text.replace(
-        &format!("fn {}", intake.boundary),
-        &format!("fn {}_moved_away", intake.boundary),
+        &format!("fn {boundary}"),
+        &format!("fn {boundary}_moved_away"),
     );
     if renamed == text {
         return Err(format!(
-            "{}: nothing to rename — `fn {}` is not spelled in that file",
-            intake.file, intake.boundary
+            "{file}: nothing to rename — `fn {boundary}` is not spelled in that file"
         ));
     }
     let mut ov = Overlay::new();
-    ov.set(intake.file, renamed);
+    ov.set(file, renamed);
     Ok(ov)
 }
 
@@ -2082,6 +2536,187 @@ mod tests {
         let src = "fn not_the_rate(x: u64) -> u64 { x }\nfn the_rate(x: f64) -> u64 { x as u64 }\n";
         let b = find_boundary(src, "the_rate").expect("the boundary");
         assert_eq!(b.first_line, 2);
+    }
+
+    /// THE EGRESS TABLE IS SURFACE TOO, so it has to be true of the tree: every declared egress
+    /// boundary is where it says it is, takes no float, is the only one in its file, and its file
+    /// is in a money scan set.
+    #[test]
+    fn every_declared_egress_boundary_is_found_takes_an_integer_and_is_scanned() {
+        let cx = cx();
+        let mut seen = std::collections::BTreeSet::new();
+        for egress in MONEY_EGRESS {
+            assert!(
+                seen.insert(egress.file),
+                "{}: two egress boundaries",
+                egress.file
+            );
+            assert!(
+                KERNEL_MONEY_FILES.contains(&egress.file)
+                    || BINARY_MONEY_FILES.contains(&egress.file)
+                    || CONTRACT_MONEY_FILES.contains(&egress.file),
+                "{}: the egress file is in no named money scan set",
+                egress.file
+            );
+            let text = cx
+                .read(egress.file)
+                .unwrap_or_else(|e| panic!("{}: {e}", egress.file));
+            let b = find_boundary(&text, egress.boundary).unwrap_or_else(|| {
+                panic!("{}: `fn {}` was not found", egress.file, egress.boundary)
+            });
+            assert!(
+                b.first_line < b.last_line,
+                "{}: measured backwards",
+                egress.file
+            );
+            assert!(
+                takes_float(egress, &b).is_none(),
+                "{}: `fn {}` takes `{}`",
+                egress.file,
+                egress.boundary,
+                b.params
+            );
+        }
+    }
+
+    /// A float outside the egress boundary is a finding; the same float inside it is not.
+    #[test]
+    fn a_float_outside_the_egress_boundary_is_a_finding_and_inside_is_not() {
+        let src = "pub(super) fn set_gauge(g: G, value: i64) {\n    g.set(value as f64);\n}\n\
+                   pub fn leak(c: i64) -> f64 {\n    c as f64\n}\n";
+        let b = find_boundary(src, "set_gauge").expect("boundary");
+        let mut spans: IntakeSpans = std::collections::BTreeMap::new();
+        spans.insert("m.rs".into(), vec![(b.first_line, b.last_line)]);
+        let mut offenders = Vec::new();
+        scan_file("m.rs", src, &spans, &mut offenders);
+        assert_eq!(offenders.len(), 2, "{offenders:?}");
+        assert!(offenders
+            .iter()
+            .all(|o| o.starts_with("m.rs:4:") || o.starts_with("m.rs:5:")));
+        let taking = find_boundary("fn set_gauge(g: G, v: f64) {\n}\n", "set_gauge").unwrap();
+        assert!(takes_float(&MONEY_EGRESS[0], &taking).is_some());
+    }
+
+    /// ITEM 214: A HOME NESTED INSIDE ANOTHER IS COUNTED ONCE. The floor is set one above the
+    /// distinct count of the outer home, and the inner home adds no file the outer one lacks — so
+    /// the area is below its floor. A walk that summed per-home counted the inner home's files
+    /// twice and cleared it.
+    #[test]
+    fn a_nested_home_is_counted_once_against_the_area_floor() {
+        let cx = cx();
+        const OUTER: &[&str] = &["crates/busbar-a2a/src"];
+        let inner = "crates/busbar-a2a/src/a2a";
+        let alone = walk_area(
+            &cx,
+            &CountRoot {
+                area: "outer alone",
+                homes: OUTER,
+                floor: 1,
+            },
+        )
+        .expect("the outer home walks");
+        let nested_count = alone
+            .iter()
+            .filter(|f| f.rel_str().starts_with(&format!("{inner}/")))
+            .count();
+        assert!(nested_count > 0, "the control needs a populated inner home");
+        let floor = alone.len() + 1;
+        let homes: &'static [&'static str] =
+            &["crates/busbar-a2a/src/a2a", "crates/busbar-a2a/src"];
+        let got = walk_area(
+            &cx,
+            &CountRoot {
+                area: "nested",
+                homes,
+                floor,
+            },
+        );
+        match got {
+            Err(e) => assert!(e.contains(&format!("{} distinct", alone.len())), "{e}"),
+            Ok(files) => panic!(
+                "{} file(s) cleared a floor of {floor} over {} distinct — the nested home was \
+                 counted twice",
+                files.len(),
+                alone.len()
+            ),
+        }
+    }
+
+    /// ITEM 213: A FLOAT NOT SPELLED `f64`/`f32` IS STILL A FLOAT. Every line below is float
+    /// arithmetic or a float type, and none of them carries the bare word the old match needed;
+    /// the control lines below them are integers and must stay clean.
+    #[test]
+    fn a_float_spelled_without_the_type_word_is_a_finding() {
+        let src = "pub fn rate(v: SignalValue) -> u128 {\n\
+                   \x20   match v { SignalValue::F64(factor) => (factor * 1_000_000_000.0) as u128, _ => 0 }\n\
+                   }\n\
+                   pub fn acc() -> u64 { let mut a = 0.0; a += 1.5; a as u64 }\n\
+                   pub fn e() -> u64 { 1e9 as u64 }\n\
+                   pub fn e2() -> u64 { 2.5E-3 as u64 }\n\
+                   pub fn sfx() -> u64 { 0f64 as u64 }\n\
+                   pub fn j(v: &Value) -> u64 { v.as_f64().map(|x| x as u64).unwrap_or(1) }\n\
+                   pub fn ints(t: (u64, (u64, u64))) -> u64 { let _r = 0..5; let _h = 0xE5; let _s = 12usize; let _v = \"1.0\"; t.1.0 + 1_000 + 7u64.max(2) }\n";
+        let mut offenders = Vec::new();
+        scan_file("m.rs", src, &IntakeSpans::new(), &mut offenders);
+        let lines: std::collections::BTreeSet<&str> = offenders
+            .iter()
+            .map(|o| o.split(':').nth(1).unwrap_or_default())
+            .collect();
+        assert_eq!(
+            lines,
+            ["2", "4", "5", "6", "7", "8"].into_iter().collect(),
+            "{offenders:#?}"
+        );
+        for spelled in [
+            "`F64`",
+            "`1_000_000_000.0`",
+            "`0.0`",
+            "`1.5`",
+            "`1e9`",
+            "`2.5E-3`",
+            "`0f64`",
+            "`as_f64`",
+        ] {
+            assert!(
+                offenders.iter().any(|o| o.contains(spelled)),
+                "{spelled} was not named: {offenders:#?}"
+            );
+        }
+    }
+
+    /// ITEM 178: A ZERO DEFAULT ON THE CODEC'S COUNT HELPER IS THE SAME SILENT ZERO. The accessor
+    /// list alone saw none of the 32 live `.and_then(read_count_u64).unwrap_or(0)` sites.
+    #[test]
+    fn a_defaulted_read_through_the_count_helper_is_a_hit() {
+        let src = "fn f(u: &Value) -> u64 {\n    u.get(\"input_tokens\")\n        \
+                   .and_then(crate::usage_count::read_count_u64)\n        .unwrap_or(0)\n}\n\
+                   fn g(v: &Value) -> u64 { read_count_u64(v).unwrap_or_default() }\n\
+                   fn h(v: &Value) -> Option<u64> { read_count_u64(v) }\n";
+        let hits = scan_count_reads(src);
+        let lines: Vec<(usize, &str)> = hits.iter().map(|h| (h.line, h.accessor)).collect();
+        assert_eq!(
+            lines,
+            vec![(3, "read_count_u64"), (6, "read_count_u64")],
+            "the helper defaulted to zero must be a hit, and the undefaulted read must not"
+        );
+    }
+
+    /// ITEM 178: THE PENDING ALLOWANCES ARE HELD TO THEIR ARMED NUMBER. A needle names a shape, so
+    /// a second site beside an allowed one would otherwise ride it for free.
+    #[test]
+    fn pending_conversions_above_the_ceiling_are_a_finding() {
+        let at = CountReadScan {
+            offenders: Vec::new(),
+            used: std::collections::BTreeSet::new(),
+            pending: PENDING_CEILING,
+        };
+        assert_eq!(row_count_read(&at).status, Status::Pass);
+        let over = CountReadScan {
+            pending: PENDING_CEILING + 1,
+            ..at
+        };
+        let row = row_count_read(&over);
+        assert_eq!(row.status, Status::Fail, "{}", row.detail);
     }
 
     /// Both arms of the framework, over the real tree.

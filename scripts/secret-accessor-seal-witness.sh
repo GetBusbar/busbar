@@ -9,10 +9,16 @@
 #   `busbar_contract::plugin::KernelSeal` authority token:
 #       SecretValue::expose(&self, seal: &dyn KernelSeal) -> &[u8]     (Secret::resolve() output)
 #       KeyMaterial::bytes(&self, seal: &dyn KernelSeal) -> &[u8]      (AuthScheme::refresh() output)
-#   A plugin cannot obtain a seal: the only way to hold one is `KernelSeal::acquire_for_kernel()` in
-#   busbar-caps, and the manifest allow-list refuses a plugin crate that names busbar-caps at all.
-#   The TYPE now enforces what an out-of-tree grep used to. This witness is the RED-provable proof
-#   that no in-tree PLUGIN crate reaches for either accessor or for the seal itself.
+#   The only way to hold a seal is `KernelSeal::acquire_for_kernel()`, defined in busbar-contract
+#   (crates/busbar-contract/src/caps/token.rs). There is NO dependency wall around it: the
+#   manifest allow-list (qa/construction.toml, rule manifest-allowlist) lets every plugin-kind
+#   crate name busbar-contract freely, and a manifest reads dependency NAMES -- it cannot see a
+#   module path. The seal's own doc says so: "Anything that can name `busbar-contract` can still
+#   call this." So nothing in the type system or the manifests stops a plugin; THIS SCAN is the
+#   wall. It is the RED-provable proof that no in-tree PLUGIN crate reaches for either accessor or
+#   for the seal itself. --selftest re-derives the seal's home crate and refuses if this header
+#   names a crate the workspace does not have (item 467: it once cited a seal crate that never existed,
+#   and a reviewer reading it would believe a wall stood where none does).
 #
 # THE PLUGIN BOUNDARY. A plugin is a `crate-type = ["cdylib"]` crate: the artefact the loader dlopen's.
 #   That is the exact population #40's dep-wall targets, and the one that must never touch a seal.
@@ -69,6 +75,64 @@ plugin_crates() {
 
 scan() { awk -v needle="$NEEDLES" "$strip_awk" "$@"; }
 
+# The crate the header names as the seal's home, and the file that defines the seal.
+SEAL_HOME_CRATE="busbar-contract"
+
+# check_crates <crate-dir>... — the verdict over a crate list. Every named crate must contribute at
+# least one .rs file under src/ (item 526): a crate the header lists as "scanned" but whose source
+# the scan never read is a partial scan dressed as a full one, and a zero-file scan is RED, as in
+# every sibling gate (plane-grep-gate.sh, plane-noun-gate.sh, plane-config-noun-gate.sh). Prints the
+# per-crate and total file counts so a partial run and a full run are never the same output.
+check_crates() {
+  local c n files="" total=0 empty=""
+  if [ "$#" -eq 0 ]; then red "seal witness: FAIL — no plugin crate named to scan"; return 1; fi
+  note "plugin crates scanned (.rs files under src/):"
+  for c in "$@"; do
+    n=0
+    if [ -d "$c/src" ]; then n="$(find "$c/src" -name '*.rs' -type f | wc -l | tr -d ' ')"; fi
+    printf '    %s  %s file(s)\n' "$c" "$n"
+    if [ "$n" -eq 0 ]; then empty="$empty $c"; continue; fi
+    files="$files
+$(find "$c/src" -name '*.rs' -type f)"
+    total=$((total + n))
+  done
+  if [ -n "$empty" ]; then
+    red "seal witness: FAIL — plugin crate(s) with ZERO .rs files under src/ (unscanned, not clean):$empty"
+    return 1
+  fi
+  note "total: $total file(s) across $# crate(s)"
+  local out
+  # shellcheck disable=SC2086
+  out="$(scan $files </dev/null)"
+  if [ -z "$out" ]; then
+    grn "seal witness: PASS — $total file(s) in $# cdylib plugin crate(s); none references acquire_for_kernel / SecretValue::expose / .expose( / KeyMaterial::bytes / .bytes("
+    return 0
+  fi
+  hdr "VIOLATIONS — a plugin reached a sealed accessor (this is a #40 finding)"
+  printf '%s\n' "$out" | sed 's/^/  /'
+  red "seal witness: FAIL — a cdylib plugin reaches a raw secret accessor or the kernel seal"
+  return 1
+}
+
+# header_crate_claims — (item 467) every `busbar-*` crate this file's own header names must be a
+# crate the workspace declares, and the seal must live in SEAL_HOME_CRATE. Prints the problems.
+header_crate_claims() {
+  local bad="" name home
+  for name in $(awk '/^set -uo pipefail/{exit} {print}' "$0" | grep -oE 'busbar-[a-z][a-z0-9-]*[a-z0-9]' | sort -u); do
+    grep -qE "^name = \"$name\"" crates/*/Cargo.toml 2>/dev/null || bad="$bad
+header names crate $name, which no crates/*/Cargo.toml declares"
+  done
+  home="$(grep -rlE 'fn acquire_for_kernel[(]' crates/*/src 2>/dev/null | head -n 1)"
+  if [ -z "$home" ]; then
+    bad="$bad
+fn acquire_for_kernel( is defined nowhere under crates/*/src -- the seal moved; re-derive this header"
+  elif ! grep -qE "^name = \"$SEAL_HOME_CRATE\"" "${home%%/src/*}/Cargo.toml" 2>/dev/null; then
+    bad="$bad
+the seal is defined in $home, not in crate $SEAL_HOME_CRATE as the header says"
+  fi
+  printf '%s' "$bad"
+}
+
 run_selftest() {
   hdr "secret-accessor-seal-witness SELF-TEST"
   local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
@@ -94,8 +158,34 @@ GREEN
   out="$(scan "$tmp/ok.rs")"
   if [ -z "$out" ]; then note "GREEN: the same names in a comment + a string literal flagged NONE"; else fail=1; note "GREEN FAILED: false positive:"; printf '%s\n' "$out" | sed 's/^/    /'; fi
 
+  # RED (item 526): a crate with no src/ and a crate whose src/ holds no .rs file are UNSCANNED,
+  # not clean -- the verdict must be FAIL even though the other crate is clean.
+  mkdir -p "$tmp/crates/full/src" "$tmp/crates/nosrc" "$tmp/crates/emptysrc/src"
+  cp "$tmp/ok.rs" "$tmp/crates/full/src/lib.rs"
+  if check_crates "$tmp/crates/full" "$tmp/crates/nosrc" "$tmp/crates/emptysrc" >/dev/null 2>&1; then
+    fail=1; note "RED FAILED: crates with zero scanned files were declared a PASS"
+  else note "RED: a partial scan (2 of 3 crates with no .rs files) is FAIL"; fi
+  if check_crates "$tmp/crates/nosrc" >/dev/null 2>&1; then
+    fail=1; note "RED FAILED: a zero-file scan was declared a PASS"
+  else note "RED: a zero-file scan is FAIL"; fi
+  # GREEN control: the same helper over a clean crate with source passes, and reports its count.
+  out="$(check_crates "$tmp/crates/full" 2>&1)"
+  if [ $? -eq 0 ] && printf '%s' "$out" | grep -q 'total: 1 file(s) across 1 crate(s)'; then
+    note "GREEN: a clean crate with 1 file passes and says how many files it read"
+  else fail=1; note "GREEN FAILED: clean crate not passed with a file count:"; printf '%s\n' "$out" | sed 's/^/    /'; fi
+  # RED planted through the same helper: a violation inside a counted crate is FAIL.
+  mkdir -p "$tmp/crates/badc/src"; cp "$tmp/bad.rs" "$tmp/crates/badc/src/lib.rs"
+  if check_crates "$tmp/crates/badc" >/dev/null 2>&1; then fail=1; note "RED FAILED: planted reach passed check_crates"
+  else note "RED: planted reach inside a counted crate is FAIL"; fi
+
+  # Item 467: the header's justification names only crates that exist, and the seal lives where
+  # the header says. A header citing a phantom crate reads as a wall that is not there.
+  out="$(header_crate_claims)"
+  if [ -z "$out" ]; then note "CLAIMS: every crate the header names exists; the seal lives in $SEAL_HOME_CRATE"
+  else fail=1; note "CLAIMS FAILED:"; printf '%s\n' "$out" | sed '/^$/d; s/^/    /'; fi
+
   if [ "$fail" -ne 0 ]; then red "secret-accessor-seal-witness SELF-TEST FAILED"; return 1; fi
-  grn "secret-accessor-seal-witness self-test: ALL GREEN (RED planted-reach + GREEN comment/string)"
+  grn "secret-accessor-seal-witness self-test: ALL GREEN (planted reach, zero/partial-file floor, header crate claims, comment/string)"
   return 0
 }
 
@@ -103,21 +193,8 @@ run_check() {
   hdr "DECISIONS #40 secret-accessor seal — no cdylib plugin reaches a raw secret accessor or the seal"
   local crates; crates="$(plugin_crates)"
   if [ -z "$crates" ]; then red "seal witness: FAIL — found no cdylib plugin crates to scan (is the tree intact?)"; exit 1; fi
-  note "plugin crates scanned:"; printf '%s\n' "$crates" | sed 's/^/    /'
-
-  local files out
-  files="$(for c in $crates; do find "$c/src" -name '*.rs' 2>/dev/null; done)"
-  [ -n "$files" ] || { grn "seal witness: PASS — plugin crates have no src to scan"; exit 0; }
   # shellcheck disable=SC2086
-  out="$(scan $files)"
-  if [ -z "$out" ]; then
-    grn "seal witness: PASS — no cdylib plugin references acquire_for_kernel / SecretValue::expose / .expose( / KeyMaterial::bytes / .bytes("
-    exit 0
-  fi
-  hdr "VIOLATIONS — a plugin reached a sealed accessor (this is a #40 finding)"
-  printf '%s\n' "$out" | sed 's/^/  /'
-  red "seal witness: FAIL — a cdylib plugin reaches a raw secret accessor or the kernel seal"
-  exit 1
+  check_crates $crates; exit $?
 }
 
 case "${1:-}" in

@@ -178,6 +178,25 @@ selftest() {
   fi
   echo "  ok: rejected"
 
+  # ── The opt-level rule, ISOLATED (item 487). Every other reject fixture above carries
+  #    opt-level=3, and the only wrong-opt fixture is a debug stamp that reds three ways, so the
+  #    opt-level comparison could be deleted with this self-test still green -- while a release
+  #    built under CARGO_PROFILE_RELEASE_OPT_LEVEL=0 (Cargo.toml untouched, debug-assertions and
+  #    lto intact) passed the gate. Each stamp below differs from the ACCEPTED control only in
+  #    opt-level, so exactly one rule can reject it.
+  echo "[selftest] control: a clean release stamp (opt-level=3 lto=fat) must be ACCEPTED:"
+  if ! assert_line "profile=release opt-level=3 lto=$RELEASE_LTO debug-assertions=false pgo=false target=x target-cpu=default" release false >/dev/null 2>&1; then
+    echo "  SELFTEST FAILED: rejected a clean release stamp -- the opt-level fixtures below prove nothing"; return 1
+  fi
+  echo "  ok: accepted"
+  for bad_opt in "opt-level=0" "opt-level=2" "opt-level=s" ""; do
+    echo "[selftest] a release stamp that differs from the control ONLY in '${bad_opt:-<no opt-level>}' must be REJECTED:"
+    if assert_line "profile=release ${bad_opt:+$bad_opt }lto=$RELEASE_LTO debug-assertions=false pgo=false target=x target-cpu=default" release false >/dev/null 2>&1; then
+      echo "  SELFTEST FAILED: accepted a release stamp with ${bad_opt:-no opt-level field}"; return 1
+    fi
+    echo "  ok: rejected"
+  done
+
   # ── HOLE 3: the lto field was printed and never asserted ──────────────────────────────────────
   echo "[selftest] a release stamp with an explicit weakened lto (thin) must be REJECTED:"
   if assert_line "profile=release opt-level=3 lto=thin debug-assertions=false pgo=false target=x target-cpu=default" release false >/dev/null 2>&1; then

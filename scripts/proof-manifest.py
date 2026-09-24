@@ -37,6 +37,8 @@
 #                     cargo-backed sources render `unknown` (honest: not executed in this collation).
 #   --index           also (re)write docs/proof/index.json rolling up every docs/proof/<v>.json.
 #   --print           print the manifest to stdout as well.
+#   --selftest        run the no-claim-without-evidence battery and exit (0 = green). Needs no
+#                     --version/--out; runs no cargo. THIS is the exit test for the collator.
 
 import argparse
 import atexit
@@ -44,6 +46,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -134,6 +137,31 @@ def golden_lanes(root):
     return total, lanes
 
 
+def parity_cmd():
+    """The cargo invocation behind the byte-identity verdict. It names GOLDEN_CRATE -- the crate the
+    translate_parity tests actually live in -- and nothing else. It used to hard-code `busbar-llm`,
+    which holds zero of them, and cargo exits 0 on a filter that matches nothing."""
+    return ["cargo", "test", "-p", GOLDEN_CRATE, "--lib", "translate_parity"]
+
+
+def tests_run(text):
+    """Sum libtest's `running N tests` lines. None when no such line was printed at all."""
+    counts = [int(n) for n in re.findall(r"^running (\d+) tests?$", text, re.MULTILINE)]
+    return sum(counts) if counts else None
+
+
+def cargo_test_status(code, text):
+    """A cargo test run is a PASS only when it exited 0 AND ran at least one test. Zero tests run
+    is not evidence; cargo exits 0 on it, so the count is checked here, not trusted to the exit."""
+    if code != 0:
+        return "fail", "cargo test exited %d" % code
+    n = tests_run(text)
+    if not n:
+        return "fail", ("cargo test exited 0 but ran ZERO tests (filter matched nothing in %s): "
+                        "zero tests passing is not a pass" % GOLDEN_CRATE)
+    return "pass", "%d test(s) ran and passed" % n
+
+
 def verdict_byte_identity(root, run_cargo):
     total, lanes = golden_lanes(root)
     lane_matrix = [
@@ -142,13 +170,16 @@ def verdict_byte_identity(root, run_cargo):
     ]
     # The golden corpus is pinned on-disk; enumeration is a filesystem fact. Whether the byte-identity
     # ASSERT passed requires running the parity tests -- honest `unknown` unless --run-cargo.
-    if run_cargo:
-        code, _ = run(
-            ["cargo", "test", "-p", "busbar-llm", "--lib", "translate_parity"],
-            cwd=root,
-            timeout=3600,
-        )
-        golden_status = "pass" if code == 0 else "fail"
+    golden_note = None
+    if total < GOLDEN_MIN:
+        # THE FLOOR. A corpus below it (a moved directory reads as 0) is a FAIL whatever cargo says:
+        # a parity run over a collapsed corpus asserts nothing about the bytes this claim names.
+        golden_status = "fail"
+        golden_note = ("the golden corpus at %s yields %d byte-pair(s), below the floor of %d; "
+                       "the byte-identity claim has nothing behind it" % (GOLDEN_DIR, total, GOLDEN_MIN))
+    elif run_cargo:
+        code, text = run(parity_cmd(), cwd=root, timeout=3600)
+        golden_status, golden_note = cargo_test_status(code, text)
     else:
         golden_status = "unknown"
 
@@ -157,12 +188,15 @@ def verdict_byte_identity(root, run_cargo):
             "id": "translate-parity-cross-pairs",
             "kind": "golden",
             "status": golden_status,
+            "note": golden_note,
+            "evidence": GOLDEN_DIR,
+            "evidence_present": total >= GOLDEN_MIN,
             "count": total,
             "total": total,
             "lane_count": len(lane_matrix),
             "drilldown": {
                 "type": "lane-matrix",
-                "path": "crates/busbar-llm/src/tests/proto/golden/",
+                "path": GOLDEN_DIR + "/",
                 "lanes": lane_matrix,
             },
         }
@@ -170,10 +204,11 @@ def verdict_byte_identity(root, run_cargo):
     # The five money-path oracle tests (byte-identity of the delivery/billing/egress path).
     oracles = [
         ("egress-differential", "crates/busbar-llm/src/engine/tests/egress_differential_tests.rs"),
-        ("crossproto-billing", "crates/busbar-llm/src/engine/tests/crossproto_delivery_billing_tests.rs"),
+        ("crossproto-billing", "crates/busbar-llm/src/engine/engine_tests/crossproto_delivery_billing_tests.rs"),
         ("on-exhausted", "crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs"),
         ("pool-upstream-creds", "crates/busbar-llm/src/engine/tests/pool_upstream_creds_tests.rs"),
-        ("usage-decode-tap", "crates/busbar-core/src/ingress/tests/tests.rs"),
+        # busbar-core's ingress suite, relocated whole into busbar-llm (03ee7227c, a git rename).
+        ("usage-decode-tap", "crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs"),
     ]
     for oid, opath in oracles:
         present = (root / opath).exists()
@@ -182,6 +217,8 @@ def verdict_byte_identity(root, run_cargo):
             "kind": "oracle",
             "status": "unknown",  # cargo-backed; not executed in scrape mode
             "note": "present" if present else "test file not found",
+            "evidence": opath,
+            "evidence_present": present,
             "drilldown": {"type": "test", "path": opath},
         })
     return {
@@ -222,8 +259,10 @@ def verdict_plane_neutrality(root, hits_dir):
                 total += 1
     sources.append({
         "id": "plane-purity-lint",
-        "evidence": "scripts/plane-purity-lint.sh",
-        "evidence_present": (root / "scripts/plane-purity-lint.sh").is_file(),
+        # The shell lint was retired into `cargo xtask gate plane-purity` (4b11e2f19); the evidence is
+        # the gate that ran, not the script that no longer exists.
+        "evidence": "xtask/src/gates/plane_purity/mod.rs",
+        "evidence_present": (root / "xtask/src/gates/plane_purity/mod.rs").is_file(),
         "kind": "gate",
         "status": "pass" if code == 0 else "fail",
         "count": total,
@@ -238,8 +277,8 @@ def verdict_plane_neutrality(root, hits_dir):
     m = re.search(r"plane-purity:core-llm-family-freeze\t(\w+)\t[^\t]*\tcount=(\d+)", text)
     sources.append({
         "id": "g6-freeze-witness",
-        "evidence": "scripts/g6-freeze-witness.sh",
-        "evidence_present": (root / "scripts/g6-freeze-witness.sh").is_file(),
+        "evidence": "xtask/src/gates/plane_purity/mod.rs",  # ROW_FREEZE lives in that gate
+        "evidence_present": (root / "xtask/src/gates/plane_purity/mod.rs").is_file(),
         "kind": "gate",
         "status": "pass" if m and m.group(1) == "PASS" else "fail",
         "count": int(m.group(2)) if m else -1,
@@ -274,8 +313,8 @@ def verdict_plane_neutrality(root, hits_dir):
     code, text = run(["cargo", "xtask", "gate", "plane-abi-neutrality"], cwd=root, timeout=120)
     sources.append({
         "id": "plane-abi-neutrality",
-        "evidence": "scripts/plane-abi-neutrality.sh",
-        "evidence_present": (root / "scripts/plane-abi-neutrality.sh").is_file(),
+        "evidence": "xtask/src/gates/plane_abi_neutrality.rs",
+        "evidence_present": (root / "xtask/src/gates/plane_abi_neutrality.rs").is_file(),
         "kind": "gate",
         "status": "pass" if code == 0 else "fail",
         "count": 0 if code == 0 else count_hit_lines(text),
@@ -594,6 +633,14 @@ def mark_sources(verdicts, specs):
             if sid not in marks:
                 continue
             st = marks[sid]
+            # A SIBLING'S PASS DOES NOT OVERWRITE THIS COLLATOR'S OWN FAIL. A producer that measured
+            # `fail` (a collapsed corpus, a cargo filter that ran zero tests) measured it here; a
+            # sibling job's `success` is a result about what THAT job ran, not a re-measurement.
+            if s.get("status") == "fail" and st == "pass":
+                s["note"] = ((s.get("note") + "; ") if s.get("note") else "") + (
+                    "the sibling ci.yml job reported pass, which does NOT overwrite this "
+                    "collator's own fail measurement")
+                continue
             # FAIL CLOSED ON A SOURCE THAT NAMES NO EVIDENCE AT ALL. This used to read
             # `if s.get("evidence") is not None and not s.get("evidence_present")`, which made the
             # whole guard OPT-IN: a source that simply had no `evidence` key skipped it and was
@@ -769,6 +816,84 @@ def selftest(root):
     ok(fan[0]["sources"][0]["status"] == "pass",
        "while the source's own aggregate status is still captured")
 
+    # 6. THE PARITY RUN NAMES THE CRATE THE TESTS ARE IN, AND ZERO TESTS RUN IS NOT A PASS. The
+    #    command named `busbar-llm` (zero translate_parity files) and cargo exits 0 on an empty
+    #    filter, so `code == 0` published `pass` over no test at all.
+    cmd = parity_cmd()
+    crate = cmd[cmd.index("-p") + 1]
+    crate_src = root / "crates" / crate / "src"
+    holders = [f for f in crate_src.rglob("*.rs") if "translate_parity" in f.read_text(errors="replace")] \
+        if crate_src.is_dir() else []
+    ok(bool(holders), "the parity command's crate (%s) contains translate_parity tests" % crate,
+       "crates/%s/src holds no file mentioning translate_parity" % crate)
+    zst, _ = cargo_test_status(0, "running 0 tests\n\ntest result: ok. 0 passed; 0 failed\n")
+    ok(zst == "fail", "a cargo run that exits 0 having run ZERO tests is FAIL", "got %r" % zst)
+    pst, _ = cargo_test_status(0, "running 7 tests\ntest result: ok. 7 passed; 0 failed\n")
+    ok(pst == "pass", "and one that ran tests and exited 0 is PASS (control)", "got %r" % pst)
+
+    # 7. A sibling's pass does not overwrite this collator's own fail.
+    own = [{"class": "c", "sources": [
+        {"id": "measured", "status": "fail", "evidence": GOLDEN_DIR, "evidence_present": True}]}]
+    mark_sources(own, ["measured=success"])
+    ok(own[0]["sources"][0]["status"] == "fail",
+       "a sibling job's pass does NOT overwrite a fail this collator measured itself",
+       "got %r" % own[0]["sources"][0]["status"])
+
+    # 8. main() MARKS THROUGH mark_sources(), not a second, unguarded copy of it. Read off main's
+    #    own AST: it must call mark_sources and must not assign a `status` itself.
+    import ast
+    tree = ast.parse(Path(__file__).read_text())
+    mfn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+    calls = {n.func.id for n in ast.walk(mfn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    status_writes = [n.lineno for n in ast.walk(mfn)
+                     if isinstance(n, ast.Subscript) and isinstance(n.ctx, ast.Store)
+                     and isinstance(n.slice, ast.Constant) and n.slice.value == "status"]
+    ok("mark_sources" in calls and not status_writes,
+       "main() marks sources only through the guarded mark_sources()",
+       "calls mark_sources=%s, writes s['status'] itself at line(s) %s"
+       % ("mark_sources" in calls, status_writes))
+
+    # 9. EVERY MODULE THIS FILE USES IS IMPORTED. `shutil` was used at three sites and imported at
+    #    none, so the collator died with NameError before a single verdict whenever --hits-dir was
+    #    omitted. The default-hits-dir path is also driven for real.
+    imported = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            imported |= {a.asname or a.name.split(".")[0] for a in n.names}
+        elif isinstance(n, ast.ImportFrom):
+            imported |= {a.asname or a.name for a in n.names}
+    import builtins
+    defined = {n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
+    defined |= {t.id for n in tree.body if isinstance(n, ast.Assign) for t in n.targets
+                if isinstance(t, ast.Name)}
+    bases = {n.value.id for n in ast.walk(tree)
+             if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)}
+    local = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
+    local |= {a.arg for n in ast.walk(tree) if isinstance(n, ast.arguments) for a in n.args}
+    local |= {n.name for n in ast.walk(tree) if isinstance(n, ast.ExceptHandler) and n.name}
+    unbound = sorted(b for b in bases
+                     if b not in imported and b not in defined and b not in local
+                     and not hasattr(builtins, b))
+    ok(not unbound, "every module referenced as `x.attr` is imported", "unbound: %s" % unbound)
+    try:
+        hd = default_hits_dir()
+        ok(hd.is_dir(), "the default (no --hits-dir) path creates its private temp dir")
+    except Exception as exc:  # NameError was the historical failure
+        ok(False, "the default (no --hits-dir) path creates its private temp dir", repr(exc))
+
+    # 10. EVERY EVIDENCE PATH WRITTEN IN THIS FILE EXISTS. Read off the source text, so a gate script
+    #     retired into `cargo xtask gate ...` cannot leave `evidence_present: false` on a gate that
+    #     ran and passed. Globs (`**`) name report patterns, not files, and are skipped, and so is
+    #     this selftest's own body (its fixtures name absent paths on purpose).
+    st_fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "selftest")
+    src_lines = Path(__file__).read_text().splitlines()
+    src_text = "\n".join(src_lines[:st_fn.lineno - 1] + src_lines[st_fn.end_lineno:])
+    lits = set(re.findall(r'"evidence":\s*"([^"*]+)"', src_text))
+    lits |= set(re.findall(r'\(root / "([^"*]+)"\)\.is_file\(\)', src_text))
+    gone = sorted(x for x in lits if not (root / x).exists())
+    ok(lits and not gone, "every evidence path named in this file exists (%d checked)" % len(lits),
+       "missing: %s" % ", ".join(gone))
+
     print()
     if bad:
         print("proof-manifest selftest: FAILED")
@@ -777,10 +902,19 @@ def selftest(root):
     return 0
 
 
+def default_hits_dir():
+    """A private temp dir for the hit-list TSVs, removed at exit (WE MADE IT, WE REMOVE IT)."""
+    d = Path(tempfile.mkdtemp(prefix="proof-hits-"))
+    atexit.register(shutil.rmtree, d, True)
+    return d
+
+
 def main():
     ap = argparse.ArgumentParser(description="Collate the Build Proof Dashboard manifest.")
-    ap.add_argument("--version", required=True)
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--selftest", action="store_true",
+                    help="run the no-claim-without-evidence battery and exit; needs no other flag.")
+    ap.add_argument("--version")
+    ap.add_argument("--out")
     ap.add_argument("--repo-root", default=None)
     ap.add_argument("--sha", default=None)
     ap.add_argument("--run-id", default="")
@@ -804,6 +938,10 @@ def main():
     args = ap.parse_args()
 
     root = Path(args.repo_root).resolve() if args.repo_root else Path(__file__).resolve().parent.parent
+    if args.selftest:
+        return selftest(root)
+    if not args.version or not args.out:
+        ap.error("--version and --out are required (except with --selftest)")
     out_path = (root / args.out) if not os.path.isabs(args.out) else Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -836,8 +974,7 @@ def main():
         # was an unregistered mkdtemp -- so every local or CI collation left a directory of them
         # behind under the system temp dir, indefinitely, for a file whose entire design constraint
         # is that its contents must not escape the build.
-        hits_dir = Path(tempfile.mkdtemp(prefix="proof-hits-"))
-        atexit.register(shutil.rmtree, hits_dir, True)
+        hits_dir = default_hits_dir()
     hits_dir.mkdir(parents=True, exist_ok=True)
     reports_dir = Path(args.reports_dir).resolve() if args.reports_dir else None
 
@@ -852,27 +989,10 @@ def main():
     ]
 
     # Honest cross-job capture: stamp a source's verdict from the sibling CI job that actually ran it.
-    # A GitHub job result of "success" -> pass; anything else -> fail; empty/skip -> left unknown.
-    marks = {}
-    for spec in args.mark:
-        if "=" not in spec:
-            continue
-        sid, res = spec.split("=", 1)
-        res = res.strip().lower()
-        if res == "":
-            continue
-        marks[sid.strip()] = "pass" if res == "success" else ("pass" if res == "pass" else "fail")
-    if marks:
-        for v in verdicts:
-            for s in v.get("sources", []):
-                if s.get("id") in marks:
-                    st = marks[s["id"]]
-                    s["status"] = st
-                    s["note"] = "captured from the sibling ci.yml job result"
-                    for mapkey in ("planes", "legs", "dialects"):
-                        if isinstance(s.get(mapkey), dict):
-                            s[mapkey] = {k: st for k in s[mapkey]}
-            v["status"] = class_status(v.get("sources", []))
+    # ONE implementation, the guarded one. main() used to re-implement this inline with neither
+    # guard (no evidence -> pass anyway; one result fanned over every sub-map), so mark_sources()'s
+    # rules held only inside the selftest that nothing ran.
+    mark_sources(verdicts, args.mark)
 
     manifest = {
         "schema_version": "1",
@@ -906,6 +1026,7 @@ def main():
 
     if args.do_print:
         print(json.dumps(manifest, indent=2))
+    return 0
 
 
 def write_index(proof_dir):
@@ -952,4 +1073,4 @@ def write_index(proof_dir):
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

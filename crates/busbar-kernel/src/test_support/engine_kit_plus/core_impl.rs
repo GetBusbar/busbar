@@ -10,13 +10,11 @@
 //! plane's test tree binds [`CORE_ENGINE_KIT`](crate::test_support::engine_kit::CORE_ENGINE_KIT) once as
 //! `&'static dyn EngineTestKitPlus` and reaches both kits through it.
 
+use super::{AppBuilder, EngineAppPlus, EngineTestKitPlus, NamedMapSectionFacts, TestAppKitPlus};
 use crate::test_support::engine_kit::CoreEngineKit;
 use crate::test_support::TestApp;
 use busbar_api::SecretResolve;
 use busbar_kernel::plane::PlaneAdmission;
-use super::{
-    AppBuilder, EngineAppPlus, EngineTestKitPlus, NamedMapSectionFacts, TestAppKitPlus,
-};
 use busbar_plugin::cold::endpoint::RouteAuth;
 use std::sync::Arc;
 

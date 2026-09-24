@@ -9,8 +9,8 @@
 //! read back nothing at all.
 
 use super::{FixtureHost, LedgerUsage};
-use busbar_kernel::plane_host::AdmissionHost;
 use busbar_api::{PlaneRequestCtx, VirtualKey};
+use busbar_kernel::plane_host::AdmissionHost;
 use std::sync::Arc;
 
 const PROTO: &str = "test-proto";

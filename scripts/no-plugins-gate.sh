@@ -536,6 +536,35 @@ run_selftest() {
   local empty; new_tmpdir; empty="$NEW_TMPDIR"
   local rc=0
 
+  # ── RED-X / GREEN-X: the cross-axis assertions over fixture directories, before any build. The
+  # two-binaries check once had no else arm, so a missing build self-report skipped it in silence
+  # while identical probe vectors read as agreement. ──
+  local xa xb before
+  new_tmpdir; xa="$NEW_TMPDIR"; new_tmpdir; xb="$NEW_TMPDIR"
+  printf 'GET /healthz 200\n' >"${xa}/probe.txt"; cp "${xa}/probe.txt" "${xb}/probe.txt"
+  SUPPRESS=1; before="$SUPPRESSED"
+  assert_cross_axis "$xa" "$xb" >/dev/null
+  if [ "$SUPPRESSED" -gt "$before" ]; then
+    ok "RED X1 (identical probe vectors, NO build self-report on either axis): the gate CAUGHT it"
+  else
+    SUPPRESS=0; fail "RED X1: a run with no build self-report passed A7 -- nothing proved two binaries were built"; rc=1
+  fi
+  SUPPRESS=1; printf 'same\n' >"${xa}/build.txt"; cp "${xa}/build.txt" "${xb}/build.txt"; before="$SUPPRESSED"
+  assert_cross_axis "$xa" "$xb" >/dev/null
+  if [ "$SUPPRESSED" -gt "$before" ]; then
+    ok "RED X2 (identical build self-report -- the same binary twice): the gate CAUGHT it"
+  else
+    SUPPRESS=0; fail "RED X2: two axes reporting the same build passed A7"; rc=1
+  fi
+  SUPPRESS=1; printf 'other\n' >"${xb}/build.txt"; before="$SUPPRESSED"
+  assert_cross_axis "$xa" "$xb" >/dev/null
+  if [ "$SUPPRESSED" -eq "$before" ]; then
+    ok "GREEN X (identical probe vectors, differing build self-report): the gate stayed SILENT"
+  else
+    SUPPRESS=0; fail "GREEN X: A7 refused two genuinely different binaries"; rc=1
+  fi
+  SUPPRESS=0
+
   cargo build -p busbar --no-default-features --features proto-llm --locked
   cp "${REPO_ROOT}/target/debug/busbar" "${stage}/busbar-no-default-features"
 
@@ -600,18 +629,10 @@ PY
   fi
 }
 
-run_check() {
-  local stage; new_tmpdir; stage="$NEW_TMPDIR"
-  build_binaries "$stage"
-
-  # ONE empty directory, shared by both axes: zero plugin artifacts on disk, everywhere.
-  local empty; new_tmpdir; empty="$NEW_TMPDIR"
-  local out1 out2; new_tmpdir; out1="$NEW_TMPDIR"; new_tmpdir; out2="$NEW_TMPDIR"
-
-  run_axis "1-compiled-out"  "${stage}/busbar-no-default-features" "$empty" "$out1" || true
-  run_axis "2-not-installed" "${stage}/busbar-default-features"    "$empty" "$out2" || true
-
-  # A7 — the cross-axis assertion.
+# A7 — the cross-axis assertions, over the two axes' output directories. A function so the
+# self-test drives THIS code over fixture directories rather than a copy of it.
+assert_cross_axis() {
+  local out1="$1" out2="$2"
   hdr "A7: compiling every built-in plugin OUT must change NOTHING core serves"
   if [ -s "${out1}/probe.txt" ] && [ -s "${out2}/probe.txt" ]; then
     if diff -u "${out1}/probe.txt" "${out2}/probe.txt" >/dev/null; then
@@ -636,7 +657,27 @@ run_check() {
       note "  axis 1 (compiled out):  $(cat "${out1}/build.txt")"
       note "  axis 2 (not installed): $(cat "${out2}/build.txt")"
     fi
+  else
+    # FAIL CLOSED, exactly like the probe-vector guard above. This `if` used to have no else arm,
+    # so an empty or absent build.txt -- a non-JSON /info body kills the python that writes it --
+    # skipped the two-binaries check in silence, and a run that built the same binary twice (and
+    # whose two identical, identically-failed probe vectors then "matched") printed PASSED.
+    fail "A7: one or both axes produced no /info build self-report, so nothing proves the two axes are different binaries"
   fi
+}
+
+run_check() {
+  local stage; new_tmpdir; stage="$NEW_TMPDIR"
+  build_binaries "$stage"
+
+  # ONE empty directory, shared by both axes: zero plugin artifacts on disk, everywhere.
+  local empty; new_tmpdir; empty="$NEW_TMPDIR"
+  local out1 out2; new_tmpdir; out1="$NEW_TMPDIR"; new_tmpdir; out2="$NEW_TMPDIR"
+
+  run_axis "1-compiled-out"  "${stage}/busbar-no-default-features" "$empty" "$out1" || true
+  run_axis "2-not-installed" "${stage}/busbar-default-features"    "$empty" "$out2" || true
+
+  assert_cross_axis "$out1" "$out2"
 
   echo
   if [ "${#FAILURES[@]}" -eq 0 ]; then

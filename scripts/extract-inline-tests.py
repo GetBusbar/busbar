@@ -441,7 +441,55 @@ def targets(root, paths):
     return sorted(set(out))
 
 
-def main():
+# EXIT STATUS (item 533). 0: every named path exists and nothing was refused. 1: at least one block
+# was REFUSED -- printed under "each needs a human", so it is not a clean run and must not exit like
+# one. 2: a named path is neither a file nor a directory -- `crates/typo` used to walk nothing and
+# exit 0, indistinguishable from "nothing to move". The paths are checked BEFORE anything is
+# planned or written, so a typo can never become a partial --apply.
+EXIT_CLEAN, EXIT_REFUSED, EXIT_BAD_PATH = 0, 1, 2
+
+
+def missing_paths(root, paths):
+    return [p for p in paths if not os.path.exists(os.path.join(root, p))]
+
+
+def selftest():
+    """The exit status over planted trees: clean 0, refused 1, missing path 2."""
+    import contextlib
+    import io
+    import shutil
+    import tempfile
+    body = "pub fn keep() {}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() {}\n}\n"
+    flush = "pub fn keep() {}\n\n#[cfg(test)]\nmod tests {\n#[test]\nfn t() {}\n}\n"
+    fails = 0
+    tmp = tempfile.mkdtemp(prefix="extract-inline-py-selftest-")
+    try:
+        for name, text in (("clean", body), ("refused", flush)):
+            os.makedirs(os.path.join(tmp, name, "src"))
+            with open(os.path.join(tmp, name, "src", "thing.rs"), "w", encoding="utf-8") as f:
+                f.write(text)
+        cases = (
+            ("a movable block and no refusal exits 0", ["--root", os.path.join(tmp, "clean"), "src"], EXIT_CLEAN),
+            ("a REFUSED block exits 1", ["--root", os.path.join(tmp, "refused"), "src"], EXIT_REFUSED),
+            ("a path that does not exist exits 2", ["--root", os.path.join(tmp, "clean"), "crates/typo"], EXIT_BAD_PATH),
+            ("a missing path beside a real one still exits 2",
+             ["--root", os.path.join(tmp, "clean"), "src", "crates/typo"], EXIT_BAD_PATH),
+        )
+        for label, argv, want in cases:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                got = main(argv)
+            ok = got == want
+            fails += not ok
+            print(("ok    " if ok else "FAIL  ") + label + ("" if ok else " (got %s)" % got))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    print("extract-inline-tests.py selftest: " + ("PASS" if not fails else "FAIL"))
+    return 1 if fails else 0
+
+
+def main(argv=None):
+    if argv is None and sys.argv[1:] == ["--selftest"]:
+        return selftest()
     ap = argparse.ArgumentParser(
         prog="extract-inline-tests",
         description="Move inline `#[cfg(test)] mod … { … }` blocks to the tree's `tests/` convention.",
@@ -450,8 +498,13 @@ def main():
     ap.add_argument("--apply", action="store_true", help="write (default: report only)")
     ap.add_argument("--support", action="store_true", help="also list the cfg(test) items that STAY")
     ap.add_argument("--root", default=os.path.join(os.path.dirname(__file__), ".."))
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     root = os.path.abspath(args.root)
+    missing = missing_paths(root, args.paths)
+    if missing:
+        for p in missing:
+            print(f"extract-inline-tests: no such file or directory under {root}: {p}", file=sys.stderr)
+        return EXIT_BAD_PATH
 
     moved_total = 0
     files_changed = 0
@@ -486,7 +539,7 @@ def main():
         f"{files_changed} file(s); refused blocks in {len(refused)} file(s); "
         f"{support_n} cfg(test) non-mod support item(s) left in place"
     )
-    return 0
+    return EXIT_REFUSED if refused else EXIT_CLEAN
 
 
 if __name__ == "__main__":

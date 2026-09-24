@@ -121,22 +121,68 @@ fn is_shipping(target: &str) -> bool {
     SHIPPING_TARGETS.contains(&target)
 }
 
-/// THE STANDING-RED ROW. Red for a shipping posture while anything is on the list, and it prints
-/// the list either way: the whole hazard of a written-down exemption is that it stops being read.
-fn standing_row(target: &Posture, standing: &[&str]) -> Row {
-    let listed = if standing.is_empty() {
+/// THE STANDING-RED ROW. Red for a shipping posture while anything is standing red, and it prints
+/// what is standing red either way: the whole hazard of a written-down exemption is that it stops
+/// being read.
+///
+/// WHAT IS STANDING RED IS READ OFF THE CONSTRUCTION GATE'S VERDICT, NOT OFF THE LIST (item 221).
+/// This row used to decide "nothing is standing red" from whether `CONSTRUCTION_STANDING_REDS` was
+/// an empty slice, while `run()` held the construction gate's actual verdict five lines later. So
+/// striking the names from the list without draining one row made the list empty, and the row
+/// certified a shipping line whose tree broke every one of those rules — retiring the record was
+/// the very thing it read. The list now only ANNOTATES: a red construction row is standing red
+/// whether or not anybody wrote its name down, and a row the construction gate could not run (a
+/// reconciliation problem) is standing red too, because a rule that did not run is not a rule
+/// that holds.
+fn standing_row(target: &Posture, listed: &[&str], construction: &Verdict) -> Row {
+    let mut standing: Vec<String> = construction
+        .rows
+        .iter()
+        .filter(|r| r.status != Status::Pass)
+        .map(|r| r.id.clone())
+        .collect();
+    standing.extend(
+        construction
+            .problems
+            .iter()
+            .map(|p| format!("(did not run) {p}")),
+    );
+    standing.sort();
+    standing.dedup();
+    let unlisted: Vec<&str> = standing
+        .iter()
+        .map(String::as_str)
+        .filter(|id| !listed.contains(id))
+        .collect();
+    let listed_txt = if listed.is_empty() {
         "(empty)".to_string()
     } else {
-        standing.join(", ")
+        listed.join(", ")
     };
-    // THE LIST FIRST, THE POSTURE SECOND. The claim this row makes is about the LIST; the posture
-    // only decides whether a NON-EMPTY list is excused. An empty list satisfies the criterion under
-    // every posture, including one nobody could read, so it is green there and says which.
+    let red_txt = if unlisted.is_empty() {
+        standing.join(", ")
+    } else {
+        format!(
+            "{} — of which {} NOT on the written-down list: {}",
+            standing.join(", "),
+            unlisted.len(),
+            unlisted.join(", ")
+        )
+    };
+    // THE VERDICT FIRST, THE POSTURE SECOND. The claim this row makes is about what the
+    // construction gate reports red; the posture only decides whether standing reds are excused.
+    // A tree with none satisfies the criterion under every posture, including one nobody could
+    // read, so it is green there and says which.
     if standing.is_empty() {
         return Row::pass(
             ROW_STANDING,
             "nothing is standing red",
-            format!("target {}: the standing-red list is empty.", target.label()),
+            format!(
+                "target {}: the construction gate reports no red row ({} row(s) read); the \
+                 written-down standing-red list is {listed_txt}.",
+                target.label(),
+                construction.rows.len()
+            ),
         );
     }
     match target {
@@ -146,7 +192,7 @@ fn standing_row(target: &Posture, standing: &[&str]) -> Row {
             ROW_STANDING,
             "the posture could not be read, so nothing may be excused against it",
             format!(
-                "{why}. {} construction row(s) are standing red — {listed} — and the exemption \
+                "{why}. {} construction row(s) are standing red — {red_txt} — and the exemption \
                  that covers them is a DEV-LINE one. A run that cannot tell whether it is on the \
                  dev line must not help itself to the dev line's conveniences: that is how a \
                  release gate comes to pass because git errored. Set XTASK_SHIP_TARGET to the line \
@@ -159,9 +205,8 @@ fn standing_row(target: &Posture, standing: &[&str]) -> Row {
             "the standing-red list is a dev-line convenience, and this is the dev line",
             format!(
                 "target `{t}` is not a shipping line, so the {} standing red(s) still stand: \
-                 {listed}. Each one is a construction row that is KNOWN red and deliberately not \
-                 blocking. None of them survives a promotion — run this gate with \
-                 XTASK_SHIP_TARGET=qa to see what a promotion would refuse.",
+                 {red_txt}. Written-down list: {listed_txt}. None of them survives a promotion — \
+                 run this gate with XTASK_SHIP_TARGET=qa to see what a promotion would refuse.",
                 standing.len()
             ),
         ),
@@ -170,13 +215,24 @@ fn standing_row(target: &Posture, standing: &[&str]) -> Row {
             "a shipping line inherits no standing reds",
             format!(
                 "target `{t}` is a shipping line and {} construction row(s) are still standing \
-                 red: {listed}. A standing red is a rule this tree BREAKS, written down so the \
+                 red: {red_txt}. A standing red is a rule this tree BREAKS, written down so the \
                  dev line can keep moving while it is drained. Promoting it does not drain it — it \
                  promotes the breakage and retires the record of it. Drain each row, or do not ship.",
                 standing.len()
             ),
         ),
     }
+}
+
+/// A construction verdict whose red rows are exactly `ids` — the self-test's and the unit tests'
+/// stand-in for running the construction gate.
+fn red_verdict(ids: &[&str]) -> Verdict {
+    Verdict::of(
+        ids.iter()
+            .map(|id| Row::fail(*id, "standing red", "planted"))
+            .chain(std::iter::once(Row::pass("some-green-row", "t", "d")))
+            .collect(),
+    )
 }
 
 /// THE CEILING ROWS. Both are construction-gate rows; this gate does not re-implement either
@@ -262,7 +318,6 @@ impl Gate for ShipReadyGate {
 
     fn run(&self, cx: &Ctx) -> Verdict {
         let target = posture(cx);
-        let mut rows = vec![standing_row(&target, CONSTRUCTION_STANDING_REDS)];
 
         // The two gates that OWN the evidence, run once each. Their `--selftest` is the expensive
         // half; a single `run()` over the tree is not, which is what makes reading them here
@@ -271,6 +326,11 @@ impl Gate for ShipReadyGate {
             &crate::gates::construction::ConstructionGate as &dyn Gate,
             cx,
         );
+        let mut rows = vec![standing_row(
+            &target,
+            CONSTRUCTION_STANDING_REDS,
+            &construction,
+        )];
         rows.extend(ceiling_rows(&construction));
 
         let ship_gate = crate::gates::kind_isolation::KindIsolationGate::ship();
@@ -296,20 +356,46 @@ impl Gate for ShipReadyGate {
                 standing_row(
                     &Posture::Named(target.to_string()),
                     &["plane-no-money", "one-pick-site"],
+                    &red_verdict(&["plane-no-money", "one-pick-site"]),
                 ),
             ));
             report.push(unit_case(
                 format!("a `{target}` target with an EMPTY list is green"),
                 &[ROW_STANDING],
                 Expect::Green,
-                standing_row(&Posture::Named(target.to_string()), &[]),
+                standing_row(&Posture::Named(target.to_string()), &[], &red_verdict(&[])),
+            ));
+        }
+        // -- ITEM 221: THE LIST EMPTIED, THE TREE STILL RED. Striking the names without draining
+        //    a row must not turn a shipping line green: the row reads the construction verdict.
+        for target in ["qa", "main"] {
+            report.push(unit_case(
+                format!(
+                    "a `{target}` target with an EMPTY list over a RED construction verdict is red"
+                ),
+                &[ROW_STANDING],
+                Expect::Red {
+                    naming: vec![
+                        "one-pick-site".to_string(),
+                        "NOT on the written-down list".to_string(),
+                    ],
+                },
+                standing_row(
+                    &Posture::Named(target.to_string()),
+                    &[],
+                    &red_verdict(&["one-pick-site"]),
+                ),
             ));
         }
         report.push(unit_case(
             "the dev line keeps its standing reds, and the row PRINTS them",
             &[ROW_STANDING],
             Expect::Green,
-            standing_row(&Posture::Named("dev".to_string()), &["plane-no-money"]),
+            standing_row(
+                &Posture::Named("dev".to_string()),
+                &["plane-no-money"],
+                &red_verdict(&["plane-no-money"]),
+            ),
         ));
 
         // -- THE FAIL-OPEN, MADE A CASE. `posture()` used to end in `unwrap_or_default()`: a git
@@ -328,6 +414,7 @@ impl Gate for ShipReadyGate {
             standing_row(
                 &Posture::Unknown("git exited 128: not a git repository".to_string()),
                 &["plane-no-money"],
+                &red_verdict(&["plane-no-money"]),
             ),
         ));
         report.push(unit_case(
@@ -337,6 +424,7 @@ impl Gate for ShipReadyGate {
             standing_row(
                 &Posture::Unknown("git exited 128: not a git repository".to_string()),
                 &[],
+                &red_verdict(&[]),
             ),
         ));
         // A DETACHED checkout is git declining to name a branch, not a branch named `HEAD`.
@@ -349,6 +437,7 @@ impl Gate for ShipReadyGate {
             standing_row(
                 &posture_of_branch_output(Ok("HEAD\n".to_string())),
                 &["plane-no-money"],
+                &red_verdict(&["plane-no-money"]),
             ),
         ));
         report.push(unit_case(
@@ -358,6 +447,7 @@ impl Gate for ShipReadyGate {
             standing_row(
                 &posture_of_branch_output(Ok("consolidated/1.6.0\n".to_string())),
                 &["plane-no-money"],
+                &red_verdict(&["plane-no-money"]),
             ),
         ));
         // THE MATCHED PAIR, IN ONE PLACE. `Posture::Named("")` is EXACTLY what the old
@@ -370,7 +460,11 @@ impl Gate for ShipReadyGate {
              why it had to stop being reachable",
             &[ROW_STANDING],
             Expect::Green,
-            standing_row(&Posture::Named(String::new()), &["plane-no-money"]),
+            standing_row(
+                &Posture::Named(String::new()),
+                &["plane-no-money"],
+                &red_verdict(&["plane-no-money"]),
+            ),
         ));
         report.push(unit_case(
             "a git FAILURE is an unknown posture",
@@ -381,6 +475,7 @@ impl Gate for ShipReadyGate {
             standing_row(
                 &posture_of_branch_output(Err("git rev-parse exited 128".to_string())),
                 &["plane-no-money"],
+                &red_verdict(&["plane-no-money"]),
             ),
         ));
 
@@ -514,5 +609,38 @@ fn rows_case(name: impl Into<String>, covers: &[&str], expected: Expect, got: Ve
         } else {
             Expect::Red { naming: red }
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ITEM 221: an EMPTY standing-red list does not make a shipping line green while the
+    /// construction verdict is red — the row reads the verdict it is handed, not the Rust slice.
+    #[test]
+    fn an_emptied_list_over_a_red_construction_verdict_refuses_a_shipping_line() {
+        for target in ["qa", "main"] {
+            let row = standing_row(
+                &Posture::Named(target.to_string()),
+                &[],
+                &red_verdict(&["one-pick-site", "request-path-fn-size"]),
+            );
+            assert_eq!(row.status, Status::Fail, "{target}: {}", row.detail);
+            assert!(row.detail.contains("one-pick-site"), "{}", row.detail);
+            assert!(
+                row.detail.contains("request-path-fn-size"),
+                "{}",
+                row.detail
+            );
+        }
+        // A construction rule that did not run is standing red too.
+        let mut v = red_verdict(&[]);
+        v.problems.push("one-pick-site: DID NOT RUN".to_string());
+        let row = standing_row(&Posture::Named("qa".to_string()), &[], &v);
+        assert_eq!(row.status, Status::Fail, "{}", row.detail);
+        // And a clean verdict with an empty list is the criterion met.
+        let row = standing_row(&Posture::Named("qa".to_string()), &[], &red_verdict(&[]));
+        assert_eq!(row.status, Status::Pass, "{}", row.detail);
     }
 }

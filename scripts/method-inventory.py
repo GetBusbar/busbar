@@ -469,6 +469,27 @@ def render():
 # Self-test: the derivation must be unable to lose a method quietly.
 # ---------------------------------------------------------------------------
 
+# The two directions every method is owed a cell in, written as a LITERAL rather than read from
+# ROLES: a check that compares the cells against ROLES only restates the loop that built them.
+BOTH_DIRECTIONS = frozenset({"server", "client"})
+
+
+def one_direction_gaps(doc):
+    """Every (protocol, method, transport) a METHOD declares, whose cells do not carry both
+    directions. Keyed off doc["methods"] -- not off the cells -- so a method with NO cells at all
+    (an emptied ROLES, a filter in build()) is a gap rather than an absence nobody iterates."""
+    seen = {}
+    for c in doc["cells"]:
+        seen.setdefault((c["protocol"], c["method"], c["transport"]), set()).add(c["role"])
+    gaps = []
+    for m in doc["methods"]:
+        for t in m["transports"]:
+            key = (m["protocol"], m["method"], t)
+            if seen.get(key, set()) != BOTH_DIRECTIONS:
+                gaps.append(key)
+    return gaps
+
+
 def selftest():
     rmcp = find_source(f"rmcp-{RMCP_VERSION}/src/model.rs", f"rmcp {RMCP_VERSION}")
     proto = find_source(f"a2a-pb-{A2A_PB_VERSION}/proto/a2a.proto", f"a2a-pb {A2A_PB_VERSION}")
@@ -530,15 +551,37 @@ def selftest():
 
     # 6. Both roles exist for every method. A method implemented in one direction is still a
     #    missing letter, and the matrix has to be able to say so.
-    roles_seen = {}
-    for c in doc["cells"]:
-        roles_seen.setdefault((c["protocol"], c["method"], c["transport"]), set()).add(c["role"])
-    lopsided = [k for k, v in roles_seen.items() if v != set(ROLES)]
+    #
+    #    This used to group build()'s cells and compare each group against set(ROLES) -- and build()
+    #    makes every cell with `for role in ROLES`, so the comparison restated the loop and could
+    #    never fail (not even with ROLES emptied). The check is now one_direction_gaps(), which
+    #    starts from the METHODS and compares against a literal pair, and the selftest proves it can
+    #    say no: once on a doc with one client cell removed, once on a build with ROLES narrowed.
+    lopsided = one_direction_gaps(doc)
     if lopsided:
         ok = False
         print(f"  FAIL methods present in only one direction: {lopsided[:5]}")
     else:
         print("  ok   every method has both a server-role and a client-role cell")
+    victim = next(c for c in doc["cells"] if c["role"] == "client")
+    dropped = dict(doc, cells=[c for c in doc["cells"] if c is not victim])
+    if (victim["protocol"], victim["method"], victim["transport"]) in one_direction_gaps(dropped):
+        print("  ok   a method missing its client-role cell is reported")
+    else:
+        ok = False
+        print(f"  FAIL a doc missing the client cell {victim['id']} was not reported")
+    global ROLES
+    saved_roles = ROLES
+    try:
+        for narrowed in (("server",), ()):
+            ROLES = narrowed
+            if one_direction_gaps(build(derive_mcp(model), derive_a2a(protosrc))):
+                print(f"  ok   a build with ROLES={narrowed!r} is reported, not passed vacuously")
+            else:
+                ok = False
+                print(f"  FAIL a build with ROLES={narrowed!r} passed the both-directions check")
+    finally:
+        ROLES = saved_roles
 
     print("SELF-TEST " + ("PASS" if ok else "FAIL"))
     return 0 if ok else 1

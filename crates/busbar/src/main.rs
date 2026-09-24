@@ -1864,9 +1864,8 @@ async fn serve_listener(
             // The built-in axum/hyper listener below always declares itself TLS-capable
             // (`transport_capable = true`); `prepare` still fails closed rather than silently
             // downgrading to plaintext if the material cannot be resolved/parsed (DECISIONS #40).
-            let security =
-                busbar_core_connsec::prepare(label, Some(&tls), &secret_resolver, true)
-                    .unwrap_or_else(|e| die(format!("TLS configuration error for '{label}': {e}")));
+            let security = busbar_core_connsec::prepare(label, Some(&tls), &secret_resolver, true)
+                .unwrap_or_else(|e| die(format!("TLS configuration error for '{label}': {e}")));
             let mtls = tls.client_ca.is_some();
             if log_at_info {
                 tracing::info!(listen = %label, mtls, "busbar listening (TLS)");

@@ -30,10 +30,12 @@ name: A2A conformance
 # guard that keeps product knowledge out of the harness is enforced in code, not by filesystem
 # distance.
 #
-# busbar is PUBLIC, so per the org rule (public -> GitHub-hosted, private -> busbar-selfhosted)
-# every job here runs on `ubuntu-latest` at no cost, and nothing needs provisioning. There is no
-# secret anywhere in this file, which is what makes "the control legs run ALWAYS" achievable rather
-# than aspirational.
+# Every job here runs on a sized `latchkey-*` runner label (`latchkey-small`, and `latchkey-xlarge`
+# for the subject build), per the Latchkey-primary runner ruling (BUSBAR-1.6.0.md DECISIONS #56).
+# That pool IS provisioned infrastructure and it bills per job-minute (DECISIONS #78), so these
+# legs are neither free nor provisioning-free: a Latchkey outage or a missing label is a red here.
+# What this file does NOT need is a secret or a repository variable -- there is none anywhere in it,
+# which is what makes "the control legs run ALWAYS" achievable rather than aspirational.
 #
 # THE CONTROL LEGS RUN ALWAYS. A battery that cannot judge a known-good peer cannot be trusted to
 # judge ours, so every run re-establishes that both instruments still produce the pinned verdict
@@ -283,6 +285,20 @@ jobs:
           kill $CONTROL_PID 2>/dev/null || true
           echo "  (battery exit $rc; the verdict is the baseline comparison)"
           tail -40 /tmp/a2a-python.log
+          # `--allow-red` makes a COMPLETED run exit 0 whatever its tests said, so any other exit
+          # means the battery produced no verdict to compare: 3 is "never reached the peer" (the
+          # state the negative-control job treats as catastrophic), 4 is a rejected known-deviations
+          # file. Judge it HERE, with its own reason, rather than let the baseline step die next on
+          # a missing report and read as a harness fault.
+          case "$rc" in
+            0) ;;
+            3) echo "::error::the a2a-python control was never reached by the battery (exit 3), so NOTHING WAS TESTED and there is no report for the baseline to compare."
+               exit 1 ;;
+            4) echo "::error::the battery rejected baselines/known-deviations-a2a-python.json (exit 4); the run produced no report."
+               exit 1 ;;
+            *) echo "::error::the battery exited ${rc} against the a2a-python control under --allow-red, which only a completed run turns into 0; no trustworthy report exists."
+               exit 1 ;;
+          esac
       - name: The second control must still produce its pinned verdict
         working-directory: testing/a2a-harness
         run: |

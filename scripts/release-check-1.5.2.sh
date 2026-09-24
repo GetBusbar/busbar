@@ -37,20 +37,24 @@
 #   integrator must confirm. Nothing here fakes a pass: a phase that cannot run its real proof says
 #   so LOUDLY and (for the optional OIDC bits) loud-skips rather than reporting green.
 #
-# KNOWN INTEGRATION BLOCKER (Phase B/C, flagged — the integrator MUST confirm)
-#   The auth-oidc plugin sets `principal.id = "oidc:<sub>"` (auth-oidc/src/lib.rs:272), but the
-#   token-exchange self-subject sanitizer `sanitize_self_sub` (auth/self_keys.rs) REJECTS any id
-#   containing ':' (→ ExchangeError::BadSubject → 403). So with the CURRENT auth-oidc plugin, a real
-#   `POST /auth/token` carrying an OIDC JWT returns 403 BadSubject, NOT the intended 200 + user:<sub>
-#   key. The busbar crate's own self_keys_tests use a clean, prefix-free principal id ("sam"). Phase
-#   B's happy-path 200 is authored against the INTENDED contract and gated VERIFIED-AT-INTEGRATION on
-#   this exact question — the integrator must confirm whether the engine strips the module prefix
-#   before the exchange subject check (or whether the plugin/sanitizer is reconciled) before Phase B's
-#   200 can pass with the real plugin.
+# THE LIVE OIDC PROOFS RUN WHENEVER ../auth-oidc IS PRESENT (item 480). Phase B's POST /auth/token
+#   round-trip and Phase C's admin authorization matrix were once behind an opt-in env var nothing in
+#   the repository set, so they never ran and nothing counted them as skipped. The "oidc:<sub>" vs
+#   `sanitize_self_sub` blocker that justified the opt-in is gone: the sanitizer
+#   (crates/busbar-kernel/src/auth/self_keys.rs) refuses only empty, '/', control chars and a leading
+#   vk_/user:/group: prefix, and Phase B already expects the `user:oidc:<sub>` leaf. With the sibling
+#   absent, each live proof is a recorded COVERAGE GAP (see below), never a silent pass.
 #
 # USAGE
 #   scripts/release-check-1.5.2.sh                 # run every 1.5.2 phase
 #   scripts/release-check-1.5.2.sh --phase A       # run just Phase A (also B / C)
+#   scripts/release-check-1.5.2.sh --selftest      # prove the gap accounting, offline, no build
+#
+# COVERAGE GAPS (item 480). A live proof that could not run (its sibling checkout is absent) is a
+# GAP, not a pass. `record_gap` names it; the final verdict prints "PASSED WITH GAPS" and lists
+# every one; each is appended as "<phase-id> <status>" to $BUSBAR_RELEASE_GAP_FILE when the parent
+# gate sets it; and under BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS=1 (the parent's own env switch,
+# which qa-gate-run.sh exports) a gap is FATAL -- the same policy release-check.sh applies.
 #
 # FAILURE POLICY — identical to release-check.sh: fail-fast, name the failing phase, tear everything
 # down on ANY exit. A failure here means: DO NOT TAG THIS RELEASE.
@@ -72,9 +76,11 @@ if [ -z "${BUSBAR_1_5_2_WATCHDOG_ARMED:-}" ] && command -v timeout >/dev/null 2>
 fi
 
 ONLY_PHASE=""
+SELFTEST=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --phase) ONLY_PHASE="${2:-}"; shift 2 ;;
+    --selftest) SELFTEST=1; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -101,6 +107,93 @@ phase() {
 ok()   { echo "  [ok] $*"; }
 note() { echo "  [note] $*"; }
 integ() { echo "  [VERIFIED-AT-INTEGRATION] $*"; }
+
+# ── Plugin pre-flight acceptance, read from a boot log (item 538) ─────────────────────────────────
+# preflight.rs logs one line per loadable plugin: "plugin validated" (trusted) or "plugin validated
+# as UNVERIFIED" (an explicit plugins.trust opt-in such as allow_unsigned), each carrying
+# `plugin=<name>`; a trust-policy skip logs "plugin present but NOT loaded (trust policy)". The
+# fetch line ("plugins.fetch: downloaded + verified") is NOT evidence: it is written before
+# pre-flight runs. Returns non-zero, naming why, unless <name> was validated and not skipped.
+assert_plugin_validated() {  # $1 boot log, $2 plugin manifest name
+  local log="$1" name="$2"
+  if ! grep -F 'plugin validated' "$log" | grep -qF "$name"; then
+    echo "  pre-flight: no 'plugin validated' line for ${name} in ${log}" >&2
+    return 1
+  fi
+  if grep -F 'NOT loaded (trust policy)' "$log" | grep -qF "$name"; then
+    echo "  pre-flight: ${name} was SKIPPED by trust policy (present but NOT loaded)" >&2
+    return 1
+  fi
+  return 0
+}
+
+# ── Coverage-gap accounting (item 480) — see COVERAGE GAPS in the header ─────────────────────────
+GAPS=()
+record_gap() {  # $1 phase-id, $2 status (sibling-missing | skip-docker — release-check.sh's GAP_STATUSES)
+  GAPS+=("$1 $2")
+  note "COVERAGE GAP: $1 ($2) — this proof did NOT run; it is not a pass."
+  if [ -n "${BUSBAR_RELEASE_GAP_FILE:-}" ]; then printf '%s %s\n' "$1" "$2" >>"$BUSBAR_RELEASE_GAP_FILE"; fi
+}
+final_verdict() {
+  if [ "${#GAPS[@]}" -eq 0 ]; then
+    phase "1.5.2 FEATURE GATE PASSED — every live proof in scope EXECUTED"
+    return 0
+  fi
+  if [ "${BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS:-0}" = "1" ]; then
+    phase "1.5.2 FEATURE GATE INCOMPLETE: ${#GAPS[@]} LIVE PROOF(S) DID NOT RUN"
+  else
+    phase "1.5.2 FEATURE GATE PASSED WITH GAPS: ${#GAPS[@]} LIVE PROOF(S) DID NOT RUN"
+  fi
+  local g; for g in "${GAPS[@]}"; do echo "  gap: ${g}"; done
+  if [ "${BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS:-0}" = "1" ]; then
+    echo "  BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS=1 — a gap is fatal. DO NOT TAG THIS RELEASE."
+    return 1
+  fi
+  return 0
+}
+
+gap_selftest() {
+  local bad=0 me="${REPO_ROOT}/scripts/release-check-1.5.2.sh" optin n gf rc
+  st() { if [ "$1" = "0" ]; then echo "  PASS  $2"; else echo "  FAIL  $2"; bad=$((bad + 1)); fi; }
+  # 1. No live proof hides behind an opt-in env var nothing sets (the item-480 shape). The name is
+  #    assembled so this line does not match itself.
+  optin="BUSBAR_1_5_2_RUN_""OIDC_BOOT"
+  n="$(grep -c "$optin" "$me" || true)"
+  st "$([ "$n" -eq 0 ] && echo 0 || echo 1)" "no live proof is gated on the never-set opt-in (${n} hit(s))"
+  # 2. Both live-proof skip sites (Phase B POST round-trip, Phase C admin matrix) record a gap.
+  n="$(grep -cE '^[[:space:]]+record_gap phase-152-[bc]-' "$me" || true)"
+  st "$([ "$n" -ge 2 ] && echo 0 || echo 1)" "the Phase B and Phase C live-proof skips each call record_gap (${n} site(s))"
+  # 3. No gaps -> PASSED, rc 0.
+  rc=0; ( GAPS=(); final_verdict ) >/dev/null || rc=$?
+  st "$rc" "no gaps -> verdict rc 0"
+  # 4. A gap, parent NOT requiring siblings -> WITH GAPS banner, rc 0, gap file carries the row.
+  new_tmpdir; gf="$NEW_TMPDIR/gaps"
+  rc=0; out="$( GAPS=(); BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS=0 BUSBAR_RELEASE_GAP_FILE="$gf"; \
+                record_gap phase-152-selftest sibling-missing; final_verdict )" || rc=$?
+  st "$([ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'PASSED WITH GAPS' && echo 0 || echo 1)" \
+     "a gap without require-siblings -> 'PASSED WITH GAPS', rc 0 (rc=${rc})"
+  st "$(grep -qx 'phase-152-selftest sibling-missing' "$gf" 2>/dev/null && echo 0 || echo 1)" \
+     "the gap is written to \$BUSBAR_RELEASE_GAP_FILE for the parent's accounting"
+  # 5. A gap under require-siblings -> fatal.
+  rc=0; ( GAPS=(); BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS=1; unset BUSBAR_RELEASE_GAP_FILE; \
+          record_gap phase-152-selftest sibling-missing; final_verdict ) >/dev/null || rc=$?
+  st "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" "a gap under BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS=1 -> non-zero (rc=${rc})"
+  # 6. assert_plugin_validated (item 538): the fetch line alone is NOT a load proof.
+  new_tmpdir; gf="$NEW_TMPDIR/boot.log"
+  printf 'INFO plugins.fetch: downloaded + verified filename=busbar-hook-test.tar.gz\n' >"$gf"
+  rc=0; assert_plugin_validated "$gf" busbar-hook-test 2>/dev/null || rc=$?
+  st "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" "a log with only 'downloaded + verified' is NOT a validated plugin (rc=${rc})"
+  printf 'WARN plugin validated as UNVERIFIED (permitted by an explicit plugins.trust opt-in) plugin=busbar-hook-test alias=hooktest\n' >>"$gf"
+  rc=0; assert_plugin_validated "$gf" busbar-hook-test 2>/dev/null || rc=$?
+  st "$rc" "a 'plugin validated' line naming the plugin is accepted"
+  rc=0; assert_plugin_validated "$gf" some-other-plugin 2>/dev/null || rc=$?
+  st "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" "a validated line for a DIFFERENT plugin does not count (rc=${rc})"
+  printf 'WARN plugin present but NOT loaded (trust policy) plugin=busbar-hook-test\n' >>"$gf"
+  rc=0; assert_plugin_validated "$gf" busbar-hook-test 2>/dev/null || rc=$?
+  st "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" "a trust-policy skip of the plugin fails the check (rc=${rc})"
+  if [ "$bad" -ne 0 ]; then echo "release-check-1.5.2 selftest: RED (${bad} failed)"; return 1; fi
+  echo "release-check-1.5.2 selftest: GREEN"
+}
 
 # ── Cleanup registry (mirrors release-check.sh) ───────────────────────────────────────────────────
 BG_PIDS=()
@@ -196,8 +289,8 @@ sha256_of() {
 #    tag (never :latest). Both are stood up with docker-run from LOCAL images + LOCAL fixtures — no
 #    external network is contacted by the flow itself (only a one-time image pull if the tag is not
 #    already cached; a fully-offline runner with the images pre-pulled never touches the network). ──
-WIREMOCK_IMAGE="wiremock/wiremock:3.9.2"   # github OAuth token/user/orgs endpoints, stubbed from JSON
-OPENLDAP_IMAGE="osixia/openldap:1.5.0"     # real OpenLDAP, seeded with scripts/fixtures/auth-ldap/seed.ldif
+WIREMOCK_IMAGE="wiremock/wiremock:3.9.2@sha256:d13997cd7b52583528a766019cfe7d4e91c4d224a67bdaa6f60efbb532f32176"   # github OAuth token/user/orgs endpoints, stubbed from JSON
+OPENLDAP_IMAGE="osixia/openldap:1.5.0@sha256:18742e9c449c9c1afe129d3f2f3ee15fb34cc43e5f940a20f3399728f41d7c28"     # real OpenLDAP, seeded with scripts/fixtures/auth-ldap/seed.ldif
 
 # docker present AND the daemon reachable? A LOCAL run without docker LOUD-SKIPS the live arms (never a
 # silent pass); a CI/self-hosted runner WITH docker RUNS them. `BUSBAR_1_5_2_SKIP_DOCKER=1` force-skips.
@@ -330,6 +423,11 @@ PYEOF
   BG_PIDS+=("$NEW_BG_PID")
 }
 
+if [ "$SELFTEST" = "1" ]; then
+  trap - ERR
+  gap_selftest; exit $?
+fi
+
 # ══════════════════════════════════════════════════════════════════════════════════════════════════
 phase "Phase 0: build (or reuse) busbar binary + busbar-plugin-pack"
 # Reuse a parent gate's already-built binaries when handed down, else build them here — same crates,
@@ -444,10 +542,10 @@ EOF
   ok "log shows: fetched + verified"
   [ -f "${d1}/busbar-hook-test.tar.gz" ] || { echo "  A.1: staged tarball missing in dir" >&2; exit 1; }
   ok "tarball staged into plugins.dir"
-  # Prove it actually LOADED (validated) — a fetched-but-rejected artifact would not.
-  grep -Eiq "validated|loaded|hooktest|busbar-hook-test" "$log1" \
-    || note "A.1: could not positively confirm LOAD from log at RUST_LOG=info (fetch+verify confirmed above)"
-  ok "A.1 happy path proven: fetch → verify → stage (load confirmed via boot success + staged artifact)"
+  # Prove plugin PRE-FLIGHT accepted the fetched artifact — a fetched-but-rejected one would not.
+  # (Item 538: the old grep matched `loaded` inside `downloaded`, and only noted on a miss.)
+  assert_plugin_validated "$log1" "busbar-hook-test" || { cat "$log1" >&2; exit 1; }
+  ok "A.1 happy path proven: fetch → verify → stage → pre-flight validated busbar-hook-test"
   kill "$p1" 2>/dev/null || true; wait "$p1" 2>/dev/null || true
 
   # ---- A.2 CACHE-BY-PIN: second boot with the artifact already staged + matching pin → NO download ----
@@ -722,7 +820,7 @@ run_phase_b() {
       oidc)
         # OIDC supports BOTH directions.
         # (b) POST /auth/token (held id_token) — RUNS fully here (fixture self-test + --validate now;
-        #     boot + POST behind BUSBAR_1_5_2_RUN_OIDC_BOOT, see the KNOWN INTEGRATION BLOCKER).
+        #     boot + POST whenever ../auth-oidc is present; a recorded coverage gap when it is not).
         run_tokenx_oidc_post "$P_DIR"
         # (a) GET /auth/token browser redirect flow — VERIFIED-AT-INTEGRATION: the GET handler is
         #     mounted by Step 6 (see auth/exchange.rs "Step 6 mounts the GET browser flow"); Steps 1-5
@@ -856,7 +954,7 @@ EOF
   now="$(date +%s)"; exp="$((now + 3600))"
   jwt="$(oidc_mint_jwt "$ISS" "$AUD" "$SUB" '["eng"]' "$exp")"
 
-  if [ "$HAVE_OIDC" = "1" ] && [ "${BUSBAR_1_5_2_RUN_OIDC_BOOT:-0}" = "1" ]; then
+  if [ "$HAVE_OIDC" = "1" ]; then
     echo "  booting busbar + driving POST /auth/token with the minted JWT..."
     local mock_pid; start_mock_upstream "$B_MOCK" "gate-B-marker"; mock_pid="$NEW_BG_PID"
     BUSBAR_CONFIG="${work}/config.yaml" BUSBAR_PROVIDERS="${work}/providers.yaml" \
@@ -872,9 +970,6 @@ EOF
     exp1="$(echo "$resp1"    | jq -r '.exp     // empty')"
     if [ -z "$api_key1" ]; then
       echo "  Phase B: POST /auth/token returned no api_key: ${resp1}" >&2
-      echo "  ^ EXPECTED IN THIS BRANCH: the auth-oidc plugin sets principal.id='oidc:<sub>', and" >&2
-      echo "    sanitize_self_sub rejects the ':' → 403 BadSubject. See the KNOWN INTEGRATION BLOCKER" >&2
-      echo "    header. The integrator must reconcile the prefix vs the sanitizer for the 200 path." >&2
       exit 1
     fi
     # The self group is ALWAYS `user:` + the WHOLE module-namespaced principal id; the oidc plugin's is
@@ -905,13 +1000,11 @@ EOF
     kill "$bpid" 2>/dev/null || true; wait "$bpid" 2>/dev/null || true
     kill "$mock_pid" 2>/dev/null || true; wait "$mock_pid" 2>/dev/null || true
   else
-    integ "Phase B boot + POST /auth/token round-trip. RAN: JWKS/JWT fixture self-test + (when the"
-    integ "  auth-oidc sibling is present) config --validate. NOT RUN standalone: the live boot + POST."
-    integ "  To run it here: set BUSBAR_1_5_2_RUN_OIDC_BOOT=1 with ../auth-oidc checked out."
-    integ "  The integrator MUST confirm, against the crates built on the sibling branch:"
-    integ "   1) POST /auth/token with the minted JWT returns 200 + { api_key, key_id, group:'user:${SUB}', exp }."
-    integ "      *** BLOCKER: the auth-oidc plugin sets principal.id='oidc:<sub>' but sanitize_self_sub"
-    integ "      rejects ':' → today this returns 403 BadSubject. Reconcile before the 200 path passes. ***"
+    record_gap phase-152-b-oidc-token-exchange-live sibling-missing
+    integ "Phase B boot + POST /auth/token round-trip. RAN: JWKS/JWT fixture self-test only."
+    integ "  NOT RUN: ../auth-oidc is absent, so the live boot + POST could not run (a COVERAGE GAP)."
+    integ "  With ../auth-oidc checked out it runs and asserts:"
+    integ "   1) POST /auth/token with the minted JWT returns 200 + { api_key, key_id, group:'user:oidc:${SUB}', exp }."
     integ "   2) exp-now ≈ auth.key_ttl (7d = 604800s)."
     integ "   3) a second POST returns the SAME key_id (one-key idempotency)."
     integ "   4) the issued key drives a real chat-completion → 200."
@@ -1429,7 +1522,7 @@ EOF
   now="$(date +%s)"; exp="$((now + 3600))"
   jwt_admin="$(oidc_mint_jwt "$ISS" "$AUD" "admin-user" '["admins"]' "$exp")"
 
-  if [ "$HAVE_OIDC_C" = "1" ] && [ "${BUSBAR_1_5_2_RUN_OIDC_BOOT:-0}" = "1" ]; then
+  if [ "$HAVE_OIDC_C" = "1" ]; then
     # Sets $MATRIX_MUT_CODE rather than echoing it: captured in a command substitution, the
     # `BG_PIDS+=` below lands in a SUBSHELL and is lost, so the `exit 1` assertion paths (which skip
     # the inline kill at the end) leave a busbar holding ${C2_LISTEN} with nothing tracking it.
@@ -1465,10 +1558,10 @@ EOF
     ok "posture (b) READ-ONLY: GET /keys 200 BUT POST /keys ${ro_code} (mutation FORBIDDEN on the SAME endpoint)"
     ok "matrix proven: full CAN do what read-only CANNOT, on the identical endpoint"
   else
-    integ "Phase C postures (a)/(b) live boot + enforcement matrix. RAN: config --validate for both"
-    integ "  full and read-only (when ../auth-oidc present). NOT RUN standalone: the live admin JWT drive."
-    integ "  To run it here: BUSBAR_1_5_2_RUN_OIDC_BOOT=1 with ../auth-oidc checked out."
-    integ "  The integrator MUST confirm, against the crates built on the sibling branch:"
+    record_gap phase-152-c-admin-authz-matrix-live sibling-missing
+    integ "Phase C postures (a)/(b) live boot + enforcement matrix."
+    integ "  NOT RUN: ../auth-oidc is absent, so the live admin JWT drive could not run (a COVERAGE GAP)."
+    integ "  With ../auth-oidc checked out it runs and asserts:"
     integ "   (a) admin_scope: full   → GET /api/v1/admin/keys = 200 AND POST /api/v1/admin/keys = 200/201."
     integ "   (b) admin_scope: read-only → GET = 200 (read allowed) but EVERY mutation on the SAME endpoints"
     integ "       (POST/PUT/DELETE keys, PUT /config/settings, hooks) = 403 forbidden — the required_scope"
@@ -1489,5 +1582,7 @@ case "$ONLY_PHASE" in
   *) echo "unknown phase: $ONLY_PHASE (want A|B|C)" >&2; exit 2 ;;
 esac
 
-phase "1.5.2 FEATURE GATE PASSED (with any VERIFIED-AT-INTEGRATION items noted above)"
+VERDICT_RC=0
+final_verdict || VERDICT_RC=$?
 echo "Total elapsed: ${SECONDS}s"
+exit "$VERDICT_RC"

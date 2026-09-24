@@ -12,9 +12,10 @@
 # It is a SEPARATE workflow rather than a job inside qa-gate.yml for two reasons, both structural:
 #
 #   * qa-gate.yml is a DISPATCHER whose `on:`/`permissions:` block is read from the DEFAULT branch by
-#     `workflow_run`, and `qa-gate-dispatch-lint.py` fails the build when this commit's copy has
-#     drifted from main's. Adding a job there means the analysis cannot gate the commit that
-#     introduced it until the next release. CodeQL has no such constraint, so it does not pay that
+#     `workflow_run`, and `cargo xtask gate qa-gate-dispatch` (xtask/src/gates/qa_gate_dispatch.rs)
+#     fails the build when its run graph drifts from the declared qa-gate.dispatcher.json and, on
+#     `qa`/`main`, from the default branch's copy. Adding a job there means the analysis cannot gate
+#     the commit that introduced it until the next release. CodeQL has no such constraint, so it does not pay that
 #     cost.
 #   * CodeQL needs `security-events: write` to upload results. qa-gate.yml deliberately declares NO
 #     `permissions:` block (its header explains why: the sibling-clone steps authenticate to other

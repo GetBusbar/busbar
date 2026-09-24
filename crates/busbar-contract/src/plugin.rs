@@ -238,6 +238,7 @@ pub trait KernelSeal: sealed::KernelSealed {
 ///   for FakeSeal` which any file could write silently.
 /// - The trait stays sealed. This is one more in-crate implementor, not a re-opened trait: an
 ///   outside crate still cannot implement [`KernelSeal`], with or without the feature.
+///
 /// The TYPE is declared here so a plane can NAME it (`busbar_contract::plugin::TestKernelSeal`);
 /// its two `impl` blocks live in [`crate::caps::token`] with every other implementor of this
 /// trait, which is both where `qa/construction.toml`'s `kernel-seal-impls` rule requires them and

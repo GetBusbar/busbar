@@ -50,28 +50,34 @@ being ticked in Settings does nothing until a `dev`→`qa`→`main` promotion ac
 
 | Required status (context name) | Workflow | What it aggregates |
 | --- | --- | --- |
-| `cargo-deny (advisories · licenses · sources · bans) + cargo-audit` | `qa-security.yml` | Single-job workflow; its own status is the aggregator. |
+| `cargo-deny (advisories · licenses · sources · bans) + cargo-audit` | `qa-security.yml` | Single-job workflow; its own status is the aggregator. **Promotion-freshness gap, same shape as the `ship-ready`/`construction gate` one above:** this context name is `qa-security.yml`'s job `name:` as of `predev` today (the `+ cargo-audit` suffix and the `security.yml`→`qa-security.yml` rename both landed there). `main`/`dev`/`qa` have not been promoted since; they still run the pre-rename `security.yml`, whose job `name:` is `cargo-deny (advisories · licenses · sources · bans)` with **no** `+ cargo-audit` suffix and no `cargo-audit` step. Until a `dev`→`qa`→`main` promotion carries `qa-security.yml` onto those branches, ticking the `+ cargo-audit` name in Settings never reports there — tick the pre-rename name instead until that promotion lands, then switch. |
 | `MCP conformance verdict` | `qa-conformance-mcp.yml` | `verdict` job fans in over every MCP conformance leg (control/subject/battery/fixture-absence). |
 | `A2A conformance verdict` | `qa-conformance-a2a.yml` | `verdict` job fans in over every A2A conformance leg. |
 | `CodeQL (rust)` | `qa-codeql.yml` | Single-job workflow; its own status is the aggregator. Builds the CodeQL database for the Rust workspace (`build-mode: none`) and uploads the SARIF to code scanning. |
+| `Voice conformance verdict` | `qa-conformance-voice.yml` | `verdict` job fans in over all 8 Voice conformance legs (gate-selftest, spec-per-dialect, replay, cross-parity, provider-dial, composition, boot-validate, governance-probe); same `workflow_run`-after-`qa`-CI shape as the MCP/A2A verdicts. Unrequired today, a red 9-job Voice battery (the verdict job plus its 8 legs) blocks nothing on promotion. |
+| `cargo-fuzz (bounded, qa boundary)` | `qa-fuzz.yml` | Single-job workflow; its own status is the aggregator. Different shape from the four above: triggers directly on `push: [qa]` (plus `workflow_dispatch`), not `workflow_run`-after-CI — still qa-only, never `main`, for the same promotion-is-already-analysed reason. Unrequired today, a red fuzz gate blocks nothing on promotion. |
 
-**Why `qa` and not `main`, and why all four live here now.** Before DECISIONS #78, `cargo-deny` and the
-two conformance verdicts triggered on `push`/`pull_request` like `ci umbrella`, and only `CodeQL`
-(`codeql.yml`, since renamed `qa-codeql.yml`) was qa-only, triggering on `push: [qa]` and
-`workflow_dispatch`. The #78 CI cost overhaul put all four on the SAME shape `CodeQL` already used:
+**Why `qa` and not `main`, and why six checks live here now.** Before DECISIONS #78, `cargo-deny` and
+the MCP/A2A conformance verdicts triggered on `push`/`pull_request` like `ci umbrella`, and only
+`CodeQL` (`codeql.yml`, since renamed `qa-codeql.yml`) was qa-only, triggering on `push: [qa]` and
+`workflow_dispatch`. The #78 CI cost overhaul put those four on the SAME shape `CodeQL` already used:
 each now triggers on `workflow_run` (`workflows: ["CI"]`, `types: [completed]`) gated by a job-level
 `if:` that only proceeds when that CI run concluded `success` on branch `qa`, plus its own
 schedule/dispatch — never on `push` or `pull_request` directly (see each workflow's own `on:` block).
-That is the cost boundary the branch model draws: `dev` gets the cheap per-push gate (`ci.yml`), and
-the expensive, exhaustive "may this ship" battery — conformance, CodeQL, supply-chain — is what a
-`dev`→`qa` promotion buys, spent ONCE per promotion instead of on every push.
+`Voice conformance verdict` uses the identical `workflow_run`-after-`qa`-CI shape. `cargo-fuzz` is the
+odd one out — it triggers directly on `push: [qa]`, the same shape `CodeQL` used pre-#78 — but is
+qa-only for the same cost-boundary reason as the rest. That is the cost boundary the branch model
+draws: `dev` gets the cheap per-push gate (`ci.yml`), and the expensive, exhaustive "may this ship"
+battery — conformance, CodeQL, supply-chain, fuzzing — is what a `dev`→`qa` promotion buys, spent ONCE
+per promotion instead of on every push.
 
 The consequence for branch protection is the one the `cargo-deny` note below has always warned about,
-now true for all four: **a required status check that never reports does not pass — GitHub leaves the
-merge pending on it forever.** Ticking any of these four on `main`, or on a `pull_request` context on
+now true for all six: **a required status check that never reports does not pass — GitHub leaves the
+merge pending on it forever.** Ticking any of these six on `main`, or on a `pull_request` context on
 either branch, would block every promotion/PR outright, because none of them ever fires off a `push`
-or a PR — only off a `workflow_run` keyed to a CI run that itself ran on `qa`. Tick them on **`qa`
-only**, as a branch (`push`-shaped) required check, never as a PR check.
+or a PR aimed at `main`/PR — only off a `workflow_run` keyed to a CI run that itself ran on `qa`, or
+(for `cargo-fuzz`) a `push` to `qa` itself. Tick them on **`qa` only**, as a branch (`push`-shaped)
+required check, never as a PR check.
 
 That is not a weaker gate. A push to `main` is a *promotion* of the exact bytes `qa` already analysed,
 so the verdict that matters has already been rendered — before the promotion, which is what `qa` is
@@ -84,7 +90,8 @@ there would be a red against a commit already being released.
 > it off `push`/`pull_request` entirely onto the `workflow_run`-after-`qa` shape described above — a
 > different reporting caveat, not a return of the old one. A required status check that never reports
 > does not pass — GitHub leaves the PR pending on it forever — so **do not reintroduce a `paths:`
-> filter on `qa-security.yml`, and do not require any of these four checks on a `pull_request`
+> filter on `qa-security.yml`, and do not require any of these six checks (including `Voice
+> conformance verdict` and `cargo-fuzz (bounded, qa boundary)`) on a `pull_request`
 > context**: they are `qa`-promotion checks now, not PR gates, and requiring them as PR gates
 > reintroduces the exact "never reports" hazard this note exists to prevent.
 

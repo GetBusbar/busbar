@@ -300,9 +300,51 @@ fn resolver_resolve(line: &str) -> bool {
     false
 }
 
-/// `async` at a word boundary, then whitespace, then `fn`, then whitespace. An `async move {` or
-/// `async {` block does NOT arm: those are values, and what matters is the thread that polls them,
-/// decided by the enclosing fn (already tracked) or by a spawn site (already an offload opener).
+/// The calls that hand an `async` block to a Tokio WORKER. `spawn_blocking` is deliberately not
+/// here (it is an offload opener); these are the ones whose body runs on the async pool.
+const ASYNC_SPAWNERS: &[&str] = &[
+    "tokio::spawn",
+    "tokio::task::spawn",
+    "task::spawn",
+    "spawn_local",
+];
+
+/// `async {` / `async move {` — an async BLOCK opener at a word boundary.
+fn opens_async_block(line: &str) -> bool {
+    let mut rest = line;
+    while let Some(i) = rest.find("async") {
+        let before_ok = rest[..i]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !is_ident_char(c));
+        let after = &rest[i + "async".len()..];
+        if before_ok {
+            let a = after.trim_start();
+            let a = a
+                .strip_prefix("move")
+                .filter(|m| !m.starts_with(is_ident_char))
+                .map_or(a, str::trim_start);
+            if a.starts_with('{') {
+                return true;
+            }
+        }
+        rest = after;
+    }
+    false
+}
+
+/// Does this line SPAWN onto the async pool — `tokio::spawn(` and friends, or a `.spawn(` method
+/// (a `JoinSet`/`Handle`)?
+fn calls_async_spawner(line: &str) -> bool {
+    ASYNC_SPAWNERS.iter().any(|s| bare_call(line, s)) || method_call(line, "spawn")
+}
+
+/// `async` at a word boundary, then whitespace, then `fn`, then whitespace. A bare `async move {`
+/// or `async {` block does NOT arm here: those are values, and what matters is the thread that
+/// polls them. A block handed to a SPAWNER does arm — see [`calls_async_spawner`] and item 186: a
+/// `tokio::spawn(async move { … })` inside a SYNC fn runs its body on a Tokio worker, and a plugin
+/// call there parks that worker exactly as one in an `async fn` does. `tokio::spawn` is not an
+/// offload opener, so before item 186 that body was scanned by nothing.
 fn opens_async_fn(line: &str) -> bool {
     let chars: Vec<char> = line.chars().collect();
     let n: Vec<char> = "async".chars().collect();
@@ -373,6 +415,8 @@ fn scan_file(rel: &str, text: &str) -> FileScan {
     let mut test_at: i64 = -1;
     let mut t_entered = false;
     let mut prev_allow = false;
+    // A spawner whose `async` block opens on a LATER line (`tokio::spawn(\n    async move {`).
+    let mut spawn_pending = false;
     let mut lex = scan::LexState::default();
 
     for (idx, line) in text.lines().enumerate() {
@@ -393,10 +437,13 @@ fn scan_file(rel: &str, text: &str) -> FileScan {
                 off_b = depth;
                 off_p = pdepth;
             }
-            if async_at < 0 && opens_async_fn(line) {
+            let spawner = calls_async_spawner(line);
+            let block = opens_async_block(line);
+            if async_at < 0 && (opens_async_fn(line) || (block && (spawner || spawn_pending))) {
                 async_at = depth;
                 entered = false;
             }
+            spawn_pending = spawner && !block && dp > 0;
             if test_at < 0 && line.contains("#[cfg(test)]") {
                 test_at = depth;
                 t_entered = false;
@@ -685,6 +732,40 @@ impl Gate for BlockingFfiGate {
                 "secret-plugin FFI",
                 "plugin OPEN",
                 "an App/hook-chain build",
+            ],
+        ));
+
+        // ITEM 186: A SPAWNED ASYNC BLOCK IN A SYNC FN RUNS ON A TOKIO WORKER. `tokio::spawn` is
+        // not an offload opener and a sync fn never arms, so this body was scanned by nothing. The
+        // two-line spelling (spawner, then the block on the next line) is planted too, and a
+        // `spawn_blocking` body beside them stays exempt.
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{CORE}/planted_spawned_block.rs"),
+            "pub(crate) fn spawn_sweeper(env: Arc<HookEnv>) {\n\
+             \x20   tokio::spawn(async move {\n\
+             \x20       let r = env.resolve_hook_settings(&hook.settings);\n\
+             \x20   });\n\
+             \x20   tokio::spawn(\n\
+             \x20       async move {\n\
+             \x20           let outcome = module.authenticate(bearer);\n\
+             \x20       },\n\
+             \x20   );\n\
+             \x20   tokio::task::spawn_blocking(move || {\n\
+             \x20       let ok = env.resolve_hook_settings(&hook.settings);\n\
+             \x20   });\n\
+             }\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a plugin call in an async block spawned from a sync fn is flagged",
+            &[ROW_NO_INLINE],
+            ov,
+            &[
+                "2 finding(s)",
+                "planted_spawned_block.rs:3",
+                "planted_spawned_block.rs:7",
             ],
         ));
 

@@ -1,0 +1,67 @@
+name: llm-spec-drift
+
+# LIVE UPSTREAM DRIFT OF THE VENDORED LLM SPECS -- REPORTED, NEVER REQUIRED.
+#
+# The LLM-plane conformance judge (ci.yml `llm-conformance`) validates busbar's wire output against
+# provider specifications pinned by digest in testing/llm-conformance/spec-digests.tsv. Some of
+# them are VENDORED: Google serves only the live generativelanguage discovery document and bumps its
+# `revision` every few days, so a URL pin went RED on every branch at every bump (item 116). The
+# reviewed copy is committed under testing/llm-conformance/specs/ and the judge reads it with NO
+# network, so a Google bump can no longer redden a branch.
+#
+# That leaves one question the judge deliberately does not ask: has upstream moved on from what was
+# reviewed? `testing/llm-conformance/vendor.sh --drift` asks it. For every vendored spec it fetches
+# the live document and compares it (same canonical digest) with the committed copy's pin:
+#
+#   exit 0  live == committed
+#   exit 5  DRIFT: upstream changed; review the change and re-vendor (vendor.sh --repin <spec>)
+#   exit 4  upstream could not be fetched, so drift is UNKNOWN -- red, never read as "no drift"
+#
+# The job is run plainly: no `continue-on-error`, no `|| true`. Its red is visible on every run.
+#
+# NOT A REQUIRED CHECK, AND IT MUST NOT BECOME ONE. A required check that a third party can turn
+# red by publishing a revision is a check that blocks every promotion for something nobody on the
+# branch did -- exactly the failure the vendoring removed. So it lives in its own workflow, is not
+# in ci.yml's umbrella, and is not listed in .github/required-status-checks.md. It says so loudly
+# instead: red on the push that first sees the drift, and red on the daily run until it is
+# re-vendored.
+#
+# TRIGGERS. `push` on the same branches ci.yml runs on, so a branch learns about drift on the push
+# that meets it. `schedule` daily, because drift is a property of upstream and not of any commit:
+# nothing pushed is what makes it appear. (A `schedule` trigger resolves against the default branch,
+# so the daily run starts once this file reaches `main`.) `workflow_dispatch` for an on-demand
+# re-check after re-vendoring.
+on:
+  push:
+    branches: ['integration/**', 'dev', 'qa', 'main', '!wip/**']
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: llm-spec-drift-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  llm-spec-drift:
+    name: llm spec drift (vendored specs vs live upstream; exit 5 drift, 4 unreachable)
+    runs-on: latchkey-small
+    # Bounded: one HTTP fetch per vendored spec, each bounded inside vendor.sh. Floor 10.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Vendored specs vs live upstream
+        run: |
+          set -uo pipefail
+          rc=0
+          bash testing/llm-conformance/vendor.sh --drift || rc=$?
+          case "$rc" in
+            0) echo "llm-spec-drift: every vendored spec equals its live upstream." ;;
+            5) echo "::error::llm-spec-drift: DRIFT -- a vendored spec's live upstream no longer matches the reviewed, committed copy (see the lines above). Review the upstream change and re-vendor with testing/llm-conformance/vendor.sh --repin <spec>." ;;
+            4) echo "::error::llm-spec-drift: UPSTREAM UNREACHABLE -- drift could not be measured, which is unknown, not clean. Re-run when the provider endpoint answers." ;;
+            *) echo "::error::llm-spec-drift: vendor.sh --drift exited ${rc}, which is neither a verdict (0/5) nor unreachable (4) -- the detector itself failed." ;;
+          esac
+          exit "$rc"

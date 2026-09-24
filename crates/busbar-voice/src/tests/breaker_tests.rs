@@ -16,11 +16,11 @@
 //! no cell to trip and a fresh dial waited out the full dial timeout against a target already known
 //! down.
 
+use crate::testkit::fixture_host::FixtureHost;
 use crate::topology::{dial_provider, stream_breaker_key, DialProviderError};
 use busbar_kernel::net_guard::GuardPolicy;
 use busbar_kernel::plane_host::BreakerHost;
 use busbar_kernel::store::BreakerState;
-use crate::testkit::fixture_host::FixtureHost;
 use busbar_substrate_values::breaker::{CanonicalSignal, StatusClass};
 
 /// A canonical hard-down signal — the disposition a definitive provider failure (auth/billing, or a

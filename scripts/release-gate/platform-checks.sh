@@ -105,14 +105,15 @@ fi
 # Not owed when no record was supplied: see the comment in expected-ids.sh — absence is announced by
 # release-fleet.yml's `resolve`, and is fatal on a release run.
 if [ -n "${STAGED_RECORD:-}" ]; then
-  want_sha="$(printf '%s' "$STAGED_RECORD" | jq -r --arg n "$ASSET" \
-    'first((.assets // [])[] | select(.name == $n) | .sha256) // empty' 2>/dev/null || true)"
+  # lib.sh's staged_asset_sha256 — the lookup gate.sh --selftest drives — not a hand-rolled copy: it
+  # also refuses a record naming this asset twice with two digests, where `first(...)` picked one.
+  want_sha="$(staged_asset_sha256 "$ASSET" || true)"
   if [ ! -s "${WORK}/${ASSET}" ]; then
     record "sha256:${TARGET}" FAIL "cannot hash ${ASSET}: it was never downloaded" \
       "see asset:${TARGET}. Reported as FAIL rather than skipped: an artifact whose bytes nobody could read is not an artifact anybody verified."
   elif [ -z "$want_sha" ]; then
     record "sha256:${TARGET}" FAIL "the staged record names no sha256 for ${ASSET}" \
-      "the record for this version pins $(printf '%s' "$STAGED_RECORD" | jq -r '(.assets // []) | length') assets and ${ASSET} is not among them, so this platform's download was never bound to anything qa verified. Fix: confirm release-stage.yml's record-staged job saw this asset on the draft — an asset uploaded after the record was written is exactly the untracked-bytes case this row exists to catch."
+      "the record for this version pins $(staged_record_json | jq -r '(.assets // []) | length' 2>/dev/null || echo '<unreadable>') assets and ${ASSET} is not among them (or is named twice, or with a digest that is not 64 hex), so this platform's download was never bound to anything qa verified. Fix: confirm release-stage.yml's record-staged job saw this asset on the draft — an asset uploaded after the record was written is exactly the untracked-bytes case this row exists to catch."
   else
     # python rather than sha256sum/shasum: this script runs on ubuntu, macOS and Windows runners and
     # the three do not agree on which of those exists. binfmt.py is here for the same reason.
@@ -122,7 +123,7 @@ with open(sys.argv[1], "rb") as fh:
     for chunk in iter(lambda: fh.read(1 << 20), b""):
         h.update(chunk)
 print(h.hexdigest())' "${WORK}/${ASSET}" 2>&1)"
-    if [ "$got_sha" = "$want_sha" ]; then
+    if digest_matches "$got_sha" "$want_sha"; then
       record "sha256:${TARGET}" PASS "${ASSET} is byte-for-byte the artifact qa staged" "sha256 ${got_sha}"
     else
       record "sha256:${TARGET}" FAIL "${ASSET} is NOT the artifact qa verified" \

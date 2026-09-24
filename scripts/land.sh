@@ -215,15 +215,25 @@ land_ceiling_verdict() {
 # operator is not left to guess what the dev line was carrying — the refusal message NAMES every
 # row on the list, because a promotion that silently drops a waiver without saying so reads, from
 # the log, exactly like a landing that never had one.
+#
+# THE LIST IS CONSTRUCTION_STANDING_REDS in xtask/src/gates/mod.rs, VERBATIM. `cargo test -p xtask`
+# holds the two equal (posture_tests::land_sh_subtracts_exactly_the_construction_standing_reds):
+# they had drifted four rows apart, so a landing was allowed reds `--posture` and ship-ready score.
+# Strike or add a name in BOTH, in one commit.
 land_construction_standing_reds() {
   local reds
   reds="$(cat <<'EOF'
 hold-discipline:cancellation-before-await
-hold-escapes
-kernel-seal-impls
+loc-ceilings:kernel:slice
+loc-ceilings:unit-verbs
+manifest-allowlist:busbar-transport-grpc
+manifest-allowlist:busbar-transport-http
+manifest-allowlist:busbar-transport-sse
+manifest-allowlist:busbar-transport-stdio
+manifest-allowlist:busbar-transport-tcp
+manifest-allowlist:busbar-transport-tls
+manifest-allowlist:busbar-transport-ws
 one-pick-site
-one-pricing-site:fee-fields
-plane-no-money
 ports-only-tests:busbar-llm
 request-path-fn-size
 terminal-doors-in-audit-step
@@ -258,7 +268,13 @@ land_gate_verdict() {
   [ "${rows:-0}" -gt 0 ] || { echo "land.sh: RED — construction gate produced no rows (log: $glog)" >&2; return 1; }
   local named; named="$(grep -E '^(PASS|FAIL)  ' "$glog" | awk '{print $2}' | grep -E "$grx" || true)"
   [ -n "$named" ] || { echo "land.sh: RED — no gate row matches '$grx' (renamed rule?)" >&2; return 1; }
-  local red; red="$(grep -E '^FAIL  ' "$glog" | awk '{print $2}' | grep -E "$grx" || true)"
+  # A row that emitted nothing reaches the report as a reconciliation problem, `RED   construction:
+  # <id>: owed but no row was recorded — DID NOT RUN`, never as a FAIL row. It is red, and the
+  # posture excuses it by the same `<id>: ` prefix, so it is read here as red under its id.
+  local red; red="$( { grep -E '^FAIL  ' "$glog" | awk '{print $2}'
+                       grep -E '^RED   construction: [^ ]+: .*DID NOT RUN' "$glog" \
+                         | sed -E 's/^RED   construction: ([^ ]+): .*/\1/'
+                     } | grep -E "$grx" || true)"
   # THE STANDING REDS ARE SUBTRACTED, AND THE LIST IS ITSELF RATCHETED. Anything red that the list
   # does not name is a NEW red — the landing broke it. Anything the list names that is no longer red
   # is a STALE entry, and a stale entry is red too: that is what stops this list becoming a
@@ -273,7 +289,7 @@ land_gate_verdict() {
          echo "land.sh: RED — construction gate rows red that the standing list does not name (log: $glog)" >&2; return 1; }
   local stale; stale="$(comm -13 <(printf '%s\n' "$red" | grep -v '^$' | sort -u) <(printf '%s\n' "$scoped_standing" | grep -v '^$' | sort -u))"
   [ -z "$stale" ] || { printf 'land.sh: standing red(s) no longer red: %s\n' "$(echo $stale)" >&2
-         echo "land.sh: RED — strike them from land_construction_standing_reds (and from REPORT_ONLY in xtask/src/gates/mod.rs)" >&2; return 1; }
+         echo "land.sh: RED — strike them from land_construction_standing_reds AND from CONSTRUCTION_STANDING_REDS in xtask/src/gates/mod.rs, in one commit" >&2; return 1; }
   echo "land.sh: gate rows green apart from the standing reds: $grx"
   return 0
 }
@@ -1405,15 +1421,15 @@ land_selftest() {
   # three postures were wired wrong.
   _stno   "--to qa empties the standing-red list"                 <(_land_reds_at qa)   '[^[:space:]]'
   _stno   "--to main empties the standing-red list"                <(_land_reds_at main) '[^[:space:]]'
-  _stgrep "--to dev leaves the standing-red list intact"           <(_land_reds_at dev)  '^plane-no-money$'
-  _stgrep "no --to at all leaves the list intact (default is dev)" <(_land_reds_at "")   '^plane-no-money$'
+  _stgrep "--to dev leaves the standing-red list intact"           <(_land_reds_at dev)  '^one-pick-site$'
+  _stgrep "no --to at all leaves the list intact (default is dev)" <(_land_reds_at "")   '^one-pick-site$'
   # And the refusal is not silent: it says WHY (a dev-line convenience, not inherited) and it NAMES
   # the rows an operator would otherwise not know were blocking the promotion.
   _land_reds_at qa >/dev/null 2>"$root/reds-to-qa.err"
   _stgrep "--to qa's message explains the standing-red list is a dev-line convenience" \
     "$root/reds-to-qa.err" 'DEV-LINE CONVENIENCE'
-  _stgrep "--to qa's message names a standing-red row (plane-no-money)" \
-    "$root/reds-to-qa.err" 'plane-no-money'
+  _stgrep "--to qa's message names a standing-red row (one-pick-site)" \
+    "$root/reds-to-qa.err" 'one-pick-site'
 
   echo "land.sh selftest: --to qa/main refuses every red-through override, one variable at a time"
   # FIVE separate cases, not a loop with one shared assertion: proving "some override got refused"
@@ -1450,17 +1466,23 @@ land_selftest() {
   echo "land.sh selftest: a standing-red construction row still aborts the gate leg under --to qa"
   # Drives land_gate_verdict directly on a fixture report — the exact code path prove_tree's `gate)`
   # arm calls — rather than building and running the real xtask construction gate.
-  # Row-filtered to `plane-no-money` alone (rather than the default "every row"): the standing-red
-  # list names EIGHT other rows land_gate_verdict has never seen a PASS or FAIL for in this fixture,
+  # Row-filtered to `one-pick-site` alone (rather than the default "every row"): the standing-red
+  # list names other rows land_gate_verdict has never seen a PASS or FAIL for in this fixture,
   # and the leg treats a standing entry with no matching row in the log as STALE — a different red,
   # for a different reason, that this case is not testing. Scoping the regex is what isolates the
   # one fact under test: this ONE standing-red row, present and still FAIL, is excused on dev and
   # not excused under --to qa.
-  printf 'FAIL  plane-no-money  x\nPASS  other  x\n' >"$root/gate-standing.txt"
-  _land_gate_verdict_to() { P_to="$1" land_gate_verdict "$2" 'plane-no-money'; }
+  printf 'FAIL  one-pick-site  x\nPASS  other  x\n' >"$root/gate-standing.txt"
+  _land_gate_verdict_to() { P_to="$1" land_gate_verdict "$2" "${3:-^one-pick-site$}"; }
   _st "gate leg: a standing red is excused on the dev line"  0 _land_gate_verdict_to dev "$root/gate-standing.txt"
   _st "gate leg: the SAME standing red aborts under --to qa" 1 _land_gate_verdict_to qa  "$root/gate-standing.txt"
-  _stgrep "gate leg: the abort names the row that is blocking" "$ST_OUT" 'plane-no-money'
+  _stgrep "gate leg: the abort names the row that is blocking" "$ST_OUT" 'one-pick-site'
+  # A standing row that DID NOT RUN is reported as a problem line, not a FAIL row, and is still red.
+  printf 'PASS  other  x\nRED   construction: manifest-allowlist:busbar-transport-ws: owed but no row was recorded — DID NOT RUN, which is not a pass\n' >"$root/gate-dnr.txt"
+  _st "gate leg: a standing row that DID NOT RUN is red and excused on dev" 0 \
+    _land_gate_verdict_to dev "$root/gate-dnr.txt" '^(other|manifest-allowlist:busbar-transport-ws)$'
+  _st "gate leg: the same row aborts under --to qa" 1 \
+    _land_gate_verdict_to qa "$root/gate-dnr.txt" '^(other|manifest-allowlist:busbar-transport-ws)$'
 
   echo "land.sh selftest: the gate-file patterns (a ceiling edit is not an unproven landing)"
   land_gate_data "qa/construction.toml" >"$root/gd-ceiling.txt"

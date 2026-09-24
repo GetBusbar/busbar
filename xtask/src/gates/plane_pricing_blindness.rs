@@ -96,7 +96,9 @@
 //! grammar, which only the legacy crates carry. `plane-purity`, `plane-purity-strict` and
 //! `plane-transport-neutrality` scan zero bytes of `busbar-plane-*`. This gate carries its own list
 //! for that reason, and [`ROW_ROOTS`] refuses a listed crate that is not on disk rather than
-//! scanning it as zero files — because zero is the passing answer to every ban.
+//! scanning it as zero files — because zero is the passing answer to every ban. It reconciles the
+//! OTHER direction too: a crate the kind table calls a plane and this list omits is refused, and
+//! scanned meanwhile (item 215).
 //!
 //! ## RED BY DESIGN, ON A NAMED AND FINITE LIST
 //!
@@ -593,13 +595,64 @@ fn finding_key(f: &Finding) -> (String, String) {
 /// finding. The production-line SET comes from [`scan::production_lines`]; the TEXT that is matched
 /// comes from the carried blanker. Two passes, one answer.
 pub fn census(cx: &Ctx) -> Result<(Vec<Finding>, bool), String> {
-    let by_dir: BTreeMap<&str, &PlaneCrate> = PLANE_CRATES.iter().map(|p| (p.dir, p)).collect();
+    census_counted(cx, &[]).map(|c| (c.findings, c.clock_fired))
+}
+
+/// The placement printed for a crate the KIND TABLE calls a plane and [`PLANE_CRATES`] does not
+/// list. It is scanned anyway — see [`unlisted_planes`] — and `:plane-roots` reds until it is listed.
+const UNLISTED_PLACEMENT: &str = "kind table: plane family, NOT on the roster list";
+
+/// EVERY CRATE THE KIND TABLE CALLS A PLANE THAT [`PLANE_CRATES`] DOES NOT LIST (item 215).
+///
+/// `PLANE_CRATES` was checked LISTED-TO-DISK only: a listed crate that vanished is refused, but a
+/// plane crate nobody added was scanned by nothing and every census row passed over it. The kind
+/// table already answers "is this crate plane-kind" — `kind_isolation::plane_kind_src_roots`, the
+/// same population `plane-purity` scans, for the reason its own comment
+/// gives: "a plane crate nobody added is a plane crate the backwards rule scans zero files of". So
+/// this reconciles the other direction. An error from the kind table is returned, never swallowed:
+/// a population nobody could resolve is not a population with nothing missing from it.
+fn unlisted_planes(cx: &Ctx) -> Result<Vec<String>, String> {
+    let listed: BTreeSet<&str> = PLANE_CRATES.iter().map(|p| p.dir).collect();
+    let mut out: Vec<String> = crate::gates::kind_isolation::plane_kind_src_roots(cx)?
+        .iter()
+        .filter_map(|root| {
+            root.strip_prefix("crates/")
+                .and_then(|r| r.strip_suffix("/src"))
+                .map(str::to_string)
+        })
+        .filter(|dir| !listed.contains(dir.as_str()))
+        .collect();
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+/// What one census read: its findings, whether the clock exemption fired, and HOW MANY production
+/// files each plane crate contributed — the denominator [`ROW_SCAN_FLOOR`] is held against.
+pub struct Census {
+    pub findings: Vec<Finding>,
+    pub clock_fired: bool,
+    /// Production files scanned, per plane crate directory. A crate with none is absent.
+    pub scanned: BTreeMap<String, usize>,
+}
+
+/// THE CENSUS, COUNTED. See [`census`]; this is the same walk with its denominator kept.
+///
+/// `unlisted` are plane crates the kind table names and the roster list does not; they are scanned
+/// under [`UNLISTED_PLACEMENT`] so a money act in one is a finding the day the crate lands.
+pub fn census_counted(cx: &Ctx, unlisted: &[String]) -> Result<Census, String> {
+    let mut by_dir: BTreeMap<&str, &'static str> =
+        PLANE_CRATES.iter().map(|p| (p.dir, p.placement)).collect();
+    for dir in unlisted {
+        by_dir.entry(dir.as_str()).or_insert(UNLISTED_PLACEMENT);
+    }
 
     let files = cx
         .walk(&WalkSpec::new(["crates"]).ext("rs").min_files(1))
         .map_err(|e| e.to_string())?;
 
     let mut out: BTreeMap<(Category, String), Finding> = BTreeMap::new();
+    let mut scanned: BTreeMap<String, usize> = BTreeMap::new();
     let mut clock_exemption_fired = false;
     // Resolved BEFORE the scan, because a file's scope is decided by how it is declared and that
     // declaration lives in a different file.
@@ -616,6 +669,7 @@ pub fn census(cx: &Ctx) -> Result<(Vec<Finding>, bool), String> {
         if is_test_file(&rel) || test_declared.contains(&rel) {
             continue;
         }
+        *scanned.entry(krate.clone()).or_default() += 1;
 
         let production: BTreeSet<usize> = scan::production_lines(&f.text)
             .into_iter()
@@ -662,7 +716,7 @@ pub fn census(cx: &Ctx) -> Result<(Vec<Finding>, bool), String> {
                         category: cat,
                         krate: krate.clone(),
                         file: rel.clone(),
-                        placement: plane.placement,
+                        placement: plane,
                         lines: Vec::new(),
                     })
                     .lines
@@ -671,7 +725,11 @@ pub fn census(cx: &Ctx) -> Result<(Vec<Finding>, bool), String> {
         }
     }
 
-    Ok((out.into_values().collect(), clock_exemption_fired))
+    Ok(Census {
+        findings: out.into_values().collect(),
+        clock_fired: clock_exemption_fired,
+        scanned,
+    })
 }
 
 /// `crates/<dir>/…` → `<dir>`.
@@ -685,6 +743,30 @@ fn crate_of(rel: &str) -> Option<String> {
     }
 }
 
+/// Does this production line BUILD a meter class — `MeterClassDecl {` — rather than merely name the
+/// type?
+///
+/// THE TYPE NAME IS NOT A DECLARATION (item 217). The row used to be satisfied by the string
+/// `MeterClassDecl` on any production line, and every plane's `meta.rs` names it in a bare `use`
+/// line. So `const METER_CLASSES: &[MeterClassDecl] = &[];` — which compiles, keeps the import
+/// used and declares ZERO classes — passed, and a plane that meters nothing read as a plane that
+/// declares its classes: the exact "gate measuring nothing" this row exists to refuse. A class is
+/// declared when one is CONSTRUCTED, which is the struct literal, spelled with any whitespace
+/// before its brace. Read over blanked code, so a doc line or a string that shows the shape is not
+/// a declaration either.
+fn constructs_meter_class(code: &str) -> bool {
+    code.match_indices(DECLARATION_GRAMMAR).any(|(at, _)| {
+        let before_ok = code[..at]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
+        before_ok
+            && code[at + DECLARATION_GRAMMAR.len()..]
+                .trim_start()
+                .starts_with('{')
+    })
+}
+
 /// Which of [`DECLARING_PLANES`] still declares at least one meter class.
 fn declarations(cx: &Ctx) -> Result<Vec<String>, String> {
     let mut missing = Vec::new();
@@ -692,10 +774,18 @@ fn declarations(cx: &Ctx) -> Result<Vec<String>, String> {
         let root = format!("crates/{plane}/src");
         let found = match cx.walk(&WalkSpec::new([root.clone()]).ext("rs")) {
             Ok(files) => files.iter().any(|f| {
-                !is_test_file(&f.rel_str())
-                    && scan::production_lines(&f.text)
-                        .iter()
-                        .any(|(_, l)| l.contains(DECLARATION_GRAMMAR))
+                if is_test_file(&f.rel_str()) {
+                    return false;
+                }
+                let production: BTreeSet<usize> = scan::production_lines(&f.text)
+                    .into_iter()
+                    .map(|(n, _)| n)
+                    .collect();
+                let mut lex = scan::LexState::default();
+                f.text.lines().enumerate().any(|(idx, raw)| {
+                    let code = scan::blank_code(raw, &mut lex);
+                    production.contains(&(idx + 1)) && constructs_meter_class(&code)
+                })
             }),
             Err(_) => false,
         };
@@ -801,6 +891,70 @@ fn emit_baseline(findings: &[Finding]) -> String {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE SCAN FLOOR
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// HOW FEW PRODUCTION FILES THE PLANE CRATES MAY HOLD BETWEEN THEM before the census is not the
+/// census it claims to be. Measured 2026-09-23: 242 across the eleven roster crates. Set below that
+/// so a money file that moves kernel-side — the burndown this gate exists to drive — does not trip
+/// it, and so a scope that collapsed (a walk that stopped reaching the planes, a crate list gone
+/// stale) does. It may only go UP.
+pub const PLANE_SCAN_FLOOR: usize = 180;
+
+/// THE SCAN FLOOR, HELD TO A NUMBER (item 216). This row used to be an unconditional `Row::pass`
+/// after any census that returned `Ok`, and the census's only floor was ONE `.rs` file anywhere
+/// under `crates/` — a population of 1616. The only plant that could red it was a `crates/` with
+/// no Rust at all. A plane crate whose `src/` emptied mid-split while the directory survived (which
+/// `:plane-roots` passes on `is_dir`) was then scanned as zero files, and every census row read that
+/// zero as "no plane crate prices".
+///
+/// Two floors now: every roster crate that is on disk contributes at least one production file, and
+/// the crates between them clear [`PLANE_SCAN_FLOOR`]. A crate already refused by `:plane-roots` for
+/// being absent is not counted twice.
+fn row_scan_floor(absent: &[&str], scanned: &BTreeMap<String, usize>) -> Row {
+    let empty: Vec<&str> = PLANE_CRATES
+        .iter()
+        .map(|p| p.dir)
+        .filter(|d| !absent.contains(d) && scanned.get(*d).copied().unwrap_or(0) == 0)
+        .collect();
+    let total: usize = PLANE_CRATES
+        .iter()
+        .map(|p| scanned.get(p.dir).copied().unwrap_or(0))
+        .sum();
+    let mut problems = Vec::new();
+    if !empty.is_empty() {
+        problems.push(format!(
+            "{} contributed ZERO production files — a plane crate the census reads as empty is a \
+             plane crate every ban passes over",
+            empty.join(", ")
+        ));
+    }
+    if total < PLANE_SCAN_FLOOR {
+        problems.push(format!(
+            "the roster plane crates yielded {total} production file(s) between them, below the \
+             floor of {PLANE_SCAN_FLOOR} — the scope collapsed, it did not get cleaner"
+        ));
+    }
+    if problems.is_empty() {
+        Row::pass(
+            ROW_SCAN_FLOOR,
+            "the crates tree was scanned",
+            format!(
+                "{total} production file(s) across {} roster plane crate(s), every one non-empty, \
+                 against a floor of {PLANE_SCAN_FLOOR}",
+                scanned.len()
+            ),
+        )
+    } else {
+        Row::fail(
+            ROW_SCAN_FLOOR,
+            "the plane census read too little to mean anything",
+            problems.join(" | "),
+        )
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
 // THE GATE
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -856,7 +1010,49 @@ impl Gate for PlanePricingBlindnessGate {
                 !cx.abs(&root).is_dir() && !cx.exists(&root)
             })
             .collect();
-        rows.push(if missing.is_empty() {
+        // AND THE OTHER DIRECTION (item 215): a plane crate the kind table names and this list
+        // does not is refused too, and scanned anyway so its money acts are not invisible while it
+        // waits to be listed.
+        let (unlisted, kind_table_error) = match unlisted_planes(cx) {
+            Ok(u) => (u, None),
+            Err(e) => (Vec::new(), Some(e)),
+        };
+        rows.push(if let Some(e) = &kind_table_error {
+            Row::fail(
+                ROW_ROOTS,
+                "the kind table's plane population could not be resolved",
+                format!(
+                    "{e} — the roster list cannot be reconciled against a population nobody could \
+                     read, and an unreconciled list is exactly how a plane crate goes unscanned{}",
+                    if missing.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            "; also listed but not present on disk: {}",
+                            missing.join(", ")
+                        )
+                    }
+                ),
+            )
+        } else if !unlisted.is_empty() {
+            Row::fail(
+                ROW_ROOTS,
+                "a crate the kind table calls a plane is not on the roster list",
+                format!(
+                    "{} — the census scans it under '{UNLISTED_PLACEMENT}' meanwhile; add it to \
+                     PLANE_CRATES with the roster row that places it{}",
+                    unlisted.join(", "),
+                    if missing.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            "; also listed but not present on disk: {}",
+                            missing.join(", ")
+                        )
+                    }
+                ),
+            )
+        } else if missing.is_empty() {
             Row::pass(
                 ROW_ROOTS,
                 format!("all {} roster plane crates are on disk", PLANE_CRATES.len()),
@@ -875,7 +1071,11 @@ impl Gate for PlanePricingBlindnessGate {
             )
         });
 
-        let (findings, clock_fired) = match census(cx) {
+        let Census {
+            findings,
+            clock_fired,
+            scanned,
+        } = match census_counted(cx, &unlisted) {
             Ok(v) => v,
             Err(e) => {
                 rows.push(Row::fail(
@@ -887,11 +1087,7 @@ impl Gate for PlanePricingBlindnessGate {
                 return Verdict::of(rows);
             }
         };
-        rows.push(Row::pass(
-            ROW_SCAN_FLOOR,
-            "the crates tree was scanned",
-            CLEAN,
-        ));
+        rows.push(row_scan_floor(&missing, &scanned));
 
         if std::env::var("XTASK_PPB_EMIT_BASELINE").as_deref() == Ok("1") {
             eprint!("{}", emit_baseline(&findings));
@@ -1186,6 +1382,9 @@ impl Gate for PlanePricingBlindnessGate {
             Overlay::new(),
         ));
         report.push(declaration_floor_bites(self, cx, FIX));
+        report.push(empty_declaration_bites(self, cx, FIX));
+        report.push(emptied_crate_bites_the_scan_floor(self, cx, FIX));
+        report.push(unlisted_plane_is_refused_and_scanned(self, cx));
 
         // THE SCAN FLOOR: a `crates/` that holds no Rust is refused, never scanned as zero findings.
         report.push(prove_rows_red_at(
@@ -1474,6 +1673,147 @@ fn declaration_floor_bites(gate: &PlanePricingBlindnessGate, cx: &Ctx, fixture: 
             Expect::Red {
                 naming: vec!["busbar-plane-llm".to_string()],
             }
+        } else {
+            Expect::Green
+        },
+    }
+}
+
+/// ITEM 217: NAMING THE TYPE IS NOT DECLARING A CLASS. The fixture plane keeps its `use` of
+/// `MeterClassDecl` and its `METER_CLASSES` const, with the array EMPTIED — it compiles, it keeps
+/// the import used, and it declares nothing. The row must go RED.
+fn empty_declaration_bites(gate: &PlanePricingBlindnessGate, cx: &Ctx, fixture: &str) -> Case {
+    let covers = vec![ROW_DECLARATION.to_string()];
+    let name = "a plane whose meter-class list is EMPTY, with the type still imported, reds the \
+                declaration floor"
+        .to_string();
+    let naming = vec!["busbar-plane-llm".to_string()];
+    let Ok(fcx) = Ctx::at(cx.abs(fixture), cx.scratch().to_path_buf()) else {
+        return Case {
+            name,
+            covers,
+            expected: Expect::Red { naming },
+            got: Expect::Skipped,
+        };
+    };
+    let mut ov = Overlay::new();
+    ov.set(
+        "crates/busbar-plane-llm/src/meta.rs",
+        "use busbar_contract::{ClassDirection, MeterClassDecl, MeterClassId};\n\
+         const METER_CLASSES: &[MeterClassDecl] = &[];\n\
+         pub const OPS: &[u8] = &[];\n",
+    );
+    let verdict = execute(gate, &fcx.with_overlay(ov));
+    let red = verdict
+        .rows
+        .iter()
+        .find(|r| r.id == ROW_DECLARATION)
+        .is_some_and(|r| r.status != Status::Pass && r.detail.contains("busbar-plane-llm"));
+    Case {
+        name,
+        covers,
+        expected: Expect::Red {
+            naming: naming.clone(),
+        },
+        got: if red {
+            Expect::Red { naming }
+        } else {
+            Expect::Green
+        },
+    }
+}
+
+/// ITEM 216: A PLANE CRATE WHOSE `src/` EMPTIED, WITH THE DIRECTORY STILL THERE, REDS THE SCAN
+/// FLOOR BY NAME. `:plane-roots` passes it (the directory is on disk); the census reads it as zero
+/// files; and zero is the passing answer to every ban below.
+fn emptied_crate_bites_the_scan_floor(
+    gate: &PlanePricingBlindnessGate,
+    cx: &Ctx,
+    fixture: &str,
+) -> Case {
+    let covers = vec![ROW_SCAN_FLOOR.to_string()];
+    let name =
+        "a roster plane crate whose src holds no Rust, directory intact, reds the scan floor"
+            .to_string();
+    let naming = vec!["busbar-plane-llm contributed ZERO".to_string()];
+    let Ok(fcx) = Ctx::at(cx.abs(fixture), cx.scratch().to_path_buf()) else {
+        return Case {
+            name,
+            covers,
+            expected: Expect::Red { naming },
+            got: Expect::Skipped,
+        };
+    };
+    let mut ov = Overlay::new();
+    ov.remove("crates/busbar-plane-llm/src/meta.rs");
+    ov.remove("crates/busbar-plane-llm/src/plane.rs");
+    let verdict = execute(gate, &fcx.with_overlay(ov));
+    let red = verdict
+        .rows
+        .iter()
+        .find(|r| r.id == ROW_SCAN_FLOOR)
+        .is_some_and(|r| {
+            r.status != Status::Pass && r.detail.contains("busbar-plane-llm contributed ZERO")
+        });
+    Case {
+        name,
+        covers,
+        expected: Expect::Red {
+            naming: naming.clone(),
+        },
+        got: if red {
+            Expect::Red { naming }
+        } else {
+            Expect::Green
+        },
+    }
+}
+
+/// ITEM 215: A PLANE CRATE NOBODY LISTED IS REFUSED, AND SCANNED MEANWHILE. Planted into the REAL
+/// workspace, because the population it reconciles against is the kind table's, which the fixture
+/// does not carry: a new `busbar-plane-embeddings` crate that prices. `:plane-roots` must name it,
+/// and `:price` must name its file — before this, both passed over it in silence.
+fn unlisted_plane_is_refused_and_scanned(gate: &PlanePricingBlindnessGate, cx: &Ctx) -> Case {
+    let covers = vec![ROW_ROOTS.to_string()];
+    let name = "a plane-kind crate missing from the roster list is refused, and its money act is \
+                still found"
+        .to_string();
+    let naming = vec![
+        "busbar-plane-embeddings".to_string(),
+        "busbar-plane-embeddings/src/meter.rs".to_string(),
+    ];
+    let mut ov = Overlay::new();
+    ov.set(
+        "crates/busbar-plane-embeddings/Cargo.toml",
+        "[package]\nname = \"busbar-plane-embeddings\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+    );
+    ov.set(
+        "crates/busbar-plane-embeddings/src/lib.rs",
+        "pub mod meter;\n",
+    );
+    ov.set(
+        "crates/busbar-plane-embeddings/src/meter.rs",
+        "pub fn bill(u: &Usage, lease: &Lease) -> u64 { lease.price_usage(u) }\n",
+    );
+    let verdict = execute(gate, &cx.with_overlay(ov));
+    let roots = verdict
+        .rows
+        .iter()
+        .find(|r| r.id == ROW_ROOTS)
+        .is_some_and(|r| r.status != Status::Pass && r.detail.contains("busbar-plane-embeddings"));
+    let priced = verdict
+        .rows
+        .iter()
+        .find(|r| r.id == ROW_PRICE)
+        .is_some_and(|r| r.detail.contains("busbar-plane-embeddings/src/meter.rs"));
+    Case {
+        name,
+        covers,
+        expected: Expect::Red {
+            naming: naming.clone(),
+        },
+        got: if roots && priced {
+            Expect::Red { naming }
         } else {
             Expect::Green
         },

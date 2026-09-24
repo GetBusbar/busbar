@@ -32,6 +32,15 @@
 # A candidate reaches the turnstile when a human (or a finished agent session) says it is ready, by
 # dispatching this workflow. `sha` defaults to the ref the dispatch runs on, so the normal case is
 # a zero-input dispatch from `predev`; pass `sha` explicitly to admit some other commit.
+#
+# THE NAME IS LOAD-BEARING (item 360). Without a top-level `name:` GitHub titles every run of this
+# file by its PATH, and every consumer that selects runs by `.name` -- release.yml's gate 0
+# (REQUIRED_WORKFLOWS / NOT_COMMIT_CHECKS), release-stage.yml's filter, any `workflow_run:
+# workflows: [...]` trigger -- silently matches nothing, which reads as "that workflow did not run".
+# The first step below asserts the name GitHub actually resolved, so deleting this line turns the
+# dispatch red instead of quietly unnaming the one run that announces a candidate.
+name: turnstile-dispatch
+
 on:
   workflow_dispatch:
     inputs:
@@ -57,6 +66,19 @@ jobs:
     # ceiling turns a hung call into a fast, visible red instead of riding the runner's 6h default.
     timeout-minutes: 5
     steps:
+      - name: This workflow resolves to its declared name, not its file path
+        env:
+          EXPECTED_WORKFLOW_NAME: turnstile-dispatch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_WORKFLOW:-}" != "$EXPECTED_WORKFLOW_NAME" ]; then
+            echo "::error::this workflow resolved to the name '${GITHUB_WORKFLOW:-}', not" \
+                 "'${EXPECTED_WORKFLOW_NAME}'. A workflow with no top-level name: is titled by its" \
+                 "file path, and every gate that selects runs by .name then matches nothing." >&2
+            exit 1
+          fi
+          echo "workflow name: ${GITHUB_WORKFLOW}"
       - name: Fire repository_dispatch (turnstile-admit) to GetBusbar/busbar-release
         env:
           # See the header comment above for what this token needs and where it is provisioned.

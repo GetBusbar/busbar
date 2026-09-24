@@ -22,8 +22,8 @@ use crate::mount::{
     Ingress, ProviderEndpoint,
 };
 use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
-use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use crate::testkit::fixture_host::FixtureHost;
+use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use std::sync::{Arc, Mutex};
 
 /// The provider key busbar holds server-side — the value the loopback provider must be dialed with.

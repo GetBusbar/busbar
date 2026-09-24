@@ -133,7 +133,9 @@ fn cells(cx: &Ctx) -> Option<(String, String)> {
 
 pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     let mut r = Report::new();
-    let owed: Vec<String> = gate.owed();
+    // THE LEDGER'S ROWS, NOT EVERY OWED ROW: every case below that reads `all` rewrites the ledger,
+    // and `design-bindings:note-witness` never reads it. See [`DesignBindingsGate::ledger_owed`].
+    let owed: Vec<String> = DesignBindingsGate::ledger_owed();
     let all: Vec<&str> = owed.iter().map(String::as_str).collect();
     if !all.contains(&CONTROL) {
         r.note_infra_failure(format!(
@@ -723,4 +725,46 @@ fn instrument_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     ));
 
     r
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NOTE_CASE: &str =
+        "a binding the ledger's own note calls UNPROVEN is refused, resolving citation and all";
+
+    /// ITEM 88: the ledger's-own-note plant must score RED. It came back GREEN once
+    /// `design-bindings:note-witness` joined the owed set: that row was then in this case's `covers`,
+    /// the plant's clean note table left it green, and a covered row that stays green makes the
+    /// whole case green however plainly the planted binding FAILs. The case is taken exactly as
+    /// the battery takes it, with the `covers` the battery hands it.
+    #[test]
+    fn the_ledgers_own_note_plant_scores_red() {
+        let cx = Ctx::workspace().expect("workspace context");
+        let owed = DesignBindingsGate::ledger_owed();
+        let all: Vec<&str> = owed.iter().map(String::as_str).collect();
+        assert!(
+            !all.contains(&super::super::ROW_NOTE_WITNESS),
+            "the note-witness row reads no ledger, so no ledger plant can move it"
+        );
+        let real_fn = a_real_test(&cx).expect("a real test fn");
+        let report = binding_verdict_cases(&DesignBindingsGate, &cx, &all, &real_fn);
+        let case = report
+            .cases()
+            .iter()
+            .find(|c| c.name == NOTE_CASE)
+            .expect("the note case is planted");
+        assert!(
+            matches!(&case.got, crate::gates::Expect::Red { naming }
+                if naming.iter().any(|n| n.contains("UNPROVEN, by the ledger's own note"))),
+            "the ledger's-own-note plant did not score RED: {:?}",
+            case.got
+        );
+        assert!(
+            !report.failures().iter().any(|f| f.contains(NOTE_CASE)),
+            "{:#?}",
+            report.failures()
+        );
+    }
 }

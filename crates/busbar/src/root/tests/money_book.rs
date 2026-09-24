@@ -148,26 +148,30 @@ fn settle_records_the_overdraft_through_the_seam() {
         &ledger_token(),
     );
 
-    // The posting's own overdraft COUNTER is the hold's, and a hold opened at the door with no
-    // accrual carries 0 — so the excess is carried by the FLAG, which is set because what settled
-    // is above what was reserved. Both are pinned: the flag is the evidence the report reads, and
-    // the counter being 0 is why the ledger writes no `Overdraft` note for this shape.
+    // The overdraft FIGURE is the settlement's excess over its reservation (250 - 100 = 150),
+    // not the hold's spend counter, which a hold opened at the door with no accrual leaves at 0.
+    // Before item 318 the posting carried the OVERDRAFT flag with a figure of 0 and the book
+    // below closed unbalanced (drawn 100 vs settled 250, residual +150) — a broken derivation,
+    // not a ledger or ratecard fault. The flag and the figure now agree, and the ledger writes
+    // the `Overdraft` note.
     assert_eq!(settlement.posted.reserved(), 100);
     assert_eq!(settlement.posted.settled(), 250);
-    assert_eq!(settlement.posted.overdraft(), 0);
+    assert_eq!(settlement.posted.overdraft(), 150);
     assert!(
         settlement.posted.flags().contains(PostingFlags::OVERDRAFT),
         "250 settled against 100 reserved is an overdrawn posting"
     );
-    assert!(settlement.overdraft.is_none());
+    assert_eq!(settlement.overdraft.as_ref().map(|o| o.amount), Some(150));
     // A hold that ran past its reservation releases nothing: (100 - 250).max(0).
     assert_eq!(settlement.released, 0);
 
     //   primed():  drawn +100, open_slice_remainders +100 then -100, open_holds +100
-    //   settle():  open_holds -100 -> 0, settled +250, open_slice_remainders +0, overdraft +0
+    //   settle():  open_holds -100 -> 0, settled +250, open_slice_remainders +0, overdraft +150
+    //   identity:  drawn 100 = settled 250 - overdraft_carried_out 150 — the book balances.
     let expected = Totals {
         drawn: 100,
         settled: 250,
+        overdraft_carried_out: 150,
         ..Totals::zero()
     };
     assert_eq!(seam_ledger.book().get(&k, 1), expected);
