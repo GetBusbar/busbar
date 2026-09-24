@@ -26,7 +26,7 @@ pub(crate) mod classify;
 pub(crate) mod respond;
 pub(crate) mod send;
 
-#[cfg_attr(not(test), allow(unused_imports))]
+#[cfg(test)]
 pub(crate) use assemble::{
     inject_openai_stream_include_usage, inject_openai_stream_include_usage_pristine,
 };
