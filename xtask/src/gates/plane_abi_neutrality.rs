@@ -286,8 +286,8 @@ fn declared_plane_keys(cx: &Ctx) -> Result<Vec<String>, String> {
         // plane is ONE crate, pure, and a pure plane's manifest may name `busbar-contract` and
         // nothing else (the dep wall, DECISIONS #40). `PlaneDecl` is a `busbar-kernel` type, so the
         // plane crate cannot hold its own declaration; `crates/busbar-plane-decision/src/registry.rs`
-        // was DELETED for carrying that forbidden edge (aad3cdd15) and the declaration was rewritten
-        // in the root (7265a533b), both on 2026-09-22. `PRIMITIVE_COLLISION_KEYS` — which names this
+        // was DELETED for carrying that forbidden edge and the declaration was rewritten
+        // in the root, both on 2026-09-22. `PRIMITIVE_COLLISION_KEYS` — which names this
         // exact plane, for the noun collision written up on it — was set a day earlier against the
         // address the declaration used to have, and has covered nothing since.
         //

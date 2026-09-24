@@ -158,7 +158,7 @@ pub const REPORT_ONLY: &[Posture] = &[
     },
     Posture {
         name: "plane-pricing-blindness",
-        why: "DECISION #43's WITNESS (Part 7 §13(3)) — planes always ledger, and the money acts are kernel-side. \
+        why: "DECISION #43's WITNESS — planes always ledger, and the money acts are kernel-side. \
               RED BY DESIGN on HEAD: the #83 roster's own SPLIT row says of busbar-{llm,mcp,a2a,\
               voice} that `unit/{admit,approve,meter,route}` and `runtime/metering.rs` decide \
               admission and price, `that is defs 5/6, not a plane` — so the debt is named in the \
@@ -403,7 +403,7 @@ pub const QA_NAMES_STANDING_REDS: &[&str] = &[
     // edits, because repointing a row at a subject it never covered launders debt nobody reviewed:
     //
     //   * `qa-names:crate-names-a-live-package` (5). `[rules.loc-ceilings].caps_crate =
-    //     "busbar-caps"` STRUCK: the crate folded into busbar-contract (2c9eddecf) and there is
+    //     "busbar-caps"` STRUCK: the crate folded into busbar-contract and there is
     //     nowhere to repoint it, because `contract_crate` already counts those lines and naming the
     //     crate twice would double-count it. The row's measurement (6837), its ceiling (5652) and
     //     its standing red are unchanged. Four `qa/kind-isolation.toml` `[[cell]]` rows naming

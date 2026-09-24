@@ -2,7 +2,7 @@
 //!
 //! The controls come first: the real seeded tree must be GREEN in every row, or every RED below
 //! proves only that the gate is broken. Then each row is planted RED in turn. Two cases carry the
-//! design's headline claim (§0, task step 5): flip a suite's verdict to fail and the manifest render
+//! the headline claim: flip a suite's verdict to fail and the manifest render
 //! drops it (manifest-drift), regenerate the manifest without it and the README badge disappears
 //! (readme-drift); a not-run suite whose claim someone pastes in by hand is caught (no-orphan-claim);
 //! and a pass carried over from an older sha is caught (freshness).
@@ -209,7 +209,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     ));
 
     // FLIP A SUITE TO FAIL → the fresh render drops it, so the committed manifest is STALE. The
-    // render dropping the green is the fail-closed property (§5.1): a red suite cannot keep its
+    // render dropping the green is the fail-closed property: a red suite cannot keep its
     // manifest entry.
     let mut ov = Overlay::new();
     ov.set(format!("{VERDICT_DIR}/{ANCHOR}.json"), {
@@ -323,7 +323,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
 
     // ══ :no-orphan-claim ═════════════════════════════════════════════════════════════════════════
     // A NOT-RUN suite's claim pasted into the README by hand, outside the markers. It is backed by no
-    // green manifest entry, so it is RED — the belt to the render's braces (§5.1).
+    // green manifest entry, so it is RED — the belt to the render's braces.
     let mut ov = Overlay::new();
     ov.set(
         README_PATH,

@@ -555,9 +555,9 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // with the crate rather than being drained: there is no `api` left to name anything. Struck at
     // that point, not kept.
     //
-    // Written out because an `allowed` row reads as permanent, and the next person to audit this
-    // table will otherwise preserve this one out of caution. It is here because a crate is on its
-    // way out, and it goes when the crate does.
+    // Written out because an `allowed` row reads as permanent, and an unexplained row risks being
+    // preserved out of caution during a future audit of this table. It is here because a crate is
+    // on its way out, and it goes when the crate does.
     ("api", "contract"),
     // The pre-split dialects: a codec is written on the closed span grammar the contract re-exports.
     ("codec", "grammar"),
@@ -613,7 +613,7 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // THE CITATION ARGUES AGAINST ITS OWN VERDICT. If the root supplies the layer, the transport
     // crate does not need to name the lower transport at COMPILE time; `COMPOSES_OVER` is an
     // associated const on `TransportMeta` (ARCHITECTURE.md:669) — a RUNTIME registry string, not a
-    // crate edge — and §5's composition table is a table of wire layering, not of manifests. What
+    // crate edge — and ARCHITECTURE.md §5's composition table is a table of wire layering, not of manifests. What
     // the cited document actually says about manifests is ARCHITECTURE.md:119 §1.2: *"any
     // dependency on … another plane or A TRANSPORT is a CI failure"*, with exactly one exception,
     // a dialect crate naming its own plane. BUSBAR-1.6.0.md:364 #40(a) is flatter still:

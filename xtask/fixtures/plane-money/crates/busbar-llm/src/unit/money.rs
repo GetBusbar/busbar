@@ -2,7 +2,7 @@
 // row), carrying ONE planted violation per banned act. Every census row must go RED and name
 // this file.
 pub fn resolves_a_card(&self) -> u64 {
-    // RESOLVES A CARD, and BRANCHES ON BILLING STATE in the same line (#43, Part 7 §13(3)).
+    // RESOLVES A CARD, and BRANCHES ON BILLING STATE in the same line.
     if self.host.cost_pricing_enabled(&self.cost) {
         return self.rate_card_version();
     }

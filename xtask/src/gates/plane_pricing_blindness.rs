@@ -1,7 +1,7 @@
 //! `cargo xtask gate plane-pricing-blindness` — NO PLANE CRATE TOUCHES MONEY.
 //!
-//! THE RULING THIS ENFORCES. DECISION #43 (owner-locked 2026-09-20; restated 2026-09-22, Part 7
-//! §13(3)): **planes always ledger.** A
+//! THE RULING THIS ENFORCES. DECISION #43 (owner-locked 2026-09-20; restated 2026-09-22):
+//! **planes always ledger.** A
 //! plane appends its raw counts unconditionally, with no branch and no knowledge of whether
 //! billing is on; `rate_card` is optional per plane IN CONFIG (#47); and the switch is a READ-TIME
 //! property of the money VIEW, kernel-side — "billing off" means the VIEW reads 0, never that the
@@ -343,7 +343,7 @@ const HOLD: &[Needle] = &[
 /// act test, so the exemption is by exact spelling and it is checked.
 const TIME_NANOS: &[&str] = &["monotonic_nanos", "as_nanos", "subsec_nanos", "from_nanos"];
 
-/// The conditional forms a billing-state BRANCH can take. #43 (Part 7 §13(3)): a plane appends "unconditionally,
+/// The conditional forms a billing-state BRANCH can take. #43: a plane appends "unconditionally,
 /// with no branch and no knowledge of whether billing is on".
 const CONDITIONALS: &[&str] = &["if ", "if(", "match ", "&&", "||", ".then", ".filter", "? "];
 
@@ -697,7 +697,7 @@ pub fn census_counted(cx: &Ctx, unlisted: &[String]) -> Result<Census, String> {
             let key = UNIT_KEY.iter().any(|n| hits(&code, n));
             let hold = HOLD.iter().any(|n| hits(&code, n));
             // THE #43 ROW. A card needle is a violation wherever it sits; a card needle inside a
-            // CONDITIONAL is the specific thing #43 (Part 7 §13(3)) outlaws — "planes always ledger" means the
+            // CONDITIONAL is the specific thing #43 outlaws — "planes always ledger" means the
             // append cannot be behind `if billing_is_on`.
             let switch = card && is_conditional(&code);
 
