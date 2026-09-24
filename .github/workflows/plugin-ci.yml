@@ -25,8 +25,11 @@
 #      packs into a valid shape *now*, not first discovered at release time.
 #   6. SIGNING GATE: build busbar with the ephemeral PUBLIC key embedded (BUSBAR_RELEASE_PUBKEY)
 #      and prove end-to-end that a correctly-signed tarball is accepted while unsigned, wrong-key,
-#      and tampered tarballs are each refused with the exact expected error. No CI step uses
-#      --allow-unsigned / plugins.trust.allow_unsigned anymore — that bypass is local-dev only.
+#      and tampered tarballs are each refused with the exact expected error. No step in THIS
+#      workflow uses --allow-unsigned / plugins.trust.allow_unsigned. The bypass is NOT gone from
+#      CI as a whole: plugin-functional.yml's this-tree path packs the calling repo's cdylib with
+#      `--allow-unsigned` (a functional probe, not a signing proof), and docker.yml keeps it for a
+#      bare `test`-tag dispatch build behind its sign guard. The signing proof is this file's.
 name: plugin-ci
 
 on:
@@ -61,6 +64,13 @@ on:
         # PINNED leg is derived from the caller's own `.busbar-ref` and is not configurable, because
         # it is not an opinion. It is whatever that repo's release will actually build against.
         default: "main"
+    # DECLARED, so the dependency is visible at the call site instead of being an `inherit`-only
+    # assumption. Optional because coverage is non-gating; the coverage job refuses to report green
+    # without it (see "Coverage token is present").
+    secrets:
+      CODECOV_TOKEN:
+        description: "Codecov upload token for the calling plugin repo. Pass it explicitly or via `secrets: inherit`."
+        required: false
 
 jobs:
   # === WHICH BUSBAR DOES A PLUGIN'S CI ACTUALLY PROVE ANYTHING ABOUT ===
@@ -881,6 +891,19 @@ jobs:
     runs-on: latchkey-large
     timeout-minutes: 45
     steps:
+      # A MISSING TOKEN IS NAMED, NOT SWALLOWED. `continue-on-error` on this job, `fail_ci_if_error:
+      # false` on the upload and Codecov's own tolerance of an empty token would otherwise stack
+      # into a GREEN coverage job that uploaded nothing -- which is what a caller passing explicit
+      # `secrets:` without CODECOV_TOKEN got. This fails THIS job only (it is continue-on-error, so
+      # the gating jobs are untouched), and it fails before the ~45-minute coverage build is paid.
+      - name: Coverage token is present
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        run: |
+          if [ -z "${CODECOV_TOKEN:-}" ]; then
+            echo "::error::CODECOV_TOKEN is empty in plugin-ci.yml's coverage job, so no coverage would be uploaded. Call plugin-ci.yml with \`secrets: inherit\` or pass \`secrets: { CODECOV_TOKEN: ... }\` explicitly."
+            exit 1
+          fi
       - name: Checkout the plugin
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
