@@ -126,6 +126,9 @@ pub enum BootRefusal {
     },
     /// The registry itself refused an entry.
     Registry(busbar_kernel::registry::RegistryError),
+    /// The breaker and egress units' hand-kept metric label banks disagree on a label both carry,
+    /// so one breaker disposition would reach the scrape under two label values.
+    LabelDrift(crate::root::adapters::LabelDrift),
 }
 
 impl std::fmt::Display for BootRefusal {
@@ -138,6 +141,7 @@ impl std::fmt::Display for BootRefusal {
                 "plane `{plane}` claims on transport `{transport}`, which no crate provides"
             ),
             Self::Registry(err) => write!(f, "{err:?}"),
+            Self::LabelDrift(drift) => write!(f, "{drift}"),
         }
     }
 }
@@ -387,6 +391,11 @@ pub fn seal(client_settings: ClientSettings) -> Result<BootRegistry, BootRefusal
     let registered = registered_rows();
     check_composition(&registered).map_err(BootRefusal::Composition)?;
     check_claim_transports(&claims, &registered)?;
+    // The two units' metric label banks are duplicate literals kept in step by hand; this is the
+    // one boot check that compares them, and it runs here because this is the check every boot
+    // passes through. A drift refuses the boot naming both spellings, rather than splitting one
+    // breaker disposition into two label values on the scrape.
+    crate::root::adapters::check_label_banks().map_err(BootRefusal::LabelDrift)?;
 
     Ok(BootRegistry {
         registry,

@@ -444,3 +444,39 @@ fn a_drifted_bank_reads_as_a_drift() {
     };
     assert!(drift.to_string().contains("drifted"));
 }
+
+/// THE CHECK HAS A CALLER, AND IT IS THE BOOT SEAL (item 248).
+///
+/// The comparison above existed and passed and nothing ran it: its only caller was the test that
+/// shows it passes, so a rename on one side would ship with the binary booting clean. The boot seal
+/// — the one check every boot that mounts the root passes through — now runs it and refuses on a
+/// drift, naming both spellings. Read off the seal's own body, so moving the call out of the boot
+/// path goes red here; and the seal on today's banks still succeeds, so the call refuses nothing it
+/// should not.
+#[test]
+fn the_boot_seal_runs_the_label_bank_check_and_a_drift_refuses_the_boot() {
+    let registry = include_str!("../registry.rs");
+    let start = registry
+        .find("pub fn seal(")
+        .expect("the boot seal is in the registry module");
+    let body = &registry[start..];
+    let body = &body[..body.find("\n}\n").expect("the seal's body closes")];
+    assert!(
+        body.contains("check_label_banks()"),
+        "the boot seal does not run the label-bank check"
+    );
+
+    // What a drift refuses the boot with: both spellings, so an operator reading the boot line can
+    // see which side moved.
+    let refusal = crate::root::registry::BootRefusal::LabelDrift(LabelDrift {
+        breaker: "transient_upstream",
+        egress: "transient-upstream",
+    });
+    let line = refusal.to_string();
+    assert!(line.contains("transient_upstream") && line.contains("transient-upstream"));
+
+    assert!(
+        crate::root::registry::seal(busbar_transport_http::ClientSettings::default()).is_ok(),
+        "today's banks agree, so the seal still passes"
+    );
+}
