@@ -603,6 +603,7 @@ impl IdentityHost for FixtureHost {
     fn approval_redeem(&self, _nonce: &str, _expires_at: u64, _now: u64) -> bool {
         false
     }
+    #[cfg(feature = "test-support")]
     fn verify_token_test(&self, _token: &str) -> Option<Arc<VirtualKey>> {
         None
     }
@@ -774,15 +775,23 @@ impl EngineHost for FixtureHost {}
 
 /// The `LaneRuntime` view of a deployment with no model lanes at all — every query answers the empty
 /// value, every record is a no-op. The fixture host's `lane_store` hands this out.
+///
+/// The methods marked `#[cfg(feature = "test-support")]` here (and `verify_token_test` on the
+/// `IdentityHost` impl above) are the ones the kernel trait declares only under ITS
+/// `test-support` feature. This crate's `test-support` forwards exactly `busbar-kernel/test-support`,
+/// so gating on it keeps the impl in lock-step with the trait: `cargo test --features runtime`
+/// (kernel test-support off) and `--features runtime,test-support` (on) both compile.
 struct InertLanes;
 
 impl LaneRuntime for InertLanes {
+    #[cfg(feature = "test-support")]
     fn usable(&self, _lane: usize, _now: u64) -> bool {
         false
     }
     fn usable_in(&self, _pool: &str, _lane: usize, _now: u64) -> bool {
         false
     }
+    #[cfg(feature = "test-support")]
     fn is_ready(&self, _lane: usize, _now: u64) -> bool {
         false
     }
@@ -836,13 +845,17 @@ impl LaneRuntime for InertLanes {
         0
     }
     fn release_probe_owned_in(&self, _pool: &str, _lane: usize, _owned_epoch: u64) {}
+    #[cfg(feature = "test-support")]
     fn breaker_state(&self, _lane: usize) -> BreakerState {
         BreakerState::Closed
     }
+    #[cfg(feature = "test-support")]
     fn breaker_state_in(&self, _pool: &str, _lane: usize) -> BreakerState {
         BreakerState::Closed
     }
+    #[cfg(feature = "test-support")]
     fn force_open_in(&self, _pool: &str, _lane: usize, _cooldown_until: u64) {}
+    #[cfg(feature = "test-support")]
     fn cooldown_remaining(&self, _lane: usize, _now: u64) -> u64 {
         0
     }
@@ -852,10 +865,12 @@ impl LaneRuntime for InertLanes {
     fn lane_needs_probe(&self, _lane: usize, _now: u64) -> bool {
         false
     }
+    #[cfg(feature = "test-support")]
     fn record_success(&self, _lane: usize) {}
     fn record_success_in(&self, _pool: &str, _lane: usize) {}
     fn record_probe_success_all_cells(&self, _lane: usize) {}
     fn record_client_fault(&self, _lane: usize) {}
+    #[cfg(feature = "test-support")]
     fn record_transient(
         &self,
         _lane: usize,
@@ -875,6 +890,7 @@ impl LaneRuntime for InertLanes {
     ) -> bool {
         false
     }
+    #[cfg(feature = "test-support")]
     fn record_rate_limit(
         &self,
         _lane: usize,
@@ -894,6 +910,7 @@ impl LaneRuntime for InertLanes {
     ) -> bool {
         false
     }
+    #[cfg(feature = "test-support")]
     fn record_hard_down(&self, _lane: usize, _reason: &str) {}
     fn record_hard_down_all_cells(&self, _lane: usize, _reason: &str) -> bool {
         false
@@ -914,6 +931,7 @@ impl LaneRuntime for InertLanes {
         false
     }
     fn refund_budget(&self, _lane: usize) {}
+    #[cfg(feature = "test-support")]
     fn select_weighted(&self, _candidates: &[usize], _weights: &[u32], _now: u64) -> Option<usize> {
         None
     }
