@@ -312,13 +312,16 @@ impl AmendChain {
         let mut expected_prev = String::new();
         let mut expected_seq = 1u64;
         for (i, amendment) in amendments.iter().enumerate() {
-            // The link and the position are one judgement: either says an amendment was inserted,
-            // removed or reordered, and the position is the half a cut at either END cannot satisfy
-            // by re-linking what is left.
-            if amendment.prev_hash != expected_prev || amendment.seq != expected_seq {
+            // The link, then the position, reported apart: the record chain's own judgement.
+            if let Some(kind) = crate::record::link_break(
+                &amendment.prev_hash,
+                amendment.seq,
+                &expected_prev,
+                expected_seq,
+            ) {
                 return Err(crate::record::AuditBreak {
                     at_index: i + 1,
-                    kind: crate::record::AuditBreakKind::LinkMismatch,
+                    kind,
                 });
             }
             if AmendChain::digest_of(amendment) != amendment.hash {

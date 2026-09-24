@@ -277,7 +277,10 @@ fn a_record_carries_its_position_and_the_position_is_digested() {
     renumbered[1].seq = 7;
     assert_eq!(
         AuditChain::verify_chain(&renumbered).unwrap_err().kind,
-        AuditBreakKind::LinkMismatch
+        AuditBreakKind::SequenceMismatch {
+            expected: 2,
+            found: 7
+        }
     );
     assert_ne!(
         AuditChain::digest_of(&renumbered[1]),

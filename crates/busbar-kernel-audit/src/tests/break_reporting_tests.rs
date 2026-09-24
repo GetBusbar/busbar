@@ -101,7 +101,14 @@ fn a_truncated_amendment_run_relinked_to_look_like_a_genesis_is_refused_for_its_
     let err = AmendChain::verify(&forged)
         .expect_err("a run that does not start at the genesis is missing amendments");
     assert_eq!(err.at_index, 1);
-    assert_eq!(err.kind, AuditBreakKind::LinkMismatch);
+    // The link is satisfied, so the break is the POSITION's, and it says so (item 405).
+    assert_eq!(
+        err.kind,
+        AuditBreakKind::SequenceMismatch {
+            expected: 1,
+            found: 2
+        }
+    );
 }
 
 /// AND THE OTHER HALF: A RUN AT THE RIGHT POSITIONS THAT POINTS AT THE WRONG THING.
@@ -212,6 +219,50 @@ fn a_record_run_matching_the_chains_head_on_only_one_count_is_refused() {
 
     // And a truncated run fails both clauses at once, which is the ordinary case.
     assert!(chain.verify_to_head(&records[..2]).is_err());
+}
+
+// ── A RENUMBERING IS NOT A SPLICE (item 405) ─────────────────────────────────────────────────────
+
+/// A RUN RENUMBERED WITH EVERY LINK INTACT IS REPORTED AS A RENUMBERING, NOT AS A SPLICE.
+///
+/// The sequence item 405 names: `[seq=1 prev=""]`, `[seq=3 prev=hash(#1)]`, `[seq=4 prev=hash(#2)]`,
+/// each re-sealed so that only the positions are wrong. Every record points at the one before it,
+/// so a report that one "does not point at its predecessor" is false — and the operator's response
+/// to a renumbering (who rewrote positions) is not the response to an insertion or a removal (what
+/// is missing). The legacy walkers already say SequenceBreak here; the fixed record's walk said
+/// LinkMismatch.
+#[test]
+fn a_renumbered_record_run_with_every_link_intact_is_reported_as_renumbered() {
+    let (_chain, records) = three_records();
+    let mut forged = records.clone();
+    forged[1].seq = 3;
+    forged[1].hash = AuditChain::digest_of(&forged[1]);
+    forged[2].seq = 4;
+    forged[2].prev_hash = forged[1].hash.clone();
+    forged[2].hash = AuditChain::digest_of(&forged[2]);
+    assert_eq!(forged[1].prev_hash, forged[0].hash, "the link is intact");
+
+    let brk = AuditChain::verify_chain(&forged).expect_err("a renumbered run is a break");
+    assert_eq!(brk.at_index, 2);
+    assert_eq!(
+        brk.kind,
+        AuditBreakKind::SequenceMismatch {
+            expected: 2,
+            found: 3
+        }
+    );
+    let said = brk.to_string();
+    assert!(
+        said.contains("RENUMBERED") && !said.contains("does not point at its predecessor"),
+        "a renumbering was reported as a splice: {said:?}"
+    );
+
+    // And a real splice — the middle record removed — is still the LINK's, not the position's.
+    let spliced = vec![records[0].clone(), records[2].clone()];
+    assert_eq!(
+        AuditChain::verify_chain(&spliced).unwrap_err().kind,
+        AuditBreakKind::LinkMismatch
+    );
 }
 
 // ── WHAT A BREAK SAYS ────────────────────────────────────────────────────────────────────────────

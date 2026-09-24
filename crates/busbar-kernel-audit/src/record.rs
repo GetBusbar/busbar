@@ -499,13 +499,12 @@ impl AuditChain {
             Anchor::Window => (first.prev_hash.clone(), first.seq),
         };
         for (i, record) in records.iter().enumerate() {
-            // The link and the position are one judgement: either says a record was inserted,
-            // removed or reordered, and the position is the half that a cut at either END cannot
-            // satisfy by re-linking what is left.
-            if record.prev_hash != expected_prev || record.seq != expected_seq {
+            if let Some(kind) =
+                link_break(&record.prev_hash, record.seq, &expected_prev, expected_seq)
+            {
                 return Err(AuditBreak {
                     at_index: i + 1,
-                    kind: AuditBreakKind::LinkMismatch,
+                    kind,
                 });
             }
             if AuditChain::digest_of(record) != record.hash {
@@ -538,6 +537,33 @@ impl AuditChain {
             });
         }
         Ok(())
+    }
+}
+
+/// THE LINK AND THE POSITION, judged in that order and reported apart (item 405).
+///
+/// The LINK first: a record missing, inserted or reordered breaks it, and at either end of a cut
+/// the position breaks too — so checking the link first names the real defect ("something is
+/// missing here") for every splice. The POSITION second, and as its own kind: a record that names
+/// its predecessor correctly but carries the wrong number was RENUMBERED, and saying it "does not
+/// point at its predecessor" would be false — it does. The operator's response to a renumbering is
+/// not the response to a splice, so the two do not share a kind. The amendment chain's walk judges
+/// its links through this same function.
+pub(crate) fn link_break(
+    prev_hash: &str,
+    seq: u64,
+    expected_prev: &str,
+    expected_seq: u64,
+) -> Option<AuditBreakKind> {
+    if prev_hash != expected_prev {
+        Some(AuditBreakKind::LinkMismatch)
+    } else if seq != expected_seq {
+        Some(AuditBreakKind::SequenceMismatch {
+            expected: expected_seq,
+            found: seq,
+        })
+    } else {
+        None
     }
 }
 
@@ -620,6 +646,13 @@ pub enum AuditBreakKind {
     DigestMismatch,
     /// A record does not point at its predecessor: something was inserted, removed or reordered.
     LinkMismatch,
+    /// A record points at its predecessor but carries the wrong position: it was renumbered.
+    SequenceMismatch {
+        /// The position the walk expected.
+        expected: u64,
+        /// The position the record carries.
+        found: u64,
+    },
 }
 
 impl std::fmt::Display for AuditBreak {
@@ -634,6 +667,12 @@ impl std::fmt::Display for AuditBreak {
                 f,
                 "the audit record at index {} does not point at its predecessor — a record was \
                  INSERTED, REMOVED or REORDERED here",
+                self.at_index
+            ),
+            AuditBreakKind::SequenceMismatch { expected, found } => write!(
+                f,
+                "the audit record at index {} points at its predecessor but is numbered {found} \
+                 where {expected} follows — it was RENUMBERED",
                 self.at_index
             ),
         }
