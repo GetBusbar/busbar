@@ -1155,7 +1155,7 @@ fn the_runtimes_port_reaches_the_nodes_own_table() {
 #[cfg(all(feature = "root-voice", feature = "plane-voice"))]
 #[test]
 fn the_served_composition_has_no_ungoverned_session_left_in_it() {
-    use busbar_voice::runtime::{Carrier, MeteringPort, SessionCore};
+    use busbar_voice::runtime::{Carrier, SessionCore};
 
     // (1) THE ROOT'S OWN COMPOSITION. First writer wins on the plane's side, so this cell is the
     // one place in the crate that writes it, and it writes it the way `main()` does.
@@ -1186,9 +1186,13 @@ fn the_served_composition_has_no_ungoverned_session_left_in_it() {
         "the leg was planned, so the wait is entered"
     );
 
-    let lease = busbar_voice::runtime::LocalMeteringPort
-        .reserve(1_000, 0, None)
-        .expect("an uncapped lease always opens");
+    let meter: std::sync::Arc<dyn busbar_voice::runtime::SessionMeter> =
+        std::sync::Arc::new(busbar_voice::runtime::LocalMeteringPort);
+    let lease = busbar_voice::runtime::SessionLease::open(
+        &meter,
+        &busbar_voice::runtime::SessionBudget::default(),
+    )
+    .expect("an uncapped lease always opens");
     let core = SessionCore::new(
         busbar_voice::ir::codec::OpenAiRealtimeCodec,
         lease,

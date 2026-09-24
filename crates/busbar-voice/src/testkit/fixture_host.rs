@@ -99,6 +99,8 @@ struct Inner {
     leases: BTreeMap<u64, Lease>,
     slots: BTreeMap<String, Arc<dyn std::any::Any + Send + Sync>>,
     audit: Vec<FixtureAuditEntry>,
+    /// The budget chain `budget_state` answers for every key — empty (uncapped) unless a test sets one.
+    budget: Vec<busbar_api::BudgetBucketState>,
 }
 
 /// The in-memory engine host a plane's tests drive through the neutral seam. Build one with
@@ -120,6 +122,9 @@ pub struct FixtureHost {
     /// tests exercise. DECISION #42 makes the metering row conditional on billing, so a test that
     /// wants the unbilled/no-card posture (metering goes quiet) opts in with [`Self::unbilled`].
     pricing_enabled: bool,
+    /// Whether the lease slice charges ONE unit per reported count (`true`) or nothing (the default,
+    /// no rate card). Opt-in, so a probe can drive a session to its cap through the kernel meter.
+    unit_rate: bool,
 }
 
 impl Default for FixtureHost {
@@ -140,7 +145,22 @@ impl FixtureHost {
             lanes: HealthState::new(Vec::new()),
             signals: RequestedSignals::default(),
             pricing_enabled: true,
+            unit_rate: false,
         }
+    }
+
+    /// Answer `chain` as every key's budget chain, so the kernel derives a session cap from it.
+    #[must_use]
+    pub fn with_budget_chain(self, chain: Vec<busbar_api::BudgetBucketState>) -> Self {
+        self.lock().budget = chain;
+        self
+    }
+
+    /// Charge one unit per reported count on the lease slice, so a session can reach its cap.
+    #[must_use]
+    pub fn unit_rate(mut self) -> Self {
+        self.unit_rate = true;
+        self
     }
 
     /// Model an UNBILLED plane: no `rate_card:` configured, so [`Self::cost_pricing_enabled`] is
@@ -214,6 +234,18 @@ impl FixtureHost {
     #[must_use]
     pub fn leases_opened(&self) -> u64 {
         self.next_lease.load(Ordering::SeqCst) - 1
+    }
+
+    /// How many cost leases are open right now (opened and not yet closed).
+    #[must_use]
+    pub fn leases_open(&self) -> usize {
+        self.lock().leases.len()
+    }
+
+    /// The total every OPEN lease has settled so far.
+    #[must_use]
+    pub fn open_settled_total(&self) -> u128 {
+        self.lock().leases.values().map(|l| l.settled).sum()
     }
 
     /// Every admin-audit row [`JournalHost::audit_record`] has landed on this host, in emission order —
@@ -370,9 +402,14 @@ impl MeteringHost for FixtureHost {
         self.lock().leases.remove(&lease.0).map(|l| l.settled)
     }
 
-    fn price_usage(&self, _model: &str, _usage: &Usage) -> Option<u128> {
-        // No rate card configured: every model prices at zero, as the engine does.
-        Some(0)
+    fn price_usage(&self, _model: &str, usage: &Usage) -> Option<u128> {
+        // No rate card configured: every model prices at zero, as the engine does — unless a test
+        // opted into the one-unit-per-count rate.
+        Some(if self.unit_rate {
+            usage.usage_units.values().copied().map(u128::from).sum()
+        } else {
+            0
+        })
     }
 }
 
@@ -543,7 +580,7 @@ impl BudgetHost for FixtureHost {
         _key: &VirtualKey,
         _now: u64,
     ) -> Vec<busbar_api::BudgetBucketState> {
-        Vec::new()
+        self.lock().budget.clone()
     }
     fn governance(&self) -> Option<GovHandle> {
         self.governed.then(|| GovHandle(Arc::new(())))

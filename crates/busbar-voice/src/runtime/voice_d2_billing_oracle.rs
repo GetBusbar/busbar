@@ -4,13 +4,14 @@
 //! THE VOICE D2 LEASE BILLING ORACLE — a byte/scalar-pinned regression backstop for the voice plane's
 //! money path, the sibling of the LLM-plane money oracles (`crossproto_delivery_billing_tests`,
 //! `on_exhausted`, `usage_tap`; `egress_differential` is TLS/SPKI parity, NOT billing). It mirrors that
-//! rigor: it drives one full `cost_reserve` → `price_usage` → `cost_settle` (×N) → exhaust-at-cap →
-//! hard-close SEQUENCE over the PRODUCTION host lease (`HostMeteringPort` + [`MockMeteringHost`], the
-//! same shape `build_runtime` binds), pinning the EXACT nanodollar scalar at every step so any drift in
-//! the lease arithmetic reddens CI with a clear expected-vs-actual.
+//! rigor: it drives one full open → report turn (the KERNEL prices and settles it) ×N → exhaust-at-cap
+//! → hard-close SEQUENCE over the PRODUCTION meter (the kernel's `HostMeteringPort` over
+//! [`MockMeteringHost`], the same shape `build_runtime_hosted` binds), pinning the EXACT nanodollar
+//! scalar at every step so any drift in the arithmetic — which moved kernel-side unchanged (#43, #71) —
+//! reddens CI with a clear expected-vs-actual.
 //!
 //! This is NOT a re-test of the per-unit lease cases the runtime/topology suites already cover
-//! (`local_lease_exhausts_at_cap_and_refuse_all_denies`, `host_lease_reserves_settles_and_hard_closes_at_the_real_cap`,
+//! (`local_meter_prices_nothing_and_refuse_all_denies`, `host_lease_reserves_settles_and_hard_closes_at_the_real_cap`,
 //! `host_port_refuse_all_fails_the_session_closed`, `abnormal_close_releases_the_reserve_via_the_by_value_guard`).
 //! It is ONE end-to-end pinned narrative of a session's whole money life — the reserved estimate+fee, the
 //! priced per-turn debits, the running settled balance, the cap decision, the terminal closed state, plus
@@ -24,18 +25,33 @@
 
 use crate::ir::usage::IrDuplexUsage;
 use crate::runtime::metering::{
-    HostMeteringPort, LeaseState, MeteringLease, MeteringPort, MockMeteringHost,
+    HostMeteringPort, MockMeteringHost, SessionBudget, SessionLease, SessionMeter, TurnVerdict,
 };
 use busbar_kernel::plane_host::MeteringHost;
 use std::sync::Arc;
 
-/// A priced per-turn increment: fold an `IrDuplexUsage` frame onto the four reserved keys, price it
-/// through the lease's host pricing leg (1 nano/unit), and return the exact nanodollar debit. This is the
-/// `price_usage`-before-`settle` step the live per-frame handler runs; the oracle settles EXACTLY this.
-fn priced(lease: &dyn MeteringLease, usage: IrDuplexUsage) -> u64 {
-    lease
-        .price_usage("gpt-realtime", &usage.to_billing_usage())
-        .expect("a priced model returns Some")
+/// Report ONE turn — fold an `IrDuplexUsage` frame onto the four reserved keys and hand the counts to
+/// the lease, exactly as the live per-frame handler does — and return the verdict plus the exact
+/// nanodollar debit the kernel settled for it (1 nano/unit on the mock host).
+fn report(lease: &SessionLease, usage: IrDuplexUsage) -> (TurnVerdict, u64) {
+    let before = lease.settled();
+    let verdict = lease.report_turn("gpt-realtime", &usage.to_billing_usage());
+    (verdict, lease.settled() - before)
+}
+
+/// The kernel meter over `host`, opened under the given money terms.
+fn open(host: &Arc<MockMeteringHost>, estimate: u64, fee: u64, cap: u64) -> Option<SessionLease> {
+    let meter = Arc::new(HostMeteringPort::new(
+        Arc::clone(host) as Arc<dyn MeteringHost>
+    )) as Arc<dyn SessionMeter>;
+    SessionLease::open(
+        &meter,
+        &SessionBudget {
+            estimate_nanos: estimate,
+            fee_nanos: fee,
+            cap_nanos: Some(cap),
+        },
+    )
 }
 
 /// THE ORACLE — one session's whole money life, every scalar pinned.
@@ -46,9 +62,8 @@ fn voice_d2_lease_billing_oracle() {
     // lease is ever minted — the money path cannot charge a byte against a zero budget.
     {
         let host = Arc::new(MockMeteringHost::default());
-        let port = HostMeteringPort::new(Arc::clone(&host) as Arc<dyn MeteringHost>);
         assert!(
-            port.reserve(900, 100, Some(0)).is_none(),
+            open(&host, 900, 100, 0).is_none(),
             "refuse-all (Some(0)) cap denies the reserve — the session never opens"
         );
         assert_eq!(
@@ -60,7 +75,6 @@ fn voice_d2_lease_billing_oracle() {
 
     // ── THE SESSION — reserve → settle ×3 → exhaust → hard-close ─────────────────────────────────────
     let host = Arc::new(MockMeteringHost::default());
-    let port = HostMeteringPort::new(Arc::clone(&host) as Arc<dyn MeteringHost>);
 
     // ── LEG 1 — RESERVE: estimate + flat fee debited ONCE up front ──────────────────────────────────
     // estimate = 1_000 nanos (the coarse up-front over-estimate) and fee = 200 nanos (the once-per-session
@@ -70,9 +84,8 @@ fn voice_d2_lease_billing_oracle() {
     let estimate = 1_000u64;
     let fee = 200u64;
     let cap = 15u64;
-    let lease = port
-        .reserve(estimate, fee, Some(cap))
-        .expect("a real (non-refuse-all) cap opens the lease");
+    let lease =
+        open(&host, estimate, fee, cap).expect("a real (non-refuse-all) cap opens the lease");
 
     // reserved = estimate + fee = 1_000 + 200 = 1_200. WHY: the reserve debits the over-estimate PLUS the
     // flat fee exactly once at session open, as a single audit tap; the fee lives in `reserved`, NOT in
@@ -83,11 +96,7 @@ fn voice_d2_lease_billing_oracle() {
         "reserved = estimate(1_000) + fee(200) = 1_200, charged once at open"
     );
     // Nothing has been settled or closed yet.
-    assert_eq!(
-        lease.settled_nanos(),
-        0,
-        "no turn settled before the first frame"
-    );
+    assert_eq!(lease.settled(), 0, "no turn settled before the first frame");
     assert_eq!(
         host.closed_ids(),
         Vec::<u64>::new(),
@@ -96,8 +105,8 @@ fn voice_d2_lease_billing_oracle() {
 
     // ── LEG 2 — SETTLE turn 1 (under cap → Live) ────────────────────────────────────────────────────
     // Turn 1 usage: audio_out 3 + text_out 4 fold onto `output` = 7 units → priced 7 nanos.
-    let d1 = priced(
-        &*lease,
+    let (v1, d1) = report(
+        &lease,
         IrDuplexUsage {
             audio_out: 3,
             text_out: 4,
@@ -109,12 +118,12 @@ fn voice_d2_lease_billing_oracle() {
         "turn 1: output (3+4) priced at 1 nano/unit = 7 nanos"
     );
     assert_eq!(
-        lease.settle(d1),
-        LeaseState::Live,
+        v1,
+        TurnVerdict::Live,
         "settled 7 < cap 15 → Live (carrier stays open)"
     );
     assert_eq!(
-        lease.settled_nanos(),
+        lease.settled(),
         7,
         "running balance after turn 1 = 0 + 7 = 7"
     );
@@ -127,8 +136,8 @@ fn voice_d2_lease_billing_oracle() {
 
     // ── LEG 3 — SETTLE turn 2 (still under cap → Live) ──────────────────────────────────────────────
     // Turn 2 usage: audio_out 2 → `output` = 2, text_in 3 → `input` = 3, total 5 units → priced 5 nanos.
-    let d2 = priced(
-        &*lease,
+    let (v2, d2) = report(
+        &lease,
         IrDuplexUsage {
             audio_out: 2,
             text_in: 3,
@@ -139,54 +148,53 @@ fn voice_d2_lease_billing_oracle() {
         d2, 5,
         "turn 2: output(2) + input(3) priced at 1 nano/unit = 5 nanos"
     );
+    assert_eq!(v2, TurnVerdict::Live, "settled 12 < cap 15 → Live");
     assert_eq!(
-        lease.settle(d2),
-        LeaseState::Live,
-        "settled 12 < cap 15 → Live"
-    );
-    assert_eq!(
-        lease.settled_nanos(),
+        lease.settled(),
         12,
         "running balance after turn 2 = 7 + 5 = 12"
     );
 
     // ── LEG 4 — SETTLE turn 3 CROSSES the cap → Exhausted → HARD CLOSE ──────────────────────────────
     // Turn 3 usage: audio_out 5 → `output` = 5 units → priced 5 nanos. 12 + 5 = 17 ≥ cap 15.
-    let d3 = priced(
-        &*lease,
+    let (v3, d3) = report(
+        &lease,
         IrDuplexUsage {
             audio_out: 5,
             ..IrDuplexUsage::default()
         },
     );
     assert_eq!(d3, 5, "turn 3: output(5) priced at 1 nano/unit = 5 nanos");
+    // Exhaustion is judged against the cap (15), NEVER against reserved (1_200): reserved is 80× the cap
+    // yet plays no part in the exhaustion decision.
     assert_eq!(
-        lease.settle(d3),
-        LeaseState::Exhausted,
+        v3,
+        TurnVerdict::MustClose,
         "settled 17 ≥ cap 15 → Exhausted — the plane MUST hard-close the carrier"
     );
     assert_eq!(
-        lease.settled_nanos(),
+        lease.settled(),
         17,
         "running balance after turn 3 = 12 + 5 = 17"
-    );
-    // Exhaustion is judged against the cap (15), NEVER against reserved (1_200): reserved is 80× the cap
-    // yet plays no part in the exhaustion decision.
-    assert!(
-        LeaseState::Exhausted.must_close(),
-        "Exhausted demands a carrier hard-close"
     );
 
     // ── LEG 5 — IDEMPOTENT AFTER EXHAUSTION (once dry, stays dry) ────────────────────────────────────
     // A late settle that races the hard-close still accrues its exact increment but the lease stays
     // Exhausted — it never flips back to Live, so no post-exhaustion turn escapes the close.
+    let (late, _) = report(
+        &lease,
+        IrDuplexUsage {
+            audio_out: 1,
+            ..IrDuplexUsage::default()
+        },
+    );
     assert_eq!(
-        lease.settle(1),
-        LeaseState::Exhausted,
+        late,
+        TurnVerdict::MustClose,
         "a settle past exhaustion stays Exhausted (17 + 1 = 18 ≥ cap 15)"
     );
     assert_eq!(
-        lease.settled_nanos(),
+        lease.settled(),
         18,
         "the late increment still accrues exactly: 17 + 1 = 18"
     );
@@ -214,7 +222,7 @@ fn voice_d2_lease_billing_oracle() {
     );
 
     // ── LEG 7 — NO DOUBLE-REFUND: the settle handle's later drop is a harmless no-op ─────────────────
-    // The lingering `HostLease` handle's own `Drop` fires cost_close a SECOND time; the registry entry is
+    // The lingering session handle's own `Drop` fires cost_close a SECOND time; the registry entry is
     // already gone, so it is an idempotent `None` — the reserve is not released (refunded) twice.
     drop(lease);
     assert_eq!(

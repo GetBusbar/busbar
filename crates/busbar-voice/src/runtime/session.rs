@@ -21,7 +21,7 @@ use crate::ir::control::IrDuplexControl;
 use crate::ir::event::{IrClientEvent, IrServerEvent};
 use crate::ir::tool::{CallRef, IrDuplexTool};
 use crate::runtime::carrier::Carrier;
-use crate::runtime::metering::{MeteringLease, TurnMeter};
+use crate::runtime::metering::{SessionLease, TurnMeter, TurnVerdict};
 use crate::runtime::tools::ToolExecutor;
 use busbar_plane_streaming::governed::GovernedSession;
 use bytes::Bytes;
@@ -83,24 +83,24 @@ struct Inner {
 
 /// THE GOVERNED SESSION CORE — the synchronous heart shared across the concurrent frame handlers. It
 /// owns the codec, the locked config (the plane's tools + instructions the browser cannot override),
-/// the metering lease (which also prices each turn host-side), the tool executor, the priced model id,
-/// and the carrier. Generic over the codec
-/// `C` (HARD RULE 3); the lease and tool executor are dependency-inverted ports.
+/// the metering lease (the kernel prices each turn's counts behind it), the tool executor, the metered
+/// model id, and the carrier. Generic over the codec `C` (HARD RULE 3); the lease and tool executor
+/// are dependency-inverted ports.
 pub struct SessionCore<C> {
     codec: C,
     inner: Mutex<Inner>,
     /// The locked GA `session` config — the authoritative copy the plane holds server-side and
     /// re-applies; a client `session.update` is a HINT reconciled against this, never trusted blind.
     locked_config: Option<SessionConfig>,
-    lease: Box<dyn MeteringLease>,
+    lease: SessionLease,
     /// The presenting-key attribution each turn's usage is landed on through the CORE Meter seam
     /// (`host.meter_ledger` + `host.meter_series`). `None` on an ungoverned deployment. Voice keeps
     /// NO meter of its own — this IS the metering step, the same one every plane traverses.
     meter: Option<TurnMeter>,
     tools: Arc<dyn ToolExecutor>,
-    /// The upstream MODEL id this session prices against (from the locked `session` config; empty when
-    /// the dialect carries it server-side and none was locked). Handed to the lease's `price_usage` so
-    /// the host prices each turn against that model's rate-card lane.
+    /// The upstream MODEL id this session meters under (from the locked `session` config; empty when
+    /// the dialect carries it server-side and none was locked). Reported with each turn's counts so the
+    /// kernel prices the turn against that model's rate-card lane.
     model: String,
     carrier: Carrier,
     /// The node's open-call table, when a composition root bound one. `None` is an ungoverned
@@ -123,7 +123,7 @@ where
     /// start); `locked_config` is the plane's authoritative tools+instructions.
     pub fn new(
         codec: C,
-        lease: Box<dyn MeteringLease>,
+        lease: SessionLease,
         meter: Option<TurnMeter>,
         tools: Arc<dyn ToolExecutor>,
         carrier: Carrier,
@@ -213,11 +213,6 @@ where
         &self.carrier
     }
 
-    /// Total nanodollars the metering lease has settled so far — the audit tap the tests assert.
-    pub fn settled_nanos(&self) -> u64 {
-        self.lease.settled_nanos()
-    }
-
     /// DECODE + ACT on ONE downlink (server→client) wire frame. Meters usage (hard-closing on
     /// exhaustion), correlates + executes tool calls server-side, drives barge-in truncate, and relays
     /// media/control downlink to the client. Returns the [`Outbound`] plan; a closed carrier yields an
@@ -241,9 +236,9 @@ where
                     // ── metering: the marquee guarantee ──────────────────────────────────────────
                     IrServerEvent::Usage(u) => {
                         // Fold the turn's five token classes onto the neutral reserved-key `Usage` (the
-                        // 5→4 map), price it HOST-side against the model's rate-card lane, then settle the
-                        // already-priced increment. A missing rate (`None`) fails CLOSED — the turn cannot
-                        // meter as free — exactly as an exhaustion would.
+                        // 5→4 map) and REPORT the raw counts to the kernel meter, which prices and
+                        // settles them and answers whether the carrier stays open. An unpriced model
+                        // fails CLOSED kernel-side — the turn cannot meter as free (#43, #71).
                         let usage = u.to_billing_usage();
                         // METER THE TURN through the CORE seam — land this turn's usage on the ONE
                         // ledger, attributed to the presenting key (the voice twin of the LLM plane's
@@ -251,11 +246,7 @@ where
                         if let Some(meter) = &self.meter {
                             meter.record_turn(&self.model, &usage);
                         }
-                        let close = match self.lease.price_usage(&self.model, &usage) {
-                            Some(nanos) => self.lease.settle(nanos).must_close(),
-                            None => true,
-                        };
-                        if close {
+                        if self.lease.report_turn(&self.model, &usage) == TurnVerdict::MustClose {
                             // Budget dry (or the lease refused / faulted / unpriced): cancel the in-flight
                             // response upstream and demand a hard close.
                             out.push_up(self.codec.write_up(
@@ -636,6 +627,17 @@ where
         for up in plan.upstream {
             // Funnel to the single upstream writer shared with the downlink-facing plane.
             let _ = self.upstream.unbounded_send(up.0.to_vec());
+        }
+    }
+}
+
+/// The settled-figure AUDIT TAP, test scope only: production reads no money figure back (#43).
+#[cfg(test)]
+mod audit_tap {
+    impl<C> super::SessionCore<C> {
+        /// What the kernel meter has settled on this session so far — the figure the tests assert.
+        pub(crate) fn settled_nanos(&self) -> u64 {
+            self.lease.settled()
         }
     }
 }

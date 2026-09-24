@@ -46,6 +46,7 @@ pub(crate) mod identity_admit;
 pub mod journal;
 pub mod pipe;
 pub mod scope;
+pub mod session_meter;
 pub mod trust;
 pub mod vtable;
 

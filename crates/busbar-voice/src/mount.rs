@@ -84,10 +84,6 @@ const SESSION_OPEN_METHOD: &str = "session.open";
 /// the audit stream must see ONE action with two outcomes, not two spellings that drift apart.
 pub(crate) const SESSION_AUDIT_ACTION: &str = "voice.session.open";
 
-/// The coarse over-estimate (nanodollars) a session debits up front at reserve. It is an audit tap,
-/// not a ceiling — the ceiling is the presenting key's own remaining budget, read per session.
-const SESSION_ESTIMATE_NANOS: u64 = 1_000;
-
 /// THE HOOK CONTAINER the voice plane's session-open gate/tap fire under — the plane's SINGULAR config
 /// section noun (`streams`), since voice declares no per-registration container (its config is one
 /// object, not a named-definition map). The operator attaches a session-open gate to this ONE
@@ -718,11 +714,7 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
     // caller has no ceiling to impose, and stays uncapped exactly as an unbudgeted model call is.
     let hosted = crate::runtime::build_runtime_hosted(rt, Arc::clone(&host));
     let rt = &hosted;
-    let budget = SessionBudget {
-        estimate_nanos: SESSION_ESTIMATE_NANOS,
-        fee_nanos: 0,
-        cap_nanos: crate::runtime::principal_cap_nanos(&host, vkey.as_ref(), now),
-    };
+    let budget = SessionBudget::for_principal(&*host, vkey.as_ref(), now);
     // The session-open params the hooks screen and (maybe) rewrite: the g711 lock for telephony, the
     // plane-default session posture otherwise. One projection both the gate and the tap read.
     let mut session_cfg = match ingress {
@@ -1457,11 +1449,7 @@ where
     // The session budget: the coarse over-estimate at reserve, no flat fee, and the presenting key's
     // REAL remaining budget as the ceiling — the SAME shape `open_governed` uses for the one-shot
     // passes, so both doors meter a session identically.
-    let budget = SessionBudget {
-        estimate_nanos: SESSION_ESTIMATE_NANOS,
-        fee_nanos: 0,
-        cap_nanos: crate::runtime::principal_cap_nanos(&host, vkey.as_ref(), now),
-    };
+    let budget = SessionBudget::for_principal(&*host, vkey.as_ref(), now);
     // THE METER STEP's attribution for this WS session — the presenting key each turn's usage is
     // landed on through the core seam, under THIS LEG'S OWN dialect label (K4: no longer a plane-wide
     // constant). Built from the resolved key (or `None` ungoverned) and moved into the post-upgrade

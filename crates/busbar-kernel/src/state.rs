@@ -759,66 +759,6 @@ impl App {
             self.config_version,
         )
     }
-
-    /// Resolve a POOL's base ordering against THIS snapshot's hook registry, env and config version —
-    /// the core-side of the fallback plane's per-pool base-ordering resolution. The MONEY-PATH twin of
-    /// [`App::resolve_container_gates`]: the extracted fallback plane hands the neutral `(&PoolCfg,
-    /// default_hook)` inputs across and gets back the resolved policy to store in its own per-pool
-    /// runtime object, so the plane names no `crate::hooks::resolve_pool_ordering` and never constructs
-    /// a `HookEnv`. Byte-identical to `appbuild`'s build-time `hooks::resolve_pool_ordering` pass
-    /// (`self.hook_registry` == the built `cfg.hooks`, `self.hook_env` == the built env,
-    /// `self.config_version` == the build's `app_config_version`).
-    // Called only from the extracted fallback plane's pool lowering (Commit C); with the plane
-    // compiled out it has no caller, exactly like the `crate::hooks::resolve_pool_ordering` it wraps.
-    #[allow(dead_code)]
-    pub fn resolve_pool_ordering(
-        &self,
-        cfg: &crate::config::PoolCfg,
-        default_hook: Option<&str>,
-    ) -> Option<crate::hooks::ResolvedPolicy> {
-        crate::hooks::resolve_pool_ordering(
-            cfg,
-            &self.hook_registry,
-            &self.hook_env,
-            default_hook,
-            self.config_version,
-        )
-    }
-
-    /// Resolve a POOL's decision GATES against THIS snapshot — the money-path twin of
-    /// [`App::resolve_container_gates`] for the priority-carrying phase-2 gate chain. Byte-identical to
-    /// `appbuild`'s `hooks::resolve_pool_gates` pass; the plane stores the returned rank in its own
-    /// per-pool runtime object without naming `crate::hooks::resolve_pool_gates` or building a
-    /// `HookEnv`.
-    #[allow(dead_code)]
-    pub fn resolve_pool_gates(
-        &self,
-        cfg: &crate::config::PoolCfg,
-    ) -> Vec<(u16, crate::hooks::ResolvedPolicy)> {
-        crate::hooks::resolve_pool_gates(
-            cfg,
-            &self.hook_registry,
-            &self.hook_env,
-            self.config_version,
-        )
-    }
-
-    /// Resolve a POOL's phase-1 REWRITE gates against THIS snapshot — the money-path twin of
-    /// [`App::resolve_container_gates`] for the pool rewrite chain. Byte-identical to `appbuild`'s
-    /// `hooks::resolve_pool_rewrites` pass; the plane stores the returned chain in its own per-pool
-    /// runtime object without naming `crate::hooks::resolve_pool_rewrites` or building a `HookEnv`.
-    #[allow(dead_code)]
-    pub fn resolve_pool_rewrites(
-        &self,
-        cfg: &crate::config::PoolCfg,
-    ) -> Vec<(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)> {
-        crate::hooks::resolve_pool_rewrites(
-            cfg,
-            &self.hook_registry,
-            &self.hook_env,
-            self.config_version,
-        )
-    }
 }
 
 /// THE NEUTRAL SLOT-READ SEAM the plane `PlaneDecl` callbacks name instead of `&App`. A thin delegate

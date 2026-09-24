@@ -30,8 +30,8 @@ pub use carrier::Carrier;
 // MOVE: no item changed shape crossing it.
 pub use busbar_plane_streaming::governed::{GovernedCalls, GovernedSession, ReplyRefusal};
 pub use metering::{
-    cap_nanos_from_buckets, principal_cap_nanos, HostLease, HostMeteringPort, LeaseCloseGuard,
-    LeaseState, LocalLease, LocalMeteringPort, MeteringLease, MeteringPort,
+    HostMeteringPort, LeaseCloseGuard, LocalMeteringPort, MeterId, SessionBudget, SessionLease,
+    SessionMeter, TurnVerdict,
 };
 pub use scope::{SessionHandle, VoiceSessionRow};
 pub use session::{
@@ -44,16 +44,15 @@ use std::sync::Arc;
 
 /// THE PLANE'S PER-GENERATION RUNTIME OBJECT — the type-erased slot `PLANE_DECL.build_runtime` builds
 /// (see `crate::PLANE_DECL`). It carries the process-wide dependencies a session is assembled from: the
-/// durable-handle engine sessions bind into, the D2 metering PORT that opens a lease per session, the
-/// server-side tool executor, and the pricing book. A session (either topology) is constructed FROM
+/// durable-handle engine sessions bind into, the kernel SESSION METER a lease is opened on per session,
+/// and the server-side tool executor. The plane holds no pricing of its own. A session (either topology) is constructed FROM
 /// this object; it holds no per-session state itself.
 pub struct VoiceRuntime {
     /// The process-wide durable-handle engine every session's [`SessionHandle`] binds into.
     pub engine: Arc<DurableHandleEngine>,
-    /// The D2 metering port — opens a reserve-then-settle lease at each session start. The lease also
-    /// carries the turn PRICING leg (`price_usage`): the host prices each turn's usage_units against the
-    /// deployment rate card, so the plane holds no price book of its own.
-    pub metering: Arc<dyn MeteringPort>,
+    /// The kernel-owned SESSION METER each session's lease is opened on. The plane reports raw counts
+    /// to it and is told whether the carrier stays open; the pricing is the kernel's (#43).
+    pub metering: Arc<dyn SessionMeter>,
     /// The server-side tool executor (the tool moat) shared across sessions.
     pub tools: Arc<dyn ToolExecutor>,
     /// The plane's OPEN-PASS destination denial set — upstream models (destinations) a session
@@ -77,7 +76,7 @@ pub struct VoiceRuntime {
     /// real `Arc<dyn EngineHost>`. `None` on the pre-host/dev-default runtime (no admin-audit trail to
     /// write to). Carried so a governed session mutation can land ONE admin-audit row through the SAME
     /// seam the host's other planes journal through (see [`VoiceRuntime::audit_session`]), without the
-    /// D2 metering port (`Arc<dyn MeteringPort>`) needing to widen into the full host trait itself.
+    /// session meter (`Arc<dyn SessionMeter>`) needing to widen into the full host trait itself.
     pub host: Option<Arc<dyn busbar_kernel::plane_host::EngineHost>>,
 }
 
@@ -86,7 +85,7 @@ impl VoiceRuntime {
     #[must_use]
     pub fn new(
         engine: Arc<DurableHandleEngine>,
-        metering: Arc<dyn MeteringPort>,
+        metering: Arc<dyn SessionMeter>,
         tools: Arc<dyn ToolExecutor>,
     ) -> Self {
         let defaults = crate::config::StreamsCfg::default();
@@ -142,16 +141,11 @@ impl VoiceRuntime {
         SessionHandle::bind(Arc::clone(&self.engine), owner, id)
     }
 
-    /// Open a D2 metering lease for a session over ALREADY-PRICED nanodollars (estimate + fee + cap).
-    /// `None` mirrors a `cost_reserve` refusal (a refuse-all cap) — the session must not open.
+    /// Open a metered session on this runtime's session meter over the kernel-derived `budget`.
+    /// `None` is a refused budget (a refuse-all cap) — the session must not open.
     #[must_use]
-    pub fn open_lease(
-        &self,
-        estimate_nanos: u64,
-        fee_nanos: u64,
-        cap_nanos: Option<u64>,
-    ) -> Option<Box<dyn MeteringLease>> {
-        self.metering.reserve(estimate_nanos, fee_nanos, cap_nanos)
+    pub fn open_lease(&self, budget: &SessionBudget) -> Option<SessionLease> {
+        SessionLease::open(&self.metering, budget)
     }
 
     /// Land ONE admin-audit row for a voice-plane mutation through the live host's `JournalHost` leg —
@@ -178,12 +172,11 @@ impl VoiceRuntime {
 /// (feature-off) build leaves the hook `None`.
 ///
 /// WHAT IS WIRED, AND WHAT REMAINS A DEV DEFAULT. This entry reads the REAL `streams:` config (session
-/// posture / ceilings, via `with_streams`) and binds the [`LocalMeteringPort`] — the faithful in-process
-/// metering stand-in the runtime/topology tests and the conformance governance leg drive. It is the
-/// PRE-HOST default only: every mounted route rebinds the money hop onto the live host lease through
-/// [`build_runtime_hosted`] the moment a request hands it an engine host, so a served session prices
-/// each turn against the deployment rate card (`MeteringHost::price_usage`) rather than the dev-default
-/// zero. What is still a dev default is the durable engine (a fresh [`DurableHandleEngine`]) and the
+/// posture / ceilings, via `with_streams`) and binds the kernel's [`LocalMeteringPort`] — the pre-host
+/// session meter (pricing off). It is the PRE-HOST default only: every mounted route rebinds the meter
+/// onto the live host's lease through [`build_runtime_hosted`] the moment a request hands it an engine
+/// host, so a served session's turns are priced by the kernel against the deployment rate card rather
+/// than at the pre-host zero. What is still a dev default is the durable engine (a fresh [`DurableHandleEngine`]) and the
 /// tool executor ([`EchoToolExecutor`]): deriving the config-driven engine/tool set is a SEPARATE,
 /// tracked slice. `prior` (carry-over) is ignored today; the signature is the real one so binding those
 /// config-derived dependencies is a body change, not an ABI change.
@@ -199,23 +192,21 @@ pub fn build_runtime(
         .downcast_ref::<crate::config::StreamsCfg>()
         .cloned()
         .unwrap_or_default();
-    // The PRE-HOST default binds [`LocalMeteringPort`] (HARD RULE 4): the runtime/topology tests and the
-    // conformance governance leg drive the faithful in-process lease. A SERVED session never keeps it —
-    // the mounted routes hold the live `Arc<dyn EngineHost>` and rebind the money hop through
-    // [`build_runtime_hosted`], so the D2 hop PRICES each turn's usage against the deployment rate card
-    // (`MeteringHost::price_usage`) rather than the dev-default zero. The frozen
-    // `PlaneDecl::build_runtime` fn-pointer signature carries no host, so the hosted entry is a sibling
-    // rather than a body branch.
+    // The PRE-HOST default binds the kernel's [`LocalMeteringPort`] (HARD RULE 4). A SERVED session
+    // never keeps it — the mounted routes hold the live `Arc<dyn EngineHost>` and rebind the meter
+    // through [`build_runtime_hosted`], so the kernel prices each turn against the deployment rate card
+    // rather than at the pre-host zero. The frozen `PlaneDecl::build_runtime` fn-pointer signature
+    // carries no host, so the hosted entry is a sibling rather than a body branch.
     build_runtime_with_metering(Arc::new(LocalMeteringPort), &streams)
 }
 
-/// THE PRODUCTION composition entry — take a generation's runtime and rebind its D2 money hop onto the
-/// REAL host metering lease. Called by every mounted route the moment the live host is in hand (the
-/// route layer is where an `Arc<dyn EngineHost>` first exists — the per-generation slot is built
-/// before any request), so a live voice session reserves / settles / exhausts against the caller's
-/// real grant rather than the in-process [`LocalLease`] stand-in.
+/// THE PRODUCTION composition entry — take a generation's runtime and rebind its session meter onto the
+/// kernel's [`HostMeteringPort`] over the REAL host lease. Called by every mounted route the moment the
+/// live host is in hand (the route layer is where an `Arc<dyn EngineHost>` first exists — the
+/// per-generation slot is built before any request), so a live voice session is metered against the
+/// caller's real grant rather than the pre-host [`LocalMeteringPort`].
 ///
-/// Everything but the metering port is SHARED with `base`, not rebuilt: the same durable-handle engine
+/// Everything but the session meter is SHARED with `base`, not rebuilt: the same durable-handle engine
 /// (so a session opened on one request is the same durable working set another request sees), the same
 /// tool executor, the same denial set, and the same operator session posture and ceilings.
 #[must_use]
@@ -225,7 +216,7 @@ pub fn build_runtime_hosted(
 ) -> VoiceRuntime {
     VoiceRuntime {
         engine: Arc::clone(&base.engine),
-        metering: Arc::new(metering::HostMeteringPort::new(
+        metering: Arc::new(HostMeteringPort::new(
             Arc::clone(&host) as Arc<dyn busbar_kernel::plane_host::MeteringHost>
         )),
         tools: Arc::clone(&base.tools),
@@ -238,11 +229,11 @@ pub fn build_runtime_hosted(
     }
 }
 
-/// The shared composition body: assemble the per-generation [`VoiceRuntime`] over the given metering
-/// PORT (the one dependency the dev/prod paths differ on) plus the current dev defaults for the durable
-/// engine and tool executor. Turn pricing rides the port's lease (`price_usage`), host-side.
+/// The shared composition body: assemble the per-generation [`VoiceRuntime`] over the given session
+/// METER (the one dependency the dev/prod paths differ on) plus the current dev defaults for the durable
+/// engine and tool executor.
 fn build_runtime_with_metering(
-    metering: Arc<dyn MeteringPort>,
+    metering: Arc<dyn SessionMeter>,
     streams: &crate::config::StreamsCfg,
 ) -> Arc<dyn std::any::Any + Send + Sync> {
     Arc::new(

@@ -44,15 +44,6 @@ static LEASES: Mutex<Option<HashMap<u64, CostHold>>> = Mutex::new(None);
 /// [`CostLeaseId::NONE`] a refusal reads); `fetch_add` hands each reserve the next non-zero id.
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-/// Mint the next non-zero lease id, register `hold`, and return the id. `NEXT_ID` starts at `1` and
-/// only increments, so the id is always a live (non-`NONE`) handle.
-fn register(hold: CostHold) -> CostLeaseId {
-    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    let mut guard = LEASES.lock().unwrap_or_else(|p| p.into_inner());
-    guard.get_or_insert_with(HashMap::new).insert(id, hold);
-    CostLeaseId(id)
-}
-
 /// Settle `settle_nanos` against the lease `id` and report exhaustion, or `None` when `id` names no
 /// open lease (unknown / already-forgotten). The lease STAYS open after a settle — a live carrier
 /// keeps settling increments until it hard-closes; the registry keys off the minted id only. The
@@ -73,7 +64,7 @@ fn settle(id: u64, settle_nanos: u64) -> Option<bool> {
 
 /// NEUTRAL-SEAM `cost_reserve`: open a host-owned reserve-then-settle [`CostHold`] over u128
 /// nanodollars and return its raw lease id, or `None` on a REFUSE-ALL cap (`Some(0)`) denied at the
-/// door. Shares [`register`] (and thus `NEXT_ID`/`LEASES`) with the FFI `cost_reserve` slot, so a
+/// door. Mints from `NEXT_ID` into `LEASES` for the FFI `cost_reserve` slot too, so a
 /// static-plane lease is indistinguishable from a dlopen-plane lease in the one registry.
 pub(crate) fn reserve_lease(
     estimate_nanos: u128,
@@ -89,7 +80,12 @@ pub(crate) fn reserve_lease(
         CostAmount(flat_fee_nanos),
         cap_nanos.map(CostAmount),
     );
-    Some(register(hold).0)
+    // Mint the next non-zero lease id (`NEXT_ID` starts at `1` and only increments, so the id is
+    // always a live, non-`NONE` handle) and register the hold under it.
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let mut guard = LEASES.lock().unwrap_or_else(|p| p.into_inner());
+    guard.get_or_insert_with(HashMap::new).insert(id, hold);
+    Some(id)
 }
 
 /// NEUTRAL-SEAM `cost_settle`: accrue one EXACT u128 increment against the open lease `id` and report
@@ -154,19 +150,16 @@ pub(super) extern "C-unwind" fn cost_reserve(
             return StatusClass::Refused;
         };
 
-        // A refuse-all cap (present, zero) denies the reserve outright: a lease that can never settle a
-        // nonzero increment is not worth opening. `out` is left untouched (the plane reads `NONE`).
-        if cap_present && cap_nanos == 0 {
+        // `cap_present == false` ⇒ uncapped (never exhausts); otherwise the widened money ceiling. The
+        // shared door: a refuse-all cap (present, zero) denies the reserve outright — a lease that can
+        // never settle a nonzero increment is not worth opening — and `out` is left untouched (the
+        // plane reads `NONE`); any other cap registers the hold in the one registry.
+        let cap = cap_present.then_some(u128::from(cap_nanos));
+        let Some(id) = reserve_lease(u128::from(reserve_nanos), u128::from(flat_fee_nanos), cap)
+        else {
             return StatusClass::Refused;
-        }
-        // `cap_present == false` ⇒ uncapped (never exhausts); otherwise the widened money ceiling.
-        let cap: Option<CostAmount> = cap_present.then(|| CostAmount(u128::from(cap_nanos)));
-        let hold = CostHold::reserve(
-            CostAmount(u128::from(reserve_nanos)),
-            CostAmount(u128::from(flat_fee_nanos)),
-            cap,
-        );
-        let lease = register(hold);
+        };
+        let lease = CostLeaseId(id);
         // SAFETY: `out` is a writable, aligned `MaybeUninit<CostLeaseId>` for the call (or null, which
         // `write_out` tolerates); published ONLY on the Ok path (init-only-on-Ok).
         unsafe { busbar_plugin::write_out(out, lease) };
