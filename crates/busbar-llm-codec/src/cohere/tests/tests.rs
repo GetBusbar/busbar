@@ -2161,10 +2161,145 @@ fn test_stream_unknown_event_is_noop() {
     let mut state = crate::ir::StreamDecodeState::default();
     let evs = CohereReader.read_response_events(
         "",
-        &serde_json::json!({"type": "citation-start", "index": 0}),
+        &serde_json::json!({"type": "debug", "index": 0}),
         &mut state,
     );
     assert!(evs.is_empty(), "unknown event types produce no IR events");
+}
+
+/// Item 301: a Cohere upstream's STREAMED grounding citation reaches the IR as a
+/// `CitationsDelta` on the text block — the same citations, on the same block, that the
+/// NON-streaming read of the same answer carries. Before the fix `citation-start` fell into the
+/// catch-all and a streamed Cohere answer lost every citation its buffered twin kept.
+#[test]
+fn test_stream_citations_match_non_stream() {
+    let citation = serde_json::json!({
+        "start": 0, "end": 5, "text": "Paris", "type": "TEXT_CONTENT",
+        "sources": [{"type": "document", "id": "doc:0",
+                     "document": {"title": "Capitals", "url": "https://example.com/capitals"}}]
+    });
+    let second = serde_json::json!({
+        "start": 9, "end": 16, "text": "capital", "type": "TEXT_CONTENT",
+        "sources": [{"type": "document", "id": "doc:1", "document": {"title": "Glossary"}}]
+    });
+
+    // Non-streaming read of the answer.
+    let buffered = CohereReader
+        .read_response(&serde_json::json!({
+            "id": "c1", "finish_reason": "COMPLETE",
+            "message": {"role": "assistant",
+                        "content": [{"type": "text", "text": "Paris is capital."}],
+                        "citations": [citation.clone(), second.clone()]},
+            "usage": {"tokens": {"input_tokens": 3, "output_tokens": 4}}
+        }))
+        .expect("buffered read");
+    let buffered_cits = buffered
+        .content
+        .iter()
+        .find_map(|b| match b {
+            crate::ir::IrBlock::Text { citations, .. } => Some(citations.clone()),
+            _ => None,
+        })
+        .expect("text block");
+    assert_eq!(
+        buffered_cits.len(),
+        2,
+        "buffered read carries both citations"
+    );
+
+    // Streaming read of the same answer, native Cohere v2 frame order.
+    let frames = [
+        serde_json::json!({"type": "message-start", "id": "c1",
+                           "delta": {"message": {"role": "assistant"}}}),
+        serde_json::json!({"type": "content-start", "index": 0,
+                           "delta": {"message": {"content": {"type": "text", "text": ""}}}}),
+        serde_json::json!({"type": "content-delta", "index": 0,
+                           "delta": {"message": {"content": {"text": "Paris is "}}}}),
+        serde_json::json!({"type": "content-delta", "index": 0,
+                           "delta": {"message": {"content": {"text": "capital."}}}}),
+        serde_json::json!({"type": "citation-start", "index": 0,
+                           "delta": {"message": {"citations": citation}}}),
+        serde_json::json!({"type": "citation-end", "index": 0}),
+        serde_json::json!({"type": "citation-start", "index": 1,
+                           "delta": {"message": {"citations": second}}}),
+        serde_json::json!({"type": "citation-end", "index": 1}),
+        serde_json::json!({"type": "content-end", "index": 0}),
+        serde_json::json!({"type": "message-end",
+                           "delta": {"finish_reason": "COMPLETE",
+                                     "usage": {"tokens": {"input_tokens": 3, "output_tokens": 4}}}}),
+    ];
+    let mut state = crate::ir::StreamDecodeState::default();
+    let events: Vec<crate::ir::IrStreamEvent> = frames
+        .iter()
+        .flat_map(|f| CohereReader.read_response_events("", f, &mut state))
+        .collect();
+
+    let text_idx = events
+        .iter()
+        .find_map(|e| match e {
+            crate::ir::IrStreamEvent::BlockStart {
+                index,
+                block: crate::ir::IrBlockMeta::Text,
+            } => Some(*index),
+            _ => None,
+        })
+        .expect("text block opened");
+    let mut streamed_cits = Vec::new();
+    for e in &events {
+        if let crate::ir::IrStreamEvent::BlockDelta {
+            index,
+            delta: crate::ir::IrDelta::CitationsDelta(c),
+        } = e
+        {
+            assert_eq!(*index, text_idx, "citation rides the text block's index");
+            streamed_cits.extend(c.iter().cloned());
+        }
+    }
+    assert_eq!(
+        streamed_cits, buffered_cits,
+        "stream and non-stream reads of the same Cohere answer must carry the same citations"
+    );
+    // Every citation delta lands BEFORE the text block's stop (balanced egress).
+    let stop_pos = events
+        .iter()
+        .position(
+            |e| matches!(e, crate::ir::IrStreamEvent::BlockStop { index } if *index == text_idx),
+        )
+        .expect("text block closed");
+    let last_cit = events
+        .iter()
+        .rposition(|e| {
+            matches!(
+                e,
+                crate::ir::IrStreamEvent::BlockDelta {
+                    delta: crate::ir::IrDelta::CitationsDelta(_),
+                    ..
+                }
+            )
+        })
+        .expect("citation delta present");
+    assert!(last_cit < stop_pos, "citations precede the text block stop");
+}
+
+/// Item 301 positive control: a `citation-start` with no open text block (a stopped index) emits
+/// nothing — a delta into a closed block would unbalance the egress stream.
+#[test]
+fn test_stream_citation_after_content_end_is_dropped() {
+    let mut state = crate::ir::StreamDecodeState::default();
+    for f in [
+        serde_json::json!({"type": "content-delta", "index": 0,
+                           "delta": {"message": {"content": {"text": "hi"}}}}),
+        serde_json::json!({"type": "content-end", "index": 0}),
+    ] {
+        CohereReader.read_response_events("", &f, &mut state);
+    }
+    let evs = CohereReader.read_response_events(
+        "",
+        &serde_json::json!({"type": "citation-start", "index": 0,
+                            "delta": {"message": {"citations": {"start": 0, "end": 2, "text": "hi"}}}}),
+        &mut state,
+    );
+    assert!(evs.is_empty(), "no delta into a stopped block, got {evs:?}");
 }
 
 /// CF6 (wire-conformance): a streamed citation egressing into the Cohere v2 dialect must serialize

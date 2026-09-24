@@ -1126,8 +1126,45 @@ impl ProtocolReader for CohereReader {
                     out.push(IrStreamEvent::BlockStop { index: ir_idx });
                 }
             }
+            // Cohere v2's streamed grounding citation (docs.cohere.com/v2/docs/streaming): ONE
+            // Citation object at `delta.message.citations`, emitted while the answer's text block is
+            // open. It maps to `IrDelta::CitationsDelta` on the TEXT block's claimed IR index — the
+            // same block the non-stream reader attaches `message.citations` to (the first text
+            // block), through the same `read_cohere_citations` seam, so a streamed and a buffered
+            // read of the SAME turn carry the same citations. This arm used to be missing: the frame
+            // fell into the catch-all below and every streamed Cohere citation vanished while the
+            // buffered read of the same answer kept it. An array body (the shape this crate's writer
+            // emitted before it was made spec-conformant) is accepted too. A citation that arrives
+            // with no text block open (none yet, a thinking/tool-plan block, or after content-end)
+            // is dropped: a delta into an unopened or stopped index would unbalance every egress.
+            ET_CITATION_START => {
+                if state.text_block_open && !state.thinking_block_open {
+                    if let Some(raw) = data
+                        .get("delta")
+                        .and_then(|d| d.get("message"))
+                        .and_then(|m| m.get("citations"))
+                    {
+                        let cits = if raw.is_array() {
+                            super::read_cohere_citations(raw)
+                        } else {
+                            super::read_cohere_citations(&serde_json::Value::Array(vec![
+                                raw.clone()
+                            ]))
+                        };
+                        if !cits.is_empty() {
+                            out.push(IrStreamEvent::BlockDelta {
+                                index: state.text_index.unwrap_or(0),
+                                delta: crate::ir::IrDelta::CitationsDelta(cits),
+                            });
+                        }
+                    }
+                }
+            }
+            // The bare structural close paired with each `citation-start`; it carries no content.
+            // Egress writers that need it (Cohere's own) re-emit it from the citation delta.
+            ET_CITATION_END => {}
             // Genuinely unknown event types are intentionally ignored: the Cohere v2 stream may add
-            // frames (e.g. citation/debug) that carry no IR-representable content. This is a named,
+            // frames (e.g. debug) that carry no IR-representable content. This is a named,
             // documented no-op arm — the explicit `ET_*` arms above still catch every tool-call
             // frame, so this only ever sees content-free frames.
             //
