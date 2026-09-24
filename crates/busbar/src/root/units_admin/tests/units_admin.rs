@@ -1340,6 +1340,150 @@ fn the_audit_doors_seal_the_resolved_class_and_append_to_no_ring() {
     }
 }
 
+/// The rows the kernel's one administrative ring holds for `principal`, newest first.
+///
+/// The ring is process-wide, so a cell that counts on it counts only rows attributed to an
+/// identity no other cell in this binary uses.
+#[cfg(feature = "root-admin")]
+fn the_one_rings_rows_by(principal: &str) -> Vec<busbar_kernel::audit_ring::AuditEntry> {
+    busbar_kernel::audit_ring::AUDIT
+        .list_filtered(0, usize::MAX, None, None)
+        .into_iter()
+        .filter(|entry| entry.principal == principal)
+        .collect()
+}
+
+/// ONE ADMIN UNIT SEALS EXACTLY ONE ENTRY, AND A READ SEALS NONE — THE audit STEP, OVER THE LOOP.
+///
+/// The rig column reads the fresh four-op chain from the outside; this reads the ONE ring (item
+/// 237) from the step that writes it, which is where "exactly one" is decided for every verb the
+/// core-admin handler does not write itself. Four answers, each a different way the step could be
+/// wrong:
+///
+/// - a root-only mutating verb that applied appends exactly ONE entry, under the operation's own
+///   name and `applied`, attributed to the identity Verify resolved — not zero, not one per step;
+/// - a READ appends none: the chain records what changed, and a listing changed nothing;
+/// - a 1.5.5 mutating verb appends none AT THIS STEP, because its one row is the core-admin
+///   handler's (`admin_path_without_plane_face.rs` reads that one row back over the served
+///   `/audit`) and a second here is the doubled row item 237 deleted;
+/// - a unit refused before Admit, by somebody the node identified, still appends one under
+///   `rejected` — a chain that recorded only successes is the one an attacker wants.
+///
+/// Each appended entry is checked against the entry the ring holds directly before it, so the
+/// entries are linked rather than merely counted.
+#[cfg(feature = "root-admin")]
+#[test]
+fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none() {
+    const WHO: &str = "operator-cifollow-one-entry";
+    let linked = |entry: &busbar_kernel::audit_ring::AuditEntry| {
+        let ring = busbar_kernel::audit_ring::AUDIT.list_filtered(0, usize::MAX, None, None);
+        let at = ring
+            .iter()
+            .position(|e| e.seq == entry.seq)
+            .expect("the entry just sealed is on the ring");
+        assert!(!entry.hash.is_empty(), "the entry carries its digest");
+        if let Some(before) = ring.get(at + 1) {
+            assert_eq!(
+                entry.prev_hash, before.hash,
+                "the entry is chained to the one before it"
+            );
+        }
+    };
+    let mutating = |path: &str| {
+        let mut request = a_request();
+        request.method = "POST".to_string();
+        request.path = path.to_string();
+        request
+    };
+
+    // A root-only mutation that applied: exactly one row, under its own name, `applied`.
+    let (binding, ctx, seal) = a_bound_unit(mutating("/api/v1/admin/operator-key"));
+    let resolved = binding
+        .units
+        .verb(ctx.key)
+        .expect("the operator-key write is a row the table names");
+    assert!(!resolved.read_only, "the fixture must be a mutation");
+    binding.units.set_principal(ctx.key, PrincipalId::new(WHO));
+    binding.units.set_answer(
+        ctx.key,
+        AdminAnswer {
+            status: 204,
+            headers: Vec::new(),
+            body: Vec::new(),
+        },
+    );
+    let before = the_one_rings_rows_by(WHO).len();
+    let _ = audit(&binding, &Pass::mint(&seal), &ctx, &Outcome::Completed).into_result(&seal);
+    let rows = the_one_rings_rows_by(WHO);
+    assert_eq!(rows.len(), before + 1, "one unit, one entry");
+    assert_eq!(rows[0].action, resolved.verb);
+    assert_eq!(rows[0].outcome, busbar_kernel::audit_ring::OUTCOME_APPLIED);
+    assert!(
+        !rows[0].principal.contains("admin-token"),
+        "the entry names the identity, never the presented credential"
+    );
+    linked(&rows[0]);
+    binding.units.close(ctx.key);
+
+    // A read changes nothing and records nothing.
+    let (binding, ctx, seal) = a_bound_unit(a_request());
+    assert!(
+        binding
+            .units
+            .verb(ctx.key)
+            .expect("the audit listing is a row the table names")
+            .read_only,
+        "the fixture must be a read"
+    );
+    binding.units.set_principal(ctx.key, PrincipalId::new(WHO));
+    let before = the_one_rings_rows_by(WHO).len();
+    let _ = audit(&binding, &Pass::mint(&seal), &ctx, &Outcome::Completed).into_result(&seal);
+    assert_eq!(
+        the_one_rings_rows_by(WHO).len(),
+        before,
+        "a read is not a mutation"
+    );
+    binding.units.close(ctx.key);
+
+    // A 1.5.5 mutation: its one row is the handler's, so the step adds none.
+    let (binding, ctx, seal) = a_bound_unit(mutating("/api/v1/admin/keys"));
+    assert!(
+        !binding
+            .units
+            .verb(ctx.key)
+            .expect("the key mint is a row the table names")
+            .read_only,
+        "the fixture must be a mutation"
+    );
+    binding.units.set_principal(ctx.key, PrincipalId::new(WHO));
+    let before = the_one_rings_rows_by(WHO).len();
+    let _ = audit(&binding, &Pass::mint(&seal), &ctx, &Outcome::Completed).into_result(&seal);
+    assert_eq!(
+        the_one_rings_rows_by(WHO).len(),
+        before,
+        "the handler's row is the one row; the step writes no second copy"
+    );
+    binding.units.close(ctx.key);
+
+    // A refused mutation by somebody the node identified is recorded as an attempt, not dropped.
+    let (binding, ctx, seal) = a_bound_unit(mutating("/api/v1/admin/operator-key"));
+    binding.units.set_principal(ctx.key, PrincipalId::new(WHO));
+    let before = the_one_rings_rows_by(WHO).len();
+    let _ = audit_refused(
+        &binding,
+        &Pass::mint(&seal),
+        &ctx,
+        &Refusal::new(ReasonCode::OverBudget),
+    )
+    .into_result(&seal);
+    let rows = the_one_rings_rows_by(WHO);
+    assert_eq!(rows.len(), before + 1, "the attempt is on the chain");
+    assert_eq!(rows[0].action, resolved.verb);
+    assert_eq!(rows[0].outcome, busbar_kernel::audit_ring::OUTCOME_REJECTED);
+    linked(&rows[0]);
+    binding.units.close(ctx.key);
+}
+
 /// The identity a fixture stands Verify's answer in for. Deliberately NOT the word the
 /// unresolved fallback uses, so a test that passed by accident because the two agreed would
 /// stop passing.
