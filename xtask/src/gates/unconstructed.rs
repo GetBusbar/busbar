@@ -158,7 +158,8 @@ pub const KNOWN_UNSHIPPED: &[&str] = &[
     "voice-denied-destinations",
     "plane-plugin-open",
     "export-plugin-open",
-    "wal-corruption-verdict",
+    // `wal-corruption-verdict` STRUCK 2026-09-24 (owner ruling Q38): recover_and_truncate branches
+    // on the verdict and quarantines a Corrupt remainder before the cut.
     // `crash-recovery-open-holds` STRUCK 2026-09-24 (item 127): the boot path calls `recover_all`.
     "breaker-pool-observation",
     // `plugin-abi-keyed-units` STRUCK 2026-09-24 (owner ruling Q33d/Q35; item 123).

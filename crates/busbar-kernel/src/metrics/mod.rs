@@ -539,6 +539,13 @@ pub const HOOK_CONTENT_TRUNCATED_TOTAL: &str = "busbar_hook_content_truncated_to
 /// it streams verbatim; only the billing side-channel is capped.)
 pub const BILLING_TRUNCATED_TOTAL: &str = "busbar_billing_truncated_total"; // no labels
 
+/// Journal segments whose damaged remainder boot recovery set aside in a quarantine file: a record
+/// failed its checksum with whole, verifying records behind it, so acknowledged postings and holds
+/// are no longer on the book. Incremented once per quarantine, at boot. Unlabeled. Any non-zero
+/// value is an incident: the node's figures read lower than what it served (see "Journal corruption
+/// at boot" in docs/operations.md). A torn tail after a crash is NOT counted here.
+pub const JOURNAL_QUARANTINED_TOTAL: &str = "busbar_journal_quarantined_total"; // no labels
+
 // ── THE RECORDER INSTALL (relocated from busbar-core, verbatim) ──────────────────────────────────
 //
 // The process-global Prometheus recorder — the opt-in decision, the install itself, the retention

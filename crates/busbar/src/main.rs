@@ -938,6 +938,16 @@ fn compose_boot_book(
         Box::new(busbar_kernel_ledger::legacy::RecordingRows::clone(&rows)),
     )
     .map_err(|e| format!("the boot ledger's log could not be opened: {e}"))?;
+    // A corrupt journal segment was already logged and counted when the book was built; this puts
+    // the durable record of it on the chain. A failed append is logged, never a refusal to boot.
+    if let Err(lost) =
+        durability.journal_quarantines(token, busbar_contract::caps::StepName::Meter, now)
+    {
+        tracing::error!(
+            step = lost.step().as_str(),
+            "the journal could not record the quarantine boot recovery made"
+        );
+    }
     let migration = {
         let mut records =
             durability.migration_records(token, busbar_contract::caps::StepName::Meter);

@@ -170,6 +170,13 @@ pub struct Durability {
     /// confirmed), and each moves back when a later append succeeds — the log re-offers a retained
     /// batch ahead of the next one, so a later success is the confirmation.
     unconfirmed: Vec<(TotalsKey, WindowStart, i128)>,
+    /// WHAT BOOT RECOVERY SET ASIDE from a corrupt journal segment: each entry names the segment
+    /// file, the byte offset, the byte count and the quarantine file the damaged remainder went to.
+    /// Empty is the only good answer. The records in them are NOT on the book, so this node's
+    /// figures read lower than what it served. Logged at `ERROR` and counted on
+    /// `busbar_journal_quarantined_total` when the book is built; put on the chain as a
+    /// `ChainBreak` record by [`Durability::journal_quarantines`].
+    pub quarantined: Vec<busbar_kernel_wal::Quarantine>,
     /// WHERE A REPLAY READS THE DATED RATE-CARD HISTORY IT PRICES THE CHAIN'S COUNTS AGAINST (#71,
     /// #79). The chain carries no money: a posting is a unit's raw counts and the arrival instant
     /// they price at, so rebuilding the book is `Σ count × rate(card_at(arrived_ms))` through the
@@ -201,6 +208,22 @@ impl Durability {
     #[must_use]
     pub fn on_disk(&self) -> bool {
         matches!(self.journal.mode(), Mode::OnDisk)
+    }
+
+    /// Put a durable `ChainBreak` record on the journal for every segment remainder boot recovery
+    /// quarantined, naming the segment file, the byte offset, the byte count and the quarantine
+    /// file. `wall` is seconds since the Unix epoch. `Ok(None)` when nothing was set aside.
+    ///
+    /// # Errors
+    ///
+    /// The journal could not make the records durable.
+    pub fn journal_quarantines(
+        &mut self,
+        token: &Grant<DurableWrite>,
+        at: StepName,
+        wall: u64,
+    ) -> Result<Option<JournalAck>, DurabilityLost> {
+        self.journal.record_quarantines(token, at, wall)
     }
 
     /// Put a sealed audit record on the journal.
@@ -2503,8 +2526,28 @@ pub fn build_priced(
         voided_claims: Vec::new(),
         refused: Vec::new(),
         unconfirmed: Vec::new(),
+        quarantined: Vec::new(),
         history,
     };
+
+    // A CORRUPT JOURNAL DOES NOT STOP THE BOOT, AND IT IS NEVER SILENT. The log has already kept
+    // every record before the damage and copied the damaged remainder, byte for byte, into a
+    // quarantine file it synced before cutting the segment. What it cannot do is raise the alarm:
+    // that is here — a loud line naming the file, the offset, the byte count and the quarantine,
+    // and a counter an operator alerts on. The durable record is `journal_quarantines`, which the
+    // boot calls once it holds a durability token. A torn tail after a crash never appears here.
+    durability.quarantined = durability.journal.log().quarantined().to_vec();
+    for q in &durability.quarantined {
+        tracing::error!(
+            segment = ?q.segment_file,
+            offset = q.offset,
+            damage_at = q.damage_at,
+            bytes = q.bytes,
+            quarantine = ?q.kept,
+            "{q}"
+        );
+        metrics::counter!(busbar_kernel::metrics::JOURNAL_QUARANTINED_TOTAL).increment(1);
+    }
 
     // THE BOOK IS REBUILT FROM THE CHAIN, not opened empty (item 128). An empty book here was the
     // money view resetting to zero on every restart — and the reconciliation passing, because both

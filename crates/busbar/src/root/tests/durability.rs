@@ -1803,3 +1803,61 @@ fn an_idempotency_claim_with_no_hold_behind_it_is_voided_at_recovery() {
         third.voided_claims
     );
 }
+
+/// A JOURNAL SEGMENT CORRUPTED MID-LOG DOES NOT STOP THE BOOT, AND IS NOT SILENT: the book opens over
+/// the records before the damage, the damaged remainder is in a quarantine file beside the segment,
+/// the verdict names the file, the offset and the byte count, and a durable `ChainBreak` record of
+/// it goes on the chain.
+#[test]
+fn a_mid_log_corrupt_journal_boots_quarantines_and_records_it() {
+    use busbar_kernel_wal::{Entry, Journal, QuarantineKept, RecordClass, FRAME_BYTES};
+
+    let dir = ScratchDir::new("quarantine");
+    {
+        let mut journal =
+            Journal::in_directory(0, &dir.path, Box::new(NullShipper::new())).expect("opens");
+        for i in 0..4u8 {
+            journal
+                .append(
+                    &token(),
+                    StepName::Meter,
+                    &[Entry::new(RecordClass::Load, vec![i; 8]).at(1, 0)],
+                )
+                .expect("appends");
+        }
+    }
+    let segment = dir.path.join("0000000000000000.wal");
+    let mut bytes = std::fs::read(&segment).expect("the segment is there");
+    bytes[FRAME_BYTES + 200] ^= 0xFF;
+    std::fs::write(&segment, &bytes).expect("damaged");
+
+    let mut durability = build_for_node(
+        &DurabilityConfig {
+            data_dir: Some(dir.path.clone()),
+        },
+        0,
+        Box::new(NullShipper::new()),
+        rows(),
+    )
+    .expect("a corrupt journal does not stop the boot");
+
+    assert_eq!(durability.quarantined.len(), 1);
+    let q = durability.quarantined[0].clone();
+    assert_eq!(q.segment_file.as_deref(), Some(segment.as_path()));
+    assert_eq!(q.offset, FRAME_BYTES as u64);
+    assert_eq!(q.bytes, 3 * FRAME_BYTES as u64);
+    let QuarantineKept::File(file) = &q.kept else {
+        panic!("an on-disk journal quarantines to a file");
+    };
+    assert_eq!(
+        std::fs::read(file).expect("the quarantine file is there"),
+        bytes[FRAME_BYTES..4 * FRAME_BYTES].to_vec()
+    );
+
+    let ack = durability
+        .journal_quarantines(&token(), StepName::Meter, 1_758_700_000)
+        .expect("appends")
+        .expect("a quarantine is recorded");
+    assert_eq!(ack.sealed.len(), 1);
+    assert_eq!(ack.sealed[0].class, RecordClass::ChainBreak);
+}
