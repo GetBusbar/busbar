@@ -239,8 +239,9 @@ pub struct UnitCtx {
     pub origin: OriginKind,
     /// Its session, if it has one.
     pub session: Option<SessionId>,
-    /// The registry generation it pinned when it started, so it finishes against what it started
-    /// with even while a reload installs a replacement.
+    /// The registry generation it pinned when it started, so it would finish against what it
+    /// started with if a reload installed a replacement. None does today: the registry is built once
+    /// at boot and every unit pins `Generation::FIRST` (see `registry`'s "Generations").
     pub generation: Generation,
     /// Whether it arrived on the administrative listener.
     pub admin_listener: bool,

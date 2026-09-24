@@ -8,10 +8,16 @@
 //! it, calls it and consumes what it returns. This file is that list, plus two things that follow
 //! from it.
 //!
-//! **Generations.** Reloading configuration does not mutate the list a running unit is walking. A
-//! new generation is a new number; entries say which generations they are live for; a unit pins the
-//! generation it started at and keeps calling the same plugins all the way to its end, even while a
-//! replacement is being installed underneath it.
+//! **Generations.** The mechanism a plugin reload needs, built and proven but not yet driven. A new
+//! generation is a new number; entries say which generations they are live for; a unit pins the
+//! generation it started at and would keep calling the same plugins all the way to its end while a
+//! replacement was installed underneath it. Today NOTHING in production installs one: the node
+//! builds its registry once, at boot (`register` only), and the real configuration reload —
+//! `AppHandle::swap` — never touches a registry, so every unit pins [`Generation::FIRST`].
+//! [`Registry::replace`] and [`Registry::retire`] are exercised by the battery alone, and `entries`
+//! is push-only: a reload wired to `replace` would retain every replaced plugin for the process's
+//! life, with no compaction and no oldest-pinned-generation watermark to release it. Whoever wires a
+//! reload to this registry owes both.
 //!
 //! **Claims.** A claim says "these bytes are mine". The question is asked at boot, over every pair,
 //! and [`overlaps`] is deliberately CONSERVATIVE: where the shapes are not comparable it answers
@@ -136,10 +142,12 @@ impl Registry {
         Ok(self.generation)
     }
 
-    /// Swap a plugin for a new one, opening a new generation.
+    /// Swap a plugin for a new one, opening a new generation. No production caller (see the module
+    /// doc's "Generations").
     ///
     /// The old entry is not deleted: it stays reachable at every generation it was live for, so a
-    /// unit that started before the swap finishes against what it started with.
+    /// unit that started before the swap finishes against what it started with — and nothing ever
+    /// releases it.
     pub fn replace(&mut self, plugin: Arc<dyn Plugin>) -> Generation {
         let (key, kind) = (plugin.key(), plugin.kind());
         let next = self.generation.next();
@@ -159,7 +167,7 @@ impl Registry {
         next
     }
 
-    /// Retire a plugin as of the next generation.
+    /// Retire a plugin as of the next generation. No production caller, like [`Registry::replace`].
     pub fn retire(&mut self, kind: PluginKind, key: &str) -> Generation {
         let next = self.generation.next();
         for entry in &mut self.entries {

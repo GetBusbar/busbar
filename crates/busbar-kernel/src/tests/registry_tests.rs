@@ -124,3 +124,46 @@ fn the_boot_seal_and_the_contract_agree_on_every_transport_pair() {
         }
     }
 }
+
+/// THE GENERATION STORY SAYS WHAT DRIVES IT, AND NOTHING DOES (item 559).
+///
+/// The module doc and `UnitCtx.generation` presented generation pinning as the live reload-safety
+/// story ("even while a replacement is being installed underneath it"). Nothing in production
+/// installs one: the registry is built once at boot and the configuration reload never touches it.
+/// The prose may describe the mechanism; it may not state as a fact a reload that does not happen,
+/// and it must own the retention debt `replace` carries.
+#[test]
+fn the_generation_story_does_not_claim_a_reload_that_never_runs() {
+    let registry = include_str!("../registry.rs");
+    let teller = include_str!("../teller.rs");
+    for (file, src) in [("registry.rs", registry), ("teller.rs", teller)] {
+        let prose = src
+            .lines()
+            .map(str::trim_start)
+            .filter(|l| l.starts_with("//"))
+            .map(|l| l.trim_start_matches('/').trim_start_matches('!').trim())
+            .collect::<Vec<_>>()
+            .join(" ");
+        for live_claim in [
+            "Reloading configuration does not mutate the list a running unit is walking",
+            "keeps calling the same plugins all the way to its end, even while a replacement is being installed",
+            "with even while a reload installs a replacement",
+        ] {
+            assert!(
+                !prose.contains(live_claim),
+                "{file} states a live reload the tree never drives: {live_claim:?}"
+            );
+        }
+    }
+    assert!(
+        registry.contains("NOTHING in production installs one")
+            && registry.contains("push-only"),
+        "registry.rs must say the generation mechanism is undriven and its entries are never released"
+    );
+    // The behaviour the prose now describes: a registry nobody replaces stays at the first
+    // generation, which is what every production unit pins.
+    assert_eq!(
+        super::Registry::new().generation(),
+        super::Generation::FIRST
+    );
+}
