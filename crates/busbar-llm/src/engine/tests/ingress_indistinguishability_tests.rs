@@ -13,7 +13,7 @@ use std::sync::Arc;
 /// hand): a one-shot local upstream declares a Content-Length it never delivers and slams the
 /// connection, so the body stream yields a genuine incomplete-message transport error. Used
 /// wherever a test injects a transport cut into `FirstByteBody`'s inner stream.
-async fn hyper_transport_err() -> hyper::Error {
+pub(crate) async fn hyper_transport_err() -> hyper::Error {
     use futures::StreamExt;
     use http_body_util::BodyExt;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

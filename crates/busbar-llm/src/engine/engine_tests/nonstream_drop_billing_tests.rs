@@ -212,3 +212,53 @@ async fn a_billing_off_delivery_still_writes_its_metering_row_and_the_view_reads
         .spend_cents;
     assert_eq!(spend, 0, "billing off is the VIEW reading 0 (#42)");
 }
+
+/// Relay `prefix`, then the UPSTREAM's own transport fails; drive the body to its end. Returns the
+/// tokens the key ledgered and the report-back.
+async fn cut_by_the_upstream_after(prefix: String) -> (u64, TapReport) {
+    let err = crate::engine::ingress_indistinguishability_tests::hyper_transport_err().await;
+    let inner = futures::stream::iter(vec![
+        Ok::<Bytes, hyper::Error>(Bytes::from(prefix.clone())),
+        Err(err),
+    ]);
+    let (fbb, gov, cost, key_id, tap) = body_over(inner);
+    let served: Vec<_> = fbb.collect().await;
+    assert_eq!(
+        served[0].as_ref().expect("the prefix relays").as_ref(),
+        prefix.as_bytes(),
+        "the prefix relays verbatim"
+    );
+    assert!(served[1].is_err(), "the cut ends the body with an error");
+    let billed = ledgered_tokens(&gov, &cost, &key_id).await;
+    (billed, tap.get().expect("the cut reports its end").clone())
+}
+
+/// OWNER RULING Q31 (a failed upstream bills only the usage the upstream reported), oracle cell
+/// `route.failover|fo|primary-cut-body`: the upstream's transport dies mid-body, before its `usage`
+/// object. It reported nothing, so it bills 0 tokens, as 1.5.5 does — never the byte floor over the
+/// relayed prefix (which billed 36 output tokens, 720 cents, for a 145-byte envelope prefix of a
+/// 7-token answer).
+#[tokio::test]
+async fn a_nonstream_body_cut_by_the_upstream_before_its_usage_bills_nothing() {
+    let whole = message_with_usage(r#"{"input_tokens":1500,"output_tokens":90}"#);
+    let cut = whole
+        .find(r#""stop_reason""#)
+        .expect("the body names a stop reason");
+    let (billed, report) = cut_by_the_upstream_after(whole[..cut].to_string()).await;
+    assert_eq!(billed, 0, "no upstream-reported usage, no charge");
+    assert_eq!(report.finish, TapFinish::Partial);
+    assert_eq!(
+        report.usage, None,
+        "the report-back carries no usage either"
+    );
+}
+
+/// The CONTROL: the same cut AFTER the upstream's `usage` object arrived bills exactly what the
+/// upstream reported, 1500 + 90.
+#[tokio::test]
+async fn a_nonstream_body_cut_by_the_upstream_after_its_usage_bills_what_it_reported() {
+    let whole = message_with_usage(r#"{"input_tokens":1500,"output_tokens":90}"#);
+    let (billed, report) = cut_by_the_upstream_after(whole[..whole.len() - 1].to_string()).await;
+    assert_eq!(billed, 1590, "the upstream-reported usage is charged");
+    assert_eq!(report.finish, TapFinish::Partial);
+}
