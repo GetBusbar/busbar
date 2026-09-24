@@ -1043,7 +1043,15 @@ impl Store for DynStore {
     }
 
     fn add_metering(&self, delta: &MeteringDelta) -> StoreResult<()> {
-        match self.call_raw(StoreRequest::AddMetering(delta.clone()))? {
+        // THE MONEY PATH's second half on a published 1.5.x store: `priced_from_ms` is part of the
+        // accrual key and that store has no column for it, so it would merge a rate-card-split day
+        // back into one row. Carry the era in a column it keys on (see `legacy_usage`).
+        let delta = if legacy_usage::needs_legacy_metering_wire(self.abi_version) {
+            legacy_usage::metering_delta_to_legacy(delta)
+        } else {
+            delta.clone()
+        };
+        match self.call_raw(StoreRequest::AddMetering(delta))? {
             StoreResponse::Unit => Ok(()),
             other => Err(unexpected(other)),
         }
@@ -1051,6 +1059,13 @@ impl Store for DynStore {
 
     fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
         match self.call_raw(StoreRequest::ListMetering(bucket))? {
+            StoreResponse::Metering(m)
+                if legacy_usage::needs_legacy_metering_wire(self.abi_version) =>
+            {
+                Ok(m.into_iter()
+                    .map(legacy_usage::metering_row_from_legacy)
+                    .collect())
+            }
             StoreResponse::Metering(m) => Ok(m),
             other => Err(unexpected(other)),
         }

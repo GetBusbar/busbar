@@ -25,8 +25,8 @@
 //! warns once when that actually happens, so the loss is never silent.
 
 use busbar_api::{
-    ModelTokens, ModelTokensDelta, UsageDelta, UsageLedger, RESERVED_UNITS, UNIT_CACHE_READ,
-    UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
+    MeteringDelta, MeteringRow, ModelTokens, ModelTokensDelta, UsageDelta, UsageLedger,
+    RESERVED_UNITS, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
 };
 use serde::{Deserialize, Serialize};
 
@@ -226,3 +226,68 @@ pub(crate) fn ledger_from_legacy(legacy: LegacyUsageLedger) -> UsageLedger {
             .collect(),
     }
 }
+
+// ── The METERING row's price instant, on a store that has no column for it ──────────────────────
+//
+// `MeteringDelta::priced_from_ms` (DECISION #79) is part of the metering ACCRUAL KEY: a rate-card
+// edit inside a UTC day opens a SECOND cell for that day, and each half prices at the card it was
+// earned under. A store built against the 1.5.x contract has no such column. It decodes the delta
+// with the field silently ignored and upserts on the four columns it does know — `(bucket, key_id,
+// provider, model)` — so the two halves of the day COALESCE into one row, and that row reads back
+// with `priced_from_ms` defaulted to `0`. The read then prices the WHOLE day at the card in force at
+// midnight: the ledger recorded one cell where two happened. That is a LEDGER fault, and it is made
+// on this side of the seam, so it is repaired on this side of the seam.
+//
+// The repair keeps the era inside a column the older store DOES key on. A non-zero price instant
+// rides in the `provider` column as `<provider>|priced_from_ms=<ms>`, and is lifted back out on the
+// way in. `0` — the opening entry's own `effective_from`, i.e. every cell of a deployment that never
+// edited its card — is NOT encoded, so such a deployment's rows stay byte-identical to what 1.5.5
+// wrote. A provider name that itself contains the mark is always encoded (with its real instant, `0`
+// included), so decoding the last mark is never ambiguous.
+
+/// The FIRST store payload schema compiled against a `MeteringDelta`/`MeteringRow` that carries
+/// `priced_from_ms`. Below it the store keys a metering row on four columns, not five.
+pub(crate) const PRICED_FROM_ABI: u32 = 4;
+
+/// Does a store at this payload schema need the price instant carried inside a keyed column?
+pub(crate) fn needs_legacy_metering_wire(abi_version: u32) -> bool {
+    abi_version < PRICED_FROM_ABI
+}
+
+/// The separator between the provider name and the carried price instant.
+pub(crate) const ERA_MARK: &str = "|priced_from_ms=";
+
+/// Encode a metering delta for a store below [`PRICED_FROM_ABI`]: fold a non-zero price instant into
+/// the keyed `provider` column so two price eras of one day stay two rows.
+pub(crate) fn metering_delta_to_legacy(delta: &MeteringDelta) -> MeteringDelta {
+    let mut out = delta.clone();
+    if delta.priced_from_ms != 0 || delta.provider.contains(ERA_MARK) {
+        out.provider = format!("{}{ERA_MARK}{}", delta.provider, delta.priced_from_ms);
+    }
+    out
+}
+
+/// Decode a metering row a store below [`PRICED_FROM_ABI`] returned: lift the carried price instant
+/// back out of `provider`. A row with no mark is an opening-card row (or one 1.5.5 wrote) and reads
+/// back exactly as the store returned it.
+pub(crate) fn metering_row_from_legacy(mut row: MeteringRow) -> MeteringRow {
+    let split = row
+        .provider
+        .rsplit_once(ERA_MARK)
+        .and_then(|(provider, ms)| {
+            // Digits only: `u64::from_str` also takes a leading `+`, which the encoder never writes.
+            if !ms.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            ms.parse::<u64>().ok().map(|ms| (provider.to_string(), ms))
+        });
+    if let Some((provider, ms)) = split {
+        row.provider = provider;
+        row.priced_from_ms = ms;
+    }
+    row
+}
+
+#[cfg(test)]
+#[path = "tests/legacy_metering_tests.rs"]
+mod tests;
