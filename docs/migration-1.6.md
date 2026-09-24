@@ -205,7 +205,7 @@ wrong would silently disarm a provider that does need one.
 
 ---
 
-## 7. Rate cards became a dated history; `GET /admin/usage` did not move with them
+## 7. Rate cards became a dated history, and `GET /admin/usage` prices by it
 
 **What shipped.** A rate card is no longer a single mutable price. Cards are an append-only DATED
 HISTORY: each entry carries an `effective_from`, publishing one never touches the window before that
@@ -216,30 +216,36 @@ row. The engine is real and reachable: the history append is `crates/busbar/src/
 `crates/busbar/src/root/units_admin/mod.rs:679`, wired at
 `POST /api/v1/admin/ledger/amend-rate-history`.
 
-**`GET /admin/usage` still prices flat off the current card, exactly as 1.5.5 did.** The legacy
-endpoint stores raw token quantities and derives each row's spend AT READ TIME from the CURRENT cost
-model — `busbar_core_admin::v1::service::get_usage` calls `derive_spend_micros_row`, whose own doc
-comment still reads *"Recomputed on every read (reprice-on-read: a rate-card correction changes
-historical figures on the next read; tokens are the stored truth)"*. Two things follow, and both are
-1.5.5's behaviour carried forward unchanged:
+**`GET /admin/usage` prices each row at the card in force when it was earned.** The endpoint still
+stores raw token quantities and derives spend at read time, but it no longer derives it off the
+newest card. Each row resolves through the dated history at the instant it was earned, so publishing
+a card leaves every figure before its `effective_from` where it was, and a signed back-dated
+correction moves exactly the window it names. A card edit in the middle of a day splits that day
+at the edit rather than repricing all of it. If you relied on 1.5.5's behaviour — a
+`PUT /api/v1/admin/config/settings` rate-card edit repricing every past row on the next read — that
+no longer happens: past rows keep the price they were earned at.
 
-- A `PUT /api/v1/admin/config/settings` rate-card edit still re-prices every past row on the next
-  read, with no restart and no boundary. If you relied on `/usage` totals recalculating after a card
-  change, they still do.
-- `get_usage` takes a window and nothing else. It parses **no** `as_of` request parameter; the
-  `as_of` field in its response is an OUTPUT, always stamped with the read's own instant. A query
-  string naming one is ignored, as it was in 1.5.5.
+`GET /admin/usage` also accepts an optional `as_of` query parameter naming a snapshot of the dated
+history (an entry number). A read at the same snapshot answers the same figures every time, which is
+how an invoice is re-derived; a snapshot above the history's newest entry is refused, never answered
+at the newest. The `as_of` field in the response is unchanged: it is still the instant the read was
+taken.
 
-Resolving the `/usage` read path through the dated history — by each posting's own arrival instant,
-rather than off the newest card — is **owed work, not shipped behaviour**
-(`docs/design/BUSBAR-1.6.0.md` decision #79). Do not write a client that depends on `/usage` pricing
-by date until that lands. This is what the D-3 entry in
-[the changelog](../CHANGELOG.md#breaking) (`1.6.0 Changed: rate cards are now a dated history, not a
-single mutable price…`) and its **Migration** note describe.
+**Every plane has its own card and its own fees.** The top-level `rate_card:` and
+`per_request_fee:` price the LLM plane exactly as they did in 1.5.5. Any other plane can carry its
+own `rate_card:` and a `fees:` block (`per_request`, `per_session`) inside its own section; a plane
+with no card of its own prices its usage at zero and bills only the fees it configured, whatever
+another plane's card says. A card that is present and does not price a class the traffic hit refuses
+it rather than answering zero. `/usage` prices each row with the card and fees of the plane that
+served it, and every plane's card and fees are dated in the same history.
 
-**Native currencies.** A rate card prices in one or more currencies natively, with no pivot and no
-conversion. On the correction verb the currency is a field of the request BODY
-(`units_admin/mod.rs:757`), defaulting to the one a 1.5.5 deployment's figures are read as.
+**Cards survive a restart.** On a node with a data directory, every applied rate card is journalled
+and a restart rebuilds the dated history; a journal written before this upgrade starts its history
+at the boot card from instant zero. A node with no data directory keeps no journal: after a restart
+its history is the boot card from instant zero, as in 1.5.5.
+
+**No currencies.** Rate-card figures are abstract cost units with no currency and no conversion. A
+correction body that names a `currency` is refused.
 
 **New, additive ledger surface.** No 1.5.5 path, field or byte is touched — the committed
 `openapi.json` is unchanged, and the 1.6.0 reads are described at
@@ -257,9 +263,8 @@ line and the correction are both visible forever, and no booked line is rewritte
 
 **What to do if a rate was wrong.** Post a signed correction through
 `POST /api/v1/admin/ledger/amend-rate-history` naming the window it repairs, rather than editing the
-live card. The correction is an append, it leaves an attributed record, and it does not depend on
-the `/usage` read path. Editing the live card reprices the past silently and leaves no record of who
-changed what.
+live card. The correction is an append and it leaves an attributed record. Editing the live card
+prices only what happens after the edit; it cannot repair a window that is already past.
 
 ---
 
