@@ -206,6 +206,26 @@ pub const REPORT_ONLY: &[Posture] = &[
         }),
     },
     Posture {
+        name: "money-invariants",
+        why: "RED ON ONE NAMED ROW, AND IT IS THE TRUE FINDING. Item 9 pointed this gate at the \
+              record production actually journals — busbar-kernel-audit/src/record.rs — and \
+              `money-invariants:no-stored-price` went red on three stored priced figures there: \
+              `AuditRecord.amount`, `Amount.priced` and `HookApplied.priced_delta` (#77(3): price \
+              is never stored). DRAIN: Phase 2 money work takes the priced figures off the \
+              journalled audit record; the currency field in the SIGNED audit digest is item 34, \
+              owner-owed. Every OTHER row of this gate is scored like any gate's, so a \
+              plugin-keyed money field or a seal outside core reds `--all` and `--posture` alike, \
+              and once `:no-stored-price` goes green the name here is STALE and reds them too \
+              until it is struck from MONEY_INVARIANTS_STANDING_REDS. \
+              `posture_tests::the_money_invariants_posture_holds_on_the_tree` runs the real gate \
+              and holds this entry to what it says.",
+        excuse: Excused::OnlyRows(StandingReds {
+            rows: MONEY_INVARIANTS_STANDING_REDS,
+            list: "MONEY_INVARIANTS_STANDING_REDS",
+            mirror: None,
+        }),
+    },
+    Posture {
         name: "ship-ready",
         why: "THE SHIP CRITERION, and the integration line is not the ship SHA. Every one of its \
               rows is a claim about a tree that is ready to promote — the twin at zero, the \
@@ -327,6 +347,18 @@ pub const QA_NAMES_STANDING_REDS: &[&str] = &[
     //     allowlisted. `plane-no-money` is NOT a member of the construction standing-red list (a
     //     line here once said it was, and never was): the construction gate scores it like any
     //     other row, and a red there is a NEW RED under `--posture`.
+];
+
+/// THE MONEY-INVARIANTS GATE'S STANDING REDS, BY NAME. Same contract as
+/// [`QA_NAMES_STANDING_REDS`]: a red this list does not name is scored, and a name on this list that
+/// has gone green is STALE and is scored too.
+pub const MONEY_INVARIANTS_STANDING_REDS: &[&str] = &[
+    // Item 9 (2026-09-24): the gate now reads the journalled audit record and is red on three
+    // stored priced figures in crates/busbar-kernel-audit/src/record.rs — `AuditRecord.amount`,
+    // `Amount.priced`, `HookApplied.priced_delta`. Drained by Phase 2 (money); the currency field
+    // in the signed audit digest is item 34, owner-owed. Strike this line in the commit that
+    // turns the row green.
+    "money-invariants:no-stored-price",
 ];
 
 /// One entry of [`REPORT_ONLY`].
@@ -3673,9 +3705,13 @@ mod posture_tests {
             })
             .collect::<Vec<_>>()
             .join(" ");
-        let lists: [(&str, &[&str]); 2] = [
+        let lists: [(&str, &[&str]); 3] = [
             ("CONSTRUCTION_STANDING_REDS", CONSTRUCTION_STANDING_REDS),
             ("QA_NAMES_STANDING_REDS", QA_NAMES_STANDING_REDS),
+            (
+                "MONEY_INVARIANTS_STANDING_REDS",
+                MONEY_INVARIANTS_STANDING_REDS,
+            ),
         ];
         let mut offenders = Vec::new();
         // An id, backticked, followed by "is on this list" (said in a list's own doc block).
@@ -3757,6 +3793,37 @@ mod posture_tests {
                 v.problems
             );
         }
+    }
+
+    /// ITEM 9 (posture): the money-invariants posture holds on the tree — the exact check ci.yml's
+    /// blocking `cargo xtask gate money-invariants --posture` step makes — AND the gate is red, so
+    /// the standing row is a real red and not an excuse over a green gate.
+    #[test]
+    fn the_money_invariants_posture_holds_on_the_tree() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let reg = find("money-invariants").expect("money-invariants is registered");
+        let v = execute(&*(reg.build)(), &cx);
+        assert!(
+            excused_from_all("money-invariants", &cx, &v).is_some() || !v.red,
+            "money-invariants is red beyond MONEY_INVARIANTS_STANDING_REDS: {:?} {:?}",
+            v.rows
+                .iter()
+                .filter(|r| r.status != crate::ledger::Status::Pass)
+                .map(|r| format!("{} {}", r.id, r.detail))
+                .collect::<Vec<_>>(),
+            v.problems
+        );
+        let sr = StandingReds {
+            rows: MONEY_INVARIANTS_STANDING_REDS,
+            list: "MONEY_INVARIANTS_STANDING_REDS",
+            mirror: None,
+        };
+        assert!(
+            only_rows_unexplained(&sr, &v).is_empty(),
+            "MONEY_INVARIANTS_STANDING_REDS carries a row that is not red (stale) or misses one \
+             that is: {:?}",
+            only_rows_unexplained(&sr, &v)
+        );
     }
 
     #[test]

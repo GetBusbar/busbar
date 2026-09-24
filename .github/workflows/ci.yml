@@ -683,7 +683,7 @@ jobs:
       - name: Money-invariants self-test (the money-model scanner cannot be lied to)
         run: cargo xtask gate money-invariants --selftest
       - name: Money-invariants gate (BLOCKING — no plugin-keyed money, no stored price, one seal site)
-        run: cargo xtask gate money-invariants
+        run: cargo xtask gate money-invariants --posture
       # SEAL-WITNESS (#77): the money facts-line seal has exactly ONE root minter, spelled only inside
       # the kernel crate — a second minter anywhere else is a second book. This is the money-model
       # sibling of money-invariants above; it runs on every push for the same reason. Self-test FIRST,

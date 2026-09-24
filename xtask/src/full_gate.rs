@@ -111,7 +111,7 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask gate kernel-token-wire-purity --selftest",
     "cargo xtask gate kernel-token-wire-purity",
     "cargo xtask gate money-invariants --selftest",
-    "cargo xtask gate money-invariants",
+    "cargo xtask gate money-invariants --posture",
     "cargo xtask gate seal-witness --selftest",
     "cargo xtask gate seal-witness",
     "cargo xtask gate no-float-money --selftest",
