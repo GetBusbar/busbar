@@ -1892,6 +1892,11 @@ async fn tools_call(
     // The JSON-RPC id busbar puts on the OUTBOUND request is the round number, not the inbound
     // caller's id. An id chosen by the caller and echoed onto an upstream is a caller-controlled
     // value crossing a trust boundary for no reason.
+    //
+    // Minted through `jsonrpc::dispatch_request_id` rather than by widening `round` here, because
+    // the handshake's id is defined as the first value ABOVE this function's range — a disjointness
+    // the compiler checks at that definition, and which only holds while this is the one way a
+    // dispatch id is made. See the id-space block in `crate::mcp::client::jsonrpc`.
     let mut call_seam = |round: u32, satisfaction: Option<serde_json::Value>| {
         // Box::pin: erases the leg future's type so `drive` instantiates once across both call
         // sites, and keeps this request's future small; see the walk.rs precedent.
@@ -1900,7 +1905,7 @@ async fn tools_call(
             pool,
             scope,
             &arguments,
-            u64::from(round),
+            super::client::jsonrpc::dispatch_request_id(round),
             satisfaction,
         ));
         leg

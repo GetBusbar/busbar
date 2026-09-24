@@ -856,11 +856,15 @@ async fn dispatch(task: Arc<McpTask>, runner: Runner) {
         // sites, and keeps the runner's future small; see the walk.rs precedent.
         let leg: super::inputreq::ErasedRoundFut<'_> = Box::pin(async move {
             let mut leg_outcome = super::upstream::LegOutcome::Nothing;
+            // The dispatch id is the round number, minted through the ONE function that defines
+            // the dispatch id range — the handshake's id is the first value above it, and that
+            // disjointness is only a fact while this is the only way in. See the id-space block in
+            // `super::client::jsonrpc`.
             let result = super::upstream::call(
                 &runner.pool,
                 &runner.authorised,
                 arguments,
-                u64::from(round),
+                super::client::jsonrpc::dispatch_request_id(round),
                 satisfaction,
                 &mut leg_outcome,
             )
