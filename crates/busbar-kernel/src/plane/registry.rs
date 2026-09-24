@@ -328,7 +328,7 @@ pub fn install_planes(decls: &'static [&'static PlaneDecl]) {
     // structure that stands in for it here.
     #[cfg(any(test, feature = "test-support"))]
     assert!(
-        TEST_MEMO.lock().unwrap().is_none(),
+        TEST_MEMO.lock().unwrap().is_empty(),
         "install_planes called after the plane list was first read; register in main before any \
          config load or validation touches a plane"
     );
@@ -451,19 +451,23 @@ pub fn plane_decls() -> &'static [&'static PlaneDecl] {
 // the NEUTRAL seam [`busbar_kernel::plane::registry::register_test_plane`] — the storage lives on
 // the substrate so a plane crate names no `busbar_kernel::` implementation to register itself, exactly
 // as production's composition root `install_planes`. `plane_decls()` folds the registered set ahead of
-// the built-ins on every read, recomputing (and leaking once) only when the set GROWS — so a plane
-// registered by any test before it reads the list is visible regardless of test order, and the
-// `&'static` contract holds. Bounded: at most one leak per distinct plane (≤ the plane count).
-// Keyed on the PAIR `(installed_len, registered_len)`, not their sum: a set that GREW `installed` by
-// one while `register_test_plane`'s set SHRANK by one (the isolation guard's snapshot/restore) sums to
-// the same total but folds to a different list, and a lone sum would alias the two and hand back a
-// stale leak. The pair distinguishes them for the price of one extra `usize`.
-/// The memo entry: the `(installed_len, registered_len)` key the fold was last computed for, and the
-/// leaked slice it produced.
+// the built-ins on every read, recomputing (and leaking once) only for a registration set it has not
+// folded before — so a plane registered by any test before it reads the list is visible regardless of
+// test order, and the `&'static` contract holds.
+// Keyed on the IDENTITY of the set — the address of every `&'static PlaneDecl` in `installed` then the
+// registered set, in fold order — never on its size. A size key (a sum, or even the pair
+// `(installed_len, registered_len)`) aliases any two DISTINCT sets of equal length: a
+// `TestRegistryIsolation::seeded(&[&A])` followed by a `seeded(&[&B])` (or an isolation's restore to a
+// same-length snapshot) would hand back the fold of the OTHER set, and every reader resolves against a
+// plane list that is not the registered one (item 117). Every folded set is kept, so a suite that
+// alternates between isolations re-uses its fold instead of leaking again: at most one leak per
+// distinct registration set the process ever folds.
+/// The memo: every registration set folded so far (its decl addresses, in fold order) and the leaked
+/// slice it produced.
 #[cfg(any(test, feature = "test-support"))]
-type TestMemoEntry = ((usize, usize), &'static [&'static PlaneDecl]);
+type TestMemoEntry = (Vec<usize>, &'static [&'static PlaneDecl]);
 #[cfg(any(test, feature = "test-support"))]
-static TEST_MEMO: std::sync::Mutex<Option<TestMemoEntry>> = std::sync::Mutex::new(None);
+static TEST_MEMO: std::sync::Mutex<Vec<TestMemoEntry>> = std::sync::Mutex::new(Vec::new());
 
 // TEST-SUPPORT SEAM — register an extracted plane's declaration into the process registry. Re-exported
 // from the neutral substrate ([`busbar_kernel::plane::registry::register_test_plane`], which owns
@@ -474,21 +478,30 @@ static TEST_MEMO: std::sync::Mutex<Option<TestMemoEntry>> = std::sync::Mutex::ne
 pub fn plane_decls() -> &'static [&'static PlaneDecl] {
     let reg = busbar_kernel::plane::registry::test_registered_planes();
     let installed = INSTALLED.get().copied().unwrap_or(&[]);
-    let want = (installed.len(), reg.len());
-    let mut memo = TEST_MEMO.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((n, slice)) = *memo {
-        if n == want {
-            return slice;
-        }
-    }
     // Fold explicit `install_planes` registrations (registry's own tests) AND `register_test_plane`
-    // registrations ahead of the built-ins, then leak ONCE for this (grown) set.
+    // registrations ahead of the built-ins.
     let mut all: Vec<&'static PlaneDecl> = installed.to_vec();
     all.extend(reg.iter().copied());
+    let want = test_memo_key(&all);
+    let mut memo = TEST_MEMO.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, slice)) = memo.iter().find(|(k, _)| *k == want) {
+        return slice;
+    }
+    // A set not folded before: fold it and leak ONCE for it.
     let merged = merged_boot_plane_decls(&all, builtin_plane_decls());
     let leaked: &'static [&'static PlaneDecl] = Box::leak(merged.into_boxed_slice());
-    *memo = Some((want, leaked));
+    memo.push((want, leaked));
     leaked
+}
+
+/// The [`TEST_MEMO`] key for a registration set: each decl's ADDRESS, in fold order. Two sets share a
+/// key only when they are the same `&'static` decls in the same order — which is exactly when they
+/// fold to the same list — so no two distinct sets can alias, whatever their sizes.
+#[cfg(any(test, feature = "test-support"))]
+fn test_memo_key(set: &[&'static PlaneDecl]) -> Vec<usize> {
+    set.iter()
+        .map(|d| std::ptr::from_ref::<PlaneDecl>(*d) as usize)
+        .collect()
 }
 
 /// THE ABI PLANE-KEY (the registration INDEX) for a plane's stable decl `key`, or `u8::MAX` when no
@@ -1299,8 +1312,9 @@ pub fn register_test_plane(decl: &'static PlaneDecl) {
 /// rather than mutating the set mid-assertion. On drop it restores the snapshot and releases the lock —
 /// so the isolation is scoped to exactly the test that asked for it and the suite stays order-independent.
 ///
-/// `busbar-core`'s `plane_decls()` re-folds on every read and memoises by the registered-set COUNT, so
-/// clearing the set here makes that memo recompute against the built-ins alone with nothing else to do.
+/// `busbar-core`'s `plane_decls()` re-folds on every read and memoises by the registered set's IDENTITY
+/// (its decl addresses, not its count), so clearing or seeding the set here makes that memo resolve
+/// against exactly the set installed, with nothing else to do.
 #[cfg(any(test, feature = "test-support"))]
 #[must_use = "the registry stays isolated only while the guard is alive"]
 pub struct TestRegistryIsolation {
@@ -1390,4 +1404,63 @@ pub fn test_registered_planes() -> Vec<&'static PlaneDecl> {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone()
+}
+
+#[cfg(test)]
+mod registry_memo_tests {
+    // The test-surface plane-list memo (`TEST_MEMO`) must resolve against the registration set that is
+    // actually installed. It used to key on the set's SIZE, so two distinct sets of equal length aliased:
+    // whichever was folded first was handed back for the other (item 117 — 8 `units_llm` tests failed
+    // whenever the `plane_decision` tests ran first, even single-threaded).
+
+    use super::*;
+
+    static ONE: PlaneDecl =
+        crate::plane::neutral_sibling_decl("memo-one", "memo-one-section", "one");
+    static TWO: PlaneDecl =
+        crate::plane::neutral_sibling_decl("memo-two", "memo-two-section", "two");
+
+    fn keys() -> Vec<&'static str> {
+        plane_decls().iter().map(|d| d.key).collect()
+    }
+
+    #[test]
+    fn two_distinct_registration_sets_of_equal_size_do_not_alias() {
+        {
+            let _reg = TestRegistryIsolation::seeded(&[&ONE]);
+            let k = keys();
+            assert!(k.contains(&"memo-one"), "set {{ONE}} folds ONE: {k:?}");
+            assert!(
+                !k.contains(&"memo-two"),
+                "set {{ONE}} does not fold TWO: {k:?}"
+            );
+        }
+        {
+            // Same size as the set before it, different plane: must NOT be served the {ONE} fold.
+            let _reg = TestRegistryIsolation::seeded(&[&TWO]);
+            let k = keys();
+            assert!(
+                k.contains(&"memo-two"),
+                "set {{TWO}} folds TWO, not the equal-size {{ONE}} fold: {k:?}"
+            );
+            assert!(
+                !k.contains(&"memo-one"),
+                "set {{TWO}} does not fold ONE: {k:?}"
+            );
+        }
+        {
+            // Back to the first set: the fold follows the set again, whichever was read last.
+            let _reg = TestRegistryIsolation::seeded(&[&ONE]);
+            let k = keys();
+            assert!(k.contains(&"memo-one") && !k.contains(&"memo-two"), "{k:?}");
+        }
+    }
+
+    #[test]
+    fn a_re_read_of_one_set_returns_the_one_leaked_fold() {
+        let _reg = TestRegistryIsolation::seeded(&[&ONE, &TWO]);
+        let a = plane_decls();
+        let b = plane_decls();
+        assert!(std::ptr::eq(a, b), "one set folds and leaks once");
+    }
 }
