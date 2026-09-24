@@ -378,16 +378,26 @@ fn line_of(text: &str, table: &str, needle: &str) -> usize {
     // hook, …)", three lines above the `kinds = ["plane", …]` it describes; a reader sent to the
     // prose is a reader sent to the wrong line, and the self-test plants beside the value it is
     // given, so a citation landing on prose is a plant that cannot be made.
+    //
+    // AND NEVER A QUOTED SPELLING INSIDE A `#` COMMENT, WHILE A VALUE LINE CARRIES IT. The
+    // `[gate] scan_roots` history paragraph in `qa/construction.toml` reads "It read
+    // `["crates/*/src"]`" above the live `scan_roots = ["crates/*/src", …]`: quoted, so the
+    // quoted-first pass cited the COMMENT, and the glob plant went into prose no parser reads —
+    // `glob-matches-something` came back GREEN on a planted dead glob (item 88). A comment line is
+    // tried only when no value line carries the name at all.
     let quoted =
         |l: &str| l.contains(&format!("\"{needle}\"")) || l.contains(&format!("'{needle}'"));
-    for pass in [0u8, 1] {
-        let hit = lines.iter().enumerate().skip(from).find(|(_, l)| {
-            if pass == 0 {
-                quoted(l)
-            } else {
-                l.contains(needle)
-            }
-        });
+    let comment = |l: &str| l.trim_start().starts_with('#');
+    for pass in [0u8, 1, 2] {
+        let hit = lines
+            .iter()
+            .enumerate()
+            .skip(from)
+            .find(|(_, l)| match pass {
+                0 => quoted(l) && !comment(l),
+                1 => quoted(l),
+                _ => l.contains(needle),
+            });
         if let Some((i, _)) = hit {
             return i + 1;
         }
@@ -1930,6 +1940,19 @@ mod tests {
         let d = parse_decl(&format!("{DECL} n")).expect("parses");
         assert!(d.file.is_empty() && d.reason.is_empty());
         assert!(parse_decl("# something else").is_none());
+    }
+
+    /// ITEM 88: a quoted spelling in a `#` comment above the value is prose. The citation (and so the
+    /// glob plant, which goes beside the cited line) must land on the value line, or the plant is
+    /// written into a comment and `glob-matches-something` scores a planted dead glob GREEN.
+    #[test]
+    fn a_citation_skips_a_quoted_spelling_in_a_comment() {
+        let text = "[gate]\n# It read `[\"crates/*/src\"]` and that is not the tree.\n\
+                    scan_roots = [\"crates/*/src\", \"crates/*/tests\"]\n";
+        assert_eq!(line_of(text, "gate", "crates/*/src"), 3);
+        // Only prose carries it: the comment is still the best citation there is.
+        let prose = "[gate]\n# It read `[\"crates/*/src\"]`.\nscan_roots = []\n";
+        assert_eq!(line_of(prose, "gate", "crates/*/src"), 2);
     }
 
     #[test]

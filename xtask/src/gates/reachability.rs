@@ -1673,7 +1673,7 @@ impl Gate for ReachabilityGate {
             cx,
             FIX_GREEN,
             "a fully wired roster is green",
-            Overlay::new(),
+            evidenced(Overlay::new()),
         ));
 
         // GREEN CONTROL 2 — THE DECLARED/UNDECLARED LINE, BOTH WAYS, ON ONE PLANT. The same edit
@@ -1685,12 +1685,44 @@ impl Gate for ReachabilityGate {
             cx,
             FIX_GREEN,
             "a dormant unit path WITH a declaration is a tracked row, not a red",
+            evidenced(dormant_declared_a2a()),
+        ));
+
+        // ── THE EVIDENCE ROW, RED THREE WAYS ──────────────────────────────────────────────────
+        //
+        // Each is the green control above with ONE thing about the evidence document changed, so
+        // the transition is the plant's: the document gone, the document silent about the module
+        // this run cites, and the document writing up a module the tree no longer has.
+        report.push(red_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "the evidence document the failure details cite, missing, reds the evidence row",
+            &[ROW_EVIDENCE.to_string()],
+            dormant_declared_a2a(),
+            "A citation to a document that is not there",
+        ));
+        report.push(red_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "an evidence document silent about a module this run cites reds the evidence row",
+            &[ROW_EVIDENCE.to_string()],
             {
-                let mut ov = Overlay::new();
-                ov.set("crates/busbar/src/root/units_a2a.rs", FIXTURE_DORMANT_A2A);
-                ov.set(DECLARATIONS, FIXTURE_DECLARED_A2A);
+                let mut ov = dormant_declared_a2a();
+                ov.set(EVIDENCE, FIXTURE_EVIDENCE_SILENT);
                 ov
             },
+            "which does not write it up",
+        ));
+        report.push(red_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "an evidence document writing up a module the tree has lost reds the evidence row",
+            &[ROW_EVIDENCE.to_string()],
+            evidenced_with(Overlay::new(), FIXTURE_EVIDENCE_LOST),
+            "which is not in the tree",
         ));
         // THE EXPIRY, WHICH IS THE HALF THAT STOPS THE LIST ONLY EVER GROWING. The same declaration
         // as the case above, over the UNPLANTED green fixture — where a2a's unit path is reached —
@@ -1726,6 +1758,48 @@ impl Gate for ReachabilityGate {
 
         report
     }
+}
+
+/// THE GREEN FIXTURE'S EVIDENCE DOCUMENT, planted rather than committed under `xtask/fixtures/`.
+///
+/// ITEM 88. `7e27cdc11` made the gate READ [`EVIDENCE`] instead of merely naming it, and the green
+/// fixture was never given one: both green controls then went RED on `reachability:evidence` alone
+/// ("No such file or directory"), so the fixture that proves the gate CAN be satisfied proved the
+/// opposite. The document writes up the one module the dormant-a2a control makes the run cite, and
+/// that module is on the fixture tree, so it holds forward and backward over both controls.
+const FIXTURE_EVIDENCE: &str = "# Reachability evidence (self-test fixture)\n\n\
+## `crates/busbar/src/root/units_a2a.rs`\n\n\
+`A2aUnits` is constructed by nothing `fn main()` reaches while the serving path is untouched.\n";
+
+/// The same document with no module written up at all: every module the run cites is owed and
+/// absent.
+const FIXTURE_EVIDENCE_SILENT: &str = "# Reachability evidence (self-test fixture)\n\n\
+Nothing is written up here.\n";
+
+/// The fixture document plus a section for a module the fixture tree does not have.
+const FIXTURE_EVIDENCE_LOST: &str = "# Reachability evidence (self-test fixture)\n\n\
+## `crates/busbar/src/root/units_a2a.rs`\n\n\
+`A2aUnits` is constructed by nothing `fn main()` reaches.\n\n\
+## `crates/busbar/src/root/units_folded_away.rs`\n\n\
+Folded in the commit that switched it on; this section should have gone with it.\n";
+
+/// `plant`, over a green fixture that carries its evidence document.
+fn evidenced(plant: Overlay) -> Overlay {
+    evidenced_with(plant, FIXTURE_EVIDENCE)
+}
+
+fn evidenced_with(mut plant: Overlay, doc: &str) -> Overlay {
+    plant.set(EVIDENCE, doc);
+    plant
+}
+
+/// a2a's unit path made dormant, AND declared: a tree the gate is satisfied by once the evidence
+/// document writes the module up.
+fn dormant_declared_a2a() -> Overlay {
+    let mut ov = Overlay::new();
+    ov.set("crates/busbar/src/root/units_a2a.rs", FIXTURE_DORMANT_A2A);
+    ov.set(DECLARATIONS, FIXTURE_DECLARED_A2A);
+    ov
 }
 
 /// The a2a module of the GREEN fixture with its one reached caller removed — the exact shape
@@ -1982,5 +2056,18 @@ mod tests {
         assert_eq!(mod_statement("mod tests;").as_deref(), Some("tests"));
         assert_eq!(mod_statement("root::money_book::build();"), None);
         assert_eq!(mod_statement("mod inline {"), None);
+    }
+
+    /// ITEM 88: THE SELF-TEST SCORES EVERY PLANTED CASE AS EXPECTED. Both green controls went RED on
+    /// `reachability:evidence` alone because the green fixture carried no evidence document, and
+    /// the evidence row had no RED case at all; either is a selftest that cannot pass, and a
+    /// selftest that cannot pass proves no rule in this gate.
+    #[test]
+    fn the_selftest_proves_every_owed_row() {
+        let cx = Ctx::workspace().expect("workspace context");
+        let report = ReachabilityGate.selftest(&cx);
+        crate::gates::verify_report(&ReachabilityGate, &report)
+            .unwrap_or_else(|errs| panic!("reachability selftest: {errs:#?}"));
+        assert_eq!(report.skipped(), 0, "a case had nothing to plant");
     }
 }
