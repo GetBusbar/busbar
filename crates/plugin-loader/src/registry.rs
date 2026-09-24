@@ -23,10 +23,8 @@
 //! canonical name and its alias. Identity comes exclusively from the signed manifest - the tarball
 //! filename is irrelevant.
 
+use crate::sign::{evaluate, validate_structure, Manifest, TrustPolicy, Verdict, HOST_IDENTITY};
 use crate::tarball;
-use crate::sign::{
-    evaluate, validate_structure, Manifest, TrustPolicy, Verdict, HOST_IDENTITY,
-};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
