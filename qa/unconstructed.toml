@@ -202,7 +202,7 @@ switch    = "STRIKE THIS ROW in the commit that gives the composition root a cal
 # LEDGER — the writer that would push a sealed checkpoint onto the node has no caller.
 [[capability]]
 id        = "ledger-checkpoint-journal"
-built     = "crates/busbar/src/root/durability.rs"
+built     = "crates/busbar/src/root/durability/mod.rs"
 symbol    = "journal_checkpoint"
 construct = [".journal_checkpoint("]
 scope     = ["crates"]

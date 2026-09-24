@@ -11,7 +11,7 @@
 //! 1. **The production audit chain is UNSIGNED.** `AuditChain::signing_with`
 //!    (`crates/busbar-kernel-audit/src/record.rs`) is a complete, green, well-tested signing
 //!    implementation with **zero non-test callers**. The one production construction site,
-//!    `crates/busbar/src/root/durability.rs` → `record: AuditChain::new()`, passes no signer and no
+//!    `crates/busbar/src/root/durability/mod.rs` → `record: AuditChain::new()`, passes no signer and no
 //!    config supplies a key. Every deployed node therefore seals a chain whose tamper-evidence is
 //!    unsigned, while sixteen `sign_tests.rs` cases prove the signing works.
 //! 2. **`#79`'s dated-history derivation has no production feed.** `booked_lines()` returns
@@ -29,7 +29,7 @@
 //!
 //! [`crate::gates::reachability`] answers a NEIGHBOURING question and is not a substitute. It asks
 //! *is this MODULE reached from `fn main()`, and does this plane have a unit path the root
-//! constructs?* `crates/busbar/src/root/durability.rs` passes every one of its rows: the module is
+//! constructs?* `crates/busbar/src/root/durability/mod.rs` passes every one of its rows: the module is
 //! reached, `build_for_node` is called, a chain IS constructed. The capability that never runs is
 //! **one builder call inside a function that does run** — a level of granularity module reachability
 //! cannot express. The two gates compose: `reachability` says the code is reached, this gate says
@@ -773,7 +773,7 @@ impl Gate for UnconstructedGate {
         // repository's composition root, and a fixture would prove the predicate without proving it
         // is about anything. Every plant below edits one real file IN AN OVERLAY, which lives in
         // this process and writes no byte to disk.
-        const DURABILITY: &str = "crates/busbar/src/root/durability.rs";
+        const DURABILITY: &str = "crates/busbar/src/root/durability/mod.rs";
         const SETTLE: &str = "crates/busbar-kernel-ledger/src/settle.rs";
         const REAL_SITE: &str = "ledger: Ledger::dual_writing(legacy_rows),";
 
