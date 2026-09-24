@@ -1874,9 +1874,11 @@ pub fn resolve_data_plane_identity(
             principal,
             resolved,
         } => {
-            let bindings = app.role_bindings.get(&module);
-            let gov_key = resolved
-                .or_else(|| crate::governance::synthesize_principal_key(&principal, bindings));
+            // Synthesized through `synthesize_bound_key` so the key records its admission (module +
+            // roles): a long-lived response's `Standing` then re-checks it against the LIVE bindings.
+            let gov_key = resolved.or_else(|| {
+                crate::governance::synthesize_bound_key(&module, &principal, &app.role_bindings)
+            });
             let Some(key) = gov_key else {
                 return Err(IdentityRefusal::NoGrant);
             };

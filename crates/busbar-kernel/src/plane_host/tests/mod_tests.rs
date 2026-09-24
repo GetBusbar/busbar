@@ -696,3 +696,52 @@ fn a_committed_invoke_rewrite_installs_any_json_object_verbatim() {
          commit replaced the arguments wholesale rather than patching the one named field."
     );
 }
+
+/// THE HOST RE-ASK READS THE BINDINGS IN FORCE NOW. `role_bindings` is per-snapshot (rebuilt from
+/// the applied config on every apply), so a host that re-checked against the snapshot it was minted
+/// on would keep a role-bound subscription alive after its binding was removed. Stands before the
+/// swap (the binding is there), lapses after it (the binding is gone).
+///
+/// RED at HEAD: the re-ask re-resolved the synthesized key by id against the registry, so the FIRST
+/// ask already lapsed — the "stands" half fails.
+#[test]
+fn a_role_bound_standing_is_rechecked_against_the_live_snapshot_bindings() {
+    use crate::trust::validate::{Lapsed, Refusal, Snapshot, Standing};
+    let mut roles = std::collections::BTreeMap::new();
+    roles.insert("eng".to_string(), crate::config::RoleBindingCfg::default());
+    let mut rb = crate::config::RoleBindings::new();
+    rb.insert("idp".to_string(), roles);
+    let principal = crate::auth::Principal {
+        id: "alice@example.com".to_string(),
+        name: None,
+        roles: vec!["eng".to_string()],
+        ttl_secs: None,
+    };
+    let key = crate::governance::synthesize_bound_key("idp", &principal, &rb).expect("bound");
+    let handle = Arc::new(crate::state::AppHandle::new(
+        crate::test_support::TestApp::new()
+            .role_bindings(rb)
+            .build(),
+    ));
+    let host = EngineHostImpl::from_handle(Arc::clone(&handle));
+    let standing = Standing::opened(
+        Some(&key),
+        Snapshot::Watching,
+        std::time::Duration::from_secs(300),
+    );
+
+    let now = host
+        .principal_standing(&standing, 1, 1_700_000_000)
+        .expect("the binding stands")
+        .expect("governed");
+    assert_eq!(now.id, "alice@example.com");
+
+    // A config apply that removes the binding swaps in a snapshot without it.
+    handle.swap(crate::test_support::TestApp::new().build());
+    assert_eq!(
+        host.principal_standing(&standing, 1, 1_700_000_000),
+        Err(Lapsed::Identity(Refusal::IdentityNotLive {
+            principal: "alice@example.com".to_string()
+        }))
+    );
+}

@@ -998,13 +998,19 @@ impl busbar_kernel::plane_host::IdentityHost for EngineHostImpl {
         live_gen: u64,
         now: u64,
     ) -> Result<Option<Arc<busbar_api::VirtualKey>>, busbar_kernel::trust::validate::Lapsed> {
-        // Inject the host's live `GovState` through the `GovResolve` seam so the plane holds only the
-        // `Standing`. Byte-identical to the pre-relocation `Standing::still_permitted(app.governance, …)`.
+        // Inject the host's live `GovState` AND the live `role_bindings` through the `GovResolve` seam
+        // so the plane holds only the `Standing`. The bindings are per-snapshot (rebuilt on every
+        // config apply), so they are read off the CURRENT snapshot when the host retains the live
+        // handle: a role-bound principal is re-checked against the bindings in force now, never the
+        // ones it was admitted under. A registry key re-resolves exactly as before.
+        let live = self.handle.as_ref().map(|h| h.load());
+        let app = live.as_ref().unwrap_or(&self.app);
+        let resolve = crate::governance::LiveResolve {
+            governance: app.governance.as_deref(),
+            role_bindings: &app.role_bindings,
+        };
         standing.still_permitted(
-            self.app
-                .governance
-                .as_deref()
-                .map(|g| g as &dyn busbar_kernel::trust::validate::GovResolve),
+            Some(&resolve as &dyn busbar_kernel::trust::validate::GovResolve),
             live_gen,
             now,
         )

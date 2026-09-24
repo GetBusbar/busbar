@@ -5497,3 +5497,160 @@ fn budget_caps_include_each_planes_fees() {
         "48 is past 10"
     );
 }
+
+// ── ROLE-BOUND SUBSCRIPTIONS: a `Standing` re-checks a synthesized key through the LIVE bindings ──
+//
+// A key synthesized from `role_bindings` is never in the registry, so re-resolving it by id (the
+// registry path) answered `identity_not_live` on the first frame of every role-bound subscription.
+// The owner ruling (2026-09-24): the re-check re-runs the synthesis against the live bindings.
+
+fn bound_table(binding: crate::config::RoleBindingCfg) -> crate::config::RoleBindings {
+    let mut roles = std::collections::BTreeMap::new();
+    roles.insert("eng".to_string(), binding);
+    let mut rb = crate::config::RoleBindings::new();
+    rb.insert("idp".to_string(), roles);
+    rb
+}
+
+fn bound_principal() -> crate::auth::Principal {
+    crate::auth::Principal {
+        id: "alice@example.com".to_string(),
+        name: Some("Alice".to_string()),
+        roles: vec!["eng".to_string()],
+        ttl_secs: None,
+    }
+}
+
+/// A synthesized key records HOW it was admitted, and only the key it was minted for reads back as
+/// bound: a registry row (a `binding:` marker) never does.
+#[test]
+fn a_bound_key_records_its_admission_and_a_registry_key_does_not() {
+    let rb = bound_table(crate::config::RoleBindingCfg::default());
+    let key =
+        synthesize_bound_key("idp", &bound_principal(), &rb).expect("a bound role synthesizes");
+    assert!(key.generation_hash.starts_with(PRINCIPAL_MARKER_PREFIX));
+    let (module, p) = bound_admission(&key).expect("the admission reads back");
+    assert_eq!(module, "idp");
+    assert_eq!(p.id, "alice@example.com");
+    assert_eq!(p.roles, vec!["eng".to_string()]);
+
+    let registry = VirtualKey {
+        id: "vk_0123456789abcdef".to_string(),
+        generation_hash: binding_marker("vk_0123456789abcdef", "g1"),
+        ..Default::default()
+    };
+    assert!(bound_admission(&registry).is_none());
+    // A marker naming another id is not trusted to re-route the re-check.
+    let mut forged = (*key).clone();
+    forged.id = "someone-else".to_string();
+    assert!(bound_admission(&forged).is_none());
+}
+
+/// THE FIX, UNIT-LEVEL: a role-bound principal's standing STANDS while its binding does, hands back
+/// the principal AS IT IS NOW when the binding changes (pool / group), and LAPSES with
+/// `Lapsed::Identity` the moment the binding is removed — or narrowed to no pools.
+///
+/// RED at HEAD: the standing re-resolved by id against the registry, where a synthesized key never
+/// is, so the very first ask answered `identity_not_live`.
+#[test]
+fn a_role_bound_standing_follows_the_live_bindings_and_lapses_when_the_binding_goes() {
+    use crate::trust::validate::{GovResolve, Lapsed, Refusal, Snapshot, Standing};
+    let mut rb = bound_table(crate::config::RoleBindingCfg::default());
+    let key = synthesize_bound_key("idp", &bound_principal(), &rb).expect("bound");
+    let standing = Standing::opened(
+        Some(&key),
+        Snapshot::Watching,
+        std::time::Duration::from_secs(300),
+    );
+    let ask = |rb: &crate::config::RoleBindings| {
+        let live = LiveResolve {
+            governance: None,
+            role_bindings: rb,
+        };
+        standing.still_permitted(Some(&live as &dyn GovResolve), 1, 1_700_000_000)
+    };
+
+    // The binding stands: the principal is served, as bound (all pools, no group).
+    let now = ask(&rb)
+        .expect("a bound principal stands")
+        .expect("governed");
+    assert_eq!(now.id, "alice@example.com");
+    assert_eq!(now.allowed_scopes, None);
+    assert_eq!(now.group, None);
+
+    // The binding CHANGES (a narrower pool, a group): the principal comes back as it is now.
+    rb = bound_table(crate::config::RoleBindingCfg {
+        allowed_pools: Some(vec!["p2".to_string()]),
+        group: Some("finance".to_string()),
+        ..Default::default()
+    });
+    let now = ask(&rb).expect("still bound").expect("governed");
+    assert_eq!(
+        now.allowed_scopes,
+        Some(vec![busbar_api::ScopeRef::pool("p2")])
+    );
+    assert_eq!(now.group.as_deref(), Some("finance"));
+
+    // Narrowed to NO pools: nothing grants it any more — the stream ends.
+    let lapsed = Err(Lapsed::Identity(Refusal::IdentityNotLive {
+        principal: "alice@example.com".to_string(),
+    }));
+    rb = bound_table(crate::config::RoleBindingCfg {
+        allowed_pools: Some(vec![]),
+        ..Default::default()
+    });
+    assert_eq!(ask(&rb), lapsed);
+
+    // The binding REMOVED mid-stream: the next ask ends it.
+    rb = crate::config::RoleBindings::new();
+    assert_eq!(ask(&rb), lapsed);
+}
+
+/// THE CONTROL: a REGISTRY key through the same live resolver behaves exactly as before — it stands
+/// while its row is live, is never re-derived from bindings (even ones that would grant its id), and
+/// lapses the moment the row is disabled.
+#[test]
+fn a_registry_key_standing_is_unchanged_by_the_bindings_resolver() {
+    use crate::trust::validate::{GovResolve, Lapsed, Refusal, Snapshot, Standing};
+    let gov = GovState::new(Arc::new(MemoryStore::new()), None).expect("registry");
+    let (key, _secret) = gov
+        .create_key(
+            NewKeySpec {
+                name: "streamer".to_string(),
+                ..Default::default()
+            },
+            1_700_000_000,
+        )
+        .expect("mint");
+    let rb = bound_table(crate::config::RoleBindingCfg::default());
+    let standing = Standing::opened(
+        Some(&key),
+        Snapshot::Watching,
+        std::time::Duration::from_secs(300),
+    );
+    let ask = || {
+        let live = LiveResolve {
+            governance: Some(&gov),
+            role_bindings: &rb,
+        };
+        standing.still_permitted(Some(&live as &dyn GovResolve), 1, 1_700_000_000)
+    };
+    let now = ask()
+        .expect("a live registry key stands")
+        .expect("governed");
+    assert_eq!(now.id, key.id);
+    assert_eq!(
+        now.generation_hash, key.generation_hash,
+        "the registry row, not a synthesis"
+    );
+
+    gov.update_key(&key.id, Some(false), None)
+        .expect("the admin PATCH")
+        .expect("the key exists");
+    assert_eq!(
+        ask(),
+        Err(Lapsed::Identity(Refusal::IdentityNotLive {
+            principal: key.id.clone()
+        }))
+    );
+}

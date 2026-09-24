@@ -740,6 +740,87 @@ pub fn synthesize_principal_key(
     principal: &crate::auth::Principal,
     bindings: Option<&std::collections::BTreeMap<String, crate::config::RoleBindingCfg>>,
 ) -> Option<Arc<VirtualKey>> {
+    synthesize_key(principal, bindings).map(Arc::new)
+}
+
+/// The `generation_hash` prefix of a key SYNTHESIZED from `role_bindings` (never a registry row:
+/// every registry key carries [`BINDING_MARKER_PREFIX`]). Like that marker it authenticates nothing;
+/// it records HOW the key was admitted, so a long-lived response can re-check it the same way.
+pub const PRINCIPAL_MARKER_PREFIX: &str = "principal:";
+
+/// THE DATA-PLANE RE-KEY THROUGH A MODULE'S BINDINGS: [`synthesize_principal_key`] over
+/// `role_bindings.<module>`, with the key's marker recording the admission — the identifying
+/// `module` and the principal's `roles` — so [`bound_admission`] can read it back and a
+/// `Standing` opened on this key re-checks it against the LIVE bindings rather than the registry
+/// (which a synthesized key is never in). Same grant, same fail-closed `None`, as the bare synthesis.
+pub fn synthesize_bound_key(
+    module: &str,
+    principal: &crate::auth::Principal,
+    role_bindings: &crate::config::RoleBindings,
+) -> Option<Arc<VirtualKey>> {
+    let mut key = synthesize_key(principal, role_bindings.get(module))?;
+    key.generation_hash = format!(
+        "{PRINCIPAL_MARKER_PREFIX}{}",
+        serde_json::json!({ "id": principal.id, "module": module, "roles": principal.roles })
+    );
+    Some(Arc::new(key))
+}
+
+/// HOW A BOUND KEY WAS ADMITTED, read back off a key [`synthesize_bound_key`] minted: the
+/// identifying module and the principal as the verdict asserted it (id, the key's display name, its
+/// roles). `None` for every other key — a registry row, or a marker whose recorded id is not the
+/// key's own (a stamp this function did not write is not trusted to re-route the re-check).
+pub fn bound_admission(key: &VirtualKey) -> Option<(String, crate::auth::Principal)> {
+    #[derive(serde::Deserialize)]
+    struct Marker {
+        id: String,
+        module: String,
+        roles: Vec<String>,
+    }
+    let json = key.generation_hash.strip_prefix(PRINCIPAL_MARKER_PREFIX)?;
+    let m: Marker = serde_json::from_str(json).ok()?;
+    if m.id != key.id {
+        return None;
+    }
+    Some((
+        m.module,
+        crate::auth::Principal {
+            id: m.id,
+            name: Some(key.name.clone()),
+            roles: m.roles,
+            ttl_secs: None,
+        },
+    ))
+}
+
+/// The LIVE re-resolution a `Standing` needs on the host: the governance registry for a registry
+/// key, and the CURRENT `role_bindings` for a bound one. Built per re-ask from the live snapshot,
+/// so a binding removed or narrowed by a config apply is what the next frame is judged against.
+pub struct LiveResolve<'a> {
+    /// The live registry; `None` where governance is disabled (a registry key then lapses).
+    pub governance: Option<&'a GovState>,
+    /// The live `auth.role_bindings` table.
+    pub role_bindings: &'a crate::config::RoleBindings,
+}
+
+impl crate::trust::validate::GovResolve for LiveResolve<'_> {
+    fn resolve_by_sub(&self, sub: &str) -> Option<Arc<VirtualKey>> {
+        self.governance.and_then(|g| g.lookup_by_sub(sub))
+    }
+
+    fn resolve_bound(
+        &self,
+        module: &str,
+        principal: &crate::auth::Principal,
+    ) -> Option<Arc<VirtualKey>> {
+        synthesize_bound_key(module, principal, self.role_bindings)
+    }
+}
+
+fn synthesize_key(
+    principal: &crate::auth::Principal,
+    bindings: Option<&std::collections::BTreeMap<String, crate::config::RoleBindingCfg>>,
+) -> Option<VirtualKey> {
     // BUCKET-NAMESPACE GUARD: the synthesized key's `id` becomes its LEDGER
     // BUCKET id, and group buckets live in the same store namespace as `group:<name>`. A
     // principal id (attacker-influenced at the IdP) literally starting with `group:` would alias a
@@ -798,7 +879,7 @@ pub fn synthesize_principal_key(
     // The bound group (first in role order). Group limits are enforced through the group chain;
     // the key itself carries NO inline caps (keys are pure auth).
     let group = granting.iter().find_map(|b| b.group.clone());
-    Some(Arc::new(VirtualKey {
+    Some(VirtualKey {
         id: principal.id.clone(),
         // NOT a credential hash — a marker. The synthetic key never authenticates anything (the
         // auth module already did); it exists purely to carry grants through enforcement.
@@ -817,7 +898,7 @@ pub fn synthesize_principal_key(
         deleted_at: None,
         revision: 0,
         ..Default::default()
-    }))
+    })
 }
 
 /// The per-request context a plane handler receives: the resolved caller identity attached to each
