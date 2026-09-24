@@ -361,6 +361,24 @@ pub trait LedgerView: Send + Sync {
     fn rate_history(&self) -> Option<crate::root::kernel::PinnedHistory> {
         None
     }
+
+    /// Does this node's book hold a counts row whose pricing REFUSED (#42/#71)?
+    ///
+    /// A refused row moves no balance — [`Durability::post_counts`] is why one can exist at all
+    /// without a figure behind it — so it is invisible to [`LedgerView::ledger_rows`], which only
+    /// ever walks settled balances, and to a booked line the totals derivation prices. A served
+    /// totals or reconciliation figure that silently skipped such a row would be exactly the silent
+    /// zero #42 forbids, just moved from the pricing read to the admin read beside it. So the two
+    /// reads ask this FIRST and refuse the whole read (`GovernanceError::Store`, the same path
+    /// 69c58179a refuses an out-of-range figure through) rather than serve a table with a hole in it.
+    ///
+    /// The default is `false`: [`UnopenedLedger`] and a view with no book behind it genuinely hold no
+    /// refused row, and saying so is the true and honest answer for them.
+    ///
+    /// [`Durability::post_counts`]: crate::root::durability::Durability::post_counts
+    fn has_refused_rows(&self) -> bool {
+        false
+    }
 }
 
 /// The view a node has before a ledger is bound behind it.
@@ -610,6 +628,12 @@ impl LedgerView for NodeLedger {
     /// line would not be.
     fn booked_lines(&self) -> Vec<busbar_kernel_ledger::Posting> {
         Vec::new()
+    }
+
+    /// Off the same lock every other read of this node's durability takes, so a row posted between
+    /// this check and the read it guards cannot slip through either side of the race.
+    fn has_refused_rows(&self) -> bool {
+        !self.lock().refused_rows().is_empty()
     }
 }
 
@@ -1568,7 +1592,9 @@ fn canonical_amend_payload(obj: &serde_json::Map<String, serde_json::Value>) -> 
 /// `NotFound` is reachable only if the closed table and this match ever disagree, which is a defect
 /// in this file rather than a request to forgive — so it is a refusal rather than a body invented
 /// for a verb nobody wrote one for. A money figure the view cannot project (item 28: past the range
-/// it is served in) fails the read as `Store` — refused, never served pinned at `i64::MAX`.
+/// it is served in) fails the read as `Store` — refused, never served pinned at `i64::MAX`. The
+/// totals and reconciliation arms refuse the same way, for the same reason, where the book holds a
+/// counts row a present card refused to price (#42): see [`LedgerView::has_refused_rows`].
 fn render_ledger_view(
     verb: KernelVerb,
     view: &dyn LedgerView,
@@ -1582,11 +1608,26 @@ fn render_ledger_view(
         // the PREVIOUS release's rows, which are what that release's read-time derivation produced
         // at settlement and are never repriced, so the two sides of it have to be read at the same
         // vintage or an amendment would report every row on a healthy node as out.
-        KernelVerb::GetLedgerTotals => render_totals(&totals_rows(view))
-            .map_err(refused)?
-            .into_bytes(),
+        KernelVerb::GetLedgerTotals => {
+            // A refused counts row (#42) moves no balance, so it is invisible to both arms of
+            // `totals_rows` — the derivation prices booked lines and the balance fallback walks
+            // settled cells, and a refused row is neither. Ask FIRST and refuse the whole read
+            // rather than serve a table quietly missing the row: the same `Store` path 69c58179a
+            // refuses an out-of-range figure through.
+            if view.has_refused_rows() {
+                return Err(busbar_core_admin::GovernanceError::Store);
+            }
+            render_totals(&totals_rows(view))
+                .map_err(refused)?
+                .into_bytes()
+        }
         KernelVerb::GetLedgerCheckpoints => render_checkpoints(&view.checkpoints()).into_bytes(),
         KernelVerb::GetLedgerReconciliation => {
+            // As the totals arm above: a refused row is off the ledger side of the identity too,
+            // since `NodeLedger::rows_of` walks the same settled cells.
+            if view.has_refused_rows() {
+                return Err(busbar_core_admin::GovernanceError::Store);
+            }
             let (ledger, legacy) = view.identity_snapshot().map_err(refused)?;
             render_reconciliation(&ledger, &legacy)
                 .map_err(refused)?

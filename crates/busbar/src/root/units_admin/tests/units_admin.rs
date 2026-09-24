@@ -2511,6 +2511,113 @@ fn the_reconciliation_names_a_row_this_nodes_dual_write_lost() {
     );
 }
 
+/// Post one unpriced-class unit's raw counts (#71) as a REFUSAL (#42: a present card silent about
+/// the class) — exactly what `LateAccrual::post_late` posts for such a unit, spelled directly
+/// against the node's own durability so this test does not need a rate card or a plane wired up to
+/// reach it. The book does not move: `settled`/`reserved`/`overdraft` are all zero, and the row
+/// lives only in [`crate::root::durability::Durability::refused_rows`].
+#[cfg(feature = "root-admin")]
+fn post_a_refused_counts_row_on(units: &crate::root::kernel::ProductionUnits, bucket: &str) {
+    use busbar_contract::caps::{Grant, KernelSeal, PrincipalId};
+    use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
+    use crate::root::durability::{PostingStamp, Settling, UnitCounts};
+
+    let seal = KernelSeal::acquire_for_kernel();
+    let key = TotalsKey::new(BucketId::new(bucket), CapDimension::NanoUnits, BucketScope::All);
+    let token = Grant::<busbar_contract::caps::DurableWrite>::mint(&seal);
+    let mut classes = std::collections::BTreeMap::new();
+    classes.insert("cache_read".to_string(), 10_000_000u64);
+    let counts = UnitCounts {
+        lane: "gpt".to_string(),
+        fee_count: 1,
+        classes,
+    };
+
+    let mut durability = units.durability.lock().unwrap_or_else(|p| p.into_inner());
+    let posted = durability
+        .post_counts(
+            &Settling {
+                key: &key,
+                window: A_DAY,
+                durability: &token,
+                step: busbar_contract::caps::StepName::Meter,
+                stamp: PostingStamp {
+                    rate_card_version: 3,
+                    wall: 1_700_000_000,
+                    mono: 42,
+                },
+            },
+            &PrincipalId::new(bucket),
+            &counts,
+            Some("ClassUnpriced(cache_read)".to_string()),
+        )
+        .expect("the memory-buffered journal takes it");
+    assert!(
+        posted.refusal.is_some(),
+        "this helper's whole point is a REFUSED counts row"
+    );
+}
+
+/// **THE EXIT TEST for the admin read's blind spot over a refused counts row.**
+///
+/// `15d23bb90` made the Durability ("second") book carry a refused unit's raw counts (#42/#71) and
+/// gave it a refusing read, [`crate::root::durability::Durability::settled_read`] — but
+/// `NodeLedger::rows_of` walked the book's settled balances directly, and a refused row moves no
+/// balance, so `/admin/ledger/totals` and `/admin/ledger/reconciliation` served a figure that
+/// silently omitted the row the unit actually posted. [`LedgerView::has_refused_rows`] closes it:
+/// both reads ask it first and refuse the whole read (`GovernanceError::Store`, served at 503 —
+/// `V::StoreError` maps to `ReasonCode::DurabilityUnavailable`, `admin_mount.rs`'s
+/// `503`/`"unavailable"`) rather than serve a table with a hole in it — a node whose book holds ANY
+/// refused row refuses on this endpoint entirely, the same `Store` path item 28's out-of-range
+/// figure refuses through.
+///
+/// The second half of the proof is the one item 28's own test states in its title: "never served
+/// pinned" cuts both ways. A CLEAN book — no refused row — must go on serving the exact bytes it
+/// served before this fix, which is asserted here by settling the SAME two fixture units on two
+/// independently built nodes and diffing the served bodies byte for byte.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_refused_counts_row_fails_the_totals_and_reconciliation_reads_a_clean_book_is_untouched() {
+    // A clean book, built twice, must serve byte-identical figures — the fix touches no path a
+    // node with no refused row takes.
+    let clean_a = a_node_that_settled(None);
+    let node_a = AdminNode::new(crate::root::kernel::new_kernel(), clean_a);
+    let totals_a = node_a.answer(a_ledger_request("/api/v1/admin/ledger/totals"));
+    let recon_a = node_a.answer(a_ledger_request("/api/v1/admin/ledger/reconciliation"));
+    assert_eq!(totals_a.status, 200, "a clean book must still serve totals");
+    assert_eq!(recon_a.status, 200, "a clean book must still serve reconciliation");
+
+    let clean_b = a_node_that_settled(None);
+    let node_b = AdminNode::new(crate::root::kernel::new_kernel(), clean_b);
+    let totals_b = node_b.answer(a_ledger_request("/api/v1/admin/ledger/totals"));
+    let recon_b = node_b.answer(a_ledger_request("/api/v1/admin/ledger/reconciliation"));
+    assert_eq!(
+        totals_a.body, totals_b.body,
+        "a clean book's totals figure must stay byte-identical"
+    );
+    assert_eq!(
+        recon_a.body, recon_b.body,
+        "a clean book's reconciliation figure must stay byte-identical"
+    );
+
+    // The same node, PLUS one refused counts row: both reads must now refuse rather than silently
+    // omit it.
+    let refused_units = a_node_that_settled(None);
+    post_a_refused_counts_row_on(&refused_units, "vk_refused");
+    let refused_node = AdminNode::new(crate::root::kernel::new_kernel(), refused_units);
+    let totals = refused_node.answer(a_ledger_request("/api/v1/admin/ledger/totals"));
+    let recon = refused_node.answer(a_ledger_request("/api/v1/admin/ledger/reconciliation"));
+    assert_eq!(
+        totals.status, 503,
+        "a refused counts row must fail /admin/ledger/totals, not be silently omitted from it"
+    );
+    assert_eq!(
+        recon.status, 503,
+        "a refused counts row must fail /admin/ledger/reconciliation, not be silently omitted \
+         from it"
+    );
+}
+
 /// The other two views are this node's too: the seal it made and the marker it sealed.
 ///
 /// Both are on the same composition that answered empty above, so the change is the node's own
