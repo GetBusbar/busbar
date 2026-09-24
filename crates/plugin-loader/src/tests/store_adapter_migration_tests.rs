@@ -312,6 +312,7 @@ fn model(name: &str, units: &[(&str, u64)]) -> ModelTokens {
 
 fn metering_row(key_id: &str, model: &str, provider: &str) -> MeteringRow {
     MeteringRow {
+        usage_units: Default::default(),
         key_id: key_id.to_string(),
         model: model.to_string(),
         provider: provider.to_string(),
@@ -825,6 +826,7 @@ fn an_opening_sealed_off_the_published_sqlite_store() {
     seeding
         .store()
         .add_metering(&MeteringDelta {
+            usage_units: Default::default(),
             key_id: "vk_sqlite".to_string(),
             bucket: WINDOW,
             model: "gpt-4".to_string(),

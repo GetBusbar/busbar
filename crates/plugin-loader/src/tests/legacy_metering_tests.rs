@@ -120,6 +120,7 @@ const NOON_MS: u64 = (DAY + 12 * 3600) * 1000; // the corrected card's `effectiv
 
 fn delta(provider: &str, priced_from_ms: u64, tokens_input: u64) -> MeteringDelta {
     MeteringDelta {
+        usage_units: Default::default(),
         key_id: "vk_a".to_string(),
         bucket: DAY,
         model: "m-openai-chat".to_string(),
@@ -191,6 +192,7 @@ fn a_provider_name_containing_the_mark_round_trips() {
         let d = delta(provider, at, 1);
         let sent = metering_delta_to_legacy(&d);
         let row = metering_row_from_legacy(MeteringRow {
+            usage_units: Default::default(),
             key_id: sent.key_id,
             model: sent.model,
             provider: sent.provider,
@@ -216,4 +218,34 @@ fn a_current_store_is_sent_the_delta_unchanged() {
     assert!(!needs_legacy_metering_wire(
         busbar_plugin::cold::ABI_VERSION
     ));
+}
+
+/// A 1.5.x store has no column for a ledgered class outside the token split (`usage_units`): the
+/// counts are stripped on the way out (the loader says so, once), and a delta that carried nothing
+/// else is not sent at all — no empty row appears in a published store.
+#[test]
+fn an_abi_2_store_is_never_sent_a_class_it_has_no_column_for() {
+    let mut classes_only = delta("tp", 0, 0);
+    classes_only.requests = 0;
+    classes_only.billable_requests = 0;
+    classes_only.usage_units = [("tool_calls".to_string(), 3)].into();
+    let sent = metering_delta_to_legacy(&classes_only);
+    assert!(sent.usage_units.is_empty());
+    assert!(metering_delta_is_empty(&sent));
+    let mut with_request = classes_only.clone();
+    with_request.requests = 1;
+    assert!(!metering_delta_is_empty(&metering_delta_to_legacy(
+        &with_request
+    )));
+
+    let store = legacy_store(2);
+    store.add_metering(&classes_only).unwrap();
+    assert!(
+        store.list_metering(DAY).unwrap().is_empty(),
+        "a classes-only delta writes no row to a store that cannot hold it"
+    );
+    store.add_metering(&with_request).unwrap();
+    let rows = store.list_metering(DAY).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!((rows[0].requests, rows[0].usage_units.len()), (1, 0));
 }

@@ -194,6 +194,7 @@ async fn the_step_accrues_the_same_metering_row_as_the_live_tap() {
         live,
         Accrued {
             row: busbar_api::MeteringRow {
+                usage_units: Default::default(),
                 key_id: key.id.clone(),
                 model: "m0".to_string(),
                 provider: "zai".to_string(),
@@ -232,6 +233,7 @@ async fn the_step_accrues_the_same_metering_row_as_the_live_tap() {
     assert_eq!(
         metered.row.as_ref().expect("a served response is metered"),
         &busbar_api::MeteringRow {
+            usage_units: Default::default(),
             key_id: key2.id.clone(),
             model: "m0".to_string(),
             provider: "zai".to_string(),

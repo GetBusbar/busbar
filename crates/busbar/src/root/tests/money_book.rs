@@ -268,6 +268,7 @@ fn metering_row_from_facts_matches_the_plane_row_shape() {
     // counts (busbar-llm/src/unit/meter.rs): serving model+provider, per-tier counts, one request,
     // one billable request, empty group + pricing version.
     let expected = busbar_api::MeteringRow {
+        usage_units: Default::default(),
         key_id: "vk_1".to_string(),
         model: "serving-model".to_string(),
         provider: "prov".to_string(),

@@ -820,6 +820,10 @@ impl GovState {
         // THE CARD ERA (Q14, #79), read as the metering row beside this accrual reads it: the
         // tokens are dated when they land, on the history's own millisecond clock.
         let era = crate::rate_apply::effective_from_at(crate::store::now_ms());
+        // THE METERING SERIES CARRIES WHAT THIS BOOK HOLDS: the same counts, keyed by the same era,
+        // mirrored onto the key's metering row by THIS accrual — the one place every ledgered class
+        // lands — so the admin usage read prices exactly the counts this book prices.
+        self.meter_classes(&key.id, model, units, era, now);
         // A missing group cannot block ACCRUAL (the request was already admitted/served);
         // degrade to the key-only bucket so the tokens are never lost.
         let chain = match cost.chain_for(key) {
@@ -836,6 +840,60 @@ impl GovState {
         for bucket in chain.iter().filter(|b| b.applies_to_pool(pool)) {
             self.accrue_bucket(bucket.bucket_id, bucket.window, (model, era), units, now);
         }
+    }
+
+    /// **MIRROR A LEDGERED ACCRUAL'S CLASSES ONTO THE KEY'S METERING ROW** (#71, #47), so the admin
+    /// usage read — which prices metering rows — holds every count this budget book holds: a plane's
+    /// declared classes, an open class of the pools plane, a plane's session count on its fee lane.
+    ///
+    /// THE ROW IS THE ONE THE PLANE'S OWN SERIES ROW IS KEYED BY. A plane-qualified lane
+    /// `"<plane>\u{1f}<subject>"` lands on `(model: <subject>, provider: <plane>)` — the row a plane's
+    /// metered request already writes, whose provider column names the plane — and a plane's fee lane
+    /// `"<plane>\u{1f}"` on `("", <plane>)`. An unqualified (pools) lane lands on `(<lane>, "")`.
+    ///
+    /// NOTHING IS COUNTED TWICE. On an unqualified lane the four reserved token tiers are left off:
+    /// the same response's `record_metering` carries them in the row's token columns. Every other
+    /// class — and every class of a plane-qualified lane, whose rows carry no token split — is
+    /// carried here and nowhere else. Write-behind, like `record_metering`.
+    fn meter_classes(
+        &self,
+        key_id: &str,
+        lane: &str,
+        units: &std::collections::BTreeMap<String, u64>,
+        priced_from_ms: u64,
+        now: u64,
+    ) {
+        let (plane, subject) = busbar_kernel_ledger::cost::split_plane_lane(lane);
+        let usage_units: std::collections::BTreeMap<String, u64> = units
+            .iter()
+            .filter(|(class, n)| {
+                **n != 0
+                    && !(plane.is_empty() && busbar_api::RESERVED_UNITS.contains(&class.as_str()))
+            })
+            .map(|(class, n)| (class.clone(), *n))
+            .collect();
+        if usage_units.is_empty() {
+            return;
+        }
+        let (model, provider) = if plane.is_empty() {
+            (lane, "")
+        } else {
+            (subject, plane)
+        };
+        let key: MeterKey = (
+            key_id.to_string(),
+            metering_bucket(now),
+            model.to_string(),
+            provider.to_string(),
+            priced_from_ms,
+        );
+        self.pending_metering.accrue(
+            key,
+            MeterCounts {
+                usage_units,
+                ..MeterCounts::default()
+            },
+        );
     }
 
     /// Accrue `units` under `model` to ONE bucket's current-window ledger cell (straddle-safe;
@@ -912,6 +970,7 @@ impl GovState {
             tokens_output: usage.map(|u| u.output).unwrap_or(0),
             tokens_cache_read: usage.and_then(|u| u.cache_read).unwrap_or(0),
             tokens_cache_write: usage.and_then(|u| u.cache_creation).unwrap_or(0),
+            usage_units: std::collections::BTreeMap::new(),
         };
         // Accrue through the sharded accumulator: this locks ONLY the shard owning `key_id`, so
         // concurrent completions for different keys no longer serialize on one process-wide mutex.
@@ -951,12 +1010,7 @@ impl GovState {
         let mut failed = 0usize;
         let mut last_error: Option<String> = None;
         for ((key_id, bucket, model, provider, priced_from_ms), counts) in taken {
-            if counts.requests == 0
-                && counts.tokens_input == 0
-                && counts.tokens_output == 0
-                && counts.tokens_cache_read == 0
-                && counts.tokens_cache_write == 0
-            {
+            if counts.is_zero() {
                 continue;
             }
             let delta = MeteringDelta {
@@ -975,6 +1029,7 @@ impl GovState {
                 // The instant the cell's card started, carried verbatim from the accrual key so the
                 // durable row can be resolved against the dated history exactly as the cell was.
                 priced_from_ms,
+                usage_units: counts.usage_units.clone(),
             };
             match self.store.add_metering(&delta) {
                 Ok(()) => flushed += 1,

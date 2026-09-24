@@ -1095,15 +1095,19 @@ pub use busbar_kernel_ledger::cost::PLANE_LANE_SEP;
 // `pub`: the canonical public spelling is the substrate's own, and nothing outside
 // busbar-core reaches this path.
 
-/// One `pending_metering` entry: the same five counters `MeteringDelta` carries, accumulated
-/// in-memory across every `record_metering` call that lands on this key before the next flush.
-#[derive(Default, Clone, Copy)]
+/// One `pending_metering` entry: the counters `MeteringDelta` carries, accumulated in-memory across
+/// every `record_metering` (and, for [`Self::usage_units`], every `record_usage`) call that lands on
+/// this key before the next flush.
+#[derive(Default, Clone)]
 pub struct MeterCounts {
     pub requests: u64,
     pub tokens_input: u64,
     pub tokens_output: u64,
     pub tokens_cache_read: u64,
     pub tokens_cache_write: u64,
+    /// The ledgered classes the token columns do not hold, by class — the budget book's own counts
+    /// (see `busbar_api::MeteringDelta::usage_units`).
+    pub usage_units: std::collections::BTreeMap<String, u64>,
 }
 
 impl MeterCounts {
@@ -1119,6 +1123,20 @@ impl MeterCounts {
         self.tokens_cache_write = self
             .tokens_cache_write
             .saturating_add(other.tokens_cache_write);
+        for (class, n) in other.usage_units {
+            let cur = self.usage_units.entry(class).or_insert(0);
+            *cur = cur.saturating_add(n);
+        }
+    }
+
+    /// Nothing counted at all — a cell the flush has nothing to write for.
+    pub fn is_zero(&self) -> bool {
+        self.requests == 0
+            && self.tokens_input == 0
+            && self.tokens_output == 0
+            && self.tokens_cache_read == 0
+            && self.tokens_cache_write == 0
+            && self.usage_units.values().all(|n| *n == 0)
     }
 }
 
@@ -1292,7 +1310,7 @@ impl PendingMetering {
             let map = shard.lock().unwrap_or_else(|e| e.into_inner());
             len += map.len();
             for counts in map.values() {
-                sum.merge(*counts);
+                sum.merge(counts.clone());
             }
         }
         (len, sum)

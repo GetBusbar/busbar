@@ -426,6 +426,7 @@ fn test_metering_accumulates_split_per_key_model_and_bucket() {
     let day = metering_bucket(1_700_000_123); // mid-day epoch floors to its bucket start
     assert_eq!(day % METERING_BUCKET_SECS, 0);
     let d = |model: &str, input: u64, output: u64| MeteringDelta {
+        usage_units: Default::default(),
         key_id: "vk_a".into(),
         bucket: day,
         model: model.into(),
@@ -5449,6 +5450,70 @@ fn a_planes_session_fee_charges_one_per_session() {
         gov.record_usage(&cost, &k, "", &plane_fee_lane("sp"), &one, AT);
     }
     assert_eq!(spend(&gov, &cost), 80, "2 sessions × 40");
+}
+
+/// P2-usagegaps: THE METERING ROW CARRIES WHAT THE BUDGET BOOK HOLDS. Every class the book's accrual
+/// receives outside the token split lands on the key's metering row, keyed as the plane's own series
+/// row — a session count on `("", <plane>)`, a tool call on `(<tool>, <plane>)`, a pools open class
+/// on `(<model>, "")` — and a pools lane's four token tiers do NOT (the same response's
+/// `record_metering` carries them in the token columns; carrying them twice would double-bill).
+#[test]
+fn the_metering_row_carries_every_class_the_budget_book_holds() {
+    use busbar_api::Store as _;
+    use busbar_kernel_ledger::cost::{plane_fee_lane, PER_SESSION};
+    let (store, gov, k) = team_gov();
+    let cost = plane_fee_cost(1_000);
+    let map = |pairs: &[(&str, u64)]| -> std::collections::BTreeMap<String, u64> {
+        pairs.iter().map(|(c, n)| (c.to_string(), *n)).collect()
+    };
+    gov.record_usage(
+        &cost,
+        &k,
+        "",
+        &plane_fee_lane("sp"),
+        &map(&[(PER_SESSION, 1)]),
+        AT,
+    );
+    gov.record_usage(
+        &cost,
+        &k,
+        "",
+        &plane_fee_lane("sp"),
+        &map(&[(PER_SESSION, 1)]),
+        AT,
+    );
+    let tool = format!("tp{PLANE_LANE_SEP}srv.read");
+    gov.record_usage(&cost, &k, "srv.read", &tool, &map(&[("tool_calls", 3)]), AT);
+    gov.record_usage(
+        &cost,
+        &k,
+        "",
+        "m",
+        &map(&[("input", 7), ("search_units", 4)]),
+        AT,
+    );
+    gov.flush_metering();
+    let rows = store.list_metering(metering_bucket(AT)).unwrap();
+    let row = |model: &str, provider: &str| {
+        rows.iter()
+            .find(|r| r.key_id == k.id && r.model == model && r.provider == provider)
+            .map(|r| (r.requests, r.tokens_input, r.usage_units.clone()))
+    };
+    assert_eq!(
+        row("", "sp"),
+        Some((0, 0, map(&[(PER_SESSION, 2)]))),
+        "2 sessions"
+    );
+    assert_eq!(
+        row("srv.read", "tp"),
+        Some((0, 0, map(&[("tool_calls", 3)])))
+    );
+    assert_eq!(
+        row("m", ""),
+        Some((0, 0, map(&[("search_units", 4)]))),
+        "the open class, and not the input tier the token columns carry"
+    );
+    assert_eq!(rows.len(), 3, "nothing else was written");
 }
 
 #[test]

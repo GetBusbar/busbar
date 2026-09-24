@@ -472,6 +472,7 @@ fn metering_row(
     usage: Option<&busbar_substrate_values::billing::TokenUsage>,
 ) -> busbar_api::MeteringRow {
     busbar_api::MeteringRow {
+        usage_units: Default::default(),
         key_id: sink.key.id.clone(),
         model: lane.model.clone(),
         provider: lane.provider.clone(),

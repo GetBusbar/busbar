@@ -261,10 +261,22 @@ pub(crate) const ERA_MARK: &str = "|priced_from_ms=";
 /// the keyed `provider` column so two price eras of one day stay two rows.
 pub(crate) fn metering_delta_to_legacy(delta: &MeteringDelta) -> MeteringDelta {
     let mut out = delta.clone();
+    // No column for a class outside the token split: dropped (the caller says so, once).
+    out.usage_units.clear();
     if delta.priced_from_ms != 0 || delta.provider.contains(ERA_MARK) {
         out.provider = format!("{}{ERA_MARK}{}", delta.provider, delta.priced_from_ms);
     }
     out
+}
+
+/// Whether a (legacy-encoded) metering delta counts nothing a 1.5.x store has a column for.
+pub(crate) fn metering_delta_is_empty(delta: &MeteringDelta) -> bool {
+    delta.requests == 0
+        && delta.billable_requests == 0
+        && delta.tokens_input == 0
+        && delta.tokens_output == 0
+        && delta.tokens_cache_read == 0
+        && delta.tokens_cache_write == 0
 }
 
 /// Decode a metering row a store below [`PRICED_FROM_ABI`] returned: lift the carried price instant

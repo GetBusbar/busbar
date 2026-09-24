@@ -525,6 +525,7 @@ impl Store for MemoryStore {
                 key_group_at_use: d.key_group_at_use.clone(),
                 pricing_version: d.pricing_version.clone(),
                 priced_from_ms: d.priced_from_ms,
+                usage_units: std::collections::BTreeMap::new(),
             });
         e.tokens_input = e.tokens_input.saturating_add(d.tokens_input);
         e.tokens_output = e.tokens_output.saturating_add(d.tokens_output);
@@ -532,6 +533,11 @@ impl Store for MemoryStore {
         e.tokens_cache_write = e.tokens_cache_write.saturating_add(d.tokens_cache_write);
         e.requests = e.requests.saturating_add(d.requests);
         e.billable_requests = e.billable_requests.saturating_add(d.billable_requests);
+        // Every ledgered class the token columns do not hold, additive like them.
+        for (class, n) in &d.usage_units {
+            let cur = e.usage_units.entry(class.clone()).or_insert(0);
+            *cur = cur.saturating_add(*n);
+        }
 
         // Amortized bounded eviction of stale buckets, mirroring `add_usage` above.
         let sweep_needed = self

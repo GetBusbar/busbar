@@ -713,6 +713,7 @@ fn ram_delete_key_tombstones_the_row_and_drops_its_usage_ledger() {
 fn ram_add_metering_accumulates_into_one_row_per_bucket() {
     let s = RamStore::new();
     let delta = |requests: u64, tokens_input: u64| MeteringDelta {
+        usage_units: Default::default(),
         key_id: "ram_meter".into(),
         bucket: 7,
         model: "m".into(),

@@ -878,6 +878,15 @@ pub struct MeteringDelta {
     /// card ever authored, which is the same reading the 1.5.5 migration gives a pre-history row.
     #[serde(default)]
     pub priced_from_ms: u64,
+    /// **EVERY LEDGERED CLASS THE TOKEN COLUMNS DO NOT HOLD** (#71), by class name: a plane's
+    /// declared classes (`tool_calls`, `bytes`, audio seconds, …), an open class of the pools plane (a
+    /// rerank's search units), and a plane's reserved session count (`per_session`). The SAME counts
+    /// the budget book's accrual received, mirrored onto this row by that one accrual
+    /// (`GovState::record_usage`) — so the admin usage read prices exactly what the budget book
+    /// prices. Additive, like every counter here. `#[serde(default, skip_serializing_if = empty)]`: a
+    /// row that carries none (every 1.5.5 row, all pools-only token traffic) is byte-identical.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub usage_units: std::collections::BTreeMap<String, u64>,
 }
 
 /// One accumulated metering row read back for a bucket (the raw material of `GET usage` by_model /
@@ -904,6 +913,9 @@ pub struct MeteringRow {
     /// was earned under rather than against the newest card ever authored.
     #[serde(default)]
     pub priced_from_ms: u64,
+    /// Every ledgered class the token columns do not hold — see [`MeteringDelta::usage_units`].
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub usage_units: std::collections::BTreeMap<String, u64>,
 }
 
 /// One admin AUDIT record, as it crosses the store seam for DURABLE persistence. Mirrors the engine's

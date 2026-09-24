@@ -112,36 +112,90 @@ pub fn derive_spend_micros_row(
     model: &str,
     b: &UsageBreakdown,
 ) -> Result<i64, busbar_kernel_ledger::cost::MoneyError> {
+    let (lanes, fee_requests, include_fee) =
+        row_lanes(cost, model, b, &std::collections::BTreeMap::new());
+    cost.derive_spend_micros(
+        lanes.iter().map(|(lane, units)| (lane.as_str(), units)),
+        fee_requests,
+        include_fee,
+    )
+}
+
+/// [`derive_spend_micros_row`] for a row that also carries LEDGERED CLASSES outside its token split
+/// (`MeteringRow::usage_units` — a plane's declared classes, an open class, a plane's session count):
+/// each is priced on the row's lane beside its tokens, exactly as the budget book prices the same
+/// counts — through the one function, so a present card silent about one REFUSES (#42).
+pub fn derive_spend_micros_row_classes(
+    cost: &busbar_kernel::cost::CostModel,
+    model: &str,
+    b: &UsageBreakdown,
+    classes: &std::collections::BTreeMap<String, u64>,
+) -> Result<i64, busbar_kernel_ledger::cost::MoneyError> {
+    let (lanes, fee_requests, include_fee) = row_lanes(cost, model, b, classes);
+    cost.derive_spend_micros(
+        lanes.iter().map(|(lane, units)| (lane.as_str(), units)),
+        fee_requests,
+        include_fee,
+    )
+}
+
+/// ONE METERING ROW AS THE LANES THE ONE FUNCTION PRICES — no arithmetic, a projection: each lane
+/// with its counts per class, the flat fee count, and whether the flat fee applies. Shared by the two
+/// current-card derivations above so they cannot spell a row two ways.
+#[allow(clippy::type_complexity)]
+fn row_lanes(
+    cost: &busbar_kernel::cost::CostModel,
+    model: &str,
+    b: &UsageBreakdown,
+    classes: &std::collections::BTreeMap<String, u64>,
+) -> (
+    Vec<(String, std::collections::BTreeMap<String, u64>)>,
+    u64,
+    bool,
+) {
     // Project the metering row's flat tier fields (its OWN JSON-contract names, unchanged) onto the
     // name-keyed unit map the pricer now consumes. `tokens_cache_creation` is the row's field name;
     // it maps onto the canonical `cache_write` unit key.
-    let units: std::collections::BTreeMap<String, u64> = [
-        (busbar_api::UNIT_INPUT, b.tokens_input),
-        (busbar_api::UNIT_OUTPUT, b.tokens_output),
-        (busbar_api::UNIT_CACHE_READ, b.tokens_cache_read),
-        (busbar_api::UNIT_CACHE_WRITE, b.tokens_cache_creation),
-    ]
-    .into_iter()
-    .filter(|(_, v)| *v != 0)
-    .map(|(k, v)| (k.to_string(), v))
-    .collect();
+    let mut units: std::collections::BTreeMap<String, u64> =
+        row_counts(b).map(|(k, v)| (k.to_string(), v)).collect();
     let resolved = cost.resolve_model_alias(model);
     // A PLANE'S ROW (`"<plane>\u{1f}<lane>"`, see [`row_lane`]) prices its requests the way the
     // budget book does (#47): one PER_REQUEST each on that plane's FEE LANE, at the plane's own
     // `fees.per_request` (0 for a plane that configured none) — never the pools plane's flat fee.
-    let (plane, _) = busbar_kernel_ledger::cost::split_plane_lane(resolved);
-    if !plane.is_empty() {
-        let fees = std::collections::BTreeMap::from([(
-            busbar_kernel_ledger::cost::PER_REQUEST.to_string(),
-            b.requests,
-        )]);
-        let fee_lane = busbar_kernel_ledger::cost::plane_fee_lane(plane);
-        let lanes = [(fee_lane.as_str(), &fees)]
-            .into_iter()
-            .chain((!units.is_empty()).then_some((resolved, &units)));
-        return cost.derive_spend_micros(lanes, 0, false);
+    let (plane, subject) = busbar_kernel_ledger::cost::split_plane_lane(resolved);
+    if plane.is_empty() {
+        add_classes(&mut units, classes);
+        return (vec![(resolved.to_string(), units)], b.requests, true);
     }
-    cost.derive_spend_micros([(resolved, &units)].into_iter(), b.requests, true)
+    let mut fees = std::collections::BTreeMap::from([(
+        busbar_kernel_ledger::cost::PER_REQUEST.to_string(),
+        b.requests,
+    )]);
+    // The plane's FEE LANE row (`("", <plane>)`) carries its session count: it IS that lane.
+    add_classes(
+        if subject.is_empty() {
+            &mut fees
+        } else {
+            &mut units
+        },
+        classes,
+    );
+    let mut lanes = vec![(busbar_kernel_ledger::cost::plane_fee_lane(plane), fees)];
+    if !units.is_empty() {
+        lanes.push((resolved.to_string(), units));
+    }
+    (lanes, 0, false)
+}
+
+/// Fold a row's ledgered classes into a lane's counts, additively (never overwriting a token tier).
+fn add_classes(
+    into: &mut std::collections::BTreeMap<String, u64>,
+    classes: &std::collections::BTreeMap<String, u64>,
+) {
+    for (class, n) in classes.iter().filter(|(_, n)| **n != 0) {
+        let cur = into.entry(class.clone()).or_insert(0);
+        *cur = cur.saturating_add(*n);
+    }
 }
 
 /// **THE LANE A METERING ROW PRICES ON.** A row a non-pools plane metered carries that plane's
@@ -315,32 +369,79 @@ pub fn derive_spend_micros_row_at_card(
     model: &str,
     b: &UsageBreakdown,
 ) -> Result<i64, busbar_kernel_ledger::cost::MoneyError> {
+    let entries = row_entries(
+        arrived_ms,
+        cost,
+        model,
+        b,
+        &std::collections::BTreeMap::new(),
+    );
+    busbar_kernel_ledger::cost::price_in_view(&entries, view)?.micros_i64()
+}
+
+/// [`derive_spend_micros_row_at_card`] for a row that also carries LEDGERED CLASSES outside its
+/// token split (`MeteringRow::usage_units`): each is one more count on the row's lane — on the plane's
+/// FEE LANE for a plane's fee row (its session count) — priced by the one function at the card in
+/// force at the row's instant, exactly as the budget book prices the same counts.
+pub fn derive_spend_micros_row_classes_at_card(
+    view: &busbar_kernel_ledger::cost::HistoryView<'_>,
+    arrived_ms: u64,
+    _card: &busbar_kernel_ledger::cost::RateCard,
+    cost: &busbar_kernel::cost::CostModel,
+    model: &str,
+    b: &UsageBreakdown,
+    classes: &std::collections::BTreeMap<String, u64>,
+) -> Result<i64, busbar_kernel_ledger::cost::MoneyError> {
+    let entries = row_entries(arrived_ms, cost, model, b, classes);
+    busbar_kernel_ledger::cost::price_in_view(&entries, view)?.micros_i64()
+}
+
+/// ONE METERING ROW AS A LEDGER SLICE — no arithmetic, a projection: a lane, counts keyed by meter
+/// class, a fee count, and THE INSTANT (#79's resolution key, in MILLISECONDS —
+/// `row_priced_at_ms` is what decides which instant this row claims). The row's counts are its
+/// token split and its ledgered classes, summed per class. Shared by the two dated derivations above.
+fn row_entries(
+    arrived_ms: u64,
+    cost: &busbar_kernel::cost::CostModel,
+    model: &str,
+    b: &UsageBreakdown,
+    classes: &std::collections::BTreeMap<String, u64>,
+) -> Vec<busbar_kernel_ledger::cost::LedgerEntry> {
     use busbar_kernel_ledger::cost::{plane_fee_lane, split_plane_lane, LedgerEntry, PER_REQUEST};
     let lane = cost.resolve_model_alias(model);
-    // ONE ROW OF A LEDGER SLICE, which is what the metering book projects onto without arithmetic:
-    // a lane, counts keyed by meter class, a fee count, and THE INSTANT (#79's resolution key, in
-    // MILLISECONDS — `row_priced_at_ms` is what decides which instant this row claims).
-    let tokens = row_counts(b).fold(
-        LedgerEntry::new(lane, arrived_ms),
-        |e, (class, quantity)| e.with_whole(class, quantity),
-    );
-    let (plane, _) = split_plane_lane(lane);
-    let entries = if plane.is_empty() {
-        vec![tokens.with_fee_count(b.requests)]
-    } else {
-        // A PLANE'S ROW (see [`row_lane`]): its requests are that plane's fee units, one PER_REQUEST
-        // each on its FEE LANE — the budget book's own spelling (#47) — so they price at the plane's
-        // `fees.per_request` (0 when it configured none), never at the pools plane's flat fee. Its
-        // tokens, if it carried any, price on its plane-qualified lane with no fee of their own.
-        let fees =
-            LedgerEntry::new(plane_fee_lane(plane), arrived_ms).with_whole(PER_REQUEST, b.requests);
-        let mut entries = vec![fees];
-        if row_counts(b).next().is_some() {
-            entries.push(tokens);
-        }
-        entries
+    let mut counts: std::collections::BTreeMap<String, u64> = row_counts(b)
+        .map(|(class, quantity)| (class.to_string(), quantity))
+        .collect();
+    let entry = |lane: &str, counts: &std::collections::BTreeMap<String, u64>| {
+        counts.iter().fold(
+            LedgerEntry::new(lane, arrived_ms),
+            |e, (class, quantity)| e.with_whole(class, *quantity),
+        )
     };
-    busbar_kernel_ledger::cost::price_in_view(&entries, view)?.micros_i64()
+    let (plane, subject) = split_plane_lane(lane);
+    if plane.is_empty() {
+        add_classes(&mut counts, classes);
+        return vec![entry(lane, &counts).with_fee_count(b.requests)];
+    }
+    // A PLANE'S ROW (see [`row_lane`]): its requests are that plane's fee units, one PER_REQUEST each
+    // on its FEE LANE — the budget book's own spelling (#47) — so they price at the plane's
+    // `fees.per_request` (0 when it configured none), never at the pools plane's flat fee. Its other
+    // counts price on its plane-qualified lane with no fee of their own; the plane's FEE LANE row
+    // (`("", <plane>)`) carries its session count on the fee lane itself.
+    let mut fees = std::collections::BTreeMap::from([(PER_REQUEST.to_string(), b.requests)]);
+    add_classes(
+        if subject.is_empty() {
+            &mut fees
+        } else {
+            &mut counts
+        },
+        classes,
+    );
+    let mut entries = vec![entry(&plane_fee_lane(plane), &fees)];
+    if !counts.is_empty() {
+        entries.push(entry(lane, &counts));
+    }
+    entries
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -373,7 +474,8 @@ pub fn derive_spend_micros_row_at_card(
 #[cfg(any(test, feature = "test-support"))]
 pub mod read_path_money {
     pub use super::{
-        derive_spend_micros_row, derive_spend_micros_row_at_card, row_lane, row_priced_at_ms,
+        derive_spend_micros_row, derive_spend_micros_row_at_card, derive_spend_micros_row_classes,
+        derive_spend_micros_row_classes_at_card, row_lane, row_priced_at_ms,
     };
 }
 /// Process start instant, for the `info` uptime read. Stamped ONCE at startup by `mark_start()`.

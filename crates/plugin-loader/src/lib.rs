@@ -1090,7 +1090,16 @@ impl Store for DynStore {
         // accrual key and that store has no column for it, so it would merge a rate-card-split day
         // back into one row. Carry the era in a column it keys on (see `legacy_usage`).
         let delta = if legacy_usage::needs_legacy_metering_wire(self.abi_version) {
-            legacy_usage::metering_delta_to_legacy(delta)
+            // A 1.5.x store has no column for a class outside the token split (`usage_units`): the
+            // counts are dropped on the way out, SAID once, exactly as the usage ledger's are — and a
+            // delta that carried nothing else is not sent at all, so no empty row appears.
+            let dropped: Vec<String> = delta.usage_units.keys().cloned().collect();
+            self.note_dropped_units(&dropped);
+            let legacy = legacy_usage::metering_delta_to_legacy(delta);
+            if legacy_usage::metering_delta_is_empty(&legacy) {
+                return Ok(());
+            }
+            legacy
         } else {
             delta.clone()
         };

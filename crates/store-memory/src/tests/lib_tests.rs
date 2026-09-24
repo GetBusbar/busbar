@@ -286,6 +286,7 @@ fn scrub_key_requires_tombstone_first() {
 fn metering_accumulates_per_bucket() {
     let s = MemoryStore::new();
     let d = MeteringDelta {
+        usage_units: Default::default(),
         key_id: "a".to_string(),
         bucket: 7,
         model: "m".to_string(),
@@ -411,6 +412,7 @@ fn add_metering_sweeps_stale_buckets() {
     let s = MemoryStore::new();
     let old_bucket = now().saturating_sub(40 * 86_400);
     let d = MeteringDelta {
+        usage_units: Default::default(),
         key_id: "k".to_string(),
         bucket: old_bucket,
         model: "m".to_string(),
@@ -446,6 +448,7 @@ fn add_metering_sweep_preserves_fresh_buckets() {
     let young_bucket = now().saturating_sub(5 * 86_400);
     let old_bucket = now().saturating_sub(40 * 86_400);
     let young = MeteringDelta {
+        usage_units: Default::default(),
         key_id: "k".to_string(),
         bucket: young_bucket,
         model: "m".to_string(),
@@ -485,6 +488,7 @@ fn add_metering_sweep_boundary_is_exact() {
     let at_ceiling = n.saturating_sub(MAX_RETENTION_SECS);
     let one_inside = at_ceiling + 1;
     let base = MeteringDelta {
+        usage_units: Default::default(),
         key_id: "k".to_string(),
         bucket: at_ceiling,
         model: "m".to_string(),
