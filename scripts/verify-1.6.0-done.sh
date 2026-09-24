@@ -42,11 +42,14 @@
 #                    across every recorded cell family (wire, admin, boot, CLI, config, billing,
 #                    failover, plugins); golden gaps are named, never passes. Both ENDS of that
 #                    comparison are pinned by digest and the group REFUSES rather than reports when
-#                    either is unproven: the subject is the artefact the release build itself names
-#                    (never a relative path something else can occupy), the recording must carry
-#                    that artefact's sha256, the golden must carry a sha256 this repository commits
-#                    for 1.5.5, and the verdict is read out of the report — so a run that compared
-#                    the wrong binary, or compared nothing at all, is a refusal and not a zero.
+#                    either is unproven: the subject is BOTH legs the release claims (the default
+#                    all-planes build AND the LLM-only build, two different binaries), each the
+#                    artefact its release build itself names (never a relative path something else
+#                    can occupy), each recording must carry its artefact's sha256; the golden is the
+#                    COMMITTED 1.5.5 recording, never re-recorded here, checked whole and carrying a
+#                    sha256 this repository commits for 1.5.5; every in-scope cell without a golden
+#                    is named in accepted-gaps.json; and the verdict is read out of the report — so
+#                    a run that compared the wrong binary, or compared nothing at all, is a refusal.
 #   design           cargo xtask gate design-bindings --strict: every ARCHITECTURE.md Appendix B
 #                    binding is mapped to a check that still exists in the tree (test, oracle cell,
 #                    lint, gate). An unmapped binding is a named gap and is RED here -- "done" means
@@ -512,9 +515,9 @@ assert_skip_boot_leg_empty() {
 #      recording to name that same digest AFTER — closing the hole from the far side, independently
 #      of how the path was chosen, and putting the subject's identity in the run's own output.
 #
-# THE BASELINE GETS THE SAME TREATMENT. The golden is re-recorded only when its recording directory
-# is empty, so a run that finds one already there trusts it sight unseen — which is every re-run on
-# a machine that has done this once. `assert_golden_is_pinned` requires that recording's
+# THE BASELINE GETS THE SAME TREATMENT. The golden used to be re-recorded here whenever its recording
+# directory was empty, and trusted sight unseen whenever it was not. It is now the committed recording
+# (parity_install_golden, TODO item 41), and `assert_golden_is_pinned` requires that recording's
 # `binary_sha256` to be a digest this repository COMMITS for the baseline release in
 # testing/shadow-oracle/golden-digests.tsv. A baseline nobody can identify is not an external
 # baseline. It is load-bearing rather than decorative: the cached baseline binary a re-record would
@@ -644,21 +647,217 @@ assert_parity_verdict() {  # $1 = report dir
   return 0
 }
 
+# ── THE SUBJECT IS TWO BUILDS, NOT ONE (TODO item 38) ────────────────────────────────────────────
+# C3 is a claim about the LLM-ONLY build ("LLM-only 1.6.0 is byte-identical to published 1.5.5",
+# BUSBAR-1.6.0.md C3), and the release ships the DEFAULT build, whose `default` list compiles in every
+# non-LLM plane. This group used to run ONE plain `cargo build`, so every recording it ever took was
+# of the all-planes binary and the LLM-only claim was never measured by it at all. Both legs are now
+# built, digested, recorded and replayed strictly against the same golden, each under its own name,
+# and the two digests must DIFFER — an llm-only leg that produced the default binary's bytes means
+# the feature flags did not bite and the "second" leg is the first one measured twice.
+#
+# The LLM-only feature set is DERIVED from the manifest's own `default`, never restated here: drop
+# every `plane-<x>` in `default` and the `root-<x>` of each dropped plane; keep the rest. A restated
+# list goes stale the day a plane joins `default`, and a new plane left out of the rule would ride
+# into the "LLM-only" leg unseen — so the derivation refuses if what is left names any `plane-*`, or
+# lacks `proto-llm` or `root-llm` (TODO item 156: without `root-llm` rate-history answers 400).
+PARITY_LEGS="default llm-only"
+PARITY_MANIFEST=crates/busbar/Cargo.toml
+
+manifest_default_features() {  # $1 = manifest ; prints the `default` feature list, one per line
+  command -v python3 >/dev/null 2>&1 || { echo "python3 is not on PATH — the leg's feature set cannot be derived; refusing" >&2; return 2; }
+  python3 - "$1" <<'PY'
+import sys
+try:
+    import tomllib
+except ImportError:
+    sys.stderr.write("python3 has no tomllib (needs 3.11+) — refusing rather than guessing a feature set\n"); sys.exit(2)
+try:
+    d = tomllib.load(open(sys.argv[1], "rb"))
+except Exception as e:
+    sys.stderr.write("unreadable manifest %s: %s\n" % (sys.argv[1], e)); sys.exit(2)
+feats = d.get("features", {}).get("default")
+if not isinstance(feats, list) or not feats:
+    sys.stderr.write("%s declares no [features] default list\n" % sys.argv[1]); sys.exit(3)
+for f in feats:
+    print(f)
+PY
+}
+
+parity_llm_only_features() {  # $1 = manifest ; prints the comma-joined LLM-only feature set
+  local all f x planes="" keep="" drop
+  all="$(manifest_default_features "$1")" || return 1
+  for f in $all; do case "$f" in plane-*) planes="$planes ${f#plane-}" ;; esac; done
+  for f in $all; do
+    drop=0
+    for x in $planes; do [ "$f" = "plane-$x" ] || [ "$f" = "root-$x" ] && drop=1; done
+    [ "$drop" -eq 1 ] || keep="${keep:+$keep,}$f"
+  done
+  case ",$keep," in *,plane-*) echo "the derived LLM-only set still names a plane feature: $keep" >&2; return 1 ;; esac
+  case ",$keep," in *,proto-llm,*) ;; *) echo "the derived LLM-only set lacks proto-llm — it would not be an LLM build: $keep" >&2; return 1 ;; esac
+  case ",$keep," in *,root-llm,*) ;; *) echo "the derived LLM-only set lacks root-llm (TODO item 156) — refusing: $keep" >&2; return 1 ;; esac
+  printf '%s\n' "$keep"
+}
+
+parity_leg_args() {  # $1 = leg ; $2 = manifest ; prints the leg's extra cargo args, one per line
+  local feats
+  case "${1:-}" in
+    default) return 0 ;;   # the shipped build IS the plain build: no flag may narrow it
+    llm-only)
+      feats="$(parity_llm_only_features "$2")" || return 1
+      # Its own target dir, so the two legs never overwrite one artefact between build and record.
+      printf '%s\n' --no-default-features --features "$feats" --target-dir target/parity-llm-only ;;
+    *) echo "unknown parity leg '${1:-}' — the legs are: $PARITY_LEGS" >&2; return 1 ;;
+  esac
+}
+
 # Build the subject and make the BUILD say where it put it. `step` is fail-soft by design, so the
 # record must not be reachable from a build that failed: this returns non-zero and the group takes
 # its refusal branch instead of recording whatever happens to be lying at a relative path.
-parity_build_and_resolve() {  # prints the artefact path on stdout; diagnostics on stderr
-  local out path
-  if ! out="$(cargo build -p busbar --release --locked --message-format=json-render-diagnostics 2>&1)"; then
+parity_build_and_resolve() {  # $1 = leg ; prints the artefact path on stdout; diagnostics on stderr
+  local leg="${1:-}" out path a
+  local args=()
+  if ! a="$(parity_leg_args "$leg" "$PARITY_MANIFEST")"; then return 1; fi
+  while IFS= read -r path; do [ -n "$path" ] && args+=("$path"); done <<<"$a"
+  if ! out="$(cargo build -p busbar --release --locked ${args[@]+"${args[@]}"} --message-format=json-render-diagnostics 2>&1)"; then
     printf '%s\n' "$out" >&2
     return 1
   fi
   path="$(printf '%s\n' "$out" | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' | tail -1)"
   if [ -z "$path" ]; then
-    echo "the release build succeeded but reported no executable artefact for -p busbar" >&2
+    echo "the $leg release build succeeded but reported no executable artefact for -p busbar" >&2
     return 1
   fi
   printf '%s\n' "$path"
+}
+
+# The two legs must be two binaries. Equal digests mean the llm-only flags compiled nothing out.
+assert_legs_distinct() {  # $1 = default sha256 ; $2 = llm-only sha256
+  if [ -z "${1:-}" ] || [ -z "${2:-}" ]; then
+    echo "a leg has no digest — both legs must be built and identified before either is believed"; return 1
+  fi
+  if [ "$1" = "$2" ]; then
+    echo "the default and llm-only legs are the SAME binary ($1): the llm-only flags compiled nothing"
+    echo "out, so one build was measured twice and the LLM-only claim was not measured at all — refusing"
+    return 1
+  fi
+  return 0
+}
+
+# ── THE REFERENCE IS THE COMMITTED 1.5.5 GOLDEN, NEVER RE-RECORDED HERE (TODO item 41) ───────────
+# This group used to re-record its own golden, from the cached 1.5.5 binary, whenever the golden
+# directory was empty — on the machine under test, with no check that the recording was whole. That
+# is the exact practice ci.yml's shadow-oracle job names as the thing that went wrong ("234 of 897
+# cells failed to record on one run and the report read 'the golden no longer owes this id'"): a
+# reference re-derived on the machine under test is not a reference. The golden is now the signed-off
+# recording committed at testing/shadow-oracle/golden/1.5.5, COPIED in fresh on every run (a stale
+# copy left in target/ from an earlier run is never trusted), and the copy is checked whole before
+# anything is compared with it. The published binary itself is fetched by `./bin/oracle fetch-golden`
+# (digest-pinned) and the recording must name that pinned digest (assert_golden_is_pinned).
+PARITY_COMMITTED_GOLDEN="testing/shadow-oracle/golden/$PARITY_BASELINE_VERSION"
+
+assert_golden_whole() {  # $1 = golden recording dir
+  command -v python3 >/dev/null 2>&1 || { echo "python3 is not on PATH, so wholeness cannot be evaluated — refusing"; return 2; }
+  python3 - "${1:-}" <<'PY'
+import json, os, sys
+g = sys.argv[1]
+try:
+    rec = json.load(open(os.path.join(g, "meta.json")))["recorded"]
+except Exception as e:
+    print("the golden at %s has no readable meta.json `recorded` count (%s) — refusing" % (g, e)); sys.exit(1)
+try:
+    rows = [l.rstrip("\n").split("\t") for l in open(os.path.join(g, "ledger.tsv")) if l.strip()]
+except Exception as e:
+    print("the golden at %s has no readable ledger.tsv (%s) — refusing" % (g, e)); sys.exit(1)
+passed = [r[0] for r in rows if len(r) > 1 and r[1] == "PASS"]
+if not isinstance(rec, int) or rec <= 0 or not passed:
+    print("the golden owes NOTHING (meta recorded=%r, %d PASS rows) — every replay against it is vacuously green" % (rec, len(passed))); sys.exit(1)
+if len(passed) != rec:
+    print("the golden is NOT WHOLE: ledger.tsv has %d PASS rows, meta.json records %d" % (len(passed), rec)); sys.exit(1)
+missing = [c for c in passed if not os.path.isfile(os.path.join(g, "cells", c.replace("|", "__") + ".json"))]
+if missing:
+    print("the golden is NOT WHOLE: %d PASS row(s) have no recorded cell file, e.g. %s" % (len(missing), missing[0])); sys.exit(1)
+print("golden whole: %d PASS rows = meta recorded %d, every one with its cell file" % (len(passed), rec))
+PY
+}
+
+parity_install_golden() {  # $1 = committed golden dir ; $2 = destination
+  local src="${1:-}" dst="${2:-}"
+  if [ ! -d "$src" ]; then echo "no committed golden at $src — there is no reference to compare with; refusing"; return 1; fi
+  rm -rf "$dst" && mkdir -p "$(dirname "$dst")" && cp -R "$src" "$dst" || { echo "could not copy the committed golden to $dst"; return 1; }
+  assert_golden_whole "$dst"
+}
+
+# The file itself may never re-record a golden. Scans non-comment lines for an oracle `record` whose
+# --out is a golden or whose --bin is the cached baseline binary — the shape the old arm had.
+assert_never_rerecords_golden() {  # $1 = file to scan
+  local hits
+  [ -f "${1:-}" ] || { echo "nothing to scan at ${1:-<empty>} — refusing"; return 1; }
+  hits="$(grep -nE '^[^#]*oracle[[:space:]]+record([[:space:]]|$)' "$1" \
+          | grep -iE -- '--out[[:space:]]+"?[^[:space:]]*golden|busbar-oracle/[^[:space:]]*/busbar|PARITY_BASELINE_VERSION/busbar' || true)"
+  if [ -n "$hits" ]; then
+    echo "this run would RE-RECORD its own reference on the machine under test:"
+    printf '%s\n' "$hits" | sed 's/^/  /'
+    echo "the golden is the committed $PARITY_BASELINE_VERSION recording, copied in and checked whole — refusing"
+    return 1
+  fi
+  return 0
+}
+
+# ── EVERY IN-SCOPE CELL HAS A GOLDEN OR A NAMED REASON; THE BASELINE IS THE GOLDEN (TODO item 51) ─
+# owed-baseline.txt is the ratchet the differ holds the golden to, so it must be EXACTLY the golden's
+# PASS set — a duplicate line (it carried one: 917 lines for 916 cells) makes its line count a false
+# statement of the owed denominator. And a cell that is in scope (every family outside the mcp/a2a
+# conformance-rig families) but has no golden reference must be NAMED in accepted-gaps.json with an
+# owner and a rationale; 22 were not, 14 of them named nowhere.
+assert_golden_bookkeeping() {  # $1 = golden dir ; $2 = owed-baseline ; $3 = accepted-gaps ; $4 = cells.json
+  command -v python3 >/dev/null 2>&1 || { echo "python3 is not on PATH, so the bookkeeping cannot be evaluated — refusing"; return 2; }
+  python3 - "$@" <<'PY'
+import json, os, re, sys, collections
+g, base, gaps, cells = sys.argv[1:5]
+bad = []
+try:
+    ledger = {}
+    for l in open(os.path.join(g, "ledger.tsv")):
+        r = l.rstrip("\n").split("\t")
+        if r and r[0]:
+            ledger[r[0]] = r
+    ids = [c["id"] for c in json.load(open(cells))["cells"]]
+    lines = [l.strip() for l in open(base) if l.strip() and not l.lstrip().startswith("#")]
+    doc = json.load(open(gaps))
+except Exception as e:
+    print("unreadable bookkeeping input: %s — refusing" % e); sys.exit(1)
+dups = [k for k, n in collections.Counter(lines).items() if n > 1]
+if dups:
+    bad.append("owed-baseline.txt repeats %d id(s): %s" % (len(dups), ", ".join(sorted(dups))))
+passed = {k for k, r in ledger.items() if len(r) > 1 and r[1] == "PASS"}
+extra, lost = set(lines) - passed, passed - set(lines)
+if extra:
+    bad.append("owed-baseline.txt owes %d id(s) the golden does not PASS, e.g. %s" % (len(extra), sorted(extra)[0]))
+if lost:
+    bad.append("the golden PASSes %d id(s) owed-baseline.txt does not name, e.g. %s" % (len(lost), sorted(lost)[0]))
+entries = []
+for e in doc.get("accepted", []):
+    if not (e.get("cells") and str(e.get("owner", "")).strip() and str(e.get("rationale", "")).strip()):
+        bad.append("accepted-gaps entry %r lacks cells, owner or rationale" % e.get("id")); continue
+    try:
+        entries.append(re.compile(e["cells"]))
+    except re.error as err:
+        bad.append("accepted-gaps entry %r has a bad regex: %s" % (e.get("id"), err))
+def rig_proven(cid):
+    r = ledger.get(cid)
+    return cid.split("|", 1)[0] in ("mcp", "a2a") and r is not None and len(r) > 2 \
+        and r[1] == "SKIP" and "proven by its conformance rig" in r[2]
+unowed = [c for c in ids if c not in passed and not rig_proven(c)]
+unnamed = [c for c in unowed if not any(rx.search(c) for rx in entries)]
+if unnamed:
+    bad.append("%d in-scope cell(s) have no golden reference and no accepted-gaps.json entry names them:\n    %s"
+               % (len(unnamed), "\n    ".join(unnamed)))
+if bad:
+    print("\n".join(bad)); sys.exit(1)
+print("bookkeeping whole: owed-baseline = the golden's %d PASS ids, no repeats; %d in-scope cell(s) without a golden, every one named"
+      % (len(passed), len(unowed)))
+PY
 }
 
 # ── --selftest: the DONE gate's own refusals, proven RED before any group runs ────────────────────
@@ -750,6 +949,73 @@ if [ "$SELFTEST" -eq 1 ]; then
   st_expect refuse "a report carrying unaccepted divergences"                    assert_parity_verdict "$st_tmp/rep-diverging"
   st_expect refuse "a report that compared ZERO cells (the zero that is not one)" assert_parity_verdict "$st_tmp/rep-nothing"
   st_expect refuse "no report at all"                                            assert_parity_verdict "$st_tmp/rep-missing"
+
+  # ── PARITY RECORDS BOTH LEGS (item 38) ────────────────────────────────────────────────────────
+  st_legs_named() { case " $PARITY_LEGS " in *" default "*) ;; *) return 1 ;; esac
+                    case " $PARITY_LEGS " in *" llm-only "*) ;; *) return 1 ;; esac; }
+  st_expect accept "PARITY records BOTH legs: the default all-planes build and the LLM-only build" st_legs_named
+  # ...and the group ITSELF iterates them: a list nothing loops over proves nothing about what ran.
+  st_group_builds_each_leg() {
+    grep -qE '^[[:space:]]*for PARITY_LEG in \$PARITY_LEGS; do' "$SELF" || return 1
+    grep -qE '^[[:space:]]*if PARITY_BIN="\$\(parity_build_and_resolve "\$PARITY_LEG"' "$SELF"; }
+  st_expect accept "the PARITY group builds, records and replays EACH leg (not one plain cargo build)" st_group_builds_each_leg
+  st_default_is_plain() { [ -z "$(parity_leg_args default "$PARITY_MANIFEST")" ]; }
+  st_expect accept "the default leg is the plain shipped build (no flag narrows it)" st_default_is_plain
+  st_llm_real() { local f; f="$(parity_llm_only_features "$PARITY_MANIFEST")" || return 1
+    case ",$f," in *,plane-*) return 1 ;; esac
+    parity_leg_args llm-only "$PARITY_MANIFEST" | grep -qx -- '--no-default-features'; }
+  st_expect accept "the llm-only leg derives from THIS manifest: --no-default-features, no plane-*" st_llm_real
+  printf '[features]\ndefault = ["auth-admin-tokens", "proto-llm", "plane-mcp", "plane-voice", "root-admin", "root-mcp", "root-voice", "root-llm"]\n' > "$st_tmp/Cargo-legs.toml"
+  printf '[features]\ndefault = ["auth-admin-tokens", "proto-llm", "plane-mcp", "root-mcp", "root-admin"]\n' > "$st_tmp/Cargo-noroot.toml"
+  printf '[features]\nfoo = []\n' > "$st_tmp/Cargo-nodefault.toml"
+  st_llm_fixture() { [ "$(parity_llm_only_features "$st_tmp/Cargo-legs.toml")" = "auth-admin-tokens,proto-llm,root-admin,root-llm" ]; }
+  st_expect accept "a fixture manifest's LLM-only set drops every plane-<x> and its root-<x>, keeps the rest" st_llm_fixture
+  st_expect refuse "an LLM-only set without root-llm (item 156: rate-history answers 400)" parity_llm_only_features "$st_tmp/Cargo-noroot.toml"
+  st_expect refuse "a manifest with no default list (no leg can be derived)"               parity_llm_only_features "$st_tmp/Cargo-nodefault.toml"
+  st_expect refuse "an unknown leg name"                                                  parity_leg_args all-planes "$PARITY_MANIFEST"
+  st_expect accept "two legs that are two different binaries"                             assert_legs_distinct "$st_sha" "$st_other"
+  st_expect refuse "two legs that are the SAME binary (the llm-only flags compiled nothing out)" assert_legs_distinct "$st_sha" "$st_sha"
+  st_expect refuse "a leg with no digest"                                                 assert_legs_distinct "$st_sha" ""
+
+  # ── THE REFERENCE IS THE COMMITTED GOLDEN, WHOLE, NEVER RE-RECORDED (item 41) ─────────────────
+  # The planted line goes through %s so it is not itself a record line the real scan finds.
+  printf '  step x ./bin/oracle %s --bin "$HOME/.cache/busbar-oracle/1.5.5/busbar" --plane all --out "$GOLDEN"\n' record > "$st_tmp/rerecord.sh"
+  printf '  step x ./bin/oracle %s --bin "$PARITY_BIN" --plane all --out "$CAND"\n' record > "$st_tmp/candidate-only.sh"
+  st_expect refuse "a DONE run that re-records its own golden on the machine under test" assert_never_rerecords_golden "$st_tmp/rerecord.sh"
+  st_expect accept "a DONE run that records only the candidate"                          assert_never_rerecords_golden "$st_tmp/candidate-only.sh"
+  st_expect accept "THIS file never re-records the golden"                               assert_never_rerecords_golden "$SELF"
+  mkdir -p "$st_tmp/g-whole/cells" "$st_tmp/g-short/cells" "$st_tmp/g-empty/cells" "$st_tmp/g-nocell/cells"
+  for st_g in g-whole g-short g-nocell; do
+    printf 'a|x|ok\tPASS\t\t\nb|y|ok\tPASS\t\t\nmcp|z|ok\tSKIP\tUNSUPPORTED: mcp is proven by its conformance rig, not recorded here\tnamed gap\n' > "$st_tmp/$st_g/ledger.tsv"
+    printf '{}\n' > "$st_tmp/$st_g/cells/a__x__ok.json"
+  done
+  printf '{}\n' > "$st_tmp/g-whole/cells/b__y__ok.json"; printf '{}\n' > "$st_tmp/g-short/cells/b__y__ok.json"
+  printf '{"binary_sha256":"%s","recorded":2}\n' "$st_sha" > "$st_tmp/g-whole/meta.json"
+  printf '{"binary_sha256":"%s","recorded":3}\n' "$st_sha" > "$st_tmp/g-short/meta.json"
+  printf '{"binary_sha256":"%s","recorded":2}\n' "$st_sha" > "$st_tmp/g-nocell/meta.json"
+  printf '{"binary_sha256":"%s","recorded":0}\n' "$st_sha" > "$st_tmp/g-empty/meta.json"; : > "$st_tmp/g-empty/ledger.tsv"
+  st_expect accept "a whole golden (PASS rows = meta recorded, every cell file present)"  assert_golden_whole "$st_tmp/g-whole"
+  st_expect refuse "a TRUNCATED golden (fewer PASS rows than meta recorded)"               assert_golden_whole "$st_tmp/g-short"
+  st_expect refuse "a golden whose PASS row has no recorded cell file"                     assert_golden_whole "$st_tmp/g-nocell"
+  st_expect refuse "a golden that owes nothing"                                            assert_golden_whole "$st_tmp/g-empty"
+  st_expect refuse "installing a committed golden that is not there"                       parity_install_golden "$st_tmp/no-such-golden" "$st_tmp/g-dst"
+  st_expect accept "the COMMITTED $PARITY_BASELINE_VERSION golden is whole"                assert_golden_whole "$PARITY_COMMITTED_GOLDEN"
+  st_expect accept "the COMMITTED golden names a digest this repository pins"              assert_golden_is_pinned "$PARITY_COMMITTED_GOLDEN" testing/shadow-oracle/golden-digests.tsv "$PARITY_BASELINE_VERSION"
+
+  # ── EVERY IN-SCOPE CELL HAS A GOLDEN OR A NAMED REASON; THE BASELINE IS THE GOLDEN (item 51) ──
+  printf '{"cells":[{"id":"a|x|ok"},{"id":"b|y|ok"},{"id":"mcp|z|ok"},{"id":"c|w|ok"}]}\n' > "$st_tmp/cells.json"
+  printf 'a|x|ok\nb|y|ok\n' > "$st_tmp/base-good.txt"
+  printf 'a|x|ok\nb|y|ok\nb|y|ok\n' > "$st_tmp/base-dup.txt"
+  printf 'a|x|ok\n' > "$st_tmp/base-short.txt"
+  printf '{"accepted":[{"id":"c","cells":"^c\\\\|w\\\\|ok$","owner":"o","rationale":"why"}]}\n' > "$st_tmp/gaps-named.json"
+  printf '{"accepted":[]}\n' > "$st_tmp/gaps-none.json"
+  printf '{"accepted":[{"id":"c","cells":"^c\\\\|w\\\\|ok$","owner":"o","rationale":""}]}\n' > "$st_tmp/gaps-noreason.json"
+  st_expect accept "baseline = golden PASS set and the one unowed in-scope cell is named" assert_golden_bookkeeping "$st_tmp/g-whole" "$st_tmp/base-good.txt"  "$st_tmp/gaps-named.json"    "$st_tmp/cells.json"
+  st_expect refuse "owed-baseline.txt repeats an id (917 lines for 916 cells)"           assert_golden_bookkeeping "$st_tmp/g-whole" "$st_tmp/base-dup.txt"   "$st_tmp/gaps-named.json"    "$st_tmp/cells.json"
+  st_expect refuse "owed-baseline.txt omits an id the golden PASSes"                     assert_golden_bookkeeping "$st_tmp/g-whole" "$st_tmp/base-short.txt" "$st_tmp/gaps-named.json"    "$st_tmp/cells.json"
+  st_expect refuse "an in-scope cell with no golden that nothing names"                  assert_golden_bookkeeping "$st_tmp/g-whole" "$st_tmp/base-good.txt"  "$st_tmp/gaps-none.json"     "$st_tmp/cells.json"
+  st_expect refuse "a gap entry with no rationale does not name anything"                assert_golden_bookkeeping "$st_tmp/g-whole" "$st_tmp/base-good.txt"  "$st_tmp/gaps-noreason.json" "$st_tmp/cells.json"
+  st_expect accept "THIS tree: owed-baseline IS the golden, every in-scope gap is named" assert_golden_bookkeeping "$PARITY_COMMITTED_GOLDEN" testing/shadow-oracle/owed-baseline.txt testing/shadow-oracle/accepted-gaps.json testing/shadow-oracle/cells.json
 
   # ── BUILD: no full-gate register is RED, not three plain builds (item 529) ────────────────────
   # Driven through the REAL run_build_group with `step` stubbed to a recorder, so no cargo runs.
@@ -1065,9 +1331,10 @@ end_group
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "PARITY — the shadow oracle: this build vs the published 1.5.5 binary (0 divergences)"
 # The user-observable contract: every cell recorded from the released 1.5.5 artifact (by digest)
-# is reproduced by the candidate byte for byte. The golden is recorded once per cells/normalizer
-# revision and cached; the candidate is recorded fresh. A cell the golden could not produce is a
-# NAMED gap in the report, never a pass.
+# is reproduced by the candidate byte for byte. The golden is the COMMITTED 1.5.5 recording, copied
+# in and checked whole on every run and never re-recorded here (TODO item 41); the candidate is
+# recorded fresh for BOTH legs the release claims — the default all-planes build and the LLM-only
+# build (TODO item 38). A cell the golden could not produce is a NAMED gap, never a pass.
 #
 # THE SAME BLESS-ENV ASSERTION THE BYTE-IDENTITY GROUP MAKES, and this group needs it more. It used
 # to say "SHADOW_ORACLE_GOLDEN may point at an existing recording" and was exempt from the check
@@ -1088,70 +1355,97 @@ elif [ -x bin/oracle ]; then
   # the parity verdict below is a count over it. A hand edit, or a generator change nobody ran
   # --write for, would make this whole group measure a cell set that was never reviewed.
   step "enumerate-cells --check (cells.json is what the generator derives)" ./bin/oracle cells --check
-  step "fetch-golden --check (1.5.5 by pinned digest)" ./bin/oracle fetch-golden --check
-  ORACLE_DIR="${SHADOW_ORACLE_DIR:-target/oracle}"
-  GOLDEN="${SHADOW_ORACLE_GOLDEN:-$ORACLE_DIR/recordings/golden}"
-  CAND="$ORACLE_DIR/recordings/candidate"
-  REPORT="$ORACLE_DIR/reports/latest"
-  if [ ! -s "$GOLDEN/ledger.tsv" ]; then
-    step "record the golden ($PARITY_BASELINE_VERSION)" ./bin/oracle record --bin "$HOME/.cache/busbar-oracle/$PARITY_BASELINE_VERSION/busbar" --plane all --out "$GOLDEN"
+  # THE PUBLISHED BINARY, fetched by pinned digest (idempotent: a verified cache is a no-op).
+  step "fetch-golden (the published $PARITY_BASELINE_VERSION binary, by pinned digest)" ./bin/oracle fetch-golden
+  ORACLE_DIR="target/oracle"
+  GOLDEN="$ORACLE_DIR/recordings/golden"
+  # THE REFERENCE: the committed recording, copied in fresh and checked whole — never re-recorded on
+  # this machine (TODO item 41; see parity_install_golden above). A golden that is not whole is RED
+  # and nothing is compared against it.
+  PARITY_GOLDEN_OK=0
+  if parity_install_golden "$PARITY_COMMITTED_GOLDEN" "$GOLDEN" >/tmp/done-parity-golden.$$ 2>&1; then
+    printf '  \033[32m[ok]\033[0m   the golden is the committed %s recording, copied in and WHOLE (never re-recorded here)\n' "$PARITY_BASELINE_VERSION"
+    sed 's/^/          /' /tmp/done-parity-golden.$$
+    PARITY_GOLDEN_OK=1
+  else
+    printf '  \033[31m[RED]\033[0m  the committed %s golden could not be installed WHOLE — nothing is compared against it\n' "$PARITY_BASELINE_VERSION"
+    sed 's/^/          /' /tmp/done-parity-golden.$$
+    CUR_RED=1; [ -z "$CUR_FIRST_NOTE" ] && CUR_FIRST_NOTE="committed golden not whole (parity)"
   fi
-  # WHICHEVER ARM PRODUCED IT — recorded just now, or found already sitting in target/ from some
-  # earlier run — the golden has to BE the published artefact and has to prove it by digest against
-  # the table this repository commits. The reuse arm is the common one and was the unchecked one.
+  rm -f /tmp/done-parity-golden.$$
   step "the golden is the published $PARITY_BASELINE_VERSION binary, by committed digest" \
     assert_golden_is_pinned "$GOLDEN" testing/shadow-oracle/golden-digests.tsv "$PARITY_BASELINE_VERSION"
-  rm -rf "$CAND"
-  # THE SUBJECT. Build it, and take its path FROM THE BUILD rather than from a literal — see the
-  # note on assert_candidate_bin_sane above for what the literal cost.
-  PARITY_BIN=""; PARITY_SHA=""; PARITY_SUBJECT_OK=0
-  if PARITY_BIN="$(parity_build_and_resolve 2>/tmp/done-parity-build.$$)"; then
-    printf '  \033[32m[ok]\033[0m   cargo build -p busbar --release --locked\n'
-    printf '          artefact: %s\n' "$PARITY_BIN"
-  else
-    printf '  \033[31m[RED]\033[0m  cargo build -p busbar --release --locked\n'
-    sed 's/^/          /' /tmp/done-parity-build.$$ | tail -4
-    CUR_RED=1; [ -z "$CUR_FIRST_NOTE" ] && CUR_FIRST_NOTE="release build failed (parity)"
-    PARITY_BIN=""
-  fi
-  rm -f /tmp/done-parity-build.$$
-  if [ -n "$PARITY_BIN" ]; then
-    if assert_candidate_bin_sane "$PARITY_BIN" >/tmp/done-parity-bin.$$ 2>&1; then
-      PARITY_SHA="$(sha256_of "$PARITY_BIN" 2>/dev/null)" || PARITY_SHA=""
-      if [ -n "$PARITY_SHA" ]; then
-        printf '  \033[32m[ok]\033[0m   the candidate is a real, unlinked artefact of this build\n'
-        printf '          candidate sha256 %s\n' "$PARITY_SHA"
-        PARITY_SUBJECT_OK=1
-      else
-        printf '  \033[31m[RED]\033[0m  the candidate could not be digested — its identity cannot be carried into the report\n'
-        CUR_RED=1; [ -z "$CUR_FIRST_NOTE" ] && CUR_FIRST_NOTE="candidate not digestible (parity)"
-      fi
+  step "every in-scope cell has a golden or a named reason; owed-baseline IS the golden" \
+    assert_golden_bookkeeping "$GOLDEN" testing/shadow-oracle/owed-baseline.txt testing/shadow-oracle/accepted-gaps.json testing/shadow-oracle/cells.json
+  # THE SUBJECT, BOTH LEGS (TODO item 38). Each is built, taken from the build's own artefact path,
+  # digested, recorded, checked to name that digest, and replayed strictly under its own name.
+  PARITY_LEG_SHAS=""
+  [ "$PARITY_GOLDEN_OK" -eq 1 ] || absent_step "the parity recordings of both legs" \
+    "a whole committed golden — a reference that is not whole owes fewer cells, and owing fewer is how this group goes quietly green"
+  for PARITY_LEG in $PARITY_LEGS; do
+    [ "$PARITY_GOLDEN_OK" -eq 1 ] || break
+    CAND="$ORACLE_DIR/recordings/candidate-$PARITY_LEG"
+    REPORT="$ORACLE_DIR/reports/latest-$PARITY_LEG"
+    rm -rf "$CAND"
+    PARITY_BIN=""; PARITY_SHA=""; PARITY_SUBJECT_OK=0
+    if PARITY_BIN="$(parity_build_and_resolve "$PARITY_LEG" 2>/tmp/done-parity-build.$$)"; then
+      printf '  \033[32m[ok]\033[0m   [%s] cargo build -p busbar --release --locked %s\n' "$PARITY_LEG" "$(parity_leg_args "$PARITY_LEG" "$PARITY_MANIFEST" 2>/dev/null | tr '\n' ' ')"
+      printf '          artefact: %s\n' "$PARITY_BIN"
     else
-      printf '  \033[31m[RED]\033[0m  the candidate binary is not an artefact this run can prove it built\n'
-      sed 's/^/          /' /tmp/done-parity-bin.$$
-      CUR_RED=1; [ -z "$CUR_FIRST_NOTE" ] && CUR_FIRST_NOTE="candidate binary refused (parity)"
+      printf '  \033[31m[RED]\033[0m  [%s] the release build of this leg failed\n' "$PARITY_LEG"
+      sed 's/^/          /' /tmp/done-parity-build.$$ | tail -4
+      CUR_RED=1; [ -z "$CUR_FIRST_NOTE" ] && CUR_FIRST_NOTE="release build failed (parity, $PARITY_LEG)"
+      PARITY_BIN=""
     fi
-    rm -f /tmp/done-parity-bin.$$
-  fi
-  if [ "$PARITY_SUBJECT_OK" -eq 1 ]; then
-    step "record the candidate (the artefact cargo named)" ./bin/oracle record --bin "$PARITY_BIN" --plane all --out "$CAND"
-    step "the recording names the binary this run built" \
-      assert_recorded_subject "$CAND" "$PARITY_SHA" "the candidate recording"
-    # `--strict` IS WHAT MAKES THE EXIT CODE THE VERDICT. Without it the differ prints its rows and
-    # exits 0 whatever they say — including when the selection matched nothing and it compared no
-    # cells at all. The sibling keep-proof workflow has passed it since it was written; this group,
-    # the one whose whole claim is the comparison, did not.
-    step "replay: candidate vs golden (strict)" \
-      ./bin/oracle replay --golden "$GOLDEN" --candidate "$CAND" --out "$REPORT" --strict
-    # ...and the same two facts re-derived from the report the differ wrote, so the claim does not
-    # rest on one flag in one pinned engine. This also prints the scope: a green here is a statement
-    # about the OWED cells only, never about the whole corpus.
-    step "the report's own numbers: cells were compared, and none diverged" \
-      assert_parity_verdict "$REPORT"
-  else
-    absent_step "the parity recording and its verdict" \
-      "a candidate binary this run can prove it built — nothing was recorded, so nothing is proven; the release build above is where to start"
-  fi
+    rm -f /tmp/done-parity-build.$$
+    if [ -n "$PARITY_BIN" ]; then
+      if assert_candidate_bin_sane "$PARITY_BIN" >/tmp/done-parity-bin.$$ 2>&1; then
+        PARITY_SHA="$(sha256_of "$PARITY_BIN" 2>/dev/null)" || PARITY_SHA=""
+        if [ -n "$PARITY_SHA" ]; then
+          printf '  \033[32m[ok]\033[0m   [%s] the candidate is a real, unlinked artefact of this build\n' "$PARITY_LEG"
+          printf '          candidate sha256 %s\n' "$PARITY_SHA"
+          PARITY_SUBJECT_OK=1
+        else
+          printf '  \033[31m[RED]\033[0m  [%s] the candidate could not be digested — its identity cannot be carried into the report\n' "$PARITY_LEG"
+          CUR_RED=1; [ -z "$CUR_FIRST_NOTE" ] && CUR_FIRST_NOTE="candidate not digestible (parity, $PARITY_LEG)"
+        fi
+      else
+        printf '  \033[31m[RED]\033[0m  [%s] the candidate binary is not an artefact this run can prove it built\n' "$PARITY_LEG"
+        sed 's/^/          /' /tmp/done-parity-bin.$$
+        CUR_RED=1; [ -z "$CUR_FIRST_NOTE" ] && CUR_FIRST_NOTE="candidate binary refused (parity, $PARITY_LEG)"
+      fi
+      rm -f /tmp/done-parity-bin.$$
+    fi
+    PARITY_LEG_SHAS="$PARITY_LEG_SHAS $PARITY_LEG=$PARITY_SHA"
+    if [ "$PARITY_SUBJECT_OK" -eq 1 ]; then
+      step "[$PARITY_LEG] record the candidate (the artefact cargo named)" ./bin/oracle record --bin "$PARITY_BIN" --plane all --out "$CAND"
+      step "[$PARITY_LEG] the recording names the binary this run built" \
+        assert_recorded_subject "$CAND" "$PARITY_SHA" "the $PARITY_LEG candidate recording"
+      # `--strict` IS WHAT MAKES THE EXIT CODE THE VERDICT. Without it the differ prints its rows and
+      # exits 0 whatever they say — including when the selection matched nothing.
+      #
+      # `--allow-harness-skew` IS PASSED HERE, BY NAME, for the reason ci.yml's shadow-oracle job gives
+      # beside its own: the golden is the COMMITTED 1.5.5 recording, taken with the Python harness, and
+      # the candidate was just recorded with the Rust engine, so the differ's same-revision guard would
+      # refuse the pair. This run no longer re-records its reference (TODO item 41), which is what used
+      # to keep the revisions equal. DELETE this flag with the golden re-take (TODO item 50).
+      step "[$PARITY_LEG] replay: candidate vs golden (strict)" \
+        ./bin/oracle replay --golden "$GOLDEN" --candidate "$CAND" --out "$REPORT" --allow-harness-skew --strict
+      # ...and the same two facts re-derived from the report the differ wrote, so the claim does not
+      # rest on one flag in one pinned engine. A green is a statement about the OWED cells only.
+      step "[$PARITY_LEG] the report's own numbers: cells were compared, and none diverged" \
+        assert_parity_verdict "$REPORT"
+    else
+      absent_step "[$PARITY_LEG] the parity recording and its verdict" \
+        "a candidate binary this run can prove it built — nothing was recorded, so nothing is proven; the release build above is where to start"
+    fi
+  done
+  PARITY_SHA_DEFAULT=""; PARITY_SHA_LLM=""
+  for PARITY_LEG in $PARITY_LEG_SHAS; do
+    case "$PARITY_LEG" in default=*) PARITY_SHA_DEFAULT="${PARITY_LEG#default=}" ;; llm-only=*) PARITY_SHA_LLM="${PARITY_LEG#llm-only=}" ;; esac
+  done
+  step "the default and llm-only legs are two different binaries" \
+    assert_legs_distinct "$PARITY_SHA_DEFAULT" "$PARITY_SHA_LLM"
 else
   absent_step "shadow oracle" "bin/oracle"
 fi
