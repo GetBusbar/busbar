@@ -369,7 +369,6 @@ fn the_closed_sources_split_into_kernel_derived_and_reported() {
     }
 }
 
-/// The short form on the report type folds with the default tolerances and no lane evidence — the
 /// The fold takes its policy and its legs, and there is no second way in.
 ///
 /// There used to be a shorter form that took neither: it priced at default tolerances with no lane
@@ -427,5 +426,34 @@ fn the_fold_takes_its_policy_and_its_legs() {
     assert!(
         reported.usage.is_estimated(),
         "an unchecked reported figure posts as an estimate"
+    );
+}
+
+/// The doc of `the_fold_takes_its_policy_and_its_legs` opens with the claim its body proves — that
+/// the fold takes its policy and its legs and there is no second way in — and never with a sentence
+/// describing the removed short form as though it were still there (item 439).
+#[test]
+fn the_fold_cell_doc_opens_with_its_claim() {
+    let src = include_str!("meter_tests.rs");
+    let sig = src
+        .find("\nfn the_fold_takes_its_policy_and_its_legs()")
+        .expect("the cell is in this file");
+    let doc: Vec<&str> = src[..sig]
+        .lines()
+        .rev()
+        .skip_while(|l| l.trim() == "#[test]")
+        .take_while(|l| l.starts_with("///"))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    assert_eq!(
+        doc.first().copied(),
+        Some("/// The fold takes its policy and its legs, and there is no second way in."),
+        "the cell's doc must open with its claim, not with the removed short form"
+    );
+    assert!(
+        !doc.iter().any(|l| l.contains("folds with the default tolerances")),
+        "the doc must not describe the removed short form as present"
     );
 }
