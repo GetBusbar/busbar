@@ -61,13 +61,6 @@ use http_body_util::{BodyExt, Full};
 use std::any::Any;
 use std::sync::Arc;
 
-/// The `busbar_plane_requests_total` family name (labels: plane, ingress_protocol, pool, outcome) —
-/// the neutral per-mounted-plane request counter the core `/metrics` scrape exposes. Named by literal
-/// so the voice plane emits into the SAME family without reaching into `busbar-core` (which owns the
-/// constant); a `Counted` marker on the answer stands the core `plane::observe` middleware down so the
-/// front-door series is never double-counted.
-const PLANE_REQUESTS_TOTAL: &str = "busbar_plane_requests_total";
-
 /// The bounded `pool` label the voice FRONT DOOR (the voice-server cell) emits under — a constant, not
 /// a caller value, so the series count stays bounded. The outbound provider dial (the voice-client
 /// cell) counts on its own `busbar_upstream_attempts_total` family in `topology::dial_provider`.
@@ -671,6 +664,8 @@ pub(crate) struct GovernedOpen<'a> {
 /// The front-door request is COUNTED on `busbar_plane_requests_total` (plane = voice), and the answer
 /// carries a [`Counted`] marker so the core `plane::observe` middleware stands down (no double count).
 pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Response {
+    // The front door's own clock: the duration `finish` reports is this request's, end to end.
+    let started = std::time::Instant::now();
     let GovernedOpen {
         rt,
         host,
@@ -690,7 +685,7 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
     // exactly as it did before — the refusal is a narrowing of governed callers only.
     if let Some(k) = vkey.as_ref() {
         if !session_scope_allowed(k) {
-            return finish(session_scope_refusal());
+            return finish(&host, started, session_scope_refusal());
         }
     }
     // The `(id, name)` the hook gate reads — derived from the resolved key (or `None` ungoverned).
@@ -720,14 +715,14 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
 
     // (1) HOOKS-GATE — refuse before any lease/mint/dial. Zero-cost / byte-identical when unattached.
     if let Err(refused) = hook_gate(&host, key.clone(), &call_id, now, &session_cfg).await {
-        return finish(*refused);
+        return finish(&host, started, *refused);
     }
     // (2) HOOKS-TAP — rewrite the session-open params before the credential is leased. Byte-identical
     // (params untouched) when no rewrite hook is attached or the chain abstains.
     match hook_tap(&host, key, &owner, &call_id, now, &session_cfg).await {
         Ok(Some(rewritten)) => session_cfg = rewritten,
         Ok(None) => {}
-        Err(refused) => return finish(*refused),
+        Err(refused) => return finish(&host, started, *refused),
     }
 
     // (3) THE GOVERNED OPEN. Telephony has no durable handle to correlate; the sideband topologies keep
@@ -768,23 +763,28 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
             Err(e) => start_refusal(&e),
         },
     };
-    finish(resp)
+    finish(&host, started, resp)
 }
 
-/// EMIT the front-door session-open count and MARK the answer counted. The plane-labelled counter
-/// (`plane = voice`, the voice-server cell) lands on the neutral `busbar_plane_requests_total` family;
-/// the [`Counted`] marker on the response tells the core `plane::observe` middleware this request was
-/// already counted, so the front-door series is never double-counted at the boundary.
-fn finish(mut resp: axum::response::Response) -> axum::response::Response {
-    let outcome = busbar_kernel::telemetry::outcome_of(resp.status().as_u16());
-    metrics::counter!(
-        PLANE_REQUESTS_TOTAL,
-        "plane" => "voice",
-        "ingress_protocol" => crate::OPENAI_REALTIME,
-        "pool" => FRONT_DOOR_POOL,
-        "outcome" => outcome,
-    )
-    .increment(1);
+/// REPORT the front-door session-open through the host's `request_finished` seam — its count AND its
+/// duration since `started` — and MARK the answer counted. On the engine's host that is the
+/// plane-labelled `busbar_plane_requests_total` series (`plane = voice`, the voice-server cell; the
+/// same family and labels this door emitted by hand) plus the `busbar_plane_request_duration_seconds`
+/// sample the hand emit never recorded (item 566) — the same call the A2A door makes. The [`Counted`]
+/// marker tells the core `plane::observe` middleware the request was already reported, so the
+/// front-door series is never double-counted at the boundary.
+fn finish(
+    host: &Arc<dyn EngineHost>,
+    started: std::time::Instant,
+    mut resp: axum::response::Response,
+) -> axum::response::Response {
+    host.request_finished(
+        crate::PLANE_KEY,
+        crate::OPENAI_REALTIME,
+        FRONT_DOOR_POOL,
+        busbar_kernel::telemetry::outcome_of(resp.status().as_u16()),
+        started.elapsed().as_secs_f64(),
+    );
     resp.extensions_mut().insert(Counted);
     resp
 }

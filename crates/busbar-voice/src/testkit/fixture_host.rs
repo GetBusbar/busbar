@@ -106,6 +106,19 @@ struct Inner {
     count_cap: Option<i64>,
     /// Every count `meter_ledger` landed, per key, per `(lane, class)`.
     rows: BTreeMap<String, BTreeMap<(String, String), u64>>,
+    /// Every request a plane reported through `request_finished`, in order.
+    finished: Vec<FinishedRequest>,
+}
+
+/// One request a plane reported through [`TelemetryHost::request_finished`] — the read-back twin of the
+/// engine's plane-labelled request counter and duration sample.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FinishedRequest {
+    pub plane: String,
+    pub ingress_protocol: String,
+    pub pool: String,
+    pub outcome: &'static str,
+    pub seconds: f64,
 }
 
 /// The in-memory engine host a plane's tests drive through the neutral seam. Build one with
@@ -218,6 +231,12 @@ impl FixtureHost {
     #[must_use]
     pub fn ledger_usage(&self, key_id: &str) -> Option<LedgerUsage> {
         self.lock().ledger.get(key_id).copied()
+    }
+
+    /// Every request reported through `request_finished`, in order.
+    #[must_use]
+    pub fn finished_requests(&self) -> Vec<FinishedRequest> {
+        self.lock().finished.clone()
     }
 
     /// Every count `key_id` has ledgered, per `(lane, class)` — the rows a plane's metering wrote.
@@ -354,12 +373,19 @@ impl ClockHost for FixtureHost {
 impl TelemetryHost for FixtureHost {
     fn request_finished(
         &self,
-        _plane: &str,
-        _ingress_protocol: &str,
-        _pool: &str,
-        _outcome: &'static str,
-        _seconds: f64,
+        plane: &str,
+        ingress_protocol: &str,
+        pool: &str,
+        outcome: &'static str,
+        seconds: f64,
     ) {
+        self.lock().finished.push(FinishedRequest {
+            plane: plane.to_string(),
+            ingress_protocol: ingress_protocol.to_string(),
+            pool: pool.to_string(),
+            outcome,
+            seconds,
+        });
     }
     fn telemetry_upstream_attempt(&self, _pool_label: &str, _lane: usize) {}
     fn telemetry_upstream_failure(&self, _pool_label: &str, _lane: usize, _d: &'static str) {}
