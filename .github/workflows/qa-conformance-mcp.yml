@@ -421,14 +421,17 @@ jobs:
           path: target/debug
       - name: Restore the subject binary's executable bit
         run: chmod +x target/debug/busbar
+      # NO REPOSITORY VARIABLE ARMS THIS, same as `official-subject` above. The arm is the handed-down
+      # binary and nothing else: `vars.MCP_SUBJECT_SERVER_CMD`/`_CLIENT_CMD` used to satisfy this
+      # check on their own, so a leg with NO busbar binary published armed=true and the verdict
+      # counted a run against whatever an operator's variable pointed at as a run against this
+      # commit. `Judge busbar` still honours the variables for an operator judging something else,
+      # but that is a statement about that something else, never an arm for this build.
       - name: Record the arm state
         id: arm
-        env:
-          SERVER_CMD: ${{ vars.MCP_SUBJECT_SERVER_CMD }}
-          CLIENT_CMD: ${{ vars.MCP_SUBJECT_CLIENT_CMD }}
         run: |
           set -euo pipefail
-          if [ -x target/debug/busbar ] || [ -n "${SERVER_CMD:-}${CLIENT_CMD:-}" ]; then
+          if [ -x target/debug/busbar ]; then
             echo "armed=true" >> "$GITHUB_OUTPUT"
           else
             echo "armed=false" >> "$GITHUB_OUTPUT"
@@ -582,7 +585,7 @@ jobs:
             case "${3:-}" in
               true)  strict "$1" "$2" ;;
               false)
-                echo "::error::$1 published armed=false. NOT ARMED, SO NOT RUN is a RED state: the controls proved the instruments, not busbar. Set the repository variable that arms it."
+                echo "::error::$1 published armed=false. NOT ARMED, SO NOT RUN is a RED state: the controls proved the instruments, not busbar. The arm is the busbar binary this run built and handed down, not a repository variable: find why the leg has no binary."
                 fail=1 ;;
               *)
                 echo "::error::$1 published no arm state (result: $2, armed: '${3:-}'). The leg did not reach its own arming check, so whether busbar was tested is unknown -- and unknown is red."
