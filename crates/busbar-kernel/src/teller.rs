@@ -745,9 +745,7 @@ pub fn run_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'_
         // private to this file and is the only leg this entry point can be given, so there is no
         // caller — inside the kernel or outside it — that can make this arm happen.
         std::task::Poll::Pending => {
-            unreachable!(
-                "the synchronous loop's one await is a leg that is ready on its first poll"
-            )
+            unreachable!("the synchronous loop's one await is ready on its first poll")
         }
     }
 }
@@ -770,7 +768,17 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
     route: &R,
 ) -> Ended {
     let seal = &kernel.seal;
+    // THE CANARY'S THREE COUNTS, each at the seat that makes it true for EVERY unit (item 272). A
+    // draft is a unit the table admitted and this loop runs; every unit ends with exactly one hold
+    // or one accrual (the arrival hold the table minted is the hold a refused or zero-priced unit
+    // settles, and the door's hold replaces it for an admitted one); and exactly one settlement, by
+    // the exit or the sweep, whichever takes the cell. Counting the draft four steps before the door
+    // and the hold only on the admitted arm left every refusal and every zero-hold unit unbalanced.
+    run.canary.draft_accepted();
     let opened = open_to_door(seal, units, ctx, &run);
+    if !matches!(opened, Ok((Admission::Accrual(_), _))) {
+        run.canary.hold_opened();
+    }
 
     match opened {
         // The refused door: nothing was charged beyond the arrival hold the table minted, and the
@@ -811,7 +819,6 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                 Admission::Own(hold) => {
                     match run.cell.admit(hold, &Grant::<Admittance>::mint(seal)) {
                         Ok(arrival) => {
-                            run.canary.hold_opened();
                             // The arrival hold has done its job; the admitted hold has taken its
                             // place and is the one the exit settles.
                             drop_arrival(arrival);
@@ -882,7 +889,6 @@ fn open_to_door<U: Units>(
                 .into_result(seal)
         })
         .and_then(|_| {
-            run.canary.draft_accepted();
             units
                 .authenticate(&Pass::<Authenticate>::mint(seal), ctx)
                 .into_result(seal)

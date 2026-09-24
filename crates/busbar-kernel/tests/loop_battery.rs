@@ -144,8 +144,14 @@ fn a_challenge_round_reaches_no_destination_and_opens_no_reservation() {
     );
     assert_eq!(
         canary.counts().holds,
-        0,
-        "a challenge opens no reservation: no hold was ever swapped into the cell"
+        1,
+        "a challenge swaps no hold into the cell: the arrival hold, which reserves nothing, is the \
+         one hold it settles (item 272)"
+    );
+    assert_eq!(
+        canary.balanced(),
+        Ok(()),
+        "a challenge round balances the canary"
     );
     assert!(
         matches!(ended, Ended::Settled { .. }),
@@ -1060,4 +1066,38 @@ fn client(key: u64) -> Enter {
         arrival: arrival_hold(&Kernel::new(), &TestDoor, principal()),
         now: 0,
     }
+}
+
+/// THE CANARY BALANCES OVER EVERY SHAPE OF UNIT, NOT ONLY ADMITTED ONES (item 272).
+///
+/// The identity `drafts == holds + accruals == settlements` was unsatisfiable for every refusal and
+/// every zero-hold unit: the draft was counted four steps before the door (so a unit refused at
+/// arrival or decode settled without a draft), and the hold only on the admitted arm (so a refused
+/// or zero-priced unit, which settles its arrival hold, settled without a hold). On a deployment
+/// with no rate card every admitted unit is zero-hold, so the one arithmetic proof that no unit went
+/// missing could never be read on a running node. A run of every shape must balance.
+#[test]
+fn the_canary_balances_over_refusals_and_zero_hold_units_too() {
+    let kernel = Kernel::new();
+    let canary = Canary::new();
+    for step in ORDER.iter().take(6) {
+        let units = TestUnits::refusing(*step, ReasonCode::ScopeDenied);
+        let cell = cell(&kernel);
+        run(&units, &kernel, &cell, &canary);
+    }
+    let challenge = TestUnits {
+        challenge: true,
+        ..TestUnits::passing()
+    };
+    let cell_c = cell(&kernel);
+    run(&challenge, &kernel, &cell_c, &canary);
+    let passing = TestUnits::passing();
+    let cell_p = cell(&kernel);
+    run(&passing, &kernel, &cell_p, &canary);
+    let counts = canary.counts();
+    assert_eq!(
+        counts.drafts, 8,
+        "one draft per unit the loop ran: {counts:?}"
+    );
+    assert_eq!(canary.balanced(), Ok(()), "{counts:?}");
 }
