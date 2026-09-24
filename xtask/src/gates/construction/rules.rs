@@ -873,14 +873,17 @@ pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     // NOTHING HERE IS PERMITTED THAT WAS NOT PERMITTED BEFORE: `allowed_root` is unchanged,
     // `max_sites` is unchanged at 0, and no site gains an excuse. The row simply now sees the sites
     // its own claim has always been about, and the count it reports is the count the tree carries.
-    const SCAN_TEST_SCOPE_TOO: bool = false; // the `production_only` argument to `Tree::grep`
+    // Named for the argument it IS, not for the intent behind it: `Tree::grep`'s third state is
+    // `production_only`, and this rule now passes `false` to it. A const called
+    // "scan test scope too = false" reads as the opposite of what it does.
+    const PRODUCTION_ONLY: bool = false;
 
     // ONE SITE IS ONE FINDING. A line a literal and a family both name is a single forged mint, so
     // the first scan to reach it labels it and the rest pass over.
     let mut seen: std::collections::BTreeSet<(&str, usize)> = std::collections::BTreeSet::new();
     let mut offenders = Vec::new();
     for (pat, rx_pat) in &scans {
-        for (rel, l) in tree.grep(rx_pat, SCAN_TEST_SCOPE_TOO, None) {
+        for (rel, l) in tree.grep(rx_pat, PRODUCTION_ONLY, None) {
             if rel.starts_with(root.as_str()) || excluded(rel) {
                 continue;
             }
@@ -941,7 +944,7 @@ pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
         // SAME SCOPE AS THE FAMILY SCAN ABOVE, and it has to be the same or the four rows of this
         // family disagree about what "spelled only inside X" ranges over.
         let sites: Vec<String> = tree
-            .grep(&rx_pat, SCAN_TEST_SCOPE_TOO, None)
+            .grep(&rx_pat, PRODUCTION_ONLY, None)
             .into_iter()
             .filter(|(rel, _)| !rel.starts_with(hroot.as_str()))
             .map(|(rel, l)| format!("{rel}:{}", l.no))
@@ -949,7 +952,7 @@ pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
         let ceiling = need_int(c, ceil_key, "token-sealed")?;
         let detail = format!(
             // "production" is gone from this sentence because the scan is no longer production-only
-            // (see SCAN_TEST_SCOPE_TOO above): #65 binds "no NON-KERNEL CODE can mint a seal", and a
+            // (see PRODUCTION_ONLY above): #65 binds "no NON-KERNEL CODE can mint a seal", and a
             // row whose text narrows its own claim to production is a row asserting less than it
             // checks — which is the drift X-177 was about, in the other direction.
             "{} call site(s) of {subject} outside {home} (ceiling {ceiling}): {}",
