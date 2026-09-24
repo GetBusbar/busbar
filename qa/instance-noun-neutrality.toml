@@ -5284,38 +5284,6 @@ category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
 [[leak]]
-noun = "streaming"
-kind = "plane"
-file = "crates/busbar/src/root/tests/units_a2a.rs"
-count = 1
-category = "composition-root"
-wave = "keystone / composition-root — register_planes both-ways self-registration"
-
-[[leak]]
-noun = "streaming"
-kind = "plane"
-file = "crates/busbar/src/root/tests/units_mcp.rs"
-count = 1
-category = "composition-root"
-wave = "keystone / composition-root — register_planes both-ways self-registration"
-
-[[leak]]
-noun = "streaming"
-kind = "plane"
-file = "crates/busbar/src/root/units_a2a.rs"
-count = 1
-category = "composition-root"
-wave = "keystone / composition-root — register_planes both-ways self-registration"
-
-[[leak]]
-noun = "streaming"
-kind = "plane"
-file = "crates/busbar/src/root/units_mcp.rs"
-count = 3
-category = "composition-root"
-wave = "keystone / composition-root — register_planes both-ways self-registration"
-
-[[leak]]
 noun = "tcp"
 kind = "transport"
 file = "crates/busbar-transport-grpc/src/tests/battery.rs"
