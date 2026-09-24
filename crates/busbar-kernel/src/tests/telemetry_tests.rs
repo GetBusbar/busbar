@@ -648,3 +648,64 @@ fn test_off_metrics_retains_effectively_nothing_below_the_drain_threshold() {
          drain it"
     );
 }
+
+/// AN EXITED THREAD'S BANK IS RELEASED, AND ITS COUNTS ARE NOT (item 567).
+///
+/// The registry used to keep a second `Arc` to every bank for the process's life, so every thread
+/// that ever emitted — tokio's reaped-and-respawned blocking threads included — stayed resident and
+/// was walked on every flush. A flush now folds a dead thread's final counters into the slot's
+/// retired base, drains its histogram buffers, and lets the bank go. Both halves are asserted: the
+/// banks of joined threads are freed, and the exposed total neither loses their adds nor regresses
+/// on the flush after the release.
+#[test]
+fn an_exited_threads_bank_is_released_and_its_counts_survive() {
+    crate::metrics::init();
+    let slot = counter_slot(
+        crate::metrics::REQUESTS_TOTAL,
+        &[
+            ("ingress_protocol", "acme"),
+            ("pool", "tel-bank-567-pool"),
+            ("outcome", "ok"),
+        ],
+    );
+    assert!(slot.is_valid(), "slot table must not be full in tests");
+    let before = metric_sum(
+        crate::metrics::REQUESTS_TOTAL,
+        &[("pool", "tel-bank-567-pool")],
+    );
+    let banks: Vec<_> = (0..6)
+        .map(|_| {
+            std::thread::spawn(move || {
+                for _ in 0..100 {
+                    slot.incr();
+                }
+                this_threads_bank()
+            })
+            .join()
+            .expect("the emitting thread exits cleanly")
+        })
+        .collect();
+    let first = metric_sum(
+        crate::metrics::REQUESTS_TOTAL,
+        &[("pool", "tel-bank-567-pool")],
+    );
+    for bank in &banks {
+        assert!(
+            bank.upgrade().is_none(),
+            "a bank whose thread has exited must be released by the flush, not kept"
+        );
+    }
+    let second = metric_sum(
+        crate::metrics::REQUESTS_TOTAL,
+        &[("pool", "tel-bank-567-pool")],
+    );
+    assert_eq!(
+        (first - before).round() as u64,
+        600,
+        "the released banks' adds must all be exposed"
+    );
+    assert_eq!(
+        second, first,
+        "a later flush must not regress the total once the banks are gone"
+    );
+}
