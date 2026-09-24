@@ -38,14 +38,14 @@
 //! What leaves the unit is `{ slot, fingerprint }` and nothing else; its debug output says so
 //! rather than printing anything derived from the material.
 //!
-//! **A hazard this allocation exposes, named here because this is what exposes it.** The TLS
-//! transport's `listen`, `dial` and `adopt` all read the slot off the handle they were given, which
-//! is correct. Its `accept` does not: it reads slot 0 directly. So an administrative listener
-//! provisioned at slot 1 passes `listen` and then mis-serves every accepted connection — either
-//! refusing for want of a key or presenting the data listener's certificate. Nothing here works
-//! around it: the workaround would be to put every listener in slot 0, which would make the slot
-//! meaningless and hide the defect behind the composition that was supposed to reveal it. The fix
-//! belongs in the transport, and until it lands a deployment with two TLS listeners is exposed.
+//! **Every slot is served by its own listener.** The TLS transport's `listen`, `dial`, `adopt` and
+//! `accept` all read the slot off the handle the listener was provisioned with — `accept` keeps the
+//! slot `listen` recorded for the bound address and resolves that slot's config, never a fixed slot
+//! of its own. So a deployment with the data listener and the administrative listener both on TLS
+//! serves each one the certificate provisioned for it, and nothing here has to crowd every listener
+//! into slot 0 to get there. The transport crate pins that in
+//! `accept_serves_the_slot_the_listener_was_provisioned_with`; this module's own tests pin it again
+//! through this module's provisioning, because this is the allocation that puts a listener in slot 1.
 
 use busbar_contract::{ConfigView, Listener, Transport, TransportConfigView, TransportError};
 #[cfg(feature = "plane-voice")]
