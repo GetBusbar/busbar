@@ -693,20 +693,16 @@ fn instrument_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
 
     // ── NOTE-WITNESS, BOTH ARMS ────────────────────────────────────────────────────────────────
     //
-    // THE SHIPPED TABLE IS RED, so neither arm may be read off it. `PB-58` names a witness that
-    // exists nowhere, which is the defect this rule was built for and is the owner's to route — so
-    // the rule is proven on PLANTED tables instead, and proven BOTH WAYS. A red arm alone would
-    // not distinguish this rule from one that is simply always red.
+    // THE RULE IS PROVEN ON PLANTED TABLES, BOTH WAYS, never read off the shipped table: a red arm
+    // alone would not distinguish this rule from one that is simply always red, and a green arm
+    // read off the real tree would move whenever the tree does.
     //
-    // THE RED ARM IS ASKED OVER A GREEN BASELINE, NOT OVER THE SHIPPED TREE (item 89). Asked over
-    // the real tree it scored IMPOSSIBLE: `design-bindings:note-witness` is standing RED there on
-    // PB-58, so no plant could be credited with the red. That red is real -- PB-58's witness
-    // `a_spend_past_the_reservation_is_carried_out_as_an_overdraft` has never been a fn in any
-    // commit (19d894261; M3 in 1.6.0-LEDGER.md) -- and it is the money owner's to route, so it
-    // STAYS red on `gate`. What moves is the proof: the case's baseline is the fixture below, a
-    // control ledger and a note table whose one witness RESOLVES, on which the row is GREEN; the
-    // plant is that same fixture with the witness swapped for one that never existed. GREEN ->
-    // RED on the one row, over two trees that differ by one symbol. DO NOT weaken the rule.
+    // THE RED ARM IS ASKED OVER A GREEN BASELINE, NOT OVER THE SHIPPED TREE (item 89). The case's
+    // baseline is the fixture below, a control ledger and a note table whose one witness RESOLVES,
+    // on which the row is GREEN; the plant is that same fixture with the witness swapped for one
+    // that never existed. GREEN -> RED on the one row, over two trees that differ by one symbol.
+    // (The shipped table's PB-58 once named a witness that did not exist, which is exactly the
+    // defect this rule catches; it now names a real test.) DO NOT weaken the rule.
     //
     // The note table goes through [`NOTE_TABLE_KEY`], which REPLACES the table wholesale, so
     // PB-58 is absent from both the baseline and the plant and cannot colour either run.
