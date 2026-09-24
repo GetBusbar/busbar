@@ -126,6 +126,30 @@ pub const PRIOR_VERDICTS: &[&str] = &[
     "DUPLICATE",
 ];
 
+/// THE THREE GIT ANSWERS THIS GATE READS, EACH OVERLAY-ANSWERABLE BY ITS KEY (item 89).
+///
+/// Every input to this gate that is not a file is a `git ls-files` subprocess, and a subprocess
+/// cannot see an overlay. So the selftest could plant into the slice documents and nothing else:
+/// it could not collapse the denominator, add a tracked file, or declare an untracked one — which
+/// left `denominator`, `swept`, `reachability-axis` and `compiles-and-tracked` with no RED case at
+/// all (item 90), and it could only plant on top of the REAL tree's debt, where `no-phantoms` is
+/// already red (PROOF IMPOSSIBLE). `Ctx::tracked_ignored` is the precedent: a git answer a
+/// self-test can plant by key. With no overlay, or an overlay that does not name the key, the
+/// real `git` answers exactly as before.
+pub const CMD_DENOMINATOR: &str = "sweep-coverage:git-ls-files-denominator";
+/// The tracked slice documents under [`SWEEP_DIR`].
+pub const CMD_SLICES: &str = "sweep-coverage:git-ls-files-sweep-dir";
+/// The untracked `.rs` files (`git ls-files --others --exclude-standard '*.rs'`).
+pub const CMD_UNTRACKED: &str = "sweep-coverage:git-ls-files-untracked-rs";
+
+/// `git <args>` as lines, unless the overlay plants the answer under `key`.
+fn git_lines_or_planted(cx: &Ctx, key: &str, args: &[&str]) -> Result<Vec<String>, String> {
+    match cx.overlay_command(key) {
+        Some(out) => Ok(out.lines().map(str::to_string).collect()),
+        None => cx.git_lines(args),
+    }
+}
+
 /// One parsed verdict line.
 #[derive(Debug, Clone)]
 pub struct Claim {
@@ -151,7 +175,7 @@ fn listing(items: &[String], cap: usize) -> String {
 pub fn denominator(cx: &Ctx) -> Result<BTreeSet<String>, String> {
     let mut args: Vec<&str> = vec!["ls-files"];
     args.extend_from_slice(DENOMINATOR_GLOBS);
-    let lines = cx.git_lines(&args)?;
+    let lines = git_lines_or_planted(cx, CMD_DENOMINATOR, &args)?;
     Ok(lines
         .into_iter()
         .map(|l| l.trim().to_string())
@@ -325,7 +349,7 @@ pub fn claims(cx: &Ctx, denom: &BTreeSet<String>) -> Result<Vec<Claim>, String> 
     //
     // The tracked set is still the claim (committed evidence is the standard the `swept` row
     // holds everyone to); the overlay is unioned on top so a plant is reachable.
-    let mut docs: Vec<String> = cx.git_lines(&["ls-files", SWEEP_DIR])?;
+    let mut docs: Vec<String> = git_lines_or_planted(cx, CMD_SLICES, &["ls-files", SWEEP_DIR])?;
     if let Some(ov) = cx.overlay() {
         for p in ov.paths() {
             let rel = p.to_string_lossy().to_string();
@@ -622,8 +646,11 @@ impl SweepCoverageGate {
         // An untracked file that some module declares is a file that exists here and nowhere else.
         // The untracked listing is an ORACLE like any other: a git that could not answer is a row
         // that could not run, never an empty list with no ghosts in it.
-        let untracked = match cx.git_lines(&["ls-files", "--others", "--exclude-standard", "*.rs"])
-        {
+        let untracked = match git_lines_or_planted(
+            cx,
+            CMD_UNTRACKED,
+            &["ls-files", "--others", "--exclude-standard", "*.rs"],
+        ) {
             Ok(v) => v,
             Err(e) => {
                 rows.push(Row::fail(
@@ -700,40 +727,87 @@ impl Gate for SweepCoverageGate {
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::new();
 
+        // EVERY CASE PLANTS INTO A FIXTURE TREE, NOT THE REAL ONE (item 89).
+        //
+        // On the real tree `swept`, `no-phantoms` and `reachability-axis` are RED on the sweep's
+        // own debt — files added since the sweep ran, verdicts naming files since deleted. That
+        // debt stays RED on `gate`; it is the work, not the instrument. But a plant into a row that
+        // is already red proves nothing (the phantom case was PROOF IMPOSSIBLE), and four rows had
+        // no plant at all because their inputs are git subprocesses an overlay could not reach.
+        //
+        // So the baseline is a synthetic tree answered through the gate's own planted-git keys:
+        // a denominator just over the floor, one slice document giving every file a CLEAN verdict,
+        // a prior reachability sweep verdicting every `.rs` file, and no untracked file. Every row
+        // is GREEN over it, so each case below moves exactly one row GREEN -> RED.
+        let fixture = Fixture::new();
+        let base = cx.with_overlay(fixture.overlay());
+
+        // RED — THE DENOMINATOR COLLAPSED. A broken glob reports 100% swept, the exact number the
+        // work is trying to reach; below the floor it is a broken instrument, never a finished job.
+        report.push(prove_red(
+            &base,
+            self,
+            "a denominator below its floor is a broken glob, not a swept tree",
+            &[ROW_DENOMINATOR],
+            {
+                let mut f = fixture.clone();
+                f.denominator.truncate(DENOMINATOR_FLOOR - 1);
+                f.overlay()
+            },
+            &[
+                "the denominator collapsed",
+                &format!("floor {DENOMINATOR_FLOOR}"),
+            ],
+        ));
+
+        // RED — A TRACKED FILE WITH NO VERDICT. Adding a file to the tree lowers coverage at once;
+        // that is what makes the denominator one the work did not write.
+        report.push(prove_red(
+            &base,
+            self,
+            "a tracked file nobody gave a verdict is unswept",
+            &[ROW_SWEPT],
+            {
+                let mut f = fixture.clone();
+                f.denominator
+                    .push("fixture/scripts/added-after-the-sweep.sh".to_string());
+                f.overlay()
+            },
+            &[
+                "without a verdict",
+                "fixture/scripts/added-after-the-sweep.sh",
+            ],
+        ));
+
         // RED — A PHANTOM. A verdict for a file the tree does not have is the cheapest way to
         // manufacture coverage: write more lines, claim a higher percentage. The denominator
         // comes from git precisely so that this cannot work, and this case is the proof.
         report.push(prove_red(
-            cx,
+            &base,
             self,
             "a verdict naming a file outside the tree is a phantom, not coverage",
             &[ROW_PHANTOMS],
-            {
-                let mut ov = Overlay::new();
-                ov.set(
-                    format!("{SWEEP_DIR}/S99-selftest.md"),
-                    "| FILE | VERDICT | EVIDENCE | ROWS |\n                     |---|---|---|---|\n                     | crates/no-such-crate/src/lib.rs | CLEAN | planted | - |\n",
-                );
-                ov
-            },
-            &["phantom"],
+            fixture.with_slice(
+                "S99-selftest",
+                "| crates/no-such-crate/src/lib.rs | CLEAN | planted | - |\n",
+            ),
+            &["phantom", "crates/no-such-crate/src/lib.rs"],
         ));
 
         // RED — PROSE IN THE VERDICT COLUMN. "looks fine to me" occupies a verdict cell and
         // reads as a swept file while asserting nothing that can be wrong.
         report.push(prove_red(
-            cx,
+            &base,
             self,
             "a verdict cell holding prose is refused rather than counted as a verdict",
             &[ROW_LEGAL],
-            {
-                let mut ov = Overlay::new();
-                ov.set(
-                    format!("{SWEEP_DIR}/S98-selftest.md"),
-                    "| FILE | VERDICT | EVIDENCE | ROWS |\n                     |---|---|---|---|\n                     | Cargo.toml | looks fine to me | planted | - |\n",
-                );
-                ov
-            },
+            fixture.with_slice(
+                "S98-selftest",
+                &format!(
+                    "| {} | looks fine to me | planted | - |\n",
+                    fixture.denominator[0]
+                ),
+            ),
             &["not a verdict"],
         ));
 
@@ -741,21 +815,115 @@ impl Gate for SweepCoverageGate {
         // leaving a real gap somewhere else, and a partition that stops being a partition is
         // the exact failure the slice arithmetic was supposed to rule out.
         report.push(prove_red(
-            cx,
+            &base,
             self,
             "one file claimed by two slices is caught rather than counted twice",
             &[ROW_DISJOINT],
-            {
-                let mut ov = Overlay::new();
-                let row = "| FILE | VERDICT | EVIDENCE | ROWS |\n                           |---|---|---|---|\n                           | Cargo.toml | CLEAN | planted | - |\n";
-                ov.set(format!("{SWEEP_DIR}/S97-selftest.md"), row);
-                ov.set(format!("{SWEEP_DIR}/S96-selftest.md"), row);
-                ov
-            },
+            fixture.with_slice(
+                "S97-selftest",
+                &format!("| {} | CLEAN | planted | - |\n", fixture.denominator[0]),
+            ),
             &["claimed by"],
         ));
 
+        // RED — A `.rs` FILE THE PRIOR REACHABILITY SWEEP NEVER SAW. A sweep that finished once
+        // is not a sweep that is finished.
+        let unseen = fixture.denominator[0].clone();
+        report.push(prove_red(
+            &base,
+            self,
+            "a tracked .rs file absent from the prior reachability sweep is named",
+            &[ROW_REACHABILITY],
+            {
+                let mut f = fixture.clone();
+                f.prior_skips = Some(unseen.clone());
+                f.overlay()
+            },
+            &["absent from the reachability sweep", &unseen],
+        ));
+
+        // RED — A FILE THAT COMPILES HERE AND NOWHERE ELSE. Untracked, and declared by a `mod`
+        // statement in a tracked file: on a clean checkout the declaring crate does not build.
+        report.push(prove_red(
+            &base,
+            self,
+            "an untracked .rs file declared by a module statement is caught",
+            &[ROW_TRACKED],
+            {
+                let mut f = fixture.clone();
+                f.untracked.push("fixture/src/ghost.rs".to_string());
+                let mut ov = f.overlay();
+                ov.set("fixture/src/lib.rs", "mod ghost;\n");
+                ov
+            },
+            &["fixture/src/ghost.rs (declared in fixture/src/lib.rs)"],
+        ));
+
         report
+    }
+}
+
+/// THE SELFTEST'S SYNTHETIC TREE: every git answer and every document this gate reads, chosen so
+/// every row is GREEN. A case clones it, changes one thing, and takes the overlay.
+#[derive(Clone)]
+struct Fixture {
+    /// The planted `git ls-files <DENOMINATOR_GLOBS>` answer.
+    denominator: Vec<String>,
+    /// The planted untracked `.rs` listing.
+    untracked: Vec<String>,
+    /// A denominator file the prior reachability sweep leaves out, when a case wants one.
+    prior_skips: Option<String>,
+}
+
+/// The fixture's one slice document, verdicting every denominator file.
+const FIXTURE_SLICE: &str = "F01-selftest-fixture";
+
+impl Fixture {
+    fn new() -> Fixture {
+        Fixture {
+            // Just over the floor, so a truncation by one file is below it.
+            denominator: (0..DENOMINATOR_FLOOR + 10)
+                .map(|i| format!("fixture/src/f{i:04}.rs"))
+                .collect(),
+            untracked: Vec::new(),
+            prior_skips: None,
+        }
+    }
+
+    fn slice_path(slice: &str) -> String {
+        format!("{SWEEP_DIR}/{slice}.md")
+    }
+
+    fn overlay(&self) -> Overlay {
+        const HEAD: &str = "| FILE | VERDICT | EVIDENCE | ROWS |\n|---|---|---|---|\n";
+        let mut ov = Overlay::new();
+        ov.set_command(CMD_DENOMINATOR, self.denominator.join("\n"));
+        ov.set_command(CMD_SLICES, Fixture::slice_path(FIXTURE_SLICE));
+        ov.set_command(CMD_UNTRACKED, self.untracked.join("\n"));
+
+        let mut slice = String::from(HEAD);
+        let mut prior = String::from(HEAD);
+        // The slice document verdicts the fixture's ORIGINAL population, so a file a case adds to
+        // the denominator is exactly the file nobody swept.
+        for f in Fixture::new().denominator {
+            slice.push_str(&format!("| {f} | CLEAN | fixture | - |\n"));
+            if f.ends_with(".rs") && self.prior_skips.as_deref() != Some(f.as_str()) {
+                prior.push_str(&format!("| {f} | LIVE | fixture | - |\n"));
+            }
+        }
+        ov.set(Fixture::slice_path(FIXTURE_SLICE), slice);
+        ov.set(PRIOR_SWEEP, prior);
+        ov
+    }
+
+    /// The fixture plus one extra slice document holding `rows`.
+    fn with_slice(&self, slice: &str, rows: &str) -> Overlay {
+        let mut ov = self.overlay();
+        ov.set(
+            Fixture::slice_path(slice),
+            format!("| FILE | VERDICT | EVIDENCE | ROWS |\n|---|---|---|---|\n{rows}"),
+        );
+        ov
     }
 }
 
