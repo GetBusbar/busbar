@@ -16,6 +16,7 @@ use crate::mount::{open_governed, GovernedOpen, Ingress};
 use crate::runtime::{EchoToolExecutor, VoiceRuntime};
 use crate::testkit::fixture_host::FixtureHost;
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
+use busbar_kernel::plane_host::EngineHost;
 use std::sync::Arc;
 
 fn key() -> busbar_api::VirtualKey {
@@ -29,7 +30,7 @@ fn key() -> busbar_api::VirtualKey {
 async fn open(host: &Arc<FixtureHost>, rt: &VoiceRuntime, call_id: &str) -> axum::http::StatusCode {
     open_governed(GovernedOpen {
         rt,
-        host: Arc::clone(host) as Arc<dyn busbar_kernel::plane_host::EngineHost>,
+        host: Arc::clone(host) as Arc<dyn EngineHost>,
         provider: None,
         ingress: Ingress::Mint,
         owner: "acct-meter".to_string(),
@@ -71,10 +72,10 @@ async fn a_served_sessions_turn_lands_the_planes_counts_on_the_presenting_key() 
             Arc::new(DurableHandleEngine::new()),
             Arc::new(EchoToolExecutor),
         ),
-        Arc::clone(&host) as Arc<dyn busbar_kernel::plane_host::EngineHost>,
+        Arc::clone(&host) as Arc<dyn EngineHost>,
     );
     let meter = crate::runtime::TurnMeter::new(
-        Arc::clone(&host) as Arc<dyn busbar_kernel::plane_host::EngineHost>,
+        Arc::clone(&host) as Arc<dyn EngineHost>,
         key(),
         "voice-server",
         crate::OPENAI_REALTIME,

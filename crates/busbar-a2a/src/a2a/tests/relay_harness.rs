@@ -21,6 +21,7 @@
 
 use crate::testkit::engine_boot::engine;
 use crate::testkit::TestAppA2aExt;
+use busbar_kernel::config::groups::{GroupCfg, LimitCfg};
 use busbar_kernel::test_support::engine_kit::{GovKit, HookEnvHandle};
 use busbar_kernel::test_support::engine_kit_plus::EngineAppPlus;
 use std::net::{IpAddr, Ipv4Addr};
@@ -661,7 +662,7 @@ pub(super) type Card =
 pub(super) async fn harness_priced(
     outcome: Outcome,
     card: Option<Card>,
-    limits: Vec<busbar_kernel::config::groups::LimitCfg>,
+    limits: Vec<LimitCfg>,
 ) -> Harness {
     harness_core(
         outcome,
@@ -723,7 +724,7 @@ async fn harness_core(
     defs: &[(&str, &str)],
     pools: &[(&str, &[&str])],
     billed: bool,
-    money: Option<(Option<Card>, Vec<busbar_kernel::config::groups::LimitCfg>)>,
+    money: Option<(Option<Card>, Vec<LimitCfg>)>,
 ) -> Harness {
     use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
     use busbar_kernel::governance::NewKeySpec;
@@ -751,11 +752,11 @@ async fn harness_core(
                 ..Default::default()
             },
             2_000_000_000,
-            busbar_kernel::store::now(),
+            busbar_substrate_values::store::now(),
         )
         .expect("mint");
     let generation = TokenVerifier::single(signer.kid(), signer.verifying_key())
-        .verify(plain.as_str(), busbar_kernel::store::now(), None)
+        .verify(plain.as_str(), busbar_substrate_values::store::now(), None)
         .expect("the plain token verifies")
         .generation;
     // THE GRANT. `agent:<id>` is what `inbound::authorize`, the catalogue and the EGRESS gate all
@@ -811,25 +812,21 @@ async fn harness_core(
         // price — so a card with no entries is enough to flip pricing on without altering one byte of
         // the row. The flat fee stays `1` (the unbilled default's `CostModel::flat(1)`), and fee
         // posting is a read-time projection that never lands in the metering row either.
-        let card: std::collections::BTreeMap<
-            String,
-            busbar_kernel::config::sections::RateEntryCfg,
-        > = std::collections::BTreeMap::new();
-        let groups: std::collections::BTreeMap<String, busbar_kernel::config::groups::GroupCfg> =
+        let card: Card = std::collections::BTreeMap::new();
+        let groups: std::collections::BTreeMap<String, GroupCfg> =
             std::collections::BTreeMap::new();
         builder = builder.cost(engine().cost_parts(Some(&card), 1, &groups));
     }
     let mut cost = None;
     if let Some((card, limits)) = money {
-        let groups: std::collections::BTreeMap<String, busbar_kernel::config::groups::GroupCfg> =
-            [(
-                "g".to_string(),
-                busbar_kernel::config::groups::GroupCfg {
-                    limits,
-                    ..Default::default()
-                },
-            )]
-            .into();
+        let groups: std::collections::BTreeMap<String, GroupCfg> = [(
+            "g".to_string(),
+            GroupCfg {
+                limits,
+                ..Default::default()
+            },
+        )]
+        .into();
         let priced = engine().cost_parts(card.as_ref(), 0, &groups);
         builder = builder.cost(priced.clone());
         cost = Some(priced);

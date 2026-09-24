@@ -62,6 +62,8 @@
 // invisible, including in the modules a request now goes through; per-file, a new gap in a mounted
 // module is a warning again, and the file that still has one has to say why.
 
+use busbar_kernel::plane::registry::BillableClass;
+
 /// THE A2A PLANE'S VOCABULARY DECLARATION, beside the code it describes. Folded into
 /// `plane::registry::BUILTIN_PLANE_DECLS`; every field replaces one arm of a `Plane::A2a` `match`.
 ///
@@ -175,7 +177,7 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         // config-seam stage 1: the registry starts EMPTY — nothing has moved out of core yet.
         owned_config_sections: &[],
         // The class the plane crate declares (`busbar_plane_a2a::meta`), by its own symbol.
-        billable_classes: &[busbar_kernel::plane::registry::BillableClass {
+        billable_classes: &[BillableClass {
             class: busbar_plane_a2a::meta::CLASS_BYTES.as_str(),
             family: "byte",
         }],

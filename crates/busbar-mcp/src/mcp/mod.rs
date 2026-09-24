@@ -114,6 +114,8 @@
 //! sealed with state busbar mints is the same rule that already makes busbar publish the operator's
 //! tool description rather than the upstream's — applied to the field where it matters most.
 
+use busbar_kernel::plane::registry::BillableClass;
+
 /// THE MCP PLANE'S VOCABULARY DECLARATION, beside the code it describes. Folded into
 /// `plane::registry::BUILTIN_PLANE_DECLS`; every field replaces one arm of a `Plane::Mcp` `match`.
 ///
@@ -189,11 +191,11 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         owned_config_sections: &[],
         // The classes the plane crate declares (`busbar_plane_mcp::meta`), by its own symbols.
         billable_classes: &[
-            busbar_kernel::plane::registry::BillableClass {
+            BillableClass {
                 class: busbar_plane_mcp::meta::CLASS_TOOL_CALLS.as_str(),
                 family: "count",
             },
-            busbar_kernel::plane::registry::BillableClass {
+            BillableClass {
                 class: busbar_plane_mcp::meta::CLASS_BYTES.as_str(),
                 family: "byte",
             },

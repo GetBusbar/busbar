@@ -192,6 +192,8 @@ pub mod testkit;
 // binary by the codec crate's `test-support` dev edge in the manifest. Nothing in this crate names
 // it directly, so there is no re-export here.
 
+use busbar_kernel::plane::registry::{BillableClass, TOKEN_FAMILY};
+
 /// EVERY DIALECT THIS PLUGIN DECLARES, in the order an operator sees.
 ///
 /// THE ORDER IS LOAD-BEARING AND IT IS NOT ALPHABETICAL. The composition root hands this slice to
@@ -281,23 +283,23 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         // and a rerank's billed search units (the one open class a codec counts). A present card
         // must configure all five (Q29/Q35).
         billable_classes: &[
-            busbar_kernel::plane::registry::BillableClass {
+            BillableClass {
                 class: busbar_api::UNIT_INPUT,
-                family: busbar_kernel::plane::registry::TOKEN_FAMILY,
+                family: TOKEN_FAMILY,
             },
-            busbar_kernel::plane::registry::BillableClass {
+            BillableClass {
                 class: busbar_api::UNIT_OUTPUT,
-                family: busbar_kernel::plane::registry::TOKEN_FAMILY,
+                family: TOKEN_FAMILY,
             },
-            busbar_kernel::plane::registry::BillableClass {
+            BillableClass {
                 class: busbar_api::UNIT_CACHE_READ,
-                family: busbar_kernel::plane::registry::TOKEN_FAMILY,
+                family: TOKEN_FAMILY,
             },
-            busbar_kernel::plane::registry::BillableClass {
+            BillableClass {
                 class: busbar_api::UNIT_CACHE_WRITE,
-                family: busbar_kernel::plane::registry::TOKEN_FAMILY,
+                family: TOKEN_FAMILY,
             },
-            busbar_kernel::plane::registry::BillableClass {
+            BillableClass {
                 class: busbar_llm_codec::ir::rerank::SEARCH_UNITS_CLASS,
                 family: "count",
             },

@@ -17,6 +17,7 @@
 
 use super::relay_harness::*;
 use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
+use busbar_kernel::governance::{budget_window, PLANE_LANE_SEP};
 
 fn per_day(metric: LimitMetric, amount: u64) -> LimitCfg {
     LimitCfg {
@@ -32,18 +33,14 @@ fn per_day(metric: LimitMetric, amount: u64) -> LimitCfg {
 /// The ledger lane a hop to `planner` is keyed on: the admitted resource, qualified by the plane, so
 /// the A2A plane's own card prices it.
 fn planner_lane() -> String {
-    format!(
-        "{}{}agent:planner",
-        crate::PLANE_KEY,
-        busbar_kernel::governance::PLANE_LANE_SEP
-    )
+    format!("{}{}agent:planner", crate::PLANE_KEY, PLANE_LANE_SEP)
 }
 
 /// The `bytes` the caller's group bucket holds on the `planner` lane, or `None` when no row exists.
 fn bytes_ledgered(h: &Harness) -> Option<u64> {
     h.gov.flush_budgets();
-    let now = busbar_kernel::store::now();
-    let window = busbar_kernel::governance::budget_window("day", now);
+    let now = busbar_substrate_values::store::now();
+    let window = budget_window("day", now);
     let ledger = h.gov.store().get_usage("group:g@day", window).ok()?;
     let lane = planner_lane();
     ledger
@@ -65,7 +62,7 @@ fn group_spend(h: &Harness) -> Result<i64, String> {
             "group:g@day",
             "day",
             true,
-            busbar_kernel::store::now(),
+            busbar_substrate_values::store::now(),
         )
         .map(|u| u.spend_cents)
 }

@@ -10,7 +10,9 @@
 //! #42's three arms, on the one wire body: a card that prices the class charges it; a card present
 //! and silent about it REFUSES; no card reads 0.
 use super::*;
-use busbar_kernel::governance::NewKeySpec;
+use busbar_kernel::governance::{budget_window, NewKeySpec, WINDOW_TOTAL};
+use busbar_kernel::plane_host::{CostHandle, GovHandle, MeterPin};
+use busbar_kernel::store::BreakerCfg;
 use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
 
 /// Cohere v2 rerank, `billed_units.search_units` = `units`.
@@ -46,10 +48,7 @@ fn spend_cents_after(card_yaml: Option<&str>, body: &str) -> Result<i64, String>
         .expect("create key");
     let charged_at: u64 = 1_700_000_000;
     let sink = Some(UsageSink {
-        pin: busbar_kernel::plane_host::MeterPin::new(
-            busbar_kernel::plane_host::GovHandle(gov.clone()),
-            busbar_kernel::plane_host::CostHandle(cost.clone()),
-        ),
+        pin: MeterPin::new(GovHandle(gov.clone()), CostHandle(cost.clone())),
         key: Arc::new(key.clone()),
         pool: Arc::from(""),
         charged_at,
@@ -135,10 +134,7 @@ async fn same_protocol_rerank_books(protocol: &'static str, body: &str) -> TwoBo
         .expect("create key");
     let charged_at: u64 = 1_700_000_000;
     let sink = Some(UsageSink {
-        pin: busbar_kernel::plane_host::MeterPin::new(
-            busbar_kernel::plane_host::GovHandle(gov.clone()),
-            busbar_kernel::plane_host::CostHandle(cost.clone()),
-        ),
+        pin: MeterPin::new(GovHandle(gov.clone()), CostHandle(cost.clone())),
         key: Arc::new(key.clone()),
         pool: Arc::from(""),
         charged_at,
@@ -161,7 +157,7 @@ async fn same_protocol_rerank_books(protocol: &'static str, body: &str) -> TwoBo
     .expect("the protocol serves rerank");
     // The same-protocol non-stream translator the protocol's writer installs (Bedrock's body
     // translator; none for Cohere, whose same-protocol body relays verbatim).
-    let translate: Option<Box<dyn busbar_kernel::proto::StreamTranslator>> =
+    let translate: Option<Box<dyn busbar_substrate_values::proto::StreamTranslator>> =
         if protocol == crate::proto_codec::PROTO_BEDROCK {
             Some(Box::new(
                 busbar_llm_codec::bedrock::BedrockConverseBodyTranslator::new(),
@@ -183,7 +179,7 @@ async fn same_protocol_rerank_books(protocol: &'static str, body: &str) -> TwoBo
         host,
         rt,
         0,
-        Arc::new(busbar_kernel::store::BreakerCfg::default()),
+        Arc::new(BreakerCfg::default()),
         "pr",
         translate,
         None,
@@ -200,13 +196,7 @@ async fn same_protocol_rerank_books(protocol: &'static str, body: &str) -> TwoBo
     gov.flush_budgets();
     let ledger = gov
         .store()
-        .get_usage(
-            &key.id,
-            busbar_kernel::governance::budget_window(
-                busbar_kernel::governance::WINDOW_TOTAL,
-                charged_at,
-            ),
-        )
+        .get_usage(&key.id, budget_window(WINDOW_TOTAL, charged_at))
         .expect("the governance ledger reads");
     let governance = ledger
         .models
