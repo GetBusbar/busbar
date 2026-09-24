@@ -263,3 +263,144 @@ fn a_streamed_answer_ends_only_on_its_last_frame() {
     let err = br#"{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"no"}}"#;
     assert!(response_terminal(err, true), "an error ends the stream too");
 }
+
+// ── item 450: a hop goes to the agent the request NAMED ────────────────────────────────────────
+
+/// The plane's shared test scaffolding: the smallest honest context a plane call can be handed.
+#[path = "../../tests/common/mod.rs"]
+mod common;
+
+use crate::{A2aPlane, Agent};
+use busbar_contract::dest::DestinationFacts;
+use busbar_contract::ids::LaneId;
+use busbar_contract::plane::{Ingress, Plane};
+use busbar_contract::unit::{ResourceLocator, Unit};
+
+/// Two agents on two lanes, so "the first one" and "the named one" are different answers.
+static TWO_AGENTS: &[Agent] = &[
+    Agent {
+        id: "alpha",
+        lane: LaneId::new("a2a-a"),
+        host: "alpha.invalid:443",
+        transport: "wire-a",
+    },
+    Agent {
+        id: "beta",
+        lane: LaneId::new("a2a-b"),
+        host: "beta.invalid:443",
+        transport: "wire-b",
+    },
+];
+
+/// The transport stack the scaffold reports. The plane reads the target off it, never its name.
+const WIRE: &str = "doc";
+
+/// A unary send, as a caller posts it.
+const SEND: &[u8] =
+    br#"{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":{"role":"user"}}}"#;
+
+/// The unit the loop builds from what this plane decoded off one request on `target`.
+fn unit_on<'u>(
+    plane: &A2aPlane,
+    frame: &'u [busbar_contract::wire::Frame],
+    ctx: &busbar_contract::unit::Ctx<'u>,
+) -> Unit<'u> {
+    let mut cursor = busbar_contract::wire::FrameCursor::new(frame);
+    let draft = match plane
+        .decode_ingress(&mut cursor, None, ctx)
+        .expect("a well-formed send decodes")
+    {
+        Ingress::OneShot(d) | Ingress::Open(d) => d,
+        other => panic!("a whole request is a unit, got {other:?}"),
+    };
+    Unit::new(
+        &common::TestSeal,
+        busbar_contract::UnitKey::new(1),
+        busbar_contract::unit::Origin::Client,
+        None,
+        None,
+        busbar_contract::wire::Direction::Inbound,
+        Some(common::principal()),
+        draft.op,
+        draft.body_ir,
+        draft.facts,
+        None,
+    )
+}
+
+/// The destination a hop to one agent is.
+fn hop_to(agent: &Agent) -> DestinationFacts {
+    DestinationFacts::Upstream {
+        transport: agent.transport,
+        address: busbar_contract::UpstreamAddress::socket(agent.host),
+        lane: agent.lane,
+    }
+}
+
+/// Item 450. A request addressed to `/a2a/agents/beta` is dialled to beta, scoped against beta and
+/// carried on beta's lane — never on the first agent the operator happened to configure. Before the
+/// fix all three answers were alpha's, so every call to beta ledgered against lane `a2a-a`.
+#[test]
+fn a_hop_goes_to_the_agent_the_request_named() {
+    let plane = A2aPlane::new(TWO_AGENTS);
+    let scaffold = common::Scaffold::new(WIRE).on_path("/a2a/agents/beta");
+    let ctx = scaffold.ctx();
+    let frame = [common::frame(SEND)];
+    let unit = unit_on(&plane, &frame, &ctx);
+    let beta = &TWO_AGENTS[1];
+
+    assert_eq!(
+        plane.verify(&unit, &ctx),
+        hop_to(beta),
+        "dialled the named agent"
+    );
+    assert_eq!(
+        plane.approve(&unit, &ctx).resources.as_slice(),
+        &[ResourceLocator {
+            kind: "agent",
+            name: "beta"
+        }],
+        "scoped against the named agent"
+    );
+    let plan = plane.route(&unit, &ctx);
+    let hop = plan.legs.as_slice().last().expect("a send hops");
+    assert_eq!(
+        hop.destination,
+        hop_to(beta),
+        "the routed hop is on the named agent's lane"
+    );
+}
+
+/// Item 450, the other half. A request that names an agent this plane does not carry, or names none
+/// while more than one is configured, reaches NO agent — the trust unit's refusal — rather than a
+/// guess at the first one. With exactly one agent configured there is nothing to guess.
+#[test]
+fn a_request_naming_no_carried_agent_reaches_none() {
+    let plane = A2aPlane::new(TWO_AGENTS);
+    for target in ["/a2a/agents/gamma", "/a2a"] {
+        let scaffold = common::Scaffold::new(WIRE).on_path(target);
+        let ctx = scaffold.ctx();
+        let frame = [common::frame(SEND)];
+        let unit = unit_on(&plane, &frame, &ctx);
+        assert_eq!(
+            plane.verify(&unit, &ctx),
+            A2aPlane::EMPTY.verify(&unit, &ctx),
+            "{target}: no guessed agent, the same unreachable answer a plane with none gives"
+        );
+        assert!(
+            plane.approve(&unit, &ctx).resources.is_empty(),
+            "{target}: no guessed scope"
+        );
+    }
+
+    let single = A2aPlane::new(&TWO_AGENTS[1..]);
+    let scaffold = common::Scaffold::new(WIRE).on_path("/a2a");
+    let ctx = scaffold.ctx();
+    let frame = [common::frame(SEND)];
+    let unit = unit_on(&single, &frame, &ctx);
+    assert_eq!(
+        single.verify(&unit, &ctx),
+        hop_to(&TWO_AGENTS[1]),
+        "the one agent there is"
+    );
+}
