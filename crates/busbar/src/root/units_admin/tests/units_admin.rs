@@ -3332,6 +3332,73 @@ fn signed_correction(mut body: serde_json::Value) -> Vec<u8> {
     serde_json::to_vec(&body).expect("the signed correction serialises")
 }
 
+/// A memory-buffered book, as a node with no data directory has.
+#[cfg(test)]
+fn a_memory_book() -> Arc<Mutex<crate::root::durability::Durability>> {
+    Arc::new(Mutex::new(
+        crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            Box::new(busbar_kernel_wal::NullShipper::new()),
+            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+        )
+        .expect("a memory-buffered journal cannot fail to open"),
+    ))
+}
+
+/// The amendment journal over `book`, under a durability token minted the way the kernel mints one.
+#[cfg(test)]
+fn a_journal_over(book: &Arc<Mutex<crate::root::durability::Durability>>) -> AmendmentJournal {
+    AmendmentJournal::new(
+        Arc::clone(book),
+        Grant::<busbar_contract::caps::DurableWrite>::mint(
+            &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
+        ),
+    )
+}
+
+/// The attribution a production call under the sealed posture carries: the admin principal, single
+/// control (this release seals no dual-control posture).
+#[cfg(test)]
+fn an_attribution() -> AmendAttribution {
+    AmendAttribution {
+        principal: "admin".to_string(),
+        dual_control: Some(busbar_core_admin::DualControl::Single),
+    }
+}
+
+/// Run the effect with a durable amendment journal bound, as production binds one.
+#[cfg(test)]
+fn amend_through_a_journal(
+    history: &crate::root::kernel::RootHistory,
+    body: &[u8],
+    arrival_secs: u64,
+    operator: busbar_core_admin::OperatorState,
+) -> Result<Vec<u8>, busbar_core_admin::GovernanceError> {
+    let book = a_memory_book();
+    amend_rate_history_effect(
+        history,
+        Some(&a_journal_over(&book)),
+        body,
+        arrival_secs,
+        operator,
+        &an_attribution(),
+    )
+}
+
+/// The Policy-class amendment records a book's journal replays.
+#[cfg(test)]
+fn replayed_amendments(durability: &crate::root::durability::Durability) -> Vec<AmendmentRecord> {
+    durability
+        .journal
+        .replay()
+        .expect("the journal reads back")
+        .expect("the journal verifies")
+        .iter()
+        .filter(|r| r.class == busbar_kernel_wal::RecordClass::Policy)
+        .map(|r| amendment_from_body(&r.body).expect("a Policy record is an amendment"))
+        .collect()
+}
+
 /// A well-formed correction body: a signed, back-dated amendment of the `gpt`/`input` rate over a
 /// bounded window, its fingerprint naming — and its signature made by — the sealed test operator key.
 #[cfg(test)]
@@ -3363,7 +3430,7 @@ fn amend_rate_history_appends_a_signed_back_dated_correction_and_rewrites_nothin
     assert_eq!(before_seq, busbar_kernel_ledger::cost::HistorySeq(0));
 
     // The correction applies, arriving at second 6 (→ 6000 ms).
-    let packed = amend_rate_history_effect(&history, &a_correction_body(), 6, a_sealed_operator())
+    let packed = amend_through_a_journal(&history, &a_correction_body(), 6, a_sealed_operator())
         .expect("the correction applies");
     let answer = AdminAnswer::unpack(&packed).expect("the answer packs");
     assert_eq!(answer.status, 200);
@@ -3449,7 +3516,7 @@ fn amend_rate_history_refuses_a_correction_that_names_a_currency() {
             "reason": "vendor corrected the March price sheet",
             "operator_fingerprint": a_test_operator_fingerprint(),
         }));
-        let err = amend_rate_history_effect(&history, &body, 6, a_sealed_operator())
+        let err = amend_through_a_journal(&history, &body, 6, a_sealed_operator())
             .expect_err("a correction naming a currency must be refused");
         assert!(
             matches!(err, busbar_core_admin::GovernanceError::Validation),
@@ -3465,7 +3532,7 @@ fn amend_rate_history_refuses_a_correction_that_names_a_currency() {
     // THE CONTROL: the same body WITHOUT the key applies. Without this arm a rule that refused
     // every correction would satisfy the assertions above.
     let history = a_seeded_history();
-    amend_rate_history_effect(&history, &a_correction_body(), 6, a_sealed_operator())
+    amend_through_a_journal(&history, &a_correction_body(), 6, a_sealed_operator())
         .expect("the same correction with no `currency` key applies");
     assert_eq!(history.len(), 2);
 }
@@ -3523,7 +3590,7 @@ fn amend_rate_history_refuses_a_negative_fee_and_appends_nothing() {
             "reason": "vendor corrected the March price sheet",
             "operator_fingerprint": a_test_operator_fingerprint(),
         }));
-        let err = amend_rate_history_effect(&history, &body, 6, a_sealed_operator())
+        let err = amend_through_a_journal(&history, &body, 6, a_sealed_operator())
             .expect_err("a correction carrying a negative fee must be refused");
         assert!(
             matches!(err, busbar_core_admin::GovernanceError::Validation),
@@ -3544,7 +3611,7 @@ fn amend_rate_history_refuses_a_negative_fee_and_appends_nothing() {
             "reason": "vendor corrected the March price sheet",
             "operator_fingerprint": a_test_operator_fingerprint(),
         }));
-        amend_rate_history_effect(&history, &body, 6, a_sealed_operator())
+        amend_through_a_journal(&history, &body, 6, a_sealed_operator())
             .expect("a non-negative fee applies");
         assert_eq!(history.len(), 2);
         let pinned = history.pin().expect("pinned");
@@ -3554,6 +3621,220 @@ fn amend_rate_history_refuses_a_negative_fee_and_appends_nothing() {
             .expect("the correction prices its window");
         assert_eq!(card.fee(), fee, "the sealed fee is the signed fee");
     }
+}
+
+/// A scratch data directory, removed on drop.
+#[cfg(test)]
+struct AmendScratch(std::path::PathBuf);
+
+#[cfg(test)]
+impl AmendScratch {
+    fn new(tag: &str) -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "busbar-amend-journal-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).expect("scratch directory");
+        AmendScratch(path)
+    }
+
+    fn book(&self) -> Arc<Mutex<crate::root::durability::Durability>> {
+        Arc::new(Mutex::new(
+            crate::root::durability::build(
+                &crate::root::durability::DurabilityConfig {
+                    data_dir: Some(self.0.clone()),
+                },
+                Box::new(busbar_kernel_wal::NullShipper::new()),
+                Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+            )
+            .expect("the directory is writable"),
+        ))
+    }
+}
+
+#[cfg(test)]
+impl Drop for AmendScratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A signed correction with a fee and one rate, so the record has figures to carry.
+#[cfg(test)]
+fn a_priced_correction(fee: i64, micro: serde_json::Value) -> Vec<u8> {
+    signed_correction(serde_json::json!({
+        "effective_from": 4_000,
+        "effective_until": 9_000,
+        "per_request_fee": fee,
+        "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": micro } ],
+        "reason": "vendor corrected the March price sheet",
+        "operator_fingerprint": a_test_operator_fingerprint(),
+    }))
+}
+
+/// **A SEALED AMENDMENT IS RECORDED DURABLY, WITH ITS FIGURES, AND SURVIVES A RESTART** (item 30).
+///
+/// THE DEFECT THIS CLOSES. The only trail an amendment left was the root's legacy admin ring — a
+/// volatile thousand entries behind `NoSeam`, four strings (action, path, outcome, principal) and no
+/// figure. One restart erased it. The record now goes onto the node's journal: after the book is
+/// dropped and reopened over the same data directory, the amendment is there with the window, the
+/// sealed fee and rate, the signer, the submitter, the posture, and a signature that re-verifies
+/// over the recorded bytes.
+#[test]
+fn a_sealed_amendment_survives_a_restart_with_its_figures() {
+    let scratch = AmendScratch::new("restart");
+    {
+        let book = scratch.book();
+        let history = a_seeded_history();
+        amend_rate_history_effect(
+            &history,
+            Some(&a_journal_over(&book)),
+            &a_priced_correction(5, serde_json::json!(1.5)),
+            6,
+            a_sealed_operator(),
+            &an_attribution(),
+        )
+        .expect("the correction applies");
+    }
+
+    // RESTART: a fresh book over the same directory.
+    let restarted = scratch.book();
+    let records = replayed_amendments(&restarted.lock().unwrap());
+    assert_eq!(records.len(), 1, "the amendment survived the restart");
+    let record = &records[0];
+    assert_eq!(record.effective_from, 4_000);
+    assert_eq!(record.effective_until, Some(9_000));
+    assert_eq!(record.amended_at_ms, 6_000);
+    assert_eq!(record.per_request_fee, 5);
+    assert_eq!(
+        record.rates,
+        vec![("gpt".to_string(), "input".to_string(), 1_500)],
+        "1.5 micro per unit is sealed as 1500 nano per unit"
+    );
+    assert_eq!(record.operator_fingerprint, a_test_operator_fingerprint());
+    assert_eq!(record.principal, "admin");
+    assert_eq!(record.dual_control, "single");
+
+    // The recorded signature re-verifies over the recorded bytes, against the sealed key: the
+    // record proves itself without trusting this node.
+    let signature: [u8; 64] = hex::decode(&record.signature)
+        .expect("hex")
+        .try_into()
+        .expect("64 bytes");
+    a_test_operator_signing_key()
+        .verifying_key()
+        .verify_strict(
+            &record.signed_payload,
+            &ed25519_dalek::Signature::from_bytes(&signature),
+        )
+        .expect("the recorded signature verifies over the recorded payload");
+}
+
+/// **VOLUME DOES NOT ERASE AN AMENDMENT** (item 30). The legacy ring prunes at a thousand entries;
+/// the journal prunes nothing. After the first amendment, a thousand more are sealed and the book is
+/// restarted — the first is still there, first, with its own figures.
+#[test]
+fn a_thousand_later_amendments_do_not_erase_the_first() {
+    let scratch = AmendScratch::new("volume");
+    {
+        let book = scratch.book();
+        let journal = a_journal_over(&book);
+        let history = a_seeded_history();
+        amend_rate_history_effect(
+            &history,
+            Some(&journal),
+            &a_priced_correction(7, serde_json::json!(2.0)),
+            6,
+            a_sealed_operator(),
+            &an_attribution(),
+        )
+        .expect("the first correction applies");
+        let later = a_priced_correction(1, serde_json::json!(1.0));
+        for _ in 0..1_000 {
+            amend_rate_history_effect(
+                &history,
+                Some(&journal),
+                &later,
+                7,
+                a_sealed_operator(),
+                &an_attribution(),
+            )
+            .expect("a later correction applies");
+        }
+    }
+    let restarted = scratch.book();
+    let records = replayed_amendments(&restarted.lock().unwrap());
+    assert_eq!(records.len(), 1_001, "every amendment is on the journal");
+    assert_eq!(
+        records[0].per_request_fee, 7,
+        "the first amendment is still first"
+    );
+    assert_eq!(
+        records[0].rates,
+        vec![("gpt".to_string(), "input".to_string(), 2_000)]
+    );
+    assert_eq!(records[0].amended_at_ms, 6_000);
+}
+
+/// **NO DURABLE RECORD, NO AMENDMENT.** With no journal bound the correction is refused (`Store`)
+/// and the history is untouched — a correction nothing recorded never prices a window.
+#[test]
+fn an_amendment_with_no_journal_bound_is_refused_and_appends_nothing() {
+    let history = a_seeded_history();
+    let err = amend_rate_history_effect(
+        &history,
+        None,
+        &a_correction_body(),
+        6,
+        a_sealed_operator(),
+        &an_attribution(),
+    )
+    .expect_err("no journal, no amendment");
+    assert!(matches!(err, busbar_core_admin::GovernanceError::Store));
+    assert_eq!(history.len(), 1);
+
+    // THE CONTROL: the same body with a journal applies and leaves exactly one record.
+    let book = a_memory_book();
+    amend_rate_history_effect(
+        &history,
+        Some(&a_journal_over(&book)),
+        &a_correction_body(),
+        6,
+        a_sealed_operator(),
+        &an_attribution(),
+    )
+    .expect("with a journal the correction applies");
+    assert_eq!(history.len(), 2);
+    assert_eq!(replayed_amendments(&book.lock().unwrap()).len(), 1);
+}
+
+/// A refused correction leaves no durable record: a negative fee and a bad signature are refused
+/// before the journal is written.
+#[test]
+fn a_refused_amendment_leaves_no_record() {
+    let book = a_memory_book();
+    let history = a_seeded_history();
+    let mut bad_signature =
+        serde_json::from_slice::<serde_json::Value>(&a_correction_body()).expect("json");
+    bad_signature["signature"] = serde_json::json!("00".repeat(64));
+    for body in [
+        a_priced_correction(-5, serde_json::json!(1.0)),
+        serde_json::to_vec(&bad_signature).expect("serialises"),
+    ] {
+        amend_rate_history_effect(
+            &history,
+            Some(&a_journal_over(&book)),
+            &body,
+            6,
+            a_sealed_operator(),
+            &an_attribution(),
+        )
+        .expect_err("refused");
+    }
+    assert_eq!(history.len(), 1);
+    assert!(replayed_amendments(&book.lock().unwrap()).is_empty());
 }
 
 /// VALIDATION REFUSALS. Every malformed or empty correction is refused at its shape, before it can
@@ -3577,7 +3858,7 @@ fn amend_rate_history_refuses_a_correction_that_names_no_signer_window_or_price(
     for case in cases {
         let history = a_seeded_history();
         let body = serde_json::to_vec(case).expect("serialises");
-        let err = amend_rate_history_effect(&history, &body, 6, a_sealed_operator())
+        let err = amend_through_a_journal(&history, &body, 6, a_sealed_operator())
             .expect_err("a malformed correction must be refused");
         assert!(
             matches!(err, busbar_core_admin::GovernanceError::Validation),
@@ -3592,7 +3873,7 @@ fn amend_rate_history_refuses_a_correction_that_names_no_signer_window_or_price(
     // A body that is not JSON at all is also a validation refusal.
     let history = a_seeded_history();
     assert!(matches!(
-        amend_rate_history_effect(&history, b"not json", 6, a_sealed_operator()),
+        amend_through_a_journal(&history, b"not json", 6, a_sealed_operator()),
         Err(busbar_core_admin::GovernanceError::Validation)
     ));
     assert_eq!(history.len(), 1);
@@ -3603,7 +3884,7 @@ fn amend_rate_history_refuses_a_correction_that_names_no_signer_window_or_price(
 #[test]
 fn amend_rate_history_refuses_when_there_is_no_history_to_amend() {
     let empty = crate::root::kernel::RootHistory::default();
-    let err = amend_rate_history_effect(&empty, &a_correction_body(), 6, a_sealed_operator())
+    let err = amend_through_a_journal(&empty, &a_correction_body(), 6, a_sealed_operator())
         .expect_err("an empty history cannot be amended");
     assert!(matches!(err, busbar_core_admin::GovernanceError::NotFound));
     assert_eq!(empty.len(), 0);
@@ -3643,7 +3924,7 @@ fn amend_rate_history_moves_no_ledger_cell() {
 
     // Amend the rate-card history — an operation that never touches the ledger book.
     let history = a_seeded_history();
-    amend_rate_history_effect(&history, &a_correction_body(), 6, a_sealed_operator())
+    amend_through_a_journal(&history, &a_correction_body(), 6, a_sealed_operator())
         .expect("the correction applies");
     assert_eq!(
         history.len(),
@@ -3667,7 +3948,7 @@ fn amend_rate_history_moves_no_ledger_cell() {
 #[test]
 fn amend_rate_history_admits_a_correction_signed_by_the_sealed_operator_key() {
     let history = a_seeded_history();
-    let packed = amend_rate_history_effect(&history, &a_correction_body(), 6, a_sealed_operator())
+    let packed = amend_through_a_journal(&history, &a_correction_body(), 6, a_sealed_operator())
         .expect("a correction signed by the sealed key applies");
     let answer = AdminAnswer::unpack(&packed).expect("the answer packs");
     assert_eq!(answer.status, 200);
@@ -3691,7 +3972,7 @@ fn amend_rate_history_refuses_a_correction_from_an_unknown_operator_fingerprint(
         "reason": "vendor corrected the March price sheet",
         "operator_fingerprint": "a-fingerprint-that-names-no-sealed-key",
     }));
-    let err = amend_rate_history_effect(&history, &body, 6, a_sealed_operator())
+    let err = amend_through_a_journal(&history, &body, 6, a_sealed_operator())
         .expect_err("an unknown signer must be refused");
     assert!(
         matches!(err, busbar_core_admin::GovernanceError::Validation),
@@ -3712,7 +3993,7 @@ fn amend_rate_history_refuses_a_correction_whose_signature_does_not_verify() {
     // Move a price AFTER signing: the signature is now over different bytes than the body carries.
     signed["rates"][0]["micro_per_unit"] = serde_json::json!(999.0);
     let body = serde_json::to_vec(&signed).expect("the tampered body serialises");
-    let err = amend_rate_history_effect(&history, &body, 6, a_sealed_operator())
+    let err = amend_through_a_journal(&history, &body, 6, a_sealed_operator())
         .expect_err("a signature that does not cover the body must be refused");
     assert!(
         matches!(err, busbar_core_admin::GovernanceError::Validation),
@@ -3757,7 +4038,7 @@ fn the_production_posture_view_seals_the_operator_key_the_verify_path_admits_aga
     // END TO END: the operator the production view resolved is exactly what the D38 verify path
     // needs — a valid-signed, back-dated correction is ADMITTED and applied against it.
     let history = a_seeded_history();
-    let packed = amend_rate_history_effect(&history, &a_correction_body(), 6, ctx.operator).expect(
+    let packed = amend_through_a_journal(&history, &a_correction_body(), 6, ctx.operator).expect(
         "a correction signed by the sealed key is admitted via the production posture view",
     );
     let answer = AdminAnswer::unpack(&packed).expect("the answer packs");
@@ -3784,7 +4065,7 @@ fn the_production_posture_view_seals_the_operator_key_the_verify_path_admits_aga
     let fresh = a_seeded_history();
     assert!(
         matches!(
-            amend_rate_history_effect(&fresh, &a_correction_body(), 6, unset_ctx.operator),
+            amend_through_a_journal(&fresh, &a_correction_body(), 6, unset_ctx.operator),
             Err(busbar_core_admin::GovernanceError::Validation)
         ),
         "with no sealed operator key the amend is refused, byte-for-byte as the release without it"

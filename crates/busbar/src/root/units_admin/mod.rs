@@ -881,6 +881,11 @@ pub struct CoreGovernance {
     /// per unit rather than sharing one across them.
     request: AdminRequest,
     verb: KernelVerb,
+    /// Where a sealed rate-card amendment is made durable, where a root bound one. `None` refuses
+    /// `amend_rate_history` (`Store`): a correction nothing can record is not applied.
+    amendments: Option<Arc<AmendmentJournal>>,
+    /// Who submitted this unit's call and under which dual-control posture it was admitted.
+    attribution: AmendAttribution,
 }
 
 impl CoreGovernance {
@@ -899,7 +904,24 @@ impl CoreGovernance {
             audit,
             request,
             verb,
+            amendments: None,
+            attribution: AmendAttribution {
+                principal: String::new(),
+                dual_control: None,
+            },
         }
+    }
+
+    /// Bind where an amendment is recorded and who is asking for it.
+    #[must_use]
+    pub fn amending(
+        mut self,
+        amendments: Option<Arc<AmendmentJournal>>,
+        attribution: AmendAttribution,
+    ) -> Self {
+        self.amendments = amendments;
+        self.attribution = attribution;
+        self
     }
 
     /// Run the operation and pack its whole answer.
@@ -974,9 +996,11 @@ impl busbar_core_admin::Governance for CoreGovernance {
         if verb == KernelVerb::AmendRateHistory {
             return amend_rate_history_effect(
                 &crate::root::kernel::ROOT_CARD,
+                self.amendments.as_deref(),
                 request,
                 self.request.at,
                 operator,
+                &self.attribution,
             );
         }
         Ok(self.run())
@@ -1059,9 +1083,11 @@ fn json_answer(body: Vec<u8>) -> AdminAnswer {
 /// the window it corrected, who signed it and the digest of why.
 fn amend_rate_history_effect(
     history: &crate::root::kernel::RootHistory,
+    journal: Option<&AmendmentJournal>,
     body: &[u8],
     arrival_secs: u64,
     operator: busbar_core_admin::OperatorState,
+    attribution: &AmendAttribution,
 ) -> Result<Vec<u8>, busbar_core_admin::GovernanceError> {
     use busbar_core_admin::GovernanceError;
     use sha2::Digest as _;
@@ -1174,6 +1200,12 @@ fn amend_rate_history_effect(
     if entries.is_empty() && per_request_fee.is_none() {
         return Err(GovernanceError::Validation);
     }
+    // The cells the correction names, captured before the card consumes them, so the durable record
+    // can state the figure the card SEALED for each — not the decimal the body spelt.
+    let cells: std::collections::BTreeSet<(String, String)> = entries
+        .iter()
+        .map(|(cell, _)| (cell.lane.clone(), cell.class.clone()))
+        .collect();
     let card = busbar_kernel_ledger::cost::RateCard::from_micro_rates(
         entries,
         per_request_fee.unwrap_or(0),
@@ -1217,6 +1249,48 @@ fn amend_rate_history_effect(
     // The append. Milliseconds, because the history dates every instant in them; a correction written
     // "now" is written at the arrival it was admitted under, never a fresh clock read.
     let appended_at_ms = arrival_secs.saturating_mul(1000);
+
+    // THE DURABLE RECORD, WRITTEN AHEAD OF THE APPEND (item 30). The only trail an amendment used to
+    // leave was the root's legacy admin ring: a thousand in-memory entries behind a seam that does
+    // nothing, four strings and no figure — erased by a thousand admin calls or one restart. The
+    // record now goes onto the node's one journal, carrying every figure the correction sealed, the
+    // signer, the dual-control posture it was admitted under and the exact signed bytes with their
+    // signature, so an auditor can re-verify it without trusting this node.
+    //
+    // AHEAD, not after: an amendment the journal will not take is REFUSED (`Store`) and the history
+    // is not touched, so no correction can price a window without its durable record. A history with
+    // no opening entry is refused first, so a record is never written for a correction that would
+    // then not apply (the holder never returns to empty once resolved).
+    if history.is_empty() {
+        return Err(GovernanceError::NotFound);
+    }
+    let dual_control = attribution
+        .dual_control
+        .ok_or(GovernanceError::Validation)?;
+    let journal = journal.ok_or(GovernanceError::Store)?;
+    let record = AmendmentRecord {
+        effective_from,
+        effective_until,
+        amended_at_ms: appended_at_ms,
+        per_request_fee: card.fee(),
+        rates: cells
+            .into_iter()
+            .map(|(lane, class)| {
+                let nanos = card
+                    .lane_rates(&lane)
+                    .map_or(0, |rates| rates.nanos_per_unit(&class));
+                (lane, class, nanos)
+            })
+            .collect(),
+        operator_fingerprint: operator_fingerprint.clone(),
+        reason_hash,
+        principal: attribution.principal.clone(),
+        dual_control: dual_control_word(dual_control).to_string(),
+        signed_payload: canonical_amend_payload(obj),
+        signature: signature.to_string(),
+    };
+    journal.record(&record, arrival_secs)?;
+
     let seq = history
         .amend(
             card,
@@ -1246,6 +1320,203 @@ fn amend_rate_history_effect(
     json_string(&hex::encode(reason_hash), &mut out);
     out.push('}');
     Ok(json_answer(out.into_bytes()).pack())
+}
+
+/// Who asked for a correction and under which dual-control posture it was admitted — the two facts
+/// the verbs unit resolved at Route and the durable amendment record states.
+///
+/// `dual_control` is an option because the posture seam may fail to resolve; the verbs unit refuses
+/// such a call before the effect, so `None` here is refused rather than recorded as a guess.
+#[derive(Debug, Clone)]
+pub struct AmendAttribution {
+    /// The authenticated principal that submitted the correction (not the signer — that is the
+    /// operator key the body's fingerprint names).
+    pub principal: String,
+    /// The dual-control posture the verb was admitted under. This release seals no dual-control
+    /// posture (see [`SealedPosture`]), so a production record says `single`: one signer, no
+    /// checker — stated on the record rather than implied.
+    pub dual_control: Option<busbar_core_admin::DualControl>,
+}
+
+/// The word a durable record uses for a dual-control posture.
+fn dual_control_word(dual_control: busbar_core_admin::DualControl) -> &'static str {
+    match dual_control {
+        busbar_core_admin::DualControl::Single => "single",
+        busbar_core_admin::DualControl::Required => "required",
+    }
+}
+
+/// The domain tag every durable amendment record's body opens with, so a `Policy`-class journal
+/// record is recognisable as a rate-card amendment without guessing.
+pub const AMENDMENT_RECORD_TAG: &str = "busbar/rate-amendment/v1";
+
+/// One sealed rate-card amendment, as the node's journal keeps it: every figure the correction put
+/// on the history, who signed it, who submitted it, under which posture, and the exact bytes the
+/// signature covers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AmendmentRecord {
+    /// Start of the corrected window, milliseconds.
+    pub effective_from: u64,
+    /// End of the corrected window, milliseconds; `None` is open-ended.
+    pub effective_until: Option<u64>,
+    /// When the correction was admitted, milliseconds.
+    pub amended_at_ms: u64,
+    /// The per-request fee the sealed card charges, minor units.
+    pub per_request_fee: i64,
+    /// `(lane, class, nanos_per_unit)` for every cell the correction named, as the card sealed it.
+    pub rates: Vec<(String, String, u64)>,
+    /// The signer: `sha256(operator key)`, hex.
+    pub operator_fingerprint: String,
+    /// `sha256(reason)`.
+    pub reason_hash: [u8; 32],
+    /// The authenticated principal that submitted it.
+    pub principal: String,
+    /// `single` or `required`.
+    pub dual_control: String,
+    /// The canonical payload the signature covers.
+    pub signed_payload: Vec<u8>,
+    /// The detached ed25519 signature, hex.
+    pub signature: String,
+}
+
+/// The journal body of an [`AmendmentRecord`]: length-prefixed fields in a fixed order.
+#[must_use]
+pub fn amendment_body(record: &AmendmentRecord) -> Vec<u8> {
+    let mut body = busbar_kernel_wal::BodyWriter::new();
+    body.text(AMENDMENT_RECORD_TAG);
+    body.num(record.effective_from);
+    body.num(u64::from(record.effective_until.is_some()));
+    body.num(record.effective_until.unwrap_or(0));
+    body.num(record.amended_at_ms);
+    body.figure(i128::from(record.per_request_fee));
+    body.num(record.rates.len() as u64);
+    for (lane, class, nanos) in &record.rates {
+        body.text(lane);
+        body.text(class);
+        body.num(*nanos);
+    }
+    body.text(&record.operator_fingerprint);
+    body.bytes(&record.reason_hash);
+    body.text(&record.principal);
+    body.text(&record.dual_control);
+    body.bytes(&record.signed_payload);
+    body.text(&record.signature);
+    body.finish()
+}
+
+/// Read an [`AmendmentRecord`] back off a journal body, or `None` for a body that is not one.
+#[must_use]
+pub fn amendment_from_body(body: &[u8]) -> Option<AmendmentRecord> {
+    struct Reader<'a>(&'a [u8]);
+    impl<'a> Reader<'a> {
+        fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+            if self.0.len() < n {
+                return None;
+            }
+            let (head, tail) = self.0.split_at(n);
+            self.0 = tail;
+            Some(head)
+        }
+        fn num(&mut self) -> Option<u64> {
+            Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?))
+        }
+        fn figure(&mut self) -> Option<i128> {
+            Some(i128::from_le_bytes(self.take(16)?.try_into().ok()?))
+        }
+        fn bytes(&mut self) -> Option<&'a [u8]> {
+            let len = usize::try_from(self.num()?).ok()?;
+            self.take(len)
+        }
+        fn text(&mut self) -> Option<String> {
+            String::from_utf8(self.bytes()?.to_vec()).ok()
+        }
+    }
+    let mut r = Reader(body);
+    if r.text()? != AMENDMENT_RECORD_TAG {
+        return None;
+    }
+    let effective_from = r.num()?;
+    let has_until = r.num()?;
+    let until = r.num()?;
+    let amended_at_ms = r.num()?;
+    let per_request_fee = i64::try_from(r.figure()?).ok()?;
+    let n = r.num()?;
+    let mut rates = Vec::new();
+    for _ in 0..n {
+        rates.push((r.text()?, r.text()?, r.num()?));
+    }
+    let record = AmendmentRecord {
+        effective_from,
+        effective_until: (has_until == 1).then_some(until),
+        amended_at_ms,
+        per_request_fee,
+        rates,
+        operator_fingerprint: r.text()?,
+        reason_hash: r.bytes()?.try_into().ok()?,
+        principal: r.text()?,
+        dual_control: r.text()?,
+        signed_payload: r.bytes()?.to_vec(),
+        signature: r.text()?,
+    };
+    r.0.is_empty().then_some(record)
+}
+
+/// Where a sealed rate-card amendment is made durable: the node's ONE journal, as a `Policy`-class
+/// record (a card entry is a pricing-policy generation), through the same token-gated append every
+/// other journal record takes.
+///
+/// Not the admin ring and not a store of its own. The journal is on disk where the operator named a
+/// data directory and shipped to the configured store otherwise; it is never pruned by volume, it
+/// replays after a restart, and it gives the amendment a POSITION relative to the postings it
+/// reprices.
+pub struct AmendmentJournal {
+    book: Arc<Mutex<crate::root::durability::Durability>>,
+    token: Grant<busbar_contract::caps::DurableWrite>,
+}
+
+impl std::fmt::Debug for AmendmentJournal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AmendmentJournal").finish_non_exhaustive()
+    }
+}
+
+impl AmendmentJournal {
+    /// Record amendments onto `book`'s journal under `token`.
+    #[must_use]
+    pub fn new(
+        book: Arc<Mutex<crate::root::durability::Durability>>,
+        token: Grant<busbar_contract::caps::DurableWrite>,
+    ) -> Self {
+        AmendmentJournal { book, token }
+    }
+
+    /// Append one amendment record, dated `wall_secs`.
+    ///
+    /// # Errors
+    ///
+    /// `Store` when the journal could not make the record durable — the caller then refuses the
+    /// amendment rather than applying a correction nothing recorded.
+    pub fn record(
+        &self,
+        record: &AmendmentRecord,
+        wall_secs: u64,
+    ) -> Result<(), busbar_core_admin::GovernanceError> {
+        let entry = busbar_kernel_wal::Entry::new(
+            busbar_kernel_wal::RecordClass::Policy,
+            amendment_body(record),
+        )
+        .at(wall_secs, 0);
+        let mut durability = self.book.lock().unwrap_or_else(|p| p.into_inner());
+        durability
+            .journal
+            .append(
+                &self.token,
+                busbar_contract::caps::StepName::Route,
+                &[entry],
+            )
+            .map(|_| ())
+            .map_err(|_| busbar_core_admin::GovernanceError::Store)
+    }
 }
 
 /// The exact bytes the operator's detached signature is verified over.
@@ -1888,6 +2159,10 @@ pub struct AdminBinding {
     /// holds is entitled to decide them. Bound to [`UnsealedPosture`] until a root binds a reader for
     /// the journal the ceremony writes.
     pub posture: Arc<dyn PostureView>,
+    /// Where a sealed rate-card amendment is made durable: the node's own journal. `None` until a
+    /// root binds one, and `amend_rate_history` refuses while it is `None` — an amendment is never
+    /// applied without its durable record (item 30).
+    pub amendments: Option<Arc<AmendmentJournal>>,
     /// The requests currently being walked.
     pub units: AdminUnits,
 }
@@ -2017,6 +2292,7 @@ impl AdminBinding {
             ledger: Arc::new(UnopenedLedger),
             audit: None,
             posture: Arc::new(UnsealedPosture),
+            amendments: None,
             units: AdminUnits::new(),
         }
     }
@@ -2035,6 +2311,13 @@ impl AdminBinding {
     #[must_use]
     pub fn with_audit_view(mut self, audit: Arc<dyn AuditView>) -> Self {
         self.audit = Some(audit);
+        self
+    }
+
+    /// Bind the journal a sealed rate-card amendment is recorded on.
+    #[must_use]
+    pub fn with_amendment_journal(mut self, journal: Arc<AmendmentJournal>) -> Self {
+        self.amendments = Some(journal);
         self
     }
 
@@ -2339,20 +2622,6 @@ pub(crate) fn route(
         return Decision::proceed(token, busbar_contract::RoutePlan::default());
     }
 
-    let verbs = busbar_core_admin::Verbs::new(
-        CoreGovernance::new(
-            Arc::clone(&binding.dispatch),
-            Arc::clone(&binding.ledger),
-            binding.audit.clone(),
-            verb,
-            request.clone(),
-        ),
-        StoreRef(store),
-        ArrivalNonce(request.at),
-        PackedReplay,
-        CONFIG_CLASS_RULES,
-    );
-
     // The same identity the record attributes to, so the rate-limit bucket, the audit row and the
     // maker half of the maker-checker rule all name one actor. Keying any of them on the credential
     // instead let one principal be two by presenting a second token.
@@ -2366,6 +2635,27 @@ pub(crate) fn route(
         Some((posture, approval)) => (Some(posture), approval),
         None => (None, busbar_core_admin::ApprovalState::NotYetApproved),
     };
+
+    let verbs = busbar_core_admin::Verbs::new(
+        CoreGovernance::new(
+            Arc::clone(&binding.dispatch),
+            Arc::clone(&binding.ledger),
+            binding.audit.clone(),
+            verb,
+            request.clone(),
+        )
+        .amending(
+            binding.amendments.clone(),
+            AmendAttribution {
+                principal: actor.clone(),
+                dual_control: posture.map(|p| p.dual_control),
+            },
+        ),
+        StoreRef(store),
+        ArrivalNonce(request.at),
+        PackedReplay,
+        CONFIG_CLASS_RULES,
+    );
 
     // THE THREE DISASTER-RECOVERY VERBS REACH THE STORE, not the governance seam. They are new
     // verbs and are admitted exactly as every other new verb is — scope, rate class, then the
