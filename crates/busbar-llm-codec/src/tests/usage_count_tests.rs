@@ -413,3 +413,20 @@ fn a_multi_byte_unreadable_spelling_refuses_rather_than_panicking() {
     );
     assert!(err.spelling.starts_with("\"é"), "{}", err.spelling);
 }
+
+/// `billed_count_opt` keeps ABSENCE distinct from zero and refuses what will not read (item 133).
+#[test]
+fn billed_count_opt_is_none_when_absent_and_refuses_when_unreadable() {
+    use super::billed_count_opt;
+    assert_eq!(billed_count_opt(None, "n"), Ok(None));
+    assert_eq!(billed_count_opt(Some(&json!({})), "n"), Ok(None));
+    assert_eq!(billed_count_opt(Some(&json!({ "n": null })), "n"), Ok(None));
+    assert_eq!(billed_count_opt(Some(&json!({ "n": 0 })), "n"), Ok(Some(0)));
+    assert_eq!(
+        billed_count_opt(Some(&json!({ "n": 27.0 })), "n"),
+        Ok(Some(27))
+    );
+    let err = billed_count_opt(Some(&json!({ "n": "27" })), "n")
+        .expect_err("a present, unreadable count is not absence");
+    assert_eq!(err.field, "n");
+}

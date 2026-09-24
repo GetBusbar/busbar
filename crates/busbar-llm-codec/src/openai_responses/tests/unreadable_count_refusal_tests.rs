@@ -71,3 +71,71 @@ fn truncated_recovery_yields_no_usage_for_a_stringified_count() {
         .expect("an absent count still recovers");
     assert_eq!((u.input, u.output), (0, 9));
 }
+
+// ── CACHE COUNTS (item 133 remainder) ────────────────────────────────────────────────────────────
+//
+// `read_cached_tokens` / `read_cache_write_tokens` read `input_tokens_details.*` as
+// `.and_then(read_count_u64)`, so an unreadable spelling became `None` — "no cache" — and a reported
+// cache read or write left the bill. Both now refuse on every path.
+
+#[test]
+fn buffered_response_refuses_an_unreadable_cache_count() {
+    for details in [
+        serde_json::json!({"cached_tokens": "40"}),
+        serde_json::json!({"cache_write_tokens": "40"}),
+    ] {
+        ResponsesReader
+            .read_response(&response(serde_json::json!({
+                "input_tokens": 100, "output_tokens": 9, "input_tokens_details": details
+            })))
+            .expect_err("a present, unreadable cache count is a refusal, never `no cache`");
+    }
+}
+
+#[test]
+fn buffered_response_cache_counts_absent_null_and_readable_still_read() {
+    let ir = ResponsesReader
+        .read_response(&response(serde_json::json!({
+            "input_tokens": 100, "output_tokens": 9,
+            "input_tokens_details": {"cached_tokens": null}
+        })))
+        .expect("a null cache count is absence");
+    assert_eq!(ir.usage.cache_read_input_tokens, None);
+    assert_eq!(ir.usage.cache_creation_input_tokens, None);
+    let ir = ResponsesReader
+        .read_response(&response(serde_json::json!({
+            "input_tokens": 100, "output_tokens": 9,
+            "input_tokens_details": {"cached_tokens": 30, "cache_write_tokens": 20}
+        })))
+        .expect("readable cache counts read");
+    assert_eq!(ir.usage.cache_read_input_tokens, Some(30));
+    assert_eq!(ir.usage.cache_creation_input_tokens, Some(20));
+    assert_eq!(ir.usage.input_tokens, 50);
+}
+
+#[test]
+fn streaming_terminal_refuses_an_unreadable_cache_count() {
+    for details in [
+        serde_json::json!({"cached_tokens": "40"}),
+        serde_json::json!({"cache_write_tokens": "40"}),
+    ] {
+        let mut state = crate::ir::StreamDecodeState::default();
+        let completed = serde_json::json!({
+            "response": {"status": STATUS_COMPLETED, "usage": {
+                "input_tokens": 100, "output_tokens": 9, "input_tokens_details": details
+            }}
+        });
+        let ev =
+            ResponsesReader.read_response_events(EVT_RESPONSE_COMPLETED, &completed, &mut state);
+        assert!(
+            matches!(ev.last(), Some(IrStreamEvent::Error(_))),
+            "response.completed with an unreadable cache count must end in an error; got {ev:?}"
+        );
+    }
+}
+
+#[test]
+fn truncated_recovery_yields_no_usage_for_an_unreadable_cache_write_count() {
+    let tail = br#"...cut"}]}],"usage":{"input_tokens":100,"output_tokens":9,"input_tokens_details":{"cache_write_tokens":"40"}}}"#;
+    assert_eq!(ResponsesReader.recover_truncated_usage(tail), None);
+}

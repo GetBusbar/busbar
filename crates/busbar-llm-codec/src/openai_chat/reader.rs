@@ -14,7 +14,7 @@ impl ProtocolReader for OpenAiReader {
         // `cache_write_tokens` is the OTHER slice of `prompt_tokens`, priced at the cache-WRITE
         // tier. A truncated body must price it like an untruncated one. See
         // `read_cache_write_tokens`.
-        let cache_write = super::read_cache_write_tokens(&v);
+        let cache_write = super::read_cache_write_tokens(&v).ok()?;
         Some(
             crate::ir::IrUsage {
                 input_tokens: billed(u, "prompt_tokens")
@@ -925,7 +925,7 @@ impl ProtocolReader for OpenAiReader {
             // `cache_write_tokens` rides the STREAM's usage chunk exactly as `cached_tokens` does —
             // the OTHER slice of `prompt_tokens`, priced at the cache-WRITE tier. See
             // `read_cache_write_tokens`.
-            let cache_write = super::read_cache_write_tokens(u);
+            let cache_write = super::read_cache_write_tokens(u).map_err(refuse_unreadable_count)?;
             Ok::<_, IrError>(IrUsage {
                 // NORMALIZE to the additive-cache convention: OpenAI's `prompt_tokens` is a
                 // TOTAL that already INCLUDES the cached prefix and the cache-write slice, so
@@ -1266,7 +1266,10 @@ impl ProtocolReader for OpenAiReader {
         )?;
         // `prompt_tokens_details.cache_write_tokens` — the OTHER slice of `prompt_tokens`, priced at
         // the cache-WRITE tier. See `read_cache_write_tokens`.
-        let cache_write_input_tokens = usage_val.and_then(super::read_cache_write_tokens);
+        let cache_write_input_tokens = match usage_val {
+            Some(u) => super::read_cache_write_tokens(u).map_err(refuse_unreadable_count)?,
+            None => None,
+        };
 
         let usage = crate::ir::IrUsage {
             // NORMALIZE to the additive-cache convention: OpenAI's `prompt_tokens` is a TOTAL that

@@ -438,7 +438,8 @@ impl ProtocolReader for AnthropicReader {
                             // object the buffered response does — and this is the frame that
                             // reports cache writes on an Anthropic stream, so defaulting it away
                             // lost the whole tier split on every streamed request.
-                            detail: read_cache_tier_detail(Some(u)),
+                            detail: read_cache_tier_detail(Some(u))
+                                .map_err(refuse_unreadable_count)?,
                         })
                     })
                     .transpose()
@@ -576,7 +577,8 @@ impl ProtocolReader for AnthropicReader {
                         cache_read_input_tokens: billed_opt(usage_val, "cache_read_input_tokens")?,
                         // `message_delta.usage` repeats the `cache_creation` tier object when the
                         // turn wrote cache; read it for the same reason `message_start` does.
-                        detail: read_cache_tier_detail(usage_val),
+                        detail: read_cache_tier_detail(usage_val)
+                            .map_err(refuse_unreadable_count)?,
                     })
                 })() {
                     Ok(usage) => usage,
@@ -746,7 +748,7 @@ impl ProtocolReader for AnthropicReader {
             // DIFFERENTLY, so collapsing them into the one total leaves a bill that reconciles in
             // aggregate and cannot be reconciled per line. Shared with the two STREAMING sites so a
             // stream does not silently lose a split the buffered path reports.
-            detail: read_cache_tier_detail(usage_val),
+            detail: read_cache_tier_detail(usage_val).map_err(refuse_unreadable_count)?,
         };
 
         // Treat an empty `model` string as absent (`None`). The writer emits `model: ""` as the

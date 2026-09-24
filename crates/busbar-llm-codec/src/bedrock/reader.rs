@@ -11,7 +11,7 @@ impl ProtocolReader for BedrockReader {
         let u = Some(&v);
         // The per-TTL cache-write split rides the same `usage` object a truncated body still
         // carries, so a body too large to buffer whole reports the same breakdown a small one does.
-        let (cache_5m, cache_1h) = super::read_cache_details(Some(&v));
+        let (cache_5m, cache_1h) = super::read_cache_details(Some(&v)).ok()?;
         Some(
             crate::ir::IrUsage {
                 input_tokens: billed(u, "inputTokens").ok()?,
@@ -1139,20 +1139,38 @@ impl ProtocolReader for BedrockReader {
                 // consuming the buffered stop_reason, BEFORE the terminal MessageStop. A bare
                 // `metadata` with neither usage nor a buffered stop_reason yields a zero-usage,
                 // stop_reason-less delta, which is benign.
-                let usage_obj = data.get("usage").and_then(|u| u.as_object());
-                let (cache_creation_input_tokens, cache_read_input_tokens) =
-                    read_cache_usage(usage_obj);
+                // BILLED COUNTS: absent is zero (as above), a present-but-UNREADABLE count REFUSES
+                // (#42) — the stream ends in an error instead of ledgering zero tokens. That holds
+                // for the cache counts and the per-TTL split as much as for input/output (item 133):
+                // an unreadable cache count used to read as "no cache", ledgering none.
+                //
                 // The per-TTL cache-write split rides the STREAM's `metadata` frame exactly as it
                 // rides the buffered `usage`: the two TTLs price differently, so reading only the
                 // total made the same turn's bill reconcilable buffered and not reconcilable
                 // streamed.
-                let (cache_5m, cache_1h) = super::read_cache_details(data.get("usage"));
-                // BILLED COUNTS: absent is zero (as above), a present-but-UNREADABLE count REFUSES
-                // (#42) — the stream ends in an error instead of ledgering zero tokens.
                 let usage_val = data.get("usage");
-                let (input_tokens, output_tokens) = match billed(usage_val, "inputTokens")
-                    .and_then(|i| Ok((i, billed(usage_val, "outputTokens")?)))
-                {
+                let read = (|| -> Result<_, IrError> {
+                    let (cache_creation, cache_read) =
+                        read_cache_usage(usage_val).map_err(refuse_unreadable_count)?;
+                    let (cache_5m, cache_1h) =
+                        super::read_cache_details(usage_val).map_err(refuse_unreadable_count)?;
+                    Ok((
+                        billed(usage_val, "inputTokens")?,
+                        billed(usage_val, "outputTokens")?,
+                        cache_creation,
+                        cache_read,
+                        cache_5m,
+                        cache_1h,
+                    ))
+                })();
+                let (
+                    input_tokens,
+                    output_tokens,
+                    cache_creation_input_tokens,
+                    cache_read_input_tokens,
+                    cache_5m,
+                    cache_1h,
+                ) = match read {
                     Ok(counts) => counts,
                     Err(refusal) => {
                         out.push(IrStreamEvent::Error(refusal));
@@ -1373,11 +1391,12 @@ impl ProtocolReader for BedrockReader {
         // error, so a spurious `ClientError` here would mislabel the cause and confuse retry logic.
         let usage_obj = obj.get("usage");
         let (cache_creation_input_tokens, cache_read_input_tokens) =
-            read_cache_usage(usage_obj.and_then(|u| u.as_object()));
+            read_cache_usage(usage_obj).map_err(refuse_unreadable_count)?;
         // `cacheDetails` — the per-TTL breakdown of `cacheWriteInputTokens`. The two TTLs are
         // PRICED DIFFERENTLY, so the total alone leaves a bill that reconciles in aggregate and
         // cannot be reconciled per line. See `read_cache_details`.
-        let (cache_5m, cache_1h) = super::read_cache_details(usage_obj);
+        let (cache_5m, cache_1h) =
+            super::read_cache_details(usage_obj).map_err(refuse_unreadable_count)?;
         // BILLED COUNTS: absent is zero, a present-but-UNREADABLE count REFUSES (#42).
         let usage = crate::ir::IrUsage {
             input_tokens: billed(usage_obj, "inputTokens")?,

@@ -1153,16 +1153,18 @@ fn stop_reason_reverse(canonical: crate::ir::IrStopReason) -> &'static str {
 /// caching was active but contributed zero tokens). The old code hardcoded both to `None`,
 /// silently dropping real cache accounting on every read; this plumbs the actual values so a
 /// Bedrock→Bedrock (and Bedrock→Anthropic) round-trip preserves cache usage.
+///
+/// A present-but-UNREADABLE count is an [`crate::usage_count::UnreadableCount`] the caller turns
+/// into a refusal (#42, item 133). The old read returned `None` for it — indistinguishable from "no
+/// caching this turn" — so a reported cache read or write was ledgered as none.
 fn read_cache_usage(
-    usage_obj: Option<&serde_json::Map<String, serde_json::Value>>,
-) -> (Option<u64>, Option<u64>) {
-    let cache_creation_input_tokens = usage_obj
-        .and_then(|u| u.get("cacheWriteInputTokens"))
-        .and_then(crate::usage_count::read_count_u64);
-    let cache_read_input_tokens = usage_obj
-        .and_then(|u| u.get("cacheReadInputTokens"))
-        .and_then(crate::usage_count::read_count_u64);
-    (cache_creation_input_tokens, cache_read_input_tokens)
+    usage_obj: Option<&serde_json::Value>,
+) -> Result<(Option<u64>, Option<u64>), crate::usage_count::UnreadableCount> {
+    let cache_creation_input_tokens =
+        crate::usage_count::billed_count_opt(usage_obj, "cacheWriteInputTokens")?;
+    let cache_read_input_tokens =
+        crate::usage_count::billed_count_opt(usage_obj, "cacheReadInputTokens")?;
+    Ok((cache_creation_input_tokens, cache_read_input_tokens))
 }
 
 /// The `CacheTTL` enum's two values, as the Bedrock service model spells them.
@@ -1185,31 +1187,35 @@ const CACHE_TTL_1H: &str = "1h";
 /// an unrecognized `ttl` string is ignored rather than folded into one of the two known tiers (the
 /// total in `cacheWriteInputTokens` still carries it, so nothing is unbilled).
 ///
-/// Counts are read through [`crate::usage_count::read_count_u64`], the one seam every money count in
-/// this crate goes through — a float-spelled `20.0` is twenty tokens here, not a silent zero.
-fn read_cache_details(usage_obj: Option<&serde_json::Value>) -> (Option<u64>, Option<u64>) {
+/// Counts are read through [`crate::usage_count::billed_count_opt`], the crate's billed-count seam —
+/// a float-spelled `20.0` is twenty tokens here, not a silent zero; an entry with no (or a `null`)
+/// `inputTokens` contributes nothing, as before; and a present-but-UNREADABLE `inputTokens` on a
+/// 5m/1h entry is an [`crate::usage_count::UnreadableCount`] the caller turns into a refusal (#42,
+/// item 133). The old read skipped that entry, so its tier reported fewer tokens than were written.
+/// An unrecognized TTL's count is not read at all: it reaches no tier.
+fn read_cache_details(
+    usage_obj: Option<&serde_json::Value>,
+) -> Result<(Option<u64>, Option<u64>), crate::usage_count::UnreadableCount> {
     let Some(list) = usage_obj
         .and_then(|u| u.get("cacheDetails"))
         .and_then(|d| d.as_array())
     else {
-        return (None, None);
+        return Ok((None, None));
     };
     let mut five_m: Option<u64> = None;
     let mut one_h: Option<u64> = None;
     for entry in list {
-        let Some(tokens) = entry
-            .get("inputTokens")
-            .and_then(crate::usage_count::read_count_u64)
-        else {
+        let tier = match entry.get("ttl").and_then(|t| t.as_str()) {
+            Some(CACHE_TTL_5M) => &mut five_m,
+            Some(CACHE_TTL_1H) => &mut one_h,
+            _ => continue,
+        };
+        let Some(tokens) = crate::usage_count::billed_count_opt(Some(entry), "inputTokens")? else {
             continue;
         };
-        match entry.get("ttl").and_then(|t| t.as_str()) {
-            Some(CACHE_TTL_5M) => five_m = Some(five_m.unwrap_or(0).saturating_add(tokens)),
-            Some(CACHE_TTL_1H) => one_h = Some(one_h.unwrap_or(0).saturating_add(tokens)),
-            _ => {}
-        }
+        *tier = Some(tier.unwrap_or(0).saturating_add(tokens));
     }
-    (five_m, one_h)
+    Ok((five_m, one_h))
 }
 
 /// Write the IR's per-TTL cache-write split back onto a Bedrock Converse `usage` object, the inverse

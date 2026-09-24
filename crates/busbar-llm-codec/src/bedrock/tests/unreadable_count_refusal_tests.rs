@@ -64,3 +64,85 @@ fn truncated_recovery_yields_no_usage_for_a_stringified_count() {
         .expect("an absent count still recovers");
     assert_eq!((u.input, u.output), (0, 9));
 }
+
+// ── CACHE COUNTS (item 133 remainder) ────────────────────────────────────────────────────────────
+//
+// `read_cache_usage` read `cacheReadInputTokens`/`cacheWriteInputTokens` as
+// `.and_then(read_count_u64)` — an unreadable spelling became `None`, "no caching this turn" — and
+// `read_cache_details` SKIPPED a 5m/1h entry whose `inputTokens` would not read, so its tier reported
+// fewer tokens than were written. Both now refuse on every path.
+
+fn converse(usage: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "output": {"message": {"role": "assistant", "content": [{"text": "hi"}]}},
+        "stopReason": "end_turn",
+        "usage": usage
+    })
+}
+
+#[test]
+fn buffered_response_refuses_an_unreadable_cache_count() {
+    for usage in [
+        serde_json::json!({"inputTokens": 5, "outputTokens": 9, "cacheReadInputTokens": "40"}),
+        serde_json::json!({"inputTokens": 5, "outputTokens": 9, "cacheWriteInputTokens": "40"}),
+        serde_json::json!({"inputTokens": 5, "outputTokens": 9, "cacheWriteInputTokens": 40,
+                           "cacheDetails": [{"ttl": "5m", "inputTokens": "40"}]}),
+    ] {
+        BedrockReader
+            .read_response(&converse(usage.clone()))
+            .expect_err(&format!(
+                "{usage} carries an unreadable cache count: refusal, not `none`"
+            ));
+    }
+}
+
+#[test]
+fn buffered_response_cache_counts_absent_null_readable_and_unknown_ttl_still_read() {
+    let ir = BedrockReader
+        .read_response(&converse(serde_json::json!({
+            "inputTokens": 5, "outputTokens": 9,
+            "cacheReadInputTokens": null, "cacheWriteInputTokens": 60,
+            "cacheDetails": [
+                {"ttl": "1h", "inputTokens": 20},
+                {"ttl": "5m", "inputTokens": 40},
+                {"ttl": "5m"},
+                {"ttl": "9d", "inputTokens": "not a tier this build prices"}
+            ]
+        })))
+        .expect("absent, null, readable and unknown-TTL entries all read");
+    assert_eq!(ir.usage.cache_read_input_tokens, None);
+    assert_eq!(ir.usage.cache_creation_input_tokens, Some(60));
+    assert_eq!(ir.usage.detail.cache_creation_5m_input_tokens, Some(40));
+    assert_eq!(ir.usage.detail.cache_creation_1h_input_tokens, Some(20));
+}
+
+#[test]
+fn streaming_metadata_refuses_an_unreadable_cache_count() {
+    for usage in [
+        serde_json::json!({"inputTokens": 5, "outputTokens": 9, "cacheReadInputTokens": "40"}),
+        serde_json::json!({"inputTokens": 5, "outputTokens": 9,
+                           "cacheDetails": [{"ttl": "1h", "inputTokens": "40"}]}),
+    ] {
+        let mut state = crate::ir::StreamDecodeState::default();
+        BedrockReader.read_response_events(
+            "",
+            &serde_json::json!({"type": "messageStop", "stopReason": "end_turn"}),
+            &mut state,
+        );
+        let ev = BedrockReader.read_response_events(
+            "",
+            &serde_json::json!({"type": "metadata", "usage": usage}),
+            &mut state,
+        );
+        assert!(
+            matches!(ev.as_slice(), [IrStreamEvent::Error(_)]),
+            "metadata with an unreadable cache count must end the stream in an error; got {ev:?}"
+        );
+    }
+}
+
+#[test]
+fn truncated_recovery_yields_no_usage_for_an_unreadable_cache_tier() {
+    let tail = br#"...cut"}],"usage":{"inputTokens":5,"outputTokens":9,"cacheDetails":[{"ttl":"5m","inputTokens":"40"}]}}"#;
+    assert_eq!(BedrockReader.recover_truncated_usage(tail), None);
+}

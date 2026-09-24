@@ -14,7 +14,7 @@ impl ProtocolReader for ResponsesReader {
         // A truncated body bills the same cache tiers an untruncated one does: `cache_write_tokens`
         // is the OTHER slice of `input_tokens`, priced at the cache-WRITE tier. See
         // `read_cache_write_tokens`.
-        let cache_write = super::read_cache_write_tokens(&v);
+        let cache_write = super::read_cache_write_tokens(&v).ok()?;
         Some(
             crate::ir::IrUsage {
                 input_tokens: billed(u, "input_tokens")
@@ -1203,11 +1203,12 @@ impl ProtocolReader for ResponsesReader {
                     let usage = response_obj
                         .get("usage")
                         .map(|u| -> Result<crate::ir::IrUsage, IrError> {
-                            let cached = read_cached_tokens(u);
+                            let cached = read_cached_tokens(u).map_err(refuse_unreadable_count)?;
                             // `cache_write_tokens` rides the STREAM's terminal usage object exactly
                             // as `cached_tokens` does — the OTHER slice of `input_tokens`, priced at
                             // the cache-WRITE tier. See `read_cache_write_tokens`.
-                            let cache_write = read_cache_write_tokens(u);
+                            let cache_write =
+                                read_cache_write_tokens(u).map_err(refuse_unreadable_count)?;
                             Ok(crate::ir::IrUsage {
                                 // NORMALIZE to the additive-cache convention: the Responses API's
                                 // `input_tokens` is a TOTAL that already INCLUDES the cached prefix
@@ -1567,10 +1568,16 @@ impl ProtocolReader for ResponsesReader {
         // proxy engine discard a valid body and emit a spurious 500.
         let usage_val = obj.get("usage");
 
-        let cached = usage_val.and_then(read_cached_tokens);
+        let cached = match usage_val {
+            Some(u) => read_cached_tokens(u).map_err(refuse_unreadable_count)?,
+            None => None,
+        };
         // `input_tokens_details.cache_write_tokens` — the OTHER slice of `input_tokens`, priced at
         // the cache-WRITE tier. See `read_cache_write_tokens`.
-        let cache_write = usage_val.and_then(read_cache_write_tokens);
+        let cache_write = match usage_val {
+            Some(u) => read_cache_write_tokens(u).map_err(refuse_unreadable_count)?,
+            None => None,
+        };
         let usage = crate::ir::IrUsage {
             // NORMALIZE to the additive-cache convention: the Responses API's `input_tokens` is a
             // TOTAL that already INCLUDES the cached prefix and the cache-write slice, so subtract

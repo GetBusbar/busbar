@@ -74,3 +74,83 @@ fn truncated_recovery_yields_no_usage_for_a_stringified_count() {
         .expect("an absent count still recovers");
     assert_eq!((u.input, u.output), (0, 9));
 }
+
+// ── CACHE TIER / METERED DETAIL COUNTS (item 133 remainder) ─────────────────────────────────────
+//
+// `read_cache_tier_detail` read the 5m/1h cache-creation tiers and `web_search_requests` as
+// `.and_then(read_count_u64)`, so an unreadable spelling became `None` — "not reported" — on the
+// buffered response and on both streaming usage frames. They now refuse, as the totals do.
+
+fn message(usage: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "role": "assistant",
+        "content": [{"type": "text", "text": "hi"}],
+        "stop_reason": "end_turn",
+        "usage": usage
+    })
+}
+
+fn unreadable_detail_usages() -> [serde_json::Value; 3] {
+    [
+        serde_json::json!({"input_tokens": 5, "output_tokens": 9, "cache_creation_input_tokens": 40,
+                           "cache_creation": {"ephemeral_5m_input_tokens": "40", "ephemeral_1h_input_tokens": 0}}),
+        serde_json::json!({"input_tokens": 5, "output_tokens": 9, "cache_creation_input_tokens": 40,
+                           "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": "40"}}),
+        serde_json::json!({"input_tokens": 5, "output_tokens": 9,
+                           "server_tool_use": {"web_search_requests": "2"}}),
+    ]
+}
+
+#[test]
+fn buffered_response_refuses_an_unreadable_cache_tier_or_metered_count() {
+    for usage in unreadable_detail_usages() {
+        AnthropicReader
+            .read_response(&message(usage.clone()))
+            .expect_err(&format!(
+                "{usage}: an unreadable priced detail count is a refusal"
+            ));
+    }
+}
+
+#[test]
+fn buffered_response_tier_counts_absent_null_and_readable_still_read() {
+    let ir = AnthropicReader
+        .read_response(&message(serde_json::json!({
+            "input_tokens": 5, "output_tokens": 9, "cache_creation_input_tokens": 40,
+            "cache_creation": {"ephemeral_5m_input_tokens": 40, "ephemeral_1h_input_tokens": null},
+            "server_tool_use": {"web_search_requests": 2}
+        })))
+        .expect("absent, null and readable detail counts read");
+    assert_eq!(ir.usage.detail.cache_creation_5m_input_tokens, Some(40));
+    assert_eq!(ir.usage.detail.cache_creation_1h_input_tokens, None);
+    assert_eq!(ir.usage.detail.web_search_requests, Some(2));
+}
+
+#[test]
+fn streaming_usage_frames_refuse_an_unreadable_cache_tier_or_metered_count() {
+    for usage in unreadable_detail_usages() {
+        let start = serde_json::json!({
+            "type": "message_start",
+            "message": {"id": "m", "role": "assistant", "usage": usage.clone()}
+        });
+        assert!(
+            matches!(
+                AnthropicReader.read_response_event("message_start", &start),
+                Some(IrStreamEvent::Error(_))
+            ),
+            "message_start with {usage} must end the stream in an error"
+        );
+        let delta = serde_json::json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn"},
+            "usage": usage.clone()
+        });
+        assert!(
+            matches!(
+                AnthropicReader.read_response_event("message_delta", &delta),
+                Some(IrStreamEvent::Error(_))
+            ),
+            "message_delta with {usage} must end the stream in an error"
+        );
+    }
+}

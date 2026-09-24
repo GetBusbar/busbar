@@ -141,6 +141,23 @@ pub fn billed_count(
     }
 }
 
+/// [`billed_count`] for a count whose ABSENCE is kept distinct from zero (a cache tier, a per-TTL
+/// split): an absent usage object, an absent field or a JSON `null` is `None` (never a spurious
+/// `Some(0)`), a readable count is `Some(n)`, and a present-but-UNREADABLE count is the same
+/// [`UnreadableCount`] refusal — never the `None` that reads as "the provider reported no cache".
+///
+/// # Errors
+/// The field is present, is not `null`, and is not a count.
+pub fn billed_count_opt(
+    usage: Option<&serde_json::Value>,
+    field: &'static str,
+) -> Result<Option<u64>, UnreadableCount> {
+    match usage {
+        Some(u) if u.get(field).is_some_and(|v| !v.is_null()) => billed_count(u, field).map(Some),
+        _ => Ok(None),
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/usage_count_tests.rs"]
 mod tests;
