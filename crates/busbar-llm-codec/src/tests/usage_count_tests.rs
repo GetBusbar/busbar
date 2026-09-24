@@ -430,3 +430,244 @@ fn billed_count_opt_is_none_when_absent_and_refuses_when_unreadable() {
         .expect_err("a present, unreadable count is not absence");
     assert_eq!(err.field, "n");
 }
+
+/// Flatten one source file the way the scans in this file read it: full-line comments dropped,
+/// trailing ` //` comments cut, and then EVERY whitespace character removed, so no rustfmt line
+/// break or spacing choice can split an idiom the scan is looking for.
+fn squash(text: &str) -> String {
+    text.lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .map(|l| l.find(" //").map_or(l, |at| &l[..at]))
+        .collect::<String>()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect()
+}
+
+/// Given `s` starting at an opening bracket, the index one past its matching close.
+fn past_balanced(s: &str, open: char, close: char) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, c) in s.char_indices() {
+        if c == open {
+            depth += 1;
+        } else if c == close {
+            depth = depth.checked_sub(1)?;
+            if depth == 0 {
+                return Some(i + c.len_utf8());
+            }
+        }
+    }
+    None
+}
+
+/// Every lenient count read in `flat` (a [`squash`]ed file) whose `None` is then DEFAULTED.
+///
+/// A lenient read is `read_count_u64`, or any local closure or `-> Option<u64>` fn that wraps one
+/// (`u64_field`, `billed_u64`, ... — found by what they CALL, never by what they are named, and to
+/// a fixpoint so a wrapper of a wrapper is one too). Its `None` means "absent OR present and
+/// unreadable"; defaulting it — `.unwrap_or(..)`, `.unwrap_or_default()`, `.unwrap_or_else(..)`,
+/// `.map_or(..)`, possibly after `.map(..)` steps — records an unreadable billed count as a number
+/// the provider never sent. That is exactly what `billed_count`/`billed_count_opt` exist to refuse.
+fn lenient_defaults(flat: &str) -> Vec<String> {
+    let mut wrappers: Vec<String> = vec!["read_count_u64".to_string()];
+    loop {
+        let mut grew = false;
+        // `letNAME=|..|BODY;` closures.
+        let mut from = 0;
+        while let Some(hit) = flat[from..].find("let") {
+            let at = from + hit;
+            from = at + 3;
+            let rest = &flat[from..];
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            let after = &rest[name.len()..];
+            if name.is_empty() || !after.starts_with("=|") {
+                continue;
+            }
+            let body_end = after.find(';').unwrap_or(after.len());
+            let body = &after[..body_end];
+            if !wrappers.contains(&name) && wrappers.iter().any(|w| body.contains(w.as_str())) {
+                wrappers.push(name);
+                grew = true;
+            }
+        }
+        // `fnNAME(..)->Option<u64>{BODY}` fns.
+        let mut from = 0;
+        while let Some(hit) = flat[from..].find("fn") {
+            let at = from + hit;
+            from = at + 2;
+            let rest = &flat[from..];
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            let after = &rest[name.len()..];
+            if name.is_empty() || !after.starts_with('(') {
+                continue;
+            }
+            let Some(sig_end) = past_balanced(after, '(', ')') else {
+                continue;
+            };
+            let Some(ret) = after[sig_end..].strip_prefix("->Option<u64>") else {
+                continue;
+            };
+            let Some(body_end) = past_balanced(ret, '{', '}') else {
+                continue;
+            };
+            let body = &ret[..body_end];
+            if !wrappers.contains(&name) && wrappers.iter().any(|w| body.contains(w.as_str())) {
+                wrappers.push(name);
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+
+    const DEFAULTS: &[&str] = &[
+        ".unwrap_or(",
+        ".unwrap_or_default(",
+        ".unwrap_or_else(",
+        ".map_or(",
+    ];
+    let mut hits = Vec::new();
+    for w in &wrappers {
+        let mut from = 0;
+        while let Some(hit) = flat[from..].find(w.as_str()) {
+            let at = from + hit;
+            from = at + w.len();
+            // A whole identifier only: `read_count_u64` inside `xread_count_u64y` is another name.
+            let before_ok = flat[..at]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+            let mut tail = &flat[from..];
+            let after_ok = tail
+                .chars()
+                .next()
+                .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+            if !before_ok || !after_ok {
+                continue;
+            }
+            if tail.starts_with('(') {
+                // CALL form `w(..)`.
+                let Some(end) = past_balanced(tail, '(', ')') else {
+                    continue;
+                };
+                tail = &tail[end..];
+            } else if let Some(t) = tail.strip_prefix(')') {
+                // PATH form `.and_then(w)`: step past the combinator's own close.
+                tail = t;
+            } else {
+                continue;
+            }
+            // `.map(..)` keeps the lenient `None` flowing; step through any number of them.
+            while let Some(t) = tail.strip_prefix(".map") {
+                let Some(end) = past_balanced(t, '(', ')') else {
+                    break;
+                };
+                tail = &t[end..];
+            }
+            if let Some(d) = DEFAULTS.iter().find(|d| tail.starts_with(**d)) {
+                let site: String = flat[at.saturating_sub(40)..at].to_string();
+                hits.push(format!("…{site}{w}…{d}"));
+            }
+        }
+    }
+    hits
+}
+
+/// THE READ-THROUGH-THE-SEAM SPELLING OF THE SILENT ZERO (item 306).
+///
+/// The two scans above look for the substring `as_u64`, which does not occur inside
+/// `read_count_u64` — so they were structurally blind to the idiom that actually carried the defect:
+/// `u64_field("input_tokens").unwrap_or(0)` over `let u64_field = |k| v.get(k).and_then(read_count_u64)`,
+/// live in all six dialects at 079a16efc (item 133 then removed every one). Routing a count through
+/// the seam and then defaulting its `None` is the ORIGINAL defect, spelled politely: a present,
+/// unreadable count is ledgered as zero. This scan keys on the SHAPE — a lenient read, however it
+/// is named or wrapped, whose `None` is defaulted — so a reintroduction goes red here.
+#[test]
+fn no_dialect_defaults_a_lenient_count_read() {
+    use std::path::Path;
+
+    // The detector must see the exact shapes that were live, or a green below proves nothing.
+    // Verbatim (squashed) from anthropic/reader.rs and cohere/reader.rs at 079a16efc.
+    let was_live = squash(
+        "let u64_field = |k: &str| v.get(k).and_then(crate::usage_count::read_count_u64);\n\
+         input_tokens: u64_field(\"input_tokens\").unwrap_or(0),\n\
+         x: u.get(\"output_tokens\").and_then(crate::usage_count::read_count_u64).unwrap_or(0),\n\
+         y: read_count_u64(&n).unwrap_or_default(),\n\
+         fn count_of(v: &Value) -> Option<u64> { v.get(\"n\").and_then(read_count_u64) }\n\
+         z: count_of(&v).map(|n| n * 2).unwrap_or(0),\n",
+    );
+    assert_eq!(
+        lenient_defaults(&was_live).len(),
+        4,
+        "the detector must flag the closure, path, call and fn-wrapper forms: {:?}",
+        lenient_defaults(&was_live)
+    );
+    // And it must NOT flag a lenient read whose `None` stays `None`, or the refusing seam.
+    let is_fine = squash(
+        "let billed_u64 = |k: &str| b.get(k).and_then(crate::usage_count::read_count_u64);\n\
+         search_units: billed_u64(\"search_units\"),\n\
+         input_tokens: billed(tokens, \"input_tokens\").ok()?,\n\
+         cached: billed_opt(Some(&v), \"cached_tokens\").ok()?.unwrap_or(0),\n",
+    );
+    assert!(
+        lenient_defaults(&is_fine).is_empty(),
+        "{:?}",
+        lenient_defaults(&is_fine)
+    );
+
+    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if p.file_name().is_some_and(|n| n == "tests") {
+                    continue;
+                }
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs")
+                && !p.file_name().is_some_and(|n| {
+                    let n = n.to_string_lossy();
+                    n.ends_with("_tests.rs") || n == "usage_count.rs"
+                })
+            {
+                out.push(p);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path(),
+        &mut files,
+    );
+    assert!(
+        files.len() > 20,
+        "the scan found only {} source files, so it is not actually looking at the dialects",
+        files.len()
+    );
+
+    let mut offenders = Vec::new();
+    for f in &files {
+        let Ok(text) = std::fs::read_to_string(f) else {
+            continue;
+        };
+        for hit in lenient_defaults(&squash(&text)) {
+            offenders.push(format!("{}: {hit}", f.display()));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a lenient count read (`read_count_u64` or a wrapper of it) has its `None` DEFAULTED, so a \
+         present-but-unreadable billed count is ledgered as a number the provider never sent. Read \
+         it through `usage_count::billed_count`/`billed_count_opt` and refuse:\n  {}",
+        offenders.join("\n  ")
+    );
+}
