@@ -459,12 +459,20 @@ _h2_st_case_card_epoch() {
   _h2_st_want "card-epoch: a non-numeric total read is red, not a pass" red "$(_h2_st_rig h2-card-epoch.sh H2_ST_USAGE='1|1|8.0')"
 }
 
+_h2_st_case_class_price() {
+  _h2_st_want "class-price: control quantity 3 passes" 0 "$(_h2_st_rig h2-class-price.sh H2_ST_QTY=3)"
+  _h2_st_want "class-price: no metering row (-) is red" red "$(_h2_st_rig h2-class-price.sh H2_ST_QTY=-)"
+  _h2_st_want "class-price: quantity 0 is red" red "$(_h2_st_rig h2-class-price.sh H2_ST_QTY=0)"
+  _h2_st_want "class-price: an EMPTY quantity read is red, not a pass" red "$(_h2_st_rig h2-class-price.sh H2_ST_QTY=)"
+  _h2_st_want "class-price: a non-numeric quantity read is red, not a pass" red "$(_h2_st_rig h2-class-price.sh H2_ST_QTY=None)"
+}
+
 h2_selftest() {
   local only="${1:-}" c
   _H2_ST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/h2-selftest.XXXXXX")" || return 1
   _H2_ST_RAN=0
   _H2_ST_FAILED=0
-  for c in verdict_exits card_epoch; do
+  for c in verdict_exits card_epoch class_price; do
     [ -z "$only" ] || [ "$only" = "$c" ] || continue
     "_h2_st_case_${c}"
   done
