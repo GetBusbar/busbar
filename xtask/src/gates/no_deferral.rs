@@ -61,6 +61,8 @@
 //! check cannot fire on a glob while even one of its markers survives, so 51 could be resolved with
 //! the row still reading as live. A matcher that is not an exact `path:line` is refused at load.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use crate::ctx::{Ctx, Overlay, WalkSpec};
 use crate::gates::{prove_green, prove_red, Gate, Report};
 use crate::ledger::{Row, Verdict};
@@ -755,11 +757,28 @@ impl Gate for NoDeferralGate {
 
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::new();
+
+        // THE BASELINE EVERY CASE IS ASKED OVER (item 89). For the plain gate it is the tree. For
+        // `--strict-done` it cannot be: the committed allowlist carries non-hot waivers -- real
+        // debt the tracker's N-rows retire, the owners' to drain -- so `strict-done` is standing
+        // RED, the green controls could not be green and the strict case scored IMPOSSIBLE. The
+        // strict baseline is the tree with that debt RESOLVED in an overlay: each non-hot waiver
+        // dropped AND the marker line it excused blanked (line numbers kept), which is exactly
+        // the tree `--strict-done` is waiting for. Every case plants on top of it. The real tree
+        // stays red on `gate`; only the proof moved.
+        let base_ov = if self.strict {
+            strict_green_base(cx)
+        } else {
+            Overlay::new()
+        };
+        let base_cx = cx.with_overlay(base_ov.clone());
+        let base = &base_cx;
+        let on_base = |ov: Overlay| layered(&base_ov, ov);
         let owed: Vec<String> = self.owed();
         let all: Vec<&str> = owed.iter().map(String::as_str).collect();
 
         report.push(prove_green(
-            cx,
+            base,
             self,
             "the committed tree's every marker is a waived one, and every waiver is live",
             &all,
@@ -775,11 +794,11 @@ impl Gate for NoDeferralGate {
              v = unimplemented!(); v }\n",
         );
         report.push(prove_red(
-            cx,
+            base,
             self,
             "a match arm and an initialiser are reachable deferrals, wherever they sit on the line",
             &[ROW_UNWAIVED],
-            ov,
+            on_base(ov),
             &[
                 "xtask_no_deferral_plant.rs:4",
                 "xtask_no_deferral_plant.rs:7",
@@ -793,11 +812,11 @@ impl Gate for NoDeferralGate {
             "// SKELETON: this plane mounts nothing yet\npub fn q() -> u8 { 1 }\n",
         );
         report.push(prove_red(
-            cx,
+            base,
             self,
             "a self-declared debt label in a comment is the whole point of Class B",
             &[ROW_UNWAIVED],
-            ov,
+            on_base(ov),
             &["xtask_no_deferral_plant.rs:1"],
         ));
 
@@ -814,11 +833,11 @@ impl Gate for NoDeferralGate {
              documented and unenforced\n",
         );
         report.push(prove_red(
-            cx,
+            base,
             self,
             "TODO / FIXME / HACK / XXX in tag form are the four labels the rule is named after",
             &[ROW_UNWAIVED],
-            ov,
+            on_base(ov),
             &[
                 "xtask_no_deferral_plant.rs:1",
                 "xtask_no_deferral_plant.rs:3",
@@ -840,7 +859,7 @@ impl Gate for NoDeferralGate {
              non-ASCII character becomes a `\\uXXXX` escape.\npub fn e() -> u8 { 5 }\n",
         );
         report.push(prove_green(
-            &cx.with_overlay(ov),
+            &cx.with_overlay(on_base(ov)),
             self,
             "the bare noun, an EMITTED `# TODO(migrate):` and `\\uXXXX` are all silent",
             &[ROW_UNWAIVED],
@@ -855,11 +874,11 @@ impl Gate for NoDeferralGate {
              implemented\n    pub fn q() -> u8 {\n        todo!(\"dev-only until DoD\")\n    }\n}\n",
         );
         report.push(prove_red(
-            cx,
+            base,
             self,
             "a cfg(not(test)) module is scanned, not excused as scaffolding",
             &[ROW_UNWAIVED],
-            ov,
+            on_base(ov),
             &[
                 "xtask_no_deferral_plant.rs:3",
                 "xtask_no_deferral_plant.rs:5",
@@ -878,7 +897,7 @@ impl Gate for NoDeferralGate {
              // SKELETON fixture\n    fn f() { todo!() }\n}\n",
         );
         report.push(prove_green(
-            &cx.with_overlay(ov),
+            &cx.with_overlay(on_base(ov)),
             self,
             "prose, a lowercase 'skeleton' and a real cfg(all(test,…)) module are all silent",
             &[ROW_UNWAIVED],
@@ -887,39 +906,45 @@ impl Gate for NoDeferralGate {
         // ── A WAIVER THAT MATCHES NOTHING. Under-count: the marker was resolved and the row lied
         //    about the tree for as long as nobody looked.
         report.push(prove_red(
-            cx,
+            base,
             self,
             "a waiver matching zero markers is a stale exemption",
             &[ROW_STALE_WAIVER],
-            waivers_overlay(
-                cx,
+            on_base(waivers_overlay(
+                base,
                 "crates/busbar-core/src/no-such-file.rs:1\tplanted, matches nothing [retires: H5]",
-            ),
+            )),
             &["no-such-file.rs:1"],
         ));
 
         // ── THE THREE WAIVER-SHAPE REFUSALS, each its own case, each driving the real loader.
         report.push(prove_red(
-            cx,
+            base,
             self,
             "a waiver row carrying no [retires: …] is refused",
             &[ROW_WAIVER_SHAPE],
-            waivers_overlay(cx, "crates/x/src/a.rs:1\ta reason with no expiry at all"),
+            on_base(waivers_overlay(
+                base,
+                "crates/x/src/a.rs:1\ta reason with no expiry at all",
+            )),
             &["carries no expiry"],
         ));
         report.push(prove_red(
-            cx,
+            base,
             self,
             "an expiry naming a tracker row that does not exist is refused",
             &[ROW_WAIVER_SHAPE],
-            waivers_overlay(cx, "crates/x/src/a.rs:1\ta reason [retires: ZZ999]"),
+            on_base(waivers_overlay(
+                base,
+                "crates/x/src/a.rs:1\ta reason [retires: ZZ999]",
+            )),
             &["not a row in"],
         ));
         // ── ITEM 212: A WAIVER WHOSE EXPIRY FIRED. Tick the tracker row every `hot/*` waiver names
         //    while the 52 markers stay; before this case the ticked row still "resolved" and the
         //    waivers could never expire.
         {
-            let tracker = cx.read(TRACKER).unwrap_or_default();
+            let tracker = base.read(TRACKER).unwrap_or_default();
             let ticked: String = tracker
                 .lines()
                 .map(|l| match l.strip_prefix("- [ ] H5 ") {
@@ -931,29 +956,29 @@ impl Gate for NoDeferralGate {
             let mut ov = Overlay::new();
             ov.set(TRACKER, ticked);
             report.push(prove_red(
-                cx,
+                base,
                 self,
                 "a waiver whose [retires: …] row is ticked closed is EXPIRED, not resolved",
                 &[ROW_WAIVER_SHAPE],
-                ov,
+                on_base(ov),
                 &["EXPIRED", "H5"],
             ));
         }
         report.push(prove_red(
-            cx,
+            base,
             self,
             "a directory glob is refused: one absorbed 52 markers and could never go stale",
             &[ROW_WAIVER_SHAPE],
-            waivers_overlay(
-                cx,
+            on_base(waivers_overlay(
+                base,
                 "crates/busbar-plugin/src/hot/*\ta whole tree [retires: H5]",
-            ),
+            )),
             &["not an exact path:line"],
         ));
 
         // ── THE FLOOR, ON THE RUN PATH. Discovery emptied: every other row must go UNPROVEN rather
         //    than report a clean tree, and `--strict-done` must not certify anything at all.
-        let emptied = match discover(cx) {
+        let emptied = match discover(base) {
             Ok(files) => {
                 let mut ov = Overlay::new();
                 for (rel, _) in &files {
@@ -965,11 +990,11 @@ impl Gate for NoDeferralGate {
         };
         match emptied {
             Some(ov) => report.push(prove_red(
-                cx,
+                base,
                 self,
                 "a tree discovery came back empty over is UNPROVEN, never a clean one",
                 &[ROW_DISCOVERY_FLOOR],
-                ov,
+                on_base(ov),
                 &["UNPROVEN, not PASS"],
             )),
             None => report.note_infra_failure(
@@ -982,7 +1007,7 @@ impl Gate for NoDeferralGate {
             // well-formed waiver for it, so the over/under-count rows stay green and the only
             // finding is the one --strict-done exists for.
             let mut ov = waivers_overlay(
-                cx,
+                base,
                 "crates/busbar-core/src/xtask_no_deferral_plant.rs:1\tplanted voice-shaped debt \
                  [retires: H5]",
             );
@@ -991,17 +1016,72 @@ impl Gate for NoDeferralGate {
                 "pub fn q() -> u8 { todo!() }\n",
             );
             report.push(prove_red(
-                cx,
+                base,
                 self,
                 "a waiver outside hot/* means the tracked debt has not cleared",
                 &[ROW_STRICT_DONE],
-                ov,
+                on_base(ov),
                 &["non-hot waiver"],
             ));
         }
 
         report
     }
+}
+
+/// THE TREE `--strict-done` IS WAITING FOR, as an overlay: every non-hot waiver dropped from the
+/// allowlist AND the marker line it excused blanked, line numbers kept so every hot/* waiver still
+/// names its marker. The strict self-test's baseline (item 89) -- never the gate's verdict.
+fn strict_green_base(cx: &Ctx) -> Overlay {
+    let mut ov = Overlay::new();
+    let Ok(text) = cx.read(WAIVERS) else {
+        return ov;
+    };
+    let mut kept = Vec::new();
+    let mut blank: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+    for line in text.lines() {
+        let t = line.trim();
+        let matcher = t.split(char::is_whitespace).next().unwrap_or_default();
+        let located = matcher
+            .rsplit_once(':')
+            .and_then(|(path, n)| Some((path, n.parse::<usize>().ok()?)));
+        match located {
+            Some((path, n)) if !t.starts_with('#') && !matcher.contains("/hot/") => {
+                blank.entry(path.to_string()).or_default().insert(n);
+            }
+            _ => kept.push(line),
+        }
+    }
+    if blank.is_empty() {
+        return ov;
+    }
+    ov.set(WAIVERS, format!("{}\n", kept.join("\n")));
+    for (path, lines) in &blank {
+        let Ok(src) = cx.read(path) else { continue };
+        let body: Vec<&str> = src
+            .split('\n')
+            .enumerate()
+            .map(|(i, l)| if lines.contains(&(i + 1)) { "" } else { l })
+            .collect();
+        ov.set(path, body.join("\n"));
+    }
+    ov
+}
+
+/// `top` laid over `base`: every claim `top` makes wins, every other claim of `base` stands.
+/// Only file claims -- no no-deferral plant cans a derived input.
+fn layered(base: &Overlay, top: Overlay) -> Overlay {
+    use crate::ctx::Change;
+    debug_assert!(!top.has_commands(), "a no-deferral plant cans no command");
+    let mut out = base.clone();
+    for (path, change) in top.changes() {
+        match change {
+            Change::Content(c) => out.set(path, c.clone()),
+            Change::Absent => out.remove(path),
+            Change::Unreadable(why) => out.unreadable(path, why.clone()),
+        }
+    }
+    out
 }
 
 /// The committed allowlist plus one planted row. Built from what the gate would otherwise READ, so
