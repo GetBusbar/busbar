@@ -1260,35 +1260,46 @@ async fn the_loop_leaves_the_money_where_the_shipped_plane_leaves_it() {
     assert_eq!(field(&post_door, "metering_rows"), "");
 }
 
-/// W3.c / DECISION #42: BILLING OFF (no `rate_card:`) ⇒ SERVE FREE WITH ZERO METERING ROWS, YET
-/// STILL GOVERNED. The complement of `the_loop_leaves_the_money_where_the_shipped_plane_leaves_it`
+/// W3.c / DECISIONS #42 + #43: BILLING OFF (no `rate_card:`) ⇒ SERVE FREE, WRITE THE COUNTS, READ 0,
+/// YET STILL GOVERNED. The complement of `the_loop_leaves_the_money_where_the_shipped_plane_leaves_it`
 /// (which drives the BILLED rig): with no card the node is a pure failover/routing proxy — the SAME
-/// delivered request is served identically (status 200) but writes NO metering row, because #42 says
-/// an unbilled plane emits none. And the plane is NOT unlimited: admission/governance still runs — a
-/// pool-ACL guard refuses exactly as it does on a billed plane — which is the "breaker + concurrency
-/// still enforced" half of #42 (both live on the admission/egress path, independent of the card).
+/// delivered request is served identically (status 200) and writes the SAME metering row a billed
+/// plane writes, because the plane always ledgers what it did (#43, owner ruling 2026-09-22; the
+/// LLM twin of item 36, 0ee95aafd). Billing off is the money VIEW: that row reads 0 (#42). And the
+/// plane is NOT unlimited: admission/governance still runs — a pool-ACL guard refuses exactly as it
+/// does on a billed plane — which is the "breaker + concurrency still enforced" half of #42 (both live
+/// on the admission/egress path, independent of the card).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn billing_off_serves_free_with_zero_metering_rows_yet_still_governs() {
-    // BILLING OFF (default rig, no `rate_card:`): a delivered request is served, and writes no
-    // metering row (#42), where the BILLED rig would write one — the only difference the card makes.
+async fn billing_off_serves_free_writes_its_metering_row_reading_zero_yet_still_governs() {
+    // BILLING OFF (default rig, no `rate_card:`): a delivered request is served, and writes its
+    // metering row — the plane's own counts, byte-for-byte the row the BILLED rig writes — which the
+    // money view reads as 0.
     let free = leg_loop(Fixture::BufferedOk).await;
     assert_eq!(
         field(&free, "status"),
         "200",
         "billing off still serves the request (a free failover/routing proxy)"
     );
+    let row = format!("{LANE}/test in={INPUT} out={OUTPUT} cr=0 cw=0 req=1 billable=1");
     assert_eq!(
         field(&free, "metering_rows"),
-        "",
-        "billing off (no rate_card) emits ZERO metering rows (#42)"
+        row,
+        "billing off (no rate_card) still writes the plane's counts: the ledger is what the plane did (#43)"
     );
-    // The exact same delivered request on a BILLED rig DOES write a metering row — proof the empty
-    // result above is billing-off and not a metering path that never ran.
+    // …and the view reads those counts as 0 (#42): the derived spend is the flat per-request fee
+    // alone (`FEE_CENTS` x 1 request), the token counts contributing nothing — not a missing row.
+    assert_eq!(
+        field(&free, "ledger_spend_cents"),
+        FEE_CENTS.to_string(),
+        "billing off is the VIEW reading the counts as 0 (#42): only the flat fee posts"
+    );
+    // The exact same delivered request on a BILLED rig writes the IDENTICAL row — the card changes
+    // what the row is WORTH, never whether it is written.
     let billed = leg_loop_billed(Fixture::BufferedOk).await;
     assert_eq!(
         field(&billed, "metering_rows"),
-        format!("{LANE}/test in={INPUT} out={OUTPUT} cr=0 cw=0 req=1 billable=1"),
-        "the same request on a billed plane writes exactly one metering row"
+        row,
+        "the same request on a billed plane writes exactly the same metering row"
     );
     // STILL GOVERNED with billing off: the admission-time pool-ACL guard refuses, exactly as on a
     // billed plane — the plane is a proxy, never unlimited. (Breaker + concurrency ride the same
