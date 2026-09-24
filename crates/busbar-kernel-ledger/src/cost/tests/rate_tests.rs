@@ -287,3 +287,59 @@ fn a_sub_quantum_rate_is_unpriced_on_the_card_and_refuses_never_priced_at_zero()
     assert_eq!(crate::cost::representable_nano_rate(0.0), Some(0));
     assert_eq!(crate::cost::representable_nano_rate(f64::MAX), None);
 }
+
+/// **ITEM 434 — TWO FOLDS, TWO NOUNS, AND THE DOC SAYS WHICH.** `nanos_sum`'s doc claimed it was
+/// the only multiply-and-sum on the money path while the settlement lookup, the read and the
+/// kernel's projection each carried their own, already drifted on overflow (at phase start the
+/// lookup billed the four classes below as `73,786,976,294,838,206,460,000,000,000,000,000,000`
+/// nano-units where the read refused). The spend fold is now `Tally`'s alone, CHECKED; `nanos_sum`
+/// sizes reservations and SATURATES. Asserted on both sides, and on the doc that names them.
+#[test]
+fn the_spend_fold_refuses_an_overflow_and_the_sizing_fold_pins_it() {
+    // SIZING: a reservation past the ceiling pins there (it can only reserve too much).
+    assert_eq!(crate::cost::nanos_sum([(u64::MAX, u64::MAX); 4]), u128::MAX);
+
+    // SPEND: the settlement lookup and the read are one fold, and both REFUSE.
+    let card = card4("m", [1e15; 4], 0);
+    let history = History::opening(card, 0);
+    let counts = [
+        (INPUT, u64::MAX),
+        (OUTPUT, u64::MAX),
+        (CACHE_READ, u64::MAX),
+        (CACHE_WRITE, u64::MAX),
+    ];
+    let posting = Posting::from_usage("m", &usage(&counts), 0, STANDARD_TIER_BP, 0, 0);
+    assert_eq!(
+        price(&history.current(), &posting),
+        Err(crate::cost::Unpriceable::Overflow),
+        "the settlement lookup's figure is the spend fold's: an overflow refuses"
+    );
+    let entry = counts
+        .iter()
+        .fold(crate::cost::LedgerEntry::new("m", 0), |e, (c, q)| {
+            e.with_whole(*c, *q)
+        });
+    assert_eq!(
+        crate::cost::price_exact(&[entry], &history.current()),
+        Err(crate::cost::MoneyError::Overflow),
+        "the read refuses the same consumption"
+    );
+
+    // THE DOC: `nanos_sum` must not claim to be the only fold, and must name the spend fold.
+    let src = include_str!("../rate.rs");
+    let at = src
+        .find("pub fn nanos_sum")
+        .expect("nanos_sum is defined in rate.rs");
+    let doc_start = src[..at]
+        .rfind("\n\n")
+        .expect("the doc block starts after a blank line");
+    let doc = &src[doc_start..at];
+    assert!(
+        !doc.contains("THE ONLY MULTIPLY-AND-SUM"),
+        "nanos_sum's doc claims to be the only fold; the spend fold is Tally's"
+    );
+    assert!(
+        doc.contains("Tally") && doc.contains("RESERVATION"),
+        "nanos_sum's doc must name Tally as the spend fold and itself as the reservation fold"
+    );
+}
