@@ -14,14 +14,16 @@
 //!   Both halves were bugs the audit fixed: `[ -d "$root" ] || return 0` meant a kernel that moved,
 //!   split or was renamed scanned NOTHING and printed GREEN, and a root that existed but held no
 //!   `.rs` scanned zero files, which finds zero wire fields and is indistinguishable from a clean
-//!   kernel. Here it is [`WalkSpec::min_files`], and a walk under its floor is a FAIL row.
+//!   kernel. A scan set under its floor is a FAIL row. Since item 199 the set is every
+//!   `busbar-kernel*` crate's `src/` (the ledger that computes money among them), each named
+//!   kernel crate must yield files, and the floor is over the set, not 4% of one crate.
 //! * `kernel-token-wire-purity:no-raw-wire-field` — the finding itself.
 //!
 //! The other fixed bug does not need a rule because it cannot be written: `return "$hits"` handed
 //! the finding COUNT back as an exit status, which is one byte, so 256 findings exited 0 and the
 //! lint got greener the worse the tree got. A `Vec<String>` has no modulus.
 
-use crate::ctx::{Ctx, Edit, Overlay, WalkSpec};
+use crate::ctx::{Ctx, Edit, Overlay, SourceFile, WalkSpec};
 use crate::gates::{prove_green, prove_red, Case, Gate, Report};
 use crate::ledger::{Row, Status, Verdict};
 use crate::parity::LegacyRun;
@@ -30,12 +32,38 @@ use crate::scan;
 pub const ROW_SCAN_ROOT: &str = "kernel-token-wire-purity:scan-root";
 pub const ROW_NO_RAW_FIELD: &str = "kernel-token-wire-purity:no-raw-wire-field";
 
-/// The kernel's production source. One root, and its absence is the gate's loudest finding.
+/// The kernel crate's own production source — kept as the plant target for the selftest.
 const KERNEL_SRC: &str = "crates/busbar-kernel/src";
 
-/// The denominator floor. Eleven production files when this was written; the floor tracks the real
-/// tree rather than `> 0`, because one surviving file is as vacuous as none.
-const SCAN_FLOOR: usize = 8;
+/// WHERE "THE KERNEL" IS (item 199). It is not one directory: it is `busbar-kernel` and every
+/// `busbar-kernel-*` sibling, and the one that computes money — `busbar-kernel-ledger` — was outside
+/// the single root this gate used to read. The scan set is DISCOVERED (every `crates/<name>/src/`
+/// whose crate name is `busbar-kernel` or starts `busbar-kernel-`), so a new kernel sibling is in
+/// scope the day it lands.
+const CRATES: &str = "crates";
+const KERNEL_CRATE: &str = "busbar-kernel";
+
+/// The kernel crates that exist today, each of which must still yield production source. Discovery
+/// alone cannot see a crate that was renamed OUT of the prefix; a named crate that scans zero files
+/// is a crate that left the scan, and that is refused rather than read as clean.
+const REQUIRED_KERNEL_CRATES: &[&str] = &[
+    "busbar-kernel",
+    "busbar-kernel-audit",
+    "busbar-kernel-breaker",
+    "busbar-kernel-budget",
+    "busbar-kernel-egress",
+    "busbar-kernel-identity",
+    "busbar-kernel-ledger",
+    "busbar-kernel-scope",
+    "busbar-kernel-wal",
+];
+
+/// The denominator floor over the WHOLE kernel scan set. Measured 292 production files across the
+/// nine crates (busbar-kernel 200, -ledger 23, -egress 20, -identity 14, -audit 10, -breaker 8,
+/// -wal 8, -budget 7, -scope 2) when item 199 raised it from 8 (which was 4% of `busbar-kernel`
+/// alone). 200 leaves room for the 1.6.0 deletion lists and still refuses the failure the old floor
+/// admitted: `handlers/` + `ingress/` lifted into a crate outside the prefix drops the set to ~100.
+const SCAN_FLOOR: usize = 200;
 
 /// The `find … -name '*.rs'` exclusions the shell carried, verbatim: an integration-test tree and a
 /// `*_tests.rs` sibling are fixtures, and a wire literal in one is a fixture's literal.
@@ -67,6 +95,53 @@ pub const WIRE_FIELDS: &[&str] = &[
 ];
 
 pub struct KernelTokenWirePurityGate;
+
+/// The crate a `crates/<crate>/src/…` path belongs to, when it is a KERNEL crate's production source.
+fn kernel_crate_of(rel: &str) -> Option<&str> {
+    let rest = rel.strip_prefix("crates/")?;
+    let (krate, tail) = rest.split_once('/')?;
+    if !tail.starts_with("src/") {
+        return None;
+    }
+    (krate == KERNEL_CRATE || krate.starts_with("busbar-kernel-")).then_some(krate)
+}
+
+/// The kernel scan set: every kernel crate's production `.rs`, tests excluded — or the reason it
+/// could not be taken (walk failure, a required crate that yields nothing, a set under its floor).
+fn kernel_files(cx: &Ctx) -> Result<Vec<SourceFile>, String> {
+    let spec = WalkSpec::new([CRATES])
+        .ext("rs")
+        .exclude([EXCLUDE_TESTS_DIR, "_tests.rs"]);
+    let files = cx.walk(&spec).map_err(|e| e.to_string())?;
+    let kernel: Vec<SourceFile> = files
+        .into_iter()
+        .filter(|f| kernel_crate_of(&f.rel_str()).is_some())
+        .collect();
+    let missing: Vec<&str> = REQUIRED_KERNEL_CRATES
+        .iter()
+        .copied()
+        .filter(|k| {
+            !kernel
+                .iter()
+                .any(|f| kernel_crate_of(&f.rel_str()) == Some(*k))
+        })
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "kernel crate(s) with no production source under crates/<crate>/src: {} — a kernel \
+             crate that scans zero files left the scan; it is not a clean crate",
+            missing.join(", ")
+        ));
+    }
+    if kernel.len() < SCAN_FLOOR {
+        return Err(format!(
+            "the kernel scan set holds {} production file(s) across busbar-kernel and its \
+             busbar-kernel-* siblings, below the floor of {SCAN_FLOOR}",
+            kernel.len()
+        ));
+    }
+    Ok(kernel)
+}
 
 /// The one line a finding is written as, on BOTH sides of a parity run. The Rust gate builds it
 /// from its own scan; the legacy translator reads the identical line out of the script's stdout.
@@ -132,11 +207,7 @@ impl Gate for KernelTokenWirePurityGate {
     }
 
     fn run(&self, cx: &Ctx) -> Verdict {
-        let spec = WalkSpec::new([KERNEL_SRC])
-            .ext("rs")
-            .exclude([EXCLUDE_TESTS_DIR, "_tests.rs"])
-            .min_files(SCAN_FLOOR);
-        let files = match cx.walk(&spec) {
+        let files = match kernel_files(cx) {
             Ok(f) => f,
             Err(e) => {
                 // The scan could not be taken. It is NOT a clean kernel, and the finding row says
@@ -251,6 +322,51 @@ impl Gate for KernelTokenWirePurityGate {
             expected: crate::gates::Expect::Green,
             got: verdict_expect(self, &cx.with_overlay(ov)),
         });
+
+        // ITEM 199: THE LEDGER IS KERNEL. `busbar-kernel-ledger` prices usage, and a wire pointer in
+        // it is the exact act this gate bans; it sat outside the single root this gate read.
+        report.push(plant(
+            cx,
+            self,
+            "a raw wire field in busbar-kernel-ledger production source is flagged",
+            &[ROW_NO_RAW_FIELD],
+            "crates/busbar-kernel-ledger/src/planted_wire_read.rs",
+            Edit::Create(format!(
+                "pub fn class_of(v: &Value) -> i64 {{\n    v[\"{raw_field}\"].as_i64()\n}}\n"
+            )),
+            &["busbar-kernel-ledger", &raw_field],
+        ));
+
+        // ITEM 199: THE FLOOR IS OVER THE SET, NOT 4% OF ONE CRATE. `busbar-kernel` keeps nine
+        // production files — the rest lifted into a crate outside the prefix — and the old floor
+        // of 8 cleared it.
+        match kernel_files(cx) {
+            Ok(files) => {
+                let mut ov = Overlay::new();
+                let mut kept = 0usize;
+                for f in &files {
+                    if kernel_crate_of(&f.rel_str()) == Some(KERNEL_CRATE) {
+                        if kept < 9 {
+                            kept += 1;
+                        } else {
+                            ov.remove(&f.rel);
+                        }
+                    }
+                }
+                report.push(prove_red(
+                    cx,
+                    self,
+                    "a kernel scan set left holding nine busbar-kernel files is under its floor",
+                    &[ROW_SCAN_ROOT],
+                    ov,
+                    &["below the floor"],
+                ));
+            }
+            Err(e) => report.note_infra_failure(format!(
+                "kernel-token-wire-purity selftest: the base tree's kernel scan set is unreadable \
+                 ({e}), so the lifted-crate plant has nothing to lift"
+            )),
+        }
 
         // THE INSTRUMENT: the root that is not there. `[ -d "$root" ] || return 0` read a renamed
         // kernel as zero hits and printed GREEN. Every production file is deleted from the
