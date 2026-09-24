@@ -5536,6 +5536,7 @@ fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
                 axum::extract::State(handle.clone()),
                 axum::Extension(busbar_kernel::auth::AuthPrincipal(None)),
                 axum::http::HeaderMap::new(),
+                None,
                 body1,
             )
             .await;
@@ -5553,6 +5554,7 @@ fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
                 axum::extract::State(handle),
                 axum::Extension(busbar_kernel::auth::AuthPrincipal(None)),
                 axum::http::HeaderMap::new(),
+                None,
                 body2,
             )
             .await;
@@ -5637,6 +5639,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
             axum::extract::State(handle),
             axum::Extension(busbar_kernel::auth::AuthPrincipal(Some(principal.clone()))),
             axum::http::HeaderMap::new(),
+            None,
             body,
         )
         .await;
@@ -5698,6 +5701,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
             axum::extract::State(handle),
             axum::Extension(busbar_kernel::auth::AuthPrincipal(None)),
             axum::http::HeaderMap::new(),
+            None,
             axum::body::Bytes::from(body.to_string()),
         )
         .await;
@@ -5800,6 +5804,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
             axum::extract::State(handle),
             axum::Extension(busbar_kernel::auth::AuthPrincipal(Some(principal.clone()))),
             axum::http::HeaderMap::new(),
+            None,
             axum::body::Bytes::from(body.to_string()),
         )
         .await;
@@ -15306,4 +15311,130 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
 
     handle.abort();
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **THE EXIT TEST FOR ITEM 271's PRODUCTION HOOKUP, AT THE LIVE CACHE.** Item 271's writer side
+/// (`RootClaimJournal`, `IdempotencyCache::with_journal`) was fully proven in isolation
+/// (`units_admin.rs`'s `an_idempotency_key_on_a_durable_node_journals_exactly_one_claim`), and the
+/// root's binding of it onto `AdminBinding::claims` was proven too
+/// (`the_admin_listener_binds_its_claim_journal_on_a_data_dir_node_only`) — but NEITHER exercises the
+/// surface a real `POST /keys` actually reaches. `keys::create_key`/`rotate_key` replay against
+/// `App::idempotency_cache` (a bare `HashMap`, not `IdempotencyCache`), which carried no journal hook
+/// at all until this change threaded one through as a request extension (`admin_mount.rs`'s
+/// `ClaimJournalCell`, set from `AdminBinding::claims` before any real request can observe it).
+///
+/// This is the seam's production shape, reproduced directly: the extension the composition root's
+/// wrap inserts on every request when a claim journal is bound (see `RouterDispatch::call`) is
+/// layered here the identical way — a `POST /keys` with a repeated `Idempotency-Key` journals the
+/// claim exactly once (first sighting only — never on the replay) and the replayed response is
+/// byte-for-byte the first, exactly as v1.5.5.
+#[tokio::test]
+async fn a_durable_node_journals_exactly_one_claim_for_a_repeated_key_post_keys() {
+    busbar_kernel::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = crate::new_test_app().governance(gov).build();
+    let router = crate::build_router(app);
+
+    #[derive(Default, Clone)]
+    struct RecordingJournal {
+        calls: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    }
+    impl RecordingJournal {
+        fn calls(&self) -> Vec<(String, String)> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+    impl crate::idempotency::ClaimJournal for RecordingJournal {
+        fn journal_claim(&self, key: &(String, String), _now: u64) {
+            self.calls.lock().unwrap().push(key.clone());
+        }
+    }
+    let journal = RecordingJournal::default();
+    let ext: Arc<dyn crate::idempotency::ClaimJournal> = Arc::new(journal.clone());
+    // The SAME wiring `RouterDispatch::call` performs on a durable node: an `Arc<dyn ClaimJournal>`
+    // riding as a request extension, which `create_key`'s `Option<axum::Extension<_>>` parameter
+    // reads. `Router::layer` inserts it on every request the same way `http::Request::builder()
+    // .extension(..)` does at the root — this is not a stand-in for the production seam, it is the
+    // same extension slot the production seam fills.
+    let router = router.layer(axum::Extension(ext));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let mint = || {
+        client
+            .post(format!("http://{addr}/api/v1/admin/keys"))
+            .header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+            .header("idempotency-key", "durable-271")
+            .body(serde_json::json!({"name": "k"}).to_string())
+            .send()
+    };
+
+    let first = mint().await.unwrap();
+    assert_eq!(first.status().as_u16(), 201);
+    let first_body = first.bytes().await.unwrap();
+
+    let second = mint().await.unwrap();
+    assert_eq!(second.status().as_u16(), 201);
+    let second_body = second.bytes().await.unwrap();
+
+    assert_eq!(
+        first_body, second_body,
+        "a replay must return the first response byte for byte, exactly as v1.5.5"
+    );
+    assert_eq!(
+        journal.calls(),
+        vec![("admin".to_string(), "durable-271".to_string())],
+        "exactly one claim journalled — the first sighting only, never the replay"
+    );
+
+    handle.abort();
+}
+
+/// **THE MEMORY-ONLY HALF OF THE SAME EXIT TEST.** A node with no data directory binds no claim
+/// journal (`the_admin_listener_binds_its_claim_journal_on_a_data_dir_node_only`), so
+/// `ClaimJournalCell` is set to `None` and `RouterDispatch::call` never inserts the extension at
+/// all — the exact shape every OTHER admin test in this file already exercises (none of them layers
+/// the extension), and `create_key`'s `Option<axum::Extension<_>>` parameter reads that absence as
+/// `None`. This test pins it explicitly: a repeated-key `POST /keys` through an UNWRAPPED router
+/// still replays correctly (byte-identical, 1.5.5 behaviour is unchanged either way) and journals
+/// nothing, because there is nothing here for it to journal to.
+#[tokio::test]
+async fn a_memory_only_node_journals_no_claim_for_a_repeated_key_post_keys() {
+    busbar_kernel::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = crate::new_test_app().governance(gov).build();
+    // NO `.layer(Extension(..))` here — the memory-buffered-node shape: `create_key` sees `None`.
+    let router = crate::build_router(app);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let mint = || {
+        client
+            .post(format!("http://{addr}/api/v1/admin/keys"))
+            .header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+            .header("idempotency-key", "memory-271")
+            .body(serde_json::json!({"name": "k"}).to_string())
+            .send()
+    };
+
+    let first = mint().await.unwrap();
+    assert_eq!(first.status().as_u16(), 201);
+    let first_body = first.bytes().await.unwrap();
+    let second = mint().await.unwrap();
+    assert_eq!(second.status().as_u16(), 201);
+    let second_body = second.bytes().await.unwrap();
+    assert_eq!(
+        first_body, second_body,
+        "replay is unaffected by the absent journal — 1.5.5 behaviour, unchanged"
+    );
+
+    handle.abort();
 }

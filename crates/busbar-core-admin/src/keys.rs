@@ -463,6 +463,24 @@ fn join_error(op: &str, e: &tokio::task::JoinError) -> Response {
     busbar_kernel::admin::v1::json::err_json(&AdminError::Internal)
 }
 
+/// Journal a claim's first sighting on the node's durable journal (item 271): called exactly once,
+/// at the moment a NEW reservation is inserted into the live App-state idempotency cache — never on
+/// a replay (the cached-body arm returns before reaching this), never on an in-flight refusal (the
+/// conflict arm returns before reaching this), never a second time for the same reservation. This is
+/// precisely the contract `ClaimJournal::journal_claim` documents, satisfied here rather than on the
+/// `Verbs`-level `IdempotencyCache` (which this crate's own `create_key`/`rotate_key` verbs implement
+/// but which no production caller reaches — see `verbs.rs`'s dedicated methods): this cache, reached
+/// from `App::idempotency_cache`, is the one a live request actually replays against.
+fn journal_first_sighting(
+    claim_journal: &Option<axum::Extension<std::sync::Arc<dyn crate::idempotency::ClaimJournal>>>,
+    key: &(String, String),
+    now: u64,
+) {
+    if let Some(axum::Extension(journal)) = claim_journal {
+        journal.journal_claim(key, now);
+    }
+}
+
 /// The request header carrying a client-chosen idempotency token on the two replayable admin
 /// mutations (key mint + key rotate).
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
@@ -593,6 +611,12 @@ pub(crate) async fn create_key(
     >,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     headers: axum::http::HeaderMap,
+    // The node's claim journal (item 271), reached from the composition root through the mounted
+    // admin surface — see `journal_first_sighting`. `None` on a node that never bound one (a
+    // memory-buffered node, or a caller that mounted this router without the root's wrap: every
+    // test/test-support router built by `busbar_kernel::build_router` and friends) — behaves exactly
+    // as it did before this seam existed.
+    claim_journal: Option<axum::Extension<std::sync::Arc<dyn crate::idempotency::ClaimJournal>>>,
     body: Bytes,
 ) -> Response {
     // A fresh snapshot for the mint's pool/group READS; the auto-provision path (below) swaps
@@ -647,6 +671,7 @@ pub(crate) async fn create_key(
             // reservation instead of an empty slot.
             None => {
                 cache.insert(ck.clone(), (now, serde_json::Value::Null));
+                journal_first_sighting(&claim_journal, ck, now);
             }
         }
     }
@@ -1467,6 +1492,8 @@ pub(crate) async fn rotate_key(
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(id): Path<String>,
     headers: axum::http::HeaderMap,
+    // See `create_key`'s identical parameter.
+    claim_journal: Option<axum::Extension<std::sync::Arc<dyn crate::idempotency::ClaimJournal>>>,
 ) -> Response {
     let actor = principal.actor_id().to_string();
     // The ONE audit identity for this operation: `key_err` writes the `rejected` row from it, so a
@@ -1518,6 +1545,7 @@ pub(crate) async fn rotate_key(
             }
             None => {
                 cache.insert(ck.clone(), (now, serde_json::Value::Null));
+                journal_first_sighting(&claim_journal, ck, now);
             }
         }
     }

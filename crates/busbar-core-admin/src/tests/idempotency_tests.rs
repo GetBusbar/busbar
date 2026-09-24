@@ -14,16 +14,19 @@ fn key(actor: &str, header: &str) -> (String, String) {
     (actor.to_string(), header.to_string())
 }
 
+/// One journalled claim: the `(actor, header)` key and the unix-seconds `now` it was journalled at.
+type JournalCall = ((String, String), u64);
+
 /// A [`ClaimJournal`] fake that records every `(key, now)` it is called with, for asserting the
 /// writer side of item 271: the cache journals a claim exactly once per first sighting, never on a
 /// replay or an in-flight refusal.
 #[derive(Default, Clone)]
 struct RecordingJournal {
-    calls: Arc<Mutex<Vec<((String, String), u64)>>>,
+    calls: Arc<Mutex<Vec<JournalCall>>>,
 }
 
 impl RecordingJournal {
-    fn calls(&self) -> Vec<((String, String), u64)> {
+    fn calls(&self) -> Vec<JournalCall> {
         self.calls.lock().unwrap().clone()
     }
 }

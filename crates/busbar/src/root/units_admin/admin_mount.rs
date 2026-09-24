@@ -384,6 +384,20 @@ pub struct RouterDispatch {
     errands: tokio::sync::mpsc::UnboundedSender<Errand>,
 }
 
+/// The node's claim journal (item 271), handed to [`RouterDispatch`] at construction and set at
+/// most once, right after `AdminNode`'s own `units.admin.claims` is known (see [`mount`]) — before
+/// the router this dispatch drives is reachable by any real request. A `OnceLock` rather than a
+/// plain field because [`RouterDispatch::new`] runs BEFORE `AdminBinding::claims` is resolved (the
+/// binding is built from the very `dispatch` this type becomes), so there is one moment between
+/// construction and first use where the answer is not yet known — never a moment where it is asked
+/// twice.
+#[cfg(feature = "root-admin")]
+pub(crate) type ClaimJournalCell =
+    std::sync::Arc<std::sync::OnceLock<Option<std::sync::Arc<dyn ClaimJournal>>>>;
+
+#[cfg(feature = "root-admin")]
+use busbar_core_admin::idempotency::ClaimJournal;
+
 #[cfg(feature = "root-admin")]
 impl RouterDispatch {
     /// Bind the seam to a mounted router, and start the task that drives it.
@@ -397,11 +411,16 @@ impl RouterDispatch {
     /// ordinary task. The seam is the same seam; only the way it is crossed stopped depending on
     /// how the node was configured.
     #[must_use]
-    pub fn new(inner: axum::Router, runtime: &tokio::runtime::Handle) -> Self {
+    pub fn new(
+        inner: axum::Router,
+        runtime: &tokio::runtime::Handle,
+        claims: ClaimJournalCell,
+    ) -> Self {
         let (errands, mut inbox) = tokio::sync::mpsc::unbounded_channel::<Errand>();
         runtime.spawn(async move {
             while let Some((request, reply)) = inbox.recv().await {
                 let inner = inner.clone();
+                let claims = claims.clone();
                 // One task per operation, so a slow verb cannot hold up the one behind it — the
                 // surface was concurrent before the switch and stays concurrent through it.
                 tokio::spawn(async move {
@@ -411,7 +430,7 @@ impl RouterDispatch {
                     // so the composition says, here, which unit the handler's ask belongs to.
                     let unit = request.unit;
                     let answer = busbar_core_admin::restart::UnitDrain::of_unit(unit)
-                        .scoping(call(inner, &request))
+                        .scoping(call(inner, &request, &claims))
                         .await;
                     let _ = reply.send(answer);
                 });
@@ -422,8 +441,17 @@ impl RouterDispatch {
 }
 
 /// Hand one request to the router and take its whole answer.
+///
+/// `claims` (item 271) rides on the built [`axum::http::Request`] as an extension — never as a
+/// header, which would put it on the wire this seam otherwise forwards byte-identical to the
+/// mounted surface — so `busbar_core_admin::keys::create_key`/`rotate_key` can read it with the same
+/// `Option<axum::Extension<_>>` pattern this crate already uses for the resolved principal. Absent
+/// (`claims.get()` not yet set, or set to `None`), the extension is simply never inserted, which is
+/// exactly the shape a router built by any OTHER mount (every test/test-support harness) already has
+/// — those requests never carry the extension either, and the handlers' `Option<Extension<_>>`
+/// param already accounts for "not present" as `None`.
 #[cfg(feature = "root-admin")]
-async fn call(inner: axum::Router, request: &AdminRequest) -> AdminAnswer {
+async fn call(inner: axum::Router, request: &AdminRequest, claims: &ClaimJournalCell) -> AdminAnswer {
     use tower::ServiceExt;
 
     let mut builder = axum::http::Request::builder()
@@ -431,6 +459,9 @@ async fn call(inner: axum::Router, request: &AdminRequest) -> AdminAnswer {
         .uri(request.path.as_str());
     for (name, value) in &request.headers {
         builder = builder.header(name.as_str(), value.as_str());
+    }
+    if let Some(journal) = claims.get().cloned().flatten() {
+        builder = builder.extension(journal);
     }
     let Ok(http) = builder.body(axum::body::Body::from(request.body.clone())) else {
         // A method, path or header the http types themselves will not carry. That is a request
@@ -586,8 +617,23 @@ pub fn mount(
     // here because this is where the loop is put in front of the surface: the operation's own
     // surface is unchanged and does not know which composition it is answering under.
     busbar_core_admin::restart::drain_released_at_exit();
-    let dispatch: Arc<dyn AdminDispatch> = Arc::new(RouterDispatch::new(inner.clone(), &runtime));
+    // Item 271: the claim journal `build_units` binds onto `units.admin.claims` (root/kernel.rs,
+    // `ProductionUnits::admin_only_sharing`) is not known until `build_units` runs — and
+    // `build_units` needs `dispatch`, which needs the router `RouterDispatch` drives, before either
+    // exists. The cell breaks the cycle: `RouterDispatch` is handed an empty one now and reads it on
+    // every call after, and it is filled exactly once, below, the instant the answer is known — long
+    // before the router this dispatch drives can see a real request.
+    let claims: ClaimJournalCell = Arc::new(std::sync::OnceLock::new());
+    let dispatch: Arc<dyn AdminDispatch> =
+        Arc::new(RouterDispatch::new(inner.clone(), &runtime, Arc::clone(&claims)));
     let node = Arc::new(AdminNode::new(kernel, build_units(dispatch)));
+    let _ = claims.set(
+        node.units
+            .admin
+            .claims
+            .clone()
+            .map(|j| j as std::sync::Arc<dyn ClaimJournal>),
+    );
 
     axum::Router::new().fallback(axum::routing::any(
         move |req: axum::http::Request<axum::body::Body>| {
