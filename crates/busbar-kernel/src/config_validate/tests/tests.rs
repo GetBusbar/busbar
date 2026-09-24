@@ -4046,6 +4046,43 @@ fn test_validate_absent_card_boots_free_no_refusal() {
     );
 }
 
+/// #77(5), item 22: A RATE THE CARD CANNOT HOLD IS A BOOT REFUSAL, naming the model, the class and
+/// the rate. The card quantises a rate to integer nano-units once; a positive rate below half a
+/// nano-unit (`0.0004`, or `$0.10/GB` a byte = `0.00009313`) or one past the integer's range has no
+/// representation, and the card holds it as an UNPRICED cell (`RateCard::refused_cells`) that
+/// refuses at runtime. Validation refuses the whole configuration first, so it never boots with a
+/// class it claims to price and cannot. 1.5.5 booted these configs and billed the class at 0.
+#[test]
+fn test_validate_rate_card_refuses_a_rate_the_card_cannot_hold() {
+    for (tier, v) in [
+        ("input_utok", 0.0004),
+        ("output_utok", 0.000_093_13),
+        ("cache_write_utok", 2.0e16),
+    ] {
+        let mut cfg = cost_cfg(&["m"]);
+        let mut entry = priced_entry();
+        match tier {
+            "input_utok" => entry.input_utok = v,
+            "output_utok" => entry.output_utok = v,
+            _ => entry.cache_write_utok = v,
+        }
+        cfg.rate_card = Some([("m".to_string(), entry)].into_iter().collect());
+        let errs = validate(&cfg).expect_err("a rate the card cannot hold must refuse boot");
+        let want = format!("rate_card['m'].{tier} = {v} micro-units per token is a rate the card");
+        assert!(
+            errs.iter().any(|e| e.contains(&want)),
+            "must name the model, class and rate ({want}): {errs:?}"
+        );
+    }
+    // The boundary and the explicit zero both hold: 0.0005 is one nano-unit, 0 is a free class.
+    let mut cfg = cost_cfg(&["m"]);
+    let mut entry = priced_entry();
+    entry.input_utok = 0.0005;
+    entry.cache_read_utok = 0.0;
+    cfg.rate_card = Some([("m".to_string(), entry)].into_iter().collect());
+    assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
+}
+
 /// EVERY missing model is stubbed (sorted), not just the first - the operator pastes once.
 #[test]
 fn test_validate_rate_card_stubs_every_missing_model() {

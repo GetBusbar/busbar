@@ -452,16 +452,14 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                 // floor vacuous so a single error in an otherwise-empty window can trip.
                 if trip.min_requests == 0 {
                     errors.push(format!(
-                        "pool '{}' breaker trip.min_requests must be >= 1 (got 0)",
-                        pool_name
+                        "pool '{pool_name}' breaker trip.min_requests must be >= 1 (got 0)"
                     ));
                 }
                 // window_s is the sliding-window length; a 0 window holds no outcomes so the
                 // count is always below min_requests and the error-rate breaker never trips.
                 if trip.window_secs == 0 {
                     errors.push(format!(
-                        "pool '{}' breaker trip.window_secs must be >= 1 (got 0)",
-                        pool_name
+                        "pool '{pool_name}' breaker trip.window_secs must be >= 1 (got 0)"
                     ));
                 }
                 match trip.mode {
@@ -551,28 +549,24 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // passed a config boot would reject - the cardinal validate/boot-drift sin. Match main.rs:
         // surface the parse error into `errors` so `--validate` catches it too.
         if let Some(crate::config::OnExhaustedCfg::FallbackPool(target)) = &pool_cfg.on_exhausted {
-            {
-                {
-                    if !cfg.pools.contains_key(target) {
-                        errors.push(format!(
-                            "pool '{}' on_exhausted references unknown fallback pool '{}'",
-                            pool_name, target
-                        ));
-                    } else if target == pool_name {
-                        // Self-referential fallback (pool A -> fallback A): the runtime loop guard
-                        // (proxy engine `RequestCtx::visited_pools`) silently terminates the chain on
-                        // the re-entry, so the configured degraded-routing policy never actually
-                        // engages: A exhausts, "falls back" to itself, is recognised as
-                        // already-visited, and 503s. A fallback pointing at its own owner is never
-                        // meaningful; reject it at boot rather than ship a self-cancelling policy with
-                        // no diagnostic. (This is the length-1 case the general cycle walk below would
-                        // also catch, called out explicitly for a precise diagnostic.)
-                        errors.push(format!(
-                            "pool '{}' on_exhausted references itself as its fallback pool ('{}'); a self-referential fallback never engages (the runtime loop guard terminates it on re-entry) so it 503s exactly as having no fallback would. Point it at a different pool or remove on_exhausted",
-                            pool_name, target
-                        ));
-                    }
-                }
+            if !cfg.pools.contains_key(target) {
+                errors.push(format!(
+                    "pool '{}' on_exhausted references unknown fallback pool '{}'",
+                    pool_name, target
+                ));
+            } else if target == pool_name {
+                // Self-referential fallback (pool A -> fallback A): the runtime loop guard
+                // (proxy engine `RequestCtx::visited_pools`) silently terminates the chain on
+                // the re-entry, so the configured degraded-routing policy never actually
+                // engages: A exhausts, "falls back" to itself, is recognised as
+                // already-visited, and 503s. A fallback pointing at its own owner is never
+                // meaningful; reject it at boot rather than ship a self-cancelling policy with
+                // no diagnostic. (This is the length-1 case the general cycle walk below would
+                // also catch, called out explicitly for a precise diagnostic.)
+                errors.push(format!(
+                    "pool '{}' on_exhausted references itself as its fallback pool ('{}'); a self-referential fallback never engages (the runtime loop guard terminates it on re-entry) so it 503s exactly as having no fallback would. Point it at a different pool or remove on_exhausted",
+                    pool_name, target
+                ));
             }
         }
         // Rule 7c: `on_exhausted: { queue: { max_ms } }` bounds the queue wait. A `max_ms` of 0 is a
@@ -1549,6 +1543,15 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                     errors.push(format!(
                         "rate_card['{model}'].{tier} must be a finite, non-negative \
                          number of micro-units per token (got {v})"
+                    ));
+                } else if busbar_kernel_ledger::cost::representable_nano_rate(v).is_none() {
+                    // #77(5), item 22: THE CARD'S OWN QUESTION, asked at boot. A rate the card
+                    // cannot hold lands on it as an UNPRICED cell (`RateCard::refused_cells`) that
+                    // refuses every hit; a configuration carrying one is refused here, whole.
+                    errors.push(format!(
+                        "rate_card['{model}'].{tier} = {v} micro-units per token is a rate the card \
+                         cannot hold (non-zero rates run from 0.0005 to about 1.8e16), so the class \
+                         would bill as unpriced; configure 0 to make it free, or a rate in range"
                     ));
                 }
             }
