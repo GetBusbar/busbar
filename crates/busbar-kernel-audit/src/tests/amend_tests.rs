@@ -75,20 +75,55 @@ fn an_access_records_who_read_what_and_never_what_they_read() {
     }
 }
 
+/// AN EXPORT ACCESS IS RECORDED THE SAME WAY A HOOK ACCESS IS — same class, same fields, same
+/// position — and the ONE thing that differs, who read it, is sealed into the digest.
+///
+/// Both are appended at the same position of fresh chains with every other field equal, so the
+/// only digested difference is the reader's word. If `Reader::Export` ever sealed as `"hook"`, an
+/// export plugin shipping content off the node and a hook reading it in-process would seal to one
+/// digest, and a stored export access could be swapped for a hook access and still verify.
 #[test]
 fn an_export_access_is_recorded_the_same_way_a_hook_access_is() {
-    let mut chain = AmendChain::new();
-    let export = content_access(
-        Reader::Export,
-        "siem",
-        Subject::Arrival,
-        OpClassId::new("chat.completion"),
-        vec!["response".into()],
-        1,
+    let access_by = |reader| {
+        content_access(
+            reader,
+            "siem",
+            Subject::Arrival,
+            OpClassId::new("chat.completion"),
+            vec!["response".into()],
+            1,
+        )
+    };
+    let hook = AmendChain::new().append(access_by(Reader::Hook), &token());
+    let export = AmendChain::new().append(access_by(Reader::Export), &token());
+
+    // The same way: one class, one position, one link, one shape of body.
+    assert_eq!(export.class(), AmendClass::Access);
+    assert_eq!(export.class(), hook.class());
+    assert_eq!((export.seq, &export.prev_hash), (hook.seq, &hook.prev_hash));
+    match (&hook.body, &export.body) {
+        (AmendBody::Access(h), AmendBody::Access(e)) => {
+            assert_eq!(h.reader, Reader::Hook);
+            assert_eq!(e.reader, Reader::Export);
+            assert_eq!(
+                (&e.name, &e.subject, &e.op_class, &e.fields, e.wall),
+                (&h.name, &h.subject, &h.op_class, &h.fields, h.wall)
+            );
+        }
+        other => panic!("expected two accesses, got {other:?}"),
+    }
+
+    // The digested words for the two readers, pinned the way the class words are.
+    assert_eq!(Reader::Hook.as_str(), "hook");
+    assert_eq!(Reader::Export.as_str(), "export");
+
+    // And the reader is SEALED: the two accesses differ only in who read, and so must their digests.
+    assert_eq!(AmendChain::digest_of(&export), export.hash);
+    assert_ne!(
+        export.hash, hook.hash,
+        "an export access sealed to the same digest as a hook access -- the chain can no longer \
+         say whether content left the node or was read in-process"
     );
-    let amendment = chain.append(export, &token());
-    assert_eq!(amendment.class(), AmendClass::Access);
-    assert!(amendment.hash.len() == 64);
 }
 
 #[test]
