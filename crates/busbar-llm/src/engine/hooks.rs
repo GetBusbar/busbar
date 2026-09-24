@@ -573,12 +573,11 @@ pub(crate) async fn decide_policy_order(
     // tests DO exercise the raw token-resolution path without building a full `GovCtx`), so it is
     // compiled out of the production binary entirely instead of shipping unreachable logic behind a
     // live-looking arm.
-    // App-retype WEDGE 3: the governance/cost reaches now cross the host seam. `gov_handle`/`cost_handle`
-    // are the opaque handles the host mints over the SAME `GovState`/`CostModel` the pre-flip
-    // `app.governance`/`app.cost` named; `rate_headroom`/`budget_state` downcast them host-side and drive
-    // the identical pure observation.
-    let gov_handle = host.governance();
-    let cost_handle = host.cost();
+    // The governance/cost reaches cross the host seam as ONE opaque meter pin, minted over the SAME
+    // `GovState`/`CostModel` the pre-flip `app.governance`/`app.cost` named; `rate_headroom`/
+    // `budget_state` read it kernel-side and drive the identical pure observation (#43: the plane
+    // names no cost type).
+    let pin = host.meter_pin();
     let gov_key = resolved_gov_key.cloned().or_else(|| {
         #[cfg(test)]
         {
@@ -592,8 +591,8 @@ pub(crate) async fn decide_policy_order(
             None
         }
     });
-    let rate_headroom: Option<f64> = match (gov_handle.as_ref(), gov_key.as_ref()) {
-        (Some(g), Some(key)) => host.rate_headroom(g, &cost_handle, key, Some(pool_name), now()),
+    let rate_headroom: Option<f64> = match (pin.as_ref(), gov_key.as_ref()) {
+        (Some(pin), Some(key)) => host.rate_headroom(pin, key, Some(pool_name), now()),
         _ => None,
     };
 
@@ -727,11 +726,10 @@ pub(crate) async fn decide_policy_order(
     // routing-policy pool; the zero-cost default path never runs this fn), so its allocation stays
     // off the default hot path. Busbar exposes the READ surface only; downshifting to a cheaper
     // model on it is the hook's policy, never core's.
-    let budget_chain: Vec<busbar_api::BudgetBucketState> =
-        match (gov_handle.as_ref(), gov_key.as_ref()) {
-            (Some(g), Some(key)) => host.budget_state(g, &cost_handle, key, now()),
-            _ => Vec::new(),
-        };
+    let budget_chain: Vec<busbar_api::BudgetBucketState> = match (pin.as_ref(), gov_key.as_ref()) {
+        (Some(pin), Some(key)) => host.budget_state(pin, key, now()),
+        _ => Vec::new(),
+    };
     let ctx = RoutingContext {
         pool: pool_name,
         // Lane-health-shaped budget signal (legacy v1 field): still not fed - the per-request

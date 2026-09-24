@@ -537,8 +537,10 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
         .expect("create key");
     let charged_at: u64 = 1_700_000_000;
     let sink = Some(UsageSink {
-        gov: busbar_kernel::plane_host::GovHandle(gov.clone()),
-        cost: busbar_kernel::plane_host::CostHandle(cost.clone()),
+        pin: busbar_kernel::plane_host::MeterPin::new(
+            busbar_kernel::plane_host::GovHandle(gov.clone()),
+            busbar_kernel::plane_host::CostHandle(cost.clone()),
+        ),
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
@@ -739,8 +741,10 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
         .expect("create key");
     let charged_at: u64 = 1_700_000_000;
     let sink = Some(UsageSink {
-        gov: busbar_kernel::plane_host::GovHandle(gov.clone()),
-        cost: busbar_kernel::plane_host::CostHandle(cost.clone()),
+        pin: busbar_kernel::plane_host::MeterPin::new(
+            busbar_kernel::plane_host::GovHandle(gov.clone()),
+            busbar_kernel::plane_host::CostHandle(cost.clone()),
+        ),
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
@@ -884,8 +888,10 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
         .expect("create key");
     let charged_at: u64 = 1_700_000_000;
     let sink = Some(UsageSink {
-        gov: busbar_kernel::plane_host::GovHandle(gov.clone()),
-        cost: busbar_kernel::plane_host::CostHandle(cost.clone()),
+        pin: busbar_kernel::plane_host::MeterPin::new(
+            busbar_kernel::plane_host::GovHandle(gov.clone()),
+            busbar_kernel::plane_host::CostHandle(cost.clone()),
+        ),
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
@@ -1023,8 +1029,10 @@ async fn test_truncated_beyond_recovery_bills_nonzero_floor_not_zero() {
         .expect("create key");
     let charged_at: u64 = 1_700_000_000;
     let sink = Some(UsageSink {
-        gov: busbar_kernel::plane_host::GovHandle(gov.clone()),
-        cost: busbar_kernel::plane_host::CostHandle(cost.clone()),
+        pin: busbar_kernel::plane_host::MeterPin::new(
+            busbar_kernel::plane_host::GovHandle(gov.clone()),
+            busbar_kernel::plane_host::CostHandle(cost.clone()),
+        ),
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
@@ -1193,8 +1201,10 @@ fn nonstream_tap_cap_is_read_once_per_decision() {
         )
         .expect("create key");
     let sink = Some(UsageSink {
-        gov: busbar_kernel::plane_host::GovHandle(gov.clone()),
-        cost: busbar_kernel::plane_host::CostHandle(cost.clone()),
+        pin: busbar_kernel::plane_host::MeterPin::new(
+            busbar_kernel::plane_host::GovHandle(gov.clone()),
+            busbar_kernel::plane_host::CostHandle(cost.clone()),
+        ),
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at: 1_700_000_000,
@@ -1494,8 +1504,10 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
         .expect("key");
     let charged_at: u64 = 1_700_000_000;
     let sink = Some(UsageSink {
-        gov: busbar_kernel::plane_host::GovHandle(gov.clone()),
-        cost: busbar_kernel::plane_host::CostHandle(cost.clone()),
+        pin: busbar_kernel::plane_host::MeterPin::new(
+            busbar_kernel::plane_host::GovHandle(gov.clone()),
+            busbar_kernel::plane_host::CostHandle(cost.clone()),
+        ),
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
@@ -3762,8 +3774,10 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
         )
         .expect("create key");
     let sink = Some(UsageSink {
-        gov: busbar_kernel::plane_host::GovHandle(gov.clone()),
-        cost: busbar_kernel::plane_host::CostHandle(cost.clone()),
+        pin: busbar_kernel::plane_host::MeterPin::new(
+            busbar_kernel::plane_host::GovHandle(gov.clone()),
+            busbar_kernel::plane_host::CostHandle(cost.clone()),
+        ),
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
@@ -3897,8 +3911,10 @@ async fn test_cancel_drop_bills_partial_tokens() {
         )
         .expect("create key");
     let sink = Some(UsageSink {
-        gov: busbar_kernel::plane_host::GovHandle(gov.clone()),
-        cost: busbar_kernel::plane_host::CostHandle(cost.clone()),
+        pin: busbar_kernel::plane_host::MeterPin::new(
+            busbar_kernel::plane_host::GovHandle(gov.clone()),
+            busbar_kernel::plane_host::CostHandle(cost.clone()),
+        ),
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
@@ -4012,8 +4028,10 @@ async fn test_cancel_drop_bills_streamed_tokens_on_aborted_translate() {
         )
         .expect("create key");
     let sink = Some(UsageSink {
-        gov: busbar_kernel::plane_host::GovHandle(gov.clone()),
-        cost: busbar_kernel::plane_host::CostHandle(cost.clone()),
+        pin: busbar_kernel::plane_host::MeterPin::new(
+            busbar_kernel::plane_host::GovHandle(gov.clone()),
+            busbar_kernel::plane_host::CostHandle(cost.clone()),
+        ),
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,

@@ -49,9 +49,9 @@ impl SessionBudget {
             // The coarse over-estimate debited at open — an audit tap, not a ceiling.
             estimate_nanos: 1_000,
             fee_nanos: 0,
-            cap_nanos: key.zip(host.governance()).and_then(|(key, gov)| {
-                cap_nanos_from_buckets(&host.budget_state(&gov, &host.cost(), key, now))
-            }),
+            cap_nanos: key
+                .zip(host.meter_pin())
+                .and_then(|(key, pin)| cap_nanos_from_buckets(&host.budget_state(&pin, key, now))),
         }
     }
 }
@@ -92,11 +92,13 @@ pub trait SessionMeter: Send + Sync {
     fn close(&self, _id: MeterId) {}
 }
 
-/// THE PRODUCTION METER — the host's reserve-then-settle lease, priced through the host's rate card.
+/// THE PRODUCTION METER — the kernel's reserve-then-settle lease, priced through the kernel's rate
+/// card ([`MeteringHost`], kernel-internal). A plane gets one from its host
+/// ([`BudgetHost::session_meter`](super::BudgetHost::session_meter)) and never names what is under it.
 pub struct HostMeteringPort(std::sync::Arc<dyn MeteringHost>);
 
 impl HostMeteringPort {
-    /// Bind the meter over a host's lease slice.
+    /// Bind the meter over a kernel pricing side.
     pub fn new(host: std::sync::Arc<dyn MeteringHost>) -> Self {
         HostMeteringPort(host)
     }

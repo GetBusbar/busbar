@@ -47,6 +47,7 @@ pub mod journal;
 pub mod pipe;
 pub mod scope;
 pub mod session_meter;
+pub mod testkit;
 pub mod trust;
 pub mod vtable;
 
@@ -468,6 +469,7 @@ pub async fn synthesize_completion_over(
 /// method exposes the `!Send` [`HostCtx`]: each mints the transient `HostCtx` INTERNALLY (via
 /// [`with_borrowed_host`] over a fresh per-call [`DispatchScope`]), drives the slot SYNCHRONOUSLY,
 /// and returns an owned value — the raw host pointer never escapes the call.
+#[derive(Clone)]
 pub struct EngineHostImpl {
     /// The BOUND engine snapshot the host reaches run against — loaded once at mint. Serves
     /// `plane_slot` and every existing method, byte-identically to the pre-`handle` host.
@@ -585,48 +587,12 @@ impl busbar_kernel::plane_host::LanePoolHost for EngineHostImpl {
     }
 }
 
-// AUDIT-D BRAKE (minor-19): the METERING-LEASE family, split off `EngineHost` into its `MeteringHost`
-// supertrait. Each method forwards into the host-owned `CostHold` registry in [`cost_host`] — the SAME
-// registry the FFI `cost_reserve`/`cost_settle` slots fill, so a statically-linked plane's reserve/settle
-// and a dlopen plane's are one ledger. This is the REAL money hop the neutral seam previously lacked: the
-// lease's cap is the caller's live grant ceiling (the plane priced it), and exhaustion (`settled ≥ cap`)
-// is judged host-side against it — not against a plane-private counter. `EngineHost: MeteringHost` makes
-// these visible on every `dyn EngineHost`.
+// THE KERNEL'S OWN PRICING (#43): `MeteringHost` is NOT a supertrait of `EngineHost`, so no plane-side
+// host implements it and no plane names it. The lease legs take the trait's defaults — the host-owned
+// `CostHold` registry in [`cost_host`], the SAME registry the FFI `cost_reserve`/`cost_settle` slots fill,
+// so a statically-linked plane's session and a dlopen plane's lease are one ledger. Only the pricing is
+// this host's: its bound snapshot's rate card.
 impl busbar_kernel::plane_host::MeteringHost for EngineHostImpl {
-    fn cost_reserve(
-        &self,
-        estimate_nanos: u128,
-        fee_nanos: u128,
-        cap_nanos: Option<u128>,
-    ) -> Option<busbar_kernel::plane_host::CostLeaseId> {
-        // The host-owned `CostHold` registry is process-global (a lease outlives any one host call — a
-        // live carrier settles many increments against it), so the reserve needs no `HostCtx`; the cap is
-        // the caller's TRUE grant ceiling in nanodollars. A refuse-all cap returns `None` (the plane fails
-        // closed and never opens the session).
-        cost_host::reserve_lease(estimate_nanos, fee_nanos, cap_nanos)
-            .map(busbar_kernel::plane_host::CostLeaseId)
-    }
-
-    fn cost_settle(
-        &self,
-        lease: busbar_kernel::plane_host::CostLeaseId,
-        exact_nanos: u128,
-    ) -> Option<busbar_kernel::plane_host::SettleOutcome> {
-        // Accrue the exact already-priced increment against the SAME `CostHold` the reserve opened and
-        // read exhaustion off the real cap. `None` (unknown / closed lease) surfaces so the plane fails
-        // closed, exactly as an exhaustion would.
-        cost_host::settle_lease(lease.0, exact_nanos)
-            .map(|exhausted| busbar_kernel::plane_host::SettleOutcome { exhausted })
-    }
-
-    fn cost_settled(&self, lease: busbar_kernel::plane_host::CostLeaseId) -> Option<u128> {
-        cost_host::settled_of(lease.0)
-    }
-
-    fn cost_close(&self, lease: busbar_kernel::plane_host::CostLeaseId) -> Option<u128> {
-        cost_host::close_lease(lease.0)
-    }
-
     fn price_usage(
         &self,
         model: &str,
@@ -875,27 +841,25 @@ impl busbar_kernel::plane_host::BudgetHost for EngineHostImpl {
 
     fn rate_headroom(
         &self,
-        gov: &busbar_kernel::plane_host::GovHandle,
-        cost: &busbar_kernel::plane_host::CostHandle,
+        pin: &busbar_kernel::plane_host::MeterPin,
         key: &busbar_api::VirtualKey,
         pool: Option<&str>,
         now: u64,
     ) -> Option<f64> {
-        // Recover the concrete gov/cost the caller's handles were minted from and drive the SAME pure
+        // Recover the concrete gov/cost the caller's pin was minted over and drive the SAME pure
         // observation `gov.rate_headroom(&app.cost, …)` did — byte-identical, no re-read of the host
         // snapshot. A downcast miss (never in practice) reads as no constraint, matching the
         // `gov`-absent arm at the engine call site.
-        handle_models(gov, cost).and_then(|(g, c)| g.rate_headroom(&c, key, pool, now))
+        pin_models(pin).and_then(|(g, c)| g.rate_headroom(&c, key, pool, now))
     }
 
     fn budget_state(
         &self,
-        gov: &busbar_kernel::plane_host::GovHandle,
-        cost: &busbar_kernel::plane_host::CostHandle,
+        pin: &busbar_kernel::plane_host::MeterPin,
         key: &busbar_api::VirtualKey,
         now: u64,
     ) -> Vec<busbar_api::BudgetBucketState> {
-        handle_models(gov, cost).map_or_else(Vec::new, |(g, c)| g.budget_state(&c, key, now))
+        pin_models(pin).map_or_else(Vec::new, |(g, c)| g.budget_state(&c, key, now))
     }
 
     fn governance(&self) -> Option<busbar_kernel::plane_host::GovHandle> {
@@ -905,53 +869,39 @@ impl busbar_kernel::plane_host::BudgetHost for EngineHostImpl {
         })
     }
 
-    fn cost(&self) -> busbar_kernel::plane_host::CostHandle {
-        busbar_kernel::plane_host::CostHandle(self.app.cost.clone())
+    // The pin carries THIS snapshot's card (one Arc bump) — the card a request's money is settled
+    // against for its whole life, whatever a reload does meanwhile. Only the kernel's host can pin one.
+    fn meter_pin(&self) -> Option<busbar_kernel::plane_host::MeterPin> {
+        let cost = busbar_kernel::plane_host::CostHandle(self.app.cost.clone());
+        self.governance()
+            .map(|gov| busbar_kernel::plane_host::MeterPin { gov, cost })
     }
 
-    fn cost_pricing_enabled(&self, cost: &busbar_kernel::plane_host::CostHandle) -> bool {
-        // The SAME read the in-place pre-admission guard makes off `app.cost`; a handle that is not
-        // this deployment's cost model answers the no-card posture rather than guessing.
-        cost_model(cost).is_some_and(|c| c.pricing_enabled())
+    fn cost_model_unpriced(&self, model: &str) -> bool {
+        // The SAME read the in-place pre-admission guard makes off `app.cost`: `false` for every name
+        // when no card is configured (there is no card to miss).
+        self.app.cost.model_unpriced(model)
     }
 
-    fn cost_model_unpriced(
-        &self,
-        cost: &busbar_kernel::plane_host::CostHandle,
-        model: &str,
-    ) -> bool {
-        cost_model(cost).is_some_and(|c| c.model_unpriced(model))
-    }
-
-    fn cost_price_usage(
-        &self,
-        cost: &busbar_kernel::plane_host::CostHandle,
-        model: &str,
-        usage: &busbar_substrate_values::billing::Usage,
-    ) -> Option<u128> {
-        // The SAME `price_usage_nanos` the neutral `MeteringHost::price_usage` reader drives — a new
-        // entry point over one function, not a second pricer — but against the card the CALLER's
-        // handle names rather than this host's bound snapshot. A handle that is not a cost model is
-        // not a card, so it prices nothing and says so.
-        cost_model(cost).and_then(|c| c.price_usage_nanos(model, usage))
+    fn session_meter(&self) -> Arc<dyn session_meter::SessionMeter> {
+        Arc::new(session_meter::HostMeteringPort::new(Arc::new(self.clone())))
     }
 
     fn meter_ledger(
         &self,
-        gov: &busbar_kernel::plane_host::GovHandle,
-        cost: &busbar_kernel::plane_host::CostHandle,
+        pin: &busbar_kernel::plane_host::MeterPin,
         key: &busbar_api::VirtualKey,
         pool: &str,
         model: &str,
         usage: &busbar_substrate_values::billing::Usage,
         now: u64,
     ) {
-        // Recover the concrete gov/cost the plane's sink minted these handles from and drive the SAME
-        // accrual `sink.gov.record_usage(&sink.cost, …)` did. The neutral `Usage` carries the one
-        // name-keyed unit map (reserved four + opens); accrual folds it straight into the cell. A
-        // downcast miss (never in practice — the handles are minted here) is a silent no-op, matching
-        // `record_usage`'s own fail-soft posture.
-        if let Some((g, c)) = handle_models(gov, cost) {
+        // Recover the concrete gov/cost the plane's pin was minted over and drive the SAME accrual
+        // `sink.gov.record_usage(&sink.cost, …)` did. The neutral `Usage` carries the one name-keyed
+        // unit map (reserved four + opens); accrual folds it straight into the cell. A downcast miss
+        // (never in practice — the pin is minted here) is a silent no-op, matching `record_usage`'s
+        // own fail-soft posture.
+        if let Some((g, c)) = pin_models(pin) {
             g.record_usage(&c, key, pool, model, &usage.usage_units, now);
         }
     }
@@ -972,21 +922,20 @@ impl busbar_kernel::plane_host::BudgetHost for EngineHostImpl {
 }
 
 /// Recover the concrete `CostModel` an opaque [`CostHandle`](busbar_kernel::plane_host::CostHandle)
-/// was minted over; `None` on a handle this host did not mint (never in practice).
+/// was minted over; `None` on a handle the kernel's host did not mint (a plane-side host's pin).
 fn cost_model(cost: &busbar_kernel::plane_host::CostHandle) -> Option<Arc<crate::cost::CostModel>> {
     cost.0.clone().downcast().ok()
 }
 
-/// The `(GovState, CostModel)` pair behind the two opaque handles a plane's sink carries — the one
-/// recovery every two-handle budget seam above makes; `None` when either handle misses.
-fn handle_models(
-    gov: &busbar_kernel::plane_host::GovHandle,
-    cost: &busbar_kernel::plane_host::CostHandle,
+/// The `(GovState, CostModel)` pair behind a [`MeterPin`](busbar_kernel::plane_host::MeterPin) — the
+/// one recovery every pinned budget seam above makes; `None` when either handle misses.
+fn pin_models(
+    pin: &busbar_kernel::plane_host::MeterPin,
 ) -> Option<(
     Arc<crate::governance::GovState>,
     Arc<crate::cost::CostModel>,
 )> {
-    Some((gov.0.clone().downcast().ok()?, cost_model(cost)?))
+    Some((pin.gov.0.clone().downcast().ok()?, cost_model(&pin.cost)?))
 }
 
 #[async_trait::async_trait]
@@ -2449,10 +2398,38 @@ pub type LiveHostFactory = std::sync::Arc<dyn Fn() -> std::sync::Arc<dyn EngineH
 #[derive(Clone)]
 pub struct GovHandle(pub Arc<dyn std::any::Any + Send + Sync>);
 
-/// The cost-model twin of [`GovHandle`] — an opaque handle to the resolved `CostModel` the sink was
-/// built from, produced by [`EngineHost::cost`] and consumed by [`EngineHost::meter_ledger`].
+/// The cost-model twin of [`GovHandle`] — an opaque handle to a resolved `CostModel`. KERNEL-SIDE
+/// ONLY: it rides inside a [`MeterPin`] and no plane-facing signature names it (#43).
 #[derive(Clone)]
 pub struct CostHandle(pub Arc<dyn std::any::Any + Send + Sync>);
+
+/// THE METER PIN — what a plane holds on its per-request sink so its counts land against the
+/// governance state AND the rate card that were in force when the request was admitted. OPAQUE: the
+/// fields are private and only the kernel's host pins a card ([`BudgetHost::meter_pin`]), so a plane
+/// carries its request's pricing context without naming a cost or price type (#43: a plane is
+/// PRICING-BLIND; #71: its money obligation is one raw count per class). The plane hands the pin BACK
+/// to the metering seams ([`BudgetHost::meter_ledger`], [`BudgetHost::rate_headroom`],
+/// [`BudgetHost::budget_state`], [`meter_series_billed`]), which read it kernel-side.
+///
+/// A plane-side host (a test double) pins NO card: its pin answers the no-card posture everywhere.
+#[derive(Clone)]
+pub struct MeterPin {
+    gov: GovHandle,
+    cost: CostHandle,
+}
+
+impl MeterPin {
+    /// Pin `gov` and the card `cost` names. Kernel-side; a TEST that hand-builds a card pins it here.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn new(gov: GovHandle, cost: CostHandle) -> Self {
+        MeterPin { gov, cost }
+    }
+
+    /// The governance handle the pin carries — what [`BudgetHost::meter_series`] takes.
+    pub fn gov(&self) -> &GovHandle {
+        &self.gov
+    }
+}
 
 /// An opaque handle to a governance ADMISSION grant (`AdmitGrant`), held DROP-ONLY on a plane's
 /// per-request sink so the admission's in-flight concurrency holds release when the last sink clone
@@ -2582,65 +2559,65 @@ pub struct SettleOutcome {
     pub exhausted: bool,
 }
 
-/// BRAKE (minor-19): the METERING-LEASE slice of the host seam, split off `EngineHost` as a supertrait
-/// so the reserve-then-settle cost-lease cluster stays a cohesive, bounded ABI rather than swelling the
-/// god-trait. It gives a statically-linked plane (a live voice/stream carrier a plane cannot price after
-/// the fact) the SAME reserve-then-settle lease the hot-ABI `cost_reserve`/`cost_settle` slots expose to
-/// a dlopen plane — reachable as a plain Rust trait method rather than the C-ABI vtable, so a compiled-in
-/// plane meters a live carrier CONTINUOUSLY against the real grant/budget: open a lease over
-/// already-priced nanodollars at session start, settle EXACT increments per turn, and read back
-/// exhaustion so the carrier is hard-closed the moment `settled ≥ cap`.
+/// THE KERNEL'S PRICING SIDE of a live carrier — the reserve-then-settle cost lease and the rate card
+/// that prices each increment. KERNEL-INTERNAL (#43: "a plane plugin NEVER sees its rate card or
+/// fees"): it is NOT a supertrait of [`EngineHost`], so no plane-side host implements it and no plane
+/// names it. A plane meters a live carrier through the count-only
+/// [`SessionMeter`](session_meter::SessionMeter) its host hands out
+/// ([`BudgetHost::session_meter`]); the kernel's [`HostMeteringPort`](session_meter::HostMeteringPort)
+/// drives this trait underneath it.
 ///
-/// Money-denominated end to end in `u128` nanodollars (1e-9 USD): core prices nothing, so the PLANE
-/// hands already-priced amounts (see the design's `plane4-duplex-session.md` §2.5). `u128` is used directly here — `EngineHost` is
-/// a plain Rust trait, NOT the frozen hot FFI, so it carries rich neutral types without the `u64`
-/// narrowing the C-ABI slot demands; the host widens/narrows at its own boundaries.
+/// The lease legs DEFAULT to the kernel's own host-owned `CostHold` registry ([`cost_host`]) — the SAME
+/// registry the hot-ABI `cost_reserve`/`cost_settle` slots fill, so every lease is one ledger. An
+/// implementor supplies the pricing. Money-denominated end to end in `u128` nanodollars (1e-9 USD);
+/// this is a plain Rust trait, not the frozen hot FFI, so it carries `u128` without narrowing.
 pub trait MeteringHost: Send + Sync {
-    /// OPEN a host-owned reserve-then-settle cost lease over ALREADY-PRICED nanodollars and return its
-    /// opaque [`CostLeaseId`]. `estimate_nanos` is the coarse over-estimate debited up front,
-    /// `fee_nanos` the once-per-lease flat session fee (`0` = none), and `cap_nanos` the TRUE budget
-    /// ceiling exhaustion is judged against: `None` leaves the lease UNCAPPED (never exhausts);
-    /// `Some(0)` is a REFUSE-ALL cap, DENIED at the door — the method returns `None` and the session
-    /// must fail closed (never open). Any other `Some(cap)` opens a live lease.
+    /// OPEN a reserve-then-settle cost lease over ALREADY-PRICED nanodollars and return its opaque
+    /// [`CostLeaseId`]. `estimate_nanos` is the coarse over-estimate debited up front, `fee_nanos` the
+    /// once-per-lease flat session fee (`0` = none), and `cap_nanos` the TRUE budget ceiling exhaustion
+    /// is judged against: `None` leaves the lease UNCAPPED (never exhausts); `Some(0)` is a REFUSE-ALL
+    /// cap, DENIED at the door — the method returns `None` and the session must fail closed (never
+    /// open). Any other `Some(cap)` opens a live lease.
     fn cost_reserve(
         &self,
         estimate_nanos: u128,
         fee_nanos: u128,
         cap_nanos: Option<u128>,
-    ) -> Option<CostLeaseId>;
+    ) -> Option<CostLeaseId> {
+        cost_host::reserve_lease(estimate_nanos, fee_nanos, cap_nanos).map(CostLeaseId)
+    }
 
     /// ACCRUE one EXACT already-priced increment (`exact_nanos`) against the open lease `lease` and read
     /// back the post-settle [`SettleOutcome`]. The lease STAYS open after a settle — a live carrier keeps
     /// settling increments until it hard-closes. `None` iff `lease` names no open lease (unknown /
     /// already-closed / the [`CostLeaseId::NONE`] sentinel); on `None` the caller fails CLOSED and
     /// hard-closes the carrier, exactly as it would on `exhausted`.
-    fn cost_settle(&self, lease: CostLeaseId, exact_nanos: u128) -> Option<SettleOutcome>;
+    fn cost_settle(&self, lease: CostLeaseId, exact_nanos: u128) -> Option<SettleOutcome> {
+        cost_host::settle_lease(lease.0, exact_nanos).map(|exhausted| SettleOutcome { exhausted })
+    }
 
-    /// The total nanodollars SETTLED so far against `lease` — the audit tap the caller journals (and the
-    /// tests assert). `None` for an unknown / already-closed lease.
-    fn cost_settled(&self, lease: CostLeaseId) -> Option<u128>;
+    /// The total nanodollars SETTLED so far against `lease` — the audit tap. `None` for an unknown /
+    /// already-closed lease.
+    fn cost_settled(&self, lease: CostLeaseId) -> Option<u128> {
+        cost_host::settled_of(lease.0)
+    }
 
     /// CLOSE and forget the lease `lease`, returning its finalize()'d ledgered total (the exact settled
     /// sum — never the coarse reserve). `None` for an unknown / already-closed lease. Idempotent: a
-    /// second close reads `None`. Bounds the host registry so a finished carrier's lease does not leak.
-    fn cost_close(&self, lease: CostLeaseId) -> Option<u128>;
+    /// second close reads `None`. Bounds the registry so a finished carrier's lease does not leak.
+    fn cost_close(&self, lease: CostLeaseId) -> Option<u128> {
+        cost_host::close_lease(lease.0)
+    }
 
-    /// PRICE a plane's neutral [`billing::Usage`](crate::billing::Usage) for `model` into nanodollars
-    /// via the deployment's rate card — the SAME `CostModel` arithmetic the LLM enforcement/derive path
-    /// uses (a new ENTRY POINT over the same function, so the LLM money path is byte-for-byte untouched).
-    /// A live carrier a plane cannot price after the fact folds each turn's usage_units and calls this to
-    /// get the already-priced nanodollar increment it then hands to [`cost_settle`](Self::cost_settle),
-    /// so the plane stays PLANE-NEUTRAL (it never names core's pricer) yet meters against the real rates.
+    /// PRICE a turn's neutral [`billing::Usage`](crate::billing::Usage) counts for `model` into
+    /// nanodollars via the deployment's rate card — the SAME `CostModel` arithmetic the LLM
+    /// enforcement/derive path uses (a new ENTRY POINT over the same function).
     ///
     /// Semantics mirror the host's per-model rate lookup exactly:
     /// - no rate card configured ⇒ `Some(0)` (pricing off — every model prices at 0, as core does);
     /// - card present, `model` priced ⇒ `Some(nanos)`;
     /// - card present, `model` UNKNOWN ⇒ `None` — the caller FAILS CLOSED (an unpriced passthrough model
     ///   must not meter as free).
-    ///
-    /// Amounts are u128 nanodollars — the plain-Rust neutral seam carries the rich type directly (unlike
-    /// the frozen hot FFI). Core prices nothing of its own here: it projects the caller's already-mapped
-    /// reserved-unit counts through the configured rate card, the one authoritative cost source.
     fn price_usage(&self, model: &str, usage: &crate::billing::Usage) -> Option<u128>;
 }
 
@@ -2907,10 +2884,12 @@ pub trait HookConfigHost: Send + Sync {
     fn requested_signals(&self) -> &crate::hooks::RequestedSignals;
 }
 
-/// The BUDGET/METERING slice: the money-path seams — the opaque gov/cost handle mints, the record-usage
-/// / record-metering accruals, the reserve-then-charge meter, and the pure headroom/budget projections.
-/// Split off `EngineHost` as a supertrait; the accrual seams downcast the opaque handles host-side and
-/// drive the SAME accrual the plane's sink did, no `HostCtx`.
+/// The BUDGET/METERING slice: the money-path seams a plane drives — COUNTS in, VERDICTS out. The
+/// governance handle and [`MeterPin`] mints, the record-usage / record-metering accruals, the
+/// reserve-then-charge meter, the live-carrier [`SessionMeter`](session_meter::SessionMeter), and the
+/// pure headroom/budget projections. No method names a cost or price type: pricing is the kernel's
+/// ([`MeteringHost`], #43), so a plane-side host implements this slice without naming one. Split off
+/// `EngineHost` as a supertrait; the accrual seams read the pin kernel-side, no `HostCtx`.
 pub trait BudgetHost: Send + Sync {
     /// Whether governance is configured for this deployment. Identical to
     /// `busbar_kernel::state::App::governance.is_some()`.
@@ -2925,110 +2904,59 @@ pub trait BudgetHost: Send + Sync {
 
     /// The per-caller RATE HEADROOM (min fraction of remaining request/token budget across the key's
     /// chain, `None` when unconstrained) — the host-driven form of
-    /// `gov.rate_headroom(&app.cost, key, pool, now)`. `gov`/`cost` are the opaque handles the caller
-    /// minted (via [`governance`](Self::governance)/[`cost`](Self::cost)); the host downcasts them to the
-    /// concrete `GovState`/`CostModel` and drives the SAME pure observation (no cell mutation). No
-    /// `HostCtx`. `key` is the already-neutral [`VirtualKey`](busbar_api::VirtualKey) (api).
-    ///
-    /// WEDGE 2 (App-retype): additive — the seam the wedge-3 `hooks.rs::decide_policy_order` `&app.cost`
-    /// read flips onto (the `gov` object is already the sink's own via the handle, so byte-identical).
+    /// `gov.rate_headroom(&app.cost, key, pool, now)` over the governance state and card `pin` carries
+    /// (a pure observation, no cell mutation). No `HostCtx`. `key` is the already-neutral
+    /// [`VirtualKey`](busbar_api::VirtualKey) (api).
     fn rate_headroom(
         &self,
-        gov: &GovHandle,
-        cost: &CostHandle,
+        pin: &MeterPin,
         key: &busbar_api::VirtualKey,
         pool: Option<&str>,
         now: u64,
     ) -> Option<f64>;
 
     /// The HOOK-seam budget projection for `key`: `{bucket_id, spend_at_current_rate, remaining, window}`
-    /// per chain bucket, derived fresh from the token ledger × the current rate card — the host-driven
-    /// form of `gov.budget_state(&app.cost, key, now)`. `gov`/`cost` are the opaque handles; the host
-    /// downcasts and drives the SAME read. Returns the neutral
-    /// [`BudgetBucketState`](busbar_api::BudgetBucketState) vec (empty when the key has no chain), built
-    /// ONLY on a routing-policy pool. No `HostCtx`.
-    ///
-    /// WEDGE 2 (App-retype): additive — the twin of [`rate_headroom`](Self::rate_headroom) for the
-    /// budget-chain projection the wedge-3 flip targets.
+    /// per chain bucket, derived fresh from the token ledger × the card `pin` carries — the host-driven
+    /// form of `gov.budget_state(&app.cost, key, now)`. Returns the neutral
+    /// [`BudgetBucketState`](busbar_api::BudgetBucketState) vec (empty when the key has no chain). No
+    /// `HostCtx`.
     fn budget_state(
         &self,
-        gov: &GovHandle,
-        cost: &CostHandle,
+        pin: &MeterPin,
         key: &busbar_api::VirtualKey,
         now: u64,
     ) -> Vec<busbar_api::BudgetBucketState>;
 
     /// Mint the OPAQUE [`GovHandle`] for this deployment's governance state — `Some` iff governance is
-    /// configured. One `Arc` bump, no `HostCtx`. Byte-identical to cloning `App::governance`; the plane
-    /// holds the handle on its per-request sink and hands it back to the metering seams.
-    ///
-    /// WEDGE 2 (App-retype): additive — the neutral producer of the sink's `gov` field, so wedge 3 can
-    /// retype `sink.gov: Arc<busbar_kernel::governance::GovState>` to [`GovHandle`].
+    /// configured. One `Arc` bump, no `HostCtx`. Byte-identical to cloning `App::governance`.
     fn governance(&self) -> Option<GovHandle>;
 
-    /// Mint the OPAQUE [`CostHandle`] for this deployment's resolved cost model — one `Arc` bump, no
-    /// `HostCtx`. Byte-identical to cloning `App::cost`; the twin of [`governance`](Self::governance)
-    /// for the sink's `cost` field.
-    fn cost(&self) -> CostHandle;
+    /// PIN this request's metering context — `Some` iff governance is configured. The plane holds the
+    /// pin on its per-request sink and hands it back to the metering seams. The kernel's host pins its
+    /// bound snapshot's card; a plane-side host keeps this default, which pins NO card (every card read
+    /// through the pin answers the no-card posture).
+    fn meter_pin(&self) -> Option<MeterPin> {
+        let cost = CostHandle(Arc::new(()));
+        self.governance().map(|gov| MeterPin { gov, cost })
+    }
 
-    /// Whether a RATE CARD is present on this deployment at all — the first of the two questions the
-    /// pre-admission pricing guard asks.
-    ///
-    /// The handle [`cost`](Self::cost) mints is opaque by design: a plane may hold the deployment's
-    /// cost model but may not read its rates, because a plane that could read a rate could price a
-    /// request. But "is anything priced here" is not a rate, it is a POSTURE — and the guard that
-    /// fails a request closed on an unbillable name cannot run without it. So the question is
-    /// answered by the host, over the same handle, exactly as
-    /// [`rate_headroom`](Self::rate_headroom) answers its own: the host downcasts and drives the
-    /// unchanged `CostModel::pricing_enabled` read. A host with no cost model answers `false`, which
-    /// is the honest posture of a deployment that prices nothing.
-    fn cost_pricing_enabled(&self, cost: &CostHandle) -> bool;
+    /// The pre-admission pricing guard's VERDICT: does a PRESENT rate card leave `model` unpriced?
+    /// `false` for every name when no card is configured (there is no card to miss). A verdict, not a
+    /// rate: the plane fails the request closed on `true` and never learns a figure.
+    fn cost_model_unpriced(&self, model: &str) -> bool;
 
-    /// Whether a PRESENT card leaves `model` unpriced — the pricing guard's second question, and the
-    /// one that fails closed.
-    ///
-    /// The same seam and the same rule as [`cost_pricing_enabled`](Self::cost_pricing_enabled): the
-    /// host downcasts the opaque handle and drives the unchanged `CostModel::model_unpriced` read,
-    /// which is `false` for every name when no card is configured (there is no card to miss).
-    fn cost_model_unpriced(&self, cost: &CostHandle, model: &str) -> bool;
+    /// The count-only [`SessionMeter`](session_meter::SessionMeter) a live carrier reports its turns
+    /// to: open over a kernel-derived budget, raw counts per turn, [`TurnVerdict`](session_meter::TurnVerdict)
+    /// back. The kernel's host binds it over its own lease registry and rate card.
+    fn session_meter(&self) -> Arc<dyn session_meter::SessionMeter>;
 
-    /// PRICE `usage` for `model` against the card the caller's own handle names, in nanodollars.
-    ///
-    /// The third read over the opaque handle, and the one a plane needs to spend money rather than
-    /// merely to ask about it: a step that accrues against a nano-unit reservation has to have a
-    /// nano-unit figure, and the only honest source of one is the rate card. The plane still reads
-    /// no rate — it hands over the counts it metered and gets back a total.
-    ///
-    /// The handle is the argument for the same reason it is the argument to
-    /// [`cost_model_unpriced`](Self::cost_model_unpriced): a request's money is settled against the
-    /// card that was resolved when its hold opened, which the caller pinned onto its own sink at the
-    /// door. [`MeteringHost::price_usage`] prices against the deployment's card as it is NOW, which
-    /// is the right answer for a live carrier reading its own rates and the wrong one for a request
-    /// that opened before a reload. Same arithmetic underneath; different card.
-    ///
-    /// Semantics are the per-model rate lookup's, unchanged: no card configured ⇒ `Some(0)`, because
-    /// a deployment that prices nothing prices every model at nothing; card present and `model`
-    /// priced ⇒ `Some(nanos)`; card present and `model` unknown ⇒ `None`, which the caller must not
-    /// read as free.
-    fn cost_price_usage(
-        &self,
-        cost: &CostHandle,
-        model: &str,
-        usage: &crate::billing::Usage,
-    ) -> Option<u128>;
-
-    /// LEDGER one delivered response's tier-split token usage against the key's budget chain — the
-    /// host-driven form of `sink.gov.record_usage(&sink.cost, key, pool, model, tokens, now)`. `gov`
-    /// and `cost` are the opaque handles the sink minted (via [`governance`](Self::governance) /
-    /// [`cost`](Self::cost)); the host downcasts them to the concrete `GovState`/`CostModel` and drives
-    /// the SAME accrual. A no-op on an all-zero tier, exactly as `record_usage`. No `HostCtx`.
-    ///
-    /// WEDGE 2 (App-retype): additive — the seam the wedge-3 `usage.rs::ledger_and_meter` flip targets.
-    #[allow(clippy::too_many_arguments)]
+    /// LEDGER one delivered response's tier-split counts against the key's budget chain — the
+    /// host-driven form of `sink.gov.record_usage(&sink.cost, key, pool, model, tokens, now)` over the
+    /// governance state and card `pin` carries. A no-op on an all-zero tier, exactly as
+    /// `record_usage`. No `HostCtx`.
     fn meter_ledger(
         &self,
-        gov: &GovHandle,
-        cost: &CostHandle,
+        pin: &MeterPin,
         key: &busbar_api::VirtualKey,
         pool: &str,
         model: &str,
@@ -3041,8 +2969,6 @@ pub trait BudgetHost: Send + Sync {
     /// `sink.gov.record_metering(key_id, model, provider, usage, now)`. `gov` is the opaque handle the
     /// sink minted; the host downcasts it and drives the SAME write-behind accrual (a zero-token
     /// response still counts its request). No `HostCtx`.
-    ///
-    /// WEDGE 2 (App-retype): additive — the seam the wedge-3 `usage.rs` metering flips target.
     fn meter_series(
         &self,
         gov: &GovHandle,
@@ -3060,25 +2986,20 @@ pub trait BudgetHost: Send + Sync {
 /// `rate_card:` the node is a free failover/routing proxy and emits no per-model usage row (#42). A
 /// plane calls this UNCONDITIONALLY with the counts it observed and never asks whether billing is on
 /// — #43: "a plane appends its counts unconditionally — no branch, no knowledge of billing state".
-/// The switch is a property of the deployment's card, so it is answered here, over the opaque handle
-/// the plane pinned at the door, and never in plane code.
-///
-/// The two host reads are the SAME [`BudgetHost::cost_pricing_enabled`] + [`BudgetHost::meter_series`]
-/// the LLM plane's `ledger_and_meter` made in place before the branch moved here — same order, same
-/// handles, same arguments — so every served usage byte is unchanged.
-#[allow(clippy::too_many_arguments)]
+/// The switch is a property of the card the plane's [`MeterPin`] carries — the card in force when the
+/// request was admitted — so it is answered here and never in plane code; a pin with no card writes
+/// no row. The row itself is the unchanged [`BudgetHost::meter_series`].
 pub fn meter_series_billed<H: BudgetHost + ?Sized>(
     host: &H,
-    gov: &GovHandle,
-    cost: &CostHandle,
+    pin: &MeterPin,
     key_id: &str,
     model: &str,
     provider: &str,
     usage: Option<&crate::billing::TokenUsage>,
     now: u64,
 ) {
-    if host.cost_pricing_enabled(cost) {
-        host.meter_series(gov, key_id, model, provider, usage, now);
+    if cost_model(&pin.cost).is_some_and(|c| c.pricing_enabled()) {
+        host.meter_series(&pin.gov, key_id, model, provider, usage, now);
     }
 }
 
@@ -3365,7 +3286,9 @@ pub trait CompletionHost: Send + Sync {
 /// The residual flat method set has been cut into cohesive capability SUPERTRAITS
 /// ([`ClockHost`], [`TelemetryHost`], [`JournalHost`], [`MountHost`], [`RegistryHost`],
 /// [`HookConfigHost`], [`BudgetHost`], [`IdentityHost`], [`AdmissionHost`], [`CompletionHost`]),
-/// alongside the earlier braking slices ([`BreakerHost`], [`LanePoolHost`], [`MeteringHost`]).
+/// alongside the earlier braking slices ([`BreakerHost`], [`LanePoolHost`]). Every slice is
+/// PLANE-FACING and pricing-blind; the kernel's pricing ([`MeteringHost`]) is deliberately NOT one of
+/// them, so a plane-side host implements the whole sum without naming a cost or price type (#43).
 /// `EngineHost` now declares NO methods of its own beyond the provided [`run_gauntlet`](Self::run_gauntlet)
 /// ergonomic entry — it is the SUM (a supertrait bound of every slice). An existing
 /// `Arc<dyn EngineHost>` caller is unaffected (it still reaches every method through the inherited
@@ -3378,7 +3301,6 @@ pub trait CompletionHost: Send + Sync {
 pub trait EngineHost:
     BreakerHost
     + LanePoolHost
-    + MeteringHost
     + ClockHost
     + TelemetryHost
     + JournalHost
@@ -3418,7 +3340,6 @@ const _: () = {
     fn _assert_engine_host_is_sum_of_slices<T: EngineHost + ?Sized>() {
         fn _needs_breaker<U: BreakerHost + ?Sized>() {}
         fn _needs_lane_pool<U: LanePoolHost + ?Sized>() {}
-        fn _needs_metering<U: MeteringHost + ?Sized>() {}
         fn _needs_clock<U: ClockHost + ?Sized>() {}
         fn _needs_telemetry<U: TelemetryHost + ?Sized>() {}
         fn _needs_journal<U: JournalHost + ?Sized>() {}
@@ -3431,7 +3352,6 @@ const _: () = {
         fn _needs_completion<U: CompletionHost + ?Sized>() {}
         _needs_breaker::<T>();
         _needs_lane_pool::<T>();
-        _needs_metering::<T>();
         _needs_clock::<T>();
         _needs_telemetry::<T>();
         _needs_journal::<T>();

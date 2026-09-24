@@ -18,7 +18,13 @@
 //!   deployment;
 //! * the per-key usage LEDGER the metering seams land on (`meter_ledger` / `meter_series`), readable
 //!   through [`FixtureHost::ledger_usage`] once the host is [`governed`](FixtureHost::governed);
-//! * the reserve-then-settle cost LEASES of the [`MeteringHost`] slice.
+//! * the live-carrier SESSIONS its `session_meter` opened, counted by [`FixtureHost::leases_opened`] /
+//!   [`FixtureHost::leases_open`].
+//!
+//! The fixture implements ONLY the plane-facing seam: it names no cost or price type (#43 — a plane is
+//! pricing-blind, and so is the host its tests stand in). The money side of a session — the lease, the
+//! card, the hard-close arithmetic — is the kernel's own session meter, which this host hands out and
+//! merely counts; [`FixtureHost::unit_rate`] picks the kernel's per-count posture instead of no card.
 //!
 //! Everything else on the seam answers the neutral "nothing configured" value (no pools, no secrets,
 //! no identity chain, no completion pipeline). It is a test double: a leg the fixture does not model
@@ -30,17 +36,20 @@ use busbar_kernel::breaker::{CanonicalSignal, Disposition};
 use busbar_kernel::hooks::{RequestedSignals, ResolvedPolicy, TapEntry};
 use busbar_kernel::plane::approvals::Sealer;
 use busbar_kernel::plane::calllog::CallInput;
+use busbar_kernel::plane_host::session_meter::{
+    HostMeteringPort, MeterId, SessionBudget, SessionMeter, TurnVerdict,
+};
 use busbar_kernel::plane_host::{
     AdmissionHost, AdmitHandle, AudienceBinding, BreakerHost, BudgetHost, ClockHost,
-    CompletionHost, CostHandle, CostLeaseId, DispatchScope, EngineHost, GateOutcome, GovAdmit,
-    GovHandle, HookConfigHost, HostCompletion, IdentityHost, JournalHost, LanePoolHost,
-    MeteringHost, MountHost, RegistryHost, SettleOutcome, TelemetryHost, TransformVerdict,
+    CompletionHost, DispatchScope, EngineHost, GateOutcome, GovAdmit, GovHandle, HookConfigHost,
+    HostCompletion, IdentityHost, JournalHost, LanePoolHost, MeterPin, MountHost, RegistryHost,
+    TelemetryHost, TransformVerdict,
 };
 use busbar_kernel::store::{BreakerState, HealthState, LaneRuntime, Unavailable};
 use busbar_kernel::trust::validate::{Lapsed, Standing};
 use busbar_kernel::trust::TrustState;
 use busbar_plugin::hot::{AdmissionId, Signal};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -72,11 +81,46 @@ struct Cell {
 /// cooldown step, so a `Retry-After` read off the fixture is a plausible whole-second floor.
 const OPEN_COOLDOWN_SECS: u64 = 15;
 
-/// One open reserve-then-settle cost lease.
-#[derive(Clone, Copy, Debug)]
-struct Lease {
-    settled: u128,
-    cap: Option<u128>,
+/// The session meter this host hands its plane: the KERNEL's own meter (its lease, its card, its
+/// hard-close), wrapped only to COUNT the sessions it opened and which are still open — the read-back
+/// a plane's lease-lifecycle test asserts. It decides nothing itself.
+struct CountedMeter {
+    kernel: HostMeteringPort,
+    opened: AtomicU64,
+    open: Mutex<BTreeSet<u64>>,
+}
+
+impl CountedMeter {
+    fn new(one_unit_per_count: bool) -> Self {
+        CountedMeter {
+            kernel: busbar_kernel::plane_host::testkit::stock_session_meter(one_unit_per_count),
+            opened: AtomicU64::new(0),
+            open: Mutex::new(BTreeSet::new()),
+        }
+    }
+
+    fn open_ids(&self) -> std::sync::MutexGuard<'_, BTreeSet<u64>> {
+        self.open.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+impl SessionMeter for CountedMeter {
+    fn open(&self, budget: &SessionBudget) -> Option<MeterId> {
+        let id = self.kernel.open(budget)?;
+        self.opened.fetch_add(1, Ordering::SeqCst);
+        self.open_ids().insert(id.0);
+        Some(id)
+    }
+    fn report_turn(&self, id: MeterId, model: &str, counts: &Usage) -> TurnVerdict {
+        self.kernel.report_turn(id, model, counts)
+    }
+    fn settled(&self, id: MeterId) -> u64 {
+        self.kernel.settled(id)
+    }
+    fn close(&self, id: MeterId) {
+        self.open_ids().remove(&id.0);
+        self.kernel.close(id);
+    }
 }
 
 /// One admin-audit row [`JournalHost::audit_record`] landed on the fixture — the read-back a plane's
@@ -96,7 +140,6 @@ struct Inner {
     gates: BTreeMap<(String, String), GateScript>,
     rewrites: BTreeMap<(String, String), RewriteScript>,
     ledger: BTreeMap<String, LedgerUsage>,
-    leases: BTreeMap<u64, Lease>,
     slots: BTreeMap<String, Arc<dyn std::any::Any + Send + Sync>>,
     audit: Vec<FixtureAuditEntry>,
     /// The budget chain `budget_state` answers for every key — empty (uncapped) unless a test sets one.
@@ -111,20 +154,13 @@ pub struct FixtureHost {
     inner: Mutex<Inner>,
     governed: bool,
     next_request_id: AtomicU64,
-    next_lease: AtomicU64,
+    /// The kernel session meter `session_meter` hands out, counted (see [`CountedMeter`]).
+    sessions: Arc<CountedMeter>,
     /// The lane store `lane_store` hands out: the kernel's OWN `LaneRuntime` implementor with no
     /// lanes configured, so this double never re-implements (and never drifts from) that trait.
     lanes: HealthState,
     /// No hook on the fixture requests a candidate signal (the all-zero mask).
     signals: RequestedSignals,
-    /// Whether this host models a BILLED plane (a `rate_card:` present). `true` by default: the
-    /// fixture's metering/pricing seams behave as a billed deployment, which is what the metering
-    /// tests exercise. DECISION #42 makes the metering row conditional on billing, so a test that
-    /// wants the unbilled/no-card posture (metering goes quiet) opts in with [`Self::unbilled`].
-    pricing_enabled: bool,
-    /// Whether the lease slice charges ONE unit per reported count (`true`) or nothing (the default,
-    /// no rate card). Opt-in, so a probe can drive a session to its cap through the kernel meter.
-    unit_rate: bool,
 }
 
 impl Default for FixtureHost {
@@ -141,11 +177,9 @@ impl FixtureHost {
             inner: Mutex::new(Inner::default()),
             governed: false,
             next_request_id: AtomicU64::new(1),
-            next_lease: AtomicU64::new(1),
+            sessions: Arc::new(CountedMeter::new(false)),
             lanes: HealthState::new(Vec::new()),
             signals: RequestedSignals::default(),
-            pricing_enabled: true,
-            unit_rate: false,
         }
     }
 
@@ -156,20 +190,11 @@ impl FixtureHost {
         self
     }
 
-    /// Charge one unit per reported count on the lease slice, so a session can reach its cap.
+    /// Meter sessions under the kernel's one-unit-per-count posture instead of no card, so a session
+    /// can reach its cap. The kernel prices; this host only chooses which stock posture it runs.
     #[must_use]
     pub fn unit_rate(mut self) -> Self {
-        self.unit_rate = true;
-        self
-    }
-
-    /// Model an UNBILLED plane: no `rate_card:` configured, so [`Self::cost_pricing_enabled`] is
-    /// `false` and — per DECISION #42 — the metering row goes quiet (the money surface is off; the
-    /// plane still admits, limits concurrency and trips its breaker). The posture the fixture had
-    /// before #42 made metering conditional.
-    #[must_use]
-    pub fn unbilled(mut self) -> Self {
-        self.pricing_enabled = false;
+        self.sessions = Arc::new(CountedMeter::new(true));
         self
     }
 
@@ -230,22 +255,26 @@ impl FixtureHost {
         self.lock().ledger.get(key_id).copied()
     }
 
-    /// How many cost leases were opened over this host's lifetime.
+    /// How many metered sessions were opened over this host's lifetime.
     #[must_use]
     pub fn leases_opened(&self) -> u64 {
-        self.next_lease.load(Ordering::SeqCst) - 1
+        self.sessions.opened.load(Ordering::SeqCst)
     }
 
-    /// How many cost leases are open right now (opened and not yet closed).
+    /// How many metered sessions are open right now (opened and not yet closed).
     #[must_use]
     pub fn leases_open(&self) -> usize {
-        self.lock().leases.len()
+        self.sessions.open_ids().len()
     }
 
-    /// The total every OPEN lease has settled so far.
+    /// What the kernel's meter reads back as settled across every OPEN session — its audit tap,
+    /// summed. The fixture computes none of it.
     #[must_use]
     pub fn open_settled_total(&self) -> u128 {
-        self.lock().leases.values().map(|l| l.settled).sum()
+        let ids: Vec<u64> = self.sessions.open_ids().iter().copied().collect();
+        ids.into_iter()
+            .map(|id| u128::from(self.sessions.settled(MeterId(id))))
+            .sum()
     }
 
     /// Every admin-audit row [`JournalHost::audit_record`] has landed on this host, in emission order —
@@ -359,57 +388,6 @@ impl LanePoolHost for FixtureHost {
     }
     fn plane_pool_members(&self, _plane_key: &str, _member: &str) -> Option<(String, Vec<String>)> {
         None
-    }
-}
-
-// ── The metering-lease slice: reserve-then-settle in memory, pricing off (no rate card) ──────────
-
-impl MeteringHost for FixtureHost {
-    fn cost_reserve(
-        &self,
-        _estimate_nanos: u128,
-        _fee_nanos: u128,
-        cap_nanos: Option<u128>,
-    ) -> Option<CostLeaseId> {
-        if cap_nanos == Some(0) {
-            return None;
-        }
-        let id = self.next_lease.fetch_add(1, Ordering::SeqCst);
-        self.lock().leases.insert(
-            id,
-            Lease {
-                settled: 0,
-                cap: cap_nanos,
-            },
-        );
-        Some(CostLeaseId(id))
-    }
-
-    fn cost_settle(&self, lease: CostLeaseId, exact_nanos: u128) -> Option<SettleOutcome> {
-        let mut inner = self.lock();
-        let l = inner.leases.get_mut(&lease.0)?;
-        l.settled = l.settled.saturating_add(exact_nanos);
-        Some(SettleOutcome {
-            exhausted: l.cap.is_some_and(|cap| l.settled >= cap),
-        })
-    }
-
-    fn cost_settled(&self, lease: CostLeaseId) -> Option<u128> {
-        self.lock().leases.get(&lease.0).map(|l| l.settled)
-    }
-
-    fn cost_close(&self, lease: CostLeaseId) -> Option<u128> {
-        self.lock().leases.remove(&lease.0).map(|l| l.settled)
-    }
-
-    fn price_usage(&self, _model: &str, usage: &Usage) -> Option<u128> {
-        // No rate card configured: every model prices at zero, as the engine does — unless a test
-        // opted into the one-unit-per-count rate.
-        Some(if self.unit_rate {
-            usage.usage_units.values().copied().map(u128::from).sum()
-        } else {
-            0
-        })
     }
 }
 
@@ -565,8 +543,7 @@ impl BudgetHost for FixtureHost {
     fn meter_charge(&self, _scope: &DispatchScope, _usage: &busbar_plugin::hot::Usage) {}
     fn rate_headroom(
         &self,
-        _gov: &GovHandle,
-        _cost: &CostHandle,
+        _pin: &MeterPin,
         _key: &VirtualKey,
         _pool: Option<&str>,
         _now: u64,
@@ -575,8 +552,7 @@ impl BudgetHost for FixtureHost {
     }
     fn budget_state(
         &self,
-        _gov: &GovHandle,
-        _cost: &CostHandle,
+        _pin: &MeterPin,
         _key: &VirtualKey,
         _now: u64,
     ) -> Vec<busbar_api::BudgetBucketState> {
@@ -585,26 +561,16 @@ impl BudgetHost for FixtureHost {
     fn governance(&self) -> Option<GovHandle> {
         self.governed.then(|| GovHandle(Arc::new(())))
     }
-    fn cost(&self) -> CostHandle {
-        CostHandle(Arc::new(()))
-    }
-    // Billing is on when this host models a billed plane (a `rate_card:` present) — the default; a
-    // test wanting the unbilled/no-card posture builds the host with `.unbilled()`. DECISION #42
-    // reads this to decide whether a metering row is emitted at all.
-    fn cost_pricing_enabled(&self, _cost: &CostHandle) -> bool {
-        self.pricing_enabled
-    }
-    fn cost_model_unpriced(&self, _cost: &CostHandle, _model: &str) -> bool {
+    // No card here, so nothing a card could miss.
+    fn cost_model_unpriced(&self, _model: &str) -> bool {
         false
     }
-    // And with no card, every model prices at nothing — the posture, not a missing answer.
-    fn cost_price_usage(&self, _cost: &CostHandle, _model: &str, _usage: &Usage) -> Option<u128> {
-        Some(0)
+    fn session_meter(&self) -> Arc<dyn SessionMeter> {
+        Arc::clone(&self.sessions) as Arc<dyn SessionMeter>
     }
     fn meter_ledger(
         &self,
-        _gov: &GovHandle,
-        _cost: &CostHandle,
+        _pin: &MeterPin,
         key: &VirtualKey,
         _pool: &str,
         _model: &str,

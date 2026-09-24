@@ -647,15 +647,14 @@ pub(crate) fn usage_sink(
     charged_at: u64,
     admit: Option<busbar_kernel::plane_host::AdmitHandle>,
 ) -> Option<crate::engine::UsageSink> {
-    // App-retype WEDGE 3: the sink holds the OPAQUE governance/cost handles the host mints over the
-    // SAME `GovState`/`CostModel` the pre-flip `app.governance`/`app.cost` named — byte-identical accrual
-    // at the stream-end metering seams. `governance()` is `Some` iff governance is configured.
-    match (host.governance(), &gov.key) {
-        (Some(g), Some(key)) => Some(crate::engine::UsageSink {
-            gov: g,
-            // The resolved cost model handle rides along (one Arc bump) so the stream-end accrual can
-            // walk the key's budget-group chain without reaching back into the App snapshot.
-            cost: host.cost(),
+    // The sink holds the kernel's OPAQUE meter pin over the SAME `GovState`/`CostModel` the pre-flip
+    // `app.governance`/`app.cost` named — byte-identical accrual at the stream-end metering seams, and
+    // the plane names no cost type (#43). `meter_pin()` is `Some` iff governance is configured.
+    match (host.meter_pin(), &gov.key) {
+        (Some(pin), Some(key)) => Some(crate::engine::UsageSink {
+            // The pin carries the resolved card (one Arc bump) so the stream-end accrual can walk the
+            // key's budget-group chain without reaching back into the App snapshot.
+            pin,
             // Share the resolved key by `Arc`: no per-request `id` String clone; it is read
             // through `sink.key` at charge time.
             key: key.clone(),

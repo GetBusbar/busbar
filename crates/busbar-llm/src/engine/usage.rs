@@ -44,8 +44,7 @@ pub(crate) fn record_resp_usage(
             {
                 let usage_units = std::collections::BTreeMap::from([(class.clone(), *count)]);
                 host.meter_ledger(
-                    &sink.gov,
-                    &sink.cost,
+                    &sink.pin,
                     &sink.key,
                     &sink.pool,
                     &lane.model,
@@ -54,7 +53,7 @@ pub(crate) fn record_resp_usage(
                 );
             }
             host.meter_series(
-                &sink.gov,
+                sink.pin.gov(),
                 &sink.key.id,
                 &lane.model,
                 &lane.provider,
@@ -106,11 +105,10 @@ pub(crate) fn ledger_and_meter(
     // differently under the rate card) against the key's budget chain, in the SAME window as the
     // flat per-request fee (`sink.charged_at`, the header-arrival epoch), so token accrual and the
     // per-request fee never split across windows (#29). `meter_ledger` no-ops on an all-zero tier.
-    // Routed through the host seam over the sink's opaque `GovHandle`/`CostHandle` — byte-identical to
-    // the pre-flip `sink.gov.record_usage(&sink.cost, …)`.
+    // Routed through the host seam over the sink's opaque meter pin — byte-identical to the pre-flip
+    // `sink.gov.record_usage(&sink.cost, …)`.
     host.meter_ledger(
-        &sink.gov,
-        &sink.cost,
+        &sink.pin,
         &sink.key,
         &sink.pool,
         &lane.model,
@@ -122,15 +120,14 @@ pub(crate) fn ledger_and_meter(
     //
     // The plane hands its counts over UNCONDITIONALLY (DECISION #43: no branch, no knowledge of
     // billing state). Whether the row is written — BILLING OFF ⇒ NO METERING ROW, #42 — is the
-    // kernel's question, answered in `meter_series_billed` over the handle the sink pinned at the
+    // kernel's question, answered in `meter_series_billed` over the card the sink pinned at the
     // door; with a card PRESENT the row is recorded byte-for-byte as before. The budget/ledger
     // accrual ABOVE is not switched at all: token-COUNT rate caps (a non-money limit, like
     // `concurrent`) enforce off that accrual, and #42 keeps admission, concurrency and breaker on for
     // an unbilled plane — only the money surface goes quiet.
     busbar_kernel::plane_host::meter_series_billed(
         &**host,
-        &sink.gov,
-        &sink.cost,
+        &sink.pin,
         &sink.key.id,
         &lane.model,
         &lane.provider,

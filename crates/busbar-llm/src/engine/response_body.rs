@@ -10,16 +10,13 @@ use busbar_substrate_values::diagnostics::{
 /// key + its budget period + the governance store). `None` when governance is off or no key resolved.
 #[derive(Clone)]
 pub(crate) struct UsageSink {
-    /// The OPAQUE governance handle (App-retype WEDGE 3): the sink holds `busbar_substrate`'s
-    /// [`GovHandle`](busbar_kernel::plane_host::GovHandle) (minted host-side via
-    /// `EngineHost::governance`) rather than naming core's `governance::GovState`. It is handed
-    /// BACK to the host metering seams (`EngineHost::meter_ledger`/`meter_series`), which downcast it —
-    /// byte-identical accrual against the SAME `GovState` the handle wraps.
-    pub(crate) gov: busbar_kernel::plane_host::GovHandle,
-    /// The OPAQUE cost handle (App-retype WEDGE 3) — the twin of `gov`, minted via `EngineHost::cost`
-    /// and downcast host-side at accrual. Was an `Arc` of core's `cost::CostModel`; an Arc bump per
-    /// request, rebuilt on config apply.
-    pub(crate) cost: busbar_kernel::plane_host::CostHandle,
+    /// The request's METER PIN — the kernel-owned opaque carrier of the governance state and the rate
+    /// card in force when this request was admitted (minted host-side via `BudgetHost::meter_pin`).
+    /// The plane holds it and hands it BACK to the metering seams (`meter_ledger`, `meter_series`,
+    /// `meter_series_billed`), which read it kernel-side — so the sink names no cost or price type
+    /// (#43) and the accrual lands against the SAME `GovState`/card it always did. An Arc bump per
+    /// request; a failover clone shares it.
+    pub(crate) pin: busbar_kernel::plane_host::MeterPin,
     /// The resolved virtual key, shared via `Arc`: `key_id` is read THROUGH it (`key.id`) at
     /// charge time, so building the sink (once per request) and cloning it (once per failover
     /// attempt) is a refcount bump, not a per-request `String` clone.

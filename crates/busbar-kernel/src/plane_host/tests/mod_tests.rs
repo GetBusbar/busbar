@@ -697,10 +697,13 @@ fn a_committed_invoke_rewrite_installs_any_json_object_verbatim() {
     );
 }
 
-/// A `BudgetHost` that answers only the two reads [`meter_series_billed`] makes: the card's presence,
-/// and a count of the metering rows it was asked to write. Every other seam is unreachable here.
+/// A PLANE-SIDE `BudgetHost` — and THE COMPILE-LEVEL PROOF of item 35's seam (#43): the plane-facing
+/// budget slice is implementable naming NO cost or price type. This impl names no `CostHandle`,
+/// `CostLeaseId`, `SettleOutcome`, `MeteringHost` or a pricing method; the counts-and-verdicts surface
+/// is all a plane-side host ever writes. (Before item 35 this impl had to write `cost()`,
+/// `cost_pricing_enabled`, `cost_price_usage` and `&CostHandle` parameters, or it did not compile.)
+/// It counts the metering rows it is asked to write; every other seam is unreachable here.
 struct BillingProbe {
-    card: bool,
     rows: AtomicUsize,
 }
 
@@ -713,8 +716,7 @@ impl BudgetHost for BillingProbe {
     }
     fn rate_headroom(
         &self,
-        _: &GovHandle,
-        _: &CostHandle,
+        _: &MeterPin,
         _: &busbar_api::VirtualKey,
         _: Option<&str>,
         _: u64,
@@ -723,33 +725,24 @@ impl BudgetHost for BillingProbe {
     }
     fn budget_state(
         &self,
-        _: &GovHandle,
-        _: &CostHandle,
+        _: &MeterPin,
         _: &busbar_api::VirtualKey,
         _: u64,
     ) -> Vec<busbar_api::BudgetBucketState> {
         unreachable!()
     }
     fn governance(&self) -> Option<GovHandle> {
-        unreachable!()
+        Some(GovHandle(Arc::new(())))
     }
-    fn cost(&self) -> CostHandle {
-        unreachable!()
+    fn cost_model_unpriced(&self, _: &str) -> bool {
+        false
     }
-    fn cost_pricing_enabled(&self, _: &CostHandle) -> bool {
-        self.card
+    fn session_meter(&self) -> Arc<dyn session_meter::SessionMeter> {
+        Arc::new(session_meter::LocalMeteringPort)
     }
-    fn cost_model_unpriced(&self, _: &CostHandle, _: &str) -> bool {
-        unreachable!()
-    }
-    fn cost_price_usage(&self, _: &CostHandle, _: &str, _: &crate::billing::Usage) -> Option<u128> {
-        unreachable!()
-    }
-    #[allow(clippy::too_many_arguments)]
     fn meter_ledger(
         &self,
-        _: &GovHandle,
-        _: &CostHandle,
+        _: &MeterPin,
         _: &busbar_api::VirtualKey,
         _: &str,
         _: &str,
@@ -771,32 +764,46 @@ impl BudgetHost for BillingProbe {
     }
 }
 
-/// ITEM 35 / DECISION #43 — THE BILLING SWITCH IS THE KERNEL'S. A plane hands its counts to
-/// `meter_series_billed` unconditionally; the kernel writes the metering row with a card present and
-/// writes none with no card (#42). Before item 35 this branch lived inside the LLM plane
-/// (`usage.rs`: `if host.cost_pricing_enabled(..)`), which is exactly what #43 outlaws.
+/// ITEM 35 / DECISION #43 — THE BILLING SWITCH IS THE KERNEL'S, READ OFF THE PIN. A plane hands its
+/// counts to `meter_series_billed` unconditionally; the kernel writes the metering row iff the card
+/// the request was PINNED under is present (#42). A plane-side host's own pin carries no card, so it
+/// writes none.
 #[test]
 fn the_kernel_not_the_plane_decides_whether_a_metering_row_is_written() {
-    let handle = || Arc::new(()) as Arc<dyn std::any::Any + Send + Sync>;
-    for (card, want) in [(true, 1), (false, 0)] {
-        let probe = BillingProbe {
-            card,
-            rows: AtomicUsize::new(0),
-        };
-        meter_series_billed(
-            &probe,
-            &GovHandle(handle()),
-            &CostHandle(handle()),
-            "key",
-            "model",
-            "provider",
-            None,
-            0,
+    let gov = || GovHandle(Arc::new(()));
+    let card = |present: bool| {
+        let mut rates = std::collections::BTreeMap::new();
+        rates.insert(
+            "m".to_string(),
+            crate::config::RateEntryCfg {
+                input_utok: 1.0,
+                ..Default::default()
+            },
         );
+        let cost = crate::cost::CostModel::resolve_parts(
+            present.then_some(&rates),
+            1,
+            &std::collections::BTreeMap::new(),
+        );
+        CostHandle(Arc::new(cost))
+    };
+    let probe = BillingProbe {
+        rows: AtomicUsize::new(0),
+    };
+    let plane_side_pin = probe
+        .meter_pin()
+        .expect("governed: the default pins no card");
+    for (pin, want) in [
+        (MeterPin::new(gov(), card(true)), 1),
+        (MeterPin::new(gov(), card(false)), 0),
+        (plane_side_pin, 0),
+    ] {
+        probe.rows.store(0, Ordering::SeqCst);
+        meter_series_billed(&probe, &pin, "key", "m", "provider", None, 0);
         assert_eq!(
             probe.rows.load(Ordering::SeqCst),
             want,
-            "card present = {card}: #42 writes a metering row iff a rate card is present"
+            "#42 writes a metering row iff the pinned card is present"
         );
     }
 }

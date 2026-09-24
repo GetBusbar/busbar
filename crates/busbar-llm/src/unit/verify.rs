@@ -306,7 +306,7 @@ impl PoolView for HostPoolView<'_> {
     }
 
     fn is_unpriced(&self, name: &str) -> bool {
-        self.host.cost_model_unpriced(&self.host.cost(), name)
+        self.host.cost_model_unpriced(name)
     }
 }
 

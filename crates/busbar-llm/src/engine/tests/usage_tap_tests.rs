@@ -285,8 +285,10 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     );
 
     let sink = Some(UsageSink {
-        gov: busbar_kernel::plane_host::GovHandle(gov.clone()),
-        cost: busbar_kernel::plane_host::CostHandle(cost.clone()),
+        pin: busbar_kernel::plane_host::MeterPin::new(
+            busbar_kernel::plane_host::GovHandle(gov.clone()),
+            busbar_kernel::plane_host::CostHandle(cost.clone()),
+        ),
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
@@ -382,8 +384,10 @@ fn test_nonstream_token_sum_saturates_no_panic_on_overflow() {
         )
         .expect("create key");
     let sink = Some(UsageSink {
-        gov: busbar_kernel::plane_host::GovHandle(gov.clone()),
-        cost: busbar_kernel::plane_host::CostHandle(cost.clone()),
+        pin: busbar_kernel::plane_host::MeterPin::new(
+            busbar_kernel::plane_host::GovHandle(gov.clone()),
+            busbar_kernel::plane_host::CostHandle(cost.clone()),
+        ),
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at: 1_700_000_000,
@@ -492,8 +496,10 @@ fn ledger_prices_an_aliased_lane_at_the_rate_card() {
         .expect("create key");
     let charged_at: u64 = 1_700_000_000;
     let sink = Some(UsageSink {
-        gov: busbar_kernel::plane_host::GovHandle(gov.clone()),
-        cost: busbar_kernel::plane_host::CostHandle(cost.clone()),
+        pin: busbar_kernel::plane_host::MeterPin::new(
+            busbar_kernel::plane_host::GovHandle(gov.clone()),
+            busbar_kernel::plane_host::CostHandle(cost.clone()),
+        ),
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,

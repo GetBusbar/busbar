@@ -2655,7 +2655,7 @@ pub(super) fn ledger_tool_call(
 ) {
     // No governance, or no key on a governed deployment: nothing to ledger against — the same two
     // early returns `charge_round` takes, so the admission and the ledger see the same principals.
-    let (Some(gov), Some(key)) = (host.governance(), key) else {
+    let (Some(pin), Some(key)) = (host.meter_pin(), key) else {
         return;
     };
     let usage = busbar_substrate_values::billing::Usage {
@@ -2674,15 +2674,7 @@ pub(super) fn ledger_tool_call(
         crate::PLANE_KEY,
         busbar_kernel::governance::PLANE_LANE_SEP
     );
-    host.meter_ledger(
-        &gov,
-        &host.cost(),
-        key,
-        namespaced,
-        &lane,
-        &usage,
-        host.clock_now_secs(),
-    );
+    host.meter_ledger(&pin, key, namespaced, &lane, &usage, host.clock_now_secs());
 }
 
 /// A refusal from the EGRESS gate — the outbound credential could not be bound to this caller — or

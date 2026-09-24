@@ -40,8 +40,10 @@ async fn billed_tokens_for(body: &str) -> u64 {
         .expect("create key");
     let charged_at: u64 = 1_700_000_000;
     let sink = Some(UsageSink {
-        gov: busbar_kernel::plane_host::GovHandle(gov.clone()),
-        cost: busbar_kernel::plane_host::CostHandle(cost.clone()),
+        pin: busbar_kernel::plane_host::MeterPin::new(
+            busbar_kernel::plane_host::GovHandle(gov.clone()),
+            busbar_kernel::plane_host::CostHandle(cost.clone()),
+        ),
         key: Arc::new(key.clone()),
         pool: Arc::from(""),
         charged_at,
@@ -175,8 +177,7 @@ async fn stream_refused_usage_bills_the_floor_not_zero() {
     let (host, _rt) = crate::engine::test_host_rt(&app);
     let charged_at = busbar_kernel::store::now();
     let sink = UsageSink {
-        gov: host.governance().expect("governance is configured"),
-        cost: host.cost(),
+        pin: host.meter_pin().expect("governance is configured"),
         key: Arc::new(key.clone()),
         pool: Arc::from("p"),
         charged_at,

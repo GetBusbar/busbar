@@ -337,8 +337,7 @@ async fn run_case(egress: &str, shape: Upstream) {
 
     let charged_at = busbar_kernel::store::now();
     let sink = UsageSink {
-        gov: host.governance().expect("governance is configured"),
-        cost: host.cost(),
+        pin: host.meter_pin().expect("governance is configured"),
         key: Arc::new(key.clone()),
         pool: Arc::from("p"),
         charged_at,

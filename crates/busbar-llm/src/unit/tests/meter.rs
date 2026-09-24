@@ -112,8 +112,7 @@ fn sink(
     charged_at: u64,
 ) -> crate::engine::UsageSink {
     crate::engine::UsageSink {
-        gov: host.governance().expect("governance is configured"),
-        cost: host.cost(),
+        pin: host.meter_pin().expect("governance is configured"),
         key: key.clone(),
         pool: std::sync::Arc::from("p"),
         charged_at,

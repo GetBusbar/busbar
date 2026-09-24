@@ -201,7 +201,8 @@ pub fn build_runtime(
 }
 
 /// THE PRODUCTION composition entry — take a generation's runtime and rebind its session meter onto the
-/// kernel's [`HostMeteringPort`] over the REAL host lease. Called by every mounted route the moment the
+/// one the live host hands out (on a served host, the kernel's [`HostMeteringPort`] over the REAL host
+/// lease; the plane names none of its pricing, #43). Called by every mounted route the moment the
 /// live host is in hand (the route layer is where an `Arc<dyn EngineHost>` first exists — the
 /// per-generation slot is built before any request), so a live voice session is metered against the
 /// caller's real grant rather than the pre-host [`LocalMeteringPort`].
@@ -216,9 +217,7 @@ pub fn build_runtime_hosted(
 ) -> VoiceRuntime {
     VoiceRuntime {
         engine: Arc::clone(&base.engine),
-        metering: Arc::new(HostMeteringPort::new(
-            Arc::clone(&host) as Arc<dyn busbar_kernel::plane_host::MeteringHost>
-        )),
+        metering: host.session_meter(),
         tools: Arc::clone(&base.tools),
         denied_destinations: base.denied_destinations.clone(),
         session_defaults: base.session_defaults.clone(),

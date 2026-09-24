@@ -1641,24 +1641,23 @@ async fn the_verify_step_reads_a_live_deployment_through_a_pool_view() {
     rig.server.shutdown().await;
 }
 
-/// GAP 4b, CLOSED — the plane can read whether a rate card is present.
+/// GAP 4b, CLOSED — the plane reads the unpriced VERDICT, never the card.
 ///
-/// The two questions VERIFY's third guard asks are answered through the host's cost seam over the
-/// opaque handle, so the guard that refuses an unbillable name is answered from the plane side
-/// without the plane ever reading a rate. The fixtures configure no card, and the seam says so —
-/// which is the difference between an answer and a fixture-shaped guess.
+/// VERIFY's third guard asks one question — does a present card leave this name unpriced? — and the
+/// host answers it as a bool, so the guard that refuses an unbillable name runs plane-side without
+/// the plane ever reading a rate or learning whether a card exists (#43: the plane-facing seam
+/// carries no cost handle and no card posture any more). The fixtures configure no card, so nothing
+/// is unpriced — which is the difference between an answer and a fixture-shaped guess.
 #[tokio::test]
-async fn the_plane_reads_whether_a_rate_card_is_present() {
+async fn the_plane_reads_the_unpriced_verdict_never_the_card() {
     use verify::PoolView as _;
 
     let rig = rig(Fixture::BufferedOk).await;
     let (host, rt) = crate::engine::test_host_rt(&rig.app);
-    let cost = host.cost();
     assert!(
-        !host.cost_pricing_enabled(&cost),
-        "these fixtures configure no rate card"
+        !host.cost_model_unpriced("made-up-name"),
+        "these fixtures configure no rate card, so no name is unpriced"
     );
-    assert!(!host.cost_model_unpriced(&cost, "made-up-name"));
 
     let gov = rig.gov();
     let view = verify::HostPoolView::new(&*host, &*rt, gov.key.as_deref());
@@ -1666,7 +1665,7 @@ async fn the_plane_reads_whether_a_rate_card_is_present() {
     // kernel's, answered inside `cost_model_unpriced` (no card => false), never the plane's (#43).
     assert_eq!(
         view.is_unpriced("made-up-name"),
-        host.cost_model_unpriced(&cost, "made-up-name")
+        host.cost_model_unpriced("made-up-name")
     );
     rig.server.shutdown().await;
 }

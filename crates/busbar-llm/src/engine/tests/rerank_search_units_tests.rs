@@ -46,8 +46,10 @@ fn spend_cents_after(card_yaml: Option<&str>, body: &str) -> Result<i64, String>
         .expect("create key");
     let charged_at: u64 = 1_700_000_000;
     let sink = Some(UsageSink {
-        gov: busbar_kernel::plane_host::GovHandle(gov.clone()),
-        cost: busbar_kernel::plane_host::CostHandle(cost.clone()),
+        pin: busbar_kernel::plane_host::MeterPin::new(
+            busbar_kernel::plane_host::GovHandle(gov.clone()),
+            busbar_kernel::plane_host::CostHandle(cost.clone()),
+        ),
         key: Arc::new(key.clone()),
         pool: Arc::from(""),
         charged_at,

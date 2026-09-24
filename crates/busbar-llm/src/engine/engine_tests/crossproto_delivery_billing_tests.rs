@@ -100,8 +100,10 @@ async fn drive(
     let (app, gov, cost, key) = fixture();
     let (host, rt) = crate::engine::test_host_rt(&app);
     let sink = Some(crate::engine::UsageSink {
-        gov: busbar_kernel::plane_host::GovHandle(gov.clone()),
-        cost: busbar_kernel::plane_host::CostHandle(cost.clone()),
+        pin: busbar_kernel::plane_host::MeterPin::new(
+            busbar_kernel::plane_host::GovHandle(gov.clone()),
+            busbar_kernel::plane_host::CostHandle(cost.clone()),
+        ),
         key: Arc::new(key.clone()),
         pool: Arc::from("p"),
         charged_at: 1_700_000_000,

@@ -60,15 +60,14 @@ impl TurnMeter {
     /// Land ONE turn's usage on the principal's ledger + metering series through the core seam — the
     /// voice twin of the LLM plane's `ledger_and_meter`. The budget-chain accrual (`meter_ledger`)
     /// is the money signal `usage_for(key)` derives spend from; the raw series (`meter_series`) feeds
-    /// the admin usage report. No-ops when governance is off (the host mints no `GovHandle`).
+    /// the admin usage report. No-ops when governance is off (the host mints no meter pin).
     pub(crate) fn record_turn(&self, model: &str, usage: &busbar_substrate_values::billing::Usage) {
-        if let Some(gov) = self.host.governance() {
-            let cost = self.host.cost();
+        if let Some(pin) = self.host.meter_pin() {
             let now = self.host.clock_now_secs();
             self.host
-                .meter_ledger(&gov, &cost, &self.key, self.pool, model, usage, now);
+                .meter_ledger(&pin, &self.key, self.pool, model, usage, now);
             self.host
-                .meter_series(&gov, &self.key.id, model, self.provider, None, now);
+                .meter_series(pin.gov(), &self.key.id, model, self.provider, None, now);
         }
     }
 }
