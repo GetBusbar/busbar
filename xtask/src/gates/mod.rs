@@ -2721,7 +2721,10 @@ pub static REGISTRY: &[Registration] = &[
     Registration {
         name: "instance-noun-neutrality",
         batch: 1,
-        tier: Tier::Fast,
+        // RELEASE-TIME, NOT PER-PUSH (item 185): red by design on a tracked burndown baseline, run
+        // in full by release-stage.yml's `done-oracle` job on the sha being staged, on the same
+        // footing as its Tier::Full siblings (reachability, plane-purity-strict, kind-isolation-ship).
+        tier: Tier::Full,
         build: || Box::new(instance_noun_neutrality::InstanceNounNeutralityGate),
         summary:
             "no crate names a concrete plugin instance outside that instance's own crate family",
@@ -2729,7 +2732,10 @@ pub static REGISTRY: &[Registration] = &[
     Registration {
         name: "plane-pricing-blindness",
         batch: 1,
-        tier: Tier::Fast,
+        // RELEASE-TIME, NOT PER-PUSH (item 185): red by design on a tracked burndown baseline, run
+        // in full by release-stage.yml's `done-oracle` job on the sha being staged, on the same
+        // footing as its Tier::Full siblings (reachability, plane-purity-strict, kind-isolation-ship).
+        tier: Tier::Full,
         build: || Box::new(plane_pricing_blindness::PlanePricingBlindnessGate),
         summary:
             "no plane crate resolves a card, prices, mints a unit key or arithmetics a hold (#43/#71)",
@@ -3449,11 +3455,32 @@ mod posture_tests {
     fn the_release_time_posture_is_read_from_full_gate_and_expires_with_it() {
         let cx = Ctx::workspace().expect("the workspace opens");
         let red = verdict(vec![Row::fail("kind-isolation:shape", "t", "d")]);
-        assert!(
-            excused_from_all("kind-isolation-ship", &cx, &red).is_some(),
-            "verify-1.6.0-done.sh invokes it, which is what full_gate's excuse asserts"
-        );
+        // THE BASELINE IS PLANTED, NOT BORROWED. The excuse holds only while the script names the
+        // gate AND some workflow runs the script in full (item 161). The control used to read that
+        // second half off whatever the real workflows carried, so on a tree where no workflow ran
+        // the script it failed before the plant, and the plant below proved nothing (item 89's
+        // PROOF IMPOSSIBLE). A workflow job running the script in full is planted here, so the
+        // green -> red transition is the script edit and nothing else.
+        let ci = ".github/workflows/ci.yml";
         let mut ov = Overlay::new();
+        ov.set(
+            ci,
+            format!(
+                "{}\n  planted-release-run:\n    runs-on: ubuntu-latest\n    steps:\n      \
+                 - run: bash scripts/verify-1.6.0-done.sh\n",
+                cx.read(ci).expect("ci.yml")
+            ),
+        );
+        let base = cx.with_overlay(ov.clone());
+        assert!(
+            excused_from_all("kind-isolation-ship", &base, &red).is_some(),
+            "verify-1.6.0-done.sh invokes it and a workflow runs the script, which is what \
+             full_gate's excuse asserts: {:?}",
+            crate::full_gate::REGISTRY_NOT_IN_CI
+                .iter()
+                .find(|(n, _, _)| *n == "kind-isolation-ship")
+                .map(|(_, _, e)| e.holds(&base))
+        );
         ov.set(
             "scripts/verify-1.6.0-done.sh",
             "#!/usr/bin/env bash\n# the release script no longer runs it\n",

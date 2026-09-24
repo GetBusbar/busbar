@@ -306,6 +306,18 @@ jobs:
           V: ${{ steps.p.outputs.version }}
         run: cargo xtask gate changelog --require-version="$V" --require-dated-top
 
+      # THE REGISTER'S RELEASE ARM, BESIDE THE CHANGELOG'S. `changelog-register` holds every
+      # accepted difference in testing/shadow-oracle/accepted-differences.json to its line in
+      # CHANGELOG.md, and `--require-version` adds the row that exists only for the version being
+      # shipped: the section every line is searched in must be THIS version's, or the last
+      # release's prose discharges this one's differences. The row was unreachable until item 160 (the flag was refused for every
+      # gate but `changelog`), and a release arm no release ever runs is the same dead arm again.
+      - name: Every accepted difference is named in THIS version's release notes (fail-closed)
+        if: ${{ steps.p.outputs.release == '1' }}
+        env:
+          V: ${{ steps.p.outputs.version }}
+        run: cargo xtask gate changelog-register --require-version="$V"
+
   # -- GATE ZERO: NOTHING IS RELEASED FROM A RED BRANCH -------------------------------------------
   #
   # Owner, 2026-08-08: "nothing should ever be released red", and "or ignored". Both halves are
@@ -657,6 +669,99 @@ jobs:
             ${{ env.CARGO_HOME }}/registry
             ${{ env.CARGO_HOME }}/git
             target
+
+  # -- THE DONE ORACLE, RUN IN FULL, ON THE SHA BEING STAGED ---------------------------------------
+  #
+  # scripts/verify-1.6.0-done.sh is the release-time DONE claim, and five registered gates are
+  # release-time instruments whose ONLY route is that script: plane-purity-strict,
+  # kind-isolation-ship, no-deferral-strict-done, reachability and instance-noun-neutrality
+  # (xtask/src/full_gate.rs, REGISTRY_NOT_IN_CI). Until this job the only workflow line that ran
+  # the script was ci.yml's `--selftest`, which proves the script's own verdict plumbing and runs
+  # none of its gates, so those five ran on no automated path at all (item 161). This is the full
+  # run: never `--fast` (PROVISIONAL by contract, exit 3) and never `--selftest`.
+  #
+  # WHY HERE AND NOT IN qa-gate.yml. qa-gate.yml fires on `workflow_run`, which loads the workflow
+  # from the DEFAULT branch, so a job added there would not run on a qa promotion until it had
+  # reached `main`, and `qa-gate-dispatch` holds its run graph to the promoted copy on `qa`. This
+  # workflow fires on the push to `qa` itself and rides the commit it stages.
+  #
+  # IT GATES THE qa VERDICT, AND ITS RED IS VISIBLE. No `continue-on-error`, no `|| true`, no
+  # `--report`. Nothing below `needs` it, deliberately: staging iterations still build and verify
+  # while the oracle is red, but a red job makes this run's conclusion red, and release.yml's
+  # promote-time branch-green requires `Release stage` green on the sha before any user-facing name
+  # exists. So a qa sha whose DONE oracle is red cannot be promoted to main.
+  #
+  # plane-pricing-blindness rides here as a step of its own: it is a release-time instrument on the
+  # same footing (Tier::Full, red by design until qa/plane-pricing-blindness.toml is empty) and the
+  # DONE script does not run it. Both steps run whatever the other concluded (`!cancelled()`), so
+  # one red never hides the other.
+  #
+  # Same service containers as `gate`: the script's TEST group runs `cargo test --workspace`, and
+  # under CI the store roundtrip tests hard-fail without them.
+  done-oracle:
+    name: done oracle (verify-1.6.0-done.sh, full run)
+    needs: [plan, branch-green]
+    runs-on: latchkey-xlarge
+    # The script runs the full-gate battery, the workspace suite, the conformance rigs and the
+    # parity replay against the published 1.5.5 binary. Running out is a red, never a pass.
+    timeout-minutes: 240
+    services:
+      postgres:
+        image: postgres:16@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b
+        credentials:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        env:
+          POSTGRES_USER: busbar
+          POSTGRES_PASSWORD: busbar
+          POSTGRES_DB: busbar_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U busbar"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      valkey:
+        image: valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6
+        credentials:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
+      VALKEY_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+        with:
+          components: rustfmt, clippy
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-done-oracle-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
+      - name: plane-pricing-blindness (release-time verdict, red until its baseline is empty)
+        run: cargo xtask gate plane-pricing-blindness
+      - name: The DONE oracle, full run (never --fast, never --selftest)
+        if: ${{ !cancelled() }}
+        run: bash scripts/verify-1.6.0-done.sh
 
   # -- THE DRAFT ------------------------------------------------------------------------------------
   #

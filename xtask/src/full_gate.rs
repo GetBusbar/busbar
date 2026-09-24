@@ -402,10 +402,10 @@ impl Excuse {
     ///   and the excuse held anyway — on the strength of the script's own header comment, which
     ///   is in the shipped tree and needed no plant at all.
     ///
-    /// Four gates — `denylist`, `plane-pricing-blindness`, `hot-path-perf`, `hot-path-alloc` — are
-    /// run by NEITHER `ci.yml` NOR `verify-1.6.0-done.sh`, so for them this string IS the
-    /// coverage. A name that cannot be wrong is what this mechanism was built to end, and a name
-    /// checked by a grep a comment satisfies is the same defect wearing the fix.
+    /// Three gates — `denylist`, `hot-path-perf`, `hot-path-alloc` — are run by NEITHER `ci.yml`
+    /// NOR `verify-1.6.0-done.sh`, so for them this string IS the coverage. A name that cannot be
+    /// wrong is what this mechanism was built to end, and a name checked by a grep a comment
+    /// satisfies is the same defect wearing the fix.
     pub fn holds(&self, cx: &Ctx) -> Result<(), String> {
         let (where_, needle) = match self {
             Excuse::XtaskTest(needle) => ("xtask/tests", *needle),
@@ -574,12 +574,16 @@ pub const REGISTRY_NOT_IN_CI: &[(&str, &str, Excuse)] = &[
          GREEN on all five EXTRACTED busbar-plane-* crates, whose 125 `rate_card|nanos|price|spend` \
          grep hits are prose. That separation is its red-before-green proof. Excused from ci.yml \
          because a gate that is red every push is a gate somebody puts a `|| true` in front of; \
-         MOVE IT TO ci.yml when qa/plane-pricing-blindness.toml is empty. Unlike its release-time \
-         siblings the coverage route is a per-push one: the SELFTEST — the proof the scanner can \
-         still be driven red, and still ignores prose, string literals and a clock spelled in \
-         nanos — runs in xtask/tests/plane_pricing_blindness.rs under `cargo test --workspace \
-         --locked` on every push.",
-        Excuse::XtaskTest("run(&[\"gate\", \"plane-pricing-blindness\", \"--selftest\"])"),
+         MOVE IT TO ci.yml when qa/plane-pricing-blindness.toml is empty. Its VERDICT is a \
+         release-time question (Tier::Full, item 185) and runs in full on the sha being staged: \
+         release-stage.yml's `done-oracle` job runs the gate plainly, on every push to qa, and that \
+         run gates the promotion. This entry used to rest on the SELFTEST alone \
+         (xtask/tests/plane_pricing_blindness.rs, still run under `cargo test --workspace --locked` \
+         on every push) — which proves the scanner can be driven red and ran the verdict nowhere.",
+        Excuse::ReleaseScript(
+            ".github/workflows/release-stage.yml",
+            "run: cargo xtask gate plane-pricing-blindness\n",
+        ),
     ),
     (
         "instance-noun-neutrality",
