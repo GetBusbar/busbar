@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE VOICE-TRANSPORT/MEDIA NEUTRALITY WITNESS (the `cargo test` twin of
-//! `scripts/plane-transport-neutrality.sh`).
+//! `cargo xtask gate plane-transport-neutrality`, `xtask/src/gates/plane_transport_neutrality.rs`).
 //!
 //! Owner's ruling: the neutral crates (`busbar-core` / `busbar-substrate` / `busbar-api`) must never
 //! learn a protocol's TRANSPORT vocabulary. plane-purity-lint bans the plane KEYS (mcp/a2a/llm/voice)
@@ -12,9 +12,13 @@
 //! A leak of any of them into a neutral crate is the forward-edge regression the plane ABI exists to
 //! prevent.
 //!
-//! This is the belt-and-suspenders twin of the shell gate: the shell gate is the BLOCKING CI gate;
-//! this runs in every `cargo test`, so a neutral-crate transport-noun leak reddens the workspace test
-//! run too, not only the lint tier. Both share ONE detection discipline (mirrored, not re-invented):
+//! This is the belt-and-suspenders twin of the xtask gate: the xtask gate is the BLOCKING one (it is
+//! a row of `xtask/src/full_gate.rs`, selftest and scan both); this runs in every `cargo test`, so a
+//! neutral-crate transport-noun leak reddens the workspace test run too, not only the lint tier. The
+//! xtask gate replaced `scripts/plane-transport-neutrality.sh` rule for rule and the script is gone —
+//! a demotion that leans on a gate is only honest while that gate exists, so
+//! [`the_blocking_twin_this_file_leans_on_exists_and_is_in_the_full_gate`] checks it does. Both share
+//! ONE detection discipline (mirrored, not re-invented):
 //!   * comments and doc-strings are STRIPPED (respecting string literals) — a doc-comment that
 //!     legitimately discusses `audio`/`speech` billing is not a hit; only code tokens are judged;
 //!   * a noun flags as a WORD (case-insensitive) or a CamelCase TOKEN (`SdpOffer`, `RtpStream`);
@@ -101,9 +105,9 @@ fn repo_root() -> PathBuf {
         .expect("the repository root must exist")
 }
 
-/// Strip line/block comments from one source line, respecting string literals — the same discipline as
-/// the shell gate's `strip()`: a `//` inside a string is NOT a comment, and a token inside a string IS
-/// kept. `in_block` persists across lines (block comments span lines); string state is per line.
+/// Strip line/block comments from one source line, respecting string literals — the same discipline
+/// as the xtask gate's comment stripping: a `//` inside a string is NOT a comment, and a token inside
+/// a string IS kept. `in_block` persists across lines (block comments span lines); string state is per line.
 fn strip_comments(line: &str, in_block: &mut bool) -> String {
     let b = line.as_bytes();
     let mut out = String::new();
@@ -226,7 +230,7 @@ fn scan_source(src: &str) -> Vec<(usize, &'static str, String)> {
 }
 
 /// Every non-test `.rs` under `dir`, recursively. Test scope (`*/tests/*`, `*_test(s).rs`) is excluded
-/// — the ban is on the neutral ABI the crates EXPORT, not their unit tests (mirrors the shell gate).
+/// — the ban is on the neutral ABI the crates EXPORT, not their unit tests (mirrors the xtask gate).
 fn neutral_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -410,4 +414,31 @@ fn an_exemption_covers_one_identifier_in_one_file_and_nothing_else() {
         ),
         "the same identifier in a file the entry does not name is still a leak"
     );
+}
+
+/// The gate this file calls BLOCKING, by the two facts that make it one: its source is on disk, and
+/// the full gate runs it — scan and selftest. The file used to lean on a shell script that no longer
+/// existed (item 266); a twin that is absent turns "belt-and-suspenders" into the only belt.
+const BLOCKING_TWIN_SOURCE: &str = "xtask/src/gates/plane_transport_neutrality.rs";
+const BLOCKING_TWIN_ROWS: &[&str] = &[
+    "\"cargo xtask gate plane-transport-neutrality --selftest\"",
+    "\"cargo xtask gate plane-transport-neutrality\"",
+];
+
+#[test]
+fn the_blocking_twin_this_file_leans_on_exists_and_is_in_the_full_gate() {
+    let root = repo_root();
+    assert!(
+        root.join(BLOCKING_TWIN_SOURCE).is_file(),
+        "{BLOCKING_TWIN_SOURCE} is gone; this witness calls it the blocking gate, so either restore \
+         it or stop leaning on it"
+    );
+    let full_gate = std::fs::read_to_string(root.join("xtask/src/full_gate.rs"))
+        .expect("xtask/src/full_gate.rs is readable");
+    for row in BLOCKING_TWIN_ROWS {
+        assert!(
+            full_gate.contains(row),
+            "the full gate no longer runs {row}; a gate nothing runs is not blocking anything"
+        );
+    }
 }
