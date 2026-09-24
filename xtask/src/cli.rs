@@ -15,7 +15,10 @@ use crate::selftest;
 
 const USAGE: &str = "\
 usage:
-  cargo xtask gate <name> [--selftest] [--jobs N] [--report] [--strict] [--write] [--format=tsv]
+  cargo xtask gate <name> [--selftest] [--jobs N] [--report] [--strict] [--write] [--posture] [--format=tsv]
+  cargo xtask gate changelog [--require-version=V] [--require-dated-top]
+  cargo xtask gate changelog-register [--require-version=V]
+  cargo xtask gate hot-path-perf|hot-path-alloc [--execute]
   cargo xtask gate --list
   cargo xtask gate --all [--format=tsv]
   cargo xtask gate <name> --parity -- <legacy argv...>
@@ -111,7 +114,104 @@ fn open_ctx() -> Result<Ctx, i32> {
     }
 }
 
+/// THE FLAGS `cargo xtask gate` KNOWS. Anything else that starts with `-` is an ARGUMENT ERROR.
+///
+/// The dispatcher used to test each flag with `args.iter().any(..)` and never look at what was
+/// left over, so `cargo xtask gate hot-path-perf --execute` — before `--execute` existed — and
+/// `cargo xtask gate changelog --require-verison=1.6.0` both ran the DEFAULT arm and exited on it.
+/// A caller who typed a flag believes the flag took effect; a green from the arm they did not ask
+/// for is a green for a check that never ran. So every argument is now accounted for, and an
+/// unaccounted one exits 2 (the exit-code contract at the top of this file) before any gate runs.
+const GATE_FLAGS: &[&str] = &[
+    "--selftest",
+    "--list",
+    "--all",
+    "--report",
+    "--strict",
+    "--write",
+    "--posture",
+    "--parity",
+    "--execute",
+    "--require-dated-top",
+    "--format=tsv",
+];
+/// `--flag=value` forms `cargo xtask gate` knows.
+const GATE_VALUED: &[&str] = &["--jobs=", "--require-version=", "--root-flag="];
+/// The flags `cargo xtask selftest` knows (`--jobs N` is handled as a pair).
+const SELFTEST_FLAGS: &[&str] = &[];
+const SELFTEST_VALUED: &[&str] = &["--jobs="];
+/// The flags the pre-registry `cargo xtask denylist` spelling knows.
+const DENYLIST_FLAGS: &[&str] = &["--selftest", "--format=tsv"];
+
+/// Split `args` into its POSITIONAL words, refusing every argument that is not a known flag.
+///
+/// `--jobs` takes the NEXT argument as its value (so `--jobs 8 construction` names `construction`,
+/// not a gate called `8`). A bare `--` ends the flags only when `allow_tail` is set — the parity
+/// arm's legacy argv follows it and is the legacy command's business, not this parser's; anywhere
+/// else a `--` is itself an unknown argument.
+fn positionals<'a>(
+    args: &'a [String],
+    flags: &[&str],
+    valued: &[&str],
+    allow_tail: bool,
+) -> Result<Vec<&'a str>, String> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--" {
+            if allow_tail {
+                break;
+            }
+            return Err("`--` is only meaningful after `--parity`".to_string());
+        }
+        if a == "--jobs" && valued.contains(&"--jobs=") {
+            if args.get(i + 1).is_none() {
+                return Err("`--jobs` needs a value".to_string());
+            }
+            i += 2;
+            continue;
+        }
+        if a.starts_with('-') {
+            let known = flags.contains(&a) || valued.iter().any(|p| a.starts_with(p));
+            if !known {
+                return Err(format!("unknown flag `{a}`"));
+            }
+        } else {
+            out.push(a);
+        }
+        i += 1;
+    }
+    Ok(out)
+}
+
+/// The refusal every subcommand prints for an argument it does not know.
+fn refuse_args(cmd: &str, why: &str) -> i32 {
+    eprintln!(
+        "xtask {cmd}: {why} — refused rather than ignored: an unread argument runs the default arm \
+         and reports its verdict as the one that was asked for."
+    );
+    eprintln!("{USAGE}");
+    2
+}
+
 fn gate(args: &[String]) -> i32 {
+    let parity = args.iter().any(|a| a == "--parity");
+    let words = match positionals(args, GATE_FLAGS, GATE_VALUED, parity) {
+        Ok(w) => w,
+        Err(why) => return refuse_args("gate", &why),
+    };
+    let listing = args.iter().any(|a| a == "--list" || a == "--all");
+    if words.len() > usize::from(!listing) {
+        return refuse_args(
+            "gate",
+            &format!(
+                "unexpected argument(s) {:?} — `gate` takes one gate name, and none with \
+                 --list/--all",
+                &words[usize::from(!listing)..]
+            ),
+        );
+    }
     let tsv = args.iter().any(|a| a == "--format=tsv");
     let report_only = args.iter().any(|a| a == "--report");
     let want_selftest = args.iter().any(|a| a == "--selftest");
@@ -187,14 +287,10 @@ fn gate(args: &[String]) -> i32 {
         return 1;
     }
 
-    // `--jobs N` takes a value, so the N after it is NOT the gate name. Without this,
-    // `cargo xtask gate --selftest --jobs 8 construction` would look for a gate called `8`.
-    let Some(name) = args
-        .iter()
-        .enumerate()
-        .find(|(i, a)| !a.starts_with("--") && !(*i > 0 && args[i - 1] == "--jobs"))
-        .map(|(_, a)| a)
-    else {
+    // `--jobs N` takes a value, so the N after it is NOT the gate name — `positionals` consumed
+    // it. Without that, `cargo xtask gate --selftest --jobs 8 construction` would look for a gate
+    // called `8`.
+    let Some(name) = words.first().copied() else {
         eprintln!("xtask gate: no gate named");
         eprintln!("{USAGE}");
         return 2;
@@ -211,46 +307,9 @@ fn gate(args: &[String]) -> i32 {
         return 2;
     };
 
-    // THE RELEASE-TIME ARMS, as flags on the gate and never as an environment variable.
-    //
-    // A few gates run a stricter form at release time than on every push. Those arms stay explicit
-    // here because an env-overridable strictness is a strictness that is off wherever nobody looked
-    // — the cautionary case is a group floor that was overridable downward from the environment
-    // with no floor-only-rises guard. A flag has to be written at the call site, in a diff.
-    //
-    // Unknown here is an ARGUMENT error, not a quietly looser run: a gate handed `--require-verison`
-    // must not report green having checked the ordinary arm.
-    let require_dated_top = args.iter().any(|a| a == "--require-dated-top");
-    let require_version = args
-        .iter()
-        .find_map(|a| a.strip_prefix("--require-version="))
-        .map(str::to_string);
-    let gate: Box<dyn gates::Gate> = if require_dated_top || require_version.is_some() {
-        if reg.name != "changelog" {
-            eprintln!(
-                "xtask gate {}: --require-version/--require-dated-top are the changelog gate's \
-                 release arms; `{}` has no such arm and must not report green as though it ran one.",
-                reg.name, reg.name
-            );
-            return 2;
-        }
-        let mut g = crate::gates::changelog::ChangelogGate::new();
-        if require_dated_top {
-            g = g.require_dated_top();
-        }
-        if let Some(v) = require_version {
-            g = g.require_version(v);
-        }
-        Box::new(g)
-    } else if cx.env().write && reg.name == "kind-isolation" {
-        // `kind-isolation --write` RE-PINS ITS EXACT COUNTS DOWNWARD, and refuses wholesale if any
-        // would rise. It is a separate CONSTRUCTION rather than a flag the gate reads out of the
-        // context, because `owed` is what the reconciliation is written against and this run emits
-        // one row: the re-pin's own. Built HERE rather than in the write branch below, so
-        // `--write --selftest` proves the arm it is about to run rather than a different one.
-        Box::new(crate::gates::kind_isolation::KindIsolationGate::write())
-    } else {
-        (reg.build)()
+    let gate = match build_gate(reg, args, cx.env().write) {
+        Ok(g) => g,
+        Err(code) => return code,
     };
     if want_selftest {
         if let Some(n) = jobs_arg(args) {
@@ -438,6 +497,96 @@ fn gate(args: &[String]) -> i32 {
     i32::from(verdict.red)
 }
 
+/// WHICH CONSTRUCTION OF THE NAMED GATE THIS INVOCATION RUNS.
+///
+/// THE RELEASE-TIME AND EXECUTING ARMS, as flags on the gate and never as an environment variable.
+///
+/// A few gates run a stricter form at release time than on every push. Those arms stay explicit
+/// here because an env-overridable strictness is a strictness that is off wherever nobody looked
+/// — the cautionary case is a group floor that was overridable downward from the environment
+/// with no floor-only-rises guard. A flag has to be written at the call site, in a diff.
+///
+/// A flag handed to a gate that has no such arm is an ARGUMENT error, not a quietly looser run: a
+/// gate must not report green having checked the ordinary arm.
+///
+/// `--require-version=V` is BOTH changelog gates' release arm. `changelog-register` declared
+/// `changelog-register:release-section-is-the-version` and switched it on from `require_version`,
+/// but this dispatcher used to refuse the flag for every gate except `changelog`, so no invocation
+/// in the tree could emit the row and the gate anchored every accepted difference to whatever the
+/// newest `## [x.y.z]` section happened to be — the previous release's, at promote time (item 160).
+/// `--require-dated-top` stays the `changelog` gate's alone; `changelog-register` has no such arm.
+///
+/// `--execute` is the hot-path gates' EXECUTING arm (`HotPathPerfExecGate` /
+/// `HotPathAllocExecGate`, 9bb473f04): the registry's build reads the bench source, this one builds
+/// and runs the bench and judges its real output.
+fn build_gate(
+    reg: &gates::Registration,
+    args: &[String],
+    write: bool,
+) -> Result<Box<dyn gates::Gate>, i32> {
+    let require_dated_top = args.iter().any(|a| a == "--require-dated-top");
+    let require_version = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--require-version="))
+        .map(str::to_string);
+    let execute = args.iter().any(|a| a == "--execute");
+    if execute && !matches!(reg.name, "hot-path-perf" | "hot-path-alloc") {
+        eprintln!(
+            "xtask gate {}: --execute is the hot-path gates' executing arm; `{}` has no such arm \
+             and must not report green as though it ran one.",
+            reg.name, reg.name
+        );
+        return Err(2);
+    }
+    if require_version.as_deref() == Some("") {
+        eprintln!(
+            "xtask gate {}: --require-version= needs a version",
+            reg.name
+        );
+        return Err(2);
+    }
+    let release_arm = require_dated_top || require_version.is_some();
+    let arm_owner = match reg.name {
+        "changelog" => true,
+        "changelog-register" => !require_dated_top,
+        _ => false,
+    };
+    if release_arm && !arm_owner {
+        eprintln!(
+            "xtask gate {}: --require-version is the release arm of `changelog` and \
+             `changelog-register`, --require-dated-top of `changelog` alone; `{}` has no such arm \
+             and must not report green as though it ran one.",
+            reg.name, reg.name
+        );
+        return Err(2);
+    }
+    Ok(if release_arm && reg.name == "changelog" {
+        let mut g = crate::gates::changelog::ChangelogGate::new();
+        if require_dated_top {
+            g = g.require_dated_top();
+        }
+        if let Some(v) = require_version {
+            g = g.require_version(v);
+        }
+        Box::new(g)
+    } else if let (true, Some(v)) = (release_arm, require_version) {
+        Box::new(crate::gates::changelog_register::ChangelogRegisterGate::new().require_version(v))
+    } else if execute && reg.name == "hot-path-perf" {
+        Box::new(crate::gates::hot_path_perf::HotPathPerfExecGate::new())
+    } else if execute {
+        Box::new(crate::gates::hot_path_alloc::HotPathAllocExecGate::new())
+    } else if write && reg.name == "kind-isolation" {
+        // `kind-isolation --write` RE-PINS ITS EXACT COUNTS DOWNWARD, and refuses wholesale if any
+        // would rise. It is a separate CONSTRUCTION rather than a flag the gate reads out of the
+        // context, because `owed` is what the reconciliation is written against and this run emits
+        // one row: the re-pin's own. Built HERE rather than in the write branch of `gate`, so
+        // `--write --selftest` proves the arm it is about to run rather than a different one.
+        Box::new(crate::gates::kind_isolation::KindIsolationGate::write())
+    } else {
+        (reg.build)()
+    })
+}
+
 /// The `--posture` refusal, naming the list THIS gate's standing reds live on. It used to name
 /// CONSTRUCTION_STANDING_REDS for every gate, so a `qa-names` red sent its reader to the wrong
 /// constant. A posture with no named list (a whole-gate or release-time excuse) has no row to
@@ -620,6 +769,19 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
 }
 
 fn selftest_cmd(args: &[String]) -> i32 {
+    let words = match positionals(args, SELFTEST_FLAGS, SELFTEST_VALUED, false) {
+        Ok(w) => w,
+        Err(why) => return refuse_args("selftest", &why),
+    };
+    if words.len() > 1 {
+        return refuse_args(
+            "selftest",
+            &format!(
+                "unexpected argument(s) {:?} — `selftest` takes at most one gate name",
+                &words[1..]
+            ),
+        );
+    }
     if let Some(n) = jobs_arg(args) {
         gates::set_selftest_jobs(n);
     }
@@ -628,12 +790,7 @@ fn selftest_cmd(args: &[String]) -> i32 {
         Err(code) => return code,
     };
 
-    let named = args
-        .iter()
-        .enumerate()
-        .find(|(i, a)| !a.starts_with("--") && !(*i > 0 && args[i - 1] == "--jobs"))
-        .map(|(_, a)| a);
-    if let Some(name) = named {
+    if let Some(name) = words.first().copied() {
         let Some(reg) = gates::find(name) else {
             eprintln!("xtask selftest: no registered gate `{name}`");
             eprintln!("registered gates: {}", gates::names().join(", "));
@@ -665,6 +822,11 @@ fn selftest_cmd(args: &[String]) -> i32 {
 }
 
 fn denylist_cmd(args: &[String]) -> i32 {
+    match positionals(args, DENYLIST_FLAGS, &[], false) {
+        Ok(w) if w.is_empty() => {}
+        Ok(w) => return refuse_args("denylist", &format!("unexpected argument(s) {w:?}")),
+        Err(why) => return refuse_args("denylist", &why),
+    }
     if args.iter().any(|a| a == "--selftest") {
         return i32::from(!selftest::run());
     }
@@ -683,7 +845,115 @@ fn denylist_cmd(args: &[String]) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::posture_refusal;
+    use super::{build_gate, main, posture_refusal};
+    use crate::gates;
+
+    fn run(args: &[&str]) -> i32 {
+        let owned: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+        main(&owned)
+    }
+
+    fn argv(args: &[&str]) -> Vec<String> {
+        args.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    /// AN ARGUMENT NOBODY READ IS REFUSED, NEVER IGNORED. Every one of these used to run the
+    /// default arm and exit on its verdict — `segregation` is green, so each answered 0 for a flag,
+    /// a word or a subcommand spelling that was never looked at.
+    #[test]
+    fn an_unknown_flag_or_a_stray_word_is_an_argument_error_not_the_default_arm() {
+        assert_eq!(run(&["gate", "segregation", "--frobnicate"]), 2);
+        assert_eq!(run(&["gate", "segregation", "--formt=tsv"]), 2);
+        assert_eq!(run(&["gate", "segregation", "-x"]), 2);
+        assert_eq!(run(&["gate", "segregation", "construction"]), 2);
+        assert_eq!(run(&["gate", "segregation", "--", "x"]), 2);
+        assert_eq!(run(&["gate", "--list", "--frobnicate"]), 2);
+        assert_eq!(run(&["gate", "--list", "segregation"]), 2);
+        assert_eq!(run(&["gate", "--all", "--frobnicate"]), 2);
+        assert_eq!(run(&["selftest", "segregation", "--frobnicate"]), 2);
+        assert_eq!(run(&["selftest", "segregation", "construction"]), 2);
+        assert_eq!(run(&["denylist", "--frobnicate"]), 2);
+        assert_eq!(run(&["denylist", "extra"]), 2);
+        // `--execute` is a KNOWN flag, but only the hot-path gates have the arm it selects.
+        assert_eq!(run(&["gate", "segregation", "--execute"]), 2);
+    }
+
+    /// The known spellings still parse: the value after `--jobs` is not a gate name, and the
+    /// parity arm's legacy argv after `--` is not this parser's to judge.
+    #[test]
+    fn the_known_spellings_still_parse() {
+        assert_eq!(run(&["gate", "--list"]), 0);
+        assert_eq!(run(&["gate", "segregation", "--format=tsv"]), 0);
+        assert_eq!(
+            run(&["gate", "--jobs", "2", "segregation", "--selftest"]),
+            0
+        );
+        assert_eq!(run(&["gate", "segregation", "--parity"]), 2);
+        assert_eq!(
+            run(&[
+                "gate",
+                "segregation",
+                "--parity",
+                "--",
+                "/usr/bin/true",
+                "--anything"
+            ]),
+            3
+        );
+    }
+
+    /// ITEM 160: `changelog-register --require-version=V` REACHES the gate's release arm. It used
+    /// to exit 2 ("the changelog gate's release arms") for every gate but `changelog`, so
+    /// `changelog-register:release-section-is-the-version` could be emitted by no invocation. A
+    /// version this CHANGELOG has no section for is a RED gate (1) — the arm ran and judged —
+    /// never an argument error (2).
+    #[test]
+    fn changelog_register_takes_its_release_arm() {
+        assert_eq!(
+            run(&[
+                "gate",
+                "changelog-register",
+                "--require-version=0.0.0-no-such-release"
+            ]),
+            1
+        );
+        let reg = gates::find("changelog-register").expect("registered");
+        let g = build_gate(reg, &argv(&["--require-version=1.6.0"]), false)
+            .unwrap_or_else(|c| panic!("the release arm was refused with {c}"));
+        assert!(
+            g.owed()
+                .iter()
+                .any(|r| r == crate::gates::changelog_register::ROW_VERSION),
+            "{:?}",
+            g.owed()
+        );
+        // `--require-dated-top` is `changelog`'s alone: refused, never silently dropped.
+        assert_eq!(
+            build_gate(reg, &argv(&["--require-dated-top"]), false).err(),
+            Some(2)
+        );
+        let other = gates::find("segregation").expect("registered");
+        assert_eq!(
+            build_gate(other, &argv(&["--require-version=1.6.0"]), false).err(),
+            Some(2)
+        );
+    }
+
+    /// `--execute` builds the EXECUTING hot-path gates (9bb473f04), whose owed set carries the
+    /// `:executed` rows the registry's text-only build does not.
+    #[test]
+    fn execute_builds_the_executing_hot_path_gates() {
+        for name in ["hot-path-perf", "hot-path-alloc"] {
+            let reg = gates::find(name).expect("registered");
+            let plain = (reg.build)().owed();
+            let exec = build_gate(reg, &argv(&["--execute"]), false)
+                .unwrap_or_else(|c| panic!("{name} --execute was refused with {c}"))
+                .owed();
+            let executed = format!("{name}:executed");
+            assert!(exec.contains(&executed), "{name}: {exec:?}");
+            assert!(!plain.contains(&executed), "{name}: {plain:?}");
+        }
+    }
 
     /// The refusal names the list the gate's own posture reads, never another gate's.
     #[test]
