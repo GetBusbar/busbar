@@ -479,12 +479,20 @@ _h2_st_case_class_price() {
   _h2_st_want "class-price: a non-numeric quantity read is red, not a pass" red "$(_h2_st_rig h2-class-price.sh H2_ST_QTY=None)"
 }
 
+_h2_st_case_unpriced_refuses() {
+  _h2_st_want "unpriced-refuses: control arm 2 refused 400 passes" 0 "$(_h2_st_rig h2-unpriced-refuses.sh H2_ST_CALL=400 H2_ST_USAGE='1|0')"
+  _h2_st_want "unpriced-refuses: arm 2 served 200 is red" red "$(_h2_st_rig h2-unpriced-refuses.sh H2_ST_CALL=200 H2_ST_USAGE='1|1')"
+  _h2_st_want "unpriced-refuses: arm 2 no connection (000) is red, not a refusal" red "$(_h2_st_rig h2-unpriced-refuses.sh H2_ST_CALL=000 H2_ST_USAGE='1|0')"
+  _h2_st_want "unpriced-refuses: arm 2 node failure (502) is red, not a refusal" red "$(_h2_st_rig h2-unpriced-refuses.sh H2_ST_CALL=502 H2_ST_USAGE='1|0')"
+  _h2_st_want "unpriced-refuses: arm 2 other success (202) is red, not a refusal" red "$(_h2_st_rig h2-unpriced-refuses.sh H2_ST_CALL=202 H2_ST_USAGE='1|0')"
+}
+
 h2_selftest() {
   local only="${1:-}" c
   _H2_ST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/h2-selftest.XXXXXX")" || return 1
   _H2_ST_RAN=0
   _H2_ST_FAILED=0
-  for c in verdict_exits card_epoch class_price; do
+  for c in verdict_exits card_epoch class_price unpriced_refuses; do
     [ -z "$only" ] || [ "$only" = "$c" ] || continue
     "_h2_st_case_${c}"
   done
