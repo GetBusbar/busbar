@@ -348,6 +348,43 @@ fn the_sweep_drops_only_windows_older_than_the_current_one() {
         .admitted());
 }
 
+/// CROSS-CHECK (item 558): this classifier and the kernel's own path classifier
+/// (`busbar_kernel::ratelimit::classify_mutation`) are two separate tables answering the same
+/// question — which ADMIN_PREFIX-relative paths are CONFIG-class — over the same path strings.
+/// Nothing in production compares them (the admin-verb path never calls the kernel one, and the
+/// kernel path is driven straight from the HTTP layer, never through a `KernelVerb`), so a table
+/// can drift from the other with no test noticing. This test is that comparison: for every legacy
+/// mutating verb (every `Full`-scope row, plus `PostPluginsInspect`, whose own dedicated budget is
+/// the same in both), it walks the SAME relative path through both classifiers and asserts they
+/// agree. It is deliberately narrower than "every verb" — a `ReadOnly` verb (other than
+/// `PostPluginsInspect`) short-circuits to `Forbidden` here before either table is ever consulted,
+/// a concept the kernel's pure path classifier has no equivalent for, and comparing it would be
+/// comparing two different questions, not the same one twice.
+#[test]
+fn for_verb_agrees_with_the_kernel_path_classifier_for_every_legacy_mutating_verb() {
+    for row in crate::verb::LEGACY_VERBS {
+        if row.scope == crate::verb::VerbScope::ReadOnly && row.verb != KernelVerb::PostPluginsInspect
+        {
+            continue;
+        }
+        let rel = row
+            .path
+            .strip_prefix("/api/v1/admin")
+            .unwrap_or(row.path);
+        let admin_class = MutationClass::for_verb(row.verb, CONFIG_CLASS_RULES);
+        let kernel_class = busbar_kernel::ratelimit::classify_mutation(rel);
+        assert_eq!(
+            admin_class.label(),
+            kernel_class.label(),
+            "{:?} ({rel}): admin-verb classifier says {} but the kernel path classifier says {} \
+             — the two CONFIG_CLASS_RULES tables have drifted",
+            row.verb,
+            admin_class.label(),
+            kernel_class.label(),
+        );
+    }
+}
+
 /// The window arithmetic and the audit labels, in their own file.
 #[path = "rate_window_tests.rs"]
 mod rate_window_tests;
