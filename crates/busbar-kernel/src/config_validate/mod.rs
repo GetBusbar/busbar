@@ -186,6 +186,17 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                 model_name
             ));
         }
+        // Item 147 sweep: the same runtime-horizon ceiling as every settings-surface duration.
+        if let Some(ms) = model_cfg
+            .attempt_timeout_ms
+            .filter(|ms| *ms > MAX_DURATION_MS)
+        {
+            errors.push(format!(
+                "model '{model_name}' has attempt_timeout_ms: {ms}, above the maximum of \
+                 {MAX_DURATION_MS} ms (30 years, the async runtime's own 'never' horizon); a larger \
+                 duration overflows the clock arithmetic it feeds — omit it to disable the cap"
+            ));
+        }
         // `upstream_model`, when set, is sent to the provider as the wire model id — an empty or
         // whitespace-only override would put a blank model on the wire (a guaranteed upstream 400/404)
         // with no boot diagnostic. Reject it loudly; omit the field to fall back to the config key.
@@ -354,6 +365,14 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                 errors.push(format!(
                     "pool '{}' member '{}' has attempt_timeout_ms: 0; a zero cap fails every attempt instantly — use a positive millisecond value, or omit it to inherit the model's setting",
                     pool_name, member.model
+                ));
+            }
+            if let Some(ms) = member.attempt_timeout_ms.filter(|ms| *ms > MAX_DURATION_MS) {
+                errors.push(format!(
+                    "pool '{pool_name}' member '{}' has attempt_timeout_ms: {ms}, above the maximum \
+                     of {MAX_DURATION_MS} ms (30 years, the async runtime's own 'never' horizon); a \
+                     larger duration overflows the clock arithmetic it feeds",
+                    member.model
                 ));
             }
             // Resolve the member model. `model_protocols` only holds models whose provider
@@ -2091,6 +2110,20 @@ fn validate_providers_with(
                     "provider '{}' health.timeout_secs must be >= 1 (got 0)",
                     provider_name
                 ));
+            }
+            // Item 147 sweep: the per-lane override reaches the same probe deadline
+            // (`Instant::now() + timeout`) and scheduler arithmetic as the global default.
+            for (field, v) in [
+                ("interval_secs", health.interval_secs),
+                ("timeout_secs", health.timeout_secs),
+            ] {
+                if let Some(v) = v.filter(|v| *v > MAX_DURATION_SECS) {
+                    errors.push(format!(
+                        "provider '{provider_name}' health.{field} ({v}) exceeds the maximum of \
+                         {MAX_DURATION_SECS} s (30 years, the async runtime's own 'never' horizon); \
+                         a larger duration overflows the clock arithmetic it feeds"
+                    ));
+                }
             }
         }
 

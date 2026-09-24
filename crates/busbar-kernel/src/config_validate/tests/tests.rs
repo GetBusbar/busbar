@@ -5806,3 +5806,56 @@ fn test_validate_refuses_every_duration_past_the_runtime_horizon() {
         .checked_add(std::time::Duration::from_millis(MAX_DURATION_MS))
         .is_some());
 }
+
+/// ITEM 147 (sweep 2) — the per-lane duration overrides reach the same clock arithmetic as the
+/// settings-surface defaults (`health.timeout_secs` → the probe deadline `Instant::now() + t`;
+/// `attempt_timeout_ms` → the attempt timer), through the config file and the named maps, both
+/// of which pass `validate`. Each is refused above the 30-year horizon, by name; the boundary is
+/// accepted.
+#[test]
+fn test_validate_refuses_per_lane_durations_past_the_runtime_horizon() {
+    let mut providers = HashMap::new();
+    let mut provider = make_provider("anthropic", "https://api.example.com", "API_KEY");
+    provider.health = Some(crate::config::providers::HealthCfg {
+        mode: crate::config::providers::HealthMode::Active,
+        interval_secs: Some(MAX_DURATION_SECS + 1),
+        timeout_secs: Some(1u64 << 63),
+    });
+    providers.insert("myprovider".to_string(), provider);
+    let mut models = HashMap::new();
+    let mut model = make_model("myprovider", 1);
+    model.attempt_timeout_ms = Some(u64::MAX);
+    models.insert("m".to_string(), model);
+    let mut member = make_member("m");
+    member.attempt_timeout_ms = Some(MAX_DURATION_MS + 1);
+    let mut pools = HashMap::new();
+    pools.insert("p".to_string(), make_pool(vec![member]));
+    let mut cfg = make_root_cfg(providers, models, pools);
+    let errs = validate(&cfg).expect_err("over-horizon per-lane durations must fail validation");
+    for needle in [
+        "health.interval_secs (946080001) exceeds",
+        "health.timeout_secs (9223372036854775808) exceeds",
+        "model 'm' has attempt_timeout_ms: 18446744073709551615, above the maximum",
+        "member 'm' has attempt_timeout_ms: 946080000001, above the maximum",
+    ] {
+        assert!(
+            errs.iter().any(|e| e.contains(needle)),
+            "expected a named refusal containing {needle:?}; got: {errs:?}"
+        );
+    }
+
+    // The boundary is accepted.
+    let p = cfg.providers.get_mut("myprovider").expect("provider");
+    p.health = Some(crate::config::providers::HealthCfg {
+        mode: crate::config::providers::HealthMode::Active,
+        interval_secs: Some(MAX_DURATION_SECS),
+        timeout_secs: Some(MAX_DURATION_SECS),
+    });
+    cfg.models.get_mut("m").expect("model").attempt_timeout_ms = Some(MAX_DURATION_MS);
+    cfg.pools.get_mut("p").expect("pool").members[0].attempt_timeout_ms = Some(MAX_DURATION_MS);
+    assert!(
+        validate(&cfg).is_ok(),
+        "the boundary values must not error: {:?}",
+        validate(&cfg)
+    );
+}
