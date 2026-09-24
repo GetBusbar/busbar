@@ -133,7 +133,7 @@ section_nouns() {
     dir="crates/busbar-${k}/src"
     # The noun is read from the file that DECLARES the plane's `pub const PLANE_DECL`, never a test
     # fixture that restates a section_section for a different plane.
-    declfile="$(grep -rlE 'pub const PLANE_DECL' "$dir" 2>/dev/null | grep -vE '/tests/|_tests?\.rs$' | head -1)"
+    declfile="$(grep -rlE 'pub const PLANE_DECL' "$dir" 2>/dev/null | grep -vE '/tests/|(^|[/_])tests?\.rs$' | head -1)"
     [ -n "$declfile" ] || continue
     noun="$(grep -hoE 'config_section:[[:space:]]*"[a-z_]+"' "$declfile" 2>/dev/null \
             | head -1 | sed -E 's/.*"([a-z_]+)".*/\1/')"
@@ -156,13 +156,15 @@ section_nouns() {
   printf '%s' "$out"
 }
 
+# A test file is `tests/…`, `test(s).rs` or `*_test(s).rs` -- the separator before `test` is `/` OR
+# `_`; it was `_` only, and this repo's module-style test files are plain `tests.rs`.
 # Non-test .rs under every CORE_ROOTS entry, EXCLUDING the frozen legacy migrator (past on-disk
 # shapes, not live grammar; today at crates/busbar-kernel/src/config/migrate*.rs).
 core_files() {
   local r
   for r in $CORE_ROOTS; do
     find "$r" -name '*.rs' 2>/dev/null
-  done | grep -vE '/tests/|_tests?\.rs$|/test_support/|/config/migrate' | sort
+  done | grep -vE '/tests/|(^|[/_])tests?\.rs$|/test_support/|/config/migrate' | sort
 }
 
 # ── THE ROOT GUARD and THE ZERO-FILE GUARD ────────────────────────────────────────────────────────
@@ -349,6 +351,18 @@ FIX
     fail=1; note "FAILED: an EMPTY noun set was accepted (zero nouns searched reads as CLEAN)"
   else
     note "RED noun-floor: an empty noun set is refused, not reported as zero debt"
+  fi
+
+  # ── TEST FILES: `core_files` (the list the run path meters) must drop a module-style `tests.rs` /
+  # `test.rs` exactly as it drops `foo_tests.rs`, and must keep a production `latest.rs`. ──
+  mkdir -p "$tmp/tf"
+  local tf got
+  for tf in prod.rs latest.rs tests.rs test.rs foo_tests.rs; do : >"$tmp/tf/$tf"; done
+  got="$(CORE_ROOTS="$tmp/tf" core_files | sed 's|.*/||' | tr '\n' ' ')"
+  if [ "$got" = "latest.rs prod.rs " ]; then
+    note "TEST FILES: tests.rs / test.rs / foo_tests.rs are not metered; latest.rs and prod.rs are"
+  else
+    fail=1; note "TEST FILES FAILED: core_files returned: $got"
   fi
 
   if [ "$fail" -ne 0 ]; then red "plane-config-noun-gate SELF-TEST FAILED"; return 1; fi

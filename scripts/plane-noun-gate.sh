@@ -116,12 +116,15 @@ HITS="$TMP/hits"       # NEEDLE<TAB>file:line
 CODE="$TMP/code"       # file:line:content  — comment-only lines dropped
 : > "$HITS"
 
-# Non-test .rs under the neutral roots. No `2>/dev/null` — require_roots has already proven every
+# Non-test .rs under the neutral roots. A test file is `tests/…`, `test(s).rs` or `*_test(s).rs`:
+# the separator before `test` is `/` OR `_` -- it used to be `_` only, and this repo's module-style
+# test files are plain `tests.rs`, so every one of them was metered as neutral-crate debt.
+# No `2>/dev/null` — require_roots has already proven every
 # root exists, so any remaining find diagnostic is real and must be seen.
 neutral_files() {
   # shellcheck disable=SC2086
   find $NEUTRAL_ROOTS -name '*.rs' \
-    | grep -vE '/tests/|_tests?\.rs$|/test_support/' | sort
+    | grep -vE '/tests/|(^|[/_])tests?\.rs$|/test_support/' | sort
 }
 
 # Build the comment-stripped code stream ONCE: every non-comment line as "file:line:content", so a
@@ -282,6 +285,22 @@ PATHCTX
     note "PATH CONTROL: a pricing word in the CODE still promotes the bare noun (the rule still works)"
   else
     fail=1; note "PATH CONTROL FAILED: a real pricing-context line stopped counting"
+  fi
+
+  # ── TEST FILES: a module-style `tests.rs` (and `test.rs`) is test code exactly like `foo_tests.rs`;
+  # a production file whose name merely ends in `test.rs` (`latest.rs`) is still metered. ──
+  mkdir -p "$tmp/tf"
+  local tf
+  for tf in tests.rs test.rs foo_tests.rs latest.rs; do
+    printf 'pub struct B { pub max_tokens: u32 }\n' >"$tmp/tf/$tf"
+  done
+  hits="$tmp/tf.hits"
+  PLANE_NOUN_NEUTRAL_ROOTS="$tmp/tf" PLANE_NOUN_HITS_OUT="$hits" \
+    bash "$SELF" --report >"$tmp/tf.log" 2>&1
+  if [ "$(cut -d: -f1 "$hits" 2>/dev/null | sed 's|.*/||' | sort -u | tr '\n' ' ')" = "latest.rs " ]; then
+    note "TEST FILES: tests.rs / test.rs / foo_tests.rs are not metered; latest.rs is"
+  else
+    fail=1; note "TEST FILES FAILED: metered files were: $(cut -d: -f1 "$hits" 2>/dev/null | sort -u | tr '\n' ' ')"
   fi
 
   # ── ABI SURFACE: the DEFAULT root set (the one CI meters) carries every ABI crate exactly once. ──
