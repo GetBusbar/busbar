@@ -465,13 +465,43 @@ pub type GovCredentialRotation = Box<dyn FnOnce() + Send>;
 /// transaction actually landed (persist AND swap both `Ok`) calls [`InstalledLimits::keep`]. Dropped
 /// unkept — a persist failure, an early return, a caller that simply lets it fall out of scope — the
 /// previous limits are restored.
+///
+/// **THE RATE APPLY RIDES THE SAME COMMIT.** The build resolves this configuration's rates, but the
+/// rate-apply seam ([`crate::rate_apply::rates_applied`]) is raised HERE, at `keep`, and not
+/// during the build: its holder appends the rates to the dated rate-card history and journals them
+/// (#79), and neither is a thing a rejected apply may leave behind. Raised during the build, an
+/// apply whose persist then failed kept serving the old `App` while the history and the journal
+/// said its rates were in force — a price the operator was told was never applied, dated as if it
+/// had been. Dropped unkept, the resolved rates are dropped with it and nothing was raised.
 #[must_use = "an unkept InstalledLimits rolls the process-wide limits back when dropped"]
-pub struct InstalledLimits(limits::InstallGuard);
+pub struct InstalledLimits {
+    guard: limits::InstallGuard,
+    rates: ResolvedRates,
+}
+
+/// The rates one build resolved, held (owned) until the build's commit raises them.
+struct ResolvedRates {
+    lanes: Vec<(String, crate::billing::RawTierRates)>,
+    units: Vec<(String, String, u64)>,
+    flat_minor: i64,
+    present: bool,
+    plane_fees: config::PlaneFeesMap,
+}
 
 impl InstalledLimits {
-    /// The new generation is live (and durable, where the caller persists): KEEP these limits.
+    /// The new generation is live (and durable, where the caller persists): KEEP these limits, and
+    /// raise the rate-apply seam with the rates this build resolved — the one moment the
+    /// configuration they came from is the one in force.
     pub fn keep(self) {
-        self.0.commit();
+        let InstalledLimits { guard, rates } = self;
+        guard.commit();
+        crate::rate_apply::rates_applied(&crate::rate_apply::RawRates {
+            lanes: &rates.lanes,
+            units: &rates.units,
+            flat_minor: rates.flat_minor,
+            present: rates.present,
+            plane_fees: &rates.plane_fees,
+        });
     }
 }
 
@@ -626,9 +656,11 @@ pub fn build_app_from_config(
     // engine's own derived spend on the next read; a holder outside the engine that read the same
     // two configured figures ONCE, at boot, would keep pricing on rates this apply has replaced —
     // one request, two numbers, and only one of them the operator's configuration. So the one place
-    // rates are resolved raises the one seam that says so, and it says it on the boot resolution and
-    // on every apply/reload alike, because this function is both. Nothing is installed in a build
-    // with no such holder and the call is a no-op there.
+    // rates are resolved captures them for the one seam that says so, on the boot resolution and on
+    // every apply/reload alike, because this function is both. The seam is RAISED at the commit
+    // (`InstalledLimits::keep`), never here: a build that fails below, or an apply whose persist
+    // fails after it, must leave the holder's dated history and its journal untouched. Nothing is
+    // installed in a build with no such holder and the raise is a no-op there.
     let (mut lanes, mut units) = (Vec::new(), Vec::new());
     for (lane, e) in cfg.rate_card.iter().flatten() {
         lanes.push((lane.clone(), e.raw_tier_rates()));
@@ -636,13 +668,13 @@ pub fn build_app_from_config(
             units.push((lane.clone(), class.clone(), rate.nanos_per_unit()));
         }
     }
-    busbar_kernel::rate_apply::rates_applied(&busbar_kernel::rate_apply::RawRates {
-        lanes: &lanes,
-        units: &units,
+    let resolved_rates = ResolvedRates {
+        lanes,
+        units,
         flat_minor: cfg.per_request_fee,
         present: cfg.rate_card.is_some(),
-        plane_fees: &cfg.plane_fees,
-    });
+        plane_fees: cfg.plane_fees.clone(),
+    };
 
     let mut sorted_models: Vec<_> = cfg.models.into_iter().collect();
     sorted_models.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1952,5 +1984,12 @@ pub fn build_app_from_config(
     // whole apply. The guard travels OUT, uncommitted, so the limits survive only if the caller's
     // own persist-and-swap lands (see `InstalledLimits`). Every earlier `return Err` / `?` drops it
     // here instead and rolls them back, exactly as before.
-    Ok((app, rotate_gov_credentials, InstalledLimits(limits_guard)))
+    Ok((
+        app,
+        rotate_gov_credentials,
+        InstalledLimits {
+            guard: limits_guard,
+            rates: resolved_rates,
+        },
+    ))
 }
