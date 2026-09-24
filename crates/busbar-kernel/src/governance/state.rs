@@ -2,7 +2,7 @@ use super::*;
 use busbar_api::{UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
 use busbar_kernel_ledger::cost::{plane_fee_lane, split_plane_lane, Money, PER_REQUEST};
 use std::collections::BTreeMap;
-// The wall clock, by name: the admission path reads it and never a store handle (A7).
+// The wall clock, by name: the admission path reads it and never reaches a store handle for it.
 use crate::store::now_ms as wall_ms;
 
 use crate::diagnostics::{
@@ -1803,7 +1803,7 @@ impl GovState {
     ///   blocks the NEXT request once the ledgered total has crossed it; in-flight requests'
     ///   tokens are invisible to admissions racing them.
     /// - `budget`: derived at check time from the cell's token ledger, each era at the card in
-    ///   force when it was earned (Q14), PLUS the flat per-request fee x its request count per
+    ///   force when it was earned, PLUS the flat per-request fee x its request count per
     ///   admission era; the prospective post-charge spend
     ///   (one more fee) must stay within the cap, and a bucket already at/over cap blocks. The
     ///   fee component is hard; token overshoot past a cap is bounded by the tokens of every
@@ -2058,7 +2058,8 @@ impl GovState {
             }
         }
 
-        // The arrival's card era (Q14): each bucket's fee base records the request under it.
+        // The arrival's card era: each bucket's fee base records the request under the card in
+        // force at admission, so a card edit reprices only what follows it.
         let era = crate::rate_apply::effective_from_at(wall_ms());
         // Another plane's request is one fee unit on ITS fee lane (#47), not the flat fee base.
         let one = || BTreeMap::from([(PER_REQUEST.to_string(), 1)]);

@@ -173,7 +173,8 @@ struct BudgetCell {
     /// Per-(model, era, tier) token counters + flush baselines. Small Vec (the models this bucket
     /// actually used), scanned linearly.
     models: Vec<ModelCell>,
-    /// The fee base split by the era each billable request was admitted under (Q14).
+    /// The fee base split by the card era each billable request was admitted under, so each fee
+    /// prices at the card in force when that request was admitted.
     fee_eras: busbar_kernel_ledger::usage::FeeEras,
     dirty: bool,
     /// Wall-clock of the last accrual or admission charge. The eviction sweep ages cells by
@@ -222,9 +223,10 @@ impl BudgetCell {
         }
     }
 
-    /// THE CELL, PRICED (Q14): every (model, era) segment and — with `include_fee` — the fee base
-    /// per era, each at the card its era resolves to in the installed dated history (none: the live
-    /// card), through the one function. Unpriced or overflowing REFUSES (#42, item 28).
+    /// THE CELL, PRICED, each era at the card in force when it was earned: every (model, era)
+    /// segment and — with `include_fee` — the fee base per era, each at the card its era resolves to
+    /// in the installed dated history (none: the live card), through the one function. A present
+    /// card silent about a held class, or an overflow, REFUSES — never a silent 0.
     fn spend(
         &self,
         cost: &crate::cost::CostModel,
@@ -1351,7 +1353,7 @@ pub fn metering_bucket(now: u64) -> u64 {
 }
 
 /// A derived (read-time) usage view for admin/metrics consumers: `spend_cents` is COMPUTED from
-/// the token ledger, each era at the card in force when it was earned (Q14), at the moment of the
+/// the token ledger, each era at the card in force when it was earned, at the moment of the
 /// read - never stored.
 ///
 /// A pure three-field figure with no engine dependency at all, so it lives HERE (the neutral
