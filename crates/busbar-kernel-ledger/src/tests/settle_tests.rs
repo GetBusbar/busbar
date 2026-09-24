@@ -320,7 +320,10 @@ fn a_settled_column_at_the_ceiling_pins_rather_than_wrapping() {
         i128::MAX,
         "the settled book must pin at the ceiling, never wrap past it into a credit"
     );
-    assert!(figures.settled > 0, "a fully-drawn book that reads negative is a book that reads as headroom");
+    assert!(
+        figures.settled > 0,
+        "a fully-drawn book that reads negative is a book that reads as headroom"
+    );
     assert!(
         figures.headroom() < 0,
         "and the gate that reads it must still see no room"
@@ -345,14 +348,7 @@ fn the_open_hold_column_pins_at_both_ends() {
 
     // Now settle against a column already at the floor: the subtraction pins rather than wrapping
     // up into a positive reservation that was never opened.
-    ledger.settle(
-        &k,
-        2,
-        hold("a", u64::MAX),
-        0,
-        &usage("tokens", 0),
-        &token,
-    );
+    ledger.settle(&k, 2, hold("a", u64::MAX), 0, &usage("tokens", 0), &token);
     assert_eq!(ledger.book().get(&k, 2).open_holds, -i128::from(u64::MAX));
 }
 
@@ -365,7 +361,16 @@ fn the_open_hold_column_pins_at_both_ends() {
 #[test]
 fn saturating_the_books_moves_no_ordinary_settlement() {
     let token = ledger_token();
-    let amounts: [u64; 8] = [0, 1, 7, 999, 1_000_000, 1_000_000_000, 4_000_000_000, 1 << 40];
+    let amounts: [u64; 8] = [
+        0,
+        1,
+        7,
+        999,
+        1_000_000,
+        1_000_000_000,
+        4_000_000_000,
+        1 << 40,
+    ];
     let mut checked = 0u32;
     for &reserved in &amounts {
         for &used in &amounts {
@@ -385,11 +390,16 @@ fn saturating_the_books_moves_no_ordinary_settlement() {
             let figures = ledger.book().get(&k, 1);
             let want_settled = i128::from(posted.settled());
             let want_released = (i128::from(posted.reserved()) - want_settled).max(0);
-            assert_eq!(figures.settled, want_settled, "settled moved at {reserved}/{used}");
-            assert_eq!(figures.open_holds, 0, "open_holds moved at {reserved}/{used}");
             assert_eq!(
-                figures.open_slice_remainders,
-                want_released,
+                figures.settled, want_settled,
+                "settled moved at {reserved}/{used}"
+            );
+            assert_eq!(
+                figures.open_holds, 0,
+                "open_holds moved at {reserved}/{used}"
+            );
+            assert_eq!(
+                figures.open_slice_remainders, want_released,
                 "the slice remainder moved at {reserved}/{used}"
             );
             assert_eq!(
