@@ -1127,9 +1127,22 @@ fn amend_rate_history_effect(
     // The corrected card. The fee defaults to zero. A correction must move at least one figure — a
     // rate or the fee — because an amendment that changes no price is a history append and nothing
     // else.
+    //
+    // A NEGATIVE FEE IS REFUSED HERE, at the signing door, and never reaches the card (item 29). The
+    // card's constructor clamps a fee at zero, so a `-5` used to be SEALED into the append-only
+    // history as a card charging `0` under a signature that covers `per_request_fee=-5`: an entry
+    // whose figure is not the figure its signer signed, and a window silently repriced to free. A
+    // fee below zero is not a price; the correction naming one is malformed, and a refusal appends
+    // nothing.
     let per_request_fee = match obj.get("per_request_fee") {
         None | Some(serde_json::Value::Null) => None,
-        Some(v) => Some(v.as_i64().ok_or(GovernanceError::Validation)?),
+        Some(v) => {
+            let fee = v.as_i64().ok_or(GovernanceError::Validation)?;
+            if fee < 0 {
+                return Err(GovernanceError::Validation);
+            }
+            Some(fee)
+        }
     };
     let mut entries: Vec<(busbar_kernel_ledger::cost::LaneClass, f64)> = Vec::new();
     if let Some(rates) = obj.get("rates") {

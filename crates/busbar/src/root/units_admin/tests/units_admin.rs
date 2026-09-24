@@ -3501,6 +3501,61 @@ fn the_canonical_amend_payload_names_no_currency() {
     }
 }
 
+/// **A NEGATIVE FEE IS REFUSED AT THE SIGNING DOOR, NEVER SEALED AND CLAMPED** (item 29 — a RATECARD
+/// fault).
+///
+/// THE DEFECT THIS CLOSES. `per_request_fee` was read with `as_i64` and handed straight to the card
+/// constructor, whose `max(0)` clamp turned `-5` into `0`. So an operator-signed correction whose
+/// signature covers `per_request_fee=-5` was appended to the append-only history as a card charging
+/// `0` — a sealed entry whose figure is not the figure its signer signed, and a window silently
+/// repriced to free. A fee below zero is not a price; it is refused before the history is touched.
+///
+/// The body is validly SIGNED, so the refusal is the fee rule and not the signature seam.
+#[test]
+fn amend_rate_history_refuses_a_negative_fee_and_appends_nothing() {
+    for fee in [-1_i64, -5, i64::MIN] {
+        let history = a_seeded_history();
+        let body = signed_correction(serde_json::json!({
+            "effective_from": 4_000,
+            "effective_until": 9_000,
+            "per_request_fee": fee,
+            "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
+            "reason": "vendor corrected the March price sheet",
+            "operator_fingerprint": a_test_operator_fingerprint(),
+        }));
+        let err = amend_rate_history_effect(&history, &body, 6, a_sealed_operator())
+            .expect_err("a correction carrying a negative fee must be refused");
+        assert!(
+            matches!(err, busbar_core_admin::GovernanceError::Validation),
+            "fee {fee} must refuse Validation, got {err:?}"
+        );
+        assert_eq!(history.len(), 1, "a refused fee {fee} appends nothing");
+    }
+
+    // THE CONTROL: the same signed shape with a fee of 5 applies, and the card it seals charges
+    // exactly 5 — the figure signed is the figure sealed. Zero is a legitimate explicit fee too.
+    for fee in [5_i64, 0] {
+        let history = a_seeded_history();
+        let body = signed_correction(serde_json::json!({
+            "effective_from": 4_000,
+            "effective_until": 9_000,
+            "per_request_fee": fee,
+            "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
+            "reason": "vendor corrected the March price sheet",
+            "operator_fingerprint": a_test_operator_fingerprint(),
+        }));
+        amend_rate_history_effect(&history, &body, 6, a_sealed_operator())
+            .expect("a non-negative fee applies");
+        assert_eq!(history.len(), 2);
+        let pinned = history.pin().expect("pinned");
+        let view = pinned.view();
+        let (_, card) = view
+            .card_at(5_000)
+            .expect("the correction prices its window");
+        assert_eq!(card.fee(), fee, "the sealed fee is the signed fee");
+    }
+}
+
 /// VALIDATION REFUSALS. Every malformed or empty correction is refused at its shape, before it can
 /// touch the history — and each leaves the history exactly as it was.
 #[test]
