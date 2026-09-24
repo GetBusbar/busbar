@@ -30,6 +30,7 @@ fn make_root_cfg(
         agent_defs: busbar_kernel::plane::config::AgentsSection::default().0,
         tool_pools: Default::default(),
         agent_pools: Default::default(),
+        plane_sections: Default::default(),
         listen: config::DEFAULT_LISTEN_ADDR.into(),
         endpoint_resources: Default::default(),
         oauth_as: None,

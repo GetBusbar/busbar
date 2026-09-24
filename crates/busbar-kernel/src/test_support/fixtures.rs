@@ -45,6 +45,7 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
         agent_defs: crate::plane::config::AgentsSection::default().0,
         tool_pools: Default::default(),
         agent_pools: Default::default(),
+        plane_sections: Default::default(),
         upstream_credentials: crate::auth::UpstreamCreds::Own,
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
         public_url: None,

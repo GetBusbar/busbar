@@ -1490,8 +1490,10 @@ pub fn build_app_from_config(
             // receives below.
             prior: prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
         };
+        // LAW 7: an unconfigured plane builds no slot, so it claims, admits and mounts nothing.
         crate::plane::registry::plane_decls()
             .iter()
+            .filter(|decl| decl.fallback || cfg.plane_sections.contains(decl.config_section))
             .filter_map(|decl| (decl.build)(&ctx).map(|obj| (decl.key, obj)))
             .collect()
     };
@@ -1682,6 +1684,7 @@ pub fn build_app_from_config(
     crate::proxy::set_hook_content_max_bytes(cfg.limits.hook_content_max_bytes);
 
     let app = App {
+        plane_sections: Some(cfg.plane_sections.clone()),
         // Telemetry-bank slot table for this generation (built above as a local, BEFORE the
         // config-derived collections moved into the fallback plane's runtime bundle so its
         // `&lanes`/`&pools`/`&by_model` borrows ran first). Identical label sets across applies re-intern to the same

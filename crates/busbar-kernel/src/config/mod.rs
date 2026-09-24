@@ -530,6 +530,10 @@ pub struct RootCfg {
     /// The `agent_pools:` failover pools for this section's owning plane, carried through `resolve`
     /// VERBATIM onto `state::App::agent_pools`. Empty ⇒ no failover on that plane.
     pub agent_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+    /// LAW 7 — the plane config sections this config writes content into (the deletion gate's
+    /// `is_present()`). A linked plane whose section is absent hydrates, starts, builds and serves
+    /// nothing; see `state::App::plane_configured`.
+    pub plane_sections: std::collections::BTreeSet<&'static str>,
 }
 
 impl RootCfg {
@@ -2607,10 +2611,17 @@ pub fn resolve(
     // so `plane_section` answers `None` for them (never present) and they are skipped; only a plane
     // section that is present with no decl is refused, byte-identical to the former `[Tools, Agents]`
     // loop.
+    // LAW 7 (BUSBAR-1.6.0.md: "Core loads a plugin **iff** its configuration section is present"):
+    // the plane sections this config writes, by the SAME `is_present()` the deletion gate reads — so
+    // "configured" is exactly what a build without the plane would refuse. Carried on `RootCfg`.
+    let mut plane_sections = std::collections::BTreeSet::new();
     for section in busbar_kernel::plane::config::NAMED_MAP_SECTIONS {
         let present = deploy
             .plane_section(section)
             .is_some_and(|cfg| cfg.is_present());
+        if present {
+            plane_sections.insert(section);
+        }
         if present && crate::plane::registry::plane_decl_for_config_section(section).is_none() {
             errors.push(format!(
                 "`{section}:` is configured, but this build was compiled without the plane that \
@@ -2639,6 +2650,9 @@ pub fn resolve(
         ("streams", deploy.streams.0.is_present()),
         ("decisions", deploy.decisions.0.is_present()),
     ] {
+        if present {
+            plane_sections.insert(section);
+        }
         if present && crate::plane::registry::plane_decl_for_config_section(section).is_none() {
             errors.push(format!(
                 "`{section}:` is configured, but this build was compiled without the plane that \
@@ -2705,6 +2719,10 @@ pub fn resolve(
     let endpoint_section = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2];
     let lower = crate::plane::registry::plane_decl_for_config_section(endpoint_section)
         .and_then(|d| d.lower_endpoint);
+    // The endpoint door belongs to the plane that owns `endpoint_section`: a present block configures it.
+    if endpoint_block.is_some_and(|ep| ep.is_present()) {
+        plane_sections.insert(endpoint_section);
+    }
     let lowered_endpoint = match (endpoint_block, lower) {
         (None, _) => None,
         (Some(ep), Some(lower)) => lower(&**ep).map_err(|e| errors.push(e)).ok(),
@@ -2791,6 +2809,7 @@ pub fn resolve(
             identity_providers: deploy.identity_providers.clone(),
             export_defs: deploy.export.clone(),
             agent_defs: deploy.agents.0.clone_box(),
+            plane_sections,
         })
     } else {
         Err(errors)

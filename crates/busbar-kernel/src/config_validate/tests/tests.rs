@@ -12,6 +12,7 @@ fn make_root_cfg(
         agent_defs: crate::plane::config::AgentsSection::default().0,
         tool_pools: Default::default(),
         agent_pools: Default::default(),
+        plane_sections: Default::default(),
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
         // No endpoint plane configured.
         endpoint_resources: Default::default(),

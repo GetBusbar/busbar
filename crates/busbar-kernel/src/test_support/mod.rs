@@ -829,6 +829,8 @@ pub struct TestApp {
     /// now lives one-way-dependent in `busbar-oauth2`); `busbar-oauth2`'s own `TestAppOauthExt`
     /// extension trait builds one and hands it in here type-erased.
     oauth_as: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+    /// LAW 7: the configured plane sections. `None` (default) = every linked plane counts configured.
+    plane_sections: Option<std::collections::BTreeSet<&'static str>>,
     mcp_durable_store: Option<std::sync::Arc<dyn busbar_api::Store>>,
     role_bindings: Option<crate::config::RoleBindings>,
     /// The resolved token-mint policy (`auth.policy:`) for the built App. `None` (default) = the empty
@@ -949,6 +951,12 @@ impl Default for TestApp {
 
 #[allow(dead_code)]
 impl TestApp {
+    /// LAW 7: build the App with exactly these plane sections configured (`[]` = a 1.5.5 config).
+    pub fn plane_sections(mut self, sections: &[&'static str]) -> Self {
+        self.plane_sections = Some(sections.iter().copied().collect());
+        self
+    }
+
     pub fn new() -> Self {
         // THE TEST-SIDE BOOT BINDING. In production the composition root (`busbar`'s `main`) installs
         // the core-backed hostless-egress driver once, before any plane dispatches. A plane's own test
@@ -972,6 +980,7 @@ impl TestApp {
             login_methods: None,
             public_url: None,
             oauth_as: None,
+            plane_sections: None,
             role_bindings: None,
             mint_policy: None,
             governance: None,
@@ -1924,6 +1933,7 @@ impl TestApp {
             // object, downcast by the plane's own accessor" property `build_app_from_config` gives
             // production, and `build()` names no slot key or plane runtime type.
             plane_slots,
+            plane_sections: self.plane_sections,
             spent_token_ledger: Default::default(),
             demotion_record: Default::default(),
             credential_cache: std::sync::Arc::new(crate::auth_cache::CredentialCache::new()),

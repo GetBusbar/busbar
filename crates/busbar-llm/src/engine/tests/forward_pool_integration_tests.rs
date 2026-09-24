@@ -3522,6 +3522,7 @@ mod disposition_matrix_tests {
                 agent_defs: busbar_kernel::plane::config::AgentsSection::default().0,
                 tool_pools: Default::default(),
                 agent_pools: Default::default(),
+                plane_sections: Default::default(),
                 upstream_credentials: busbar_api::UpstreamCreds::Own,
                 listen: "0.0.0.0:8080".into(),
                 public_url: None,

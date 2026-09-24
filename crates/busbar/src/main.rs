@@ -1410,17 +1410,24 @@ async fn run(data_workers: usize) {
     // because the access entry per secret read goes on the node's own chain; before either listener
     // binds, because a key resolved after a listener is accepting is a listener that accepted
     // without one.
+    // LAW 7: the unit is the voice plane's root wiring, so it runs only where that plane is
+    // configured — a 1.5.5 config resolves, journals and warns about nothing here.
     #[cfg(all(
         feature = "root-voice",
         any(feature = "root-admin", feature = "root-llm")
     ))]
-    provision_root_listeners(
-        &sealed_root,
-        &*tls_secret_resolver,
-        &book.durability,
-        (&listen, tls_cfg.as_ref()),
-        (&admin_listen, admin_tls_cfg.as_ref()),
-    );
+    if app_handle
+        .load()
+        .plane_configured(&busbar_voice::PLANE_DECL)
+    {
+        provision_root_listeners(
+            &sealed_root,
+            &*tls_secret_resolver,
+            &book.durability,
+            (&listen, tls_cfg.as_ref()),
+            (&admin_listen, admin_tls_cfg.as_ref()),
+        );
+    }
 
     // THE ROOT-DRIVEN LLM PLANE'S EXIT ARM, bound to that book. The loop already ended every unit
     // and handed back a posting; what this line adds is somewhere for the posting to go. Off, the
