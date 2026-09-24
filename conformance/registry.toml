@@ -13,7 +13,8 @@
 #   evidence-only    busbar supplies audit EVIDENCE; never busbar's own cert
 #
 # A green suite may render only AT OR BELOW its ceiling. Adding a suite is one block here plus the
-# suite's own verdict artifact — nothing on the README is hand-edited (design §7).
+# suite's own verdict artifact — nothing on the README is hand-edited; it is rendered from this
+# registry and those artifacts.
 
 # ── GREEN in 1.6.0 (verdict artifacts present) ───────────────────────────────────────────────────
 

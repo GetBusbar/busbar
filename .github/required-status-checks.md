@@ -28,8 +28,8 @@ say to, leaves every PR to `main`/`qa` pending forever on a context that can nev
 the `cargo-deny` warning below for the mechanism).
 
 `gate-mutants` (`gate-mutants.yml`) is **deliberately not listed here**: it is `workflow_dispatch`-only
-and `disabled_manually` on GitHub — mutation testing is TEST-ENHANCING, not release-breaking
-(DECISIONS #78), so it is not a release gate. `scripts/ci-branch-protection.sh` is the enforcement
+and `disabled_manually` on GitHub — it is a test-effectiveness check, not a release-breaking one,
+so it is not a release gate. `scripts/ci-branch-protection.sh` is the enforcement
 point for that ruling: it explicitly strips `gate-mutants` out of whatever branch protection already
 has, rather than merely not adding it, because a plain required-contexts union can never remove a
 context that is already required — see that script's header.
@@ -98,7 +98,7 @@ there would be a red against a commit already being released.
 ## Intentionally NOT branch-protection-required (and why)
 
 - **`gate-mutants`** (`gate-mutants.yml`) — `workflow_dispatch`-only and `disabled_manually` on
-  GitHub. Mutation testing is TEST-ENHANCING, not release-breaking (DECISIONS #78), so it does not
+  GitHub. It is a test-effectiveness check, not a release-breaking one, so it does not
   gate a release; run it on demand when hardening tests. It must not be a required context on
   `qa`/`main` — see `scripts/ci-branch-protection.sh` for how a stale required context like this one
   is actually removed, not just left unadded.

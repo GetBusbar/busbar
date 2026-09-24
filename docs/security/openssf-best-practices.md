@@ -81,7 +81,7 @@ The badge criteria are grouped as the bestpractices.dev form groups them. Answer
 | `no_leaked_credentials` | Met | `Redacted<T>` (no `Serialize`/`Deserialize`), `SecretRef` (inline literal unrepresentable), and the `cargo xtask gate settings-leak` gate. |
 | `static_analysis` + `static_analysis_common_vulnerabilities` | Met | CodeQL (`qa-codeql.yml`); clippy at `-D warnings`; the xtask gate battery. |
 | `static_analysis_fixed` + `static_analysis_often` | Met | CodeQL on every `qa` promotion; clippy on every push. |
-| `dynamic_analysis` / `dynamic_analysis_unsafe` | Met | Coverage-guided **cargo-fuzz** over the codec parse surface (`fuzz/`, `.github/workflows/qa-fuzz.yml`); loom concurrency model (`scripts/loom.sh`) for the config-swap invariant; mutation testing. |
+| `dynamic_analysis` / `dynamic_analysis_unsafe` | Met | Coverage-guided **cargo-fuzz** over the codec parse surface (`fuzz/`, `.github/workflows/qa-fuzz.yml`); loom concurrency model (`scripts/loom.sh`) for the config-swap invariant; automated fault-injection test-effectiveness checks in CI. |
 | **Dependency advisory scanning** (`static_analysis` supply-chain dimension) | Met | `qa-security.yml` runs **cargo-deny** (advisories · licenses · sources · bans) **and cargo-audit** (RustSec) at the qa boundary and weekly; **OpenSSF Scorecard** (`sched-scorecard.yml`) weekly. |
 
 ## Analysis / other
@@ -139,17 +139,17 @@ unmet for a solo-maintained project — we leave those open rather than overclai
 | `crypto_weaknesses` + `crypto_algorithm_agility` + `crypto_credential_agility` | Met | Vetted crates, no home-grown crypto; posture doc §2.3 / §2.6. |
 | `hardening` | Met | Static binary, credential boundary, fail-closed gauntlet, FFI `catch_unwind`; k8s `securityContext`. |
 | `assurance_case` | Met | `docs/design/1.6.0-security-posture.md` class→mechanism→gate case. |
-| `security_review` — design **and** code reviewed | Met (internal) | `THREAT_MODEL.md` design review + the posture-doc audit + the repo's `security-review` / `codeaudit` process — a documented internal review, which silver accepts. |
-| `dynamic_analysis` — a dynamic/fuzz tool is applied | Met | Coverage-guided **cargo-fuzz** over the codec parse surface (`fuzz/`, `qa-fuzz.yml`); loom; mutation testing. |
+| `security_review` — design **and** code reviewed | Met (internal) | `THREAT_MODEL.md` design review + the posture-doc audit + the repo's documented internal code review process, which silver accepts. |
+| `dynamic_analysis` — a dynamic/fuzz tool is applied | Met | Coverage-guided **cargo-fuzz** over the codec parse surface (`fuzz/`, `qa-fuzz.yml`); loom; automated fault-injection test-effectiveness checks. |
 
 ### Coverage statement (for `test_statement_coverage80`)
 
 Coverage is measured on **product paths only** via Codecov (`codecov.yml` ignores tests, examples,
 sample plugins, and docs) and surfaced on the README badge and per-PR context. By design coverage
-is **informational, not a hard gate**: the correctness gate is CI's `check` job, backed by the
-mutation-testing gate (`gate-mutants.yml`), which measures *test effectiveness* (killed mutants) — a
+is **informational, not a hard gate**: the correctness gate is CI's `check` job, backed by an
+automated fault-injection check (`gate-mutants.yml`) that measures *test effectiveness* — a
 stronger signal than line coverage alone. We treat **80% statement coverage on product paths** as
-the working floor and rely on mutation score to catch weak tests that line coverage would call
+the working floor and rely on that test-effectiveness score to catch weak tests that line coverage would call
 "covered." `test_statement_coverage80` is therefore attested by the live Codecov figure rather than
 a pinned CI threshold.
 

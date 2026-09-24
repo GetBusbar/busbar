@@ -133,7 +133,7 @@ git update-ref -m "<why>" refs/heads/<branch> "$commit" "$old_head"
 **The footgun:** `update-ref` moves the branch but does not touch the *shared*
 index, which is still populated against the OLD head. Your paths therefore show
 as `MM` — and the staged half is the pre-commit content, i.e. an undo of your
-own commit. The next person to run a bare `git commit` publishes that revert.
+own commit. A bare `git commit` run in that state publishes that revert.
 
 Detect it immediately after `update-ref`:
 

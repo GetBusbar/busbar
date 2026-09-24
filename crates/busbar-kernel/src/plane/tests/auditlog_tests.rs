@@ -766,7 +766,7 @@ fn parse_audit_suffix_does_not_panic_on_a_truncated_safe_body() {
     assert_eq!(principal, "");
 }
 
-// ── AUDIT-INTEGRITY FIX: THE PENDING RECOVERY QUEUE (defect #3) ────────────────────────────────────
+// ── AUDIT-INTEGRITY: THE PENDING RECOVERY QUEUE ─────────────────────────────────────────────────────
 //
 // `PendingAuditQueue` is tested directly, driven over an injected `mint` closure, rather than through
 // `emit`/`emit_admin_hostless` themselves: those two are hardwired to the PRODUCTION `KIND_ID_AUDIT`

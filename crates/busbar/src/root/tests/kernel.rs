@@ -668,7 +668,7 @@ fn the_usage_seam_answers_with_the_process_history() {
 /// **THE WIRING WITNESS.** The boot install raises BOTH halves of the rate seam, and the binary
 /// calls it.
 ///
-/// The apply half without the read half is precisely the defect #79 names: a node that dates its
+/// The apply half without the read half is precisely the defect this seam rules out: a node that dates its
 /// prices and then reports them off the newest card anyway. The date half without the other two
 /// stamps an instant nothing reads. And any of them without a caller is dead code that looks live.
 /// So the body of `install_card_repricer` is read for all three names, and `main.rs` is read for
