@@ -302,12 +302,19 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         // guard admits this claim; a second claimant of `streams` is refused by construction.
         owned_config_sections: &["streams"],
         // The classes the plane crate declares (`busbar_plane_streaming::meta`), by its own symbols.
+        //
+        // `cached_tokens` is deliberately NOT here (architect ruling #71, money-model integrity): the
+        // dialects' own `cached_tokens` figure is a SUBSET of the input token classes above (OpenAI
+        // Realtime reports it INSIDE `input_token_details`; Gemini Live the same, inside
+        // `promptTokensDetails`), so a rate card that priced it too would bill the same cached input
+        // twice. A billable class must be disjoint from every other one the plane declares; a subset
+        // measure is attribution, not a class. The figure is still carried, unbilled, as the
+        // `cached_tokens` content fact (`busbar_plane_streaming::meta::FACT_CACHED_TOKENS`).
         billable_classes: &[
             busbar_plane_streaming::meta::CLASS_AUDIO_TOKENS_IN.as_str(),
             busbar_plane_streaming::meta::CLASS_AUDIO_TOKENS_OUT.as_str(),
             busbar_plane_streaming::meta::CLASS_TEXT_TOKENS_IN.as_str(),
             busbar_plane_streaming::meta::CLASS_TEXT_TOKENS_OUT.as_str(),
-            busbar_plane_streaming::meta::CLASS_CACHED_TOKENS.as_str(),
             busbar_plane_streaming::meta::CLASS_AUDIO_SECONDS_IN.as_str(),
             busbar_plane_streaming::meta::CLASS_TOOL_CALLS.as_str(),
         ],

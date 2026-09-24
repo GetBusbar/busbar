@@ -554,7 +554,6 @@ fn usage_closes_the_turn_and_meter_reads_every_declared_class() {
         "audio_tokens_out",
         "text_tokens_in",
         "text_tokens_out",
-        "cached_tokens",
         "audio_seconds_in",
     ] {
         assert!(
@@ -562,6 +561,13 @@ fn usage_closes_the_turn_and_meter_reads_every_declared_class() {
             "expected meter class {expected} in {classes:?}"
         );
     }
+    // #71: cached_tokens is a SUBSET of audio_tokens_in/text_tokens_in, not a class beside them, so
+    // the usage report naming it must NOT produce a meter line for it — pricing it too would
+    // double-bill the same cached input.
+    assert!(
+        !classes.contains(&"cached_tokens"),
+        "cached_tokens must never be a meter class (#71); got {classes:?}"
+    );
 
     // The point of the split, asserted as a quantity and not just as a label: the fixture reports
     // three text tokens consumed and four emitted, and the two land on different classes at their
@@ -583,9 +589,9 @@ fn usage_closes_the_turn_and_meter_reads_every_declared_class() {
     // than a label that still reads as present.
     assert_eq!(quantity("audio_tokens_in"), Some(10));
     assert_eq!(quantity("audio_tokens_out"), Some(20));
-    // The cached figure is a DISCOUNT, so a class reported at the wrong figure overcharges a caller
-    // for input it was already billed for.
-    assert_eq!(quantity("cached_tokens"), Some(1));
+    // The cached figure is a SUBSET of the input figure above, not a class beside it (#71): pricing
+    // it too would double-bill the same cached input, so it never reaches the meter as its own line.
+    assert_eq!(quantity("cached_tokens"), None);
 }
 
 #[test]
@@ -1751,5 +1757,7 @@ fn class_counts_are_the_lines_meter_emits_for_the_same_turn() {
     counted.sort();
 
     assert_eq!(counted, emitted, "one reading of one turn");
-    assert_eq!(counted.len(), 7, "every declared class carried a count");
+    // Six, not seven: cached_tokens is a SUBSET of audio_tokens_in/text_tokens_in, not a class beside
+    // them (#71), so it carries no line of its own even though this turn's usage report names it.
+    assert_eq!(counted.len(), 6, "every declared class carried a count");
 }

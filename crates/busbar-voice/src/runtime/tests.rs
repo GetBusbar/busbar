@@ -176,8 +176,14 @@ fn usage_folds_five_classes_onto_the_four_reserved_keys() {
 
 /// Q21b EXIT TEST — a served voice session writes the streaming plane's count rows. One turn: a
 /// second of uplink audio, one tool call opened, a usage report naming all five token classes. The
-/// ledger holds exactly the plane's seven classes, under the voice lane, at the counts the turn
-/// carried — never a price, and never the llm plane's reserved token keys.
+/// ledger holds exactly the plane's SIX billable classes, under the voice lane, at the counts the
+/// turn carried — never a price, and never the llm plane's reserved token keys.
+///
+/// #71 EXIT TEST (money-model integrity, P2-voicefix): the upstream's `cached_tokens` figure is a
+/// SUBSET of `input_token_details.audio_tokens`/`text_tokens`, not a class beside them, so it must
+/// NOT produce a ledger row — a streams card that priced it would double-bill the same cached input.
+/// This turn reports `cached_tokens: 1` and the ledger holds no `cached_tokens` row for it (before
+/// this fix it did, at count 1, RED against this exact assertion).
 #[tokio::test]
 async fn a_served_turn_ledgers_the_planes_counts_per_class() {
     let host = governed_host(None);
@@ -199,11 +205,16 @@ async fn a_served_turn_ledgers_the_planes_counts_per_class() {
             ("audio_seconds_in", 1),
             ("audio_tokens_in", 10),
             ("audio_tokens_out", 20),
-            ("cached_tokens", 1),
             ("text_tokens_in", 3),
             ("text_tokens_out", 4),
             ("tool_calls", 1),
         ]),
+        "no cached_tokens row: it is a subset of audio_tokens_in/text_tokens_in, not a class beside \
+         them (architect ruling #71) — pricing it too would double-bill the same cached input",
+    );
+    assert!(
+        !rows(&host).contains_key("cached_tokens"),
+        "cached_tokens must never reach the ledger as a billable class (#71)",
     );
     // The turn's counters closed with it: the next report carries only what the next turn did.
     let _ = core.on_server_frame(usage_frame(2)).await;

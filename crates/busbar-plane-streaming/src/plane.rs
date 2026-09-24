@@ -583,12 +583,15 @@ impl Plane for StreamingPlane {
         // the plane DECLARED are one value the compiler checks — not two strings that agree today.
         // A typo in a literal here emits a count under a class no card can name: silently unpriced,
         // or a boot refusal under #77(5), and in neither case anything that points at this line.
+        // `cached_tokens` is NOT here: it is a subset of the input token classes above, not a
+        // billable class beside them (architect ruling #71 — see `meta::CLASS_CACHED_TOKENS`'s doc).
+        // Pricing it too would double-bill the same cached input; the figure is attribution only,
+        // carried on the `cached_tokens` fact, never on a meter line.
         let classes = [
             (meta::FACT_AUDIO_TOKENS_IN, meta::CLASS_AUDIO_TOKENS_IN),
             (meta::FACT_AUDIO_TOKENS_OUT, meta::CLASS_AUDIO_TOKENS_OUT),
             (meta::FACT_TEXT_TOKENS_IN, meta::CLASS_TEXT_TOKENS_IN),
             (meta::FACT_TEXT_TOKENS_OUT, meta::CLASS_TEXT_TOKENS_OUT),
-            (meta::FACT_CACHED_TOKENS, meta::CLASS_CACHED_TOKENS),
         ];
         // A duplex turn's figures all come off the upstream's usage report, which is the answer. A
         // one-shot request's input figure comes off the request, which decode read and put on the

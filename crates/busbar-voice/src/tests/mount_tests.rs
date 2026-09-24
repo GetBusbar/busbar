@@ -523,3 +523,29 @@ fn redaction_leaves_a_message_that_carries_no_query_credential_alone() {
         "wss://h/p?key=<redacted>&alt=sse"
     );
 }
+
+/// #71 EXIT TEST (money-model integrity, P2-voicefix, architect ruling): a plane's DECLARED
+/// BILLABLE CLASSES must be pairwise DISJOINT, because money = Σ count(class) × rate(class) only
+/// holds when no class is a subset of another. The upstream `cached_tokens` figure both duplex
+/// dialects report is a SUBSET of the input token classes (nested inside
+/// `input_token_details`/`promptTokensDetails`, never a sibling count), so it must not appear in
+/// `PLANE_DECL.billable_classes` — a streams card that priced it too would double-bill the same
+/// cached input. This asserts the declared list excludes it and stays pairwise distinct.
+#[test]
+fn billable_classes_are_pairwise_disjoint_and_exclude_cached_tokens() {
+    let classes = crate::PLANE_DECL.billable_classes;
+    assert!(
+        !classes.contains(&"cached_tokens"),
+        "cached_tokens is a subset of audio_tokens_in/text_tokens_in, not a billable class beside \
+         them (#71) — declaring it would double-bill the same cached input; declared classes: \
+         {classes:?}"
+    );
+    let mut seen = std::collections::BTreeSet::new();
+    for class in classes {
+        assert!(
+            seen.insert(*class),
+            "declared billable classes must be pairwise disjoint (#71) — {class:?} repeats in \
+             {classes:?}"
+        );
+    }
+}

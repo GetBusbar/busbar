@@ -268,7 +268,10 @@ fn a_realtime_voice_session_reserves_takes_turns_and_settles() {
     assert_eq!(quantity("audio_tokens_out"), Some(20));
     assert_eq!(quantity("text_tokens_in"), Some(3));
     assert_eq!(quantity("text_tokens_out"), Some(4));
-    assert_eq!(quantity("cached_tokens"), Some(1));
+    // #71: cached_tokens is a SUBSET of audio_tokens_in/text_tokens_in, not a class beside them, so
+    // it never reaches the meter as its own line even though the usage report names it — pricing it
+    // too would double-bill the same cached input.
+    assert_eq!(quantity("cached_tokens"), None);
     // The duration class the architecture's own inventory names for this plane is present too.
     assert!(
         locators
@@ -291,11 +294,14 @@ fn the_streaming_plane_declares_its_full_dialect_and_meter_roster() {
         4,
         "streaming claims its four live dialect surfaces"
     );
-    // The seven per-turn meter classes the architecture's inventory row names for this plane.
+    // The six BILLABLE per-turn meter classes this plane declares (architect ruling #71: a plane's
+    // declared billable classes must be pairwise disjoint, so `cached_tokens` — a subset of the input
+    // token classes, not a class beside them — is carried only as an unbilled attribution fact, not a
+    // meter class; see `busbar_plane_streaming::meta::CLASS_CACHED_TOKENS`'s doc).
     assert_eq!(
         <StreamingPlane as PlaneMeta>::METER_CLASSES.len(),
-        7,
-        "streaming meters its seven per-turn classes"
+        6,
+        "streaming meters its six billable per-turn classes"
     );
     // The two duplex dialects a streaming session may DIAL, with voice among them.
     let plane = streaming_plane();
