@@ -49,6 +49,14 @@ const EXCLUDE_TESTS_DIR: &str = "/tests/";
 /// reviewable source edit.
 const SCAN_FLOOR: usize = 130;
 
+/// THE SUBJECT FLOOR (item 228). The file floor above proves the walk opened the crates; it says
+/// nothing about whether the thing this gate judges is still there. "Every `#[instrument]` has a
+/// level" is as vacuous over zero SPANS as over zero files, and the files-to-spans ratio is ~150:1
+/// (777 production files, 5 attributes), so every span could leave the tree with the file floor
+/// untouched. Armed at the measured count (arrival.rs 3, ingress/mod.rs 2); like the file floor it
+/// has no override, and lowering it is a reviewable source edit that says which span went where.
+const SPAN_FLOOR: usize = 5;
+
 /// The two findings, spelled ONCE so both the gate and its legacy translator write them the same
 /// way and a parity diff can only be about which spans were found.
 fn finding_level(rel: &str, line: usize) -> String {
@@ -70,6 +78,8 @@ const CLEAN: &str = "the scan cleared its floor and named nothing";
 /// One file's findings: the level-less spans and the attribute that never closed.
 #[derive(Debug, Default)]
 struct Findings {
+    /// How many `#[instrument]` attributes the scan read — the subject count [`SPAN_FLOOR`] judges.
+    spans: usize,
     level: Vec<String>,
     unclosed: Vec<String>,
 }
@@ -99,6 +109,56 @@ fn opens_instrument_attr(line: &str) -> bool {
     };
     let after = after.trim_start();
     after.starts_with(']') || after.starts_with('(')
+}
+
+/// Does this blanked attribute text set the span's LEVEL — a TOP-LEVEL `level = …` argument of the
+/// `instrument(…)` list? (Item 229.) A substring test accepted `fields(level = %lvl)` (a span FIELD
+/// named `level`, which leaves the span at the default INFO) and `skip(log_level)`; only an argument
+/// at paren depth 1 whose key is exactly `level` followed by `=` sets the Level.
+fn declares_level(code: &str) -> bool {
+    let Some(open) = code.find("instrument").and_then(|at| {
+        code[at..]
+            .find('(')
+            .map(|p| at + p)
+            .filter(|p| code[at + "instrument".len()..*p].trim().is_empty())
+    }) else {
+        return false;
+    };
+    let mut depth = 0usize;
+    let mut args: Vec<String> = vec![String::new()];
+    for c in code[open..].chars() {
+        match c {
+            '(' | '[' | '{' => {
+                depth += 1;
+                if depth == 1 {
+                    continue;
+                }
+            }
+            ')' | ']' | '}' => {
+                if depth == 1 {
+                    break;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            ',' if depth == 1 => {
+                args.push(String::new());
+                continue;
+            }
+            _ => {}
+        }
+        if let Some(a) = args.last_mut() {
+            a.push(c);
+        }
+    }
+    args.iter().any(|a| {
+        a.trim()
+            .strip_prefix("level")
+            .map(|rest| {
+                let rest = rest.trim_start();
+                rest.starts_with('=') && !rest.starts_with("==")
+            })
+            .unwrap_or(false)
+    })
 }
 
 /// The statement-window accumulator, per file. An attribute's token stream may span any number of
@@ -132,7 +192,8 @@ fn scan_file(rel: &str, text: &str) -> Findings {
         let opens = code.matches('(').count();
         let closes = code.matches(')').count();
         if opens == closes {
-            if !code.contains("level") {
+            out.spans += 1;
+            if !declares_level(&code) {
                 out.level.push(finding_level(rel, start_line));
             }
             in_attr = false;
@@ -229,16 +290,51 @@ impl Gate for TracingGate {
 
         let mut level = Vec::new();
         let mut unclosed = Vec::new();
+        let mut spans = 0usize;
         for f in &files {
             let found = scan_file(&f.rel_str(), &f.text);
+            spans += found.spans;
             level.extend(found.level);
             unclosed.extend(found.unclosed);
         }
         level.sort();
         unclosed.sort();
 
+        if spans < SPAN_FLOOR {
+            return Verdict::of(vec![
+                Row::fail(
+                    ROW_SCAN_FLOOR,
+                    "the scan found fewer #[instrument] spans than its subject floor",
+                    format!(
+                        "{} files walked but only {spans} #[instrument] attribute(s) read, below \
+                         the span floor of {SPAN_FLOOR}. A span that moved or became a hand-rolled \
+                         `span!` took the subject with it: lower SPAN_FLOOR in a diff that says \
+                         which one and why.",
+                        files.len()
+                    ),
+                ),
+                Row::fail(
+                    ROW_LEVEL,
+                    "the instrument scan read fewer spans than its floor",
+                    format!(
+                        "{spans} span(s) read against a floor of {SPAN_FLOOR}, so 'every span has a \
+                         level' is vacuous — it is NOT a pass"
+                    ),
+                ),
+                row_closes(&unclosed),
+            ]);
+        }
+
         Verdict::of(vec![
-            Row::pass(ROW_SCAN_FLOOR, "the crates walk cleared its floor", CLEAN),
+            Row::pass(
+                ROW_SCAN_FLOOR,
+                "the crates walk cleared its floor",
+                format!(
+                    "{} files, {spans} #[instrument] span(s) (floors {SCAN_FLOOR} / {SPAN_FLOOR}); \
+                     {CLEAN}",
+                    files.len()
+                ),
+            ),
             row_level(&level),
             row_closes(&unclosed),
         ])
@@ -346,6 +442,78 @@ impl Gate for TracingGate {
             "a comment mentioning the attribute stays green",
             &[ROW_LEVEL],
         ));
+
+        // ITEM 229: a span FIELD or a skipped ARGUMENT named `level` is not the span's Level. The
+        // blanked text contains the word in both, and a substring test passed both.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core/src/planted_level_field.rs",
+            "#[tracing::instrument(name = \"forward\", skip_all, fields(level = %lvl))]\n\
+             pub fn a_field_named_level() {}\n\n\
+             #[instrument(skip(log_level))]\n\
+             pub fn a_skipped_arg_named_level() {}\n\n\
+             #[tracing::instrument(skip_all, level = \"debug\", fields(level = %lvl))]\n\
+             pub fn levelled_and_a_field() {}\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a field or skipped argument named level does not set the span's Level",
+            &[ROW_LEVEL],
+            ov,
+            &[
+                "2 finding(s)",
+                "planted_level_field.rs:1",
+                "planted_level_field.rs:4",
+            ],
+        ));
+
+        // ITEM 228: THE SUBJECT FLOOR. Every production span becomes a hand-rolled `span!`; the
+        // file walk still clears 130, and the scan must still refuse to call the empty subject
+        // clean.
+        let mut ov = Overlay::new();
+        let mut planted = 0usize;
+        if let Ok(files) = cx.walk(
+            &WalkSpec::new([SCAN_ROOT])
+                .ext("rs")
+                .exclude([EXCLUDE_TESTS_DIR]),
+        ) {
+            for f in &files {
+                if !f.text.lines().any(opens_instrument_attr) {
+                    continue;
+                }
+                let text: String = f
+                    .text
+                    .lines()
+                    .map(|l| {
+                        if opens_instrument_attr(l) {
+                            "// span moved to a hand-rolled tracing::span!".to_string()
+                        } else {
+                            l.to_string()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                ov.set(&f.rel, text);
+                planted += 1;
+            }
+        }
+        if planted == 0 {
+            report.note_infra_failure(
+                "tracing selftest: the base tree holds no #[instrument] span to remove, so the \
+                 span-floor plant has nothing to take away"
+                    .to_string(),
+            );
+        } else {
+            report.push(prove_red(
+                cx,
+                self,
+                "a tree whose spans all left clears the file floor and is still refused",
+                &[ROW_SCAN_FLOOR, ROW_LEVEL],
+                ov,
+                &["span floor", "NOT a pass"],
+            ));
+        }
 
         // THE FLOOR, on the RUN path. Every candidate file is removed from the overlay's view,
         // which is what a workspace restructure looks like from the scan's side.
