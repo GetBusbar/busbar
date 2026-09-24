@@ -379,6 +379,13 @@ pub trait LedgerView: Send + Sync {
     fn has_refused_rows(&self) -> bool {
         false
     }
+
+    /// SEAM `recorded-counts` (item 404): what the book RECORDED for the entry whose journal digest
+    /// is `amends` — the unit's principal, lane, card epoch and counts — which is what an `adjust`
+    /// corrects. `None` is "this view holds no such entry", and the verb answers `NotFound`.
+    fn recorded_counts(&self, _amends: &str) -> Option<RecordedCounts> {
+        None
+    }
 }
 
 /// The view a node has before a ledger is bound behind it.
@@ -639,6 +646,11 @@ impl LedgerView for NodeLedger {
     /// this check and the read it guards cannot slip through either side of the race.
     fn has_refused_rows(&self) -> bool {
         !self.lock().refused_rows().is_empty()
+    }
+
+    /// Read off this node's own journal, under the same lock every other read takes.
+    fn recorded_counts(&self, amends: &str) -> Option<RecordedCounts> {
+        adjust::recorded_in(&self.lock(), amends)
     }
 }
 
@@ -924,6 +936,10 @@ pub struct CoreGovernance {
     amendments: Option<Arc<AmendmentJournal>>,
     /// Who submitted this unit's call and under which dual-control posture it was admitted.
     attribution: AmendAttribution,
+    /// The scope the caller was admitted under. `adjust` hands it to the kernel half, which
+    /// refuses anything below `full` whatever the verbs unit decided. `ReadOnly` until a root says
+    /// otherwise, so an unbound scope corrects nothing.
+    granted: VerbScope,
 }
 
 impl CoreGovernance {
@@ -947,7 +963,15 @@ impl CoreGovernance {
                 principal: String::new(),
                 dual_control: None,
             },
+            granted: VerbScope::ReadOnly,
         }
+    }
+
+    /// Bind the scope the caller was admitted under.
+    #[must_use]
+    pub fn granted(mut self, granted: VerbScope) -> Self {
+        self.granted = granted;
+        self
     }
 
     /// Bind where an amendment is recorded and who is asking for it.
@@ -1040,6 +1064,21 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 operator,
                 &self.attribution,
             );
+        }
+        // `adjust` (item 404, owner ruling Q9): a correction to a recorded unit's COUNTS, sealed on
+        // the node amendment journal by the kernel's half. Its scope, rate class and the irreducible
+        // gate ran in the verbs unit before this seam; the kernel half re-checks the scope and
+        // refuses a count below zero or a blank reason. What the counts WERE is read from the book,
+        // by the digest of the journal record the correction names — never from the body.
+        if verb == KernelVerb::Adjust {
+            let scope = match self.granted {
+                VerbScope::Full => busbar_contract::authz::Scope::Full,
+                VerbScope::ReadOnly => busbar_contract::authz::Scope::ReadOnly,
+            };
+            return adjust::adjust_effect(request, scope, &self.attribution.principal, |amends| {
+                self.ledger.recorded_counts(amends)
+            })
+            .map(|body| json_answer(body).pack());
         }
         Ok(self.run())
     }
@@ -2760,7 +2799,8 @@ pub(crate) fn route(
                 principal: actor.clone(),
                 dual_control: posture.map(|p| p.dual_control),
             },
-        ),
+        )
+        .granted(granted),
         StoreRef(store),
         ArrivalNonce(request.at),
         PackedReplay,
@@ -3520,7 +3560,9 @@ impl busbar_core_admin::ReplayEncoder<busbar_core_admin::MintedKeyOutcome> for P
 mod admin_mount;
 pub(crate) use admin_mount::*;
 
-// ── the idempotency claim journal: a sibling module, re-exported here ─────────────────────────────
+// ── `adjust` and the idempotency claim journal: sibling modules, re-exported here ─────────────────
+mod adjust;
+pub use adjust::RecordedCounts;
 mod claims;
 pub use claims::RootClaimJournal;
 

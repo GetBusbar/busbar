@@ -4878,7 +4878,318 @@ fn the_node_books_carry_the_fee_count_on_both_sides_and_a_lost_count_is_out() {
     assert!(out[0].fees_disagree());
 }
 
-// ── the claim journal (item 271) ─────────────────────────────────────────────────────────────────
+// ── `adjust` (item 404, OWNER RULING Q9) and the claim journal (item 271) ──────────────────────────
+
+/// The posture of a fleet that ran the operator ceremony under single control: the irreducible
+/// `adjust` is admitted.
+#[cfg(feature = "root-admin")]
+struct CeremonyRun;
+
+#[cfg(feature = "root-admin")]
+impl PostureView for CeremonyRun {
+    fn resolve(&self, _verb: KernelVerb, _actor: &str) -> Option<(PostureCtx, ApprovalState)> {
+        Some((
+            PostureCtx {
+                operator: busbar_core_admin::OperatorState::Set([0u8; 32]),
+                dual_control: busbar_core_admin::DualControl::Single,
+            },
+            ApprovalState::NotYetApproved,
+        ))
+    }
+}
+
+/// A node book holding ONE counts posting for `principal`: 1,000 `input` units on `lane`, arrived
+/// at `ADJUST_ARRIVED_MS`. Answers the book and the digest of the posting's journal record — the
+/// entry an `adjust` names.
+#[cfg(feature = "root-admin")]
+fn a_book_with_one_recorded_unit(
+    principal: &str,
+    lane: &str,
+) -> (crate::root::durability::NodeBook, String) {
+    use crate::root::durability::{PostingStamp, Settling, UnitCounts};
+    use busbar_contract::caps::{DurableWrite, KernelSeal, PrincipalId};
+    let book = crate::root::durability::node_book();
+    let token = Grant::<DurableWrite>::mint(&KernelSeal::acquire_for_kernel());
+    let key = busbar_kernel_ledger::totals::TotalsKey::new(
+        busbar_kernel_ledger::totals::BucketId::new(principal),
+        busbar_kernel_ledger::totals::CapDimension::NanoUnits,
+        busbar_kernel_ledger::totals::BucketScope::All,
+    );
+    let counts = UnitCounts {
+        lane: lane.to_string(),
+        fee_count: 0,
+        classes: std::collections::BTreeMap::from([(
+            busbar_kernel_ledger::cost::CLASS_INPUT.to_string(),
+            1_000,
+        )]),
+    };
+    let mut durability = book.durability.lock().expect("unpoisoned");
+    durability
+        .post_counts(
+            &Settling {
+                key: &key,
+                window: A_DAY,
+                durability: &token,
+                step: busbar_contract::caps::StepName::Meter,
+                stamp: PostingStamp {
+                    rate_card_version: 0,
+                    wall: ADJUST_ARRIVED_MS / 1_000,
+                    mono: 7,
+                },
+            },
+            &PrincipalId::new(principal),
+            &counts,
+            ADJUST_ARRIVED_MS,
+            None,
+        )
+        .expect("the memory-buffered journal takes it");
+    let records = durability
+        .journal
+        .replay()
+        .expect("the journal reads back")
+        .expect("the journal verifies");
+    let digest = hex::encode(records.last().expect("the posting is on the chain").hash);
+    drop(durability);
+    (book, digest)
+}
+
+/// The instant the adjusted unit arrived: its card epoch.
+#[cfg(feature = "root-admin")]
+const ADJUST_ARRIVED_MS: u64 = 1_700_000_000_000;
+
+/// Walk one `POST /api/v1/admin/adjust` through decode and route over `binding`, admitted at
+/// `granted`. Answers the unit's answer, or the reason it was refused.
+#[cfg(feature = "root-admin")]
+fn adjust_through_route(
+    binding: &AdminBinding,
+    granted: VerbScope,
+    body: serde_json::Value,
+) -> Result<AdminAnswer, ReasonCode> {
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
+    let admin = crate::root::kernel::new_kernel().admin_token();
+    let key = UnitKey::new(a_fresh_unit());
+    let mut request = a_request();
+    request.method = "POST".to_string();
+    request.path = "/api/v1/admin/adjust".to_string();
+    request.body = serde_json::to_vec(&body).expect("the body serialises");
+    binding.units.open(key, request);
+    let ctx = UnitCtx {
+        key,
+        origin: busbar_contract::caps::OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: true,
+        kernel_verb_only: true,
+    };
+    decode(binding, &Pass::<Decode>::mint(&seal), &ctx)
+        .into_result(&seal)
+        .expect("the plane's table declares adjust");
+    binding.units.set_granted(key, granted);
+    let outcome = route(
+        binding,
+        Arc::new(crate::root::kernel::RefusingStore),
+        &admin,
+        &Pass::<Route>::mint(&seal),
+        &ctx,
+        &busbar_kernel::teller::AccrualMeter::new(),
+    )
+    .into_result(&seal);
+    let answer = binding.units.answer(key);
+    binding.units.close(key);
+    outcome
+        .map(|_| answer.expect("an admitted unit leaves an answer"))
+        .map_err(|refusal| refusal.reason())
+}
+
+/// A binding over `book`'s node ledger, under a fleet that ran the ceremony.
+#[cfg(feature = "root-admin")]
+fn an_adjusting_binding(book: &crate::root::durability::NodeBook) -> AdminBinding {
+    let legacy: Arc<dyn LegacyRowsRead> = book.rows.clone();
+    AdminBinding::new(Arc::new(AnsweringDispatch))
+        .with_ledger_view(Arc::new(NodeLedger::new(
+            Arc::clone(&book.durability),
+            legacy,
+        )))
+        .with_posture_view(Arc::new(CeremonyRun))
+}
+
+/// What the recorded unit costs at its card epoch over the counts the node journal stands it at
+/// NOW — `counts_now`, then the one function. 2.5 micro-units per `input` unit on `lane`.
+#[cfg(feature = "root-admin")]
+fn priced_now_at_two_and_a_half_micro(lane: &str, digest: &str, recorded: &RecordedCounts) -> u128 {
+    let card = busbar_kernel_ledger::cost::RateCard::from_micro_rates(
+        [(
+            busbar_kernel_ledger::cost::LaneClass::new(
+                lane,
+                busbar_kernel_ledger::cost::CLASS_INPUT,
+            ),
+            2.5,
+        )],
+        0,
+    );
+    let mut history = busbar_kernel_ledger::cost::History::new();
+    let seq = history.append(busbar_kernel_ledger::cost::CardEntryDraft {
+        effective_from: 0,
+        effective_until: None,
+        card,
+        appended_at: 0,
+        author: busbar_kernel_ledger::cost::Author::Opening,
+    });
+    let pinned = crate::root::kernel::PinnedHistory::for_test(Arc::new(history), seq);
+    let entry = busbar_kernel::audit::amend::counts_now(digest, &recorded.classes)
+        .into_iter()
+        .fold(
+            busbar_kernel_ledger::cost::LedgerEntry::new(lane, recorded.card_epoch_ms),
+            |entry, (class, count)| entry.with_count(class, count),
+        )
+        .with_fee_count(recorded.fee_count);
+    let exact = busbar_kernel_ledger::cost::price_exact(&[entry], &pinned.view())
+        .expect("the card prices the lane's input");
+    busbar_kernel_ledger::cost::nanos_of_exact(exact).expect("in range")
+}
+
+/// **THE EXIT TEST FOR ITEM 404's ADMIN HALF.** An `adjust` of a recorded unit's 1,000 `input`
+/// units to 800, walked through the admin route under a fleet that ran the ceremony, is sealed on
+/// the node amendment journal with what the BOOK recorded (principal, lane, card epoch, 1,000) as
+/// its `was` — never the body's word — and the unit's money, the one function over `counts_now` at
+/// 2.5 micro-units, moves 2,500,000 → 2,000,000 nano-units. The book's own record is untouched.
+#[cfg(feature = "root-admin")]
+#[test]
+fn an_admin_adjust_corrects_a_recorded_units_counts_and_its_money_follows() {
+    let lane = "adjust-404-money";
+    let (book, digest) = a_book_with_one_recorded_unit("vk_adjust_money", lane);
+    let binding = an_adjusting_binding(&book);
+    let recorded = binding
+        .ledger
+        .recorded_counts(&digest)
+        .expect("the book holds the posting the digest names");
+    assert_eq!(recorded.principal, "vk_adjust_money");
+    assert_eq!(recorded.lane, lane);
+    assert_eq!(recorded.card_epoch_ms, ADJUST_ARRIVED_MS);
+    assert_eq!(
+        priced_now_at_two_and_a_half_micro(lane, &digest, &recorded),
+        2_500_000,
+        "before: 1,000 input units at 2.5 micro-units"
+    );
+
+    let answer = adjust_through_route(
+        &binding,
+        VerbScope::Full,
+        serde_json::json!({
+            "amends": digest,
+            "now": { "input": "800" },
+            "reason": "a retried request was metered twice",
+        }),
+    )
+    .expect("a root correction with a reason and a non-negative count is admitted");
+    assert_eq!(answer.status, 200);
+    let body: serde_json::Value = serde_json::from_slice(&answer.body).expect("JSON");
+    assert_eq!(body["amends"], serde_json::json!(digest));
+    assert_eq!(body["now"]["input"], serde_json::json!("800"));
+    assert_eq!(body["card_epoch_ms"], serde_json::json!(ADJUST_ARRIVED_MS));
+    assert!(
+        body.get("amount_nanos").is_none(),
+        "the answer carries counts, never money (Q9)"
+    );
+
+    let sealed: Vec<_> = busbar_kernel::audit::amend::node_corrections()
+        .into_iter()
+        .filter_map(|a| match a.body {
+            busbar_kernel::audit::amend::AmendBody::Adjust(adj) if adj.amends_hash == digest => {
+                Some(adj)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sealed.len(), 1, "exactly one correction sealed");
+    assert_eq!(
+        sealed[0].was.get("input").map(|c| c.to_decimal_string()),
+        Some("1000".to_string()),
+        "`was` is what the book recorded"
+    );
+    assert_eq!(sealed[0].authorised_by, "admin");
+    assert_eq!(
+        priced_now_at_two_and_a_half_micro(lane, &digest, &recorded),
+        2_000_000,
+        "after: 800 input units at 2.5 micro-units"
+    );
+    assert_eq!(
+        binding.ledger.recorded_counts(&digest),
+        Some(recorded),
+        "the book's record is never rewritten"
+    );
+}
+
+/// A NEGATIVE, A REASONLESS AND A NON-ROOT `adjust` ARE REFUSED END TO END, and none seals
+/// anything. The count below zero and the blank reason are refused by the kernel half (a 400 on the
+/// wire); a read-only credential is refused by the verbs unit before the effect is reached, and the
+/// kernel half refuses the same scope again if it ever is. A digest the book does not hold is a
+/// `NotFound`.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_negative_reasonless_or_non_root_adjust_is_refused_and_seals_nothing() {
+    let (book, digest) = a_book_with_one_recorded_unit("vk_adjust_refusals", "adjust-404-refusals");
+    let binding = an_adjusting_binding(&book);
+    let adjust = |granted, now: &str, reason: serde_json::Value| {
+        let mut body = serde_json::json!({ "amends": digest, "now": { "input": now } });
+        if !reason.is_null() {
+            body["reason"] = reason;
+        }
+        adjust_through_route(&binding, granted, body).map(|a| a.status)
+    };
+    let why = serde_json::json!("duplicate metering");
+
+    assert_eq!(
+        adjust(VerbScope::Full, "-1", why.clone()),
+        Err(ReasonCode::DecodeFailed),
+        "a count below zero"
+    );
+    assert_eq!(
+        adjust(VerbScope::Full, "800", serde_json::Value::Null),
+        Err(ReasonCode::DecodeFailed),
+        "no reason"
+    );
+    assert_eq!(
+        adjust(VerbScope::Full, "800", serde_json::json!("   ")),
+        Err(ReasonCode::DecodeFailed),
+        "a blank reason"
+    );
+    assert_eq!(
+        adjust(VerbScope::ReadOnly, "800", why.clone()),
+        Err(ReasonCode::ScopeDenied),
+        "a read-only credential"
+    );
+    assert_eq!(
+        adjust_through_route(
+            &binding,
+            VerbScope::Full,
+            serde_json::json!({ "amends": "00".repeat(32), "now": { "input": "1" }, "reason": "x" }),
+        )
+        .map(|a| a.status),
+        Err(ReasonCode::NoDestination),
+        "an entry the book does not hold"
+    );
+    // The kernel half's own scope check, reached directly: below `full` corrects nothing.
+    assert!(matches!(
+        adjust::adjust_effect(
+            br#"{"amends":"x","now":{"input":"1"},"reason":"y"}"#,
+            busbar_contract::authz::Scope::ReadOnly,
+            "admin",
+            |_| binding.ledger.recorded_counts(&digest),
+        ),
+        Err(busbar_core_admin::GovernanceError::Validation)
+    ));
+    assert!(
+        busbar_kernel::audit::amend::node_corrections()
+            .iter()
+            .all(|a| !matches!(
+                &a.body,
+                busbar_kernel::audit::amend::AmendBody::Adjust(adj)
+                    if adj.amends_hash == digest || adj.amends_hash == "x"
+            )),
+        "no refused correction was sealed"
+    );
+}
 
 /// **THE EXIT TEST FOR ITEM 271's WRITER SIDE, AT THE ROOT.** An admin idempotency cache bound to
 /// [`RootClaimJournal`] over a node with a data directory journals EXACTLY ONE claim for a key it
