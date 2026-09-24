@@ -13,14 +13,21 @@
 # list below is the ONLY custom labels the fleets issue, so a typo (`busbar-x1`, `latchkey-xlage`, a
 # label no runner actually carries) is still caught — the job would otherwise sit queued forever.
 #
-# THIS IS NOT A CI GATE TODAY. No workflow in .github/workflows/ invokes actionlint; the only caller
-# is scripts/land.sh's staged-file check, and even there it is conditional on
-# `command -v actionlint` — a contributor without the binary installed silently falls back to a plain
-# `yaml.safe_load` parse (which cannot catch a bad runner label at all). So "actionlint says so before
-# it is pushed" is true only for a contributor who both has actionlint installed AND runs
-# `scripts/land.sh` before pushing; nothing here or in CI enforces either. Wiring an unconditional
-# actionlint step into a workflow (so this file's labels are actually checked on every push/PR) is a
-# `.github/workflows/` change, outside this file's scope.
+# ACTIONLINT CI ENFORCEMENT: NOT WIRED. No workflow in .github/workflows/ invokes actionlint as of
+# this writing; the only caller is scripts/land.sh's staged-file check, and even there it is
+# conditional on `command -v actionlint` — a contributor without the binary installed silently falls
+# back to a plain `yaml.safe_load` parse (which cannot catch a bad runner label at all). So "actionlint
+# says so before it is pushed" is true only for a contributor who both has actionlint installed AND
+# runs `scripts/land.sh` before pushing; nothing here or in CI enforces either.
+#
+# This marker is measured, not asserted: `.github/scripts/actionlint-claim-selftest.sh` scans
+# .github/workflows/ for a REAL actionlint invocation (a `run:` line that executes the binary — not
+# a comment, a step `name:` mentioning the word, or an `echo`/`printf` string) and fails if this
+# marker disagrees with what it finds. Wiring an unconditional actionlint step into a workflow (so
+# this file's labels are actually checked on every push/PR) is a `.github/workflows/` change, outside
+# this file's scope — but whoever adds that step MUST flip the word NOT-WIRED above to WIRED (see
+# the selftest script for the exact marker text) in the same change, or the selftest goes red for
+# staleness.
 self-hosted-runner:
   labels:
     - busbar-xl

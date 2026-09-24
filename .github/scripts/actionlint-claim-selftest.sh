@@ -2,17 +2,30 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# Selftest for .github/actionlint.yaml (item 458 of the 1.6.0 audit).
+# Selftest for .github/actionlint.yaml (item 458 of the 1.6.0 audit; follow-up per architect note).
 #
 # 458: the file's header comment claimed "actionlint says so before it is pushed" as an
-#      unconditional guarantee. Measured: no workflow under .github/workflows/ invokes actionlint;
-#      the only caller is scripts/land.sh, and even there it is conditional on
-#      `command -v actionlint` (falls back to a bare YAML parse otherwise). The comment must not
-#      claim CI enforcement it does not have, and must say where real enforcement would need to be
-#      wired (a .github/workflows/ change, outside this file's directory).
+#      unconditional guarantee. Measured (at the time of the original fix): no workflow under
+#      .github/workflows/ invoked actionlint; the only caller was scripts/land.sh, gated behind
+#      `command -v actionlint`, falling back to a bare YAML parse (which cannot catch a bad runner
+#      label) when the binary isn't installed.
 #
-# Run: .github/scripts/actionlint-claim-selftest.sh   (exit 0 = the comment's claim matches
-# measured reality; non-zero = the file overclaims again, with the failing assertion on stderr)
+# Follow-up: the first version of this script hard-failed whenever ANY workflow merely CONTAINED
+# the word "actionlint" (a comment, a step `name:`, an `echo`) — which blocks W0.12 from ever wiring
+# a real CI invocation, since adding the word anywhere would trip it. Narrowed to detect a REAL
+# invocation: a line that is not a comment, not a bare step `name:`, and does not mention
+# `actionlint` only inside an `echo`/`printf` string — i.e. a `run:` line that actually executes the
+# `actionlint` binary as a command.
+#
+# The claim in .github/actionlint.yaml must track that measurement via one of two exact markers:
+#   - "ACTIONLINT CI ENFORCEMENT: NOT WIRED"  — while no real invocation exists anywhere in
+#     .github/workflows/
+#   - "ACTIONLINT CI ENFORCEMENT: WIRED"      — once a real invocation exists; whoever adds the
+#     workflow step (W0.12) must flip the marker in the same change, or this selftest goes red for
+#     staleness instead of for the original overclaim.
+#
+# Run: .github/scripts/actionlint-claim-selftest.sh   (exit 0 = the marker matches measured
+# reality; non-zero = it doesn't, with the failing assertion on stderr)
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -27,21 +40,64 @@ check() {
   fi
 }
 
-# Measure reality: no workflow invokes actionlint.
-if grep -rq 'actionlint' "$repo/.github/workflows/" 2>/dev/null; then
-  echo "RED — a workflow now invokes actionlint; this selftest's 'not a CI gate' claim is stale and .github/actionlint.yaml's comment must be revised to match (and this script updated)." >&2
-  fail=1
+marker_not_wired='ACTIONLINT CI ENFORCEMENT: NOT WIRED'
+marker_wired='ACTIONLINT CI ENFORCEMENT: WIRED'
+
+# Measure: does any workflow contain a REAL actionlint invocation?
+#   - skip comment-only lines (first non-space char is '#')
+#   - skip a bare step `name:` line mentioning the word (names describe, they don't execute)
+#   - skip a line where the mention is only inside an echo/printf string (fake invocation)
+# Anything else containing the word "actionlint" as a token is treated as a real invocation line.
+real_invocation=""
+if compgen -G "$repo/.github/workflows/*.yml" > /dev/null; then
+  for f in "$repo"/.github/workflows/*.yml; do
+    while IFS= read -r line; do
+      trimmed="$(printf '%s' "$line" | sed -E 's/^[[:space:]]+//')"
+      [ -z "$trimmed" ] && continue
+      case "$trimmed" in
+        '#'*) continue ;;
+      esac
+      # strip a leading YAML list-item marker ("- ") before checking for a bare step `name:` line —
+      # a step's *name* describing actionlint does not execute it.
+      unlisted="$(printf '%s' "$trimmed" | sed -E 's/^-[[:space:]]*//')"
+      case "$unlisted" in
+        name:*) continue ;;
+      esac
+      case "$trimmed" in
+        *actionlint*) : ;;
+        *) continue ;;
+      esac
+      case "$trimmed" in
+        *echo*actionlint*|*printf*actionlint*) continue ;;
+        *actionlint*echo*|*actionlint*printf*) continue ;;
+      esac
+      real_invocation="$f: $trimmed"
+      break
+    done < "$f"
+    [ -n "$real_invocation" ] && break
+  done
 fi
 
-# The file must no longer make the bare, unconditional "before it is pushed" claim without the
-# caveat that it is land.sh-local and command -v-gated.
-check "actionlint.yaml must not carry the bare unconditional claim without a caveat" \
-  bash -c "! grep -q 'and actionlint says so before it is pushed\.\$' '$cfg'"
-check "actionlint.yaml must state this is not a CI gate today" \
-  grep -q 'NOT A CI GATE TODAY' "$cfg"
-check "actionlint.yaml must name its one real (conditional) caller" \
+if [ -n "$real_invocation" ]; then
+  # RED arm: a real invocation now exists, but the claim is stale (still says NOT WIRED, or never
+  # says WIRED at all) — the file must be updated in the same change that wires the workflow step.
+  check "actionlint.yaml must claim WIRED now that a real invocation exists ($real_invocation)" \
+    grep -qF "$marker_wired" "$cfg"
+  check "actionlint.yaml must drop the NOT-WIRED marker now that a real invocation exists" \
+    bash -c "! grep -qF '$marker_not_wired' '$cfg'"
+else
+  # RED arm: no real invocation exists (including the case where the only workflow mentions of
+  # "actionlint" are a comment or an echo — those are filtered out above, so they count as "none"),
+  # but the file claims WIRED anyway, or has dropped the honest NOT-WIRED marker.
+  check "actionlint.yaml must claim NOT WIRED while no real invocation exists" \
+    grep -qF "$marker_not_wired" "$cfg"
+  check "actionlint.yaml must not claim WIRED while no real invocation exists" \
+    bash -c "! grep -qF '$marker_wired' '$cfg'"
+fi
+
+check "actionlint.yaml must name its one real (conditional) local caller" \
   grep -q 'scripts/land.sh' "$cfg"
-check "actionlint.yaml must name the command -v gate that makes the caller conditional" \
+check "actionlint.yaml must name the command -v gate that makes that caller conditional" \
   grep -q 'command -v actionlint' "$cfg"
 
 exit $fail
