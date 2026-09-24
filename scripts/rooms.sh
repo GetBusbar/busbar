@@ -30,11 +30,62 @@
 # catch it.
 set -euo pipefail
 
-REPO="${REPO:-/Users/matthew/Developer/GetBusbar/busbar}"
+die() { printf 'rooms: %s\n' "$*" >&2; exit 2; }
+
+# THE SUBJECT REPOSITORY IS THE CHECKOUT THIS SCRIPT LIVES IN (item 525). The default used to be a
+# hard-coded absolute path inside one developer's home directory, so running this from any other
+# checkout silently computed the denominator of a DIFFERENT tree — the one number this script exists
+# to make reader-independent. `REPO` still overrides; unset, it resolves from the script's own path,
+# and a script that is not inside a git work tree with no REPO set is refused, never guessed.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -z "${REPO:-}" ]; then
+  REPO="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null)" \
+    || die "REPO is unset and $SCRIPT_DIR is not inside a git work tree — set REPO to the subject repository"
+fi
+
+# ── SELF-TEST — the subject repository is the one the script sits in, not a fixed path. ─────────────
+# Builds a throwaway repo holding a COPY of this script, runs that copy with REPO unset, and asserts
+# the denominator it computed is the throwaway repo's (its trunk sha, its one file). Control: the same
+# copy placed OUTSIDE any repo honours an explicit REPO, and with REPO unset it is refused.
+if [ "${1:-}" = "--selftest" ]; then
+  st="$(mktemp -d)"; trap 'rm -rf "$st"' EXIT
+  fails=0
+  mkdir -p "$st/repo/scripts" "$st/loose"
+  cp "${BASH_SOURCE[0]}" "$st/repo/scripts/rooms.sh"
+  cp "${BASH_SOURCE[0]}" "$st/loose/rooms.sh"
+  printf 'room-selftest-marker\n' >"$st/repo/marker.txt"
+  git -C "$st/repo" init -q
+  git -C "$st/repo" -c user.name=selftest -c user.email=selftest@invalid add -A
+  git -C "$st/repo" -c user.name=selftest -c user.email=selftest@invalid -c core.hooksPath=/dev/null commit -q --no-verify -m fixture
+  sha="$(git -C "$st/repo" rev-parse HEAD)"
+
+  if env -u REPO OUT="$st/out1" bash "$st/repo/scripts/rooms.sh" "$sha" >/dev/null 2>"$st/err1" \
+     && grep -q "\"trunk\": \"$sha\"" "$st/out1/ROOMS.json" \
+     && grep -q $'\tmarker.txt$' "$st/out1/A.tsv"; then
+    echo "  PASS  REPO unset: the denominator is the checkout the script lives in"
+  else
+    echo "  FAIL  REPO unset: the script measured some other repository ($(tail -1 "$st/err1" 2>/dev/null))"
+    fails=$((fails+1))
+  fi
+  if REPO="$st/repo" OUT="$st/out2" bash "$st/loose/rooms.sh" "$sha" >/dev/null 2>&1 \
+     && grep -q $'\tmarker.txt$' "$st/out2/A.tsv"; then
+    echo "  PASS  control: an explicit REPO is honoured from outside any checkout"
+  else
+    echo "  FAIL  control: an explicit REPO was not honoured"
+    fails=$((fails+1))
+  fi
+  if (cd "$st/loose" && env -u REPO OUT="$st/out3" GIT_CEILING_DIRECTORIES="$st" bash "$st/loose/rooms.sh" "$sha") >/dev/null 2>&1; then
+    echo "  FAIL  REPO unset outside any checkout was NOT refused — the subject was guessed"
+    fails=$((fails+1))
+  else
+    echo "  PASS  REPO unset outside any checkout is refused, never guessed"
+  fi
+  if [ "$fails" -eq 0 ]; then echo "rooms self-test: ALL GREEN"; exit 0; fi
+  echo "rooms self-test: $fails FAILED"; exit 1
+fi
+
 OUT="${OUT:-/tmp/rooms}"
 TRUNK="${1:-}"
-
-die() { printf 'rooms: %s\n' "$*" >&2; exit 2; }
 [ -n "$TRUNK" ] || die "usage: rooms.sh <trunk-sha> — the pin is an argument, never a default"
 
 # Resolve the pin to a full sha and FAIL if it is not a commit. A pin that silently
