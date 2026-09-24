@@ -30,6 +30,20 @@ const MAX_AFFINITY_HEADER_NAME_LEN: usize = 64;
 /// guaranteed to panic (on this target width) are newly rejected as a clean `400`/boot `die()`
 /// instead.
 const MAX_SEMAPHORE_PERMITS: usize = tokio::sync::Semaphore::MAX_PERMITS;
+/// The ceiling on every operator-set DURATION (item 147): 30 years, in seconds. Every duration knob
+/// on the settings surface ends up as `Instant + Duration` (a deadline, an idle expiry, a sleep or
+/// an interval tick), and `std`'s `Instant + Duration` PANICS on overflow — which is how
+/// `limits.pool_idle_timeout_secs: 9223372036854775808` panicked the egress pool's reaper under its
+/// mutex and killed the shard's egress until restart. The bound is the runtime's own horizon, not a
+/// policy opinion: 30 years is `tokio::time::Instant::far_future()`, the deadline tokio itself
+/// substitutes when an addition would overflow, so no value above it buys any behaviour the
+/// runtime can express — and every value at or below it is representable as `Instant + Duration`,
+/// as u64 nanoseconds (584 years) and as u64 milliseconds on every target. Every value that works
+/// today keeps working; only values that were a latent overflow are refused (boot `die()`,
+/// `400 invalid_request` on the admin settings apply).
+const MAX_DURATION_SECS: u64 = 30 * 365 * 86_400;
+/// [`MAX_DURATION_SECS`] for the millisecond-denominated knobs.
+const MAX_DURATION_MS: u64 = MAX_DURATION_SECS * 1_000;
 // SSRF host guards relocated DOWN into the neutral `busbar-substrate` net_guard leaf (Batch A),
 // re-exported here so every in-core caller keeps naming `config_validate::{…}` unchanged and the
 // two SSRF guards still single-source their byte-identical atoms.
@@ -1195,6 +1209,15 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // `delivery_timeout_secs`, so this check runs once per configured sink rather than once over a
     // single process-global value that could only ever describe one of them.
     for (i, w) in cfg.export.request_log_webhooks.iter().enumerate() {
+        if w.delivery_timeout_secs > MAX_DURATION_SECS {
+            errors.push(format!(
+                "the `module: request-log-webhook` export instance targeting '{}' (#{i}) sets \
+                 settings.delivery_timeout_secs: {}, above the {MAX_DURATION_SECS}-second (30-year) \
+                 ceiling every duration is bounded by — a delivery deadline that far out overflows \
+                 the clock",
+                w.url, w.delivery_timeout_secs
+            ));
+        }
         if w.delivery_timeout_secs < 1 {
             errors.push(format!(
                 "the `module: request-log-webhook` export instance targeting '{}' (#{i}) sets \
@@ -1246,6 +1269,8 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
 /// value, so we only reject values that would make a subsystem non-functional.
 fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<String>) {
     use crate::config::{REQUEST_BODY_MAX_BYTES_CEIL, REQUEST_BODY_MAX_BYTES_FLOOR};
+
+    validate_limit_ceilings(limits, errors);
 
     // Timeouts must be >= 1s — a 0s timeout fires instantly and breaks the path it guards.
     if limits.upstream_request_timeout_secs < 1 {
@@ -1375,6 +1400,104 @@ fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<Stri
              Semaphore's hard permit ceiling — a value above it panics at build time instead of \
              failing validation), or 0 to disable the inbound-concurrency layer entirely"
         ));
+    }
+}
+
+/// THE UNBOUNDED-NUMERIC SWEEP (item 147): every numeric on the settings surface declares its
+/// bound here. This is an EXHAUSTIVE destructure of `LimitsResolved` (no `..`), so a numeric added
+/// there cannot compile until it is classified below as either DURATION-BOUNDED (it reaches
+/// `Instant + Duration`, a sleep or an interval, so it is capped at [`MAX_DURATION_SECS`] /
+/// [`MAX_DURATION_MS`]) or SAFE AT ANY VALUE with the reason — the "API reports success, the
+/// clock arithmetic panics later" class cannot re-enter by omission.
+fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut Vec<String>) {
+    let crate::config::LimitsResolved {
+        // DURATION-BOUNDED (seconds).
+        upstream_request_timeout_secs,
+        pool_idle_timeout_secs,
+        hard_down_cooldown_secs,
+        tls_handshake_timeout_secs,
+        request_body_read_timeout_secs,
+        max_honored_retry_after_secs,
+        default_probe_interval_secs,
+        default_probe_timeout_secs,
+        // DURATION-BOUNDED (milliseconds).
+        usage_flush_interval_ms,
+        default_policy_timeout_ms,
+        // BOUNDED ELSEWHERE in `validate_limits`: the byte window, and the `Semaphore::new` panic
+        // ceiling.
+        request_body_max_bytes: _,
+        max_inbound_concurrent: _,
+        max_inflight_webhook_deliveries: _,
+        // SAFE AT ANY VALUE — compared against a count/length only, never added to, allocated
+        // from, or slept on (0 = unlimited where documented).
+        pool_max_idle_per_host: _,
+        max_keys_per_principal: _,
+        max_auto_provisioned_groups: _,
+        hook_content_max_bytes: _,
+        upstream_error_body_max_bytes: _,
+        key_gauge_limit: _,
+        // SAFE AT ANY VALUE — a u32 modulus (`== 0` refused in `validate_limits`).
+        rate_sweep_interval: _,
+        // SAFE AT ANY VALUE — u32 token counts injected verbatim into the upstream body (the
+        // upstream judges them; no local arithmetic).
+        default_max_tokens: _,
+        reasoning_effort_budgets: _,
+        // Not numeric.
+        upstream_http1_only: _,
+        upstream_h2_prior_knowledge: _,
+    } = limits;
+    let secs = [
+        (
+            "limits.upstream_request_timeout_secs",
+            *upstream_request_timeout_secs,
+        ),
+        ("limits.pool_idle_timeout_secs", *pool_idle_timeout_secs),
+        ("limits.hard_down_cooldown_secs", *hard_down_cooldown_secs),
+        (
+            "limits.tls_handshake_timeout_secs",
+            *tls_handshake_timeout_secs,
+        ),
+        (
+            "limits.request_body_read_timeout_secs",
+            *request_body_read_timeout_secs,
+        ),
+        (
+            "limits.max_honored_retry_after_secs",
+            *max_honored_retry_after_secs,
+        ),
+        (
+            "health.default_probe_interval_secs",
+            *default_probe_interval_secs,
+        ),
+        (
+            "health.default_probe_timeout_secs",
+            *default_probe_timeout_secs,
+        ),
+    ];
+    for (name, v) in secs {
+        if v > MAX_DURATION_SECS {
+            errors.push(format!(
+                "{name} ({v}) exceeds the maximum of {MAX_DURATION_SECS} s (30 years, the async \
+                 runtime's own 'never' horizon); a larger duration overflows the clock arithmetic \
+                 it feeds. Lower it to <= {MAX_DURATION_SECS}"
+            ));
+        }
+    }
+    let millis = [
+        ("advanced.usage_flush_interval_ms", *usage_flush_interval_ms),
+        (
+            "routing.default_policy_timeout_ms",
+            *default_policy_timeout_ms,
+        ),
+    ];
+    for (name, v) in millis {
+        if v > MAX_DURATION_MS {
+            errors.push(format!(
+                "{name} ({v}) exceeds the maximum of {MAX_DURATION_MS} ms (30 years, the async \
+                 runtime's own 'never' horizon); a larger duration overflows the clock arithmetic \
+                 it feeds. Lower it to <= {MAX_DURATION_MS}"
+            ));
+        }
     }
 }
 

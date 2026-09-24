@@ -5740,3 +5740,69 @@ fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
         "a non-empty canonical key must not raise the empty-secret error; got: {errs:?}"
     );
 }
+
+/// ITEM 147 — the unbounded-numeric sweep. `limits.pool_idle_timeout_secs` at 2^63 used to pass
+/// validation (so the admin settings apply answered 200) and then overflow `Instant + Duration`
+/// under the egress pool mutex, killing the shard's egress until restart. Every duration on the
+/// settings surface — and the per-instance webhook `delivery_timeout_secs` — is now refused above
+/// the 30-year runtime horizon, by name; the boundary value itself stays clean.
+#[test]
+fn test_validate_refuses_every_duration_past_the_runtime_horizon() {
+    let over_s = MAX_DURATION_SECS + 1;
+    let over_ms = MAX_DURATION_MS + 1;
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    cfg.limits.pool_idle_timeout_secs = 1u64 << 63;
+    cfg.limits.upstream_request_timeout_secs = over_s;
+    cfg.limits.hard_down_cooldown_secs = over_s;
+    cfg.limits.tls_handshake_timeout_secs = over_s;
+    cfg.limits.request_body_read_timeout_secs = over_s;
+    cfg.limits.max_honored_retry_after_secs = over_s;
+    cfg.limits.default_probe_interval_secs = over_s;
+    cfg.limits.default_probe_timeout_secs = u64::MAX;
+    cfg.limits.usage_flush_interval_ms = over_ms;
+    cfg.limits.default_policy_timeout_ms = u64::MAX;
+    let webhook: crate::config::WebhookSettings = serde_json::from_value(serde_json::json!({
+        "url": "https://hooks.example.com/ingest",
+        "delivery_timeout_secs": u64::MAX,
+    }))
+    .expect("webhook settings");
+    cfg.export.request_log_webhooks.push(webhook);
+
+    let errs = validate(&cfg).expect_err("every over-horizon duration must fail validation");
+    for name in [
+        "limits.pool_idle_timeout_secs (9223372036854775808) exceeds",
+        "limits.upstream_request_timeout_secs",
+        "limits.hard_down_cooldown_secs",
+        "limits.tls_handshake_timeout_secs",
+        "limits.request_body_read_timeout_secs",
+        "limits.max_honored_retry_after_secs",
+        "health.default_probe_interval_secs",
+        "health.default_probe_timeout_secs",
+        "advanced.usage_flush_interval_ms",
+        "routing.default_policy_timeout_ms",
+        "settings.delivery_timeout_secs: 18446744073709551615",
+    ] {
+        assert!(
+            errs.iter()
+                .any(|e| e.contains(name) && (e.contains("30-year") || e.contains("30 years"))),
+            "expected a named over-horizon refusal for {name}; got: {errs:?}"
+        );
+    }
+
+    // The exact boundary is accepted — the ceiling refuses only what overflows.
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    cfg.limits.pool_idle_timeout_secs = MAX_DURATION_SECS;
+    cfg.limits.upstream_request_timeout_secs = MAX_DURATION_SECS;
+    cfg.limits.default_probe_timeout_secs = MAX_DURATION_SECS;
+    cfg.limits.usage_flush_interval_ms = MAX_DURATION_MS;
+    cfg.limits.default_policy_timeout_ms = MAX_DURATION_MS;
+    assert!(
+        validate(&cfg).is_ok(),
+        "the boundary values must not error: {:?}",
+        validate(&cfg)
+    );
+    // And the boundary itself is representable where the old overflow happened.
+    assert!(std::time::Instant::now()
+        .checked_add(std::time::Duration::from_millis(MAX_DURATION_MS))
+        .is_some());
+}
