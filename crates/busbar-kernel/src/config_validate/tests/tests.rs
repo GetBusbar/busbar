@@ -3944,10 +3944,9 @@ fn priced_entry() -> config::RateEntryCfg {
 /// type-erased seam `DeployCfg` deserializes it through — so this reads the same in a build with
 /// the owning plane compiled in (a parsed registry) and one with it compiled out (a raw capture).
 fn present_tools_section() -> Box<dyn busbar_kernel::plane::config::PlaneCfg> {
-    let section: crate::plane::config::ToolsSection = serde_yaml::from_str(
-        "an-mcp-server:\n  url: \"https://mcp.example.com/mcp\"\n",
-    )
-    .expect("a one-registration tools section must parse");
+    let section: crate::plane::config::ToolsSection =
+        serde_yaml::from_str("an-mcp-server:\n  url: \"https://mcp.example.com/mcp\"\n")
+            .expect("a one-registration tools section must parse");
     assert!(
         section.0.is_present(),
         "the fixture must be a section the operator wrote content for"

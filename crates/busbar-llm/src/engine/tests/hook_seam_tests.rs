@@ -558,7 +558,10 @@ fn lanes(n: usize) -> Vec<WeightedLane> {
         .collect()
 }
 
-async fn fire<A: busbar_kernel::test_support::BuiltAppSeam>(app: Arc<A>, n_lanes: usize) -> Response {
+async fn fire<A: busbar_kernel::test_support::BuiltAppSeam>(
+    app: Arc<A>,
+    n_lanes: usize,
+) -> Response {
     forward_with_pool(
         &app,
         lanes(n_lanes),

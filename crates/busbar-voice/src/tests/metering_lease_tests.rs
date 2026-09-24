@@ -21,8 +21,8 @@
 use crate::mount::{open_governed, GovernedOpen, Ingress};
 use crate::runtime::metering::TurnMeter;
 use crate::runtime::{cap_nanos_from_buckets, EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
-use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use crate::testkit::fixture_host::FixtureHost;
+use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

@@ -585,4 +585,3 @@ pub fn split_comment_line(line: &str, in_block: &mut bool) -> (String, String) {
 pub fn strip_comment_line(line: &str, in_block: &mut bool) -> String {
     split_comment_line(line, in_block).0
 }
-

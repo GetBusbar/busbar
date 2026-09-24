@@ -203,7 +203,11 @@ fn a_model_the_card_prices_at_explicit_zero_is_free_and_does_not_block() {
         "an entry that exists is priced, whatever it is priced AT"
     );
     assert_eq!(
-        pricer.derive_spend_cents([("free-on-purpose", &a_million_each())].into_iter(), 1, true),
+        pricer.derive_spend_cents(
+            [("free-on-purpose", &a_million_each())].into_iter(),
+            1,
+            true
+        ),
         2,
         "two million tokens at an explicit zero rate cost the flat fee and nothing else"
     );
@@ -219,7 +223,11 @@ fn with_no_card_at_all_an_unknown_model_still_reads_the_fee_alone() {
         "billing off: no card, so no class is unpriced"
     );
     assert_eq!(
-        pricer.derive_spend_cents([("anything-at-all", &a_million_each())].into_iter(), 1, true),
+        pricer.derive_spend_cents(
+            [("anything-at-all", &a_million_each())].into_iter(),
+            1,
+            true
+        ),
         2,
         "#42: a silent 0 is correct — and only correct — when rate_card is absent"
     );

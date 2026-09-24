@@ -197,7 +197,14 @@ fn a_walk_below_its_floor_is_an_error_not_a_clean_tree() {
         )
         .expect_err("zero files under a floor of one must not read as a clean scan");
     assert!(
-        matches!(err, WalkError::BelowFloor { found: 0, floor: 1, .. }),
+        matches!(
+            err,
+            WalkError::BelowFloor {
+                found: 0,
+                floor: 1,
+                ..
+            }
+        ),
         "the floor must refuse the empty set even when the scope allows empty: {err:?}"
     );
 

@@ -389,7 +389,10 @@ fn resolve_builtin_env_genuinely_unset_still_reports_unset() {
     let var = unique("ENV_STILL_UNSET");
     std::env::remove_var(&var);
     let err = busbar_api::resolve_builtin(&SecretRef::env(&var)).unwrap_err();
-    assert!(err.contains("unset"), "a truly absent variable is unset: {err}");
+    assert!(
+        err.contains("unset"),
+        "a truly absent variable is unset: {err}"
+    );
     assert!(err.contains(&var), "{err}");
 }
 
@@ -452,8 +455,9 @@ fn resolve_builtin_file_whitespace_only_content_is_fail_closed() {
     for blank in [b"   ".to_vec(), b"\n\r\n".to_vec(), b"\t \n".to_vec()] {
         let path = temp_path("FILE_BLANK");
         std::fs::write(&path, &blank).unwrap();
-        let err = busbar_api::resolve_builtin(&SecretRef::file(path.to_str().unwrap()))
-            .expect_err(&format!("whitespace-only file content {blank:?} must be refused"));
+        let err = busbar_api::resolve_builtin(&SecretRef::file(path.to_str().unwrap())).expect_err(
+            &format!("whitespace-only file content {blank:?} must be refused"),
+        );
         assert!(
             err.contains("BLANK") || err.contains("blank"),
             "a present-but-blank file is not a credential: {err}"

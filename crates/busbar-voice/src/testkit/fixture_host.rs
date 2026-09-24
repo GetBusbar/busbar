@@ -24,6 +24,7 @@
 //! no identity chain, no completion pipeline). It is a test double: a leg the fixture does not model
 //! answers its documented empty value rather than pretending to be the engine.
 
+use busbar_api::{AuthPrincipal, IdentityRefusal, PlaneRequestCtx, VirtualKey};
 use busbar_kernel::billing::{TokenUsage, Usage};
 use busbar_kernel::breaker::{CanonicalSignal, Disposition};
 use busbar_kernel::hooks::{RequestedSignals, ResolvedPolicy, TapEntry};
@@ -38,7 +39,6 @@ use busbar_kernel::plane_host::{
 use busbar_kernel::store::{BreakerState, HealthState, LaneRuntime, Unavailable};
 use busbar_kernel::trust::validate::{Lapsed, Standing};
 use busbar_kernel::trust::TrustState;
-use busbar_api::{AuthPrincipal, IdentityRefusal, PlaneRequestCtx, VirtualKey};
 use busbar_plugin::hot::{AdmissionId, Signal};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};

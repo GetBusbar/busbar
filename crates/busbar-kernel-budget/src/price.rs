@@ -234,8 +234,11 @@ impl Pricer {
             // zero rate, and with the card present `model_unpriced` already returned for every
             // model the table does not hold. The `unwrap_or_default` is the unreachable arm made
             // total, not a second resolution of the ruling.
-            nanos = nanos
-                .saturating_add(self.rate_for(model).unwrap_or_default().reserved_nanos(units));
+            nanos = nanos.saturating_add(
+                self.rate_for(model)
+                    .unwrap_or_default()
+                    .reserved_nanos(units),
+            );
         }
         let mut cents = i64::try_from(nanos / NANOS_PER_CENT).unwrap_or(i64::MAX);
         if include_request_fee {
