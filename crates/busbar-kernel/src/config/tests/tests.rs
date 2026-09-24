@@ -3868,6 +3868,37 @@ fn test_auth_policy_block_parses_and_resolves() {
     );
 }
 
+/// `auth:`'s unknown-key refusal names 1.5.5's five keys and no 1.6.0 one (oracle cell
+/// `neutrality|NEUT-U-auth|validate`), while `auth.operator_pub` still parses and still resolves.
+/// It was a plain field of the frozen struct (f83513b41), so serde listed it in the refusal.
+#[test]
+fn test_auth_operator_pub_is_lifted_off_the_1_5_5_refusal() {
+    crate::test_support::register_neutral_test_plane();
+    let err = crate::config::deploy_from_yaml_str(
+        "auth:\n  chain: [keys]\n  bogus_key: 1\nproviders: {}\nmodels: {}\npools: {}\n",
+    )
+    .expect_err("an unknown auth key refuses")
+    .to_string();
+    assert!(
+        err.contains(
+            "auth: unknown field `bogus_key`, expected one of `signing_key`, `chain`, \
+             `admin_auth`, `role_bindings`, `key_ttl` at line 3 column 3"
+        ),
+        "{err}"
+    );
+    let deploy: DeployCfg = crate::config::deploy_from_yaml_str(
+        "auth:\n  chain: [keys]\n  operator_pub: { env: OPERATOR_PUB }\n\
+         providers: {}\nmodels: {}\npools: {}\n",
+    )
+    .expect("the 1.6.0 auth.operator_pub key parses");
+    let auth = deploy.auth.as_ref().expect("auth block");
+    assert_eq!(auth.operator_pub, Some(SecretRef::env("OPERATOR_PUB")));
+    let mut errors = Vec::new();
+    let resolved = crate::config::resolve_auth(auth, &deploy.identity_providers, &mut errors);
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(resolved.operator_pub, Some(SecretRef::env("OPERATOR_PUB")));
+}
+
 /// An omitted `auth.policy:` block resolves to `Default` — every field None/empty — so a config that
 /// predates the block behaves exactly as before (byte-identical: nothing consults it).
 #[test]
