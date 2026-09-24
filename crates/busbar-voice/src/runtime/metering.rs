@@ -23,9 +23,10 @@ use busbar_substrate_values::billing::Usage;
 use std::sync::Arc;
 
 /// THE PRESENTING KEY a live session is metered for, before the session opens: the live host, the
-/// resolved key, the front-door pool its buckets are filtered by, and the provider label its series
-/// row carries. Built at the governed open (where the key and the host are both in hand); `None` on an
-/// ungoverned deployment, which has no key to attribute anything to.
+/// resolved key, the front-door pool its buckets are filtered by, and the upstream's provider label
+/// (the lane's subject when the session names no model). Built at the governed open (where the key
+/// and the host are both in hand); `None` on an ungoverned deployment, which has no key to attribute
+/// anything to.
 pub struct TurnMeter {
     host: Arc<dyn EngineHost>,
     key: busbar_api::VirtualKey,
@@ -56,6 +57,9 @@ impl TurnMeter {
     ///
     /// The ledger lane is `voice` + U+001F + the model (the provider label when the session names no
     /// model), so the view prices it with the `streams` card and never with the llm plane's flat one.
+    /// That lane is also the session's ONE metering row: the kernel's accrual mirrors each count onto
+    /// the row keyed `(model: <model or provider label>, provider: voice)` — this plane's key, the way
+    /// an MCP or A2A row carries theirs — so `GET /admin/usage` reads it as a streams row.
     pub fn open(self, model: &str) -> Result<Option<SessionMetering>, BudgetRefused> {
         let name = if model.is_empty() {
             self.provider
@@ -69,39 +73,34 @@ impl TurnMeter {
         );
         let account =
             SessionAccount::open(Arc::clone(&self.host), Some(&self.key), self.pool, lane)?;
-        Ok(account.map(|account| SessionMetering {
-            account,
-            model: model.to_string(),
-            meter: self,
-        }))
+        Ok(account.map(|account| SessionMetering { account }))
     }
 }
 
-/// ONE OPEN SESSION'S METERING, plane-side: the kernel account its turns are reported to, and the
-/// attribution its per-model series row is written under.
+/// ONE OPEN SESSION'S METERING, plane-side: the kernel account its turns are reported to.
 pub struct SessionMetering {
     account: SessionAccount,
-    model: String,
-    meter: TurnMeter,
 }
 
 impl SessionMetering {
     /// Report ONE closed turn — `usage` is the upstream's report (`None` for a turn that ended on an
     /// error or with the session), `counters` the plane's own bookkeeping — to the kernel account,
-    /// which ledgers its raw counts per class and answers whether the carrier stays open. A reported
-    /// turn also writes its series row (the admin usage report's per-model request count), exactly as
-    /// before.
+    /// which ledgers its raw counts per class and answers whether the carrier stays open.
+    ///
+    /// THAT IS THE TURN'S WHOLE METERING (#47, OWNER RULING Q32). A turn writes no series row of its
+    /// own: a series row counts a REQUEST, and a turn is not one — the session is admitted and paid
+    /// for once at its open (`fees.per_session`), and a turn of a conversation already opened draws
+    /// no per-request fee in the budget book. The series row this used to write carried the UPSTREAM
+    /// dialect label (`openai_realtime`) as its provider, so `GET /admin/usage` read it as a pools
+    /// row and charged the pools plane's flat `per_request_fee:` per turn; keyed by this plane
+    /// instead, it would have charged `streams.fees.per_request` per turn. The budget book charges
+    /// neither, and the view now agrees with it: the turn's counts reach the metering row through the
+    /// kernel's one accrual, on the plane-keyed row [`TurnMeter::open`] names.
     pub fn report_turn(
         &self,
         usage: Option<&crate::ir::usage::IrDuplexUsage>,
         counters: TurnCounters,
     ) -> TurnVerdict {
-        let m = &self.meter;
-        if let (Some(pin), Some(_)) = (m.host.meter_pin(), usage) {
-            let now = m.host.clock_now_secs();
-            m.host
-                .meter_series(pin.gov(), &m.key.id, &self.model, m.provider, None, now);
-        }
         self.account.report_turn(&plane_counts(usage, counters))
     }
 }

@@ -17,8 +17,9 @@
 //!   `gate_decide` / `tap_attached` / `transform_over` legs run exactly as they do over a configured
 //!   deployment;
 //! * the per-key usage LEDGER the metering seams land on (`meter_ledger` / `meter_series`), readable
-//!   through [`FixtureHost::ledger_usage`] and, per `(lane, class)`, [`FixtureHost::ledger_rows`] once
-//!   the host is [`governed`](FixtureHost::governed);
+//!   through [`FixtureHost::ledger_usage`], per `(lane, class)` through [`FixtureHost::ledger_rows`],
+//!   and per series row through [`FixtureHost::series_rows`] once the host is
+//!   [`governed`](FixtureHost::governed);
 //! * the key's BUDGET VIEW (`budget_state`): a chain a test sets outright
 //!   ([`FixtureHost::with_budget_chain`] / [`FixtureHost::set_budget_chain`]), or a count cap
 //!   ([`FixtureHost::with_count_cap`]) whose remaining is the cap less every count ledgered — so the
@@ -108,6 +109,8 @@ struct Inner {
     count_cap: Option<i64>,
     /// Every count `meter_ledger` landed, per key, per `(lane, class)`.
     rows: BTreeMap<String, BTreeMap<(String, String), u64>>,
+    /// Every series row `meter_series` wrote, per key, as `(model, provider)`, in order.
+    series: BTreeMap<String, Vec<(String, String)>>,
     /// Every request a plane reported through `request_finished`, in order.
     finished: Vec<FinishedRequest>,
 }
@@ -245,6 +248,13 @@ impl FixtureHost {
     #[must_use]
     pub fn ledger_rows(&self, key_id: &str) -> BTreeMap<(String, String), u64> {
         self.lock().rows.get(key_id).cloned().unwrap_or_default()
+    }
+
+    /// Every series row `key_id`'s metering wrote through `meter_series`, as `(model, provider)`, in
+    /// order — the rows whose `provider` column decides which plane `GET /admin/usage` prices them as.
+    #[must_use]
+    pub fn series_rows(&self, key_id: &str) -> Vec<(String, String)> {
+        self.lock().series.get(key_id).cloned().unwrap_or_default()
     }
 
     /// Every admin-audit row [`JournalHost::audit_record`] has landed on this host, in emission order —
@@ -589,12 +599,17 @@ impl BudgetHost for FixtureHost {
     fn meter_series(
         &self,
         _gov: &GovHandle,
-        _key_id: &str,
-        _model: &str,
-        _provider: &str,
+        key_id: &str,
+        model: &str,
+        provider: &str,
         _usage: Option<&TokenUsage>,
         _now: u64,
     ) {
+        self.lock()
+            .series
+            .entry(key_id.to_string())
+            .or_default()
+            .push((model.to_string(), provider.to_string()));
     }
 }
 

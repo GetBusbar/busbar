@@ -8,9 +8,9 @@
 //! response stream completes."
 //!
 //! It drives a voice turn's usage through the SHIPPED path — `SessionCore`'s per-turn metering, which
-//! reports the turn to the kernel's session account (`host.meter_ledger`, plus the series row through
-//! `host.meter_series`) — over a GOVERNED host, then reads the key's usage back off the host's ledger. A voice session that "bills nobody" (the
-//! pre-fix state) reads back zero tokens; a fixed one reads the turn.
+//! reports the turn to the kernel's session account (`host.meter_ledger`) — over a GOVERNED host, then
+//! reads the key's usage back off the host's ledger. A voice session that "bills nobody" (the pre-fix
+//! state) reads back zero tokens; a fixed one reads the turn.
 //!
 //! The host is the substrate's in-memory fixture host with governance ON: its `meter_ledger` seam is
 //! the one ledger this test reads back (`ledger_usage(key)`), keyed by the presenting key exactly as
@@ -56,7 +56,7 @@ fn a_voice_turn_lands_spend_on_the_presenting_keys_ledger() {
     assert_eq!(before, (0, 0), "a fresh key has no ledgered usage");
 
     // Drive ONE voice turn's usage through the SHIPPED Meter seam — the exact call `SessionCore`
-    // makes per turn (the kernel session account → `host.meter_ledger`, and `host.meter_series`).
+    // makes per turn (the kernel session account → `host.meter_ledger`).
     let meter = TurnMeter::new(
         Arc::clone(&host) as Arc<dyn busbar_kernel::plane_host::EngineHost>,
         key.clone(),
@@ -102,4 +102,57 @@ fn an_ungoverned_voice_turn_meters_nobody_without_panicking() {
     // Must not panic even though there is no ledger to write to.
     assert!(matches!(meter.open("voice-model"), Ok(None)));
     let _ = turn_usage(10, 5);
+}
+
+/// **EVERY ROW A VOICE SESSION'S METERING WRITES IS THE STREAMS PLANE'S** (#47, OWNER RULING Q32).
+///
+/// `GET /admin/usage` knows a metering row as a plane's row by its `provider` column naming a
+/// registered plane key; any other row is a pools row, priced at the pools plane's flat
+/// `per_request_fee:` per request. Each turn used to write a series row with the UPSTREAM dialect
+/// label (`openai_realtime`) as its provider — a pools row — so, with a flat fee of 5, a three-turn
+/// session read 15 on `/admin/usage` while the budget book (which charges a turn no per-request fee)
+/// read 0. The turn's counts now reach the metering row only through the kernel's one accrual
+/// (`meter_ledger`), on the plane-qualified lane the kernel keys by this plane: `/admin/usage` reads
+/// 0, as the book does, and the session's own fee (`streams.fees.per_session`) is the fee lane's.
+#[test]
+fn a_voice_sessions_metering_writes_no_row_keyed_by_the_upstream_provider() {
+    let (host, key) = governed_fixture();
+    let meter = TurnMeter::new(
+        Arc::clone(&host) as Arc<dyn busbar_kernel::plane_host::EngineHost>,
+        key.clone(),
+        "voice-server",
+        crate::OPENAI_REALTIME,
+    );
+    let session = meter
+        .open("gpt-realtime")
+        .expect("an uncapped chain opens")
+        .expect("a governed host opens an account");
+    for _ in 0..3 {
+        let _ = session.report_turn(Some(&turn_usage(30, 4)), TurnCounters::default());
+    }
+
+    assert_eq!(
+        host.series_rows(&key.id),
+        Vec::<(String, String)>::new(),
+        "a turn is not a request: no per-turn series row (one keyed by the upstream provider \
+         reads as a pools row, charged the flat per_request_fee per turn on /admin/usage)"
+    );
+    let plane_lane = format!(
+        "{}{}",
+        crate::PLANE_KEY,
+        busbar_kernel::governance::PLANE_LANE_SEP
+    );
+    let rows = host.ledger_rows(&key.id);
+    assert!(
+        rows.keys().all(|(lane, _)| lane.starts_with(&plane_lane)),
+        "every count lands on a lane qualified by this plane's key: {rows:?}"
+    );
+    assert_eq!(
+        rows.get(&(
+            format!("{plane_lane}gpt-realtime"),
+            "audio_tokens_in".to_string()
+        )),
+        Some(&90),
+        "the three turns' counts, on the plane-qualified model lane"
+    );
 }
