@@ -1162,7 +1162,6 @@ known_sites = [
   "crates/busbar-kernel/src/ingress/mod.rs:915",
   "crates/busbar-kernel/src/metrics/money.rs:160",
   "crates/busbar-kernel/src/metrics/money.rs:224",
-  "crates/busbar-kernel/src/metrics.rs:1246",
   "crates/busbar-kernel/src/plane/config.rs:368",
   "crates/busbar-kernel/src/plane_host/build_input.rs:149",
   "crates/busbar-kernel/src/router.rs:419",
