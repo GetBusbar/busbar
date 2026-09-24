@@ -322,21 +322,28 @@ impl Gate for ResponseHeaderGate {
             ));
         }
 
-        for rule in rules() {
-            let mut offenders = Vec::new();
-            for f in &files {
-                let rel = f.rel_str();
+        // ONE PASS OVER THE POPULATION, EVERY RULE READ IN IT. Each file's production lines are
+        // derived once and every rule's needle is looked for in them; deriving them once per rule
+        // re-lexed the whole tree five times over for the same answer.
+        let rules = rules();
+        let mut offenders: Vec<Vec<String>> = vec![Vec::new(); rules.len()];
+        for f in &files {
+            let rel = f.rel_str();
+            let lines = f.production_lines();
+            for (rule, found) in rules.iter().zip(offenders.iter_mut()) {
                 if rel == rule.allow {
                     continue;
                 }
-                for (lineno, code) in f.production_lines() {
+                for (lineno, code) in &lines {
                     if code.contains(rule.needle) {
-                        offenders.push(finding(&rel, lineno, rule.what, rule.allow));
+                        found.push(finding(&rel, *lineno, rule.what, rule.allow));
                     }
                 }
             }
-            offenders.sort();
-            head.push(row_for(&rule, &offenders));
+        }
+        for (rule, mut found) in rules.iter().zip(offenders) {
+            found.sort();
+            head.push(row_for(rule, &found));
         }
         Verdict::of(head)
     }
