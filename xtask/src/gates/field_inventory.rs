@@ -1004,7 +1004,6 @@ mod tests {
             .find(|r| r.id == id)
             .unwrap_or_else(|| panic!("{id} was not emitted"))
             .status
-            .clone()
     }
 
     /// ITEM 168: `:both-directions` CAN GO RED ON AN INPUT THE LOADER ACCEPTS. Gemini's response
