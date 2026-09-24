@@ -1184,7 +1184,16 @@ fn row_count_scale(offenders: &[String]) -> Row {
 ///
 /// The floor is applied to the UNION, not to each home, so a file that moved from one home in the
 /// group to another is invisible here and a set that emptied out of all of them is not.
+///
+/// THE UNION IS A SET OF PATHS, NOT A SUM OF WALKS (item 214). A group may name one home inside
+/// another — the agent group names `crates/busbar-a2a/src/a2a` AND `crates/busbar-a2a/src` — and
+/// summing one walk per home counted the 34 nested files twice: 85 against a floor of 40 where the
+/// distinct count is 51. A whole home could then leave the tree and the doubled remainder still
+/// cleared the floor, so the area never went red for the move its own doc says it reds for. Each
+/// file is kept once, by its repo-relative path, and the floor is held against that count. The
+/// same dedup keeps a nested file from being SCANNED twice, which doubled its findings.
 fn walk_area(cx: &Ctx, area: &CountRoot) -> Result<Vec<crate::ctx::SourceFile>, String> {
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut files = Vec::new();
     for home in area.homes {
         let spec = WalkSpec::new([*home]).ext("rs").exclude([
@@ -1195,12 +1204,12 @@ fn walk_area(cx: &Ctx, area: &CountRoot) -> Result<Vec<crate::ctx::SourceFile>, 
         // A home that is not there is a home the fold has already emptied; the floor over the union
         // is what says whether the AREA is still being scanned.
         if let Ok(found) = cx.walk(&spec) {
-            files.extend(found);
+            files.extend(found.into_iter().filter(|f| seen.insert(f.rel_str())));
         }
     }
     if files.len() < area.floor {
         return Err(format!(
-            "{}: {} production file(s) across {}, below the floor of {}",
+            "{}: {} distinct production file(s) across {}, below the floor of {}",
             area.area,
             files.len(),
             area.homes.join(" + "),
@@ -2377,6 +2386,50 @@ mod tests {
             .all(|o| o.starts_with("m.rs:4:") || o.starts_with("m.rs:5:")));
         let taking = find_boundary("fn set_gauge(g: G, v: f64) {\n}\n", "set_gauge").unwrap();
         assert!(takes_float(&MONEY_EGRESS[0], &taking).is_some());
+    }
+
+    /// ITEM 214: A HOME NESTED INSIDE ANOTHER IS COUNTED ONCE. The floor is set one above the
+    /// distinct count of the outer home, and the inner home adds no file the outer one lacks — so
+    /// the area is below its floor. A walk that summed per-home counted the inner home's files
+    /// twice and cleared it.
+    #[test]
+    fn a_nested_home_is_counted_once_against_the_area_floor() {
+        let cx = cx();
+        const OUTER: &[&str] = &["crates/busbar-a2a/src"];
+        let inner = "crates/busbar-a2a/src/a2a";
+        let alone = walk_area(
+            &cx,
+            &CountRoot {
+                area: "outer alone",
+                homes: OUTER,
+                floor: 1,
+            },
+        )
+        .expect("the outer home walks");
+        let nested_count = alone
+            .iter()
+            .filter(|f| f.rel_str().starts_with(&format!("{inner}/")))
+            .count();
+        assert!(nested_count > 0, "the control needs a populated inner home");
+        let floor = alone.len() + 1;
+        let homes: &'static [&'static str] = &["crates/busbar-a2a/src/a2a", "crates/busbar-a2a/src"];
+        let got = walk_area(
+            &cx,
+            &CountRoot {
+                area: "nested",
+                homes,
+                floor,
+            },
+        );
+        match got {
+            Err(e) => assert!(e.contains(&format!("{} distinct", alone.len())), "{e}"),
+            Ok(files) => panic!(
+                "{} file(s) cleared a floor of {floor} over {} distinct — the nested home was \
+                 counted twice",
+                files.len(),
+                alone.len()
+            ),
+        }
     }
 
     /// Both arms of the framework, over the real tree.
