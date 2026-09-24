@@ -2552,22 +2552,22 @@ fn migrate_rewrites_a_lingering_at_key_on_a_named_hook_def() {
     );
 }
 
-/// END-TO-END, 1.6.0: a COMPLETE 1.5.x-shaped config that uses EVERY deprecated spelling at once —
-/// a hook written with the retired `plugin:` key AND the retired single-stage `at:` key, a model pool
-/// with rich weighted members (still the 1.6.0 grammar, carried through unchanged), and the
-/// unreleased `tool_pools:`/`agent_pools:` sections — runs through `busbar --migrate-config` and the
-/// output (a) parses into the 1.6.0 `DeployCfg`, (b) `config::resolve` + `config_validate::validate`
-/// clean, and (c) contains NONE of the deprecated spellings. This migrate→validate round-trip on a
-/// full config is the only thing that proves the migrator is comprehensive: a code read of what it
-/// "thinks" it handles is not enough.
-///
-/// MOVED to `tests/config_migrate_cross_plane.rs` (A6/HostCtx dev-dependency-cycle cleanup): the
-/// fixture's `tools:`/`agents:` blocks need the REAL `busbar_mcp`/`busbar_a2a` planes registered to
-/// resolve past `resolve`'s "compiled without the plane that owns it" refusal — a neutral fake plane
-/// cannot stand in, since the assertions below read `cfg.tool_pools`/`cfg.agent_pools`, which only
-/// exist once the real MCP/A2A failover planes actually claimed those sections. That only
-/// type-checks with ONE `busbar_kernel` in the graph, which is exactly what an integration-test
-/// target gives. See that file's header.
+// END-TO-END, 1.6.0: a COMPLETE 1.5.x-shaped config that uses EVERY deprecated spelling at once —
+// a hook written with the retired `plugin:` key AND the retired single-stage `at:` key, a model pool
+// with rich weighted members (still the 1.6.0 grammar, carried through unchanged), and the
+// unreleased `tool_pools:`/`agent_pools:` sections — runs through `busbar --migrate-config` and the
+// output (a) parses into the 1.6.0 `DeployCfg`, (b) `config::resolve` + `config_validate::validate`
+// clean, and (c) contains NONE of the deprecated spellings. This migrate→validate round-trip on a
+// full config is the only thing that proves the migrator is comprehensive: a code read of what it
+// "thinks" it handles is not enough.
+//
+// MOVED to `tests/config_migrate_cross_plane.rs` (A6/HostCtx dev-dependency-cycle cleanup): the
+// fixture's `tools:`/`agents:` blocks need the REAL `busbar_mcp`/`busbar_a2a` planes registered to
+// resolve past `resolve`'s "compiled without the plane that owns it" refusal — a neutral fake plane
+// cannot stand in, since the assertions below read `cfg.tool_pools`/`cfg.agent_pools`, which only
+// exist once the real MCP/A2A failover planes actually claimed those sections. That only
+// type-checks with ONE `busbar_kernel` in the graph, which is exactly what an integration-test
+// target gives. See that file's header.
 
 /// 1.6.0 verify-on-call: the per-server `refresh_ttl:` under `tools:` is renamed to `verify_ttl:`, the value is
 /// carried over, and a loud WARNING names the server and the semantics change (a former sweep cadence
