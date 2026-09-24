@@ -258,23 +258,39 @@ jobs:
       - name: Assert the promote actually landed on all four names
         env:
           V: ${{ inputs.promote_to }}
+          # Empty means the src==V recovery arm; see the compat-name assertions below for why the
+          # assertion needs to know which arm the promote took.
+          SRC: ${{ inputs.promote_from }}
           MOVE_LATEST: ${{ inputs.promote_latest }}
         run: |
           set -euo pipefail
-          reg_digest() {  # reg_digest <auth-host> <registry-host> <repo> <tag>
-            local auth_host="$1" reg_host="$2" repo="$3" tag="$4" token_url token
+          # reg_digest <auth-host> <registry-host> <repo> <tag>
+          # Prints the manifest digest and returns 0; returns 2 ONLY when the registry answered and
+          # said the tag does not exist (HTTP 404); returns 1 for everything else -- no token, a
+          # network failure, a 5xx, a 200 with no digest header. ABSENT and UNREADABLE are different
+          # facts and the compat assertions below forgive only the first.
+          reg_digest() {
+            local auth_host="$1" reg_host="$2" repo="$3" tag="$4" token_url token out status digest
             if [ "$auth_host" = "auth.docker.io" ]; then
               token_url="https://auth.docker.io/token?service=registry.docker.io&scope=repository:${repo}:pull"
             else
               token_url="https://${auth_host}/token?service=${auth_host}&scope=repository:${repo}:pull"
             fi
-            token="$(curl -fsS --max-time 30 "$token_url" | jq -r '.token // .access_token')"
+            token="$(curl -fsS --max-time 30 "$token_url" | jq -r '.token // .access_token')" || return 1
             [ -n "$token" ] && [ "$token" != "null" ] || return 1
-            curl -fsS --max-time 30 -I \
+            out="$(curl -sS --max-time 30 -I -w '\nHTTP_STATUS:%{http_code}\n' \
               -H "Authorization: Bearer $token" \
               -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json' \
-              "https://${reg_host}/v2/${repo}/manifests/${tag}" \
-            | tr -d '\r' | grep -i '^docker-content-digest:' | awk '{print $2}'
+              "https://${reg_host}/v2/${repo}/manifests/${tag}")" || return 1
+            status="$(printf '%s\n' "$out" | sed -n 's/^HTTP_STATUS://p')"
+            case "$status" in
+              200)
+                digest="$(printf '%s\n' "$out" | tr -d '\r' | grep -i '^docker-content-digest:' | awk '{print $2}')" || return 1
+                [ -n "$digest" ] || return 1
+                printf '%s\n' "$digest" ;;
+              404) return 2 ;;
+              *) return 1 ;;
+            esac
           }
           hub_v="$(reg_digest auth.docker.io registry-1.docker.io getbusbar/busbar "$V" || true)"
           hub_l="$(reg_digest auth.docker.io registry-1.docker.io getbusbar/busbar latest || true)"
@@ -309,7 +325,8 @@ jobs:
           # must agree with its three sibling names AND must be a DIFFERENT digest from the main
           # manifest (a two-arch index and a single-arch armv8.0 image can never be the same
           # bytes; equality would mean the fast build got published under the compat name).
-          v8_v="$(reg_digest auth.docker.io registry-1.docker.io getbusbar/busbar "${V}-armv8.0" || true)"
+          v8_rc=0
+          v8_v="$(reg_digest auth.docker.io registry-1.docker.io getbusbar/busbar "${V}-armv8.0")" || v8_rc=$?
           v8_f="$(reg_digest auth.docker.io registry-1.docker.io getbusbar/busbar armv8.0 || true)"
           ghcr_v8_v="$(reg_digest ghcr.io ghcr.io getbusbar/busbar "${V}-armv8.0" || true)"
           ghcr_v8_f="$(reg_digest ghcr.io ghcr.io getbusbar/busbar armv8.0 || true)"
@@ -317,10 +334,20 @@ jobs:
           echo "docker.io armv8.0     = ${v8_f:-<none>}"
           echo "ghcr.io   ${V}-armv8.0 = ${ghcr_v8_v:-<none>}"
           echo "ghcr.io   armv8.0     = ${ghcr_v8_f:-<none>}"
-          if [ -z "$v8_v" ]; then
-            # Mirrors the promote's recovery arm: a pre-dual-arm64 version legitimately has no
-            # compat pin. Any version that staged one had it created above or the job already died.
-            echo "::warning::docker.io/getbusbar/busbar:${V}-armv8.0 does not resolve; skipping the compat-name assertions (pre-dual-arm64 version recovery only)."
+          # THE SKIP IS FORGIVEN FOR EXACTLY ONE STATE: the registry answered 404 for the compat pin
+          # AND the promote took the src==V recovery arm, which is the only arm that can meet a
+          # pre-dual-arm64 version. An UNREADABLE compat pin (token, network, 5xx, no digest) is not
+          # an absent one -- it is unknown, and unknown is red, exactly as an empty digest is for the
+          # four main names above. A 404 after a src!=V promote is red too: that arm created the pin
+          # with `imagetools create` under errexit, so its absence means the promote did not land.
+          if [ "$v8_rc" = 2 ] && [ "${SRC:-$V}" = "$V" ]; then
+            echo "::warning::docker.io/getbusbar/busbar:${V}-armv8.0 does not exist (registry 404) and this was the src==V recovery arm; skipping the compat-name assertions (pre-dual-arm64 version recovery only)."
+          elif [ "$v8_rc" = 2 ]; then
+            echo "::error::PARTIAL PROMOTE (compat): docker.io/getbusbar/busbar:${V}-armv8.0 does not exist (registry 404), but this promote copied it from ${SRC}-armv8.0, so it must. Re-run docker.yml with promote_to=${V} promote_from=${SRC} (idempotent) and re-run this assertion."
+            fail=1
+          elif [ "$v8_rc" != 0 ] || [ -z "$v8_v" ]; then
+            echo "::error::docker.io/getbusbar/busbar:${V}-armv8.0 could not be READ (reg_digest exit ${v8_rc}: no token, network failure, non-200/404 status, or no digest header). Unreadable is not absent: the four armv8.0 assertions cannot be skipped on it. Re-run this job; if it persists, check registry reachability."
+            fail=1
           else
             if [ "$v8_v" = "$hub_v" ]; then
               echo "::error::${V}-armv8.0 resolves to the SAME digest as ${V}. The compat name must carry the armv8.0 baseline build, not the default manifest."
