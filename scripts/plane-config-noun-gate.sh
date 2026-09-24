@@ -87,17 +87,22 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 # CANDIDATES CONSIDERED AND REJECTED, so the choice is defensible rather than incidental (grepped for
 # `NamedMapSection`/`DeployCfg`/a bare noun literal on a parse-steering line in each; all empty except
 # where noted):
-#   * `busbar-admin` — DOES use `NamedMapSection` (`v1/json/named_map.rs`, `v1/json/service.rs`), but
+#   * `busbar-core-admin` — DOES use `NamedMapSection` (`v1/json/named_map.rs`), but
 #     only as a CONSUMER: it matches `IdentityProviders | Export | Plane(_)` — the same three arms
 #     `named_map.rs` itself exhausts — and calls `section.parse_def(...)`/`validate_def(...)`, whose
 #     bodies live in busbar-kernel. It never spells `"tools"`/`"agents"`/`"pools"`/`"streams"` on a
 #     parse-steering line of its own. It is the admin HTTP surface (`/api/v1/admin/*`), not the boot
 #     config parser — the property this meter measures never lived there.
-#   * `busbar-core-oauth2`, `busbar-core-connsec` — "core"-kind siblings by the repo's own DECISIONS
-#     #19/#20/#40 taxonomy, but neither is config-section parsing: oauth2 is its own plane's AS
-#     surface, connsec is TLS/mTLS connection prep. Zero grep hits in either.
-#   * `busbar-core-hooks` — hook DISPATCH, and `named_map.rs`'s own module doc says `hooks:` is
-#     "deliberately NOT" part of the named-map section set this meter polices. Zero grep hits.
+#   * `busbar-oauth2`, `busbar-core-connsec` — compiled-in cleanliness crates by the repo's own
+#     DECISIONS #4/#5/#40 taxonomy, but neither is config-section parsing: oauth2 is its own plane's
+#     AS surface, connsec is TLS/mTLS connection prep. Zero grep hits in either.
+#   Hook DISPATCH has no crate of its own to reject: it lives at `crates/busbar-kernel/src/hooks/`,
+#   which is UNDER the root below and so is scanned, not excluded (and `config/named_map.rs`'s own
+#   module doc says `hooks:` is "deliberately NOT" part of the named-map section set this meter
+#   polices).
+#   Every crate a bullet above names is checked to EXIST by the self-test (REJECTED NAMES): this
+#   block once named `busbar-core-oauth2`, `busbar-core-hooks` and `busbar-admin`, none of which the
+#   tree has, so the rejections could not be re-run as written.
 #   * `busbar-substrate-values` — the PURE value-family types a codec/plane names, not config
 #     parsing at all (a later split off `busbar-substrate`, itself split off busbar-core's session
 #     substrate, commit 7d23875b5). Zero grep hits.
@@ -363,6 +368,22 @@ FIX
     note "TEST FILES: tests.rs / test.rs / foo_tests.rs are not metered; latest.rs and prod.rs are"
   else
     fail=1; note "TEST FILES FAILED: core_files returned: $got"
+  fi
+
+  # ── REJECTED NAMES: every crate the CANDIDATES CONSIDERED AND REJECTED block names on a bullet must
+  # exist on disk, or the defence of CORE_ROOTS cites crates nobody can grep. ──
+  local cand cands missing=""
+  cands="$(awk '/CANDIDATES CONSIDERED AND REJECTED/{on=1; next} on && /^# A root that stops existing/{exit}
+                on && /^#   \* /{print}' "scripts/$(basename "$0")" | grep -oE '`busbar-[a-z0-9-]+`' | tr -d '`' || true)"
+  for cand in $cands; do
+    [ -d "crates/$cand" ] || missing="${missing:+$missing }$cand"
+  done
+  if [ -z "$cands" ]; then
+    fail=1; note "REJECTED NAMES FAILED: read no crate names out of the rejected-candidates block (nothing checked)"
+  elif [ -z "$missing" ]; then
+    note "REJECTED NAMES: every crate the rejected-candidates block names exists on disk"
+  else
+    fail=1; note "REJECTED NAMES FAILED: the rejected-candidates block names crate(s) the tree does not have: $missing"
   fi
 
   if [ "$fail" -ne 0 ]; then red "plane-config-noun-gate SELF-TEST FAILED"; return 1; fi
