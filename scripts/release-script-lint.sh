@@ -45,8 +45,8 @@
 #      makes the shell refuse the script with exit 126 the instant CI runs it — the release-stage
 #      regression that failed every busbar-store-sqlite artifact build (release-build.sh) and lurked
 #      one stage downstream in release-fleet (fleet-checks.sh), both invoked directly and both left
-#      non-executable. Sourced libraries (scripts/plane-roots.sh, dot-sourced by three lints and
-#      intentionally 100644) are correctly exempt: the interpreter, not the file's own bit, runs them.
+#      non-executable. Sourced libraries (e.g. scripts/ci-runners-lib.sh, dot-sourced by
+#      scripts/ci-runners-up.sh) are correctly exempt: the interpreter, not the file's own bit, runs them.
 #
 # Runs in CI (see .github/workflows/ci.yml, structure-lint job). No external deps; bash 3.2 + POSIX
 # awk (macOS/Linux). `--selftest` proves the scanner still catches the real antipattern before its
@@ -151,7 +151,7 @@ scan_lost_registrations() {
 # Emits each unique `scripts/…​.sh` path that a workflow file EXECUTES DIRECTLY (a `run:` command that
 # is the path itself). A path preceded by an interpreter/source token (`bash `, `sh `, `source `, or
 # `. `) is NOT a direct exec — the interpreter supplies the exec bit — and is skipped, so a sourced
-# library (e.g. scripts/plane-roots.sh, dot-sourced by three lints and intentionally 100644) is never
+# library (e.g. scripts/ci-runners-lib.sh, dot-sourced by scripts/ci-runners-up.sh) is never
 # reported. The caller maps each emitted path through `git ls-files -s`: a direct-exec script whose
 # TRACKED mode is not 100755 fails the shell with exit 126 the moment CI runs it — exactly the
 # release-stage regression this rule exists to catch before staging rather than during it.
