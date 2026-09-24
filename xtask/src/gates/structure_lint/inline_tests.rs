@@ -82,7 +82,7 @@ pub fn scan(corpus: &Corpus, f: &mut Findings) {
         let mut armed_marker = false;
         let mut armed_reason = String::new();
 
-        for line in &c.lines {
+        for line in c.lines.iter() {
             // (1) REGION BOOKKEEPING. The report points at the `#[cfg(test)]` that OPENED the
             //     region, which is the line a reader has to act on — not the individual test
             //     attribute inside it.

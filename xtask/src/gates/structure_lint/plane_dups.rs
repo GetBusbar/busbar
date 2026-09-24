@@ -53,7 +53,6 @@ use crate::gates::structure_lint::corpus::{scan_decls, test_scoped, Candidate, C
 use crate::gates::structure_lint::roots::Addresses;
 use crate::gates::structure_lint::{row, Findings, Tables};
 use crate::ledger::Row;
-use crate::scan;
 
 pub const ROW_UNLEDGERED: &str = "structure-lint:plane-dup:unledgered";
 pub const ROW_LEDGER_INTEGRITY: &str = "structure-lint:plane-dup:ledger-integrity";
@@ -228,7 +227,7 @@ pub fn scan(cx: &Ctx, a: &Addresses, corpus: Option<&Corpus>, t: &Tables, f: &mu
                     .filter(|s| !test_only.contains(&s.rel_str()))
                     .map(|s| Candidate {
                         rel: s.rel_str(),
-                        lines: scan::test_scope(&s.text),
+                        lines: super::corpus::scope_lines(&s.rel_str(), &s.text),
                     })
                     .collect();
                 plane_files.push((key, files));
