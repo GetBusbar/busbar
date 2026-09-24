@@ -182,14 +182,48 @@ fn walk_is_sorted_and_honours_exclude_fragments() {
 #[test]
 fn a_walk_below_its_floor_is_an_error_not_a_clean_tree() {
     let c = cx();
+
+    // THE EMPTY SET UNDER A FLOOR. By default `list` refuses an empty scope first
+    // (`WalkError::Empty`), which pre-empts the floor, so the floor is only reachable on an empty
+    // set once the scope declares `allow_empty`. That declaration says "zero is a real answer for
+    // this rule"; it must never also switch the floor off. So: allow_empty + min_files(1) over an
+    // empty set is BelowFloor { found: 0 }, and removing the floor check turns this into Ok(vec![]).
+    let err = c
+        .walk(
+            &WalkSpec::new(["xtask/fixtures"])
+                .ext("no-such-ext")
+                .allow_empty()
+                .min_files(1),
+        )
+        .expect_err("zero files under a floor of one must not read as a clean scan");
+    assert!(
+        matches!(err, WalkError::BelowFloor { found: 0, floor: 1, .. }),
+        "the floor must refuse the empty set even when the scope allows empty: {err:?}"
+    );
+
+    // A NON-EMPTY SET UNDER ITS FLOOR — the shrunken scan, which `Empty` can never catch.
+    let spec = WalkSpec::new(["xtask/src"]).ext("rs").min_files(0);
+    let have = c.walk(&spec).expect("xtask/src has rust files").len();
+    assert!(have > 0);
+    let err = c
+        .walk(&spec.clone().min_files(have + 1))
+        .expect_err("one file short of the floor must not read as a clean scan");
+    assert!(
+        matches!(err, WalkError::BelowFloor { found, floor, .. } if found == have && floor == have + 1),
+        "a shrunken scan must be reported as BelowFloor: {err:?}"
+    );
+    // At exactly the floor it passes: the floor is a threshold, not a blanket refusal.
+    assert_eq!(c.walk(&spec.min_files(have)).unwrap().len(), have);
+
+    // And the default (no allow_empty) empty scope is still refused, as `Empty`.
     let err = c
         .walk(
             &WalkSpec::new(["xtask/fixtures"])
                 .ext("no-such-ext")
                 .min_files(1),
         )
-        .expect_err("zero files under a floor of one must not read as a clean scan");
-    assert!(matches!(err, WalkError::BelowFloor { .. }));
+        .expect_err("an empty scope must be refused");
+    assert!(matches!(err, WalkError::Empty { .. }), "{err:?}");
 }
 
 #[test]
