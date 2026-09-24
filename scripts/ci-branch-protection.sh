@@ -165,7 +165,7 @@ for doc in sys.stdin.read().split('\x00'):
     for line in doc.splitlines():
         if re.match(r'^jobs:\s*$', line):
             in_jobs = True; continue
-        if in_jobs and re.match(r'^\S', line):
+        if in_jobs and re.match(r'^[^\s#]', line):  # a column-0 comment does not end jobs:
             close(); in_jobs, job = False, None; continue
         if not in_jobs:
             continue
@@ -573,7 +573,7 @@ print('ok' if 'gate-mutants' not in contexts else 'FAIL')
     cd "$st_repo"; git init -q; git config user.email selftest@example.invalid; git config user.name selftest
     git config core.hooksPath /dev/null   # a host's global commit hooks must not decide a fixture
     mkdir -p .github/workflows
-    printf 'on: push\njobs:\n  umbrella:\n    name: ci umbrella\n    runs-on: x\n  lint:\n    name: "structure lint"\n    runs-on: x\n  construction-gate:\n    name: construction gate (how the tree is built vs ARCHITECTURE.md — BLOCKING, on its posture)\n    runs-on: x\n' > .github/workflows/ci.yml
+    printf 'on: push\njobs:\n  umbrella:\n    name: ci umbrella\n    runs-on: x\n# a column-0 comment inside jobs: must not end the job list\n  lint:\n    name: "structure lint"\n    runs-on: x\n  construction-gate:\n    name: construction gate (how the tree is built vs ARCHITECTURE.md — BLOCKING, on its posture)\n    runs-on: x\n' > .github/workflows/ci.yml
     git add -A; git commit -q --no-verify -m stale; git update-ref refs/remotes/origin/dev HEAD
     printf '  ship-ready:\n    runs-on: x\n' >> .github/workflows/ci.yml
     git commit -q --no-verify -am fresh; git update-ref refs/remotes/origin/qa HEAD
