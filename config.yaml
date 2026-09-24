@@ -391,12 +391,28 @@ pools:
 
 # ── Pricing: the ONE cost source (optional) ──────────────────────────────────────────────────────
 # Per-model token pricing in MICRO-units per token (abstract cost units - busbar attaches no
-# currency). ALL-OR-NOTHING: absent = tokens price 0; present = EVERY configured model needs an
-# entry (--validate prints a paste-ready stub otherwise). Keys are the CONFIG model names above.
+# currency). ALL-OR-NOTHING at two levels: absent = billing off (tokens price 0); present = EVERY
+# configured model needs an entry (--validate prints a paste-ready stub otherwise), AND every
+# billable class the LLM plane declares must be configured on some entry — the four reserved
+# *_utok tiers below count as configured just by the card's presence (an omitted tier is 0), but
+# the open `search_units` class (a rerank's billed search units) is NOT reserved and needs an
+# explicit `units: { search_units: <rate> }` on at least one entry; `0` makes it free but still
+# counts as configured. A card silent about a declared class fails boot naming it. Keys are the
+# CONFIG model names above.
+#
+# UPGRADING FROM 1.5.5: a card that priced only the four reserved tiers (no `units:` at all) now
+# fails boot. Add `units: { search_units: 0 }` to any one entry, as below.
 # rate_card:
-#   claude-sonnet: { input_utok: 3.0, output_utok: 15.0, cache_read_utok: 0.3, cache_write_utok: 3.75 }
-#   gpt-4o:        { input_utok: 2.5, output_utok: 10.0 }
+#   claude-sonnet: { input_utok: 3.0, output_utok: 15.0, cache_read_utok: 0.3, cache_write_utok: 3.75,
+#                    units: { search_units: 0 } }
+#   gpt-4o:        { input_utok: 2.5, output_utok: 10.0, units: { search_units: 0 } }
 # per_request_fee: 0                       # flat per-request budget charge (default 0)
+#
+# Non-LLM planes take the SAME reserved `rate_card` key under their OWN section instead — e.g.
+# `tools.rate_card` (MCP, keyed by tool name, prices `tool_calls`/`bytes`) or `agents.rate_card`
+# (A2A, keyed `agent:<id>`, prices `bytes` = request + response body bytes per hop) — each
+# independent of this flat card and of each other; see docs/mcp.md and docs/a2a.md. A plane
+# section with no card of its own bills that plane's traffic at 0 (no refusal).
 
 # ── Store (optional) ─────────────────────────────────────────────────────────────────────────────
 # The durable store as a plugin: `{ module, settings }`. Absent = ephemeral RAM (keys/usage reset

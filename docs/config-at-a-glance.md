@@ -111,10 +111,21 @@ groups:
 
 ```yaml
 rate_card:                      # the ONLY cost source: per-model token rates in abstract MICRO-units.
-  claude-sonnet-4-5:            # ALL-OR-NOTHING: present = must cover every configured model.
-    { input_utok: 3, output_utok: 15, cache_read_utok: 0, cache_write_utok: 4 }
+  claude-sonnet-4-5:            # ALL-OR-NOTHING: present = must cover every configured model AND
+    { input_utok: 3, output_utok: 15, cache_read_utok: 0, cache_write_utok: 4,
+      units: { search_units: 0 } }   # every billable class the plane declares (0 = free, still counts)
 per_request_fee: 0              # flat abstract charge added per request at admission
 ```
+
+`units: { <class>: <rate> }` prices an OPEN class alongside the four reserved `*_utok` tiers — same
+MICRO-units scale, integer or an exact decimal STRING only (a bare float is refused). A present
+card silent about a class the plane declares fails BOOT naming the section and every missing class;
+silent about a class/lane it actually serves REFUSES that hit at run time instead of billing `0`
+(surfaced on `/usage` reads as `409 unpriced_class`). Non-LLM planes take the SAME reserved
+`rate_card` key under their own section — `tools.rate_card` (keyed by tool name, prices
+`tool_calls`/`bytes`), `agents.rate_card` (keyed `agent:<id>`, prices `bytes` = request + response
+body bytes per hop), `streams.rate_card`, `decisions.rate_card` — each independent of this flat card
+and of each other; absent = that plane's traffic bills `0`, no refusal.
 
 ## Durability: [`store`](configuration.md#store)
 
@@ -211,5 +222,13 @@ providers_file: providers.yaml  # provider catalog pointer (overridden by the --
   expires (default 90 days). Requires `full` scope.
 - **[Migrating from 1.4.x](migration-1.5.md)**: `busbar --migrate-config old.yaml` prints the
   converted config with TODO/WARNING comments; a 1.x config refuses to boot with a named error.
+- **Upgrading from 1.5.5**: a 1.5.5 `rate_card:` that priced only the four reserved token tiers now
+  FAILS BOOT — every plane whose section carries a card must configure every billable class that
+  plane declares. The fix is additive: add `units: { search_units: 0 }` to any one entry of the
+  flat/`pools` card (declared classes per plane: `pools` = `input`, `output`, `cache_read`,
+  `cache_write`, `search_units` · `tools` = `tool_calls`, `bytes` · `agents` = `bytes` ·
+  `decisions` = `decision` · `streams` = `audio_tokens_in`, `audio_tokens_out`, `text_tokens_in`,
+  `text_tokens_out`, `cached_tokens`, `audio_seconds_in`, `tool_calls`). A plane section with no
+  card of its own is unaffected.
 - **[Validation](configuration.md#startup-validation-summary)**: `busbar --validate` runs the exact
   boot pipeline (config + plugins) with zero side effects. A clean validate means a clean boot.

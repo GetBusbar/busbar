@@ -614,26 +614,70 @@ other limit's.
 
 ### `rate_card` and `per_request_fee`
 
-The ONLY cost source. Tokens are the ledger; every dollar figure is DERIVED at read time as
-`tokens x rate_card + requests x per_request_fee`, so correcting a rate is a config edit + reload
-with no re-billing and no data migration.
+The ONLY cost source. Every billable class a plane declares is the ledger (the four reserved LLM
+token tiers, plus any OPEN class a plane counts — a rerank's `search_units`, an A2A hop's `bytes`);
+every dollar figure is DERIVED at read time as `sum(class_count x class_rate) + requests x
+per_request_fee`, so correcting a rate is a config edit + reload with no re-billing and no data
+migration.
 
 ```yaml
 rate_card:
-  sonnet-anthropic: { input_utok: 3.0, output_utok: 15.0, cache_read_utok: 0.3, cache_write_utok: 3.75 }
-  sonnet-bedrock:   { input_utok: 2.8, output_utok: 14.0 }
+  sonnet-anthropic: { input_utok: 3.0, output_utok: 15.0, cache_read_utok: 0.3, cache_write_utok: 3.75,
+                       units: { search_units: 0 } }     # open class: free, but explicitly configured
+  sonnet-bedrock:   { input_utok: 2.8, output_utok: 14.0, units: { search_units: 0 } }
 per_request_fee: 0
 ```
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `rate_card` | map | absent (token pricing = 0) | Per-model, per-tier token rates in MICRO-units (1e-6 abstract cost unit) per token; an omitted tier prices 0. ALL-OR-NOTHING: absent = every model's tokens price at 0 (budgets count only the flat fee); present = AUTHORITATIVE and COMPLETE: every configured model must have an entry or boot/`--validate` fail with a paste-ready stub of exactly the missing models. With a card present, a request for an arbitrary passthrough model with no rate is rejected pre-forward. |
+| `rate_card` | map | absent (billing off) | Per-model, per-tier token rates in MICRO-units (1e-6 abstract cost unit) per unit; an omitted `*_utok` tier prices 0. ALL-OR-NOTHING at TWO levels: (1) present = every configured model needs an entry, or boot/`--validate` fail with a paste-ready stub of exactly the missing models; (2) present = every billable class the LLM plane declares — `input`, `output`, `cache_read`, `cache_write`, and the open `search_units` class a rerank counts — must be configured on SOME entry, or boot/`--validate` refuse naming the section and every missing class. The four reserved tiers count as configured by the card's mere presence (an omitted `*_utok` field is a configured `0`); `search_units` is not reserved, so it needs an explicit `units: { search_units: <rate> }` on at least one entry (`0` makes it free). With a card present, a request for an arbitrary passthrough model with no rate is also rejected pre-forward. |
+| `units` | map, per entry | `{}` | Rates for OPEN (non-reserved) billable classes, alongside a model's four `*_utok` tiers: `{ <class>: <rate> }`, same MICRO-units-per-unit scale. The wire form is a non-negative integer, or an exact decimal STRING (`"0.5"`); a bare YAML/JSON float is refused — it has already lost precision through a binary double by the time serde sees it. A rate finer than 0.001 micro-units per unit, negative, or past ~1.8e16 is refused at parse ("finer than one nano-unit, the finest rate the card holds; round it to three decimal places"). A reserved class name (`input`, `output`, `cache_read`, `cache_write`) under `units:` is refused — it already has its own `*_utok` field. An unpriced class under a card that IS configured for the model REFUSES at the point it is hit, rather than silently billing `0` (see [Virtual keys and enforcement](#virtual-keys-and-enforcement)). |
 | `per_request_fee` | integer | `0` | Flat charge per request in abstract cents, charged at admission into every chain bucket's request count (refunded on a non-2xx outcome). |
 
 The rate numbers are **abstract cost units**: Busbar does pure integer math and never knows what
 currency they represent. Currency, symbols, and FX are display concerns owned by your dashboard.
 Routing's `cheapest` strategy derives its per-member scalar from the card as
 `(input_utok + output_utok) / 2`; pool members carry no cost fields.
+
+A configured rate the card cannot hold is a BOOT refusal, not a silent unpriced cell: a `*_utok`
+tier below half a nano-unit (e.g. `0.0004`) or past ~1.8e16 fails validation naming the model, the
+tier and the rate —
+
+```text
+rate_card['<model>'].<tier> = <rate> micro-units per token is a rate the card cannot hold
+(non-zero rates run from 0.0005 to about 1.8e16), so the class would bill as unpriced;
+configure 0 to make it free, or a rate in range
+```
+
+— rather than booting and refusing on the first hit. Configure an explicit `0`, or a rate inside
+the representable range.
+
+#### Per-plane rate cards (`tools.rate_card`, `agents.rate_card`, `streams.rate_card`, `decisions.rate_card`)
+
+The reserved `rate_card` key is also accepted, core-owned, under every non-LLM plane's own section —
+`tools:`, `agents:`, `streams:`, `decisions:` — one card per plane, resolved independently of the
+flat/`pools` card above and of every other plane's card. Each entry is the same `{ *_utok fields,
+units: {...} }` shape (a non-LLM plane's classes are all OPEN, so only `units:` is meaningful for
+it); the shipped field-by-field grammar and per-plane boot refusals for each are in
+[mcp.md](mcp.md) (`tools.rate_card`, keyed by tool name — prices `tool_calls` and `bytes`),
+[a2a.md](a2a.md) (`agents.rate_card`, keyed `agent:<id>` — prices `bytes`, the request + response
+body bytes an A2A hop relayed both ways), and [voice.md](voice.md) (`streams.rate_card`). The same
+rule applies everywhere: a plane section with no `rate_card` of its own bills that plane's traffic
+at `0` (no refusal); a plane section WITH a card must configure every class the plane declares (the
+generic boot rule above) and REFUSES a hit against a class or lane it left silent, rather than
+billing it `0`. `GET /usage`, `/groups/{name}/usage` and `/keys/{id}/usage` surface that refusal as
+`409 unpriced_class` (`{"error":{"code":"unpriced_class","message":"usage cannot be priced: the
+rate card in force names no price for class \`<class>\` of \`<lane>\`"}}`) instead of a bare `500
+internal`; no figure moves, only the status and code the caller sees change.
+
+> **Upgrading from 1.5.5.** Every 1.5.5 deployment with a `rate_card:` now FAILS BOOT until the card
+> configures every class its plane declares — in practice, add `units: { search_units: 0 }` to any
+> one entry of the flat/`pools` card (or price it, if you bill reranks). The declared classes per
+> plane are: `pools` (LLM) = `input`, `output`, `cache_read`, `cache_write`, `search_units`; `tools`
+> (MCP) = `tool_calls`, `bytes`; `agents` (A2A) = `bytes`; `decisions` = `decision`; `streams`
+> (voice) = `audio_tokens_in`, `audio_tokens_out`, `text_tokens_in`, `text_tokens_out`,
+> `cached_tokens`, `audio_seconds_in`, `tool_calls`. A plane with no `rate_card` of its own is
+> unaffected (absent = billing off, no refusal).
 
 ---
 
@@ -1027,7 +1071,7 @@ chosen lane.
 
 Circuit-breaker tuning for one target. On the LLM plane a target is a `(pool, lane)` cell, and the state is independent per pool: a lane open in pool A can be closed in pool B. Lane-global state (hard-down, lifetime budget, concurrency semaphore) is shared across all pools.
 
-**This block is accepted under `pools:` and nowhere else.** An earlier version of this reference said `tools.<server>.breaker:` and `agents.<agent>.breaker:` were also accepted. They are not, they never were, and because `tools:` and `agents:` reject unknown keys, a config written against that sentence fails at boot rather than running with the block ignored. MCP and A2A share the one breaker through failover pools in the same neutral top-level `pools:` map (their kind inferred from their `tools:`/`agents:` members; see [circuit-breaker.md](circuit-breaker.md#failover-on-mcp-and-a2a-the-same-server-deployed-twice)), which take `members:` and `repeatable:` only, so those planes run on the built-in breaker defaults. There is no field reference for `mcp:`, `tools:`, `agents:` or those MCP/A2A pools on this page; the complete grammar for each, with every boot refusal, is in [mcp.md](mcp.md) and [a2a.md](a2a.md). The fourth plane noun, `streams:` (live voice), is a singular section rather than a named-definition registry, so it has no `pools:` membership and no `breaker:` block of its own; its complete grammar is in [voice.md](voice.md).
+**This block is accepted under `pools:` and nowhere else.** An earlier version of this reference said `tools.<server>.breaker:` and `agents.<agent>.breaker:` were also accepted. They are not, they never were, and because `tools:` and `agents:` reject unknown keys, a config written against that sentence fails at boot rather than running with the block ignored. MCP and A2A share the one breaker through failover pools in the same neutral top-level `pools:` map (their kind inferred from their `tools:`/`agents:` members; see [circuit-breaker.md](circuit-breaker.md#failover-on-mcp-and-a2a-the-same-server-deployed-twice)), which take `members:` and `repeatable:` only, so those planes run on the built-in breaker defaults. There is no field reference for `mcp:`, `tools:`, `agents:` or those MCP/A2A pools on this page; the complete grammar for each, with every boot refusal, is in [mcp.md](mcp.md) and [a2a.md](a2a.md). The fourth plane noun, `streams:` (live voice), is a singular section rather than a named-definition registry, so it has no `pools:` membership and no `breaker:` block of its own; its complete grammar is in [voice.md](voice.md). The same is true of `tools.<server>.sampling`, the per-upstream bounds on a server-initiated `sampling/createMessage` ask (`max_messages`, `max_prompt_bytes`, `max_stop_sequences`, `max_stop_sequence_bytes`, `temperature_min_milli`/`temperature_max_milli`) — each defaults to a sensible ceiling and each refusal names the exact `tools.<server>.sampling.<key>` to edit; the full grammar is in [mcp.md](mcp.md).
 
 ```yaml
 pools:
