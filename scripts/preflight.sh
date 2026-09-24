@@ -15,7 +15,16 @@
 # Unset, `--full` skips that step and everything else still runs.
 #
 # Exit 0 only if every mirrored job is green. Windows can't fully build on a mac (cross C
-# toolchain), so it is a *type-check* best-effort here + a loud reminder to confirm the CI job.
+# toolchain), so it is a *type-check* best-effort here.
+#
+# EXIT CODES. 0 = every mirrored CI job ran here and was green ("safe to tag"). 1 = a job ran and was
+# red. 3 = PROVISIONAL: nothing ran red, but at least one mirrored CI job could NOT be verified on
+# this machine (cargo-deny not installed, the windows target absent, or the windows check failing
+# for a reason that is not a recognised rustc diagnostic) -- each is named, and the verdict is NOT
+# "safe to tag". These legs used to print a warning glyph, leave fail=0, and end on "PREFLIGHT
+# GREEN -- safe to tag" with the Windows job -- the one this file exists for -- unverified.
+#
+#   scripts/preflight.sh --selftest   # prove the verdict logic on fixtures (no cargo, no tree)
 set -uo pipefail
 cd "$(dirname "$0")/.." || { echo "preflight: cannot cd to the repository root" >&2; exit 1; }
 export RUSTFLAGS="-D warnings"   # same as CI env
@@ -29,6 +38,97 @@ fail=0
 TMPD="$(mktemp -d)" || { echo "preflight: cannot create a scratch directory" >&2; exit 1; }
 trap 'rm -rf "$TMPD"' EXIT
 step() { echo; echo "━━━ $1"; shift; if "$@"; then echo "  ✓"; else echo "  ✗ FAILED: $*"; fail=1; fi; }
+
+# A mirrored CI job this machine could not verify. Not a red (nothing ran red) and never a green.
+UNVERIFIED=""
+unverified() {   # unverified <job> <why…>
+  local job="$1"; shift
+  echo "  ⚠ NOT VERIFIED LOCALLY: $*"
+  echo "    → the '$job' CI job must be confirmed green before tagging."
+  UNVERIFIED="${UNVERIFIED:+$UNVERIFIED; }$job"
+}
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# ── Security job: cargo-deny (advisories · licenses · sources · bans) ──
+leg_cargo_deny() {
+  echo; echo "━━━ cargo-deny"
+  if have cargo-deny; then
+    if cargo deny check >"$TMPD/deny.log" 2>&1; then echo "  ✓"; else
+      echo "  ✗ cargo-deny failed:"; grep -iE "error|warning" "$TMPD/deny.log" | head -6; fail=1
+    fi
+  else
+    unverified "security (cargo-deny)" "cargo-deny is not installed (cargo install cargo-deny)."
+  fi
+}
+
+# Classify a finished `cargo check --target x86_64-pc-windows-msvc` log: `red` for a REAL code
+# error (a rustc diagnostic: `error[Ennnn]` or an unused/dead-code lint), `unverified` for anything
+# else -- a cross C-toolchain gap (ring/libsqlite3 needing MSVC headers on a mac) is NOT our code,
+# but neither is it a pass: the check did not complete, so it proved nothing.
+classify_windows_log() {
+  if grep -qiE "error\[E[0-9]|is never (used|constructed|read)" "$1"; then echo red; else echo unverified; fi
+}
+
+# ── Job 3: windows build · test (best-effort locally) ──
+# Catches cfg(unix)-only items left dead on Windows (e.g. a const used only inside #[cfg(unix)]).
+leg_windows() {
+  echo; echo "━━━ windows check (x86_64-pc-windows-msvc)"
+  if rustup target list --installed 2>/dev/null | grep -q x86_64-pc-windows-msvc; then
+    if cargo check --workspace --target x86_64-pc-windows-msvc >"$TMPD/win.log" 2>&1; then
+      echo "  ✓ windows type-check clean"
+    elif [ "$(classify_windows_log "$TMPD/win.log")" = red ]; then
+      echo "  ✗ windows has a REAL code error:"; grep -iE "error\[E[0-9]|is never (used|constructed|read)|-->" "$TMPD/win.log" | grep -v check-cfg | head -6; fail=1
+    else
+      unverified "windows build · test" "the windows check could not complete locally (not a recognised rustc diagnostic -- e.g. a cross C-toolchain gap building ring/sqlite)."
+    fi
+  else
+    unverified "windows build · test" "the windows target is not installed (rustup target add x86_64-pc-windows-msvc)."
+  fi
+}
+
+verdict() {
+  echo
+  if [ "$fail" -ne 0 ]; then echo "❌ PREFLIGHT FAILED — fix before tagging."; return 1; fi
+  if [ -n "$UNVERIFIED" ]; then
+    echo "⚠ PREFLIGHT PROVISIONAL — nothing ran red, but these mirrored CI jobs were NOT verified here:"
+    echo "    $UNVERIFIED"
+    echo "  Not safe to tag on this result alone: confirm those jobs green in CI."
+    return 3
+  fi
+  echo "✅ PREFLIGHT GREEN — safe to tag."
+  return 0
+}
+
+# ── --selftest: the verdict logic, on fixtures. No cargo, no working-tree check. ──
+run_selftest() {
+  local bad=0 out rc
+  expect() {   # expect <label> <want-rc> <rc> <out> [<must-not-contain>]
+    if [ "$3" -ne "$2" ] || { [ -n "${5:-}" ] && printf '%s' "$4" | grep -qF "$5"; }; then
+      echo "  BAD — $1 (rc $3, want $2)"; printf '%s\n' "$4" | sed 's/^/      /'; bad=$((bad + 1))
+    else
+      echo "  ok  — $1"
+    fi
+  }
+  echo "preflight.sh selftest"
+  out="$(fail=0; UNVERIFIED=""; verdict)"; rc=$?
+  expect "every job verified and green -> exit 0, safe to tag" 0 "$rc" "$out"
+  out="$(fail=1; UNVERIFIED=""; verdict)"; rc=$?
+  expect "a red job -> exit 1" 1 "$rc" "$out" "PREFLIGHT GREEN"
+  out="$(fail=0; UNVERIFIED="windows build · test"; verdict)"; rc=$?
+  expect "an unverified job -> exit 3, never GREEN" 3 "$rc" "$out" "PREFLIGHT GREEN"
+  out="$(fail=0; UNVERIFIED=""; have() { return 1; }; leg_cargo_deny; verdict)"; rc=$?
+  expect "cargo-deny absent -> not green" 3 "$rc" "$out" "PREFLIGHT GREEN"
+  printf 'error[E0425]: cannot find value `X` in this scope\n' >"$TMPD/w-red.log"
+  printf 'error: linking with `link.exe` failed: exit status: 1\nerror: could not compile `busbar` (bin "busbar")\n' >"$TMPD/w-other.log"
+  [ "$(classify_windows_log "$TMPD/w-red.log")" = red ] && echo "  ok  — a rustc diagnostic on windows is red" \
+    || { echo "  BAD — a rustc diagnostic on windows was not red"; bad=$((bad + 1)); }
+  [ "$(classify_windows_log "$TMPD/w-other.log")" = unverified ] && echo "  ok  — any other windows failure is unverified, not a pass" \
+    || { echo "  BAD — a non-diagnostic windows failure was classified as a pass"; bad=$((bad + 1)); }
+  if [ "$bad" -ne 0 ]; then echo "preflight.sh selftest: RED — $bad case(s)"; return 1; fi
+  echo "preflight.sh selftest: GREEN"
+}
+if [ "${1:-}" = "--selftest" ]; then run_selftest; exit $?; fi
 
 echo "▶ Pre-release gate — mirroring CI (RUSTFLAGS=$RUSTFLAGS)"
 
@@ -76,16 +176,7 @@ step "clippy (no-default, all-targets)"  cargo clippy --no-default-features --al
 step "build (no-default)"                cargo build --no-default-features --locked
 step "test (no-default)"                 cargo test --no-default-features --locked
 
-# ── Security job: cargo-deny (advisories · licenses · sources · bans) ──
-echo; echo "━━━ cargo-deny"
-if command -v cargo-deny >/dev/null 2>&1; then
-  if cargo deny check >"$TMPD/deny.log" 2>&1; then echo "  ✓"; else
-    echo "  ✗ cargo-deny failed:"; grep -iE "error|warning" "$TMPD/deny.log" | head -6; fail=1
-  fi
-else
-  echo "  ⚠ cargo-deny not installed (cargo install cargo-deny) — the Security CI job is NOT"
-  echo "    covered locally; verify it green before tagging."
-fi
+leg_cargo_deny
 
 # ── Local artifact audit (optional, machine-local) ──
 # A developer machine carries things a published tree must not: credential material, personal paths,
@@ -102,24 +193,7 @@ else
   echo "  ⚠ BUSBAR_LOCAL_AUDIT not set or not executable — skipped"
 fi
 
-# ── Job 3: windows build · test (best-effort locally) ──
-# Catches cfg(unix)-only items left dead on Windows (e.g. a const used only inside #[cfg(unix)]).
-echo; echo "━━━ windows check (x86_64-pc-windows-msvc)"
-if rustup target list --installed 2>/dev/null | grep -q x86_64-pc-windows-msvc; then
-  if cargo check --workspace --target x86_64-pc-windows-msvc >"$TMPD/win.log" 2>&1; then
-    echo "  ✓ windows type-check clean"
-  # A REAL code error is a rustc diagnostic: `error[Ennnn]` or an unused/dead-code lint.
-  # A cross C-toolchain gap (ring/libsqlite3 needing MSVC headers on a mac) is NOT our code.
-  elif grep -qiE "error\[E[0-9]|is never (used|constructed|read)" "$TMPD/win.log"; then
-    echo "  ✗ windows has a REAL code error:"; grep -iE "error\[E[0-9]|is never (used|constructed|read)|-->" "$TMPD/win.log" | grep -v check-cfg | head -6; fail=1
-  else
-    echo "  ⚠ could not complete locally (cross C-toolchain gap building ring/sqlite, not your Rust)."
-    echo "    → VERIFY the 'windows build · test' CI job green before tagging."
-  fi
-else
-  echo "  ⚠ windows target not installed (rustup target add x86_64-pc-windows-msvc)."
-  echo "    The 'windows build · test' CI job is NOT covered locally — VERIFY it green before tagging."
-fi
+leg_windows
 
 # ── Optional: deeper release gate (acceptance harness) ──
 if [ "${1:-}" = "--full" ]; then
@@ -145,5 +219,4 @@ if [ "${1:-}" = "--full" ]; then
   fi
 fi
 
-echo
-if [ $fail -eq 0 ]; then echo "✅ PREFLIGHT GREEN — safe to tag."; else echo "❌ PREFLIGHT FAILED — fix before tagging."; exit 1; fi
+verdict; exit $?
