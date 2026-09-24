@@ -68,8 +68,12 @@
 # cannot see. NOTE: still a feature branch head (`fix/oracle-recorder-residual-gaps`), the same
 # shape as the previous four pins; re-pin to the integration/merge commit when that branch lands.
 #
+# 2026-09-24 (owner ruling Q8): moved ab88903 -> 57da1eb, the same branch's next commit — Law 10: an
+# accepted-differences entry's premise is evaluated against the build under test (item 119). Still a
+# feature branch head; re-pin to the integration/merge commit when that branch lands.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=ab88903
+release_ref=57da1eb
 crate=busbar-release-oracle
 bin=busbar-oracle
