@@ -87,7 +87,24 @@ pub fn supported_abi(kind: &str) -> &'static [u32] {
         // at 1 (the first minor a plane ABI could target) so an older-minor plane still validates and
         // its real forward-compat gate is the airlock `check_preamble` at load. `[1, ABI_MINOR]`.
         "plane" => &[1, busbar_plugin::ABI_MINOR],
+        // No arm for `transport`, deliberately: the contract names seven kinds, and a transport is
+        // in-tree only (compiled into the binary, never dynamically loaded). A dropped-in
+        // `kind: transport` tarball is refused, and [`kind_refusal_note`] says why.
         _ => &[],
+    }
+}
+
+/// The explanation a refusal appends for a kind this binary will not load, so an operator who drops
+/// in a `kind: transport` tarball is told the kind is compiled-in only rather than merely that it is
+/// not in a list. Empty for every other kind.
+#[must_use]
+pub fn kind_refusal_note(kind: &str) -> &'static str {
+    match kind {
+        "transport" => {
+            " — transports are in-tree only: a transport is compiled into the busbar binary and is \
+             never loaded from the plugins folder"
+        }
+        _ => "",
     }
 }
 
@@ -806,3 +823,7 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
 #[cfg(test)]
 #[path = "tests/registry_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/kind_refusal_tests.rs"]
+mod kind_refusal_tests;

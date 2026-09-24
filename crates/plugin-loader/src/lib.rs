@@ -1735,7 +1735,8 @@ fn validate_mapped(lib: &Library, display: &str) -> Result<u32, String> {
     let plugin_kind = read_plugin_kind(lib, &display)?;
     if supported_abi(&plugin_kind).is_empty() {
         return Err(format!(
-            "plugin '{display}' declares unsupported kind '{plugin_kind}'"
+            "plugin '{display}' declares unsupported kind '{plugin_kind}'{}",
+            registry::kind_refusal_note(&plugin_kind)
         ));
     }
     // Confirm the operational symbols resolve too, so a half-built library is caught here rather than
