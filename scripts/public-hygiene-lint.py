@@ -386,7 +386,11 @@ SKIP_FILES = re.compile(
 # prose: scrubbing a phrase out of a 2026 config to satisfy a rule written in 2026 would corrupt the
 # very thing the corpus exists to preserve, and the corpus README says in terms that the fix for a
 # failure there is the migrator, never the file.
-SKIP_PATHS = re.compile(r"(^|/)tests/migration-corpus/")
+#
+# `testing/llm-conformance/specs/` holds provider API descriptions vendored BYTE-FOR-BYTE from the
+# provider (the conformance job diffs recordings against them); their prose is the provider's, and
+# editing it would break the very comparison the file exists for.
+SKIP_PATHS = re.compile(r"(^|/)tests/migration-corpus/|^testing/llm-conformance/specs/")
 
 
 # Internal engineering DESIGN docs. `docs/design/` holds the build's own design and roadmap prose —
