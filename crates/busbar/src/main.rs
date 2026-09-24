@@ -1468,6 +1468,11 @@ async fn run(data_workers: usize) {
     // spawn_probers call above and `AppHandle::set_snapshot_host`.
     #[cfg(feature = "proto-llm")]
     app_handle.set_snapshot_host(boot_host);
+    // And bind the spawner every later swap re-attaches the probers with (item 552): the swap drops
+    // this generation's host and retires its probers, so without the binding the first admin
+    // mutation stops active health probing for the life of the process.
+    #[cfg(feature = "proto-llm")]
+    app_handle.attach_on_swap(busbar_llm::spawn_probers);
 
     // Graceful shutdown: on ctrl_c (SIGINT) or SIGTERM, stop accepting new connections, let
     // in-flight requests drain, then flush the OTLP tracer so the final (most diagnostic) spans are
