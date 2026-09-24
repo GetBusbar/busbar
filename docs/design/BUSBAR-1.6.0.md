@@ -469,6 +469,63 @@ strings naming functions, so any census keyed on names reads them as references 
 code live — which is precisely how an unwired money backstop stayed invisible. **Run a positive
 control before believing a zero: search for something you know is there, and show it.**
 
+### Law 9 — arm at today's number
+
+An instrument that blocks REGRESSION is worth having on the day it is written, even while the debt
+it measures still stands. Holding a gate switched off until its count reaches zero is how this
+release built a dependency cycle: Wave 0 ("make the instruments able to fail") could not land
+because its ceilings only reach zero in Wave 5, and Wave 6 rewrites the corpus Wave 0's gates read.
+
+**The rule.** A new or newly-armed instrument pins its ceiling at TODAY'S MEASURED VALUE and
+refuses every rise from that moment. The drain runs behind it, ratcheting the ceiling down. An
+instrument's proof of life is that it CAN fail and that it RUNS — never that its number is zero.
+
+This is how every ratchet in this tree already works. Stating it as a law is what dissolves the
+cycle: item 6 splits into "wire the gates into CI" (a set-equality check about registration,
+landable immediately) and "make the gates green" (content, which waits for the tree to settle).
+
+### Law 10 — a forgiveness whose premise is never checked is a blindfold
+
+The oracle's register may forgive a difference, and every entry states WHY. That `why` is a
+premise about the build under test, and nothing evaluates it.
+
+Found live: entry **F-011b** forgives the served `openapi.json` listing the MCP and A2A endpoints,
+on the stated grounds that *"openapi.json describes the MCP and A2A endpoints."* The document is
+`include_bytes!("openapi.json.gz")` — compile-time embedded and entirely feature-independent — so
+in a build with those planes compiled OUT, the binary advertises a surface it cannot serve, and the
+very cell whose contract is *"the document must list only the 1.5.5 admin surface"* is scored
+`accepted` rather than `diverging`.
+
+**The rule.** An entry's premise is written as a condition the runner evaluates against the build
+in front of it. A premise that cannot be evaluated is not a reason; it is a wish, and the entry is
+refused. This is Law 0 applied to the register rather than to a gate: a forgiveness that cannot
+turn back into a refusal is not a forgiveness.
+
+### THE MEASUREMENT HOLE UNDER C1 AND C2
+
+Recorded here rather than in the plan, because it is a statement about what the claims MEAN.
+
+C1 — *"core names no instance"* — is asserted over all **7 plugin kinds** and measured over **2**.
+`xtask/src/gates/kind_isolation/matrix.rs:116` reads
+`const INSTANCE_VOCAB_KINDS: &[&str] = &["plane", "transport"];`, and `:1193` skips every kind
+outside it. Core carries no `[[cell]]` on the store, secret, auth, hook or export axis at all.
+
+The counter-example is in core: `crates/busbar-kernel/src/config/sections.rs:435` defines
+`EXPORT_MODULES`, **a closed list of export-plugin instance names inside the engine**, and
+`crates/busbar-kernel/src/config/mod.rs:1983` refuses at boot any `export.<name>.module` outside
+it. Same shape at `config/mod.rs:820` (`RETIRED_STORE_MODULES_1_5_3`), `:824`
+(`STORE_MODULE_VALKEY`), and `config/migrate.rs:905`.
+
+**This is one hole under two claims.** It breaches C1 directly. It also breaches **C2**: if core
+refuses every export module name it does not already know, a dropped-in export plugin cannot be
+named in a config file, so for the `export` kind the compiled-in fold and the dropped-in fold are
+NOT the same contract — which is the one universal rule a plugin has. Neither of the two
+instruments that claim to enforce C1 can see it, and `instance-noun-neutrality`'s export/secret/hook
+tokens are the fixture crate names (`export_example_plugin`), not the real instance vocabulary.
+
+Arming the five missing kind axes is a Phase 1 item. Until it lands, **every C1 green on record is
+a statement about planes and transports only.**
+
 # PART 2 — THE 85 LOCKED DECISIONS
 
 > *Absorbed verbatim from `DECISIONS.md`, which this document replaced and DELETED (`49ab4aca2`) — that name is history, not a path. Row numbers are cited from source comments, gate ledgers and commit messages — they are permanent. Cite a row; never re-litigate it.*
