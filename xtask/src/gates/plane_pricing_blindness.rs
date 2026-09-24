@@ -593,6 +593,20 @@ fn finding_key(f: &Finding) -> (String, String) {
 /// finding. The production-line SET comes from [`scan::production_lines`]; the TEXT that is matched
 /// comes from the carried blanker. Two passes, one answer.
 pub fn census(cx: &Ctx) -> Result<(Vec<Finding>, bool), String> {
+    census_counted(cx).map(|c| (c.findings, c.clock_fired))
+}
+
+/// What one census read: its findings, whether the clock exemption fired, and HOW MANY production
+/// files each plane crate contributed — the denominator [`ROW_SCAN_FLOOR`] is held against.
+pub struct Census {
+    pub findings: Vec<Finding>,
+    pub clock_fired: bool,
+    /// Production files scanned, per plane crate directory. A crate with none is absent.
+    pub scanned: BTreeMap<String, usize>,
+}
+
+/// THE CENSUS, COUNTED. See [`census`]; this is the same walk with its denominator kept.
+pub fn census_counted(cx: &Ctx) -> Result<Census, String> {
     let by_dir: BTreeMap<&str, &PlaneCrate> = PLANE_CRATES.iter().map(|p| (p.dir, p)).collect();
 
     let files = cx
@@ -600,6 +614,7 @@ pub fn census(cx: &Ctx) -> Result<(Vec<Finding>, bool), String> {
         .map_err(|e| e.to_string())?;
 
     let mut out: BTreeMap<(Category, String), Finding> = BTreeMap::new();
+    let mut scanned: BTreeMap<String, usize> = BTreeMap::new();
     let mut clock_exemption_fired = false;
     // Resolved BEFORE the scan, because a file's scope is decided by how it is declared and that
     // declaration lives in a different file.
@@ -616,6 +631,7 @@ pub fn census(cx: &Ctx) -> Result<(Vec<Finding>, bool), String> {
         if is_test_file(&rel) || test_declared.contains(&rel) {
             continue;
         }
+        *scanned.entry(krate.clone()).or_default() += 1;
 
         let production: BTreeSet<usize> = scan::production_lines(&f.text)
             .into_iter()
@@ -671,7 +687,11 @@ pub fn census(cx: &Ctx) -> Result<(Vec<Finding>, bool), String> {
         }
     }
 
-    Ok((out.into_values().collect(), clock_exemption_fired))
+    Ok(Census {
+        findings: out.into_values().collect(),
+        clock_fired: clock_exemption_fired,
+        scanned,
+    })
 }
 
 /// `crates/<dir>/…` → `<dir>`.
@@ -833,6 +853,70 @@ fn emit_baseline(findings: &[Finding]) -> String {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE SCAN FLOOR
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// HOW FEW PRODUCTION FILES THE PLANE CRATES MAY HOLD BETWEEN THEM before the census is not the
+/// census it claims to be. Measured 2026-09-23: 242 across the eleven roster crates. Set below that
+/// so a money file that moves kernel-side — the burndown this gate exists to drive — does not trip
+/// it, and so a scope that collapsed (a walk that stopped reaching the planes, a crate list gone
+/// stale) does. It may only go UP.
+pub const PLANE_SCAN_FLOOR: usize = 180;
+
+/// THE SCAN FLOOR, HELD TO A NUMBER (item 216). This row used to be an unconditional `Row::pass`
+/// after any census that returned `Ok`, and the census's only floor was ONE `.rs` file anywhere
+/// under `crates/` — a population of 1616. The only plant that could red it was a `crates/` with
+/// no Rust at all. A plane crate whose `src/` emptied mid-split while the directory survived (which
+/// `:plane-roots` passes on `is_dir`) was then scanned as zero files, and every census row read that
+/// zero as "no plane crate prices".
+///
+/// Two floors now: every roster crate that is on disk contributes at least one production file, and
+/// the crates between them clear [`PLANE_SCAN_FLOOR`]. A crate already refused by `:plane-roots` for
+/// being absent is not counted twice.
+fn row_scan_floor(absent: &[&str], scanned: &BTreeMap<String, usize>) -> Row {
+    let empty: Vec<&str> = PLANE_CRATES
+        .iter()
+        .map(|p| p.dir)
+        .filter(|d| !absent.contains(d) && scanned.get(*d).copied().unwrap_or(0) == 0)
+        .collect();
+    let total: usize = PLANE_CRATES
+        .iter()
+        .map(|p| scanned.get(p.dir).copied().unwrap_or(0))
+        .sum();
+    let mut problems = Vec::new();
+    if !empty.is_empty() {
+        problems.push(format!(
+            "{} contributed ZERO production files — a plane crate the census reads as empty is a \
+             plane crate every ban passes over",
+            empty.join(", ")
+        ));
+    }
+    if total < PLANE_SCAN_FLOOR {
+        problems.push(format!(
+            "the roster plane crates yielded {total} production file(s) between them, below the \
+             floor of {PLANE_SCAN_FLOOR} — the scope collapsed, it did not get cleaner"
+        ));
+    }
+    if problems.is_empty() {
+        Row::pass(
+            ROW_SCAN_FLOOR,
+            "the crates tree was scanned",
+            format!(
+                "{total} production file(s) across {} roster plane crate(s), every one non-empty, \
+                 against a floor of {PLANE_SCAN_FLOOR}",
+                scanned.len()
+            ),
+        )
+    } else {
+        Row::fail(
+            ROW_SCAN_FLOOR,
+            "the plane census read too little to mean anything",
+            problems.join(" | "),
+        )
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
 // THE GATE
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -907,7 +991,11 @@ impl Gate for PlanePricingBlindnessGate {
             )
         });
 
-        let (findings, clock_fired) = match census(cx) {
+        let Census {
+            findings,
+            clock_fired,
+            scanned,
+        } = match census_counted(cx) {
             Ok(v) => v,
             Err(e) => {
                 rows.push(Row::fail(
@@ -919,11 +1007,7 @@ impl Gate for PlanePricingBlindnessGate {
                 return Verdict::of(rows);
             }
         };
-        rows.push(Row::pass(
-            ROW_SCAN_FLOOR,
-            "the crates tree was scanned",
-            CLEAN,
-        ));
+        rows.push(row_scan_floor(&missing, &scanned));
 
         if std::env::var("XTASK_PPB_EMIT_BASELINE").as_deref() == Ok("1") {
             eprint!("{}", emit_baseline(&findings));
@@ -1219,6 +1303,7 @@ impl Gate for PlanePricingBlindnessGate {
         ));
         report.push(declaration_floor_bites(self, cx, FIX));
         report.push(empty_declaration_bites(self, cx, FIX));
+        report.push(emptied_crate_bites_the_scan_floor(self, cx, FIX));
 
         // THE SCAN FLOOR: a `crates/` that holds no Rust is refused, never scanned as zero findings.
         report.push(prove_rows_red_at(
@@ -1543,6 +1628,52 @@ fn empty_declaration_bites(gate: &PlanePricingBlindnessGate, cx: &Ctx, fixture: 
         .iter()
         .find(|r| r.id == ROW_DECLARATION)
         .is_some_and(|r| r.status != Status::Pass && r.detail.contains("busbar-plane-llm"));
+    Case {
+        name,
+        covers,
+        expected: Expect::Red {
+            naming: naming.clone(),
+        },
+        got: if red {
+            Expect::Red { naming }
+        } else {
+            Expect::Green
+        },
+    }
+}
+
+/// ITEM 216: A PLANE CRATE WHOSE `src/` EMPTIED, WITH THE DIRECTORY STILL THERE, REDS THE SCAN
+/// FLOOR BY NAME. `:plane-roots` passes it (the directory is on disk); the census reads it as zero
+/// files; and zero is the passing answer to every ban below.
+fn emptied_crate_bites_the_scan_floor(
+    gate: &PlanePricingBlindnessGate,
+    cx: &Ctx,
+    fixture: &str,
+) -> Case {
+    let covers = vec![ROW_SCAN_FLOOR.to_string()];
+    let name =
+        "a roster plane crate whose src holds no Rust, directory intact, reds the scan floor"
+            .to_string();
+    let naming = vec!["busbar-plane-llm contributed ZERO".to_string()];
+    let Ok(fcx) = Ctx::at(cx.abs(fixture), cx.scratch().to_path_buf()) else {
+        return Case {
+            name,
+            covers,
+            expected: Expect::Red { naming },
+            got: Expect::Skipped,
+        };
+    };
+    let mut ov = Overlay::new();
+    ov.remove("crates/busbar-plane-llm/src/meta.rs");
+    ov.remove("crates/busbar-plane-llm/src/plane.rs");
+    let verdict = execute(gate, &fcx.with_overlay(ov));
+    let red = verdict
+        .rows
+        .iter()
+        .find(|r| r.id == ROW_SCAN_FLOOR)
+        .is_some_and(|r| {
+            r.status != Status::Pass && r.detail.contains("busbar-plane-llm contributed ZERO")
+        });
     Case {
         name,
         covers,
