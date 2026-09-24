@@ -42,8 +42,24 @@ MODE="${1:-}"
 # Each case asserts on the check-5 line specifically, not on the exit code: the stub cannot know
 # each plugin's version_line, so check 4 is noisy under it and is not what these cases are about.
 if [ "$MODE" = "--selftest" ]; then
-  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+  tmp="$(mktemp -d)"
   rc=0
+  # EVERY DECLARED CASE MUST RUN (item 509). An early `exit 0` once ended this selftest after check
+  # 5's cases, so check 2's fail-injection below never executed on the happy path and could not
+  # change the outcome on the unhappy one. The EXIT trap counts the cases that actually ran and
+  # turns a green exit with any case unrun into RED.
+  SELFTEST_CASES=6
+  ran=0
+  selftest_exit() {
+    local st=$?
+    rm -rf "$tmp"
+    if [ "$st" = 0 ] && [ "$ran" != "$SELFTEST_CASES" ]; then
+      echo "plugin-registry-check selftest: FAILED -- only $ran of $SELFTEST_CASES declared case(s) ran;"
+      echo "  a selftest that exits before its cases is not a pass."
+      exit 1
+    fi
+  }
+  trap selftest_exit EXIT
   mk_stub() {  # mk_stub <orgs-behaviour-script>
     mkdir -p "$tmp/bin"
     { printf '#!/usr/bin/env bash\ncase "$2" in\n  */releases/latest) echo %s ;;\n  orgs/*)\n' \
@@ -54,6 +70,7 @@ if [ "$MODE" = "--selftest" ]; then
     chmod +x "$tmp/bin/gh"
   }
   probe() {  # probe <label> <want-present|want-absent> <pattern>
+    ran=$((ran + 1))
     local out; out="$(PATH="$tmp/bin:$PATH" "$0" 2>&1 || true)"
     if [ "$2" = want-present ]; then
       if printf '%s' "$out" | grep -qF "$3"; then printf '  [ok]     %s\n' "$1"
@@ -85,8 +102,6 @@ if [ "$MODE" = "--selftest" ]; then
   mk_stub '    python3 -c "import json;print(json.dumps([{\"name\":\"r\"+str(i)} for i in range(40)]))"'
   probe "a clean listing produces no sweep finding" want-absent "matches plugin naming but is not in plugins.yaml"
 
-  echo
-  [ "$rc" = 0 ] && { echo "plugin-registry-check selftest: the org sweep fails loud and still finds strays"; exit 0; }
   # ── CHECK 2, FAIL-INJECTED. A COMMENT MENTIONING THE LOOP IS NOT THE LOOP ──────────────────────
   # Check 2 asserted only that the string `plugin-registry-check.sh --list` appeared SOMEWHERE in
   # the qa-gate surface, and scripts/qa-gate-run.sh's header documents that loop in prose. Deleting
@@ -115,6 +130,7 @@ if [ "$MODE" = "--selftest" ]; then
 
   # CONTROL: the unmutated copy must still pass check 2, so a RED below is the mutation talking.
   cp scripts/qa-gate-run.sh "$c2/scripts/qa-gate-run.sh"
+  ran=$((ran + 1))
   if c2_says "$C2_NEEDLE"; then
     printf '  [FAILED] %s\n' "control: the UNMUTATED tree failed check 2 (the check is broken, not the subject)"; rc=1
   else
@@ -132,6 +148,7 @@ for ln in open(p, encoding="utf-8"):
     out.append(ln)
 open(p, "w", encoding="utf-8").write("".join(out))
 MUT
+  ran=$((ran + 1))
   if c2_says "$C2_NEEDLE"; then
     printf '  [ok]     %s\n' "deleting the loop but keeping the comment that describes it is RED"
   else
