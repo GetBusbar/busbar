@@ -729,8 +729,8 @@ fn parse_enum(body: &str, csd: &Container) -> Result<Map<String, Value>, String>
 /// is accepted at all, and for `SecretRef` that rejection is the whole point of the type. Relaxing
 /// any of `visit_str`/`visit_u64`/`visit_i64`/`visit_f64`/`visit_bool`/`visit_bytes` was a
 /// ZERO-DELTA change to this fingerprint, so the refusals are recorded and frozen in BOTH
-/// directions — a refusal REMOVED widens the grammar to accept exactly the inline literal the type
-/// exists to reject, and a refusal ADDED breaks a config that used the form.
+/// directions — a refusal REMOVED widens the grammar to a form that may admit the inline literal the
+/// type exists to reject, and a refusal ADDED breaks a config that used the form.
 ///
 /// A form counts as refused when its body can only fail: it mentions `Err` and contains no `Ok(` at
 /// all. Deliberately CONSERVATIVE — a visitor that can sometimes succeed is simply not recorded.
