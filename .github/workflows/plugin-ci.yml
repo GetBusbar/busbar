@@ -467,7 +467,8 @@ jobs:
           set -euo pipefail
           WORKDIR=$(mktemp -d)
           mkdir -p "$WORKDIR/plugins"
-          export BUSBAR_ADMIN_TOKEN="ci-admin-$(date +%s)"
+          BUSBAR_ADMIN_TOKEN="ci-admin-$(date +%s)"
+          export BUSBAR_ADMIN_TOKEN
           export FAKE_UPSTREAM_KEY="sk-ci-fake"
 
           cat > "$WORKDIR/providers.yaml" <<EOF
@@ -610,7 +611,8 @@ jobs:
           WORKDIR=$(mktemp -d)
           mkdir -p "$WORKDIR/plugins"
           cp /tmp/signoff.tar.gz "$WORKDIR/plugins/${{ inputs.plugin_crate }}.tar.gz"
-          export BUSBAR_ADMIN_TOKEN="ci-admin-$(date +%s)"
+          BUSBAR_ADMIN_TOKEN="ci-admin-$(date +%s)"
+          export BUSBAR_ADMIN_TOKEN
           export FAKE_UPSTREAM_KEY="sk-ci-fake"
 
           cat > "$WORKDIR/providers.yaml" <<EOF
@@ -721,7 +723,8 @@ jobs:
           # ---- OIDC POST /auth/token flow (RUNS fully). ----
           WORKDIR=$(mktemp -d); mkdir -p "$WORKDIR/plugins"
           cp /tmp/signoff.tar.gz "$WORKDIR/plugins/${{ inputs.plugin_crate }}.tar.gz"
-          export BUSBAR_ADMIN_TOKEN="ci-admin-$(date +%s)"
+          BUSBAR_ADMIN_TOKEN="ci-admin-$(date +%s)"
+          export BUSBAR_ADMIN_TOKEN
 
           # Real RSA keypair → JWKS (kid gate-key-1, e=AQAB) + a real RS256-signed JWT.
           openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$WORKDIR/rsa.pem" 2>/dev/null

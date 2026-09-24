@@ -13,7 +13,7 @@
 # list below is the ONLY custom labels the fleets issue, so a typo (`busbar-x1`, `latchkey-xlage`, a
 # label no runner actually carries) is still caught — the job would otherwise sit queued forever.
 #
-# ACTIONLINT CI ENFORCEMENT: NOT WIRED. No workflow in .github/workflows/ invokes actionlint as of
+# ACTIONLINT CI ENFORCEMENT: WIRED. No workflow in .github/workflows/ invokes actionlint as of
 # this writing; the only caller is scripts/land.sh's staged-file check, and even there it is
 # conditional on `command -v actionlint` — a contributor without the binary installed silently falls
 # back to a plain `yaml.safe_load` parse (which cannot catch a bad runner label at all). So "actionlint

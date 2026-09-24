@@ -217,7 +217,13 @@ jobs:
   #   * scripts/release-gate/gate.sh --selftest — the release gate's short-list refusal, staged
   #     record digests and version anchors, and ledger-selftest.sh riding along.
   #   * .github/scripts/required-status-checks-selftest.sh — the required-status-checks doc against
-  #     the workflow files it describes.
+  #     the workflow files it describes; .github/scripts/actionlint-claim-selftest.sh — the lint
+  #     config's WIRED/NOT WIRED marker against whether a workflow really runs the linter.
+  #   * actionlint itself over every workflow file, pinned by version AND sha256 (a linter fetched by
+  #     a moving name is whatever that name meant this morning), reading .github/actionlint.yaml for
+  #     the fleet's runner labels. Before this step its only caller was scripts/land.sh, and only when
+  #     the binary happened to be installed. shellcheck findings count when the runner image ships
+  #     shellcheck; the tree is clean under 1.7.12 with shellcheck either way.
   #   * scripts/mcp-subject/h2-lib.sh and boot.sh --selftest — the MCP subject rig's library and
   #     boot script, which need no binary and no network in selftest mode.
   #   * scripts/a2a-subject/h2-lib.sh and h2-route-failover.sh --selftest — the A2A twins, same
@@ -231,8 +237,10 @@ jobs:
   #     documented-claims-check.py, extract-inline-tests.py --selftest, and
   #     secret-accessor-seal-witness.sh --selftest AND --check (the witness's verdict over the six
   #     cdylib plugin crates, which reads source only).
-  #   * scripts/qa-gate-run.sh selftest (its own spelling, no dashes) and
-  #     scripts/release-check-1.5.2.sh --selftest.
+  #   * scripts/qa-gate-run.sh selftest (its own spelling, no dashes),
+  #     scripts/release-check-1.5.2.sh --selftest and scripts/ci-runners-selftest.sh.
+  #     (plane-delete-test.sh, proto-deletion-gate.sh and branch-symbol-sweep.py selftests build or
+  #     read history, so they ride the jobs that already run those gates.)
   #     (verify-1.6.0-done.sh --selftest needs the xtask runner, so it rides structure-lint instead.)
   script-selftests:
     name: script selftests (bare scripts prove themselves; workflow invariants)
@@ -253,6 +261,23 @@ jobs:
         run: ./scripts/release-gate/gate.sh --selftest
       - name: required-status-checks doc self-test
         run: ./.github/scripts/required-status-checks-selftest.sh
+      - name: lint-config claim self-test
+        run: ./.github/scripts/actionlint-claim-selftest.sh
+      - name: Install actionlint 1.7.12 (pinned by sha256)
+        env:
+          AL_VERSION: "1.7.12"
+          AL_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          tgz="actionlint_${AL_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --max-time 60 -o "$RUNNER_TEMP/$tgz" \
+            "https://github.com/rhysd/actionlint/releases/download/v${AL_VERSION}/${tgz}"
+          echo "${AL_SHA256}  $RUNNER_TEMP/$tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/actionlint-bin"
+          tar -xzf "$RUNNER_TEMP/$tgz" -C "$RUNNER_TEMP/actionlint-bin" actionlint
+          echo "$RUNNER_TEMP/actionlint-bin" >> "$GITHUB_PATH"
+      - name: actionlint over every workflow
+        run: actionlint -color .github/workflows/*.yml
       - name: MCP subject h2 library self-test
         run: ./scripts/mcp-subject/h2-lib.sh --selftest
       - name: MCP subject boot self-test
@@ -293,6 +318,8 @@ jobs:
         run: ./scripts/qa-gate-run.sh selftest
       - name: release-check 1.5.2 self-test
         run: ./scripts/release-check-1.5.2.sh --selftest
+      - name: ci-runners self-test
+        run: ./scripts/ci-runners-selftest.sh
 
   # THE PREFLIGHT BARRIER. `needs:` every member of the cheap hygiene tier; its only step is a green
   # echo. It has NO `if:` on purpose: the implicit `success()` means it runs (and goes green) only
@@ -821,8 +848,17 @@ jobs:
         run: cargo xtask gate kind-isolation --selftest
       - name: Kind-isolation gate (BLOCKING — no name, edge, word or root wiring fuses two kinds)
         run: cargo xtask gate kind-isolation
+      # Self-test before verdict, as everywhere else in this file: the deletion test proves it can
+      # still see a plane edge before its green over the real planes is believed.
+      - name: Plane deletion test self-test
+        run: scripts/plane-delete-test.sh --selftest
       - name: Plane deletion test (each plane crate is strong-form removable)
         run: scripts/plane-delete-test.sh --all
+      # BRANCH-SYMBOL SWEEP self-test: the instrument that finds branch content missing from trunk
+      # proves its fixtures against this checkout. It needs full history and the v1.5.5 tag, which
+      # this job's `fetch-depth: 0` checkout carries (tags included).
+      - name: Branch-symbol sweep self-test
+        run: python3 scripts/branch-symbol-sweep.py --repo "$GITHUB_WORKSPACE" selftest --trunk HEAD
       - name: Latchkey Fast Cache (cargo registry + target, save)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
@@ -1873,6 +1909,8 @@ jobs:
       # remain — "fewer protocols is a valid busbar" (owner ruling R-D), executed rather than
       # asserted. Lives in this job because it is the same reduced-feature axis with the same
       # toolchain + cache warm.
+      - name: Protocol deletion gate self-test
+        run: scripts/proto-deletion-gate.sh --selftest
       - name: Protocol deletion gate
         run: scripts/proto-deletion-gate.sh
 
@@ -3830,6 +3868,46 @@ jobs:
         if: ${{ !cancelled() && matrix.gate == 'map-proof' }}
         run: cargo xtask gate map-proof
 
+  # EVERY REGISTERED GATE, IN ONE RUN, ON EVERY PUSH -- REPORT-ONLY IN THE UMBRELLA, NEVER SOFTENED
+  # HERE (KICKOFF 13.2). `cargo xtask gate --all` is the registry's own verdict: every gate, one
+  # closing rollup. Until this job it ran in NO automatic workflow -- its only caller was
+  # manual-keep-proof.yml, which is dispatch-only -- so its red (17 gates by its own rollup when
+  # 1.6.0 Phase 0 measured it) was visible to nobody who did not go and run it.
+  #
+  # The job runs it PLAINLY: no `continue-on-error`, no `|| true`, no `--report`. Its red is this
+  # job's red on every run. What is withheld is only its COUNT in the umbrella -- it is in `needs`
+  # and declared `# report-only:` there, the footing item 6a gave `content-debt-gates` -- because a
+  # required check that is red on every push for gates later phases drain is a check somebody learns
+  # to ignore. The per-gate steps in structure-lint and the other jobs stay the blocking form.
+  #
+  # FLIP CONDITION: when `cargo xtask gate --all` exits 0 on HEAD, give this job a RESULTS row in
+  # the umbrella, strike its `# report-only:` line and move its CARGO_CI_ONLY entry in
+  # xtask/src/full_gate.rs to CARGO_LOCAL, in the same commit.
+  gate-all:
+    name: cargo xtask gate --all (every registered gate — REPORT-ONLY in the umbrella, never softened here)
+    needs: [preflight]
+    runs-on: latchkey-xlarge
+
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. NEW JOB, no run history yet.
+    # The same registry ci.yml's structure-lint runs one gate per step measures p95 14.5 min, and
+    # keep-proof's `gates` job (gate --all plus `cargo xtask selftest`) is bounded at 45 after being
+    # cancelled at 25. This runs the verdicts only, so 45 is headroom, not a guess.
+    timeout-minutes: 45
+    steps:
+      # FULL HISTORY: `kind-isolation` and the construction ceilings measure against a base commit
+      # (`base_ref` in xtask/src/gates/construction/ceilings.rs: `HEAD~1` or the merge-base with the
+      # line's remote tip), and a depth-1 clone carries neither.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
+      - name: Build the gate runner once
+        run: cargo build -p xtask --locked
+      - name: Every registered gate, run against this tree
+        run: cargo xtask gate --all
+
   ship-ready:
     name: ship-ready
     # THE SHIP CRITERION, AS A CHECK RATHER THAN A CHECKLIST. The criterion used to be prose that
@@ -3934,10 +4012,14 @@ jobs:
       - teller-steps
       - construction-gate
       - content-debt-gates
+      - gate-all
     # report-only: content-debt-gates -- unconstructed, map-proof and sweep-coverage are RED ON HEAD on
     #   content that item 6b (Phase 5) drains, self-test and verdict both, and none has a
     #   gates::REPORT_ONLY posture to score against. The job runs them plainly and goes red; the
     #   umbrella waits for it and prints its result, and does not count it until each is green.
+    # report-only: gate-all -- `cargo xtask gate --all` is RED ON HEAD in the gates later phases
+    #   drain (KICKOFF 13.2). The job runs it plainly and goes red on every run; the umbrella waits
+    #   for it and prints its result, and does not count it until `gate --all` exits 0 on HEAD.
     # ── THE JOBS DELIBERATELY OUTSIDE THIS LIST ───────────────────────────────────────────────────
     # scripts/ci-umbrella-lint.py reads these two lines and requires that EVERY job in this file is
     # either in `needs` above or named here with a reason. `deletion-test-matrix` -- an enforcement
@@ -3964,6 +4046,8 @@ jobs:
       CONSTRUCTION_RESULT: ${{ needs.construction-gate.result }}
       # Report-only: printed, never counted. Flip condition is on the content-debt-gates job.
       CONTENT_DEBT_GATES_RESULT: ${{ needs.content-debt-gates.result }}
+      # Report-only: printed, never counted. Flip condition is on the gate-all job.
+      GATE_ALL_RESULT: ${{ needs.gate-all.result }}
       # 'true' on any run where the full tier is expected to execute: every event except a push,
       # plus pushes to the three promotion branches. Mirrors the `if:` on the full-tier jobs above,
       # so "expected to run" and "required to have run" cannot drift apart.
@@ -4035,6 +4119,7 @@ jobs:
           # row went red that the gate's standing list does not name.
           printf '  %-24s %s\n' "construction-gate" "posture verdict=${CONSTRUCTION_VERDICT:-unset} (job result ${CONSTRUCTION_RESULT:-unset}; SCORED)"
           printf '  %-24s %s\n' "content-debt-gates" "job result ${CONTENT_DEBT_GATES_RESULT:-unset} (REPORT-ONLY until item 6b drains it; NOT COUNTED)"
+          printf '  %-24s %s\n' "gate-all" "job result ${GATE_ALL_RESULT:-unset} (REPORT-ONLY until gate --all is green on HEAD; NOT COUNTED)"
           if [ "$fails" -ne 0 ]; then
             echo "::error::ci umbrella: RED — ${fails} required job(s) did not pass on this ref."
             echo "::error::A skipped, failed, or cancelled required job is NOT a pass. DO NOT PROMOTE."

@@ -47,6 +47,8 @@ OWED_CI_CALLS = [
     "scripts/prove-remote.sh --selftest",
     "scripts/release-gate/gate.sh --selftest",
     ".github/scripts/required-status-checks-selftest.sh",
+    ".github/scripts/actionlint-claim-selftest.sh",
+    "actionlint -color .github/workflows/*.yml",
     "scripts/mcp-subject/h2-lib.sh --selftest",
     "scripts/mcp-subject/boot.sh --selftest",
     "scripts/a2a-subject/h2-lib.sh --selftest",
@@ -68,6 +70,10 @@ OWED_CI_CALLS = [
     "scripts/secret-accessor-seal-witness.sh --check",
     "scripts/qa-gate-run.sh selftest",
     "scripts/release-check-1.5.2.sh --selftest",
+    "scripts/ci-runners-selftest.sh",
+    "scripts/plane-delete-test.sh --selftest",
+    "scripts/proto-deletion-gate.sh --selftest",
+    "scripts/branch-symbol-sweep.py --repo \"$GITHUB_WORKSPACE\" selftest --trunk HEAD",
     ".github/workflows/lint/workflow-invariants.py --selftest",
 ]
 
@@ -549,6 +555,28 @@ def c_owed_consumer_state(tree):
             for n, t in hits if not re.match(r"^if ! state=\"\$\(", t)]
 
 
+def c_owed_gate_all(tree):
+    """(d) `cargo xtask gate --all` runs on push in ci.yml, plainly, and its red is visible."""
+    ls = lines(tree, CI)
+    hits = [n for n, t in executed_lines(tree, CI) if re.match(r"^cargo xtask gate --all\b", t)]
+    if not hits:
+        return ["%s: no step runs `cargo xtask gate --all` -- it runs in no automatic workflow" % CI]
+    bad = []
+    for n in hits:
+        t = ls[n - 1]
+        job = next((k for k, s, e in job_spans(ls) if s < n <= e), None)
+        s, e = job_span(ls, job)
+        body = "\n".join(ls[s:e])
+        if "|| true" in t or "--report" in t or re.search(r"^\s*continue-on-error:\s*true", body, re.M):
+            bad.append("%s:%d `gate --all` is softened (|| true / --report / continue-on-error)" % (CI, n))
+        cond = next((ls[q] for q in range(s, e) if re.match(r"^    if:", ls[q])), "")
+        if FULL_TIER_GUARD in cond:
+            bad.append("%s:%d `gate --all` runs only on the full tier, not on every push" % (CI, n))
+        if not re.search(r"^\s*- %s\s*$" % re.escape(job), "\n".join(ls[job_span(ls, "ci-umbrella")[0]:]), re.M):
+            bad.append("%s: job `%s` is not in the umbrella's needs, so its result is printed nowhere" % (CI, job))
+    return bad
+
+
 def c_owed_ci_calls(tree):
     """(a) + 15.5: ci.yml runs every bare-script selftest this directory owes."""
     ex = [t for _, t in executed_lines(tree, CI)]
@@ -560,6 +588,7 @@ CHECKS = [
     ("340", c340), ("341", c341), ("342", c342), ("343", c343), ("352", c352), ("353", c353),
     ("356", c356), ("357", c357), ("358", c358), ("361", c361), ("owed-b", c_owed_keep_scope),
     ("owed-c", c_owed_drift), ("owed-a", c_owed_ci_calls), ("owed-w04", c_owed_consumer_state),
+    ("owed-d", c_owed_gate_all),
 ]
 
 
@@ -639,6 +668,10 @@ PLANTS = [
     ("owed-w04", "the consumer-state read back to a bare assignment",
      _sub(MIRROR, 'if ! state="$(python3 scripts/ci-images.py --consumer-state)"; then',
           'state="$(python3 scripts/ci-images.py --consumer-state)"; if false; then')),
+    ("owed-d", "gate --all softened with || true",
+     _sub(CI, "        run: cargo xtask gate --all\n", "        run: cargo xtask gate --all || true\n")),
+    ("owed-d", "gate --all wired nowhere",
+     _sub(CI, "        run: cargo xtask gate --all\n", "        run: cargo xtask gate structure-lint\n")),
     ("owed-a", "the prove-remote selftest unwired",
      _sub(CI, "        run: ./scripts/prove-remote.sh --selftest\n", "        run: 'true'\n")),
 ]

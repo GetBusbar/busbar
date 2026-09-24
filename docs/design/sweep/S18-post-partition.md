@@ -4,11 +4,16 @@ The three files that entered the tree after the 17+6 slice partition was cut, an
 no slice. Swept directly. Each is a gate module — the instruments the rest of the sweep was
 measured with, which makes an unfalsifiable one the worst kind of gap.
 
+A fourth entered later: `.github/workflows/sched-llm-spec-drift.yml`, created by slot W0.12 for the
+non-required live-drift check stream A owed (`vendor.sh --drift`). Swept by the slot that wrote it,
+against the invariant check that guards it.
+
 | FILE | VERDICT | EVIDENCE | ROWS |
 |---|---|---|---|
 | `xtask/src/gates/kind_abi_lane.rs` | FINDING | `grep -c 'fn selftest'` -> 1 but `grep -c 'prove_red'` -> **0**, against 8 `Row::fail` sites. Registered (`grep -c 'kind_abi_lane::' gates/mod.rs` -> 1) and invoked (`grep -c kind-abi-lane ci.yml` -> 2). So eight refusal arms ship with no case proving any of them can fire. | X-4000 |
 | `xtask/src/gates/kind_isolation/closure.rs` | FINDING | 803 lines, 2 `Row::fail`, no `selftest` of its own; it is reached through the parent `kind-isolation` battery, whose own case for `:closure` reports IMPOSSIBLE because the row is standing red. So the rule is real and its falsification is blocked, not absent. | X-4001 |
 | `xtask/src/gates/sweep_coverage.rs` | FINDING | 4 `prove_red` cases, all three planted arms proven GREEN->RED after the overlay fix. But `grep -c sweep-coverage ci.yml` -> **0**: the completeness instrument for this whole sweep runs nowhere automatically. Four of its six rows still carry no RED case. | X-4002 |
+| `.github/workflows/sched-llm-spec-drift.yml` | CLEAN | One job, `llm-spec-drift`, runs `bash testing/llm-conformance/vendor.sh --drift` plainly (`rc=0; ... || rc=$?`, then `exit "$rc"`): no `continue-on-error`, no `|| true` on the verdict. Exit 5 (drift), 4 (unreachable) and any other non-zero each print their own `::error::` and stay red. Triggers `push` (ci.yml's branch set) + daily `schedule` + dispatch. Named in neither ci.yml's umbrella nor `.github/required-status-checks.md`. Guarded by `.github/workflows/lint/workflow-invariants.py` check `owed-c` (planted: schedule removed, file deleted -> both fire). | none |
 
 ## ROWS RAISED
 
@@ -48,8 +53,8 @@ ACTION:    Add the three gates to ci.yml, and a RED case per uncovered row. `:sw
 
 ## TALLY
 files in slice:  3
-verdict lines:   3
-CLEAN:           0
+verdict lines:   4
+CLEAN:           1
 FINDING:         3      rows raised: 3
 DELETABLE:       0
 UNREADABLE:      0

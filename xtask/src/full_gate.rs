@@ -216,6 +216,7 @@ pub const CARGO_CI_ONLY: &[(&str, &str)] = &[
     ("cargo xtask gate sweep-coverage", CONTENT_DEBT_GATE),
     ("cargo xtask gate map-proof --selftest", CONTENT_DEBT_GATE),
     ("cargo xtask gate map-proof", CONTENT_DEBT_GATE),
+    ("cargo xtask gate --all", "run by ci.yml's `gate-all` job, PLAINLY — no --report, no continue-on-error, no `|| true` — which the umbrella waits for and declares `# report-only:` (KICKOFF 13.2: before it, `gate --all` ran in no automatic workflow). It is the whole registry in one run and is RED ON HEAD on the gates later phases drain, so in CARGO_LOCAL it would red every local full-gate run on debt this runner cannot excuse; the gates it runs are each ALSO invoked gate-by-gate in ci.yml and classified one by one above (CARGO_LOCAL, or CI-only with their own reason, or excused in REGISTRY_NOT_IN_CI), so omitting the rollup here leaves no gate unaccounted for. DELETE this entry, move the line to CARGO_LOCAL and give the job a RESULTS row in the same commit, when `cargo xtask gate --all` exits 0 on HEAD."),
 ];
 
 /// The one reason the three `content-debt-gates` gates share (item 6a). Written once so the six
