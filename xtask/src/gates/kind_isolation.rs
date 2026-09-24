@@ -669,7 +669,13 @@ const DEP_HALVES: &[&str] = &["shipped", "test"];
 /// than gate it. These four are different: `busbar-core -> busbar-unit-audit` is the drain in
 /// flight and `busbar-core -> busbar-transport-ws` is the fusion, and nothing about "legacy is
 /// unscored" can tell them apart. A NAME can.
-const DRAIN_TARGET_KINDS: &[&str] = &["unit", "plane", "transport", "cleanliness"];
+const DRAIN_TARGET_KINDS: &[&str] = &["unit", "plane", "transport", CLEANLINESS];
+
+/// THE KIND THE CONTROL-PATH RULES READ. `control` is not a kind (DECISIONS #5); admin and oauth2
+/// resolve as `cleanliness`, and every rule that asks about a served control surface asks about
+/// this word. One spelling, so a rule cannot go on filtering for the retired one after the rest of
+/// the file has moved: two did, and each compared nothing on every tree.
+const CLEANLINESS: &str = "cleanliness";
 
 // A CLEANLINESS SURFACE (admin/oauth2) is compiled-in with a one-way dep on core (DECISIONS #5).
 // Unlike the retired `control` kind, its edges are NOT a closed sink set: admin/oauth2 legitimately
@@ -3232,8 +3238,12 @@ fn rule_registry(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, ship: bool)
     // own source, not a string built at runtime inside a handler. Two crates claiming the same one
     // is an ambiguity the registry cannot resolve, and it is worse here than between planes: a
     // control surface is unmetered and privileged, so "which crate answered" is a security answer.
+    //
+    // The surfaces are the `cleanliness` kind's (DECISIONS #5). This read `kind == "control"`, a
+    // kind no table row defines and no crate resolves to, so the loop ran over nothing on every
+    // tree and the arm could not fire — the same re-point `rule_control` already made.
     let mut routes: BTreeMap<String, Vec<&str>> = BTreeMap::new();
-    for c in crates.iter().filter(|c| c.kind == Some("control")) {
+    for c in crates.iter().filter(|c| c.kind == Some(CLEANLINESS)) {
         for route in control_routes(cx, &c.dir) {
             routes.entry(route).or_default().push(c.name.as_str());
         }
@@ -3662,23 +3672,36 @@ fn rule_shape(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
     let mut checked = 0usize;
 
     for (kind, exemplar) in EXEMPLARS {
-        let Some(ex_dir) = dir_of.get(exemplar) else {
-            offenders.push(format!(
-                "no-exemplar\t{exemplar}\tthe canonical sibling for kind `{kind}` is not in the \
-                 tree, so this kind's skeleton is derived from nothing"
-            ));
-            continue;
-        };
         let want_trait = entry_trait(kind);
-        let ex_impls = idx.impls.get(*ex_dir).cloned().unwrap_or_default();
-        let ex_entries = ex_impls.get(&want_trait).copied().unwrap_or(0);
-        if ex_entries != 1 {
-            offenders.push(format!(
-                "no-entry\t{ex_dir}\tkind `{kind}` states no single entry: the exemplar implements \
-                 `{want_trait}` {ex_entries} time(s) in shipped source, so there is no one \
-                 declaration every crate of the kind owes"
-            ));
-        }
+        // A MISSING EXEMPLAR IS A FINDING, NOT A REASON TO LOOK AWAY FROM THE KIND. This arm used
+        // to `continue`, so the day the unit exemplar was absorbed every unit crate stopped being
+        // checked for a lib, an entry or a skeleton — and the row went red about the exemplar and
+        // never about a member. None of the three member checks is derived from the exemplar: the
+        // skeleton is the spec's ([`kind_skeleton`]) and "exactly one entry" is the kind's rule. The
+        // exemplar only VOUCHES for the entry trait; with none to vouch, the members are held to
+        // the rule as written.
+        let ex_entries = match dir_of.get(exemplar) {
+            Some(ex_dir) => {
+                let ex_impls = idx.impls.get(*ex_dir).cloned().unwrap_or_default();
+                let n = ex_impls.get(&want_trait).copied().unwrap_or(0);
+                if n != 1 {
+                    offenders.push(format!(
+                        "no-entry\t{ex_dir}\tkind `{kind}` states no single entry: the exemplar \
+                         implements `{want_trait}` {n} time(s) in shipped source, so there is no \
+                         one declaration every crate of the kind owes"
+                    ));
+                }
+                n
+            }
+            None => {
+                offenders.push(format!(
+                    "no-exemplar\t{exemplar}\tthe canonical sibling for kind `{kind}` is not in \
+                     the tree, so no crate models this kind's entry; its members are still held \
+                     to the kind's skeleton and single entry below"
+                ));
+                1
+            }
+        };
         let skeleton = kind_skeleton(kind);
 
         for c in crates.iter().filter(|c| c.kind == Some(*kind)) {
@@ -4225,7 +4248,7 @@ fn rule_steps(cx: &Ctx, crates: &[CrateInfo]) -> Row {
 fn rule_control(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     let controls: Vec<&CrateInfo> = crates
         .iter()
-        .filter(|c| c.kind == Some("cleanliness"))
+        .filter(|c| c.kind == Some(CLEANLINESS))
         .collect();
     if controls.is_empty() {
         return Row::fail(
@@ -4479,6 +4502,21 @@ fn rule_wires(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     }
     for w in &wires {
         let here = sites.get(&w.name).cloned().unwrap_or_default();
+        // EXACTLY ONE HAS TWO SIDES. A wire composed nowhere is a member of the tree — built,
+        // tested and shipped — that no registry reaches, so a client asking for it gets no
+        // transport at runtime. The row's title promised "exactly one place" while its only
+        // predicate was `> 1`, and it printed `<wire>=unregistered` in its own PASS detail.
+        if here.is_empty() {
+            offenders.push(format!(
+                "unregistered-wire\t{}\tthe wire {} is composed in NO place: no shipped source \
+                 outside a transport names `{}` through its own crate path. A wire is registered \
+                 in exactly ONE place — the transport registry the root composes — and a wire in \
+                 none is a crate the tree ships and nothing can reach",
+                w.dir,
+                w.name,
+                wire_symbol(&w.remainder.join("-"))
+            ));
+        }
         if here.len() > 1 {
             offenders.push(format!(
                 "second-registration\t{}\tthe wire {} is composed in {} places ({}). A wire is \
@@ -4516,7 +4554,7 @@ fn rule_wires(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     }
     Row::fail(
         ROW_WIRES,
-        "a wire is registered twice, or a plugin links the crate that moves the bytes",
+        "a wire is registered twice or nowhere, or a plugin links the crate that moves the bytes",
         format!("{} finding(s): {}", offenders.len(), offenders.join(" | ")),
     )
 }
@@ -5221,104 +5259,81 @@ impl Gate for KindIsolationGate {
             ));
         }
 
-        // THE SAME REACH OUT OF A CONTROL SURFACE, refused by its own closed sink set rather than
-        // by the measured graph — a control crate names the contract and nothing else, whether or
-        // not the tree has ever grown the edge.
-        report.push(prove_rows_red(
-            cx,
-            self,
-            "a control surface depending on a transport crate",
-            &[ROW_DEPS],
-            manifest_plant(
-                "crates/busbar-plane-admin",
-                "busbar-plane-admin",
-                &["busbar-contract", "busbar-transport-http"],
-            ),
-            &[
-                "control-sink",
-                "busbar-plane-admin",
-                "busbar-transport-http",
-            ],
-        ));
+        // THE SAME REACH OUT OF A CLEANLINESS SURFACE, AND INTO ONE — scored by the measured graph.
+        //
+        // These two cases asserted `control-sink` and `plane-control`, two refusals that went with
+        // the `control` kind (DECISIONS #4/#5; see the note in `rule_deps`). Nothing emits either
+        // needle, so both cases proved a rule that is not there. What REPLACED them is that a
+        // `cleanliness` crate's edges are rows of the measured graph like every other Neutral
+        // kind's: an edge between a cleanliness surface and a wire or a plane that no `[[dep]]` row
+        // names is `unlisted-dep-edge`, and that is the behaviour these cases now prove. Per-push
+        // only, for the reason on the case above.
+        if !self.ship {
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "a cleanliness surface depending on a transport crate is an edge nobody wrote down",
+                &[ROW_DEPS],
+                cleanliness_reaches_wire(),
+                &[
+                    "unlisted-dep-edge",
+                    "cleanliness -> transport",
+                    "busbar-oauth2 -> busbar-transport-http",
+                ],
+            ));
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "a plane depending on a cleanliness surface is an edge nobody wrote down",
+                &[ROW_DEPS],
+                plane_reaches_cleanliness(),
+                &[
+                    "unlisted-dep-edge",
+                    "plane -> cleanliness",
+                    "busbar-plane-mcp -> busbar-oauth2",
+                ],
+            ));
+        }
 
-        // A PLANE REACHING A CONTROL SURFACE. The metered path and the control path are two kinds;
-        // a control surface never appears in a plane's step list.
-        report.push(prove_rows_red(
+        // A CLEANLINESS SURFACE MAY NAME A PRICE. The money-vocabulary ban was a `control`-kind
+        // rule and it retired with the kind (DECISIONS #5, and the note in `rule_vocab`): admin and
+        // oauth2 are served surfaces that legitimately report on cost and usage. The red case that
+        // asserted a `MONEY` finding here could never fire; the behaviour that replaced it is the
+        // ABSENCE of the ban, and that is what is proven — a cleanliness crate naming the
+        // plane-no-money vocabulary leaves `:vocab` green.
+        report.push(prove_rows_green(
             cx,
             self,
-            "a plane depending on a control surface",
-            &[ROW_DEPS],
-            manifest_plant(
-                "crates/busbar-plane-mcp",
-                "busbar-plane-mcp",
-                &["busbar-contract", "busbar-plane-admin"],
-            ),
-            &["plane-control", "busbar-plane-mcp"],
-        ));
-
-        // A CONTROL SURFACE NAMING A PRICE. The vocabulary is `plane-no-money`'s, verbatim: one
-        // list, read off the file that argued for it, so the two rules cannot drift apart.
-        let mut ov = Overlay::new();
-        ov.set(
-            "crates/busbar-plane-admin/src/planted_money.rs",
-            "pub fn charge(card: u32) -> u32 { let rate_card = card; let fee_cents = rate_card; \
-             fee_cents }\n",
-        );
-        report.push(prove_rows_red(
-            cx,
-            self,
-            "a control surface naming a money symbol from the plane-no-money list",
+            "a cleanliness surface naming money symbols is not a vocabulary finding",
             &[ROW_VOCAB],
-            ov,
-            &["fee_cents", "planted_money.rs", "MONEY"],
+            cleanliness_names_money(),
         ));
 
-        // TWO CONTROL SURFACES, ONE ROUTE. The claim table is DATA, which is the only reason this
-        // is checkable at all: the second surface's prefix is a list of literal segments in its own
-        // source, not a string a handler builds.
-        let mut ov = manifest_plant(
-            "crates/busbar-control-planted",
-            "busbar-control-planted",
-            &["busbar-contract"],
-        );
-        ov.set(
-            "crates/busbar-control-planted/src/claims.rs",
-            "pub const P: &[PathSeg] = &[PathSeg::Lit(\"api\"), PathSeg::Lit(\"v1\"), \
-             PathSeg::Lit(\"admin\"), PathSeg::Tail];\n",
-        );
+        // TWO CLEANLINESS SURFACES, ONE ROUTE. The claim table is DATA, which is the only reason
+        // this is checkable at all: each surface's prefix is a list of literal segments in its own
+        // `src/claims.rs`, not a string a handler builds. The rule read the retired `control` kind,
+        // which no crate resolves to, so it compared nothing; it reads the kind that succeeded it.
         report.push(prove_rows_red(
             cx,
             self,
-            "two control surfaces claiming the same route",
+            "two cleanliness surfaces claiming the same route",
             &[ROW_REGISTRY],
-            ov,
-            &[
-                "shared-route",
-                "busbar-control-planted",
-                "busbar-plane-admin",
-            ],
+            cleanliness_shared_route(),
+            &["shared-route", "busbar-admin", "busbar-oauth2"],
         ));
 
-        // THE REGISTRATION EXPIRES WITH THE RENAME IT WAS WRITTEN FOR. Land `busbar-control-admin`
-        // and the row says what the name already says; the gate asks for it to be struck in the
-        // same commit rather than left standing as a list nobody reads.
-        let mut ov = manifest_plant(
-            "crates/busbar-control-admin",
-            "busbar-control-admin",
-            &["busbar-contract"],
-        );
-        ov.set(
-            REGISTRY_FILE,
-            "[[registered]]\ncrate = \"busbar-control-admin\"\nkind = \"control\"\nreason = \
-             \"planted\"\n",
-        );
+        // THE REGISTRATION EXPIRES WITH THE RENAME IT WAS WRITTEN FOR. Land `busbar-admin` and a
+        // `[[registered]]` row saying it is `cleanliness` says what the name already says; the gate
+        // asks for it to be struck in the same commit rather than left standing as a list nobody
+        // reads. The row's kind is one the table HAS: a `control` row is refused at load as
+        // `unknown-kind`, one layer before this arm, which is why the arm had no working proof.
         report.push(prove_rows_red(
             cx,
             self,
             "a registration whose crate name already says its kind is redundant",
             &[ROW_REGISTRY],
-            ov,
-            &["redundant-registration", "busbar-control-admin"],
+            redundant_registration(),
+            &["redundant-registration", "busbar-admin"],
         ));
 
         // A MANIFEST WHOSE `[package]` HEADER IS NOT BYTE-EXACT IS STILL A CRATE.
@@ -5405,17 +5420,16 @@ impl Gate for KindIsolationGate {
             ],
         ));
 
-        // …AND A REGISTRATION FOR A CRATE THAT IS NOT THERE IS A KIND ASSIGNMENT FOR NOTHING.
+        // …AND A REGISTRATION FOR A CRATE THAT IS NOT THERE IS A KIND ASSIGNMENT FOR NOTHING. The
+        // row names a kind the table HAS: a `control` row is refused at load as `unknown-kind`
+        // before this arm reads it, so a plant spelled that way names the kind and never the crate.
         report.push(prove_rows_red(
             cx,
             self,
             "a registration naming a crate the tree does not have",
             &[ROW_REGISTRY],
-            registry_plant(
-                "[[registered]]\ncrate = \"busbar-control-ghost\"\nkind = \"control\"\nreason = \
-                 \"planted\"\n",
-            ),
-            &["dead-registration", "busbar-control-ghost"],
+            dead_registration(),
+            &["dead-registration", "busbar-ghost-registered"],
         ));
 
         // ONE PLANE REACHING INTO ANOTHER PLANE'S HALF.
@@ -6821,17 +6835,21 @@ impl Gate for KindIsolationGate {
 
         // ── THE LEGACY DRAIN, NAMED ──────────────────────────────────────────────────────────────
 
-        // AN UNLISTED DRAIN EDGE IS RED. `busbar-llm` is a legacy crate and `busbar-unit-audit` is
-        // a unit, so this is exactly the shape the owner's ruling permits — and no row names it.
+        // AN UNLISTED DRAIN EDGE IS RED. `busbar-llm` is a legacy crate and [`PLANTED_UNIT`] is a
+        // unit, so this is exactly the shape the owner's ruling permits — and no row names it.
         // Before the transitional table this edge was invisible: `legacy` was an unscored source,
         // so every legacy edge into every kind was allowed by silence.
+        //
+        // THE TARGET IS A CRATE THE TREE HAS. It was `busbar-unit-audit`, folded into
+        // `busbar-kernel-audit`: the refusal and `measure_edges` both skip a declaration whose
+        // package is not in the census, so the edge was never scored and the case could not bite.
         report.push(prove_rows_red(
             cx,
             self,
             "a legacy crate reaching a unit with no transitional row naming the edge",
             &[ROW_DEPS],
-            manifest_plant("crates/busbar-llm", "busbar-llm", &["busbar-unit-audit"]),
-            &["unlisted-transitional", "busbar-llm", "busbar-unit-audit"],
+            manifest_plant("crates/busbar-llm", "busbar-llm", &[PLANTED_UNIT]),
+            &["unlisted-transitional", "busbar-llm", PLANTED_UNIT],
         ));
 
         // THE TABLE CANNOT EXEMPT A CRATE THAT IS NOT RETIRING. A row whose source is a live,
@@ -6961,19 +6979,17 @@ impl Gate for KindIsolationGate {
         // when DECISIONS #37 killed `busbar-core-{config,hooks}`. A case whose subject is a live row
         // goes dark the day that row lands or dies, so it plants its own: `busbar-core-planted`
         // exists nowhere but here.
-        let mut ov = registry_announcing(cx, "busbar-core-planted", "core");
-        ov.set(
-            "crates/busbar-core-planted/Cargo.toml",
-            "[package]\nname = \"busbar-core-planted\"\nversion = \"0.0.0\"\n\n\
-             [dependencies]\nbusbar-substrate = { workspace = true }\n\
-             busbar-unit-audit = { workspace = true }\n",
-        );
+        //
+        // BOTH DEPENDENCIES ARE CRATES THE TREE HAS. They were `busbar-substrate` (renamed
+        // `busbar-substrate-values`) and `busbar-unit-audit` (folded into `busbar-kernel-audit`),
+        // and an edge onto a package the census does not know is never measured — so the class
+        // this case is about was never formed.
         report.push(prove_rows_red(
             cx,
             self,
             "a core crate reaching a unit is a class the architecture grants nothing to",
             &[ROW_DEPS],
-            ov,
+            core_announced_reaching_unit(cx),
             &["announced-edge-class", "core -> unit"],
         ));
 
@@ -7117,6 +7133,17 @@ impl Gate for KindIsolationGate {
             &["second-registration", "busbar-transport-http"],
         ));
 
+        // …AND A WIRE COMPOSED IN NO PLACE. "Exactly one" has two sides and the rule read one:
+        // `> 1` passed a wire that is a member, built and shipped, and reachable from no registry —
+        // and printed `stdio=unregistered` inside the green row's own detail. The plant takes the
+        // one line that composes the wire out of the root.
+        let name = "a wire composed in no place at all";
+        let naming = ["unregistered-wire", "busbar-transport-stdio"];
+        match wire_unregistered(cx, "stdio") {
+            Ok(ov) => report.push(prove_rows_red(cx, self, name, &[ROW_WIRES], ov, &naming)),
+            Err(why) => report.push(unplantable(name, &[ROW_WIRES], &naming, why)),
+        }
+
         // THE MATRIX ROW'S OWN CASES, owed by BOTH registrations: the per-push gate holds the
         // ceilings and the ship twin holds zero, and neither is a claim the other proves.
         matrix::selftest(cx, self, self.ship, &mut report);
@@ -7140,7 +7167,7 @@ impl Gate for KindIsolationGate {
                 manifest_plus(
                     cx,
                     "crates/busbar-llm/Cargo.toml",
-                    "\n[dependencies]\nbusbar-unit-audit = { workspace = true }\n",
+                    &format!("\n[dependencies]\n{PLANTED_UNIT} = {{ workspace = true }}\n"),
                 ),
             );
             ov.set(
@@ -7148,7 +7175,7 @@ impl Gate for KindIsolationGate {
                 format!(
                     "{}\n\n[[transitional]]\nfrom = \"busbar-llm\"\nto = \"busbar-unit-*\"\n\
                      reason = \"planted\"\n\n[[dep]]\nfrom    = \"busbar-llm\"\n\
-                     to      = \"busbar-unit-audit\"\nhalf    = \"shipped\"\ncount   = \"1\"\n\
+                     to      = \"{PLANTED_UNIT}\"\nhalf    = \"shipped\"\ncount   = \"1\"\n\
                      verdict = \"not-allowed\"\ncite    = \"the legacy drain: ARCHITECTURE.md 1.1 \
                      grants a legacy crate no unit edge, and the [[transitional]] row above names \
                      this one as the retirement in flight.\"\nwhy     = \"planted: proves the drain \
@@ -7228,28 +7255,36 @@ impl Gate for KindIsolationGate {
             &["upstream", "busbar-control-planted", "pool"],
         ));
 
-        // A TRANSITIONAL ROW WHOSE CRATE IS STILL HERE AT SHIP TIME IS RED, and this is the real
-        // tree: `busbar-core` exists, so the DONE oracle refuses the tag and names the crate. The
-        // exemption's expiry rule is the crate, not the edge.
+        // A TRANSITIONAL ROW WHOSE CRATE IS STILL HERE AT SHIP TIME IS RED. The exemption's expiry
+        // rule is the crate, not the edge.
+        //
+        // PROVEN AS A TRANSITION, FROM A SCRATCH TREE WHERE THE ROW IS GREEN. The real tree cannot
+        // be the baseline: every legacy crate is still in it, so `:legacy-drain` is red there BY
+        // DESIGN and no plant against it can be told apart from that standing red. This case used
+        // to plant an EMPTY overlay — which the harness refuses before the gate runs — and assert
+        // `busbar-core`, a crate absorbed into `busbar-kernel` that is the `from` of no row. So the
+        // baseline is a table with no rows (green: nothing to expire), and the plant is ONE row for
+        // a legacy crate that really is on disk. The row goes red and names that crate.
         report.push(prove_rows_red(
-            cx,
+            &cx.with_overlay(registry_plant("")),
             self,
             "a transitional row is red at ship time while its legacy crate still exists",
             &[ROW_DRAIN],
-            Overlay::new(),
-            &["transitional-live", "busbar-core", "ship"],
+            drain_row_plant(),
+            &["transitional-live", DRAIN_PLANT_FROM, "ship"],
         ));
 
-        // …AND GREEN WHEN THE DRAIN IS ACTUALLY DONE. The scratch tree the criterion is about: the
-        // table is empty and the crates it excused are gone. Without this case the row above would
-        // equally be produced by a ratchet that is simply red for ever.
-        let mut ov = registry_plant("");
-        ov.remove("crates/busbar-core/Cargo.toml");
-        ov.remove("crates/busbar-voice/Cargo.toml");
+        // …AND GREEN WHEN THE DRAIN IS ACTUALLY DONE: the SAME row, over a tree whose crate is
+        // gone. The pair differs in exactly one thing — whether the row's `from` crate exists — so
+        // together they prove the expiry is the crate. Without this case the row above would
+        // equally be produced by a ratchet that is simply red for ever. Every path this removes is
+        // one the tree has (the removal of the absorbed `busbar-core` was a no-op).
+        let mut ov = drain_row_plant();
+        ov.remove(format!("crates/{DRAIN_PLANT_FROM}/Cargo.toml"));
         report.push(prove_rows_green(
             cx,
             self,
-            "an empty transitional table over a tree whose legacy crates are gone",
+            "a transitional row whose legacy crate is gone is not held against the ship",
             &[ROW_DRAIN],
             ov,
         ));
@@ -7543,17 +7578,25 @@ impl Gate for KindIsolationGate {
             &["0 crate(s) reached the battery rule"],
         ));
 
-        // NO CONTROL SURFACE REACHED `:control-path`. The tree carries exactly one control crate —
-        // `busbar-plane-admin`, which is `control` by its `[[registered]]` row and not by its name —
-        // so the honest fixture for "this rule looked at no surface at all" is that row's crate out
-        // of the census. Zero surfaces run zero data-path steps and name zero upstreams, which reads
-        // exactly like a control kind that keeps to its own path.
+        // NO CONTROL SURFACE REACHED `:control-path`. The rule reads the `cleanliness` kind
+        // (admin/oauth2, DECISIONS #5), so the honest fixture for "this rule looked at no surface
+        // at all" is every crate of THAT kind out of the census. Zero surfaces run zero data-path
+        // steps and name zero upstreams, which reads exactly like a control kind that keeps to its
+        // own path.
+        //
+        // It asked for `kinds_gone(["control"])`, a kind no crate resolves to: the overlay was
+        // empty, the harness refused it, and the floor had no proof. And it cannot be proven from
+        // the real tree either, whose `:control-path` is red today on the surfaces' own findings —
+        // so the baseline is the same tree with those surfaces' sources blanked (green over the
+        // surfaces that remain), and the plant takes the surfaces out of the census.
+        let clean = control_surfaces_clean(cx);
+        let base = cx.with_overlay(clean);
         report.push(prove_rows_red(
-            cx,
+            &base,
             self,
             "no control surface reached the control-path rule is refused, not read as clean",
             &[ROW_CONTROL],
-            move || kinds_gone(cx, &["control"]),
+            kinds_gone(&base, &[CLEANLINESS]),
             &["0 control crate(s)"],
         ));
 
@@ -7580,6 +7623,146 @@ fn registry_plant(rows: &str) -> Overlay {
     let mut ov = Overlay::new();
     ov.set(REGISTRY_FILE, rows.to_string());
     ov
+}
+
+/// THE UNIT AND THE SUBSTRATE CRATE THE DRAIN AND EDGE-CLASS CASES PLANT A DEPENDENCY ON. Each
+/// must be a package the census knows: `measure_edges` and the drain refusal both skip a
+/// declaration whose package is absent, so an edge onto a name the tree does not have is an edge
+/// that is never scored — the two cases that named `busbar-unit-audit` and `busbar-substrate`
+/// (both folded away) planted exactly that. The exit test holds both to the census.
+const PLANTED_UNIT: &str = "busbar-unit-transport-key";
+const PLANTED_SUBSTRATE: &str = "busbar-substrate-values";
+
+/// An announced `core` crate landing with a dependency on the substrate and on a unit.
+fn core_announced_reaching_unit(cx: &Ctx) -> Overlay {
+    let mut ov = registry_announcing(cx, "busbar-core-planted", "core");
+    ov.set(
+        "crates/busbar-core-planted/Cargo.toml",
+        format!(
+            "[package]\nname = \"busbar-core-planted\"\nversion = \"0.0.0\"\n\n\
+             [dependencies]\n{PLANTED_SUBSTRATE} = {{ workspace = true }}\n\
+             {PLANTED_UNIT} = {{ workspace = true }}\n"
+        ),
+    );
+    ov
+}
+
+/// THE LEGACY CRATE THE DRAIN PAIR IS ABOUT. It must be a `legacy` crate that is really on disk,
+/// or the red case plants a row for nothing and the green case removes a manifest that is not there.
+const DRAIN_PLANT_FROM: &str = "busbar-voice";
+
+/// ONE `[[transitional]]` row for [`DRAIN_PLANT_FROM`], and no other row — the red case's plant
+/// and, with the crate removed, the green case's.
+fn drain_row_plant() -> Overlay {
+    registry_plant(&format!(
+        "[[transitional]]\nfrom = \"{DRAIN_PLANT_FROM}\"\nto = \"busbar-plane-streaming\"\nreason = \
+         \"legacy drain\"\n"
+    ))
+}
+
+/// `busbar-oauth2` — a `cleanliness` crate — declaring a wire.
+fn cleanliness_reaches_wire() -> Overlay {
+    manifest_plant(
+        "crates/busbar-oauth2",
+        "busbar-oauth2",
+        &["busbar-contract", "busbar-transport-http"],
+    )
+}
+
+/// A plane declaring the `cleanliness` crate `busbar-oauth2`.
+fn plane_reaches_cleanliness() -> Overlay {
+    manifest_plant(
+        "crates/busbar-plane-mcp",
+        "busbar-plane-mcp",
+        &["busbar-contract", "busbar-oauth2"],
+    )
+}
+
+/// A `cleanliness` crate's source naming the plane-no-money vocabulary.
+fn cleanliness_names_money() -> Overlay {
+    let mut ov = Overlay::new();
+    ov.set(
+        "crates/busbar-oauth2/src/planted_money.rs",
+        "pub fn charge(card: u32) -> u32 { let rate_card = card; let fee_cents = rate_card; \
+         fee_cents }\n",
+    );
+    ov
+}
+
+/// The route one planted `cleanliness` surface and the real one both claim.
+const PLANTED_ROUTE: &str =
+    "pub const P: &[PathSeg] = &[PathSeg::Lit(\"api\"), PathSeg::Lit(\"v1\"), \
+                             PathSeg::Lit(\"admin\"), PathSeg::Tail];\n";
+
+/// `busbar-admin` landed beside `busbar-oauth2` — both `cleanliness` by NAME (the kind's matchers
+/// are exact) — and both claiming [`PLANTED_ROUTE`].
+fn cleanliness_shared_route() -> Overlay {
+    let mut ov = manifest_plant("crates/busbar-admin", "busbar-admin", &["busbar-contract"]);
+    ov.set("crates/busbar-admin/src/claims.rs", PLANTED_ROUTE);
+    ov.set("crates/busbar-oauth2/src/claims.rs", PLANTED_ROUTE);
+    ov
+}
+
+/// `busbar-admin` landed, and a `[[registered]]` row still saying it is `cleanliness` — which its
+/// name already resolves it to.
+fn redundant_registration() -> Overlay {
+    let mut ov = manifest_plant("crates/busbar-admin", "busbar-admin", &["busbar-contract"]);
+    ov.set(
+        REGISTRY_FILE,
+        format!(
+            "[[registered]]\ncrate = \"busbar-admin\"\nkind = \"{CLEANLINESS}\"\nreason = \
+             \"planted\"\n"
+        ),
+    );
+    ov
+}
+
+/// A `[[registered]]` row, of a kind the table has, for a crate the tree does not have.
+fn dead_registration() -> Overlay {
+    registry_plant(
+        "[[registered]]\ncrate = \"busbar-ghost-registered\"\nkind = \"store\"\nreason = \
+         \"planted\"\n",
+    )
+}
+
+/// THE CONTROL-PATH RULE'S SCRATCH BASELINE: the real tree with every source file of every
+/// `cleanliness` crate emptied, so the surfaces stay in the census and name nothing. The row is
+/// green over them, which is the state the starvation floor's transition is measured from.
+fn control_surfaces_clean(cx: &Ctx) -> Overlay {
+    let mut ov = Overlay::new();
+    let Ok(crates) = census(cx) else {
+        return ov;
+    };
+    for c in crates.iter().filter(|c| c.kind == Some(CLEANLINESS)) {
+        let Ok(files) = cx.walk(&WalkSpec::new([c.dir.as_str()]).ext("rs")) else {
+            continue;
+        };
+        for f in &files {
+            ov.set(f.rel_str(), "\n".to_string());
+        }
+    }
+    ov
+}
+
+/// The composition root with the one line that composes `wire` taken out — the wire is then a
+/// member of the tree, built and shipped, and registered NOWHERE.
+fn wire_unregistered(cx: &Ctx, wire: &str) -> Result<Overlay, String> {
+    let root = "crates/busbar/src/root/registry.rs";
+    let text = cx.read(root)?;
+    let line = format!(
+        "use busbar_transport_{}::{};\n",
+        wire.replace('-', "_"),
+        wire_symbol(wire)
+    );
+    if !text.contains(&line) {
+        return Err(format!(
+            "`{}` is not in {root} to plant over",
+            line.trim_end()
+        ));
+    }
+    let mut ov = Overlay::new();
+    ov.set(root, text.replacen(&line, "", 1));
+    Ok(ov)
 }
 
 /// THE TREE WITH ALMOST EVERY FILE OF ONE EXTENSION REMOVED, for the two floors.
@@ -7844,4 +8027,327 @@ fn manifest_plant(dir: &str, name: &str, deps: &[&str]) -> Overlay {
     let mut ov = Overlay::new();
     ov.set(format!("{dir}/Cargo.toml"), body);
     ov
+}
+
+/// THE SELFTEST PLANTS, HELD TO THEIR OWN RULES DIRECTLY.
+///
+/// A `prove_rows_red` case over a row that is RED on the real tree is `Impossible` by construction
+/// — the harness cannot tell the plant's red from the standing one — and several of this gate's
+/// rows are red today on tree debt that is not the rule's. So the question "can this plant bite,
+/// and does the rule it is aimed at emit the needle it asserts" is asked here, rule by rule, where
+/// no other row's debt can answer it. Each test fails on a plant that names a crate the census does
+/// not have, a kind the table does not have, or a needle no rule emits.
+#[cfg(test)]
+mod plant_tests {
+    use super::*;
+    use crate::ctx::Change;
+    use crate::ledger::Status;
+
+    fn ws() -> Ctx {
+        Ctx::workspace().expect("the workspace opens")
+    }
+
+    /// The census exactly as [`KindIsolationGate::run`] builds it.
+    fn crates_of(cx: &Ctx) -> (Vec<CrateInfo>, BTreeSet<String>) {
+        let mut crates = census(cx).expect("the census reads");
+        let (planes, ports) = vocabularies(&crates);
+        assign_instances(&mut crates, &planes, &ports);
+        (crates, planes)
+    }
+
+    fn reg_of(cx: &Ctx) -> KindRegistry {
+        load_registry(cx).expect("the registry reads")
+    }
+
+    /// THE PLANT MUST BITE against the tree it is planted over: no removal of a path that tree has
+    /// not got, and at least one change it does not already carry.
+    fn assert_bites(base: &Ctx, ov: &Overlay) {
+        assert!(!ov.is_empty(), "an empty overlay plants nothing");
+        let mut bites = false;
+        for (path, change) in ov.changes() {
+            match change {
+                Change::Absent => {
+                    assert!(
+                        base.exists(path),
+                        "{} is removed by the plant and is not in the tree",
+                        path.display()
+                    );
+                    bites = true;
+                }
+                Change::Content(want) => {
+                    if base.read(path).ok().as_ref() != Some(want) {
+                        bites = true;
+                    }
+                }
+                _ => bites = true,
+            }
+        }
+        assert!(
+            bites,
+            "every change the plant makes is one the tree already has"
+        );
+    }
+
+    fn assert_red_naming(row: &Row, naming: &[&str]) {
+        assert_ne!(
+            row.status,
+            Status::Pass,
+            "{} stayed green: {}",
+            row.id,
+            row.detail
+        );
+        for n in naming {
+            assert!(
+                row.detail.contains(n),
+                "{} went red without naming `{n}`: {}",
+                row.id,
+                row.detail
+            );
+        }
+    }
+
+    fn assert_green(row: &Row) {
+        assert_eq!(
+            row.status,
+            Status::Pass,
+            "{} is red: {}",
+            row.id,
+            row.detail
+        );
+    }
+
+    // ── items 173 / 233: the legacy-drain pair ──────────────────────────────────────────────────
+
+    #[test]
+    fn the_drain_pair_turns_on_whether_the_rows_crate_exists() {
+        let cx = ws();
+        let (crates, _) = crates_of(&cx);
+        assert!(
+            crates
+                .iter()
+                .any(|c| c.name == DRAIN_PLANT_FROM && c.kind == Some("legacy")),
+            "{DRAIN_PLANT_FROM} must be a legacy crate the census has"
+        );
+
+        // The red case's baseline: a table with no rows, green.
+        let base = cx.with_overlay(registry_plant(""));
+        assert_green(&rule_drain(&crates_of(&base).0, &reg_of(&base)));
+
+        // The red case's plant bites against that baseline and names the live crate.
+        let plant = drain_row_plant();
+        assert_bites(&base, &plant);
+        let red = cx.with_overlay(plant);
+        assert_red_naming(
+            &rule_drain(&crates_of(&red).0, &reg_of(&red)),
+            &["transitional-live", DRAIN_PLANT_FROM, "ship"],
+        );
+
+        // The green case: the same row, its crate gone — every removal a path the tree has.
+        let mut ov = drain_row_plant();
+        ov.remove(format!("crates/{DRAIN_PLANT_FROM}/Cargo.toml"));
+        assert_bites(&cx, &ov);
+        let done = cx.with_overlay(ov);
+        assert_green(&rule_drain(&crates_of(&done).0, &reg_of(&done)));
+    }
+
+    // ── item 174: the control-path starvation floor ─────────────────────────────────────────────
+
+    #[test]
+    fn the_control_path_floor_is_proven_from_a_green_baseline_over_the_cleanliness_kind() {
+        let cx = ws();
+        let base = cx.with_overlay(control_surfaces_clean(&cx));
+        let (crates, _) = crates_of(&base);
+        assert!(
+            crates.iter().any(|c| c.kind == Some(CLEANLINESS)),
+            "the tree carries no cleanliness surface to take away"
+        );
+        assert_green(&rule_control(&base, &crates));
+
+        let plant = kinds_gone(&base, &[CLEANLINESS]);
+        assert_bites(&base, &plant);
+        let gone = cx.with_overlay(plant);
+        assert_red_naming(
+            &rule_control(&gone, &crates_of(&gone).0),
+            &["0 control crate(s)"],
+        );
+    }
+
+    // ── item 171: the retired control-kind block ────────────────────────────────────────────────
+
+    fn deps_over(ov: Overlay) -> Row {
+        let cx = ws().with_overlay(ov);
+        let (crates, _) = crates_of(&cx);
+        rule_deps(&cx, &crates, &reg_of(&cx), Half::Shipped, false)
+    }
+
+    fn registry_over(ov: Overlay) -> Row {
+        let cx = ws().with_overlay(ov);
+        let (crates, _) = crates_of(&cx);
+        rule_registry(&cx, &crates, &reg_of(&cx), false)
+    }
+
+    #[test]
+    fn a_cleanliness_surface_reaching_a_wire_is_an_unlisted_edge() {
+        assert_bites(&ws(), &cleanliness_reaches_wire());
+        assert_red_naming(
+            &deps_over(cleanliness_reaches_wire()),
+            &[
+                "unlisted-dep-edge",
+                "cleanliness -> transport",
+                "busbar-oauth2 -> busbar-transport-http",
+            ],
+        );
+    }
+
+    #[test]
+    fn a_plane_reaching_a_cleanliness_surface_is_an_unlisted_edge() {
+        assert_bites(&ws(), &plane_reaches_cleanliness());
+        assert_red_naming(
+            &deps_over(plane_reaches_cleanliness()),
+            &[
+                "unlisted-dep-edge",
+                "plane -> cleanliness",
+                "busbar-plane-mcp -> busbar-oauth2",
+            ],
+        );
+    }
+
+    #[test]
+    fn a_cleanliness_surface_naming_money_is_not_a_vocab_finding() {
+        let cx = ws().with_overlay(cleanliness_names_money());
+        let (crates, planes) = crates_of(&cx);
+        assert!(crates
+            .iter()
+            .any(|c| c.name == "busbar-oauth2" && c.kind == Some(CLEANLINESS)));
+        assert_green(&rule_vocab(&cx, &crates, &planes));
+    }
+
+    #[test]
+    fn two_cleanliness_surfaces_claiming_one_route_is_a_shared_route() {
+        assert_bites(&ws(), &cleanliness_shared_route());
+        assert_red_naming(
+            &registry_over(cleanliness_shared_route()),
+            &["shared-route", "busbar-admin", "busbar-oauth2"],
+        );
+    }
+
+    // ── items 171 / 202: both arms of the registration ratchet ──────────────────────────────────
+
+    #[test]
+    fn a_registration_its_crate_name_already_says_is_redundant() {
+        assert_bites(&ws(), &redundant_registration());
+        let row = registry_over(redundant_registration());
+        assert_red_naming(&row, &["redundant-registration", "busbar-admin"]);
+        assert!(
+            !row.detail.contains("`[[registered]] kind"),
+            "{}",
+            row.detail
+        );
+    }
+
+    #[test]
+    fn a_registration_for_a_crate_the_tree_lacks_is_dead() {
+        assert_bites(&ws(), &dead_registration());
+        let row = registry_over(dead_registration());
+        assert_red_naming(&row, &["dead-registration", "busbar-ghost-registered"]);
+        assert!(
+            !row.detail.contains("`[[registered]] kind"),
+            "{}",
+            row.detail
+        );
+    }
+
+    // ── item 172: planted edges land on packages the census has ─────────────────────────────────
+
+    #[test]
+    fn the_drain_and_edge_class_plants_name_packages_the_census_has() {
+        let (crates, _) = crates_of(&ws());
+        for (name, kind) in [(PLANTED_UNIT, "unit"), (PLANTED_SUBSTRATE, "substrate")] {
+            assert!(
+                crates.iter().any(|c| c.name == name && c.kind == Some(kind)),
+                "{name} is not a `{kind}` crate of the census, so an edge onto it is never measured"
+            );
+        }
+        assert_red_naming(
+            &deps_over(manifest_plant(
+                "crates/busbar-llm",
+                "busbar-llm",
+                &[PLANTED_UNIT],
+            )),
+            &["unlisted-transitional", "busbar-llm", PLANTED_UNIT],
+        );
+        assert_red_naming(
+            &deps_over(core_announced_reaching_unit(&ws())),
+            &["announced-edge-class", "core -> unit"],
+        );
+    }
+
+    // ── item 200: a missing exemplar does not excuse the kind's members ─────────────────────────
+
+    fn unit_crate(name: &str) -> CrateInfo {
+        CrateInfo {
+            dir: format!("crates/{name}"),
+            manifest: format!("crates/{name}/Cargo.toml"),
+            name: name.to_string(),
+            kind: Some("unit"),
+            family: Family::Neutral,
+            remainder: Vec::new(),
+            instance: None,
+            deps: Vec::new(),
+            dev_deps: Vec::new(),
+            ambiguous: Vec::new(),
+        }
+    }
+
+    fn empty_index() -> SourceIndex {
+        SourceIndex {
+            skeleton: BTreeMap::new(),
+            impls: BTreeMap::new(),
+            has_lib: BTreeSet::new(),
+            conformance: BTreeSet::new(),
+            conformance_dead: BTreeSet::new(),
+        }
+    }
+
+    #[test]
+    fn a_unit_crate_is_checked_although_the_unit_exemplar_is_absent() {
+        let (_, exemplar) = EXEMPLARS
+            .iter()
+            .find(|(k, _)| *k == "unit")
+            .expect("the unit kind has an exemplar row");
+        let no_lib = unit_crate("busbar-unit-planted-nolib");
+        let bare = unit_crate("busbar-unit-planted-bare");
+        assert_ne!(&no_lib.name, exemplar);
+        let mut idx = empty_index();
+        idx.has_lib.insert(bare.dir.clone());
+        let row = rule_shape(&[no_lib, bare], &idx);
+        assert_red_naming(
+            &row,
+            &[
+                "no-exemplar",
+                "no-lib\tcrates/busbar-unit-planted-nolib/src/lib.rs",
+                "entry-count\tcrates/busbar-unit-planted-bare",
+                "skeleton\tcrates/busbar-unit-planted-bare/src/lib.rs",
+            ],
+        );
+    }
+
+    // ── item 201: a wire composed nowhere ───────────────────────────────────────────────────────
+
+    #[test]
+    fn a_wire_composed_in_no_place_is_red_and_the_real_tree_has_none() {
+        let cx = ws();
+        let (crates, _) = crates_of(&cx);
+        let real = rule_wires(&cx, &crates);
+        assert_green(&real);
+        assert!(!real.detail.contains("unregistered"), "{}", real.detail);
+
+        let plant = wire_unregistered(&cx, "stdio").expect("the root composes stdio");
+        assert_bites(&cx, &plant);
+        let planted = cx.with_overlay(plant);
+        assert_red_naming(
+            &rule_wires(&planted, &crates_of(&planted).0),
+            &["unregistered-wire", "busbar-transport-stdio"],
+        );
+    }
 }
