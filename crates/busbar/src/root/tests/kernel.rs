@@ -704,3 +704,474 @@ fn the_boot_install_raises_both_halves_of_the_rate_seam_and_main_calls_it() {
         "nothing in the binary calls the boot install, so neither half is ever raised"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// The dated history, journalled (#79, OWNER RULING Q14 "date everything")
+// ---------------------------------------------------------------------------------------------
+
+/// The flat lane the history tests price.
+const FLAT_LANE: &str = "gpt";
+/// The `mcp` plane's own lane (#47): its card prices it, at twice the flat card's rate.
+const PLANE_LANE: &str = "mcp\u{1f}search";
+
+/// When the history tests' events land, in wall-clock milliseconds.
+const BOOT_A: u64 = 1_000;
+const EARNED_A: u64 = 10_000;
+const APPLIED_B: u64 = 20_000;
+const EARNED_B: u64 = 30_000;
+const REBOOT: u64 = 40_000;
+const REBOOT_CHANGED: u64 = 50_000;
+
+fn tiers(input: f64) -> busbar_substrate_values::billing::RawTierRates {
+    busbar_substrate_values::billing::RawTierRates {
+        input,
+        output: 0.0,
+        cache_read: 0.0,
+        cache_write: 0.0,
+    }
+}
+
+/// The deployment's lanes at one price: [`FLAT_LANE`] at `price` micro-units an input token, and
+/// the `mcp` plane's card (its presence key and [`PLANE_LANE`]) at twice that.
+fn lanes_at(price: f64) -> Vec<(String, busbar_substrate_values::billing::RawTierRates)> {
+    vec![
+        (FLAT_LANE.to_string(), tiers(price)),
+        ("mcp\u{1f}".to_string(), tiers(0.0)),
+        (PLANE_LANE.to_string(), tiers(2.0 * price)),
+    ]
+}
+
+fn plane_fees() -> busbar_kernel::config::PlaneFeesMap {
+    busbar_kernel::config::PlaneFeesMap::from([(
+        "mcp".to_string(),
+        busbar_kernel_ledger::cost::PlaneFees {
+            per_request: 7,
+            per_session: 11,
+        },
+    )])
+}
+
+/// The engine resolving the deployment at `price`, heard by `holder` at `at`.
+fn apply_at(holder: &RootHistory, price: f64, at: u64) {
+    let lanes = lanes_at(price);
+    let fees = plane_fees();
+    holder.apply_rates(
+        &busbar_kernel::rate_apply::RawRates {
+            lanes: &lanes,
+            units: &[("gpt".to_string(), "search_units".to_string(), 2_000)],
+            flat_minor: 4,
+            present: true,
+            plane_fees: &fees,
+        },
+        at,
+    );
+}
+
+/// A PROCESS'S holder: fresh, armed as the production boot arms `ROOT_CARD`, and `'static` as the
+/// process holder is.
+fn process_holder() -> &'static RootHistory {
+    let holder: &'static RootHistory = Box::leak(Box::default());
+    holder.arm_journal();
+    holder
+}
+
+/// A directory of the test's own for a node's journal.
+fn journal_dir(tag: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "busbar-root-card-history-{tag}-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&path);
+    std::fs::create_dir_all(&path).expect("scratch directory");
+    path
+}
+
+/// The boot's book over `dir`, rebuilding `holder`'s dated history from its chain and pricing the
+/// replay through it — `build_for_node` with the holder named.
+fn boot_book(
+    holder: &'static RootHistory,
+    dir: &std::path::Path,
+) -> Arc<Mutex<crate::root::durability::Durability>> {
+    let book = crate::root::durability::build_with_cards(
+        &crate::root::durability::DurabilityConfig {
+            data_dir: Some(dir.to_path_buf()),
+        },
+        7,
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+        Box::new(move || holder.pin()),
+        Some(holder),
+    )
+    .expect("the journal opens");
+    let book = Arc::new(Mutex::new(book));
+    holder.bind_journal(&book);
+    book
+}
+
+fn bucket(name: &str) -> busbar_kernel_ledger::totals::TotalsKey {
+    use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
+    TotalsKey::new(
+        BucketId::new(name),
+        CapDimension::NanoUnits,
+        BucketScope::All,
+    )
+}
+
+/// One unit of `input` tokens on `lane`, arriving at `arrived_ms` and settled at `amount` — the
+/// figure the unit's exit priced at the card it pinned.
+fn settle(
+    book: &Arc<Mutex<crate::root::durability::Durability>>,
+    name: &str,
+    lane: &str,
+    input: u64,
+    amount: u64,
+    arrived_ms: u64,
+) {
+    use busbar_contract::caps::{DurableWrite, HoldAccrual, KernelSeal, Posted, WriteMoney};
+    let seal = KernelSeal::acquire_for_kernel();
+    let money = Grant::<WriteMoney>::mint(&seal);
+    let posted = Posted::settle_late(
+        HoldAccrual::after_terminal(PrincipalId::new(name), amount, &money),
+        &money,
+    );
+    let token = Grant::<DurableWrite>::mint(&seal);
+    let key = bucket(name);
+    book.lock()
+        .expect("the book")
+        .settle_counted(
+            &crate::root::durability::Settling {
+                key: &key,
+                window: 86_400,
+                durability: &token,
+                step: busbar_contract::caps::StepName::Meter,
+                stamp: crate::root::durability::PostingStamp {
+                    rate_card_version: 0,
+                    wall: arrived_ms / 1_000,
+                    mono: arrived_ms,
+                },
+            },
+            posted,
+            &crate::root::durability::UnitCounts {
+                lane: lane.to_string(),
+                fee_count: 0,
+                classes: std::collections::BTreeMap::from([("input".to_string(), input)]),
+            },
+            arrived_ms,
+        )
+        .expect("the journal takes the posting");
+}
+
+/// The settled figure on `name`'s balance, in nano-units.
+fn settled(book: &Arc<Mutex<crate::root::durability::Durability>>, name: &str) -> i128 {
+    book.lock()
+        .expect("the book")
+        .ledger
+        .book()
+        .get(&bucket(name), 86_400)
+        .settled
+}
+
+/// How many applied cards the chain holds.
+fn cards_on_chain(book: &Arc<Mutex<crate::root::durability::Durability>>) -> usize {
+    book.lock()
+        .expect("the book")
+        .journal
+        .replay()
+        .expect("reads")
+        .expect("verifies")
+        .iter()
+        .filter(|r| r.class == busbar_kernel_wal::RecordClass::Policy)
+        .filter(|r| super::CardApplied::from_body(&r.body).is_some())
+        .count()
+}
+
+/// `GET /admin/usage`'s dated derivation of one metering row of `input` tokens on [`FLAT_LANE`]
+/// dated `priced_from_ms`, through `holder`'s history — the history the read is handed
+/// (`RootUsageHistory` hands the process holder's).
+fn usage_row_micros(holder: &RootHistory, priced_from_ms: u64, input: u64) -> i64 {
+    let history = holder.history().expect("a resolved history");
+    let live = history
+        .current()
+        .card_at(u64::MAX)
+        .map(|(_, card)| card.clone())
+        .expect("a head card");
+    let cost = busbar_kernel::cost::CostModel::resolve_parts(
+        Some(&std::collections::BTreeMap::from([(
+            FLAT_LANE.to_string(),
+            busbar_kernel::config::RateEntryCfg {
+                input_utok: 1.0,
+                ..Default::default()
+            },
+        )])),
+        0,
+        &std::collections::BTreeMap::new(),
+    );
+    busbar_core_admin::v1::service::read_path_money::derive_spend_micros_row_at_card(
+        &history.current(),
+        priced_from_ms,
+        &live,
+        &cost,
+        FLAT_LANE,
+        &busbar_kernel::admin::v1::contract::UsageBreakdown {
+            tokens_input: input,
+            tokens_output: 0,
+            tokens_cache_read: 0,
+            tokens_cache_creation: 0,
+            requests: 0,
+            spend_micros: 0,
+        },
+    )
+    .expect("the row prices")
+}
+
+/// **A RESTART NEVER REPRICES WHAT ALREADY HAPPENED** (#79, OWNER RULING Q14).
+///
+/// Card A prices [`FLAT_LANE`] at 3 micro-units an input token (the `mcp` plane's lane at 6); a
+/// million tokens are earned on each. Card B is applied live — 5 (plane 10) — and another million is
+/// earned on each. The node restarts. Every posting on the chain is replayed at the card in force
+/// when it ARRIVED: flat 3,000,000,000 + 5,000,000,000 = 8,000,000,000 nano-units, plane
+/// 6,000,000,000 + 10,000,000,000 = 16,000,000,000 — the figures the node served before the
+/// restart. Before the applied cards were journalled, the rebuilt history was the boot card B from
+/// instant zero and the same chain replayed as 10,000,000,000 and 20,000,000,000.
+///
+/// The usage read resolves through the same rebuilt history: the A-era row (dated 0, the opening
+/// entry) at 3,000,000 micro-units and the B-era row (dated at B's apply) at 5,000,000 —
+/// 8,000,000 in all, where the restart used to read 10,000,000.
+///
+/// A second restart with no price change appends nothing and moves nothing; a third that changes
+/// the price to C prices from its boot forward and leaves every earlier figure where it was.
+#[test]
+fn a_restart_prices_every_posting_at_the_card_in_force_when_it_arrived() {
+    let dir = journal_dir("restart");
+
+    // THE FIRST PROCESS: boots at A, earns, applies B live, earns again.
+    let figures_before = {
+        let holder = process_holder();
+        apply_at(holder, 3.0, BOOT_A);
+        let book = boot_book(holder, &dir);
+        settle(&book, "flat", FLAT_LANE, 1_000_000, 3_000_000_000, EARNED_A);
+        settle(
+            &book,
+            "plane",
+            PLANE_LANE,
+            1_000_000,
+            6_000_000_000,
+            EARNED_A,
+        );
+        apply_at(holder, 5.0, APPLIED_B);
+        settle(&book, "flat", FLAT_LANE, 1_000_000, 5_000_000_000, EARNED_B);
+        settle(
+            &book,
+            "plane",
+            PLANE_LANE,
+            1_000_000,
+            10_000_000_000,
+            EARNED_B,
+        );
+        assert_eq!(cards_on_chain(&book), 2, "the boot card and the live apply");
+        (settled(&book, "flat"), settled(&book, "plane"))
+    };
+    assert_eq!(figures_before, (8_000_000_000, 16_000_000_000));
+
+    // THE RESTART, at the price B already set.
+    let holder = process_holder();
+    apply_at(holder, 5.0, REBOOT);
+    let book = boot_book(holder, &dir);
+    assert_eq!(
+        (settled(&book, "flat"), settled(&book, "plane")),
+        figures_before,
+        "a restart repriced a posting at a card that was not in force when it arrived"
+    );
+    assert!(book.lock().expect("the book").restart_findings.is_empty());
+    assert_eq!(
+        holder.len(),
+        2,
+        "a restart that changed no price appends no entry"
+    );
+    assert_eq!(cards_on_chain(&book), 2, "and journals none");
+    assert_eq!(
+        (
+            usage_row_micros(holder, 0, 1_000_000),
+            usage_row_micros(holder, APPLIED_B, 1_000_000),
+        ),
+        (3_000_000, 5_000_000),
+        "the usage read prices each era at its own card after a restart"
+    );
+    drop(book);
+
+    // A RESTART THAT CHANGES THE PRICE prices from its boot forward, and nothing before it.
+    let holder = process_holder();
+    apply_at(holder, 7.0, REBOOT_CHANGED);
+    let book = boot_book(holder, &dir);
+    assert_eq!(
+        (settled(&book, "flat"), settled(&book, "plane")),
+        figures_before
+    );
+    assert_eq!(holder.len(), 3);
+    assert_eq!(cards_on_chain(&book), 3);
+    let history = holder.history().expect("a history");
+    let price_at = |lane: &str, at: u64| {
+        history
+            .current()
+            .card_at(at)
+            .and_then(|(_, card)| card.lane_rates(lane).map(|r| r.nanos_per_unit("input")))
+    };
+    assert_eq!(
+        [EARNED_A, EARNED_B, REBOOT_CHANGED].map(|at| price_at(FLAT_LANE, at)),
+        [Some(3_000), Some(5_000), Some(7_000)]
+    );
+    assert_eq!(
+        [EARNED_A, EARNED_B, REBOOT_CHANGED].map(|at| price_at(PLANE_LANE, at)),
+        [Some(6_000), Some(10_000), Some(14_000)],
+        "the plane's own card is dated with the rest"
+    );
+    drop(book);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A holder that was not armed — every test holder, and a build with no root ledger — rebuilds
+/// nothing and journals nothing; a node with NO data directory keeps the boot card from instant
+/// zero exactly as the previous release did, and writes no card anywhere.
+#[test]
+fn no_data_dir_or_no_arming_keeps_the_boot_card_and_journals_nothing() {
+    let holder = process_holder();
+    apply_at(holder, 3.0, BOOT_A);
+    let book = crate::root::durability::build_with_cards(
+        &crate::root::durability::DurabilityConfig { data_dir: None },
+        7,
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+        Box::new(move || holder.pin()),
+        Some(holder),
+    )
+    .expect("memory-buffered cannot fail");
+    let book = Arc::new(Mutex::new(book));
+    holder.bind_journal(&book);
+    apply_at(holder, 5.0, APPLIED_B);
+    assert_eq!(
+        cards_on_chain(&book),
+        0,
+        "no data directory, no card journalled"
+    );
+    assert_eq!(holder.len(), 2);
+    assert_eq!(
+        holder
+            .history()
+            .expect("a history")
+            .entries()
+            .first()
+            .map(busbar_kernel_ledger::cost::CardEntry::effective_from),
+        Some(0),
+        "the boot card opens the history from instant zero"
+    );
+
+    let unarmed: &'static RootHistory = Box::leak(Box::default());
+    apply_at(unarmed, 3.0, BOOT_A);
+    let dir = journal_dir("unarmed");
+    let book = crate::root::durability::build_with_cards(
+        &crate::root::durability::DurabilityConfig {
+            data_dir: Some(dir.clone()),
+        },
+        7,
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+        Box::new(move || unarmed.pin()),
+        Some(unarmed),
+    )
+    .expect("the journal opens");
+    let book = Arc::new(Mutex::new(book));
+    unarmed.bind_journal(&book);
+    apply_at(unarmed, 5.0, APPLIED_B);
+    assert_eq!(
+        cards_on_chain(&book),
+        0,
+        "an unarmed holder journals nothing"
+    );
+    drop(book);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **AN APPLIED CARD ROUND-TRIPS THE JOURNAL AS THE SAME CARD, EVERY PLANE INCLUDED** (#47): the
+/// flat lane's four classes and its open class, the plane's own lane, an unconfigured lane on each
+/// (refused, #42), and each plane's fees read back identically off the rebuilt card.
+#[test]
+fn an_applied_card_round_trips_the_journal_as_the_same_card_on_every_plane() {
+    let lanes = lanes_at(3.0);
+    let fees = plane_fees();
+    let units = [("gpt".to_string(), "search_units".to_string(), 2_000)];
+    let raw = busbar_kernel::rate_apply::RawRates {
+        lanes: &lanes,
+        units: &units,
+        flat_minor: 4,
+        present: true,
+        plane_fees: &fees,
+    };
+    let card = super::card_from_raw(&raw);
+    let applied = super::CardApplied {
+        effective_from: APPLIED_B,
+        appended_at: APPLIED_B,
+        policy_epoch: 3,
+        form: super::CardForm::of(&raw, &card),
+    };
+    let read = super::CardApplied::from_body(&applied.body()).expect("the body reads back");
+    assert_eq!(read, applied);
+    let rebuilt = read.form.card();
+    let fee_lane = busbar_kernel_ledger::cost::plane_fee_lane("mcp");
+    for lane in [
+        FLAT_LANE,
+        PLANE_LANE,
+        "other",
+        "mcp\u{1f}other",
+        fee_lane.as_str(),
+    ] {
+        assert_eq!(
+            rebuilt.lane_unpriced(lane),
+            card.lane_unpriced(lane),
+            "{lane}"
+        );
+        for class in [
+            "input",
+            "output",
+            "cache_read",
+            "cache_write",
+            "search_units",
+        ] {
+            let of = |c: &busbar_kernel_ledger::cost::RateCard| {
+                c.lane_rates(lane)
+                    .map(|r| (r.nanos_per_unit(class), r.class_priced(class)))
+            };
+            assert_eq!(of(&rebuilt), of(&card), "{lane} {class}");
+        }
+        for class in ["per_request", "per_session"] {
+            assert_eq!(
+                rebuilt.plane_lane(lane).0.fee_of(class),
+                card.plane_lane(lane).0.fee_of(class),
+                "{lane} {class}"
+            );
+        }
+    }
+    assert_eq!(rebuilt.fee(), card.fee());
+    assert_eq!(rebuilt.pricing_enabled(), card.pricing_enabled());
+    assert!(
+        super::CardApplied::from_body(b"not a card").is_none(),
+        "another Policy record is not read as a card"
+    );
+
+    // An ABSENT card round-trips absent, fee and plane fees included.
+    let absent = busbar_kernel::rate_apply::RawRates {
+        lanes: &[],
+        units: &[],
+        flat_minor: 9,
+        present: false,
+        plane_fees: &fees,
+    };
+    let card = super::card_from_raw(&absent);
+    let rebuilt = super::CardForm::of(&absent, &card).card();
+    assert!(!rebuilt.pricing_enabled());
+    assert_eq!(rebuilt.fee(), 9);
+    assert_eq!(
+        rebuilt.plane_lane(&fee_lane).0.fee_of("per_session"),
+        Some(11)
+    );
+}

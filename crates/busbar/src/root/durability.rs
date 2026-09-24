@@ -183,6 +183,10 @@ pub struct Durability {
     /// one spend function. Asked at the moment of the rebuild, never cached, so a card appended
     /// after boot is in the view a later reconciliation prices against.
     history: HistorySource,
+    /// THE HOLDER WHOSE DATED HISTORY THIS BOOK REBUILT FROM ITS CHAIN at boot (#79), and so the
+    /// one whose later applies it journals ([`crate::root::kernel::RootHistory::bind_journal`]).
+    /// `None` on every book a production boot with a data directory did not build.
+    pub(crate) cards_from: Option<&'static crate::root::kernel::RootHistory>,
 }
 
 /// Where the book reads the dated rate-card history a replay prices against: a snapshot pinned
@@ -2487,7 +2491,14 @@ pub fn build_for_node(
     shipper: Box<dyn Shipper>,
     legacy_rows: Box<dyn LegacyRows>,
 ) -> Result<Durability, OpenError> {
-    build_priced(cfg, node, shipper, legacy_rows, root_history())
+    build_with_cards(
+        cfg,
+        node,
+        shipper,
+        legacy_rows,
+        root_history(),
+        Some(&crate::root::kernel::ROOT_CARD),
+    )
 }
 
 /// [`build_for_node`], naming where the book reads the dated rate-card history its replay prices
@@ -2503,6 +2514,24 @@ pub fn build_priced(
     shipper: Box<dyn Shipper>,
     legacy_rows: Box<dyn LegacyRows>,
     history: HistorySource,
+) -> Result<Durability, OpenError> {
+    build_with_cards(cfg, node, shipper, legacy_rows, history, None)
+}
+
+/// [`build_priced`], naming the holder whose DATED HISTORY the book rebuilds from its chain before
+/// it prices a replayed posting (#79). The production boot names the process holder; a holder that
+/// was not armed ([`crate::root::kernel::RootHistory::arm_journal`]) is left as it is.
+///
+/// # Errors
+///
+/// As [`build_for_node`].
+pub fn build_with_cards(
+    cfg: &DurabilityConfig,
+    node: u64,
+    shipper: Box<dyn Shipper>,
+    legacy_rows: Box<dyn LegacyRows>,
+    history: HistorySource,
+    cards: Option<&'static crate::root::kernel::RootHistory>,
 ) -> Result<Durability, OpenError> {
     let journal = match cfg.data_dir.as_deref() {
         // The previous release's shape: nothing is opened, nothing is probed, and durability is
@@ -2528,6 +2557,7 @@ pub fn build_priced(
         unconfirmed: Vec::new(),
         quarantined: Vec::new(),
         history,
+        cards_from: None,
     };
 
     // A CORRUPT JOURNAL DOES NOT STOP THE BOOT, AND IT IS NEVER SILENT. The log has already kept
@@ -2554,9 +2584,20 @@ pub fn build_priced(
     // sides were zero. Every hold opened and every settlement posted is replayed through the
     // ledger's own arithmetic, the dual write included, so the book and the rows it feeds are what
     // they were when the node stopped. A memory-buffered journal replays nothing: it starts empty.
+    //
+    // AND THE DATED RATE-CARD HISTORY IS REBUILT FROM THE CHAIN FIRST (#79, OWNER RULING Q14), so a
+    // replayed posting prices at the card in force when it arrived — never at the boot card.
+    let chain = durability.journal.replay();
+    if let Some(cards) = cards {
+        let records = match (&cfg.data_dir, &chain) {
+            (Some(_), Ok(Ok(records))) => Some(records.as_slice()),
+            _ => None,
+        };
+        cards.rebuild_from_chain(&mut durability, records);
+    }
     let pinned = (durability.history)();
     let view = pinned.as_ref().map(PinnedHistory::view);
-    let (replayed, unreadable) = match durability.journal.replay() {
+    let (replayed, unreadable) = match chain {
         Ok(Ok(records)) => (
             replay_into(&mut durability.ledger, &records, view.as_ref(), false),
             None,
