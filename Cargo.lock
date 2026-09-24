@@ -2736,9 +2736,9 @@ dependencies = [
 
 [[package]]
 name = "oauth-as"
-version = "0.9.3"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad4e11a679ee273f4e60d25fb67c01da64cefe541af18a8227b9e63c26507226"
+checksum = "4e3bf4c869f5d66f1a4254dd1bd2ddad2de1746bd0649186945fd17b391ee95e"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -4228,7 +4228,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

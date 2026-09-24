@@ -186,8 +186,9 @@ metrics-util = { version = "0.20.4", default-features = false }
 #                      pre-built router would enter the tree with no entry in `CoreRouteTable`,
 #                      which is the one thing that table exists to make impossible.
 #   jwt                RFC 9068 `at+jwt` access tokens and the RFC 7517 JWKS document — and, since
-#                      0.9.0 split the seam, the `Es256Signer`/`Es256Verifier` TRAITS with NO curve
-#                      implementation behind them. `jwt-p256` is deliberately ABSENT: busbar
+#                      0.9.0 split the seam, the signer/verifier TRAITS with NO curve implementation
+#                      behind them (`JwsSigner`/`JwsVerifier` since 0.10.0, which generalised the
+#                      ES256-only `Es256Signer`/`Es256Verifier`). `jwt-p256` is deliberately ABSENT: busbar
 #                      already links `ring` through rustls and implements both traits over it
 #                      (`oauth_as::signer`), so the RustCrypto P-256 stack — twenty packages, a
 #                      complete second elliptic-curve implementation — never enters the tree.
@@ -196,9 +197,13 @@ metrics-util = { version = "0.20.4", default-features = false }
 #   resource-metadata  RFC 9728 §4 `protected_resources` on the AS metadata document, which is the
 #                      AS half of the discovery loop busbar's resource half already publishes.
 #
-# The feature list is UNCHANGED at 0.9.3. That release adds no features (it closes Gate 4, a full
-# mutation sweep) and busbar turns on the same four it always has.
-oauth-as = { version = "0.9.3", features = [
+# RE-DERIVED at 1.0.0 against that release's own feature table (`cargo info oauth-as@1.0.0`), not
+# carried across. 0.9.3 → 1.0.0 renamed and split NONE of these four; it ADDED `jwt-rsa`,
+# `jwt-ed25519` and `jwt-ed25519-pkcs8` (off-by-default RS256/PS256 and EdDSA backends). They stay
+# off: busbar signs and verifies ES256 only, over `ring`, and `jwt-rsa` would pull the `rsa` crate
+# with its RUSTSEC-2023-0071 signing advisory into a tree that has no use for it. `test-util` (the
+# signer/storage conformance harnesses, dev-dependencies only) is likewise unrenamed.
+oauth-as = { version = "1.0.0", features = [
     "http",
     "jwt",
     "consent",

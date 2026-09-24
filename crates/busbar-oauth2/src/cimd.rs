@@ -207,7 +207,7 @@ fn is_cimd_client_id(client_id: &str) -> bool {
 /// VALIDATE THE DOCUMENT AND MATERIALISE THE CLIENT, under the operator's ceiling.
 ///
 /// TODO(chore/1.6.0-oauth-as-0.9.3): `oauth-as` ships a CIMD document validator behind its `cimd`
-/// feature; this tree pins 0.9.3 but does not enable that feature. When it is switched on, the
+/// feature; this tree pins 1.0.0 but does not enable that feature. When it is switched on, the
 /// checks below hand over to (or are cross-checked against) the crate's validator AT THIS CALL
 /// SITE — the fetch, the seam and the ceiling are unchanged by that switch. The checks below are
 /// busbar's own and are ENFORCED TODAY; nothing here is a placeholder.
