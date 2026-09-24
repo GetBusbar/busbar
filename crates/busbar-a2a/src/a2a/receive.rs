@@ -2801,7 +2801,7 @@ async fn stream_hop(
                 cursor = cursor.saturating_add(1);
                 // The resubscribe resume point, advanced durably per chunk. Monotonic in the store,
                 // so a duplicate delivery cannot rewind it.
-                let _ = crate::taskstore::TASKS.advance_cursor(&task_id, cursor, now, &request_id);
+                advance_resume_cursor(&task_id, cursor, now, &request_id);
             }
             // A caller that has gone away closes the receiver, and the hop stops there rather than
             // draining an upstream into a channel nobody is reading.
@@ -2996,6 +2996,37 @@ async fn stream_hop(
         .header(axum::http::header::CACHE_CONTROL, "no-store")
         .body(axum::body::Body::from_stream(stream))
         .unwrap_or_else(|_| plane_absent())
+}
+
+/// ADVANCE THE ARTIFACT RESUME CURSOR — `tasks/resubscribe` reads it — and SAY SO when the durable
+/// write fails.
+///
+/// This was a bare `let _ =`, while the state-transition write six lines above it on the same
+/// stream logs under an error-once latch. A store that refuses the cursor leaves a resubscribing
+/// caller replaying from a stale position with nothing in the log to explain it. Reported, never
+/// fatal — the stream keeps flowing — under the same code as its sibling, because it is the same
+/// condition: a relayed outcome the durable task store would not take. Error once on the
+/// transition into the failing state; subsequent failures hold at debug. Returns whether the write
+/// landed.
+pub(crate) fn advance_resume_cursor(
+    task_id: &str,
+    cursor: u64,
+    now: u64,
+    request_id: &str,
+) -> bool {
+    match crate::taskstore::TASKS.advance_cursor(task_id, cursor, now, request_id) {
+        Ok(_) => true,
+        Err(e) => {
+            static RESUME_CURSOR_UNRECORDED_WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !RESUME_CURSOR_UNRECORDED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                diag_error!(A2A_RELAYED_OUTCOME_UNRECORDED, task = %task_id, cursor, error = %e, "a2a: a streamed task's artifact resume cursor could not be recorded");
+            } else {
+                diag_debug!(A2A_RELAYED_OUTCOME_UNRECORDED, task = %task_id, cursor, error = %e, "a2a: a streamed task's artifact resume cursor could not be recorded");
+            }
+            false
+        }
+    }
 }
 
 /// RECORD WHAT THE BACKEND SAID THE TASK IS NOW.

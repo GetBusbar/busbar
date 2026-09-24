@@ -811,3 +811,33 @@ async fn a_streamed_artifact_advances_the_durable_resume_cursor() {
         "the stream's terminal event must land on the task"
     );
 }
+
+/// **A FAILED DURABLE WRITE OF THE ARTIFACT RESUME CURSOR IS SURFACED, NOT SWALLOWED.**
+///
+/// `tasks/resubscribe` resumes from this cursor. The streaming relay advanced it with a bare
+/// `let _ =`, so a store that refused the write left a resubscribing caller replaying from a stale
+/// position with no line in the log — while the state-transition write beside it on the same
+/// stream was logged under an error-once latch. The failure here is a cursor write for a task the
+/// store does not hold; the capture admits DEBUG so the assertion holds whichever side of the
+/// latch this process is on.
+#[test]
+fn a_resume_cursor_the_store_refuses_is_surfaced() {
+    use busbar_substrate_values::testkit::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let cap = WarnCapture::capturing_debug();
+    let landed =
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(cap.clone()), || {
+            crate::a2a::receive::advance_resume_cursor("a2a-no-such-task-cursor", 3, 0, "req-1")
+        });
+    assert!(!landed, "the fixture must actually be a refused write");
+    let lines = cap.messages().join("\n");
+    assert!(
+        cap.contains("resume cursor could not be recorded"),
+        "the refused cursor write must be logged at all: {lines}"
+    );
+    assert!(
+        cap.contains("a2a-no-such-task-cursor"),
+        "and must name the task whose resubscribe now reads a stale position: {lines}"
+    );
+}
