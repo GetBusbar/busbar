@@ -107,17 +107,42 @@ pub const LEDGER: &str = "qa/kind-isolation.toml";
 /// whose extension is not on [`BINARY_EXTS`], which is 1 707 of them today.
 const MIN_SCANNED: usize = 600;
 
-/// LAW 0/1: the plugin-INSTANCE vocabularies a NEUTRAL crate may name ZERO times. These are the two
-/// families the kind table gives an instance vocabulary (`Family::Plane`, `Family::Transport`).
-/// `control` and `dialect` are gone (DECISIONS #4/#5): control is not a kind, and a dialect is a
-/// thing inside a plane whose vendor-name confinement lives in `plane-purity`, not a kind column
-/// here. `codec`/`legacy` are the pre-split plane halves and retiring crates — they drain on the
-/// ordinary ratchet.
-const INSTANCE_VOCAB_KINDS: &[&str] = &["plane", "transport"];
+mod instances;
+
+/// LAW 0/1: the plugin-INSTANCE vocabularies a NEUTRAL crate may name ZERO times — ALL SEVEN plugin
+/// kinds (DECISIONS #3), read off `truths::PLUGIN_KINDS` rather than restated here.
+///
+/// IT WAS `["plane", "transport"]`, AND THAT WAS THE RELEASE'S BIGGEST INSTRUMENT HOLE (item 118 /
+/// C1-KIND): C1 — "core names no instance" — was asserted over seven kinds and measured over two,
+/// and the counter-example sat in the kernel (`EXPORT_MODULES`, a closed list of export plugin
+/// instance names). `plane` and `transport` are measured by the ordinary columns, whose bare ids
+/// count everywhere; the other five by [`instances`], whose vocabulary is derived from the census
+/// and the tree's own module-name constants, and whose cells are the `[[instance]]` table.
+fn instance_vocab_kinds() -> &'static [&'static str] {
+    super::truths::PLUGIN_KINDS
+}
+
+/// The five axes [`instances`] measures — for the registry reader's load-time refusal.
+pub(super) fn instance_axes() -> Vec<&'static str> {
+    instances::axes()
+}
+
+/// Every neutral crate's naming of the five axes, `(crate, kind) -> count` — for `--write`.
+pub fn measured_instances(
+    cx: &Ctx,
+    crates: &[CrateInfo],
+) -> Result<BTreeMap<(String, String), usize>, String> {
+    let (files, _) = scan_set(cx)?;
+    let vocab = instances::vocabulary(crates, &files);
+    Ok(instances::measure(crates, &files, &vocab)
+        .into_iter()
+        .map(|((k, kind), c)| ((k, kind.to_string()), c.count))
+        .collect())
+}
 
 /// LAW 0/1 readiness: the neutral crates ENFORCED at ceiling 0 in the EVERYDAY
 /// (`ship: false`) gate. Starts empty. A crate belongs here the moment its measured
-/// `source_count` for every `INSTANCE_VOCAB_KINDS` cell reaches 0 — adding it PINS that
+/// `source_count` for every [`instance_vocab_kinds`] cell reaches 0 — adding it PINS that
 /// crate at 0 permanently: from then on the everyday gate reds again the instant the
 /// count rises above zero, even though the ordinary `[[cell]]` ratchet would otherwise
 /// let it float back up. A neutral crate NOT yet listed here still drains through the
@@ -1132,6 +1157,11 @@ fn minted_rows(cx: &Ctx) -> Vec<String> {
             &["crate", "kind"][..],
             "an excuse for the two scanners reading one cell differently",
         ),
+        (
+            instances::TABLE,
+            &["crate", "kind"][..],
+            "a ceiling for one neutral crate naming one plugin kind's instances as a value",
+        ),
     ] {
         let was = super::base::row_keys(&base.registry, table, ids);
         // A WHOLE COLUMN THAT DID NOT EXIST IS THE RULE ARRIVING, NOT A CEILING RISING.
@@ -1176,7 +1206,7 @@ fn minted_rows(cx: &Ctx) -> Vec<String> {
 }
 
 /// THE LAW 0/1 ARMED CLASS — evaluated UNCONDITIONALLY of the `[[cell]]` ledger: a NEUTRAL
-/// crate's ceiling against `INSTANCE_VOCAB_KINDS` is 0, and no ratchet row can raise it.
+/// crate's ceiling against [`instance_vocab_kinds`] is 0, and no ratchet row can raise it.
 /// Cargo.toml is excepted (`cell.manifest`) because a manifest edge is already governed by
 /// `kind-isolation:deps`; arming it here too would double-count the same dependency name.
 ///
@@ -1190,7 +1220,7 @@ fn law0_offenders(matrix: &Matrix, crates: &[CrateInfo], enforced: Option<&[&str
         let is_neutral = crates
             .iter()
             .any(|c| &c.name == krate && c.family == Family::Neutral);
-        if !is_neutral || !INSTANCE_VOCAB_KINDS.contains(kind) {
+        if !is_neutral || !instance_vocab_kinds().contains(kind) {
             continue;
         }
         let source_count = cell.count - cell.manifest; // Cargo-exempt
@@ -1228,9 +1258,24 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
 
     let total: usize = matrix.values().map(|c| c.count).sum();
 
+    // THE FIVE INSTANCE AXES (item 118). Same scan set, read a second way — see [`instances`].
+    let (files, _) = match scan_set(cx) {
+        Ok(f) => f,
+        Err(e) => {
+            return Row::fail(
+                ROW_MATRIX,
+                "the kind × crate scan could not run",
+                format!("{e} — the instance axes read the same scan set, and it did not read."),
+            )
+        }
+    };
+    let ivocab = instances::vocabulary(crates, &files);
+    let inst = instances::measure(crates, &files, &ivocab);
+    let inst_total: usize = inst.values().map(|c| c.count).sum();
+
     // THE SHIP TWIN OWES ZERO EVERYWHERE, and owes it without consulting the ledger.
     if ship {
-        if total == 0 {
+        if total == 0 && inst_total == 0 && ivocab.unattributed.is_empty() {
             return Row::pass(
                 ROW_MATRIX,
                 "no crate names another kind's vocabulary anywhere",
@@ -1243,7 +1288,9 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
             .collect();
         // THE ARMED LAW 0/1 CLASS, UNCONDITIONALLY, over every `Family::Neutral` crate — the
         // ship twin does not consult [`LAW0_ENFORCED_NEUTRAL_CRATES`], it owes zero everywhere.
-        let law0 = law0_offenders(&matrix, crates, None);
+        let mut law0 = law0_offenders(&matrix, crates, None);
+        law0.extend(instances::law0(&inst, None));
+        law0.extend(ivocab.unattributed.iter().cloned());
         return Row::fail(
             ROW_MATRIX,
             "a crate still names another kind's vocabulary",
@@ -1264,6 +1311,8 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
 
     let mut offenders: Vec<String> = duplicates(reg);
     offenders.extend(minted_rows(cx));
+    offenders.extend(instances::offenders(&inst, &ivocab, reg));
+    offenders.extend(instances::law0(&inst, Some(LAW0_ENFORCED_NEUTRAL_CRATES)));
     let kind_of: BTreeMap<&str, &'static str> = crates
         .iter()
         .filter_map(|c| c.kind.map(|k| (c.name.as_str(), k)))
@@ -1412,8 +1461,11 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
     ));
 
     let headline = format!(
-        "{total} hit(s) over {} cell(s), {scanned} file(s) scanned",
-        matrix.len()
+        "{total} hit(s) over {} cell(s), {inst_total} instance name(s) written as a value over {} \
+         `[[{}]]` cell(s), {scanned} file(s) scanned",
+        matrix.len(),
+        inst.len(),
+        instances::TABLE
     );
 
     // `--report` PRINTS, rather than filling the row's detail. A ledger row is one TSV line and
@@ -1425,6 +1477,10 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
         println!(
             "\nTHE MATRIX (crate, kind, count, per scanner):\n{}",
             render_matrix(&matrix)
+        );
+        println!(
+            "\nTHE FIVE INSTANCE AXES (vocab kind name from | cell crate kind count | hit):\n{}",
+            instances::render(&inst, &ivocab)
         );
         println!(
             "\nTHE LISTED CLASSES (cite, why, the line that deletes it):\n{}",
@@ -1588,6 +1644,24 @@ pub(super) fn cell_anchor(cx: &Ctx, krate: &str, kind: &str) -> Result<String, S
     Ok(format!("{head}{}\"", &rest[..end]))
 }
 
+/// The row `[[<table>]] crate × kind` as the ledger spells it today, and its count — read off the
+/// file, never quoted, for the same reason as [`cell_anchor`].
+fn cell_anchor_in(cx: &Ctx, table: &str, krate: &str, kind: &str) -> Result<(String, i64), String> {
+    let text = cx.read(LEDGER)?;
+    let head = format!("[[{table}]]\ncrate = \"{krate}\"\nkind = \"{kind}\"\ncount = \"");
+    let at = text
+        .find(&head)
+        .ok_or_else(|| format!("no `[[{table}]]` row for {krate} × {kind} in {LEDGER}"))?;
+    let rest = &text[at + head.len()..];
+    let end = rest.find('"').ok_or_else(|| {
+        format!("the `[[{table}]]` row for {krate} × {kind} has no closing quote")
+    })?;
+    let n: i64 = rest[..end].parse().map_err(|_| {
+        format!("the `[[{table}]]` row for {krate} × {kind} has a non-numeric count")
+    })?;
+    Ok((format!("{head}{n}\""), n))
+}
+
 /// That row, and the same row with `count` moved to `count`.
 pub(super) fn cell_subst(
     cx: &Ctx,
@@ -1624,8 +1698,12 @@ pub fn selftest<'a>(
             ),
             &["ship-ceiling 0", "busbar-transport-tcp × plane"],
         ));
+        instances::selftest(cx, gate, true, report);
         return;
     }
+
+    // THE FIVE INSTANCE AXES (item 118) — every one planted in core, plus the ratchet both ways.
+    instances::selftest(cx, gate, false, report);
 
     // THIS ROW'S SCAN HAS A FLOOR, AND NOTHING PROVED IT. A mutation campaign turned
     // `files.len() < MIN_SCANNED` into `false && …` and the whole battery stayed green: every other
@@ -1744,13 +1822,13 @@ pub fn selftest<'a>(
     report.push(prove_rows_red(
         cx,
         gate,
-        "a transport named inside a plane (`busbar-plane-admin` says `grpc`)",
+        "a transport named inside a plane (`busbar-plane-mcp` says `grpc`)",
         &[ROW_MATRIX],
         plant(
-            "crates/busbar-plane-admin/src/leak.rs",
+            "crates/busbar-plane-mcp/src/leak.rs",
             "//! The grpc wire delivers these.\n",
         ),
-        &["ratchet", "busbar-plane-admin × transport", "RAISED"],
+        &["ratchet", "busbar-plane-mcp × transport", "RAISED"],
     ));
 
     // A STORE NAMED INSIDE THE KERNEL — core is core.
@@ -1977,28 +2055,30 @@ pub fn selftest<'a>(
         &["confusable", "busbar-transport-tcp"],
     ));
 
-    // -- THE DIALECT VOCABULARY -----------------------------------------------------------------
+    // -- THE DIALECT VOCABULARY — MOVED, AND THE MOVE IS WHAT IS ASSERTED ---------------------
     //
-    // A red team put `const VD = "anthropic";` and `fn openai_shim()` into `busbar-store-memory`
-    // and every gate in the tree stayed green. The vendor
-    // names are the `dialect` kind's vocabulary, and the `dialect` kind has no crate yet, so the
-    // census derived NO needles for it and the matrix had no row to raise. The vocabulary is read
-    // from the DIALECT rule's own list rather than written out here, so the two cannot drift.
-    report.push(prove_rows_red(
+    // A red team once put `const VD = "anthropic";` and `fn openai_shim()` into
+    // `busbar-store-memory` with every gate green, and this case planted exactly that and asserted a
+    // `dialect` column went RED. DECISIONS #4 then struck `dialect` as a kind: there is no dialect
+    // column in this matrix any more (see [`vocabulary`]), and the vendor-name confinement is
+    // `plane-purity`'s scanner, the one place the vendor names are written down. The case could not
+    // go red here by construction — it scored PROOF IMPOSSIBLE behind the matrix's standing debt,
+    // and GREEN against the debt-free subject (item 89).
+    //
+    // So what this row owes about that plant is the ABSENCE: the matrix must not grow a second,
+    // unowned copy of plane-purity's vendor rule. A dialect column coming back here without the
+    // owner's ruling is the regression, and this is the case that says so.
+    report.push(prove_rows_green(
         cx,
         gate,
-        "a vendor name in a neutral crate is dialect vocabulary, scored like any other kind",
+        "a vendor name in a neutral crate is plane-purity's to judge, not a matrix column (DECISIONS #4)",
         &[ROW_MATRIX],
         plant(
-            // THE DIRECTORY, NOT THE PACKAGE NAME. `busbar-store-memory` lives at
-            // `crates/store-memory`, and a plant at `crates/busbar-store-memory/src/vendor.rs` is a
-            // file under no crate at all: `owning_dir` finds no manifest above it, the scan skips
-            // it, and the case went GREEN while asserting RED. The fixture has to name the path the
-            // tree really has.
+            // THE DIRECTORY, NOT THE PACKAGE NAME: `busbar-store-memory` lives at
+            // `crates/store-memory`, or the plant lands under no crate at all.
             "crates/store-memory/src/vendor.rs",
             "pub const VD: &str = \"anthropic\";\npub fn openai_shim() {}\n",
         ),
-        &["busbar-store-memory", "dialect"],
     ));
 
     // ── THE THREE DEAD-ROW RULES, ONE PLANT EACH ─────────────────────────────────────────────────

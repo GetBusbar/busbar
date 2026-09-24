@@ -193,7 +193,7 @@ pub fn rule_truths(cx: &Ctx, table_kinds: &[&str], crates: &[CrateInfo]) -> Row 
 }
 
 /// The kinds a ledger names, with how many rows name each. ONLY the tables whose fields are KINDS are
-/// read: a `[[cell]]`'s `kind`, an `[[edge]]`'s `from` and `to`, and a `[[registered]]`/`[[announced]]`
+/// read: a `[[cell]]`'s or `[[instance]]`'s `kind`, an `[[edge]]`'s `from` and `to`, and a `[[registered]]`/`[[announced]]`
 /// row's `kind`. `[[dep]]` and `[[transitional]]` carry CRATE names in their `from`/`to`, not kinds,
 /// so they are skipped — reading them would report every crate as an unknown kind. Read as a bag so a
 /// stale-taxonomy word is reported with its weight rather than once.
@@ -219,7 +219,7 @@ fn ledger_kinds(text: &str) -> Vec<(String, usize)> {
         };
         let key = k.trim();
         let is_kind_field = match table {
-            "cell" | "registered" | "announced" => key == "kind",
+            "cell" | "instance" | "registered" | "announced" => key == "kind",
             "edge" => key == "from" || key == "to",
             _ => false,
         };

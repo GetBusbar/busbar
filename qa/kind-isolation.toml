@@ -4118,3 +4118,139 @@ to = "kernel"
 cite = "ARCHITECTURE.md — the kernel workflow crates form the loop; a kernel crate naming another kernel crate's vocabulary is the #36 group structure (budget -> ledger, egress -> breaker), allowed structure rather than a fusion."
 why = "crates of kind kernel naming kernel vocabulary: kernel package names in any spelling and the kind-qualified id (kernel-<id>). Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "none: the #36 kernel group is intra-tier by design. What the paired [[cell]] holds is the NUMBER."
+
+# ------------------------------------------------------------------------------------------------
+# [[instance]] — THE FIVE PLUGIN-INSTANCE AXES C1 WAS NEVER MEASURED OVER (item 118 / C1-KIND)
+# ------------------------------------------------------------------------------------------------
+#
+# C1 says core names no instance, over SEVEN plugin kinds (DECISIONS #3). The matrix above measured
+# two: plane and transport. These rows are the other five — store, secret, auth, hooks, export —
+# for every Family::Neutral crate: how many times the crate writes one of that kind's INSTANCE
+# names as a whole string literal (`"otlp"`, `"valkey"`, `"admin-tokens"`, `"file"`). The
+# vocabulary is derived by `kind-isolation:matrix` from the census and the tree's own
+# `*_MODULE*` constants (see xtask/src/gates/kind_isolation/matrix/instances.rs); nothing here
+# lists it.
+#
+# ARMED AT TODAY'S MEASURED NUMBER (Law 9, KICKOFF 9.4), exact in both directions: a rise is the
+# landing that grew the naming, a fall must bring the row down with it, a zero cell must be struck.
+# The ship twin owes ZERO in every neutral crate (law0-neutral-instance). The drain is Phase 4's.
+
+[[instance]]
+crate = "busbar"
+kind = "auth"
+count = "3"
+
+[[instance]]
+crate = "busbar"
+kind = "secret"
+count = "10"
+
+[[instance]]
+crate = "busbar"
+kind = "store"
+count = "5"
+
+[[instance]]
+crate = "busbar-api"
+kind = "secret"
+count = "4"
+
+[[instance]]
+crate = "busbar-contract"
+kind = "secret"
+count = "6"
+
+[[instance]]
+crate = "busbar-core-admin"
+kind = "auth"
+count = "25"
+
+[[instance]]
+crate = "busbar-core-admin"
+kind = "export"
+count = "12"
+
+[[instance]]
+crate = "busbar-core-admin"
+kind = "hooks"
+count = "3"
+
+[[instance]]
+crate = "busbar-core-admin"
+kind = "secret"
+count = "43"
+
+[[instance]]
+crate = "busbar-core-admin"
+kind = "store"
+count = "15"
+
+[[instance]]
+crate = "busbar-kernel"
+kind = "auth"
+count = "58"
+
+[[instance]]
+crate = "busbar-kernel"
+kind = "export"
+count = "54"
+
+[[instance]]
+crate = "busbar-kernel"
+kind = "hooks"
+count = "1"
+
+[[instance]]
+crate = "busbar-kernel"
+kind = "secret"
+count = "49"
+
+[[instance]]
+crate = "busbar-kernel"
+kind = "store"
+count = "30"
+
+[[instance]]
+crate = "busbar-kernel-audit"
+kind = "auth"
+count = "2"
+
+[[instance]]
+crate = "busbar-kernel-identity"
+kind = "auth"
+count = "2"
+
+[[instance]]
+crate = "busbar-oauth2"
+kind = "secret"
+count = "5"
+
+[[instance]]
+crate = "busbar-plugin"
+kind = "secret"
+count = "5"
+
+[[instance]]
+crate = "busbar-plugin-loader"
+kind = "export"
+count = "1"
+
+[[instance]]
+crate = "busbar-plugin-loader"
+kind = "secret"
+count = "4"
+
+[[instance]]
+crate = "busbar-plugin-loader"
+kind = "store"
+count = "94"
+
+[[instance]]
+crate = "busbar-plugin-sdk"
+kind = "secret"
+count = "1"
+
+[[instance]]
+crate = "busbar-secret-ref"
+kind = "secret"
+count = "40"

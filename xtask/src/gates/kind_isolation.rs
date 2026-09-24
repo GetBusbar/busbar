@@ -135,13 +135,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ctx::{Ctx, Overlay, WalkSpec};
-use crate::gates::{prove_green, prove_rows_green, prove_rows_red, Gate, Report};
+use crate::gates::{prove_rows_green, prove_rows_red, Gate, Report};
 use crate::ledger::{Row, Verdict};
 use crate::manifest::{self, DepDecl};
 use crate::scan;
 
 mod base;
 mod closure;
+mod debt_free;
 mod inputs;
 mod matrix;
 mod truths;
@@ -945,6 +946,10 @@ struct KindRegistry {
     matrix_edges: Vec<MatrixEdge>,
     matrix_cells: Vec<MatrixCell>,
     matrix_disagreements: Vec<MatrixDisagreement>,
+    /// The `[[instance]]` table: the five plugin-instance axes C1 was never measured over (item
+    /// 118). Same row shape as `[[cell]]` — crate, kind, today's exact count. See
+    /// `matrix::instances`.
+    instance_cells: Vec<MatrixCell>,
     /// Every named `[patch]`/`[replace]`/`[source]` allowance. See [`PatchAllow`].
     patch_allows: Vec<PatchAllow>,
     /// Rows REFUSED AT LOAD. A malformed or over-broad row is not skipped and it is not tolerated:
@@ -1244,6 +1249,41 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                 file: v[0].clone(),
                 entry: v[1].clone(),
                 reason: v[2].clone(),
+            });
+        }
+        // THE FIVE INSTANCE AXES' CEILINGS (item 118). The same refusals as `[[cell]]`, plus one:
+        // a row naming a kind that is not one of the five axes would be a ceiling no measurement
+        // ever produces, so it is refused at load rather than scored dead forever.
+        "instance" => {
+            let Some(v) = take_row(fields, &["crate", "kind", "count"], table, at, &mut reg.errors)
+            else {
+                return;
+            };
+            let count = match v[2].parse::<i64>() {
+                Ok(n) if n >= 0 => n,
+                _ => {
+                    reg.errors.push(format!(
+                        "bad-count\t{REGISTRY_FILE}:{at}\t`[[instance]] count = \"{}\"` is not a \
+                         non-negative number. A ceiling no measurement can equal is not a ceiling",
+                        v[2]
+                    ));
+                    return;
+                }
+            };
+            if !matrix::instance_axes().contains(&v[1].as_str()) {
+                reg.errors.push(format!(
+                    "bad-instance-kind\t{REGISTRY_FILE}:{at}\t`[[instance]] kind = \"{}\"` is not \
+                     one of the instance axes ({}). A ceiling for an axis nothing measures is never \
+                     compared to anything",
+                    v[1],
+                    matrix::instance_axes().join(", ")
+                ));
+                return;
+            }
+            reg.instance_cells.push(MatrixCell {
+                krate: v[0].clone(),
+                kind: v[1].clone(),
+                count,
             });
         }
         "disagreement" => {
@@ -4603,6 +4643,26 @@ fn repins(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry) -> Result<Vec<Repi
         }
     }
 
+    let inst = matrix::measured_instances(cx, crates)?;
+    for c in &reg.instance_cells {
+        let now = inst
+            .get(&(c.krate.clone(), c.kind.clone()))
+            .copied()
+            .unwrap_or(0) as i64;
+        if now != c.count {
+            out.push(Repin {
+                label: format!("[[instance]] {} × {}", c.krate, c.kind),
+                keys: vec![
+                    ("crate".to_string(), c.krate.clone()),
+                    ("kind".to_string(), c.kind.clone()),
+                ],
+                table: "instance",
+                was: c.count,
+                now,
+            });
+        }
+    }
+
     for half in [Half::Shipped, Half::Test] {
         let measured = measure_edges(crates, half);
         for row in reg.dep_edges.iter().filter(|d| d.half == half.word()) {
@@ -4846,6 +4906,10 @@ pub struct KindIsolationGate {
     ship: bool,
     /// `--write`: re-pin the registry's exact counts DOWNWARD, and refuse if any would rise.
     write: bool,
+    /// THE SELF-TEST'S SUBJECT: this same gate with the unplanted tree's findings out of view,
+    /// measured once, on the first `selftest` that asks. See [`debt_free`] — it is how a red case
+    /// over a row that carries owned debt stays a proof rather than PROOF IMPOSSIBLE (item 89).
+    twin: std::sync::OnceLock<Box<debt_free::DebtFree>>,
 }
 
 impl KindIsolationGate {
@@ -4854,6 +4918,7 @@ impl KindIsolationGate {
         KindIsolationGate {
             ship: false,
             write: false,
+            twin: std::sync::OnceLock::new(),
         }
     }
 
@@ -4863,6 +4928,7 @@ impl KindIsolationGate {
         KindIsolationGate {
             ship: false,
             write: true,
+            twin: std::sync::OnceLock::new(),
         }
     }
 
@@ -4871,7 +4937,24 @@ impl KindIsolationGate {
         KindIsolationGate {
             ship: true,
             write: false,
+            twin: std::sync::OnceLock::new(),
         }
+    }
+
+    /// THE DEBT-FREE SUBJECT every planted case in [`Gate::selftest`] runs against — this gate, same
+    /// configuration, with the findings the unplanted tree ALREADY reports taken out of view. The
+    /// debt is measured once per gate value, on first use, so a battery pays for one extra run.
+    fn debt_free(&self, cx: &Ctx) -> &debt_free::DebtFree {
+        self.twin.get_or_init(|| {
+            Box::new(debt_free::DebtFree::measure(
+                KindIsolationGate {
+                    ship: self.ship,
+                    write: self.write,
+                    twin: std::sync::OnceLock::new(),
+                },
+                cx,
+            ))
+        })
     }
 }
 
@@ -5088,46 +5171,45 @@ impl Gate for KindIsolationGate {
             return report;
         }
 
-        // THE UNPLANTED ARM. It is narrowed to the four enforceable rows in the ship twin, and
-        // that narrowing is the honest form of the claim: the two ship rows are RED on this tree
-        // ON PURPOSE (the criterion is about the ship SHA), so asserting them green here would be
-        // asserting the opposite of what the gate is for.
-        if self.ship {
-            // `:deps` leaves this arm on the ship twin for the same reason `:shape` and `:testkit`
-            // were never in it: it now carries the TRANSITIONAL ratchet, whose whole claim is about
-            // the ship SHA. Every legacy crate is still in the tree today, so every transitional
-            // row is red here BY DESIGN, and asserting the row green would be asserting that the
-            // drain has finished. The row's ship behaviour is proven by the two planted cases
-            // below instead — one for the drain unfinished, one for a scratch tree where it is.
-            report.push(prove_rows_green(
-                cx,
-                self,
-                "the real tree keeps its plugin kinds apart (the enforceable rows)",
-                &[ROW_NAME, ROW_VOCAB, ROW_REGISTRY, ROW_STEPS, ROW_WIRES],
-                Overlay::new(),
-            ));
+        // THE UNPLANTED ARM, ON THE REAL GATE AND THE REAL TREE — narrowed to the rows that are
+        // green on it. The rows in [`STANDING_DEBT_ROWS`] carry owned debt today (stale ledger rows,
+        // unlisted edges, closure breaches, the kind table's dead entries — drained in Phase 4,
+        // items 92/94) and stay RED on `cargo xtask gate kind-isolation`; asserting them green here
+        // was a case that could only fail, and it failed on every run. Their proofs moved onto the
+        // DEBT-FREE subject below instead, which is where a green -> red transition CAN be asked.
+        //
+        // On the ship twin the rows red BY DESIGN leave this arm too (`:deps`, `:shape`, `:testkit`
+        // carry the transitional/ship criteria whose whole claim is about the ship SHA).
+        let unplanted: &[&str] = if self.ship {
+            &[ROW_NAME, ROW_VOCAB, ROW_STEPS, ROW_WIRES]
         } else {
-            report.push(prove_green(
-                cx,
-                self,
-                "the real tree keeps its plugin kinds apart",
-                &[
-                    ROW_NAME,
-                    ROW_DEPS,
-                    ROW_TEST_DEPS,
-                    ROW_VOCAB,
-                    ROW_REGISTRY,
-                    ROW_STEPS,
-                    ROW_WIRES,
-                ],
-            ));
-        }
+            &[
+                ROW_NAME, ROW_INPUTS, ROW_VOCAB, ROW_STEPS, ROW_WIRES, ROW_TRUTHS, ROW_FACES,
+            ]
+        };
+        debug_assert!(unplanted.iter().all(|r| !STANDING_DEBT_ROWS.contains(r)));
+        report.push(prove_rows_green(
+            cx,
+            self,
+            if self.ship {
+                "the real tree keeps its plugin kinds apart (the enforceable rows)"
+            } else {
+                "the real tree keeps its plugin kinds apart (every row not carrying owned debt)"
+            },
+            unplanted,
+            Overlay::new(),
+        ));
+
+        // EVERY CASE BELOW RUNS AGAINST THE DEBT-FREE SUBJECT. See [`debt_free`]: the shipped gate,
+        // unchanged, with the findings the unplanted tree already reports taken out of view under
+        // both halves of each proof. On a row with no debt it is the shipped gate exactly.
+        let subject: &'a dyn Gate = self.debt_free(cx);
 
         // THE RULING ITSELF, PLANTED. `busbar-transport-a2a` is the crate the owner refused, and
         // this is the fixture that proves the refusal is mechanical.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "the refused `busbar-transport-a2a` — a kind fused with another kind's instance",
             &[ROW_NAME],
             manifest_plant("crates/busbar-transport-a2a", "busbar-transport-a2a", &[]),
@@ -5137,7 +5219,7 @@ impl Gate for KindIsolationGate {
         // THE OTHER TWO DIRECTIONS of the same rule.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a plane named after a transport instance (`busbar-plane-http`)",
             &[ROW_NAME],
             manifest_plant("crates/busbar-plane-http", "busbar-plane-http", &[]),
@@ -5145,7 +5227,7 @@ impl Gate for KindIsolationGate {
         ));
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a unit named after a plane instance (`busbar-unit-mcp`)",
             &[ROW_NAME],
             manifest_plant("crates/busbar-unit-mcp", "busbar-unit-mcp", &[]),
@@ -5168,7 +5250,7 @@ impl Gate for KindIsolationGate {
         // arm above holds that distinction on the real tree.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "no reviewed sentence can waive a crate whose whole name is another kind's instance",
             &[ROW_NAME],
             manifest_plant("crates/busbar-unit-llm", "busbar-unit-llm", &[]),
@@ -5179,23 +5261,34 @@ impl Gate for KindIsolationGate {
             ],
         ));
 
-        // THE SAME FUSION IN A KIND THAT ALREADY CARRIES A WAIVER. Shorten the reviewed
-        // `busbar-auth-admin-tokens` to `busbar-auth-admin` and the qualifier is gone: what is left
-        // is an auth plugin named for the control surface's instance. The waiver beside it does not
-        // move, and the crate is refused anyway.
+        // A WAIVER EXCUSES ITS OWN NAME, NOT THE SHORTER ONE. Shorten the one reviewed name,
+        // `busbar-unit-transport-key`, to `busbar-unit-transport` and the qualifier is gone: what is
+        // left is a unit named for another kind's marker and nothing else. The waiver beside it does
+        // not move — the waived crate stays in the tree, its sentence stays in `ACCEPTED_NAMES` —
+        // and the shortened crate is refused anyway.
+        //
+        // RE-TARGETED (item 89): this case used to shorten `busbar-auth-admin-tokens` to
+        // `busbar-auth-admin`, whose `admin` was a PLANE instance while `busbar-plane-admin`
+        // existed. That crate folded into `busbar-core-admin`, `admin` names no instance any more,
+        // `busbar-auth-admin-tokens` carries no waiver any more, and the plant came back GREEN — a
+        // proof about a tree that is gone. The claim is the same; the subject is the waiver that
+        // still stands.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "shortening a waived name to the fusion form is refused with the waiver still standing",
             &[ROW_NAME],
-            manifest_plant("crates/auth-admin-tokens", "busbar-auth-admin", &[]),
-            &["fused-instance-name", "busbar-auth-admin", "admin"],
+            manifest_plant("crates/busbar-unit-transport", "busbar-unit-transport", &[]),
+            &[
+                "busbar-unit-transport\tcrates/busbar-unit-transport",
+                "the marker word of kind `transport`",
+            ],
         ));
 
         // THE PLANE-TRANSPORT the ruling names by name: two KIND words, no instance at all.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "`busbar-plane-transport` — two kind words in one name",
             &[ROW_NAME],
             manifest_plant(
@@ -5211,7 +5304,7 @@ impl Gate for KindIsolationGate {
         // `busbar-unit-transport-key`).
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a five-segment name is refused whatever kind it claims",
             &[ROW_NAME],
             manifest_plant(
@@ -5227,7 +5320,7 @@ impl Gate for KindIsolationGate {
         ov.remove("crates/busbar-unit-transport-key/Cargo.toml");
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "an accepted-name waiver whose crate is gone is reported dead",
             &[ROW_NAME],
             ov,
@@ -5243,7 +5336,7 @@ impl Gate for KindIsolationGate {
         if !self.ship {
             report.push(prove_rows_red(
                 cx,
-                self,
+                subject,
                 "a plane growing a dependency on a transport is an edge nobody wrote down",
                 &[ROW_DEPS],
                 manifest_plant(
@@ -5271,7 +5364,7 @@ impl Gate for KindIsolationGate {
         if !self.ship {
             report.push(prove_rows_red(
                 cx,
-                self,
+                subject,
                 "a cleanliness surface depending on a transport crate is an edge nobody wrote down",
                 &[ROW_DEPS],
                 cleanliness_reaches_wire(),
@@ -5283,7 +5376,7 @@ impl Gate for KindIsolationGate {
             ));
             report.push(prove_rows_red(
                 cx,
-                self,
+                subject,
                 "a plane depending on a cleanliness surface is an edge nobody wrote down",
                 &[ROW_DEPS],
                 plane_reaches_cleanliness(),
@@ -5303,7 +5396,7 @@ impl Gate for KindIsolationGate {
         // plane-no-money vocabulary leaves `:vocab` green.
         report.push(prove_rows_green(
             cx,
-            self,
+            subject,
             "a cleanliness surface naming money symbols is not a vocabulary finding",
             &[ROW_VOCAB],
             cleanliness_names_money(),
@@ -5315,7 +5408,7 @@ impl Gate for KindIsolationGate {
         // which no crate resolves to, so it compared nothing; it reads the kind that succeeded it.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "two cleanliness surfaces claiming the same route",
             &[ROW_REGISTRY],
             cleanliness_shared_route(),
@@ -5329,7 +5422,7 @@ impl Gate for KindIsolationGate {
         // `unknown-kind`, one layer before this arm, which is why the arm had no working proof.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a registration whose crate name already says its kind is redundant",
             &[ROW_REGISTRY],
             redundant_registration(),
@@ -5357,7 +5450,7 @@ impl Gate for KindIsolationGate {
             );
             report.push(prove_rows_red(
                 cx,
-                self,
+                subject,
                 format!("a `[package]` header carrying {label} is still a crate of the census"),
                 &[ROW_REGISTRY],
                 ov,
@@ -5377,7 +5470,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a manifest with dependency tables and no readable package name is a FINDING",
             &[ROW_REGISTRY],
             ov,
@@ -5409,7 +5502,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a product crate path-depending on an OFF-TREE manifest is refused",
             &[ROW_REGISTRY],
             ov,
@@ -5425,7 +5518,7 @@ impl Gate for KindIsolationGate {
         // before this arm reads it, so a plant spelled that way names the kind and never the crate.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a registration naming a crate the tree does not have",
             &[ROW_REGISTRY],
             dead_registration(),
@@ -5435,15 +5528,19 @@ impl Gate for KindIsolationGate {
         // ONE PLANE REACHING INTO ANOTHER PLANE'S HALF.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a plane depending on another plane's codec is cross-instance",
             &[ROW_DEPS],
+            // RE-TARGETED (item 89): this planted `busbar-plane-llm -> busbar-llm-codec`, which is
+            // the llm plane reaching its OWN codec — the same instance, never cross-instance — and
+            // the plant came back GREEN once the row's standing debt stopped hiding it. The claim
+            // is one plane reaching ANOTHER plane's half, so the plane is `mcp`.
             manifest_plant(
-                "crates/busbar-plane-llm",
-                "busbar-plane-llm",
+                "crates/busbar-plane-mcp",
+                "busbar-plane-mcp",
                 &["busbar-contract", "busbar-llm-codec"],
             ),
-            &["cross-instance", "busbar-plane-llm"],
+            &["cross-instance", "busbar-plane-mcp"],
         ));
 
         // #40(a) IS A CLOSURE, AND THE PROOF OF THAT IS A CRATE THAT NAMES NOTHING WRONG.
@@ -5454,19 +5551,14 @@ impl Gate for KindIsolationGate {
         // each manifest wrote, so the one thing it cannot say is the thing #40(a) is about, and
         // `closure-breach busbar-transport-ws -> busbar-kernel-ledger` is that thing said.
         //
-        // THIS CASE REPORTS `Impossible` ON THIS TREE, AND THAT IS THE HONEST ANSWER RATHER THAN A
-        // HOLE. `:closure` is STANDING RED here — sixteen plugin crates breach the wall today, and
-        // making this row green would mean waiving the finding set it exists to produce. So the
-        // transition this case asks for cannot be shown WHILE THE TREE CARRIES THE DEBT, and
-        // `prove_red` says so in its own words rather than scoring a red it did not cause. The
-        // rule's own mechanics are proven instead by the unit tests in [`closure`] — the two-hop
-        // walk, the path, the optional hop, the preference for an unswitched route — which need no
-        // green baseline. When the closure debt reaches zero this case becomes a real GREEN -> RED
-        // and nothing about it has to change. DO NOT weaken the rule to make it pass; that restores
-        // the green and nothing else.
+        // THIS CASE USED TO REPORT `Impossible`: `:closure` is STANDING RED here (plugin crates
+        // breach the wall today) and the transition could not be shown while the tree carried the
+        // debt. It runs against the DEBT-FREE subject now (item 89), where the breaches the tree
+        // already has are out of view and only the planted two-hop breach can turn the row. The
+        // rule is unchanged; DO NOT weaken it to make the real tree green.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a crate two hops away is in the closure, and no manifest of the plugin names it",
             &[closure::ROW_CLOSURE],
             {
@@ -5485,7 +5577,7 @@ impl Gate for KindIsolationGate {
                 "closure-breach",
                 "busbar-transport-ws -> busbar-kernel-ledger",
                 "TRANSITIVE, 2 hops",
-                "busbar-transport-ws -> busbar-transport-http | busbar-transport-http ->                  busbar-kernel-ledger",
+                "busbar-transport-ws -> busbar-transport-http | busbar-transport-http -> busbar-kernel-ledger",
             ],
         ));
 
@@ -5505,13 +5597,17 @@ impl Gate for KindIsolationGate {
             // gate is red until it does.
             report.push(prove_rows_red(
                 cx,
-                self,
+                subject,
                 "an edge instance no crate has any more is reported as a dead allowance",
                 &[ROW_DEPS],
-                manifest_plant("crates/busbar-contract", "busbar-contract", &[]),
+                // RE-TARGETED (item 89): the subject was `busbar-contract -> busbar-grammar`, a row
+                // that is ALREADY dead on this tree (the grammar crate folded away) — so the plant
+                // produced the tree's own standing finding and proved nothing. `busbar-kernel ->
+                // busbar-contract` is a live row; stripping the kernel's edges kills it.
+                manifest_plant("crates/busbar-kernel", "busbar-kernel", &[]),
                 &[
                     "dead-dep-edge",
-                    "busbar-contract -> busbar-grammar",
+                    "busbar-kernel -> busbar-contract",
                     "Strike the row",
                 ],
             ));
@@ -5521,7 +5617,7 @@ impl Gate for KindIsolationGate {
             // did was the `Cargo.lock` cross-check, which is itself census-gated.
             report.push(prove_rows_red(
                 cx,
-                self,
+                subject,
                 "a dotted-key dependency table is reported, not skipped",
                 &[ROW_DEPS],
                 {
@@ -5546,7 +5642,7 @@ impl Gate for KindIsolationGate {
             // the build graph, on the strength of a comment. The needle is `shipped`.
             report.push(prove_rows_red(
                 cx,
-                self,
+                subject,
                 "a table header with a trailing comment is the table it names, in the right half",
                 &[ROW_DEPS],
                 {
@@ -5601,7 +5697,7 @@ impl Gate for KindIsolationGate {
             );
             report.push(prove_rows_red(
                 cx,
-                self,
+                subject,
                 "a `[[dep]]` row may RECORD a not-allowed edge, never INTRODUCE one",
                 &[ROW_DEPS],
                 ov,
@@ -5618,7 +5714,7 @@ impl Gate for KindIsolationGate {
             // turning off one crate × kind's ratchet, with nothing anywhere saying so.
             report.push(plant_registry(
                 cx,
-                self,
+                subject,
                 "a negative `[[cell]]` count is refused at load — it is not a ceiling, it is the \
                  absence of one",
                 &[ROW_DEPS],
@@ -5636,7 +5732,7 @@ impl Gate for KindIsolationGate {
             // legacy -> dialect and legacy -> transport edge there will ever be.
             report.push(plant_registry(
                 cx,
-                self,
+                subject,
                 "a `[[transitional]]` glob that covers more than one kind's prefix is refused",
                 &[ROW_DEPS],
                 transitional_anchor(cx)
@@ -5653,7 +5749,7 @@ impl Gate for KindIsolationGate {
             // drained the edge.
             report.push(plant_registry(
                 cx,
-                self,
+                subject,
                 "a dependency row left above the count it measures — stale slack is how drift hides",
                 &[ROW_DEPS],
                 dep_subst(cx, "busbar-kernel", "busbar-contract", "9"),
@@ -5669,7 +5765,7 @@ impl Gate for KindIsolationGate {
             // ledger IS the architecture and the ratchet loosens by editing one word.
             report.push(plant_registry(
                 cx,
-                self,
+                subject,
                 "a ledger row cannot grant itself an edge the architecture withholds",
                 &[ROW_DEPS],
                 verdict_subst(cx, "busbar-transport-tls", "busbar-unit-transport-key"),
@@ -5687,7 +5783,7 @@ impl Gate for KindIsolationGate {
             // an edge that passes by being unreadable.
             report.push(plant_registry(
                 cx,
-                self,
+                subject,
                 "an unruled edge whose question was struck out has stopped asking",
                 &[ROW_DEPS],
                 Ok((
@@ -5703,7 +5799,7 @@ impl Gate for KindIsolationGate {
             // is the one nobody checked.
             report.push(plant_registry(
                 cx,
-                self,
+                subject,
                 "two rows for one edge is two numbers for one measurement",
                 &[ROW_DEPS],
                 dep_anchor(cx, "busbar-kernel", "busbar-contract").map(|anchor| {
@@ -5722,7 +5818,7 @@ impl Gate for KindIsolationGate {
             // that refuses a `[[cell]]` with half a sentence.
             report.push(plant_registry(
                 cx,
-                self,
+                subject,
                 "a dependency row whose citation was emptied is refused at load",
                 &[ROW_DEPS],
                 dep_anchor(cx, "busbar-kernel", "busbar-contract").map(|anchor| {
@@ -5748,7 +5844,7 @@ impl Gate for KindIsolationGate {
         if !self.ship {
             report.push(prove_rows_red(
                 cx,
-                self,
+                subject,
                 "an edge the architecture grants is still an edge that must be written down",
                 &[ROW_DEPS],
                 manifest_plant(
@@ -5785,7 +5881,7 @@ impl Gate for KindIsolationGate {
             );
             report.push(prove_rows_red(
                 cx,
-                self,
+                subject,
                 "a build-dependency is a shipped edge",
                 &[ROW_DEPS],
                 ov,
@@ -5809,7 +5905,7 @@ impl Gate for KindIsolationGate {
             );
             report.push(prove_rows_red(
                 cx,
-                self,
+                subject,
                 "a per-target dependency is a dependency",
                 &[ROW_DEPS],
                 ov,
@@ -5829,7 +5925,7 @@ impl Gate for KindIsolationGate {
             );
             report.push(prove_rows_red(
                 cx,
-                self,
+                subject,
                 "a renamed package is the package it renames",
                 &[ROW_DEPS],
                 ov,
@@ -5863,7 +5959,7 @@ impl Gate for KindIsolationGate {
             );
             report.push(prove_rows_red(
                 cx,
-                self,
+                subject,
                 "a workspace-inherited rename reaches the package the workspace named",
                 &[ROW_DEPS],
                 ov,
@@ -5889,7 +5985,7 @@ impl Gate for KindIsolationGate {
             );
             report.push(prove_rows_red(
                 cx,
-                self,
+                subject,
                 "a dev-dependency crossing a kind is named on the test graph's own row",
                 &[ROW_TEST_DEPS],
                 ov,
@@ -5912,7 +6008,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "no kind names another kind's crate path",
             &[ROW_VOCAB],
             ov,
@@ -5945,9 +6041,10 @@ impl Gate for KindIsolationGate {
         // rule reads. A kind with a prefix matcher would need every crate of it removed at once.
         let mut ov = Overlay::new();
         ov.remove("crates/busbar-timing/Cargo.toml");
+        hold_census_floor(&mut ov, 1);
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a kind in the table that no crate is any more",
             &[ROW_REGISTRY],
             ov,
@@ -5967,9 +6064,10 @@ impl Gate for KindIsolationGate {
         // have.
         let mut ov = Overlay::new();
         ov.remove("crates/busbar-voice-codec/Cargo.toml");
+        hold_census_floor(&mut ov, 1);
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a plane alias that outlived the crate it translates",
             &[ROW_REGISTRY],
             ov,
@@ -5987,7 +6085,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "the second kind vocabulary renamed away leaves the cross-check reading nothing",
             &[ROW_REGISTRY],
             ov,
@@ -6008,7 +6106,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a kind key in the second vocabulary that maps onto no kind here",
             &[ROW_REGISTRY],
             ov,
@@ -6020,7 +6118,7 @@ impl Gate for KindIsolationGate {
         ov.remove("qa/construction.toml");
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "the second kind vocabulary absent is a refusal, never an agreement",
             &[ROW_REGISTRY],
             ov,
@@ -6031,7 +6129,7 @@ impl Gate for KindIsolationGate {
         // everything, and a scan of no files names no leak — both read exactly like a clean tree.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "the crate census collapsed below its floor",
             &[ROW_REGISTRY],
             move || all_but(cx, "toml", 4),
@@ -6039,7 +6137,7 @@ impl Gate for KindIsolationGate {
         ));
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "the source walk collapsed below its floor",
             &[ROW_VOCAB],
             move || all_but(cx, "rs", 4),
@@ -6056,7 +6154,7 @@ impl Gate for KindIsolationGate {
         // belongs to no crate the census knows, so the rule looked at nothing and found nothing.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a :vocab scan that reached zero kind-bearing files is refused, not read as clean",
             &[ROW_VOCAB],
             move || all_but(cx, "toml", 0),
@@ -6075,7 +6173,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a step list that read fewer than five plane-owned steps is refused",
             &[ROW_STEPS],
             ov,
@@ -6085,7 +6183,7 @@ impl Gate for KindIsolationGate {
         // A TREE WITH NO PLANE IN IT. Zero planes skip every step.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a tree with no plane crate at all is refused by the step rule",
             &[ROW_STEPS],
             move || kind_gone(cx, "busbar-plane-"),
@@ -6095,7 +6193,7 @@ impl Gate for KindIsolationGate {
         // A TREE WITH NO WIRE IN IT. Zero wires are registered twice.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a tree with no transport crate at all is refused by the registration rule",
             &[ROW_WIRES],
             move || kind_gone(cx, "busbar-transport-"),
@@ -6107,7 +6205,7 @@ impl Gate for KindIsolationGate {
         // reaches its source scan with nothing to scan.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "the registration rule's source walk below its floor is refused",
             &[ROW_WIRES],
             move || all_but(cx, "rs", 4),
@@ -6124,7 +6222,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "the crate census failing is refused on every row this gate owes, not on one",
             &[
                 ROW_NAME,
@@ -6153,7 +6251,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a wire implementing a plane face",
             &[ROW_FACES],
             ov,
@@ -6167,7 +6265,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a plane implementing a wire face",
             &[ROW_FACES],
             ov,
@@ -6185,7 +6283,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a wire implementing a plane face in the QUALIFIED spelling",
             &[ROW_FACES],
             ov,
@@ -6204,7 +6302,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a wire implementing a plane face under a `use … as` rename",
             &[ROW_FACES],
             ov,
@@ -6221,7 +6319,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a wire implementing a plane face across a rustfmt-wrapped header",
             &[ROW_FACES],
             ov,
@@ -6244,7 +6342,7 @@ impl Gate for KindIsolationGate {
             );
             report.push(prove_rows_green(
                 cx,
-                self,
+                subject,
                 "a trait named only in an `impl<T: Trait>` bound is not an implementation of it",
                 &[ROW_FACES],
                 ov,
@@ -6256,22 +6354,22 @@ impl Gate for KindIsolationGate {
         if !self.ship {
             let mut ov = Overlay::new();
             ov.set(
-                "crates/busbar-plane-admin/src/planted_second_plane.rs",
-                "pub struct Second;\nimpl Plane for Second {}\n",
+                "crates/busbar-a2a/src/planted_second_transport.rs",
+                "pub struct Second;\nimpl Transport for Second {}\n",
             );
             report.push(prove_rows_red(
                 cx,
-                self,
+                subject,
                 "a second implementation of a reviewed foreign face is a landing that grew it",
                 &[ROW_FACES],
                 ov,
-                &["face-ratchet", "busbar-plane-admin", "Plane"],
+                &["face-ratchet", "busbar-a2a", "Transport"],
             ));
 
             // AND A ROW WHOSE IMPLEMENTATION IS GONE IS A DEAD ALLOWANCE.
             report.push(plant_registry(
                 cx,
-                self,
+                subject,
                 "a reviewed face row that covers no implementation any more is struck",
                 &[ROW_FACES],
                 Ok((
@@ -6297,7 +6395,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a cross-crate #[path] module is a dual compile, not a dependency",
             &[ROW_INPUTS],
             ov,
@@ -6319,7 +6417,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a `[patch]` table redirects what cargo compiles and is refused unless a row names it",
             &[ROW_INPUTS],
             ov,
@@ -6338,7 +6436,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a `[source] replace-with` in .cargo/config.toml is the same redirect, in a file no \
              rule opened",
             &[ROW_INPUTS],
@@ -6357,7 +6455,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a `[[patch]]` row whose table is not in the tree is a standing hole, and is struck",
             &[ROW_INPUTS],
             ov,
@@ -6378,7 +6476,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a lib target pointing into another kind's source",
             &[ROW_INPUTS],
             ov,
@@ -6399,7 +6497,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a build script reading another kind's source",
             &[ROW_INPUTS],
             ov,
@@ -6425,7 +6523,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a build script that reads its siblings by directory walk, not by name",
             &[ROW_INPUTS],
             ov,
@@ -6446,7 +6544,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "an `include!` of another kind's source is a dual compile",
             &[ROW_INPUTS],
             ov,
@@ -6467,7 +6565,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "an include path spliced from CARGO_MANIFEST_DIR is resolved against the crate \
              directory",
             &[ROW_INPUTS],
@@ -6489,7 +6587,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "an include path spliced out of pieces is refused, not resolved",
             &[ROW_INPUTS],
             ov,
@@ -6501,7 +6599,7 @@ impl Gate for KindIsolationGate {
         // was asked for.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a lock file naming an edge no manifest has",
             &[ROW_INPUTS],
             lock_plus(cx, "busbar-transport-tcp", "busbar-plane-llm"),
@@ -6521,7 +6619,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a registry entry filed under the wrong kind",
             &[ROW_INPUTS],
             ov,
@@ -6545,7 +6643,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a feature name is vocabulary too",
             &[ROW_INPUTS],
             ov,
@@ -6568,7 +6666,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_green(
             cx,
-            self,
+            subject,
             "the composition root's own `root-*` plane features are the written exemption",
             &[ROW_INPUTS],
             ov,
@@ -6598,7 +6696,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a compiled source in a walker-skipped, gitignored directory is source no rule has read",
             &[ROW_INPUTS],
             ov,
@@ -6624,7 +6722,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a `mod` whose file is in no scan this gate runs is refused",
             &[ROW_INPUTS],
             ov,
@@ -6643,7 +6741,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a transport source naming a plane instance",
             &[ROW_VOCAB],
             ov,
@@ -6652,12 +6750,12 @@ impl Gate for KindIsolationGate {
 
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-plane-admin/src/planted_axum.rs",
+            "crates/busbar-plane-mcp/src/planted_axum.rs",
             "use axum::Router;\npub fn bind() { let _ = tokio::net::TcpListener::bind; }\n",
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a plane source naming a transport library and a socket module",
             &[ROW_VOCAB],
             ov,
@@ -6680,7 +6778,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a DIALECT naming a transport library and a transport crate — the plane's own ban",
             &[ROW_VOCAB],
             ov,
@@ -6694,7 +6792,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a codec naming a transport crate",
             &[ROW_VOCAB],
             ov,
@@ -6722,7 +6820,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_green(
             cx,
-            self,
+            subject,
             "comments, literals and cfg(test) scope name nothing TO `:vocab` (`:matrix` counts them)",
             &[ROW_VOCAB],
             ov,
@@ -6731,7 +6829,7 @@ impl Gate for KindIsolationGate {
         // A CRATE OF NO KIND AT ALL, answered in the owner's own words.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a crate whose kind is not in the table is refused with the owner's instruction",
             &[ROW_REGISTRY],
             manifest_plant("crates/busbar-frobnicator", "busbar-frobnicator", &[]),
@@ -6758,7 +6856,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a crate outside crates/ is still a crate of a kind",
             &[ROW_REGISTRY, ROW_DEPS],
             ov,
@@ -6774,7 +6872,7 @@ impl Gate for KindIsolationGate {
         // compiles this crate and a path dependency reaches it anyway.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a crate nested under another crate is not a fixture",
             &[ROW_REGISTRY],
             manifest_plant(
@@ -6798,7 +6896,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a crate on disk and off the members list",
             &[ROW_REGISTRY],
             ov,
@@ -6811,7 +6909,7 @@ impl Gate for KindIsolationGate {
         ov.remove("examples/smart-router/rust-hook/Cargo.toml");
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "an off-tree exemption that outlived its manifest is refused",
             &[ROW_REGISTRY],
             ov,
@@ -6821,9 +6919,10 @@ impl Gate for KindIsolationGate {
         // THE LEGACY RATCHET, proven by retiring one.
         let mut ov = Overlay::new();
         ov.remove("crates/busbar-a2a/Cargo.toml");
+        hold_census_floor(&mut ov, 1);
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a legacy exemption that outlived its crate is refused",
             &[ROW_REGISTRY],
             ov,
@@ -6831,7 +6930,7 @@ impl Gate for KindIsolationGate {
         ));
 
         // THE THREE TRUTHS, each planted in the file that carries it.
-        truths::selftest(cx, self, &mut report);
+        truths::selftest(cx, subject, &mut report);
 
         // ── THE LEGACY DRAIN, NAMED ──────────────────────────────────────────────────────────────
 
@@ -6845,7 +6944,7 @@ impl Gate for KindIsolationGate {
         // package is not in the census, so the edge was never scored and the case could not bite.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a legacy crate reaching a unit with no transitional row naming the edge",
             &[ROW_DEPS],
             manifest_plant("crates/busbar-llm", "busbar-llm", &[PLANTED_UNIT]),
@@ -6861,7 +6960,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a transitional row naming a non-legacy source crate is refused at load",
             &[ROW_DEPS],
             ov,
@@ -6934,7 +7033,7 @@ impl Gate for KindIsolationGate {
         ] {
             report.push(prove_rows_red(
                 cx,
-                self,
+                subject,
                 name,
                 &[ROW_REGISTRY],
                 registry_plant(rows),
@@ -6949,7 +7048,7 @@ impl Gate for KindIsolationGate {
         ov.remove(REGISTRY_FILE);
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "the kind registry file being absent is refused, not read as an empty table",
             &[ROW_DEPS],
             ov,
@@ -6964,7 +7063,7 @@ impl Gate for KindIsolationGate {
         // silence, which is the difference this case exists to hold.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a core crate named after a plane instance (`busbar-core-mcp`)",
             &[ROW_NAME],
             manifest_plant("crates/busbar-core-mcp", "busbar-core-mcp", &[]),
@@ -6986,7 +7085,7 @@ impl Gate for KindIsolationGate {
         // this case is about was never formed.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a core crate reaching a unit is a class the architecture grants nothing to",
             &[ROW_DEPS],
             core_announced_reaching_unit(cx),
@@ -6999,10 +7098,20 @@ impl Gate for KindIsolationGate {
         // announcement had not been made with it.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "the `core` kind row with neither a crate nor an announcement is a dead kind",
             &[ROW_REGISTRY],
-            registry_plant(""),
+            // RE-TARGETED (item 89): `core` HAS crates now (`busbar-core-admin`,
+            // `busbar-core-connsec`), so an empty registry alone left the kind alive and the case
+            // GREEN. "Neither a crate nor an announcement" is the plant: every core manifest gone
+            // and no `[[announced]]` row.
+            move || {
+                let mut ov = kinds_gone(cx, &["core"]);
+                let gone = ov.paths().count();
+                hold_census_floor(&mut ov, gone);
+                ov.set(REGISTRY_FILE, String::new());
+                ov
+            },
             &["dead-kind", "core"],
         ));
 
@@ -7023,7 +7132,7 @@ impl Gate for KindIsolationGate {
         ov.remove("crates/busbar-plane-mcp/src/plane.rs");
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a data plane that implements none of the strict step list",
             &[ROW_STEPS],
             ov,
@@ -7039,7 +7148,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a plane step whose body is a short circuit is not a step that runs",
             &[ROW_STEPS],
             ov,
@@ -7051,7 +7160,7 @@ impl Gate for KindIsolationGate {
         ov.remove(STEP_TABLE_FILE);
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "the strict step list being unreadable is refused, not read as no steps",
             &[ROW_STEPS],
             ov,
@@ -7062,7 +7171,7 @@ impl Gate for KindIsolationGate {
         // claims, as data; the moment it links the wire it has chosen one.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a plane crate depending on a wire crate",
             &[ROW_WIRES],
             manifest_plant(
@@ -7084,7 +7193,7 @@ impl Gate for KindIsolationGate {
         // a kind added tomorrow is covered tomorrow.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a STORE plugin depending on a wire crate — every kind but root and transport",
             &[ROW_WIRES],
             manifest_plant(
@@ -7110,7 +7219,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a plugin whose TEST binary links a wire has chosen one just the same",
             &[ROW_WIRES],
             ov,
@@ -7126,7 +7235,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a wire composed in a second place",
             &[ROW_WIRES],
             ov,
@@ -7146,7 +7255,7 @@ impl Gate for KindIsolationGate {
 
         // THE MATRIX ROW'S OWN CASES, owed by BOTH registrations: the per-push gate holds the
         // ceilings and the ship twin holds zero, and neither is a claim the other proves.
-        matrix::selftest(cx, self, self.ship, &mut report);
+        matrix::selftest(cx, subject, self.ship, &mut report);
 
         if !self.ship {
             // A LISTED DRAIN EDGE IS GREEN. The owner's ruling, as the per-push gate reads it:
@@ -7186,7 +7295,7 @@ impl Gate for KindIsolationGate {
             );
             report.push(prove_rows_green(
                 cx,
-                self,
+                subject,
                 "a legacy crate reaching a unit through a named transitional row and its own count",
                 &[ROW_DEPS],
                 ov,
@@ -7203,7 +7312,7 @@ impl Gate for KindIsolationGate {
             );
             report.push(prove_rows_green(
                 cx,
-                self,
+                subject,
                 "an announced core crate landing reds nothing",
                 &[ROW_NAME, ROW_DEPS, ROW_REGISTRY],
                 ov,
@@ -7219,40 +7328,42 @@ impl Gate for KindIsolationGate {
         // fix this week, so it is owed by the DONE oracle on the same terms as `:shape` — and each
         // case below plants a NAMED, NEW deviation, because "the row went red" would be satisfied
         // by the debt the criterion is about.
-        let mut ov = manifest_plant(
-            "crates/busbar-control-planted",
-            "busbar-control-planted",
-            &["busbar-contract"],
-        );
+        //
+        // RE-TARGETED (item 89): the plants were a `busbar-control-planted` crate — but `control`
+        // is not a kind (DECISIONS #5) and that name resolves to none, so the rule, which reads the
+        // `cleanliness` surfaces, never saw it: both cases came back GREEN once the row's standing
+        // debt stopped hiding them. The surface is a real cleanliness crate, `busbar-oauth2`.
+        let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-control-planted/src/lib.rs",
+            "crates/busbar-oauth2/src/planted_route.rs",
             "pub struct P;\nimpl P {\n    fn route(&self) -> u8 { 0 }\n}\n",
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a control surface implementing a data-path step",
             &[ROW_CONTROL],
             ov,
-            &["data-path-step", "busbar-control-planted", "route"],
+            &[
+                "data-path-step",
+                "planted_route.rs",
+                "busbar-oauth2",
+                "route",
+            ],
         ));
 
-        let mut ov = manifest_plant(
-            "crates/busbar-control-planted",
-            "busbar-control-planted",
-            &["busbar-contract"],
-        );
+        let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-control-planted/src/lib.rs",
+            "crates/busbar-oauth2/src/planted_pool.rs",
             "pub fn pick(pool: u8) -> u8 { let failover = pool; failover }\n",
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a control surface naming the vocabulary of reaching an upstream",
             &[ROW_CONTROL],
             ov,
-            &["upstream", "busbar-control-planted", "pool"],
+            &["upstream", "busbar-oauth2", "pool"],
         ));
 
         // A TRANSITIONAL ROW WHOSE CRATE IS STILL HERE AT SHIP TIME IS RED. The exemption's expiry
@@ -7265,6 +7376,11 @@ impl Gate for KindIsolationGate {
         // `busbar-core`, a crate absorbed into `busbar-kernel` that is the `from` of no row. So the
         // baseline is a table with no rows (green: nothing to expire), and the plant is ONE row for
         // a legacy crate that really is on disk. The row goes red and names that crate.
+        //
+        // THE SHIPPED GATE, NOT THE DEBT-FREE SUBJECT: this case already brings its own green base
+        // (the empty table), and the subject's debt — measured over the REAL table, whose
+        // `busbar-voice` row is exactly this plant's row — would take the planted finding out of
+        // view as if it were the tree's. The pair below is the same transition read the other way.
         report.push(prove_rows_red(
             &cx.with_overlay(registry_plant("")),
             self,
@@ -7300,7 +7416,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "an announcement whose crate has landed is collected at ship time",
             &[ROW_REGISTRY],
             ov,
@@ -7316,7 +7432,7 @@ impl Gate for KindIsolationGate {
         // no edge at all today.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "at the architecture's own graph, a transport reaching a plane is a NEW refusal",
             &[ROW_DEPS],
             manifest_plant(
@@ -7345,7 +7461,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "at the architecture's own graph, a transport TEST-reaching a plane is refused too",
             &[ROW_TEST_DEPS],
             ov,
@@ -7358,7 +7474,7 @@ impl Gate for KindIsolationGate {
 
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a crate of a kind with no lib.rs at all",
             &[ROW_SHAPE],
             manifest_plant(
@@ -7376,7 +7492,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a second entry implementation in one crate of a kind",
             &[ROW_SHAPE],
             ov,
@@ -7398,7 +7514,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "an entry implementation written with generic parameters is counted",
             &[ROW_SHAPE],
             ov,
@@ -7415,7 +7531,7 @@ impl Gate for KindIsolationGate {
         ov.set("crates/busbar-unit-planted/src/lib.rs", "pub mod meta;\n");
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a crate of a kind is judged against its kind's skeleton, not the exemplar's file list",
             &[ROW_SHAPE],
             ov,
@@ -7428,7 +7544,7 @@ impl Gate for KindIsolationGate {
 
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a crate of a kind that does not run its kind's shared battery",
             &[ROW_TESTKIT],
             manifest_plant("crates/busbar-store-planted", "busbar-store-planted", &[]),
@@ -7456,7 +7572,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a conformance battery whose every entry is ignored is not a battery",
             &[ROW_TESTKIT],
             ov,
@@ -7481,7 +7597,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a crate of a kind that implements its kind's trait nowhere has no subject to conform",
             &[ROW_TESTKIT],
             ov,
@@ -7503,7 +7619,7 @@ impl Gate for KindIsolationGate {
         ov.remove("crates/busbar-plane-a2a/Cargo.toml");
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a kind whose canonical exemplar is not in the tree derives its skeleton from nothing",
             &[ROW_SHAPE],
             ov,
@@ -7522,7 +7638,7 @@ impl Gate for KindIsolationGate {
         );
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a kind whose exemplar states no single entry states nothing every member owes",
             &[ROW_SHAPE],
             ov,
@@ -7533,12 +7649,27 @@ impl Gate for KindIsolationGate {
         // already run — `tests/conformance.rs` in `busbar-plane-a2a` and `busbar-plane-mcp`. Take
         // both away and the kind has no battery to be judged against, so `not-run` (which is
         // guarded on there being one) says nothing about the other planes at all.
-        let mut ov = Overlay::new();
-        ov.remove("crates/busbar-plane-a2a/tests/conformance.rs");
-        ov.remove("crates/busbar-plane-mcp/tests/conformance.rs");
+        //
+        // EVERY plane's battery file, read off the tree (item 89): the case named two, and two more
+        // planes (`decision`, `streaming`) have run it since — so removing two left a battery the
+        // kind still had, and the row said `not-run` instead of `no-battery`.
+        let ov = move || {
+            let mut ov = Overlay::new();
+            if let Ok(rels) = cx.list(&WalkSpec::new(["crates"]).ext("rs")) {
+                for rel in rels {
+                    let rel = rel.to_string_lossy().replace('\\', "/");
+                    if rel.starts_with("crates/busbar-plane-")
+                        && rel.ends_with("/tests/conformance.rs")
+                    {
+                        ov.remove(rel);
+                    }
+                }
+            }
+            ov
+        };
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "a kind no member of which runs any shared battery has no battery, and is told so",
             &[ROW_TESTKIT],
             ov,
@@ -7560,7 +7691,7 @@ impl Gate for KindIsolationGate {
         // compared every crate of a kind against its skeleton and found nothing to compare.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "no crate of any exemplar kind reached the shape rule is refused, not read as clean",
             &[ROW_SHAPE],
             move || kinds_gone(cx, &["plane", "transport", "unit"]),
@@ -7571,7 +7702,7 @@ impl Gate for KindIsolationGate {
         // that owe a shared conformance battery. Zero crates skip every battery.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "no crate of any battery kind reached the battery rule is refused, not read as clean",
             &[ROW_TESTKIT],
             move || kinds_gone(cx, BATTERY_KINDS),
@@ -7593,7 +7724,7 @@ impl Gate for KindIsolationGate {
         let base = cx.with_overlay(clean);
         report.push(prove_rows_red(
             &base,
-            self,
+            subject,
             "no control surface reached the control-path rule is refused, not read as clean",
             &[ROW_CONTROL],
             kinds_gone(&base, &[CLEANLINESS]),
@@ -7606,7 +7737,7 @@ impl Gate for KindIsolationGate {
         // ship rows owe the refusal, and they owe it together, because they read ONE index.
         report.push(prove_rows_red(
             cx,
-            self,
+            subject,
             "the source index below its floor is refused on both ship rows, not read as no findings",
             &[ROW_SHAPE, ROW_TESTKIT],
             move || all_but(cx, "rs", 4),
@@ -7616,6 +7747,18 @@ impl Gate for KindIsolationGate {
         report
     }
 }
+
+/// THE ROWS THAT CARRY OWNED DEBT ON TODAY'S TREE, and so cannot sit in the self-test's unplanted
+/// green arm (item 89). This is not an exemption: every one of them is RED on `gate kind-isolation`,
+/// and every one of them is proven RED-able by planted cases run against the debt-free subject.
+/// When Phase 4 drains a row it comes off this list and back into the green arm.
+const STANDING_DEBT_ROWS: &[&str] = &[
+    ROW_DEPS,
+    ROW_TEST_DEPS,
+    ROW_CLOSURE,
+    ROW_REGISTRY,
+    ROW_MATRIX,
+];
 
 /// A planted [`REGISTRY_FILE`], holding `rows` and nothing else. The real file's comments carry the
 /// reasoning; a plant carries only the rows under test, so what a case proves is what it wrote.
@@ -7802,6 +7945,22 @@ fn kinds_gone(cx: &Ctx, kinds: &[&str]) -> Overlay {
         }
     }
     ov
+}
+
+/// THE CENSUS HELD AT ITS FLOOR under a plant that removes `removed` manifests.
+///
+/// The tree sits EXACTLY at [`MIN_MANIFESTS`] (Phase 0 F0), so a plant that takes one crate out
+/// drops the census below its floor, and the floor refusal — its own proven case — then answers
+/// for the whole `:registry` row: `the crate census collapsed below its floor`, and never the rule
+/// the case is about. The floor is not lowered. Each removed manifest is replaced by one inert
+/// kernel-kind filler crate, so the census stays a census and the row judges what was planted.
+fn hold_census_floor(ov: &mut Overlay, removed: usize) {
+    for i in 0..removed {
+        ov.set(
+            format!("crates/busbar-kernel-censusfill{i}/Cargo.toml"),
+            format!("[package]\nname = \"busbar-kernel-censusfill{i}\"\nversion = \"0.0.0\"\n"),
+        );
+    }
 }
 
 /// THE TREE WITH EVERY MANIFEST UNDER `crates/<marker>*` REMOVED — a whole KIND deleted.
