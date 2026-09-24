@@ -325,19 +325,25 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // empty codec set and refuse a valid provider. Production is unaffected — there `registry()` is
     // the direct substrate re-export and the composition root installed the protocols in `main`.
     //
-    // UNIONED with every registered plane's OWN declared dialects (`PlaneCfg::known_dialects`,
+    // UNIONED with every CONFIGURED plane's OWN declared dialects (`PlaneCfg::known_dialects`,
     // P2-243/P2-decvalidate) — a plane like the decision plane speaks a dialect with no translating
     // IR (jev), so it is never a `busbar-llm-codec` wire codec and would otherwise be an "unknown
     // protocol" here on the very config `resolve`'s own `known_dialects` cross-check (below) just
     // accepted. Read from the STATIC plane registry via each decl's `default_section` hook — a
-    // plane's own dialect restriction is a declared CONSTANT, not something that varies with what a
-    // deployment configured, so a throwaway default instance answers it with no `DeployCfg` in
-    // scope. `default_section` is `None` only for a plane owning no registry section at all (the
-    // residual `proto` plane); such a plane declares no dialect restriction either.
+    // plane's own dialect restriction is a declared CONSTANT, so a throwaway default instance
+    // answers it with no `DeployCfg` in scope. `default_section` is `None` only for a plane owning
+    // no registry section at all (the residual `proto` plane); such a plane declares no dialect
+    // restriction either. ONLY a configured plane contributes (Law 7, the one generic check: the
+    // fallback plane, or its declared section is in `plane_sections`): a linked plane with no
+    // config section serves nothing, so its dialect is no legal `protocol:` — and a 1.5.5 config's
+    // unknown-protocol refusal lists 1.5.5's protocols, not `jev` (oracle cell BOOT-020).
     let mut known_protocols: Vec<&str> = crate::proto::registry::registry()
         .codec_protocols()
         .to_vec();
-    for decl in crate::plane::registry::plane_decls() {
+    for decl in crate::plane::registry::plane_decls()
+        .iter()
+        .filter(|d| d.fallback || cfg.plane_sections.contains(d.config_section))
+    {
         if let Some(default_section) = decl.default_section {
             if let Some(dialects) = default_section().known_dialects() {
                 known_protocols.extend(dialects.iter().copied());

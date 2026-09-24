@@ -1482,3 +1482,53 @@ fn validate_refuses_a_decisions_model_whose_provider_speaks_a_non_jev_dialect() 
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ── LAW 7: AN UNCONFIGURED PLANE CONTRIBUTES NO PROVIDER DIALECT (oracle cell BOOT-020) ───────────
+//
+// The provider protocol check is unioned with the dialects of the planes a config CONFIGURES, not
+// of every plane linked into the build. A 1.5.5 config writes no `decisions:` section, so its
+// unknown-protocol refusal lists exactly the six wire protocols 1.5.5 lists, and `protocol: jev`
+// is as unknown to it as it was to 1.5.5.
+
+/// The published 1.5.5 refusal for `protocol: bogus`, byte for byte (golden cell
+/// `boot.refusal|BOOT-020|validate`).
+const PROTOCOLS_1_5_5: &str =
+    "must be one of: anthropic, openai, gemini, bedrock, responses, cohere\n";
+
+#[cfg(feature = "plane-decision")]
+#[test]
+fn validate_unknown_protocol_lists_only_the_configured_planes_dialects() {
+    let dir = fixture_dir("bogus-protocol-no-decisions");
+    write_decisions_configs(&dir, "bogus", "");
+    let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 1, "an unknown protocol fails validate: {stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "provider 'mock' has unknown protocol 'bogus': {PROTOCOLS_1_5_5}"
+        )),
+        "with no decisions: section the list is 1.5.5's, with no plane dialect appended: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `protocol: jev` with no `decisions:` section refuses as 1.5.5 refuses it: no configured plane
+/// speaks it. (The CONTROL `validate_ok_on_a_good_decisions_config` above is the same provider WITH
+/// the section, which validates clean.)
+#[cfg(feature = "plane-decision")]
+#[test]
+fn validate_refuses_the_jev_protocol_when_no_decisions_section_is_configured() {
+    let dir = fixture_dir("jev-no-decisions");
+    write_decisions_configs(&dir, "jev", "");
+    let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(
+        code, 1,
+        "jev with no decision plane configured fails validate: {stderr}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "provider 'mock' has unknown protocol 'jev': {PROTOCOLS_1_5_5}"
+        )),
+        "the refusal is 1.5.5's unknown-protocol line: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
