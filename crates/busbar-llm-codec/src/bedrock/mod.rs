@@ -1807,7 +1807,8 @@ pub fn complete_converse_body(
 /// not a Converse response (an InvokeModel embeddings / image / rerank body) is emitted unchanged.
 ///
 /// Because the forward path takes billing usage from the installed translator, this also reports
-/// the body's usage, via the same per-operation tap the relay used (`handler::same_protocol_usage`).
+/// the body's usage, via the same per-operation tap the relay used (`handler::same_protocol_usage`),
+/// and a rerank body's counted search units (`handler::same_protocol_open_billing`).
 ///
 /// Bounded: past the translation cap the body is relayed verbatim from that point on (no member can
 /// be added to a body busbar will not hold whole), keeping only the tail so usage can still be
@@ -1820,6 +1821,8 @@ pub struct BedrockConverseBodyTranslator {
     /// the most recent `cap` bytes.
     passthrough: bool,
     usage: Option<busbar_substrate_values::billing::TokenUsage>,
+    /// The non-token billing the body reported (a rerank's search units, item 134).
+    open_billing: Option<busbar_substrate_values::billing::Billing>,
 }
 
 impl Default for BedrockConverseBodyTranslator {
@@ -1840,6 +1843,7 @@ impl BedrockConverseBodyTranslator {
             cap,
             passthrough: false,
             usage: None,
+            open_billing: None,
         }
     }
 
@@ -1896,6 +1900,7 @@ impl busbar_substrate_values::proto::StreamTranslator for BedrockConverseBodyTra
         }
         let parsed = busbar_substrate_values::json::parse::<serde_json::Value>(&body).ok();
         self.usage = handler::same_protocol_usage(&body, parsed.as_ref());
+        self.open_billing = handler::same_protocol_open_billing(&body, parsed.as_ref());
         match parsed {
             Some(v) if handler::is_converse_response(&v) => {
                 complete_converse_body(&body, &v, self.elapsed_ms()).unwrap_or(body)
@@ -1906,6 +1911,10 @@ impl busbar_substrate_values::proto::StreamTranslator for BedrockConverseBodyTra
 
     fn usage(&self) -> Option<busbar_substrate_values::billing::TokenUsage> {
         self.usage.clone()
+    }
+
+    fn open_billing(&self) -> Option<busbar_substrate_values::billing::Billing> {
+        self.open_billing.clone()
     }
 
     fn terminal_error(&self) -> Option<&str> {

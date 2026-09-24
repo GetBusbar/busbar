@@ -101,3 +101,168 @@ fn a_reranks_search_units_reach_the_price() {
         "no card: billing off reads 0"
     );
 }
+
+/// A same-protocol rerank's search units, as they reached each of the two books: the GOVERNANCE
+/// ledger (the key's bucket, flushed to its store and read back — the invoice and `/usage` read it)
+/// and the TAP REPORT (the counts the late reading hands the durable, second book).
+struct TwoBooks {
+    governance: Option<u64>,
+    tap: Option<u64>,
+}
+
+/// Drive ONE same-protocol, non-stream rerank body through the real `FirstByteBody` to its end, on a
+/// `protocol` lane with that protocol's own rerank cell, exactly as the relay serves it: Cohere relays
+/// verbatim, Bedrock through the body translator its writer installs for every same-protocol
+/// non-stream response. Return what each book holds of `search_units`.
+async fn same_protocol_rerank_books(protocol: &'static str, body: &str) -> TwoBooks {
+    use bytes::Bytes;
+    use http_body_util::BodyExt as _;
+    crate::testkit::install_test_seams();
+    busbar_kernel::metrics::init();
+    let store = Arc::new(busbar_store_memory::MemoryStore::new());
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, None, None)
+        .expect("gov");
+    let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_flat(0);
+    let (key, _secret) = gov
+        .create_key(
+            NewKeySpec {
+                name: "k".to_string(),
+                ..Default::default()
+            },
+            1_700_000_000,
+        )
+        .expect("create key");
+    let charged_at: u64 = 1_700_000_000;
+    let sink = Some(UsageSink {
+        pin: busbar_kernel::plane_host::MeterPin::new(
+            busbar_kernel::plane_host::GovHandle(gov.clone()),
+            busbar_kernel::plane_host::CostHandle(cost.clone()),
+        ),
+        key: Arc::new(key.clone()),
+        pool: Arc::from(""),
+        charged_at,
+        admit: None,
+    });
+    let app = crate::test_support::TestApp::new()
+        .lane(crate::test_support::LaneSpec::new(
+            "rerank-v3.5",
+            protocol,
+            "http://127.0.0.1:1",
+        ))
+        .pool("pr", &[(0, 1)])
+        .build();
+    let (host, rt) = crate::engine::test_host_rt(&app);
+    let op = busbar_substrate_values::handlers::op_for(
+        protocol,
+        busbar_api::operation::Operation::RERANK,
+        busbar_substrate_values::transport::Transport::Http,
+    )
+    .expect("the protocol serves rerank");
+    // The same-protocol non-stream translator the protocol's writer installs (Bedrock's body
+    // translator; none for Cohere, whose same-protocol body relays verbatim).
+    let translate: Option<Box<dyn busbar_kernel::proto::StreamTranslator>> =
+        if protocol == crate::proto_codec::PROTO_BEDROCK {
+            Some(Box::new(
+                busbar_llm_codec::bedrock::BedrockConverseBodyTranslator::new(),
+            ))
+        } else {
+            None
+        };
+    let tap = TapCell::new();
+    let inner = futures::stream::iter(vec![Ok::<Bytes, hyper::Error>(Bytes::from(
+        body.to_string(),
+    ))]);
+    let fbb = FirstByteBody::new(
+        inner,
+        false, // same-protocol NON-STREAM application/json
+        protocol,
+        op,
+        (),
+        tokio::time::Instant::now() + std::time::Duration::from_secs(300),
+        host,
+        rt,
+        0,
+        Arc::new(busbar_kernel::store::BreakerCfg::default()),
+        "pr",
+        translate,
+        None,
+        sink,
+        false,
+        tap.clone(),
+    );
+    let served = fbb.into_body().collect().await.expect("drain").to_bytes();
+    assert_eq!(
+        served.as_ref(),
+        body.as_bytes(),
+        "the rerank body relays verbatim"
+    );
+    gov.flush_budgets();
+    let ledger = gov
+        .store()
+        .get_usage(
+            &key.id,
+            busbar_kernel::governance::budget_window(
+                busbar_kernel::governance::WINDOW_TOTAL,
+                charged_at,
+            ),
+        )
+        .expect("the governance ledger reads");
+    let governance = ledger
+        .models
+        .iter()
+        .find(|m| m.model == "rerank-v3.5")
+        .and_then(|m| {
+            m.usage_units
+                .get(busbar_llm_codec::ir::rerank::SEARCH_UNITS_CLASS)
+        })
+        .copied()
+        .filter(|n| *n > 0);
+    let tap = tap
+        .get()
+        .expect("the tap reported the end the body reached")
+        .open_units
+        .get(busbar_llm_codec::ir::rerank::SEARCH_UNITS_CLASS)
+        .copied();
+    TwoBooks { governance, tap }
+}
+
+/// **A SAME-PROTOCOL RERANK PUTS IDENTICAL SEARCH UNITS ON BOTH BOOKS** (Q29, completing item 134).
+///
+/// Cohere → Cohere and Bedrock → Bedrock reranks billed their search units on NEITHER book: the
+/// Cohere rerank cell did not tap usage (the verbatim relay kept no copy, so nothing read the body),
+/// Bedrock's body translator answered no usage for a `results` body, and the same-protocol tap read
+/// token usage only. Both now ledger the counted class the upstream billed on the governance ledger
+/// AND report it on the tap, from the one projection.
+#[tokio::test]
+async fn a_same_protocol_rerank_puts_identical_search_units_on_both_books() {
+    for protocol in [
+        crate::proto_codec::PROTO_COHERE,
+        crate::proto_codec::PROTO_BEDROCK,
+    ] {
+        let books = same_protocol_rerank_books(protocol, &cohere_rerank_body(50)).await;
+        assert_eq!(
+            books.governance,
+            Some(50),
+            "{protocol} → {protocol}: the governance ledger holds the rerank's search units"
+        );
+        assert_eq!(
+            books.tap,
+            Some(50),
+            "{protocol} → {protocol}: the tap reports the rerank's search units to the durable book"
+        );
+    }
+    // CONTROL: a rerank body that bills no search units puts none on either book.
+    let none = r#"{"id":"rr-0","results":[{"index":0,"relevance_score":0.9}]}"#;
+    for protocol in [
+        crate::proto_codec::PROTO_COHERE,
+        crate::proto_codec::PROTO_BEDROCK,
+    ] {
+        let books = same_protocol_rerank_books(protocol, none).await;
+        assert_eq!(
+            (books.governance, books.tap),
+            (None, None),
+            "{protocol}: no units, none booked"
+        );
+    }
+}

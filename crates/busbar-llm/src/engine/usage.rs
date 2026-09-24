@@ -42,17 +42,7 @@ pub(crate) fn record_resp_usage(
             //
             // The class map is [`open_units_of`]'s — the SAME map the tap reports back for the
             // durable book (#71), so the two books are handed one set of counts from one function.
-            if let Some(busbar_substrate_values::billing::Billing::Counted { .. }) = &usage {
-                let usage_units = open_units_of(&usage);
-                host.meter_ledger(
-                    &sink.pin,
-                    &sink.key,
-                    &sink.pool,
-                    &lane.model,
-                    &busbar_substrate_values::billing::Usage { usage_units },
-                    sink.charged_at,
-                );
-            }
+            ledger_open_units(host, sink, lane, open_units_of(&usage));
             host.meter_series(
                 sink.pin.gov(),
                 &sink.key.id,
@@ -94,6 +84,30 @@ pub(crate) fn open_units_of(
         | Some(Billing::Flat)
         | None => std::collections::BTreeMap::new(),
     }
+}
+
+/// Ledger a delivery's OPEN classes ([`open_units_of`]'s map) VERBATIM against the key's budget
+/// chain, in the fee's window (#71) — where the card prices them; a present card silent about one
+/// refuses (#42); an absent card reads 0. The ONE ledger write for them: the buffered accrual
+/// ([`record_resp_usage`]) and the same-protocol tap both call it with the map they report back to
+/// the durable book. An empty map ledgers nothing.
+pub(crate) fn ledger_open_units(
+    host: &Arc<dyn EngineHost>,
+    sink: &UsageSink,
+    lane: &crate::engine::Lane,
+    usage_units: std::collections::BTreeMap<String, u64>,
+) {
+    if usage_units.is_empty() {
+        return;
+    }
+    host.meter_ledger(
+        &sink.pin,
+        &sink.key,
+        &sink.pool,
+        &lane.model,
+        &busbar_substrate_values::billing::Usage { usage_units },
+        sink.charged_at,
+    );
 }
 
 /// Project the IR's normalized usage into the neutral name-keyed [`busbar_substrate_values::billing::Usage`]

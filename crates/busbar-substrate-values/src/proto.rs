@@ -421,6 +421,11 @@ pub trait StreamTranslator: Send {
     /// or `None` if no usage-bearing terminal event was seen. The streaming billing arm reads this
     /// for the per-request token fee.
     fn usage(&self) -> Option<crate::billing::TokenUsage>;
+    /// The NON-TOKEN billing the body reported beside [`Self::usage`] — a rerank's counted search
+    /// units (item 134) — or `None`. Default `None`: a translator that reads tokens only reports none.
+    fn open_billing(&self) -> Option<crate::billing::Billing> {
+        None
+    }
     /// The terminal stream ERROR message, or `None` for a clean stream — the breaker/billing gate.
     fn terminal_error(&self) -> Option<&str>;
     /// True once this translator abandoned its stream (reassembly overflow / malformed prelude).

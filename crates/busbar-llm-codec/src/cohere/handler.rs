@@ -268,6 +268,12 @@ impl OperationHandler for CohereRerank {
     ) -> busbar_substrate_values::breaker::RawUpstreamError {
         super::super::proto_codec::protocol_error("cohere", status, body)
     }
+    // Search-unit metered: buffer the same-protocol non-stream 2xx body so the tap reads the
+    // `meta.billed_units.search_units` it billed onto both books, as the cross-protocol path does
+    // (item 134). Without it the verbatim relay kept no copy and the units reached neither book.
+    fn taps_usage(&self) -> bool {
+        true
+    }
     fn read_request(
         &self,
         body: &[u8],

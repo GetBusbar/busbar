@@ -42,7 +42,8 @@ static CELLS: &[busbar_substrate_values::handlers::Cell] = &[
 ///   - `output` / `stopReason` (a Converse body)     -> the chat tap (the Converse reader's usage)
 ///   - `images`                                        -> the image cell's tap
 ///   - `embedding` / `inputTextTokenCount`             -> the embeddings cell's tap
-///   - `results` (a Rerank body)                       -> nothing (rerank does not tap usage)
+///   - `results` (a Rerank body)                       -> no tokens; its counted search units
+///     ride [`same_protocol_open_billing`]
 ///   - anything else                                   -> the chat tap (the decode-failure warn it
 ///     raises is the one the relay raised too)
 ///
@@ -64,6 +65,20 @@ pub fn same_protocol_usage(
     } else {
         CHAT.extract_usage("bedrock", body)
     }
+}
+
+/// The NON-TOKEN billing of a complete same-protocol non-stream 2xx body, by the same shape probe as
+/// [`same_protocol_usage`]: a Rerank body (`results`) is read by the rerank cell's own reader, so the
+/// search units it billed reach both books as the open class the cross-protocol path ledgers (item
+/// 134). Every other shape bills tokens only, and answers `None`.
+pub fn same_protocol_open_billing(
+    body: &[u8],
+    parsed: Option<&Value>,
+) -> Option<busbar_substrate_values::billing::Billing> {
+    if !parsed.is_some_and(|v| v.get("results").is_some()) {
+        return None;
+    }
+    read_rerank_response(body).ok().and_then(|r| r.billing())
 }
 
 /// True when a same-protocol non-stream 2xx body is a Converse response (the shape that must carry
@@ -589,6 +604,14 @@ pub fn read_rerank_response(wire: &[u8]) -> Result<crate::ir::rerank::RerankResp
     Ok(crate::ir::rerank::RerankResp {
         id: v.get("id").and_then(Value::as_str).map(str::to_string),
         results: super::super::cohere::handler::read_rerank_results(v.get("results")),
+        // A Bedrock-hosted Cohere rerank model answers in Cohere's shape; the search units it billed
+        // (`meta.billed_units.search_units`) are read EXACTLY, as the Cohere reader reads them. A body
+        // without them stays the flat marker — nothing is estimated.
+        search_units: crate::usage_count::billed_count_opt(
+            v.get("meta").and_then(|m| m.get("billed_units")),
+            "search_units",
+        )
+        .map_err(|e| CodecError::Malformed(e.to_string()))?,
         ..Default::default()
     })
 }

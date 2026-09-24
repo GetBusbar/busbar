@@ -864,10 +864,14 @@ where
                             .flatten()
                         })
                         == Some(crate::ir::IrStopReason::Error);
+                    // The NON-TOKEN billing the same body reported beside its tokens — a rerank's
+                    // counted search units (item 134) — read by the same producer as the tokens.
+                    let mut open_billing: Option<busbar_substrate_values::billing::Billing> = None;
                     let token_usage: Option<busbar_substrate_values::billing::TokenUsage> =
                         if this.usage_sink.is_none() {
                             None
                         } else if let Some(t) = this.translate.as_ref() {
+                            open_billing = t.open_billing();
                             // A reader that REFUSED a count it could not read ends the stream in an
                             // `ir_parse` error — after the body was delivered. That is NO usage
                             // recovered, so it bills the floor the truncated-tail path bills, never
@@ -913,19 +917,27 @@ where
                                 // could not read, item 133) was already delivered: that is no usage
                                 // recovered, billed exactly as the truncated arm above bills it. A body
                                 // that READ cleanly and simply carries no token usage (an image op)
-                                // still bills nothing — `read_response` is the one that decides.
+                                // still bills nothing — `read_response` is the one that decides —
+                                // but what it billed beside tokens (a rerank's search units) is kept.
                                 this.op
                                     .extract_usage(this.ingress_protocol, &buf)
-                                    .or_else(|| {
-                                        this.op.op_handler.read_response(&buf).is_err().then(|| {
+                                    .or_else(|| match this.op.op_handler.read_response(&buf) {
+                                        Ok(read) => {
+                                            open_billing = read.billing();
+                                            None
+                                        }
+                                        Err(_) => {
                                             fault_unreadable(this.ingress_protocol, buf.len());
-                                            unrecovered_usage(this.ingress_protocol, &buf)
-                                        })
+                                            Some(unrecovered_usage(this.ingress_protocol, &buf))
+                                        }
                                     })
                             }
                         } else {
                             None
                         };
+                    // ONE projection of the open classes, ledgered below and reported to the durable
+                    // book, so both books hold the same counts (#71).
+                    let open_units = crate::engine::usage::open_units_of(&open_billing);
                     // Charge this request's token usage to the virtual key's budget (once), on EVERY
                     // end this arm reaches — a clean one, and one whose stream carried a reader-emitted
                     // terminal ERROR event (`translate.terminal_error()`) or whose cross-protocol
@@ -986,6 +998,12 @@ where
                                 token_usage.as_ref(),
                                 &tier,
                             );
+                            crate::engine::usage::ledger_open_units(
+                                host,
+                                &sink,
+                                lane,
+                                open_units.clone(),
+                            );
                         }
                     }
                     // THE REPORT-BACK, on the end that actually arrived, and after the accrual so the
@@ -999,8 +1017,7 @@ where
                     this.tap.report(TapReport {
                         lane: this.lane_idx,
                         usage: token_usage,
-                        // This end reads usage through a TOKEN reader only, so no counted class reaches it.
-                        open_units: Default::default(),
+                        open_units,
                         finish: if stream_failed {
                             TapFinish::Error
                         } else {
