@@ -660,7 +660,7 @@ pub fn mount(
                 // for, and the whole point of the seam is that it never does that.
                 let declared =
                     busbar_core_admin::admin_codec::verbs::resolve(req.method().as_str(), &path)
-                        .is_some();
+                        .is_some_and(|resolved| served_here(&node.units.admin, &resolved));
                 if !claimed || !declared {
                     return inner.oneshot(req).await.unwrap_or_else(|e| match e {});
                 }
@@ -731,6 +731,29 @@ pub fn mount(
             }
         },
     ))
+}
+
+/// Whether THIS node serves the row `resolved` names, beyond the table declaring it.
+///
+/// One row is conditional: `amend_rate_history` verifies an operator signature against the key the
+/// fleet sealed (`auth.operator_pub`), so a node with no sealed key has nothing to verify against
+/// and the operation does not exist there. Such a node is exactly a 1.5.5-shaped deployment, and it
+/// answers the path as 1.5.5 does — the surface's own `404 not_found`, no audit row — rather than
+/// running the unit to a `403` naming a scope the caller already holds (oracle cells
+/// `ledger|amend|adjusting-entries`, `|refused-unsigned`). With a key sealed, the row is the
+/// verb's and every refusal is the verb's own. A posture this node cannot read stays claimed, so
+/// the verbs unit refuses it rather than this seam guessing.
+#[cfg(feature = "root-admin")]
+pub(crate) fn served_here(binding: &AdminBinding, resolved: &ResolvedVerb) -> bool {
+    if kernel_verb(resolved) != Some(KernelVerb::AmendRateHistory) {
+        return true;
+    }
+    binding
+        .posture
+        .resolve(KernelVerb::AmendRateHistory, "")
+        .is_none_or(|(posture, _)| {
+            matches!(posture.operator, busbar_core_admin::OperatorState::Set(_))
+        })
 }
 
 /// Cells for THE ADMIN REQUEST CHAIN as a whole, end to end over this mount.

@@ -663,6 +663,72 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
     }
 }
 
+/// A NODE WITH NO SEALED OPERATOR KEY ANSWERS THE AMEND PATH AS 1.5.5 DOES (oracle cells
+/// `ledger|amend|adjusting-entries` and `|refused-unsigned`).
+///
+/// `amend_rate_history` verifies a signature against `auth.operator_pub`; with none sealed there is
+/// nothing to verify against, and the deployment is a 1.5.5-shaped one. The published binary
+/// answers this path with its router's generic miss, `404 not_found` / `resource not found`; the
+/// mount used to walk it to a `403` "insufficient scope: this endpoint requires `full`" — told to
+/// the operator credential, which holds `full`. Signed or unsigned, the unsealed node answers the
+/// surface's own 404. With a key sealed the verb is claimed and refuses on its own terms.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn the_amend_path_on_a_node_with_no_operator_key_is_1_5_5_s_404() {
+    busbar_kernel::metrics::init();
+    busbar_core_admin::install();
+    let mount_under = |operator_key: Option<[u8; 32]>| {
+        let app = busbar_kernel::test_support::TestApp::new()
+            .admin_chain(vec![])
+            .build();
+        let (_data, bare, _handle) =
+            busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
+        let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
+        let durability = crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            Box::new(busbar_kernel_wal::NullShipper::new()),
+            Box::new(rows.clone()),
+        )
+        .expect("a memory-buffered journal cannot fail to open");
+        let held = Arc::new(std::sync::Mutex::new(durability));
+        let read = Arc::new(rows);
+        mount(
+            bare,
+            crate::root::kernel::new_kernel(),
+            1 << 20,
+            move |dispatch| {
+                let mut units =
+                    crate::root::kernel::ProductionUnits::admin_only_sharing(dispatch, held, read)
+                        .with_auth_chain(a_door_that_identifies_the_operator())
+                        .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(
+                            Arc::new(ADirectoryThatMintedIt),
+                        ));
+                units.admin.posture = Arc::new(SealedPosture::new(operator_key));
+                units
+            },
+        )
+    };
+    let path = "/api/v1/admin/ledger/amend-rate-history";
+    let body = br#"{"effective_from":1,"rate_card":{}}"#.to_vec();
+
+    // The SEALED half is `every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_none`
+    // (the verb claimed, walked, and sealing its one `rejected` row). It is not repeated here: the
+    // ring is process-wide and a second sealed walk would add a row to that cell's count.
+    let (status, answer, headers) = over(&mount_under(None), "POST", path, body).await;
+    assert_eq!(status, 404, "{}", String::from_utf8_lossy(&answer));
+    assert_eq!(
+        answer,
+        br#"{"error":{"code":"not_found","message":"resource not found"}}"#.to_vec(),
+        "the 1.5.5 router's generic miss, byte for byte"
+    );
+    assert!(
+        headers
+            .iter()
+            .any(|(k, v)| k == "content-type" && v == "application/json"),
+        "{headers:?}"
+    );
+}
+
 /// AND THE METER STEP STILL RUNS, AND STILL PRICES AN ADMIN VERB AT NOTHING.
 ///
 /// The admin surface declares NO meter classes, so the honest report is the empty one — and the
