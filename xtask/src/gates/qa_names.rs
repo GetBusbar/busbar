@@ -1479,7 +1479,7 @@ fn planted_rs_glob() -> String {
 /// One overlay carrying one planted file under the covered Rust root.
 fn planted_rs(body: String) -> Overlay {
     let mut ov = Overlay::new();
-    ov.set(&planted_rs_file(), body);
+    ov.set(planted_rs_file(), body);
     ov
 }
 

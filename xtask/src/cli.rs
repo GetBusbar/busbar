@@ -430,16 +430,31 @@ fn gate(args: &[String]) -> i32 {
                 0
             }
             None => {
-                eprintln!(
-                    "xtask gate {name} --posture: RED beyond its standing list (the lines above \
-                     name what changed). Either fix it, or move the row onto \
-                     CONSTRUCTION_STANDING_REDS in xtask/src/gates/mod.rs in a diff somebody reads."
-                );
+                eprintln!("{}", posture_refusal(name));
                 1
             }
         };
     }
     i32::from(verdict.red)
+}
+
+/// The `--posture` refusal, naming the list THIS gate's standing reds live on. It used to name
+/// CONSTRUCTION_STANDING_REDS for every gate, so a `qa-names` red sent its reader to the wrong
+/// constant. A posture with no named list (a whole-gate or release-time excuse) has no row to
+/// move, and says the excuse itself stopped holding.
+fn posture_refusal(name: &str) -> String {
+    match gates::standing_list_of(name) {
+        Some(list) => format!(
+            "xtask gate {name} --posture: RED beyond its standing list (the lines above name what \
+             changed). Either fix it, or move the row onto {list} in xtask/src/gates/mod.rs in a \
+             diff somebody reads."
+        ),
+        None => format!(
+            "xtask gate {name} --posture: RED and its REPORT_ONLY excuse no longer holds (the \
+             lines above name why). Fix the red, or correct the entry in xtask/src/gates/mod.rs \
+             in a diff somebody reads."
+        ),
+    }
 }
 
 /// `--jobs N` / `--jobs=N`: how many of a battery's cases are taken at once. Unknown or absent
@@ -664,4 +679,24 @@ fn denylist_cmd(args: &[String]) -> i32 {
         denylist::print_report(&report)
     };
     i32::from(!ok)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::posture_refusal;
+
+    /// The refusal names the list the gate's own posture reads, never another gate's.
+    #[test]
+    fn the_posture_refusal_names_the_gates_own_standing_list() {
+        let qa = posture_refusal("qa-names");
+        assert!(qa.contains("QA_NAMES_STANDING_REDS"), "{qa}");
+        assert!(!qa.contains("CONSTRUCTION_STANDING_REDS"), "{qa}");
+        let construction = posture_refusal("construction");
+        assert!(
+            construction.contains("CONSTRUCTION_STANDING_REDS"),
+            "{construction}"
+        );
+        let whole = posture_refusal("ship-ready");
+        assert!(!whole.contains("_STANDING_REDS"), "{whole}");
+    }
 }
