@@ -40,6 +40,17 @@
 //!    That script is where the drift was found, and a lint that reads only `.github/workflows/`
 //!    would have declared the tree clean on the day the hole was open.
 //!
+//! 9. [`ROW_SCRIPTS`] — THE SCAN SET IS DISCOVERED, NOT LISTED (items 182, 220). Every tracked
+//!    `*.sh` under [`SCRIPT_ROOTS`] that runs a container (`docker run`/`docker create`/`podman
+//!    run`) is read, and each reference it runs is held to rule 8's demands. Rule 8 read one named
+//!    script, so the qa gate's own `bash scripts/release-check-1.5.2.sh` hop and the shadow
+//!    oracle's store provisioner ran floating tags with this gate green. A shell VARIABLE is not
+//!    an escape: `IMG="postgres:16"` … `docker run "$IMG"` is resolved through the file's own
+//!    assignments (a `${X:-default}` resolves to the default that runs when nothing overrides it);
+//!    only a value computed at run time (`$(…)`, a variable the file never assigns) is exempt, the
+//!    same way a `${{ … }}` workflow expression is. Images published by this project
+//!    ([`FIRST_PARTY`]) are the product under test in a release check, not a pinned service.
+//!
 //! THE ESCAPE HATCH, ported exactly as the shell had it: an `image:` whose value is a workflow
 //! expression (`${{ … }}`) with no image literal in it is exempt. The value is not knowable from
 //! the text, and a lint that guessed at it would be a lint somebody adds an allowlist to — and the
@@ -56,7 +67,7 @@
 use std::collections::BTreeSet;
 
 use crate::ctx::{Ctx, Edit, Overlay, SourceFile, WalkSpec};
-use crate::gates::{prove_green, prove_red, Case, Expect, Gate, Report};
+use crate::gates::{prove_green, prove_red, prove_rows_green, Case, Expect, Gate, Report};
 use crate::ledger::{Row, Verdict};
 
 pub const IMAGES_TSV: &str = "testing/fleet-fixtures/service-images.tsv";
@@ -71,6 +82,16 @@ pub const ROW_ROW_PRESENT: &str = "images|workflow-row-present";
 pub const ROW_PIN_MATCHES: &str = "images|workflow-pin-matches";
 pub const ROW_EVERY_PIN_USED: &str = "images|every-pin-used";
 pub const ROW_RELEASE_CHECK: &str = "images|release-check-tags";
+pub const ROW_SCRIPTS: &str = "images|script-containers";
+
+/// Where container-running scripts live. Every `*.sh` under these that runs a container is in the
+/// [`ROW_SCRIPTS`] scan set; nothing is listed by name.
+pub const SCRIPT_ROOTS: &[&str] = &["scripts", "testing"];
+
+/// Image namespaces this project PUBLISHES. A release check that boots `getbusbar/busbar@<digest>`
+/// or the published `:latest` bundle is verifying the product, not running a service dependency;
+/// those references are not rows of the service table and are not judged against it.
+pub const FIRST_PARTY: &[&str] = &["getbusbar/", "docker.io/getbusbar/", "ghcr.io/getbusbar/"];
 
 /// The shell's own TITLE for the three rules whose row ids could not be inherited.
 fn legacy_title(rule: &str) -> Option<&'static str> {
@@ -106,8 +127,17 @@ const MIN_IMAGE_LINES: usize = 6;
 
 /// `release-check.sh` runs four service containers today (postgres, mysql, valkey, vault). Same
 /// reasoning, same refusal to be configurable: a `docker run` parser that stopped matching would
-/// otherwise report a script full of floating tags as a script with no containers at all.
-const MIN_RELEASE_CHECK_TAGS: usize = 3;
+/// otherwise report a script full of floating tags as a script with no containers at all. The floor
+/// is the measured four (item 182): at three, moving one reference behind a variable the reader
+/// skipped still cleared it.
+const MIN_RELEASE_CHECK_TAGS: usize = 4;
+
+/// Third-party container references judged across the discovered scripts OTHER than
+/// `release-check.sh` (which has its own row and floor). Measured 6 when [`ROW_SCRIPTS`] was armed
+/// (`release-check-1.5.2.sh` 2, `oracle-box-store-services.sh` 3, `ws-conformance/scripts/run.sh`
+/// one); the floor sits below that so retiring the 1.5.2 harness does not trip it, while a reader
+/// that stopped matching finds zero.
+const MIN_SCRIPT_REFS: usize = 3;
 
 pub struct ServiceImagesGate;
 
@@ -210,9 +240,15 @@ impl Gate for ServiceImagesGate {
                 rows.push(rule_shape(pins));
                 rows.push(rule_every_pin_used(&found, pins, workflows.is_ok()));
                 rows.push(rule_release_check(cx, pins));
+                rows.push(rule_scripts(cx, pins));
             }
             None => {
-                for id in [ROW_SHAPE, ROW_EVERY_PIN_USED, ROW_RELEASE_CHECK] {
+                for id in [
+                    ROW_SHAPE,
+                    ROW_EVERY_PIN_USED,
+                    ROW_RELEASE_CHECK,
+                    ROW_SCRIPTS,
+                ] {
                     rows.push(Row::fail(
                         id,
                         "the pinned table could not be read",
@@ -326,13 +362,14 @@ impl Gate for ServiceImagesGate {
         // THE ESCAPE HATCH. An `image:` whose value is a workflow expression is exempt, so this
         // plant must leave the gate GREEN — and the floating case above is what proves the same
         // scanner still refuses a literal in that position.
-        report.push(prove_green(
-            &cx.with_overlay(workflow_overlay(
-                "        image: ${{ inputs.service_image }}\n",
-            )),
+        // Narrowed to the three workflow rows it is about: the exemption is a claim about how a
+        // workflow `image:` is read, and it must not be held hostage to a script row's standing red.
+        report.push(prove_rows_green(
+            cx,
             self,
             "an image: that is a workflow expression is exempt",
             &[ROW_FLOATING, ROW_ROW_PRESENT, ROW_PIN_MATCHES],
+            workflow_overlay("        image: ${{ inputs.service_image }}\n"),
         ));
 
         match a_pinned_reference(cx) {
@@ -366,6 +403,58 @@ impl Gate for ServiceImagesGate {
                 ));
             }
             Err(e) => report.note_infra_failure(format!("service-images selftest: {e}")),
+        }
+
+        // ITEM 182: A VARIABLE IS NOT AN ESCAPE. The finding's own shape: one of the four pinned
+        // references moved behind `VAULT_IMAGE=` as a floating tag. The reader skipped `$`-tokens,
+        // the three that remained cleared a floor of 3, and the row stayed green.
+        match a_pinned_reference(cx) {
+            Ok(reference) => {
+                let image = reference
+                    .split('@')
+                    .next()
+                    .unwrap_or(&reference)
+                    .to_string();
+                let planted = cx.read(RELEASE_CHECK).map(|t| {
+                    let moved = t.replacen(&reference, "\"$PLANTED_SVC_IMAGE\"", 1);
+                    format!("PLANTED_SVC_IMAGE=\"{image}\"\n{moved}")
+                });
+                match planted {
+                    Ok(text) => {
+                        let mut ov = Overlay::new();
+                        ov.set(RELEASE_CHECK, text);
+                        report.push(prove_red(
+                            cx,
+                            self,
+                            "release-check.sh runs a floating tag spelled as a shell variable",
+                            &[ROW_RELEASE_CHECK],
+                            ov,
+                            &[&image, "carries no @sha256:"],
+                        ));
+                    }
+                    Err(e) => report.note_infra_failure(format!("service-images selftest: {e}")),
+                }
+            }
+            Err(e) => report.note_infra_failure(format!("service-images selftest: {e}")),
+        }
+
+        // ITEM 220: A SCRIPT NOBODY LISTED. A new provisioning script runs a floating tag through
+        // a `${X:-default}` variable; before discovery, nothing read it.
+        {
+            let mut ov = Overlay::new();
+            ov.set(
+                "testing/planted/planted-services.sh",
+                "#!/usr/bin/env bash\nIMG=\"${PLANTED_IMG:-postgres:16}\"\n\
+                 docker run -d --rm --name planted \\\n  -p 5432:5432 \"$IMG\" >/dev/null\n",
+            );
+            report.push(prove_red(
+                cx,
+                self,
+                "a script outside release-check.sh runs a floating tag",
+                &[ROW_SCRIPTS],
+                ov,
+                &["planted-services.sh", "postgres:16", "carries no @sha256:"],
+            ));
         }
 
         report.push(plant_release_check(
@@ -569,6 +658,7 @@ const OWED: &[&str] = &[
     ROW_PIN_MATCHES,
     ROW_EVERY_PIN_USED,
     ROW_RELEASE_CHECK,
+    ROW_SCRIPTS,
 ];
 
 /// A well-formed digest that pins nothing real, for the plants that need one.
@@ -784,19 +874,197 @@ fn is_well_formed_digest(d: &str) -> bool {
     })
 }
 
-/// Every container tag `scripts/release-check.sh` names in a `docker run`.
+/// Every container tag `scripts/release-check.sh` names in a `docker run` — see [`container_refs`].
+fn release_check_tags(text: &str) -> Vec<String> {
+    container_refs(text).into_iter().map(|(_, r)| r).collect()
+}
+
+/// The shell assignments a script makes, `NAME=value` (optionally `export`/`local`/`readonly`),
+/// every value kept: a variable assigned twice is judged on every literal it can hold.
+fn shell_assignments(text: &str) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut out: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for raw in text.lines() {
+        let mut t = raw.trim();
+        if t.starts_with('#') {
+            continue;
+        }
+        for kw in ["export ", "local ", "readonly ", "declare "] {
+            if let Some(rest) = t.strip_prefix(kw) {
+                t = rest.trim_start();
+            }
+        }
+        let Some(eq) = t.find('=') else { continue };
+        let name = &t[..eq];
+        if name.is_empty()
+            || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            || name.starts_with(|c: char| c.is_ascii_digit())
+        {
+            continue;
+        }
+        let value = shell_word(&t[eq + 1..]);
+        out.entry(name.to_string()).or_default().push(value);
+    }
+    out
+}
+
+/// The first shell word of `s` with its quotes removed — enough of the quoting rules to read an
+/// assignment's value (`"x"`, `'x'`, bare `x`, a trailing `# comment`).
+fn shell_word(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s.chars().peekable();
+    let mut depth = 0i32; // inside `${…}` / `$(…)`, whitespace does not end the word
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                for d in chars.by_ref() {
+                    if d == '"' {
+                        break;
+                    }
+                    out.push(d);
+                }
+            }
+            '\'' => {
+                for d in chars.by_ref() {
+                    if d == '\'' {
+                        break;
+                    }
+                    out.push(d);
+                }
+            }
+            '{' | '(' => {
+                depth += 1;
+                out.push(c);
+            }
+            '}' | ')' => {
+                depth -= 1;
+                out.push(c);
+            }
+            c if c.is_whitespace() && depth <= 0 => break,
+            ';' if depth <= 0 => break,
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Resolve every `$NAME` / `${NAME}` / `${NAME:-default}` in `word` through the script's own
+/// assignments. Returns every fully-literal value the word can take; an empty result means the
+/// value is computed at run time (`$(…)`, a name the file never assigns and gives no default) and
+/// this reader cannot know it.
+fn resolve_word(
+    word: &str,
+    vars: &std::collections::BTreeMap<String, Vec<String>>,
+    depth: usize,
+) -> Vec<String> {
+    if depth > 6 {
+        return Vec::new();
+    }
+    let Some(at) = word.find('$') else {
+        return vec![word.to_string()];
+    };
+    let (head, rest) = word.split_at(at);
+    let rest = &rest[1..];
+    let (name, default, tail): (&str, Option<&str>, &str) =
+        if let Some(inner) = rest.strip_prefix('{') {
+            let Some(close) = inner.find('}') else {
+                return Vec::new();
+            };
+            let body = &inner[..close];
+            let tail = &inner[close + 1..];
+            match body.find(":-").or_else(|| body.find('-')) {
+                Some(i) if i > 0 => {
+                    let skip = if body[i..].starts_with(":-") { 2 } else { 1 };
+                    (&body[..i], Some(&body[i + skip..]), tail)
+                }
+                _ => (body, None, tail),
+            }
+        } else {
+            let end = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(rest.len());
+            (&rest[..end], None, &rest[end..])
+        };
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Vec::new(); // `$(`, `$?`, `$1` … — computed
+    }
+    let values: Vec<String> = match vars.get(name) {
+        Some(vs) => vs
+            .iter()
+            .flat_map(|v| resolve_word(v, vars, depth + 1))
+            .collect(),
+        None => match default {
+            Some(d) => resolve_word(d, vars, depth + 1),
+            None => Vec::new(),
+        },
+    };
+    let mut out = Vec::new();
+    for v in values.into_iter().filter(|v| !v.is_empty()) {
+        for t in resolve_word(tail, vars, depth + 1) {
+            out.push(format!("{head}{v}{t}"));
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Every container reference a shell script runs, as `(line, reference)`.
 ///
 /// The tags sit at the END of backslash-continued invocations, so the lines are joined first. The
-/// image is the first token after `docker run` that is neither a flag nor a flag's value; a token
-/// carrying a `$` is a shell expansion this reader cannot resolve and is left alone, the same way
-/// a `${{ … }}` workflow expression is.
-fn release_check_tags(text: &str) -> Vec<String> {
+/// image is the first token after `docker run` / `docker create` / `podman run` that is neither a
+/// flag nor a flag's value. A token spelled as a shell variable is RESOLVED through the script's
+/// own assignments (item 182 — it used to be skipped, so `docker run "$VAULT_IMAGE"` over
+/// `VAULT_IMAGE="hashicorp/vault"` was a floating reference the reader never saw); only a value
+/// computed at run time is left alone, the same way a `${{ … }}` workflow expression is.
+fn container_refs(text: &str) -> Vec<(usize, String)> {
+    const OPENERS: &[&str] = &["docker run", "docker create", "podman run"];
+    // A value-taking flag consumes the next token; `--flag=value` carries its own.
+    const TAKES_A_VALUE: &[&str] = &[
+        "-e",
+        "-p",
+        "-v",
+        "-w",
+        "-u",
+        "-l",
+        "-m",
+        "-h",
+        "--name",
+        "--env",
+        "--env-file",
+        "--publish",
+        "--volume",
+        "--network",
+        "--entrypoint",
+        "--workdir",
+        "--user",
+        "--add-host",
+        "--mount",
+        "--label",
+        "--platform",
+        "--hostname",
+        "--cap-add",
+        "--cap-drop",
+        "--restart",
+        "--memory",
+        "--cpus",
+        "--pull",
+        "--ulimit",
+        "--tmpfs",
+        "--shm-size",
+        "--log-driver",
+        "--health-cmd",
+    ];
+    let vars = shell_assignments(text);
     let mut out = Vec::new();
     let mut logical = String::new();
-    for raw in text.lines() {
+    let mut start = 0usize;
+    for (idx, raw) in text.lines().enumerate() {
         let line = raw.trim();
         if line.starts_with('#') && logical.is_empty() {
             continue;
+        }
+        if logical.is_empty() {
+            start = idx + 1;
         }
         if let Some(head) = line.strip_suffix('\\') {
             logical.push_str(head.trim_end());
@@ -805,39 +1073,145 @@ fn release_check_tags(text: &str) -> Vec<String> {
         }
         logical.push_str(line);
         let joined = std::mem::take(&mut logical);
-        let Some(rest) = joined.split_once("docker run").map(|(_, r)| r) else {
+        let Some(rest) = opener_at_command_position(&joined, OPENERS) else {
             continue;
         };
-        let mut tokens = rest.split_whitespace();
+        let tokens = shell_tokens(rest);
+        let mut tokens = tokens.iter();
         while let Some(token) = tokens.next() {
-            if token.starts_with('>') || token.starts_with('|') || token.starts_with('&') {
-                break;
-            }
             if token.starts_with('-') {
-                // A value-taking flag consumes the next token; `--flag=value` carries its own.
-                const TAKES_A_VALUE: &[&str] = &[
-                    "-e",
-                    "-p",
-                    "-v",
-                    "--name",
-                    "--env",
-                    "--publish",
-                    "--volume",
-                    "--network",
-                ];
-                if !token.contains('=') && TAKES_A_VALUE.contains(&token) {
+                if !token.contains('=') && TAKES_A_VALUE.contains(&token.as_str()) {
                     tokens.next();
                 }
                 continue;
             }
-            let token = token.trim_matches(['"', '\'']);
-            if !token.contains('$') && split_reference(token).is_some() {
-                out.push(token.to_string());
+            for candidate in resolve_word(token, &vars, 0) {
+                if split_reference(&candidate).is_some() {
+                    out.push((start, candidate));
+                }
             }
             break;
         }
     }
     out
+}
+
+/// The text after the first container-run opener that sits in COMMAND position — at the start of
+/// the line or after `$(`, `(`, `;`, `|`, `&&`, `then`, `do`, `!`. `docker run` inside a sentence
+/// (`emit "…the documented docker run boots…"`) is prose, not an invocation.
+fn opener_at_command_position<'t>(line: &'t str, openers: &[&str]) -> Option<&'t str> {
+    let mut best: Option<(usize, usize)> = None;
+    for o in openers {
+        let mut from = 0;
+        while let Some(rel) = line[from..].find(o) {
+            let i = from + rel;
+            let before = line[..i].trim_end();
+            let command_position = before.is_empty()
+                || ["$(", "(", ";", "|", "&", "then", "do", "!", "`", "{"]
+                    .iter()
+                    .any(|p| before.ends_with(p));
+            if command_position && best.is_none_or(|(b, _)| i < b) {
+                best = Some((i, o.len()));
+                break;
+            }
+            from = i + o.len();
+        }
+    }
+    best.map(|(i, n)| &line[i + n..])
+}
+
+/// The shell words of one command, quotes removed and `${…}` / `$(…)` kept whole, stopping at the
+/// end of the command (an unmatched `)`, or a top-level `;`, `|`, `&`, `>`, `<`). Whitespace
+/// splitting read `-e LDAP_ORGANISATION="Example Org"` as two words and judged `Org` as an image.
+fn shell_tokens(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut have = false;
+    let mut depth = 0i32;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' | '\'' => {
+                have = true;
+                for d in chars.by_ref() {
+                    if d == c {
+                        break;
+                    }
+                    cur.push(d);
+                }
+            }
+            '$' if matches!(chars.peek(), Some('{') | Some('(')) => {
+                have = true;
+                cur.push(c);
+                depth += 1;
+                if let Some(n) = chars.next() {
+                    cur.push(n);
+                }
+            }
+            '}' | ')' if depth > 0 => {
+                depth -= 1;
+                cur.push(c);
+            }
+            ')' | ';' | '|' | '&' | '>' | '<' if depth == 0 => break,
+            c if c.is_whitespace() && depth == 0 => {
+                if have {
+                    out.push(std::mem::take(&mut cur));
+                    have = false;
+                }
+            }
+            _ => {
+                have = true;
+                cur.push(c);
+            }
+        }
+    }
+    if have {
+        out.push(cur);
+    }
+    out
+}
+
+/// Whether a reference is an image this project publishes (see [`FIRST_PARTY`]).
+fn is_first_party(reference: &str) -> bool {
+    FIRST_PARTY.iter().any(|ns| reference.starts_with(ns))
+}
+
+/// What is wrong with one container reference a script runs, judged against the table exactly as a
+/// workflow `image:` is: it must carry a digest, name a row, and carry THAT row's digest.
+fn judge_reference(tag: &str, pins: &[Pin]) -> Option<String> {
+    let Some((image, digest)) = split_reference(tag) else {
+        return Some(format!(
+            "{tag} — not a container reference this reader can judge"
+        ));
+    };
+    let Some(pin) = pins.iter().find(|p| p.image == image) else {
+        return Some(match digest {
+            None => format!(
+                "{tag} — carries no @sha256: AND no row in {IMAGES_TSV} names `{image}`: a \
+                 FLOATING reference nothing pins"
+            ),
+            Some(_) => format!(
+                "{tag} — no row in {IMAGES_TSV} names `{image}`, so the gate that decides a \
+                 release is not pinned to the bytes CI is pinned to"
+            ),
+        });
+    };
+    match (digest, pin.digest.as_deref()) {
+        (None, _) => Some(format!(
+            "{tag} — carries no @sha256:, so it is a FLOATING reference: it can resolve to \
+             different bytes on two runs of the same commit, which is the drift this rule was \
+             written for"
+        )),
+        (Some(d), Some(pinned)) if d != pinned => Some(format!(
+            "{tag} — the table pins {pinned} for `{image}`, so the qa gate and CI are running \
+             two different images under one name"
+        )),
+        (Some(_), None) => Some(format!(
+            "{tag} — the row for `{image}` in {IMAGES_TSV} carries no digest, so there is \
+             nothing to agree with"
+        )),
+        (Some(_), Some(_)) => None,
+    }
 }
 
 // ── the rules ───────────────────────────────────────────────────────────────────────────────────
@@ -1039,41 +1413,10 @@ fn rule_release_check(cx: &Ctx, pins: &[Pin]) -> Row {
     // is exactly the floating reference this rule exists to ban. So each reference must carry the
     // digest, and it must carry the SAME digest the table pins — the identical demand
     // `ROW_FLOATING` and `ROW_PIN_MATCHES` make of a workflow's `image:` line.
-    let mut offenders: Vec<String> = Vec::new();
-    for tag in &tags {
-        let (image, digest) = match split_reference(tag) {
-            Some(parts) => parts,
-            None => {
-                offenders.push(format!(
-                    "{tag} — not a container reference this reader can judge"
-                ));
-                continue;
-            }
-        };
-        let Some(pin) = pins.iter().find(|p| p.image == image) else {
-            offenders.push(format!(
-                "{tag} — no row in {IMAGES_TSV} names `{image}`, so the gate that decides a \
-                 release is not pinned to the bytes CI is pinned to"
-            ));
-            continue;
-        };
-        match (digest, pin.digest.as_deref()) {
-            (None, _) => offenders.push(format!(
-                "{tag} — carries no @sha256:, so it is a FLOATING reference: it can resolve to \
-                 different bytes on two runs of the same commit, which is the drift this rule was \
-                 written for"
-            )),
-            (Some(d), Some(pinned)) if d != pinned => offenders.push(format!(
-                "{tag} — the table pins {pinned} for `{image}`, so the qa gate and CI are running \
-                 two different images under one name"
-            )),
-            (Some(_), None) => offenders.push(format!(
-                "{tag} — the row for `{image}` in {IMAGES_TSV} carries no digest, so there is \
-                 nothing to agree with"
-            )),
-            (Some(_), Some(_)) => {}
-        }
-    }
+    let offenders: Vec<String> = tags
+        .iter()
+        .filter_map(|tag| judge_reference(tag, pins))
+        .collect();
     if offenders.is_empty() {
         Row::pass(
             ROW_RELEASE_CHECK,
@@ -1091,6 +1434,70 @@ fn rule_release_check(cx: &Ctx, pins: &[Pin]) -> Row {
         Row::fail(
             ROW_RELEASE_CHECK,
             "the qa gate's script runs a container that is not pinned to the table's bytes",
+            offenders.join(" | "),
+        )
+    }
+}
+
+/// The discovered scan set: every `*.sh` under [`SCRIPT_ROOTS`] other than [`RELEASE_CHECK`] that
+/// runs a container.
+fn container_scripts(cx: &Ctx) -> Result<Vec<SourceFile>, String> {
+    let files = cx
+        .walk(&WalkSpec::new(SCRIPT_ROOTS.iter().copied()).ext("sh"))
+        .map_err(|e| e.to_string())?;
+    Ok(files
+        .into_iter()
+        .filter(|f| f.rel_str() != RELEASE_CHECK && !container_refs(&f.text).is_empty())
+        .collect())
+}
+
+fn rule_scripts(cx: &Ctx, pins: &[Pin]) -> Row {
+    let scripts = match container_scripts(cx) {
+        Ok(s) => s,
+        Err(e) => {
+            return Row::fail(
+                ROW_SCRIPTS,
+                "the container-running scripts could not be discovered",
+                format!("{SCRIPT_ROOTS:?}: {e}"),
+            )
+        }
+    };
+    let mut judged = 0usize;
+    let mut offenders = Vec::new();
+    for f in &scripts {
+        for (line, tag) in container_refs(&f.text) {
+            if is_first_party(&tag) {
+                continue;
+            }
+            judged += 1;
+            if let Some(why) = judge_reference(&tag, pins) {
+                offenders.push(format!("{}:{line}: {why}", f.rel_str()));
+            }
+        }
+    }
+    if judged < MIN_SCRIPT_REFS {
+        return Row::fail(
+            ROW_SCRIPTS,
+            format!("only {judged} third-party container reference(s) found across the scripts"),
+            format!(
+                "floor is {MIN_SCRIPT_REFS}; a reader that finds no containers in {SCRIPT_ROOTS:?} \
+                 clears every script vacuously"
+            ),
+        );
+    }
+    if offenders.is_empty() {
+        Row::pass(
+            ROW_SCRIPTS,
+            "every container a tracked script runs is pinned to the digest the table pins",
+            format!(
+                "{judged} third-party reference(s) across {} script(s)",
+                scripts.len()
+            ),
+        )
+    } else {
+        Row::fail(
+            ROW_SCRIPTS,
+            "a tracked script runs a container that is not pinned to the table's bytes",
             offenders.join(" | "),
         )
     }
@@ -1228,6 +1635,46 @@ mod tests {
         if let Err(failures) = verify_report(&ServiceImagesGate, &report) {
             panic!("service-images selftest did not prove itself: {failures:#?}");
         }
+    }
+
+    /// ITEM 182: a reference spelled as a shell variable is resolved through the script's own
+    /// assignments, a `${X:-default}` resolves to its default, and a computed value stays exempt.
+    #[test]
+    fn a_shell_variable_image_is_resolved_not_skipped() {
+        let text = "VAULT_IMAGE=\"hashicorp/vault\"\n\
+                    PG=\"${ORACLE_PG_IMAGE:-postgres:16}\"\n\
+                    ref=\"$(svc_ref pg)\"\n\
+                    docker run -d --rm --cap-add=IPC_LOCK \\\n  \"$VAULT_IMAGE\" >/dev/null\n\
+                    cid=\"$(docker run -d -p 1:2 \"$PG\")\"\n\
+                    docker run -d \"$ref\"\n";
+        let refs: Vec<String> = container_refs(text).into_iter().map(|(_, r)| r).collect();
+        assert_eq!(
+            refs,
+            vec!["hashicorp/vault".to_string(), "postgres:16".to_string()]
+        );
+    }
+
+    /// ITEM 220: a container-running script outside release-check.sh is in the scan set, and its
+    /// floating tag is NAMED by the scripts row.
+    #[test]
+    fn a_floating_container_in_any_script_is_named() {
+        let cx = Ctx::workspace().expect("workspace context");
+        let mut ov = Overlay::new();
+        ov.set(
+            "testing/planted/planted-services.sh",
+            "#!/usr/bin/env bash\nIMG=\"${PLANTED_IMG:-redis:7}\"\ndocker run -d \"$IMG\"\n",
+        );
+        let verdict = execute(&ServiceImagesGate, &cx.with_overlay(ov));
+        assert!(
+            verdict
+                .rows
+                .iter()
+                .any(|r| r.status != crate::ledger::Status::Pass
+                    && r.detail.contains("planted-services.sh")
+                    && r.detail.contains("redis:7")),
+            "no row named the planted floating container: {:?}",
+            verdict.rows
+        );
     }
 
     #[test]
