@@ -822,35 +822,41 @@ impl LlmNode {
 ///
 /// The four reserved tiers are walked in the canonical order rather than the report's map order,
 /// which is what makes the line sequence a property of this function rather than of a `BTreeMap`'s
-/// collation. An OPEN unit a report carries prices at nothing on this path and is left off: the card
-/// this node binds names the reserved four, so a line for a class it cannot price would be a zero
-/// line claiming to be a priced one.
+/// collation. An OPEN class is not a line of this record — a contract line names its class with a
+/// static id, and an open class is a runtime name — so [`priced_posting`] puts every open class the
+/// report carries onto the POSTING directly, verbatim (#71). It used to be LEFT OFF entirely —
+/// priced at nothing — which was a silent zero once a card could price an open class (item 123,
+/// `units:`): a rerank's search units reached the governance ledger and its read, and this book
+/// took the fee alone. Now the card prices the class, or a present card silent about it REFUSES (#42).
 ///
 /// The flat fee is NOT a line built here. It is the card's, added by the pricing as a line of its own
 /// from the billable count the report carries, which is what keeps one configured fee to one place.
+/// The four reserved classes, in the canonical order.
+const RESERVED_CLASSES: [&str; 4] = [
+    busbar_api::UNIT_INPUT,
+    busbar_api::UNIT_OUTPUT,
+    busbar_api::UNIT_CACHE_READ,
+    busbar_api::UNIT_CACHE_WRITE,
+];
+
 fn usage_record(
     token: &busbar_contract::caps::Grant<busbar_contract::caps::Consumption>,
     usage: &busbar_substrate_values::billing::Usage,
 ) -> busbar_contract::caps::Usage {
-    let lines = [
-        busbar_api::UNIT_INPUT,
-        busbar_api::UNIT_OUTPUT,
-        busbar_api::UNIT_CACHE_READ,
-        busbar_api::UNIT_CACHE_WRITE,
-    ]
-    .into_iter()
-    .filter_map(|class| {
-        // A zero-quantity line is not a fact about anything, and the plane's own metering step drops
-        // them for the same reason. Kept out here too so the two reports have the same shape.
-        let quantity = usage.usage_units.get(class).copied().unwrap_or(0);
-        (quantity > 0).then(|| busbar_contract::caps::UsageLine {
-            class: busbar_contract::caps::MeterClassId::new(class),
-            quantity,
-            source: busbar_contract::caps::QuantitySource::Count,
-            estimated: false,
+    let lines = RESERVED_CLASSES
+        .into_iter()
+        .filter_map(|class| {
+            // A zero-quantity line is not a fact about anything, and the plane's own metering step drops
+            // them for the same reason. Kept out here too so the two reports have the same shape.
+            let quantity = usage.usage_units.get(class).copied().unwrap_or(0);
+            (quantity > 0).then(|| busbar_contract::caps::UsageLine {
+                class: busbar_contract::caps::MeterClassId::new(class),
+                quantity,
+                source: busbar_contract::caps::QuantitySource::Count,
+                estimated: false,
+            })
         })
-    })
-    .collect();
+        .collect();
     // A report wider than the record holds is not a reason to post nothing: the record's own limit is
     // a bound on lines, and the four tiers this plane reports are far inside it. An empty record is
     // the honest fallback — it prices the fee and no tokens, which is what a response that reported
@@ -905,6 +911,19 @@ fn priced_posting(
         busbar_kernel_ledger::cost::STANDARD_TIER_BP,
         arrived.ms(),
         arrived.mono(),
+    );
+    // EVERY OPEN CLASS the report carries, verbatim and in its name's order, after the reserved four
+    // (#71; item 123/134 — a rerank's search units). A present card prices it or refuses it (#42);
+    // an absent card prices it at nothing, the one silent zero.
+    posting.quantities.extend(
+        report
+            .usage
+            .usage_units
+            .iter()
+            .filter(|(class, count)| **count > 0 && !RESERVED_CLASSES.contains(&class.as_str()))
+            .map(|(class, count)| {
+                busbar_kernel_ledger::cost::Quantity::new(class.as_str(), *count)
+            }),
     );
     // THE LOOKUP, at the snapshot pinned at the door and the instant the unit arrived at. The
     // history resolves which entry was in force then; a later apply is not in this view at all, so
@@ -999,67 +1018,116 @@ impl LateAccrual {
         let Some(report) = walk.reported_after_terminal(&tap) else {
             return;
         };
-        // THE PRICING, and it happens HERE rather than on the plane. The plane said what the unit
-        // consumed — quantities, by class — and how many billable requests it is. What that is worth
-        // is the card's answer, and this is the only side that holds a card. It is the same
-        // expression the live metering step is answered through, because one report priced two ways
-        // is two answers to what one request cost.
-        //
-        // THE ROW THIS LANDS ON. `report` names the serving lane and its provider — the two names the
-        // legacy row is keyed by — and the balance below is keyed by principal and window. Those are
-        // the same row: the node's books retain no lane and no provider, so both the ledger's side and
-        // the legacy side of the reconciliation are read at the width the node keeps, with the two
-        // names empty on BOTH. Carrying them here is what makes that a fact about the width rather
-        // than a figure that lost its row on the way — and it is where a wider key attaches the day
-        // the books grow one.
-        //
-        // A ZERO IS NOT A ROW, and posting one would say the node had settled something. A unit that
-        // reached a lane and priced at nothing — no tokens and no fee on a card that prices both at
-        // zero — is already fully described by the settlement the exit made.
-        //
-        // A REFUSAL IS NOT A ZERO AND NOT A PARTIAL (#42, item 28). A present card silent about the
-        // lane or a hit class, a hole in the history, or a figure the record cannot hold states no
-        // amount, so this book is handed none — never the priced part with the unpriced part at
-        // nothing. The COUNTS are not lost: they are the governance ledger's row, which the walk's
-        // tap wrote unconditionally (#43) and whose read refuses the same class; they are named
-        // here too, so the refusal says what went unpriced.
-        let amount = match priced_amount(&history, arrived, &usage_token, &report) {
-            Ok(amount) => amount,
-            Err(refusal) => {
-                tracing::warn!(
-                    principal = principal.as_str(),
-                    lane = %report.lane,
-                    counts = ?report.usage.usage_units,
-                    fee_count = report.fee_count,
-                    ?refusal,
-                    "late accrual refused at settlement: the card cannot price these counts"
-                );
-                return;
-            }
-        };
-        if amount == 0 {
-            return;
-        }
-        let accrual = busbar_contract::caps::HoldAccrual::after_terminal(
-            principal.clone(),
-            amount,
-            &ledger_token,
-        );
-        let posted = busbar_contract::caps::Posted::settle_late(accrual, &ledger_token);
-        // Through the money-book seam, as the terminal exit arm does — the same shared book, the
-        // same posting, the lock taken and released behind the seam.
-        let book = crate::root::durability::SharedBook::over(book);
-        // The same pinned snapshot the amount above was PRICED against, so the figure and the entry
-        // number the posting claims priced it cannot come from two different reads.
-        let _settled = settle(
-            &book,
+        post_late(
+            &crate::root::durability::SharedBook::over(book),
+            &LateTokens {
+                durability: &durability_token,
+                ledger: &ledger_token,
+                usage: &usage_token,
+            },
+            &history,
             &principal,
             arrived,
-            Some(&history),
-            &durability_token,
-            posted,
+            &report,
         );
     }
+}
+
+/// The three tokens the late arm posts under, lent together.
+struct LateTokens<'a> {
+    durability: &'a busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
+    ledger: &'a busbar_contract::caps::Grant<busbar_contract::caps::WriteMoney>,
+    usage: &'a busbar_contract::caps::Grant<busbar_contract::caps::Consumption>,
+}
+
+/// The unit's raw counts as its posting record carries them (#71): the serving lane, the billable
+/// count, and every class the report carries — the reserved four and the open ones — verbatim. A
+/// zero-quantity class is not a fact about anything and is left off, as [`usage_record`] leaves it.
+fn counts_of(report: &LateReport) -> crate::root::durability::UnitCounts {
+    crate::root::durability::UnitCounts {
+        lane: report.lane.clone(),
+        fee_count: u64::from(report.fee_count),
+        classes: report
+            .usage
+            .usage_units
+            .iter()
+            .filter(|(_, count)| **count > 0)
+            .map(|(class, count)| (class.clone(), *count))
+            .collect(),
+    }
+}
+
+/// **THE LATE ARM'S POSTING**: what one drained report leaves on the second book. ALWAYS one row
+/// (#43: the write is unconditional; #71: the fact is the counts, and pricing is the read).
+///
+/// - PRICED above zero: the settlement moves the book, and its record carries the counts beside
+///   the figure.
+/// - PRICED AT ZERO, or REFUSED: a counts row that moves no balance. A refusal (#42) leaves the
+///   money unpriced — no zero, no partial — and every read of the balance it sits on refuses.
+fn post_late(
+    book: &dyn crate::root::durability::MoneyBook,
+    tokens: &LateTokens<'_>,
+    history: &crate::root::kernel::PinnedHistory,
+    principal: &PrincipalId,
+    arrived: Arrived,
+    report: &LateReport,
+) {
+    let counts = counts_of(report);
+    // THE PRICING, and it happens HERE rather than on the plane. The plane said what the unit
+    // consumed — quantities, by class — and how many billable requests it is. What that is worth is
+    // the card's answer, and this is the only side that holds a card. It is the same expression the
+    // live metering step is answered through, because one report priced two ways is two answers to
+    // what one request cost.
+    //
+    // THE ROW THIS LANDS ON. `report` names the serving lane and its provider — the two names the
+    // legacy row is keyed by — and the balance below is keyed by principal and window. Those are the
+    // same row: the node's books retain no lane and no provider, so both the ledger's side and the
+    // legacy side of the reconciliation are read at the width the node keeps, with the two names
+    // empty on BOTH. The lane rides the counts row, which is where a read prices from.
+    //
+    // A ZERO IS NOT A SETTLEMENT, and posting one would say the node had settled something. But the
+    // counts are still the unit's fact (#43), so a unit that priced at nothing leaves its counts row
+    // and moves no balance.
+    //
+    // A REFUSAL IS NOT A ZERO AND NOT A PARTIAL (#42, item 28). A present card silent about the
+    // lane or a hit class, a hole in the history, or a figure the record cannot hold states no
+    // amount, so this book is handed none — never the priced part with the unpriced part at nothing.
+    // The COUNTS are not lost: they are posted as a counts row with the money unpriced, and every
+    // read of the balance it sits on refuses (`Durability::settled_read`). It used to post nothing
+    // at all and only warn — the fact survived on the governance ledger alone.
+    let key = balance(principal);
+    // The same pinned snapshot the amount below is PRICED against, so the figure and the entry
+    // number the posting claims priced it cannot come from two different reads.
+    let at = settling_at(&key, arrived, Some(history), tokens.durability);
+    let amount = match priced_amount(history, arrived, tokens.usage, report) {
+        Ok(amount) => amount,
+        Err(refusal) => {
+            tracing::warn!(
+                principal = principal.as_str(),
+                lane = %report.lane,
+                counts = ?report.usage.usage_units,
+                fee_count = report.fee_count,
+                ?refusal,
+                "late accrual refused at settlement: the card cannot price these counts; \
+                 the counts row is posted with no figure"
+            );
+            let _row = book.post_counts(&at, principal, &counts, Some(format!("{refusal:?}")));
+            return;
+        }
+    };
+    if amount == 0 {
+        let _row = book.post_counts(&at, principal, &counts, None);
+        return;
+    }
+    let accrual = busbar_contract::caps::HoldAccrual::after_terminal(
+        principal.clone(),
+        amount,
+        tokens.ledger,
+    );
+    let posted = busbar_contract::caps::Posted::settle_late(accrual, tokens.ledger);
+    // Through the money-book seam, as the terminal exit arm does — the same shared book, the same
+    // posting, the lock taken and released behind the seam — with the counts on the record.
+    let _settled = book.settle_counted(&at, posted, &counts);
 }
 
 /// The answer's body, with the late arm riding on it.
@@ -1805,8 +1873,19 @@ pub fn settle(
     posted: busbar_contract::caps::Posted,
 ) -> Result<crate::root::durability::Settled, busbar_contract::caps::DurabilityLost> {
     let key = balance(principal);
-    let at = crate::root::durability::Settling {
-        key: &key,
+    book.settle_posted(&settling_at(&key, arrived, card, token), posted)
+}
+
+/// Where an LLM unit's posting lands: its balance, the window of its pinned arrival, stamped with the
+/// card in force at that arrival.
+fn settling_at<'a>(
+    key: &'a busbar_kernel_ledger::totals::TotalsKey,
+    arrived: Arrived,
+    card: Option<&crate::root::kernel::PinnedHistory>,
+    token: &'a busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
+) -> crate::root::durability::Settling<'a> {
+    crate::root::durability::Settling {
+        key,
         window: busbar_kernel_budget::budget_window(
             busbar_kernel_budget::window::WINDOW_DAY,
             arrived.secs(),
@@ -1829,8 +1908,7 @@ pub fn settle(
             wall: arrived.secs(),
             mono: arrived.mono(),
         },
-    };
-    book.settle_posted(&at, posted)
+    }
 }
 
 /// THE PROVENANCE STAMP: which rate-card entry was in force when this unit arrived.

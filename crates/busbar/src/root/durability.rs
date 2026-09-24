@@ -154,6 +154,12 @@ pub struct Durability {
     pub restart_findings: Vec<JournalDisagreement>,
     /// How many holds a predecessor left open that this boot RECOVERED and posted (item 127).
     pub recovered_holds: usize,
+    /// THE COUNTS ROWS WHOSE PRICING REFUSED (#42, #43, #71): a unit's raw counts, on the chain,
+    /// that the card in force could not price. The fact is kept — the counts are what the unit did
+    /// — and the money is not: no figure moved the book for them. Every read of the balance and
+    /// window one of these sits on REFUSES rather than answering the priced remainder, which would
+    /// be a silent zero for the class the card was silent about. Rebuilt from the chain at boot.
+    refused: Vec<Posting>,
     /// Settled figures the book moved whose journal record the log has not confirmed yet.
     ///
     /// Each was moved out of `settled` into `unreconciled` when its append came back as a
@@ -341,6 +347,12 @@ impl Durability {
             .into_iter()
             .map(JournalDisagreement::Unreadable)
             .collect();
+        if replay.refused != self.refused {
+            findings.push(JournalDisagreement::RefusedRows {
+                journal: replay.refused.len(),
+                book: self.refused.len(),
+            });
+        }
         let journal = rebuilt.book().snapshot();
         let book = self.ledger.book().snapshot();
         let mut keys: Vec<&(TotalsKey, WindowStart)> = journal.keys().chain(book.keys()).collect();
@@ -473,6 +485,109 @@ impl Durability {
         self.journal_settlement(at, settlement)
     }
 
+    /// [`Durability::settle_posted`] for a unit whose RAW COUNTS are known (#71): the posting record
+    /// carries them, per class string — the reserved four and every open class — beside the figure
+    /// they were priced to, so the chain holds the fact and not only its price.
+    ///
+    /// # Errors
+    ///
+    /// As [`Durability::settle`].
+    pub fn settle_counted(
+        &mut self,
+        at: &Settling<'_>,
+        posted: busbar_contract::caps::Posted,
+        counts: &UnitCounts,
+    ) -> Result<Settled, DurabilityLost> {
+        let settlement = self.ledger.post(at.key, at.window, posted);
+        self.journal_settlement_counted(at, settlement, self.incarnation, Some(counts))
+    }
+
+    /// PUT A UNIT'S COUNTS ON THE CHAIN WITH NO FIGURE BEHIND THEM (#43: the write is unconditional).
+    ///
+    /// For a unit whose counts priced to nothing, or whose pricing REFUSED (#42: a present card
+    /// silent about the lane or a hit class, a hole in the history, a figure past the record). The
+    /// book does not move — there is no amount, and a zero or a partial would be a figure nobody
+    /// priced — but the counts are a fact about what the unit did, and a fact is recorded whether
+    /// or not the card can price it. A refused row is kept, and every read of its balance and
+    /// window refuses ([`Durability::settled_read`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Durability::journal_audit`]. The row is kept in memory either way and a failed append
+    /// is retained and re-offered by the log.
+    pub fn post_counts(
+        &mut self,
+        at: &Settling<'_>,
+        principal: &busbar_contract::caps::PrincipalId,
+        counts: &UnitCounts,
+        refusal: Option<String>,
+    ) -> Result<Posting, DurabilityLost> {
+        let posting = Posting {
+            principal: principal.as_str().to_string(),
+            kind: PostingKind::Counted,
+            incarnation: self.incarnation,
+            key: at.key.clone(),
+            window: at.window,
+            reserved: 0,
+            settled: 0,
+            overdraft: 0,
+            rate_card_version: at.stamp.rate_card_version,
+            wall: at.stamp.wall,
+            mono: at.stamp.mono,
+            counts: Some(counts.clone()),
+            refusal,
+        };
+        if posting.refusal.is_some() {
+            self.refused.push(posting.clone());
+        }
+        let entry =
+            Entry::new(RecordClass::Transaction, posting.body()).at(posting.wall, posting.mono);
+        let appended = self.journal.append(at.durability, at.step, &[entry]);
+        self.confirm(appended.as_ref().ok());
+        appended.map(|_| posting)
+    }
+
+    /// The counts rows whose pricing refused, oldest first.
+    #[must_use]
+    pub fn refused_rows(&self) -> &[Posting] {
+        &self.refused
+    }
+
+    /// **THE BOOK'S SETTLED FIGURE FOR ONE BALANCE AND WINDOW — or the refusal (#42).**
+    ///
+    /// `settled` read together with `unreconciled` (a posting the log has not confirmed has not left
+    /// the book). A balance and window on which a unit's counts REFUSED to price has no figure: the
+    /// priced remainder would answer the refused class at nothing, which is the silent zero #42
+    /// forbids on a present card. So the read refuses, naming the row.
+    ///
+    /// # Errors
+    ///
+    /// [`RefusedCounts`]: a counts row on this balance and window whose pricing refused.
+    pub fn settled_read(
+        &self,
+        key: &TotalsKey,
+        window: WindowStart,
+    ) -> Result<i128, Box<RefusedCounts>> {
+        if let Some(row) = self
+            .refused
+            .iter()
+            .find(|row| row.key == *key && row.window == window)
+        {
+            return Err(Box::new(RefusedCounts {
+                key: row.key.clone(),
+                window: row.window,
+                lane: row
+                    .counts
+                    .as_ref()
+                    .map(|c| c.lane.clone())
+                    .unwrap_or_default(),
+                refusal: row.refusal.clone().unwrap_or_default(),
+            }));
+        }
+        let figures = self.ledger.book().get(key, window);
+        Ok(figures.settled.saturating_add(figures.unreconciled))
+    }
+
     fn journal_settlement(
         &mut self,
         at: &Settling<'_>,
@@ -490,6 +605,19 @@ impl Durability {
         settlement: Settlement,
         incarnation: u64,
     ) -> Result<Settled, DurabilityLost> {
+        self.journal_settlement_counted(at, settlement, incarnation, None)
+    }
+
+    /// [`Durability::journal_settlement_as`], with the unit's raw counts on the settlement's record
+    /// where the caller knows them. The carry beside it repeats no counts, as it repeats no reserved
+    /// or settled figure: one fact, one record.
+    fn journal_settlement_counted(
+        &mut self,
+        at: &Settling<'_>,
+        settlement: Settlement,
+        incarnation: u64,
+        counts: Option<&UnitCounts>,
+    ) -> Result<Settled, DurabilityLost> {
         let stamp = at.stamp;
         let principal = settlement.posted.principal().as_str().to_string();
         let posting = Posting {
@@ -504,6 +632,8 @@ impl Durability {
             rate_card_version: stamp.rate_card_version,
             wall: stamp.wall,
             mono: stamp.mono,
+            counts: counts.cloned(),
+            refusal: None,
         };
         // The overdraft's own record. Reserved and settled are zero on it deliberately: the
         // settlement above already carries both, and repeating them here would double every figure
@@ -521,6 +651,8 @@ impl Durability {
             rate_card_version: stamp.rate_card_version,
             wall: stamp.wall,
             mono: stamp.mono,
+            counts: None,
+            refusal: None,
         });
         // ONE BATCH, both records. A batch is the unit of durability — one store round trip
         // memory-buffered, one fsync on disk — and the settlement and its carry are two entries of
@@ -657,6 +789,33 @@ pub trait MoneyBook: Send + Sync {
         at: &Settling<'_>,
         posted: busbar_contract::caps::Posted,
     ) -> Result<Settled, DurabilityLost>;
+
+    /// [`MoneyBook::settle_posted`] with the unit's raw counts on the record (#71). See
+    /// [`Durability::settle_counted`].
+    ///
+    /// # Errors
+    ///
+    /// As [`MoneyBook::settle_posted`].
+    fn settle_counted(
+        &self,
+        at: &Settling<'_>,
+        posted: busbar_contract::caps::Posted,
+        counts: &UnitCounts,
+    ) -> Result<Settled, DurabilityLost>;
+
+    /// The unit's raw counts with no figure behind them — priced to nothing, or REFUSED (#42/#43).
+    /// See [`Durability::post_counts`].
+    ///
+    /// # Errors
+    ///
+    /// As [`MoneyBook::settle_posted`].
+    fn post_counts(
+        &self,
+        at: &Settling<'_>,
+        principal: &busbar_contract::caps::PrincipalId,
+        counts: &UnitCounts,
+        refusal: Option<String>,
+    ) -> Result<Posting, DurabilityLost>;
 }
 
 /// The byte-identical pass-through: settle onto the ONE shared durability book (DECISION #25).
@@ -697,6 +856,27 @@ impl MoneyBook for SharedBook {
         let mut durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
         durability.settle_posted(at, posted)
     }
+
+    fn settle_counted(
+        &self,
+        at: &Settling<'_>,
+        posted: busbar_contract::caps::Posted,
+        counts: &UnitCounts,
+    ) -> Result<Settled, DurabilityLost> {
+        let mut durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
+        durability.settle_counted(at, posted, counts)
+    }
+
+    fn post_counts(
+        &self,
+        at: &Settling<'_>,
+        principal: &busbar_contract::caps::PrincipalId,
+        counts: &UnitCounts,
+        refusal: Option<String>,
+    ) -> Result<Posting, DurabilityLost> {
+        let mut durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
+        durability.post_counts(at, principal, counts, refusal)
+    }
 }
 
 /// A settlement as the journal carries it.
@@ -728,7 +908,68 @@ pub struct Posting {
     pub wall: u64,
     /// The node's monotonic clock.
     pub mono: u64,
+    /// THE UNIT'S RAW COUNTS, per class string (#71) — `None` on a record written before they were
+    /// carried, and on a record whose writer did not know them (the carry, and every plane that
+    /// settles through [`Durability::settle_posted`]).
+    pub counts: Option<UnitCounts>,
+    /// Why the counts on a [`PostingKind::Counted`] row could not be priced; `None` on every other
+    /// record, and on a counts row that priced to nothing.
+    pub refusal: Option<String>,
 }
+
+/// A unit's raw counts, as its posting record carries them (#71): the lane that served it, the
+/// billable-request count the flat fee is charged on, and the count per class string — the reserved
+/// four and every OPEN class alike. No price: pricing is the read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UnitCounts {
+    /// The serving lane, the key a card entry is written against.
+    pub lane: String,
+    /// How many billable requests the unit is.
+    pub fee_count: u64,
+    /// The count per class string, as the plane reported it.
+    pub classes: std::collections::BTreeMap<String, u64>,
+}
+
+impl UnitCounts {
+    /// The counts as one row of a ledger slice at `arrived_ms` — what a read prices through the one
+    /// function (`busbar_kernel_ledger::cost::price_in_view`).
+    #[must_use]
+    pub fn entry(&self, arrived_ms: u64) -> busbar_kernel_ledger::cost::LedgerEntry {
+        self.classes
+            .iter()
+            .fold(
+                busbar_kernel_ledger::cost::LedgerEntry::new(self.lane.as_str(), arrived_ms),
+                |entry, (class, count)| entry.with_whole(class.as_str(), *count),
+            )
+            .with_fee_count(self.fee_count)
+    }
+}
+
+/// A read that met a counts row the card refused to price (#42). Never a figure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusedCounts {
+    /// The balance the row sits on.
+    pub key: TotalsKey,
+    /// Its window.
+    pub window: WindowStart,
+    /// The lane that served the unit.
+    pub lane: String,
+    /// Why the pricing refused.
+    pub refusal: String,
+}
+
+impl std::fmt::Display for RefusedCounts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} in the window opening at {}: a unit's counts on lane {:?} could not be priced ({}); \
+             the balance has no figure",
+            self.key, self.window, self.lane, self.refusal
+        )
+    }
+}
+
+impl std::error::Error for RefusedCounts {}
 
 impl Posting {
     /// The journal body: the balance it moved, the window, and the three figures — and then what a
@@ -754,6 +995,22 @@ impl Posting {
         body.num(self.incarnation);
         body.text(&self.principal);
         write_key(&mut body, &self.key);
+        // THE COUNTS TAIL (#71), appended after the v2 tail exactly as that one was appended after
+        // the original six fields: a record without it is a record written before it existed and
+        // reads back with no counts, so a journal written by an earlier build rebuilds the same
+        // book. Written only where the counts are known, so every other record is byte-identical.
+        if let Some(counts) = &self.counts {
+            body.text(POSTING_COUNTS_TAIL);
+            body.text(&counts.lane);
+            body.num(counts.fee_count);
+            body.num(counts.classes.len() as u64);
+            for (class, count) in &counts.classes {
+                body.text(class);
+                body.num(*count);
+            }
+            body.num(u64::from(self.refusal.is_some()));
+            body.text(self.refusal.as_deref().unwrap_or(""));
+        }
         body.finish()
     }
 
@@ -778,9 +1035,20 @@ impl Posting {
         let incarnation = body.num()?;
         let principal = body.text()?.to_string();
         let key = read_key(&mut body)?;
+        let (counts, refusal) = if body.is_done() {
+            // A record written before the counts tail: no counts, and nothing refused.
+            (None, None)
+        } else {
+            read_counts(&mut body)?
+        };
         // The two spellings of the balance must name the same one, or this is not a body this
         // build wrote and reading it would be guessing.
         if !body.is_done() || key.to_string() != shown {
+            return None;
+        }
+        // A counts row carries its counts by definition; one without them is not a body this
+        // build wrote.
+        if kind == PostingKind::Counted && counts.is_none() {
             return None;
         }
         Some(Posting {
@@ -795,8 +1063,44 @@ impl Posting {
             rate_card_version,
             wall: record.wall,
             mono: record.mono,
+            counts,
+            refusal,
         })
     }
+}
+
+/// The counts tail, read back. `None` for a tail this build did not write.
+fn read_counts(body: &mut BodyReader<'_>) -> Option<(Option<UnitCounts>, Option<String>)> {
+    if body.text()? != POSTING_COUNTS_TAIL {
+        return None;
+    }
+    let lane = body.text()?.to_string();
+    let fee_count = body.num()?;
+    let n = body.num()?;
+    let mut classes = std::collections::BTreeMap::new();
+    for _ in 0..n {
+        let class = body.text()?.to_string();
+        let count = body.num()?;
+        // One class twice is not a body this build wrote: the writer iterates a map.
+        if classes.insert(class, count).is_some() {
+            return None;
+        }
+    }
+    let refused = body.num()?;
+    let why = body.text()?.to_string();
+    let refusal = match refused {
+        0 if why.is_empty() => None,
+        1 => Some(why),
+        _ => return None,
+    };
+    Some((
+        Some(UnitCounts {
+            lane,
+            fee_count,
+            classes,
+        }),
+        refusal,
+    ))
 }
 
 /// Which of a settlement's two records a [`Posting`] is.
@@ -807,6 +1111,9 @@ pub enum PostingKind {
     /// The overdraft carry beside it, repeating the part nothing reserved. Replaying it as well
     /// would count that part twice.
     Carry,
+    /// A unit's raw counts with NO figure behind them (#43: the write is unconditional): the counts
+    /// priced to nothing, or the card REFUSED to price them (#42). It moves no balance.
+    Counted,
 }
 
 impl PostingKind {
@@ -814,6 +1121,7 @@ impl PostingKind {
         match self {
             PostingKind::Settlement => 1,
             PostingKind::Carry => 2,
+            PostingKind::Counted => 3,
         }
     }
 
@@ -821,6 +1129,7 @@ impl PostingKind {
         match code {
             1 => Some(PostingKind::Settlement),
             2 => Some(PostingKind::Carry),
+            3 => Some(PostingKind::Counted),
             _ => None,
         }
     }
@@ -828,6 +1137,9 @@ impl PostingKind {
 
 /// The tag between a posting's original fields and the tail a rebuild reads.
 const POSTING_TAIL: &str = "posting.v2";
+
+/// The tag between the v2 tail and the unit's raw counts (#71).
+const POSTING_COUNTS_TAIL: &str = "posting.counts.v1";
 
 /// The tag a hold's journal record opens with. No posting can begin with it: a posting's first
 /// field is a balance's display, which always carries a `/`.
@@ -955,6 +1267,8 @@ struct Replayed {
     incarnation: u64,
     /// Records that look like this build's money records and could not be read.
     unreadable: Vec<String>,
+    /// Counts rows whose pricing refused, in chain order.
+    refused: Vec<Posting>,
 }
 
 impl Replayed {
@@ -964,6 +1278,7 @@ impl Replayed {
             open: Vec::new(),
             incarnation: 0,
             unreadable: Vec::new(),
+            refused: Vec::new(),
         }
     }
 }
@@ -978,6 +1293,7 @@ fn replay_into(ledger: &mut Ledger, records: &[JournalRecord]) -> Replayed {
     let mut open: Vec<HoldOpened> = Vec::new();
     let mut incarnation = 0;
     let mut unreadable = Vec::new();
+    let mut refused = Vec::new();
     for record in records
         .iter()
         .filter(|r| r.class == RecordClass::Transaction)
@@ -988,6 +1304,14 @@ fn replay_into(ledger: &mut Ledger, records: &[JournalRecord]) -> Replayed {
             open.push(hold);
         } else if let Some(posting) = Posting::from_record(record) {
             incarnation = incarnation.max(posting.incarnation);
+            if posting.kind == PostingKind::Counted {
+                // No balance moves for a counts row; a refused one is kept, so the reads over its
+                // balance refuse after a restart exactly as they did before it.
+                if posting.refusal.is_some() {
+                    refused.push(posting);
+                }
+                continue;
+            }
             if posting.kind == PostingKind::Settlement {
                 let (Ok(reserved), Ok(settled), Ok(overdraft)) = (
                     u64::try_from(posting.reserved),
@@ -1029,6 +1353,7 @@ fn replay_into(ledger: &mut Ledger, records: &[JournalRecord]) -> Replayed {
         open,
         incarnation,
         unreadable,
+        refused,
     }
 }
 
@@ -1072,12 +1397,23 @@ pub enum JournalDisagreement {
         /// What the book holds.
         book: Box<Totals>,
     },
+    /// The refused counts rows the node holds are not the ones its chain holds.
+    RefusedRows {
+        /// How many the chain rebuilds.
+        journal: usize,
+        /// How many the node holds.
+        book: usize,
+    },
 }
 
 impl std::fmt::Display for JournalDisagreement {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             JournalDisagreement::Unreadable(why) => f.write_str(why),
+            JournalDisagreement::RefusedRows { journal, book } => write!(
+                f,
+                "the journal rebuilds {journal} refused counts row(s), the node holds {book}"
+            ),
             JournalDisagreement::Balance {
                 key,
                 window,
@@ -1359,6 +1695,7 @@ pub fn build_for_node(
         incarnation: 0,
         restart_findings: Vec::new(),
         recovered_holds: 0,
+        refused: Vec::new(),
         unconfirmed: Vec::new(),
     };
 
@@ -1379,6 +1716,7 @@ pub fn build_for_node(
         ),
     };
     durability.incarnation = replayed.incarnation.saturating_add(1);
+    durability.refused = replayed.refused;
 
     // THE HOLDS A PREDECESSOR LEFT OPEN ARE RECOVERED HERE, before anything can settle onto this
     // book (item 127): `recovery::recover_all` had no production caller, so a hold whose node died

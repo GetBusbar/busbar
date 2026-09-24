@@ -185,6 +185,8 @@ fn posting() -> Posting {
         principal: "vk_a".to_string(),
         kind: PostingKind::Settlement,
         incarnation: 1,
+        counts: None,
+        refusal: None,
     }
 }
 
@@ -1214,4 +1216,281 @@ fn a_posting_the_journal_lost_is_unreconciled_until_the_log_confirms_it() {
         "the next append re-offered it and it was confirmed"
     );
     assert_eq!(figures.settled, 850);
+}
+
+// ---------------------------------------------------------------------------------------------
+// P2A-books (#71/#43/#42): THE POSTING RECORD CARRIES THE UNIT'S RAW COUNTS
+// ---------------------------------------------------------------------------------------------
+
+/// A unit's counts on lane `"lane"`: a reserved class and an OPEN one.
+fn unit_counts() -> UnitCounts {
+    UnitCounts {
+        lane: "lane".to_string(),
+        fee_count: 1,
+        classes: std::collections::BTreeMap::from([
+            ("input".to_string(), 1_000),
+            ("search_units".to_string(), 50),
+        ]),
+    }
+}
+
+/// THE BODY A POSTING HAD BEFORE THE COUNTS TAIL — spelled out field by field, not by calling
+/// [`Posting::body`], so the replay below is judged against the bytes an earlier build wrote.
+fn pre_counts_body(p: &Posting) -> Vec<u8> {
+    let mut body = BodyWriter::new();
+    body.text(&p.key.to_string());
+    body.num(p.window);
+    body.figure(p.reserved);
+    body.figure(p.settled);
+    body.figure(p.overdraft);
+    body.num(p.rate_card_version);
+    body.text("posting.v2");
+    body.num(1);
+    body.num(p.incarnation);
+    body.text(&p.principal);
+    write_key(&mut body, &p.key);
+    body.finish()
+}
+
+/// REPLAY COMPATIBILITY: a journal written before the counts tail existed rebuilds the same book.
+///
+/// The chain is written with the PRE-CHANGE bodies (a hold, and the settlement that closes it), the
+/// node restarts over it, and the book is the book those records describe — no finding, no
+/// recovered hold, no counts invented. A node that writes the same unit through the counted path
+/// rebuilds the same figures: the counts are a fact beside the money and move no balance.
+#[test]
+fn a_journal_written_before_the_counts_tail_rebuilds_the_same_book() {
+    let scratch = ScratchDir::new("pre-counts-replay");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let key = totals_key("vk_a");
+    let old = posting();
+    // A record with no counts writes the pre-change bytes exactly: nothing another plane writes moved.
+    assert_eq!(
+        old.body(),
+        pre_counts_body(&old),
+        "a count-less body is byte-identical"
+    );
+    {
+        let mut durability = build_for_node(&cfg, 5, Box::new(NullShipper::new()), rows())
+            .expect("the directory is writable");
+        let token = token();
+        let hold = HoldOpened {
+            key: key.clone(),
+            window: old.window,
+            principal: old.principal.clone(),
+            reserved: 5_000,
+            incarnation: 1,
+            wall: old.wall,
+            mono: old.mono,
+        };
+        let entries = [
+            Entry::new(RecordClass::Transaction, hold.body()).at(old.wall, old.mono),
+            Entry::new(RecordClass::Transaction, pre_counts_body(&old)).at(old.wall, old.mono),
+        ];
+        durability
+            .journal
+            .append(&token, StepName::Meter, &entries)
+            .expect("the journal takes the pre-change records");
+    }
+    let restarted =
+        build_for_node(&cfg, 5, Box::new(NullShipper::new()), rows()).expect("the journal reopens");
+    assert!(
+        restarted.restart_findings.is_empty(),
+        "a pre-change chain reconciles clean: {:?}",
+        restarted.restart_findings
+    );
+    assert_eq!(
+        restarted.recovered_holds, 0,
+        "the pre-change posting closed its hold"
+    );
+    let figures = restarted.ledger.book().get(&key, 86_400);
+    assert_eq!(figures.settled, 4_200);
+    assert_eq!(figures.drawn, 5_000);
+    assert_eq!(figures.open_holds, 0);
+    assert!(restarted.refused_rows().is_empty());
+    let replayed = restarted
+        .journal
+        .replay()
+        .expect("reads")
+        .expect("verifies");
+    let read_back = replayed
+        .iter()
+        .find_map(Posting::from_record)
+        .expect("the pre-change posting reads back");
+    assert_eq!(
+        read_back.counts, None,
+        "no counts are invented for an old record"
+    );
+    assert_eq!(read_back.settled, 4_200);
+    drop(restarted);
+
+    // The SAME unit written through the counted path, and its record re-spelled as the pre-change
+    // body: the two chains rebuild the same book, and only the counted one carries the counts.
+    let scratch_counted = ScratchDir::new("counted-replay");
+    let scratch_old = ScratchDir::new("counted-replay-old");
+    let counted_cfg = DurabilityConfig {
+        data_dir: Some(scratch_counted.path.clone()),
+    };
+    let old_cfg = DurabilityConfig {
+        data_dir: Some(scratch_old.path.clone()),
+    };
+    let written = {
+        let mut durability = build_for_node(&counted_cfg, 5, Box::new(NullShipper::new()), rows())
+            .expect("the directory is writable");
+        late_counted(&mut durability, &key, 4_200, &unit_counts())
+    };
+    assert_eq!(written.counts, Some(unit_counts()));
+    {
+        let mut durability = build_for_node(&old_cfg, 5, Box::new(NullShipper::new()), rows())
+            .expect("the directory is writable");
+        let entry = Entry::new(RecordClass::Transaction, pre_counts_body(&written))
+            .at(written.wall, written.mono);
+        durability
+            .journal
+            .append(&token(), StepName::Meter, &[entry])
+            .expect("the journal takes the pre-change record");
+    }
+    let counted = build_for_node(&counted_cfg, 5, Box::new(NullShipper::new()), rows())
+        .expect("the journal reopens");
+    let old_chain = build_for_node(&old_cfg, 5, Box::new(NullShipper::new()), rows())
+        .expect("the journal reopens");
+    assert!(
+        counted.restart_findings.is_empty(),
+        "{:?}",
+        counted.restart_findings
+    );
+    assert!(
+        old_chain.restart_findings.is_empty(),
+        "{:?}",
+        old_chain.restart_findings
+    );
+    assert_eq!(
+        counted.ledger.book().snapshot(),
+        old_chain.ledger.book().snapshot(),
+        "a pre-change body rebuilds the same book as the counted one"
+    );
+    assert_eq!(counted.ledger.book().get(&key, 86_400).settled, 4_200);
+    let read = |d: &Durability| {
+        d.journal
+            .replay()
+            .expect("reads")
+            .expect("verifies")
+            .iter()
+            .filter_map(Posting::from_record)
+            .find(|p| p.kind == PostingKind::Settlement)
+            .expect("the settlement reads back")
+    };
+    assert_eq!(
+        read(&counted).counts,
+        Some(unit_counts()),
+        "every class cell, the open one included"
+    );
+    assert_eq!(read(&old_chain).counts, None);
+}
+
+/// A late settlement of `amount` (no hold behind it, as the LLM late arm posts), with its counts.
+fn late_counted(
+    durability: &mut Durability,
+    key: &TotalsKey,
+    amount: u64,
+    counts: &UnitCounts,
+) -> Posting {
+    use busbar_contract::caps::{Grant, HoldAccrual, KernelSeal, Posted, PrincipalId, WriteMoney};
+    let seal = KernelSeal::acquire_for_kernel();
+    let ledger = Grant::<WriteMoney>::mint(&seal);
+    let accrual =
+        HoldAccrual::after_terminal(PrincipalId::new(key.bucket.as_str()), amount, &ledger);
+    let posted = Posted::settle_late(accrual, &ledger);
+    let durability_token = token();
+    durability
+        .settle_counted(&settling(key, &durability_token), posted, counts)
+        .expect("the journal takes the posting")
+        .posting
+}
+
+/// A REFUSED COUNTS ROW IS DURABLE, MOVES NO BALANCE, AND EVERY READ OVER IT REFUSES (#42/#43) —
+/// before a restart and after one.
+#[test]
+fn a_refused_counts_row_survives_a_restart_and_the_read_refuses() {
+    let scratch = ScratchDir::new("refused-row");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let key = totals_key("vk_refused");
+    let principal = busbar_contract::caps::PrincipalId::new("vk_refused");
+    {
+        let mut durability = build_for_node(&cfg, 6, Box::new(NullShipper::new()), rows())
+            .expect("the directory is writable");
+        let durability_token = token();
+        let row = durability
+            .post_counts(
+                &settling(&key, &durability_token),
+                &principal,
+                &unit_counts(),
+                Some("ClassUnpriced search_units".to_string()),
+            )
+            .expect("the journal takes the counts row");
+        assert_eq!(row.kind, PostingKind::Counted);
+        assert_eq!((row.reserved, row.settled, row.overdraft), (0, 0, 0));
+        assert_eq!(
+            durability.ledger.book().get(&key, 86_400),
+            Totals::zero(),
+            "a refused row moves no balance"
+        );
+        let refused = durability
+            .settled_read(&key, 86_400)
+            .expect_err("a read over a refused row refuses");
+        assert_eq!(refused.lane, "lane");
+        assert!(durability.reconcile_with_journal().is_empty());
+    }
+    let restarted =
+        build_for_node(&cfg, 6, Box::new(NullShipper::new()), rows()).expect("the journal reopens");
+    assert!(
+        restarted.restart_findings.is_empty(),
+        "{:?}",
+        restarted.restart_findings
+    );
+    assert_eq!(
+        restarted.refused_rows().len(),
+        1,
+        "the refused row survived the restart"
+    );
+    assert_eq!(restarted.refused_rows()[0].counts, Some(unit_counts()));
+    assert!(
+        restarted.settled_read(&key, 86_400).is_err(),
+        "the read still refuses after a restart"
+    );
+    assert_eq!(
+        restarted.settled_read(&totals_key("vk_other"), 86_400),
+        Ok(0),
+        "a balance with no refused row still reads"
+    );
+    assert_eq!(restarted.ledger.book().get(&key, 86_400), Totals::zero());
+}
+
+/// A node that lost a refused row from memory is named by the restart reconciliation.
+#[test]
+fn the_reconciliation_names_a_refused_row_the_node_lost() {
+    let mut durability = memory_node();
+    let key = totals_key("vk_lost_row");
+    let durability_token = token();
+    durability
+        .post_counts(
+            &settling(&key, &durability_token),
+            &busbar_contract::caps::PrincipalId::new("vk_lost_row"),
+            &unit_counts(),
+            Some("LaneUnpriced".to_string()),
+        )
+        .expect("taken");
+    assert!(durability.reconcile_with_journal().is_empty());
+    durability.refused.clear();
+    assert_eq!(
+        durability.reconcile_with_journal(),
+        vec![JournalDisagreement::RefusedRows {
+            journal: 1,
+            book: 0
+        }]
+    );
 }
