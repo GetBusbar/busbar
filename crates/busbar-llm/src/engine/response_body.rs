@@ -157,6 +157,38 @@ fn estimate_usage_from_truncated_tail(
     }
 }
 
+/// NO USAGE RECOVERED — the one answer for a delivered body whose usage could not be read: the
+/// dialect's own tail scan for its `usage` object, and when that yields nothing (the object is gone,
+/// or it holds a count the reader refuses), the conservative FLOOR over the bytes in hand. The
+/// truncated-tail arm and the refused-count arms share it, so the two can never bill differently.
+fn unrecovered_usage(protocol: &str, buf: &[u8]) -> busbar_substrate_values::billing::TokenUsage {
+    busbar_kernel::proto::decl_for(protocol)
+        .and_then(|d| d.dialect())
+        .and_then(|di| di.recover_truncated_usage(buf))
+        .unwrap_or_else(|| estimate_usage_from_truncated_tail(buf.len()))
+}
+
+/// The STREAM form of [`unrecovered_usage`]: a stream's reader refused a count after the bytes were
+/// delivered, and there is no reassembled body to scan, so it is the floor over the upstream bytes.
+fn unreadable_usage_floor(
+    protocol: &str,
+    upstream: usize,
+) -> busbar_substrate_values::billing::TokenUsage {
+    fault_unreadable(protocol, upstream);
+    estimate_usage_from_truncated_tail(upstream)
+}
+
+/// The fault an unreadable usage raises. It is billed (the floor), and it is still a fault.
+fn fault_unreadable(protocol: &str, delivered: usize) {
+    busbar_substrate_values::diag_warn!(
+        busbar_substrate_values::diagnostics::USAGE_TAP_DECODE_FAILED,
+        protocol,
+        delivered,
+        "usage is present but unreadable on a delivered response; billing the floor estimate, \
+         never 0"
+    );
+}
+
 /// Body wrapper that drives IR-based usage extraction, billing, and mid-stream error handling for
 /// streaming responses.
 pub(crate) struct FirstByteBody<S, P> {
@@ -251,6 +283,11 @@ pub(crate) struct FirstByteBody<S, P> {
     /// otherwise reliably fail to parse a fragment). Also gates the truncation counter/warn to fire
     /// ONCE per response rather than once per over-cap chunk.
     nonstream_buf_truncated: bool,
+    /// Every upstream byte this body has read, counted on the one arm every chunk passes through.
+    /// It exists for ONE figure: when the stream's reader REFUSED a count it could not read (the
+    /// terminal error is `ir_parse`), no usage was recovered, and the request bills the SAME floor
+    /// the truncated-tail path bills — over the upstream bytes, the measure that floor is taken on.
+    upstream_bytes: usize,
     /// THE STREAM CEILING — the re-provision of reqwest's total-timeout envelope over the BODY:
     /// a `Sleep` polled BEFORE the inner stream on every wakeup, so expiry cuts the body exactly
     /// as reqwest's `TotalTimeoutBody` did, even while chunks are still flowing. The DEADLINE is
@@ -328,6 +365,7 @@ where
             ended: false,
             nonstream_buf: Vec::new(),
             nonstream_buf_truncated: false,
+            upstream_bytes: 0,
             ceiling,
             tap,
         }
@@ -385,6 +423,7 @@ where
                     if !this.first_byte_sent {
                         this.first_byte_sent = true;
                     }
+                    this.upstream_bytes = this.upstream_bytes.saturating_add(chunk.len());
                     // cross-protocol → translate egress SSE bytes to the ingress format. SAME-protocol
                     // → `t.feed` returns the VERBATIM original frame bytes. Billing reads the
                     // IR-derived `t.usage()` at stream end — there is no byte-scanner tap on this
@@ -781,7 +820,20 @@ where
                         if this.usage_sink.is_none() {
                             None
                         } else if let Some(t) = this.translate.as_ref() {
-                            t.usage()
+                            // A reader that REFUSED a count it could not read ends the stream in an
+                            // `ir_parse` error — after the body was delivered. That is NO usage
+                            // recovered, so it bills the floor the truncated-tail path bills, never
+                            // whatever fragment was read before the refusal (ruling, item 133).
+                            if t.terminal_error()
+                                == Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE)
+                            {
+                                Some(unreadable_usage_floor(
+                                    this.ingress_protocol,
+                                    this.upstream_bytes,
+                                ))
+                            } else {
+                                t.usage()
+                            }
                         } else if !this.is_sse && !this.nonstream_buf.is_empty() {
                             // Same-protocol non-stream body relayed verbatim; the operation reads
                             // usage from the reassembled bytes. Chat runs the egress reader and
@@ -796,23 +848,32 @@ where
                                 // the self-contained `usage` sub-object instead (see
                                 // `usage::recover_truncated_usage`'s doc comment for why this is safe and
                                 // why it duplicates rather than reuses each reader's field mapping).
-                                let tail_len = buf.len();
-                                busbar_kernel::proto::decl_for(this.ingress_protocol)
-                                    .and_then(|d| d.dialect())
-                                    .and_then(|di| di.recover_truncated_usage(&buf))
-                                    // C2 fail-open-to-free fix: a body large enough to OVERFLOW the
-                                    // reassembly cap demonstrably consumed tokens. When the tail scan
-                                    // cannot isolate the `usage` object — the usage object itself fell
-                                    // past the retained tail, or the dialect is unrecognized —
-                                    // returning `None` here meters those real tokens at $0 (only the
-                                    // flat fee lands): a silent under-bill on exactly the LARGEST
-                                    // responses. Fall back to a conservative FLOOR estimate derived
-                                    // from the retained tail so the request is never silently free.
-                                    // Genuine "no usage" (a truly empty / errored response) never
-                                    // truncates and so never reaches this arm — it still bills nothing.
-                                    .or_else(|| Some(estimate_usage_from_truncated_tail(tail_len)))
+                                //
+                                // C2 fail-open-to-free fix: a body large enough to OVERFLOW the
+                                // reassembly cap demonstrably consumed tokens. When the tail scan
+                                // cannot isolate the `usage` object — the usage object itself fell
+                                // past the retained tail, or the dialect is unrecognized — metering
+                                // those real tokens at $0 (only the flat fee lands) is a silent
+                                // under-bill on exactly the LARGEST responses, so `unrecovered_usage`
+                                // falls back to a conservative FLOOR estimate derived from the
+                                // retained tail and the request is never silently free. Genuine "no
+                                // usage" (a truly empty / errored response) never truncates and so
+                                // never reaches this arm — it still bills nothing.
+                                Some(unrecovered_usage(this.ingress_protocol, &buf))
                             } else {
-                                this.op.extract_usage(this.ingress_protocol, &buf)
+                                // A whole body the op's own codec REFUSED to read (a present count it
+                                // could not read, item 133) was already delivered: that is no usage
+                                // recovered, billed exactly as the truncated arm above bills it. A body
+                                // that READ cleanly and simply carries no token usage (an image op)
+                                // still bills nothing — `read_response` is the one that decides.
+                                this.op
+                                    .extract_usage(this.ingress_protocol, &buf)
+                                    .or_else(|| {
+                                        this.op.op_handler.read_response(&buf).is_err().then(|| {
+                                            fault_unreadable(this.ingress_protocol, buf.len());
+                                            unrecovered_usage(this.ingress_protocol, &buf)
+                                        })
+                                    })
                             }
                         } else {
                             None
@@ -967,3 +1028,7 @@ impl<S, P> FirstByteBody<S, P> {
         Body::from_stream(self)
     }
 }
+
+#[cfg(test)]
+#[path = "tests/unreadable_usage_floor_tests.rs"]
+mod unreadable_usage_floor_tests;
