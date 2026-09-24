@@ -276,16 +276,26 @@ pub struct Resolved {
     pub reason: Option<String>,
 }
 
-/// The whole reconciliation: the release commit (the sha the manifest is anchored to) and every
-/// suite's resolved state. The release commit is the one the armed passing verdicts AGREE on — the
-/// mode — so a lone verdict from a stale sha cannot drag the anchor with it; it is downgraded
-/// against the anchor instead.
+/// The whole reconciliation: the MANIFEST ANCHOR (the sha the manifest's entries are recorded
+/// against) and every suite's resolved state. The anchor is the one the armed passing verdicts
+/// AGREE on — the mode — so a lone verdict from a stale sha cannot drag the manifest's record with
+/// it; it is downgraded against the anchor instead.
+///
+/// THE ANCHOR IS NOT THE RELEASE COMMIT, and the freshness row must never be judged against it.
+/// A commit derived from the verdicts is a commit the verdicts agree with by construction: ten
+/// verdicts all carried over from the same old sha elect that old sha, and every one of them is
+/// then "about the anchor". Only the minority could ever be caught (item 165 — the sibling of the
+/// config-schema `HEAD`-as-baseline circularity, `config_schema/mod.rs:26-32`). The release commit
+/// is resolved from OUTSIDE the verdicts, by [`release_commit`], and [`stale_against`] is the
+/// freshness judgement.
 pub struct Assessment {
+    /// The manifest anchor — the mode of the armed passing verdicts' commits. NOT the release commit.
     pub commit: String,
     pub generated_at: String,
     pub resolved: Vec<Resolved>,
-    /// Suites whose verdict claims a green on a commit that is NOT the release commit — the stale
-    /// passes the freshness row refuses.
+    /// Suites whose verdict claims a green on a commit that is NOT the manifest anchor — the ones
+    /// the manifest render downgrades to `not-run(stale)`. The freshness row does not read this; it
+    /// reads [`stale_against`] the release commit.
     pub stale: Vec<String>,
 }
 
@@ -370,6 +380,56 @@ pub fn assess(cx: &Ctx, suites: &[Suite]) -> Result<Assessment, String> {
         resolved,
         stale,
     })
+}
+
+/// The overlay key a self-test plants the release commit under. The real run asks git.
+pub const RELEASE_COMMIT_KEY: &str = "conformance-release-commit";
+
+/// THE RELEASE COMMIT — the sha of the checkout under judgement (`git rev-parse HEAD`), resolved
+/// from OUTSIDE the verdicts it judges. The release pipeline drops the verdicts it downloaded into
+/// a checkout OF the release sha before running this gate, so there `HEAD` is the release commit;
+/// on any other commit every carried-over pass is stale, which is the rule (KICKOFF §7.3: every
+/// commit invalidates every conformance pass). An unresolvable commit is an error, never a pass —
+/// an empty anchor would make "stale" unanswerable.
+pub fn release_commit(cx: &Ctx) -> Result<String, String> {
+    let sha = match cx.overlay_command(RELEASE_COMMIT_KEY) {
+        Some(planted) => planted,
+        None => cx
+            .git(&["rev-parse", "HEAD"])
+            .map_err(|e| format!("`git rev-parse HEAD` failed: {e}"))?,
+    };
+    let sha = sha.trim().to_string();
+    if sha.is_empty() {
+        return Err(
+            "the release commit resolved to an empty sha — no pass can be judged fresh \
+                    against nothing"
+                .to_string(),
+        );
+    }
+    Ok(sha)
+}
+
+/// Every suite whose verdict is an ARMED PASS on a commit that is not `release` — the stale passes
+/// the freshness row refuses. Judged over every armed pass the tree holds, whatever the manifest
+/// anchor made of it: a pass is honoured only if its commit IS the release commit.
+pub fn stale_against(a: &Assessment, release: &str) -> Vec<String> {
+    a.resolved
+        .iter()
+        .filter_map(|r| {
+            let v = r.verdict.as_ref()?;
+            (v.armed && v.status == "pass" && v.commit != release).then(|| {
+                format!(
+                    "{} (verdict commit {})",
+                    r.suite.id,
+                    if v.commit.is_empty() {
+                        "<none>".to_string()
+                    } else {
+                        short(&v.commit)
+                    }
+                )
+            })
+        })
+        .collect()
 }
 
 fn short(sha: &str) -> String {
@@ -542,12 +602,45 @@ pub fn rewrite_readme(readme: &str, block: &str) -> Option<String> {
 
 // ── THE NO-ORPHAN-CLAIM BACKSTOP (§5, `conformance:no-orphan-claim`) ──────────────────────────────
 
-/// Every registered suite's badge alt string that appears in the README OUTSIDE the marked span. The
-/// belt to the render's braces: a hand-pasted "MCP conformant" is caught even though the
-/// marker-render never put it there, and a claim for a suite that is not green is caught wherever it
-/// sits. Returns the offending `(suite id, token)` pairs.
-pub fn no_orphan_claims(readme: &str, suites: &[Suite]) -> Vec<(String, String)> {
-    let outside = match marked_span(readme) {
+/// THE CLAIM VOCABULARY — the words a human-visible conformance/certification claim is made of.
+/// Outside the generated badge block NONE of them may appear: the block is the only place a claim
+/// is allowed to exist, because it is the only place the manifest render put one.
+///
+/// WHY A VOCABULARY AND NOT ONLY THE REGISTRY (item 188). Searching only for each REGISTERED suite's
+/// badge string makes a claim for a standard that is in NO registry — "SOC 2 certified", "HIPAA
+/// compliant", "FIPS 140-3 validated", the purest unbacked claim there is — structurally invisible:
+/// the token set it is checked against is derived from the very registry that lacks it. Matched as
+/// whole words, case-insensitively, so `certificate` (TLS vocabulary) is not a claim.
+pub const CLAIM_WORDS: &[&str] = &[
+    "certified",
+    "certification",
+    "certifications",
+    "conformant",
+    "compliant",
+    "compliance",
+    "validated",
+    "accredited",
+    "accreditation",
+    "attested",
+];
+
+/// One claim found outside the generated badge block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Orphan {
+    /// A registered suite's badge alt string, hand-placed where the render did not put it.
+    Registered { id: String, token: String },
+    /// A claim word on a line that names no registered suite at all — a claim no registry entry,
+    /// and so no manifest entry, could ever back.
+    Unbacked {
+        line: usize,
+        word: String,
+        text: String,
+    },
+}
+
+/// The README with the marked span excised — everything the render did NOT write.
+fn outside_block(readme: &str) -> String {
+    match marked_span(readme) {
         Some((begin, end)) => {
             let mut s = String::with_capacity(readme.len());
             s.push_str(&readme[..begin]);
@@ -555,12 +648,41 @@ pub fn no_orphan_claims(readme: &str, suites: &[Suite]) -> Vec<(String, String)>
             s
         }
         None => readme.to_string(),
-    };
+    }
+}
+
+/// Every claim in the README OUTSIDE the marked span. The belt to the render's braces: a
+/// hand-pasted "MCP conformant" is caught even though the marker-render never put it there, a claim
+/// for a suite that is not green is caught wherever it sits, and a claim for a standard no registry
+/// names is caught by its vocabulary ([`CLAIM_WORDS`]). A line already reported for a registered
+/// token is not reported a second time for its claim word.
+pub fn no_orphan_claims(readme: &str, suites: &[Suite]) -> Vec<Orphan> {
+    let outside = outside_block(readme);
+    let tokens: Vec<(String, String)> =
+        suites.iter().map(|s| (s.id.clone(), alt_text(s))).collect();
     let mut out = Vec::new();
-    for s in suites {
-        let token = alt_text(s);
-        if outside.contains(&token) {
-            out.push((s.id.clone(), token));
+    for (id, token) in &tokens {
+        if outside.contains(token.as_str()) {
+            out.push(Orphan::Registered {
+                id: id.clone(),
+                token: token.clone(),
+            });
+        }
+    }
+    for (i, line) in outside.lines().enumerate() {
+        if tokens.iter().any(|(_, t)| line.contains(t.as_str())) {
+            continue;
+        }
+        let lower = line.to_lowercase();
+        let hit = lower
+            .split(|c: char| !c.is_alphanumeric())
+            .find(|w| CLAIM_WORDS.contains(w));
+        if let Some(word) = hit {
+            out.push(Orphan::Unbacked {
+                line: i + 1,
+                word: word.to_string(),
+                text: line.trim().chars().take(120).collect(),
+            });
         }
     }
     out
