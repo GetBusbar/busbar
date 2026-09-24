@@ -484,9 +484,12 @@ def scan_text(rel, body):
     """Every rule against every line of one file -> (hits, allowed)."""
     hits, allowed = [], []
     lines = body.split("\n")
+    # EVERY LINE IS SCANNED, WHATEVER ITS LENGTH. A length cut-off here once skipped any line over
+    # 4,000 characters on the theory that long lines are machine output — but a hand-written markdown
+    # table row in the operator-facing API document runs longer than that, and was silently exempt.
+    # Machine output is excluded BY PATH (SKIP_FILES: lockfiles, *.min.*, bundles, source maps),
+    # which says what a file IS rather than guessing from how wide one of its lines happens to be.
     for i, line in enumerate(lines):
-        if len(line) > 4000:  # a minified or generated one-liner: not prose anyone reads
-            continue
         for rule in RULES:
             if rule.skip and rule.skip.search(rel):
                 continue
@@ -803,6 +806,31 @@ def selftest(out=sys.stdout):
                 devnull.close()
         finally:
             shutil.rmtree(empty, ignore_errors=True)
+
+        # (6) LENGTH IS NOT AN EXEMPTION. Every rule's RED fixture line, buried at the end of a
+        #     hand-written prose line far wider than any editor window, must still be flagged by that
+        #     rule. Control: the same fixture line on its own is flagged, so a miss below is the
+        #     length and nothing else.
+        pad = "| a hand-written table cell describing the endpoint in plain prose " * 80
+        long_bad, probed = [], 0
+        for rid, (red, _green) in FIXTURES.items():
+            probe = next((ln for ln in red.split("\n")
+                          if any(h.rule.id == rid for h in scan_text(f"docs/{rid}.md", ln)[0])), None)
+            if probe is None:
+                continue  # a fixture whose hit needs multi-line context; (2) already proves it RED
+            probed += 1
+            long_line = pad + probe
+            if not any(h.rule.id == rid for h in scan_text(f"docs/{rid}.md", long_line)[0]):
+                long_bad.append((rid, len(long_line)))
+        if probed == 0:
+            fail = 1
+            out.write("  LONG-LINE FAILED: no fixture yielded a single-line probe; the check is vacuous\n")
+        elif long_bad:
+            fail = 1
+            out.write(f"  LONG-LINE FAILED: a violation on a long prose line went unscanned: {long_bad}\n")
+        else:
+            out.write(f"  LONG-LINE: {probed}/{len(FIXTURES)} rules still fire on a {len(pad)}+ character prose line "
+                      "(line length is not an exemption; machine output is excluded by path)\n")
 
         out.write(f"  self-test: {len(RULES)} rules, {red_ok} red fixtures flagged, "
                   f"{len(RULES) - len({p for p, _, _ in loud})} green twins silent\n")
