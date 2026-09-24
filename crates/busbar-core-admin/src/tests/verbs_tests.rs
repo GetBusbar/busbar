@@ -2063,3 +2063,107 @@ fn a_recovery_verb_waits_for_its_approval_under_required_dual_control() {
 /// The group-lookup adapter and the length-framed rotate slot, in their own file.
 #[path = "mint_wiring_tests.rs"]
 mod mint_wiring_tests;
+
+/// A claim journal that remembers every claim it was handed.
+#[derive(Default)]
+struct RecordingClaims(Mutex<Vec<((String, String), u64)>>);
+
+impl crate::idempotency::ClaimJournal for RecordingClaims {
+    fn journal_claim(&self, key: &(String, String), now: u64) {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push((key.clone(), now));
+    }
+}
+
+/// A journal bound through `Verbs` receives the claim both idempotency caches take: once per
+/// first sighting of a key, at the instant it was taken, and never again on the replay. Without
+/// the binding reaching the caches the journal hears nothing and every assertion below fails.
+#[test]
+fn a_bound_claim_journal_receives_each_claim_the_create_and_rotate_caches_take_through_verbs() {
+    let claims = std::sync::Arc::new(RecordingClaims::default());
+    let verbs =
+        make_verbs(FakeGovernance::new().with_key("k1", false))
+            .with_claim_journal(Some(std::sync::Arc::clone(&claims)
+                as std::sync::Arc<dyn crate::idempotency::ClaimJournal>));
+    let admin = admin();
+    let create = |now| {
+        verbs
+            .create_key(
+                &admin,
+                "alice",
+                VerbScope::Full,
+                now,
+                UnitKey::new(1),
+                Some("dedupe-me"),
+                None,
+                None,
+            )
+            .unwrap()
+    };
+    assert!(!create(1_000).is_replay());
+    assert!(create(1_010).is_replay());
+    let rotate = |now| {
+        verbs
+            .rotate_key(
+                &admin,
+                "alice",
+                VerbScope::Full,
+                now,
+                UnitKey::new(1),
+                Some("shared-header"),
+                "k1",
+            )
+            .unwrap()
+    };
+    assert!(!rotate(1_020).is_replay());
+    assert!(rotate(1_030).is_replay());
+
+    let seen = claims.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    assert_eq!(
+        seen.len(),
+        2,
+        "one claim per first sighting, none on a replay: {seen:?}"
+    );
+    assert_eq!(seen[0].0 .0, "alice");
+    assert_eq!(
+        seen[0].1, 1_000,
+        "the create's claim is taken at its instant"
+    );
+    assert_eq!(seen[1].0 .0, "alice");
+    assert_eq!(
+        seen[1].1, 1_020,
+        "the rotate's claim is taken at its instant"
+    );
+    assert_ne!(
+        seen[0].0 .1, seen[1].0 .1,
+        "the create and the rotate claim under their own scoped keys"
+    );
+}
+
+/// `None` is today's executor: nothing is journalled and the replay still answers.
+#[test]
+fn an_unbound_claim_journal_leaves_the_executor_as_it_was() {
+    let verbs = make_verbs(FakeGovernance::new()).with_claim_journal(None);
+    let admin = admin();
+    let call = |now| {
+        verbs
+            .create_key(
+                &admin,
+                "alice",
+                VerbScope::Full,
+                now,
+                UnitKey::new(1),
+                Some("dedupe-me"),
+                None,
+                None,
+            )
+            .unwrap()
+    };
+    let first = call(1_000);
+    let second = call(1_010);
+    assert!(!first.is_replay());
+    assert!(second.is_replay());
+    assert_eq!(second.body(), first.body());
+}
