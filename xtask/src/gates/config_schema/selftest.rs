@@ -129,6 +129,35 @@ fn drop_type(doc: &mut Value, key: &str) {
     }
 }
 
+/// THE FIXTURE BASE: the committed snapshot as the baseline, and an EMPTY waiver register — the
+/// unplanted state every `ROW_ADDITIVE_ONLY` red proof is measured from.
+///
+/// WHY A FIXTURE AND NOT THE REAL BASELINE. [`crate::gates::prove_red`] demands a GREEN -> RED
+/// transition, and it reads the GREEN half off the context it is handed. Handed the real tree, that
+/// half is the real render against the real freeze-point ref — which is RED today on real debt (the
+/// seven `PoolMember` removals; see the second control in [`run`]). Every additive red proof
+/// measured from there was PROOF IMPOSSIBLE: a planted break over a row that was already red proves
+/// nothing about whether the rule can fire.
+///
+/// Measured from THIS base instead, the unplanted additive row is honestly green — the committed
+/// snapshot is byte-equal to the fresh render, which the first control proves — and each case's
+/// plant is that same base with exactly one mutation, so the RED it produces is the plant's and
+/// no one else's. The real-tree red is not hidden by this: it stays RED on `cargo xtask gate
+/// config-schema` and on the second control below. This fixes the PROOF, not the tree.
+///
+/// The register is emptied for the same reason [`additive_green`] empties it: a verdict about
+/// waivers must not decide a case that is not about waivers.
+fn fixture_base(cx: &Ctx) -> Overlay {
+    baseline_with_waivers(cx, "# no waivers\n", |_| {})
+}
+
+/// The context whose UNPLANTED state is [`fixture_base`]. A plant handed to a proof run on this
+/// context must itself carry the whole base (every `baseline*` helper here builds a complete
+/// overlay), because [`Ctx::with_overlay`] replaces the overlay rather than layering on it.
+fn on_fixture(cx: &Ctx) -> Ctx {
+    cx.with_overlay(fixture_base(cx))
+}
+
 /// A green case for the additive rule.
 ///
 /// THE REGISTER IS EMPTIED IN EVERY ONE OF THESE. The committed register's single line is stale
@@ -150,6 +179,9 @@ fn additive_green<'a>(
 }
 
 /// A red case for the additive rule, naming the path and the reason the report must carry.
+///
+/// MEASURED FROM [`fixture_base`], never from the real tree: the transition proven is "the committed
+/// snapshot as baseline is additive-green; the same baseline with this one mutation is RED".
 fn additive_red<'a>(
     cx: &'a Ctx,
     gate: &'a dyn Gate,
@@ -158,7 +190,7 @@ fn additive_red<'a>(
     f: impl Fn(&mut Value),
 ) -> crate::gates::CasePlan<'a> {
     prove_rows_red(
-        cx,
+        &on_fixture(cx),
         gate,
         name,
         &[ROW_ADDITIVE_ONLY],
@@ -198,18 +230,29 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     // fingerprint's namespace lost them anyway, and to an additive-only classifier that is seven
     // removals. See `docs/design/1.6.0-denominator.md` §8.1.
     //
-    // A standing red here makes every `ROW_ADDITIVE_ONLY` red-proof below report `Impossible`
-    // rather than pass, because `prove_red` demands a GREEN -> RED transition and this row is red
-    // before any plant. That is the harness working: those proofs have no falsifiability to
-    // demonstrate while the row cannot be green. It is NOT a reason to waive the seven paths, to
-    // re-record the snapshot, or to narrow this control to rows it can pass — each of those
-    // restores the green and nothing else. Clear the breach and all of them can be asked again.
+    // This standing red USED to make every `ROW_ADDITIVE_ONLY` red-proof below report
+    // `Impossible`, because each was measured from the real tree and `prove_red` demands a
+    // GREEN -> RED transition. Those proofs are now measured from [`fixture_base`] — whose
+    // additive row is green, which the fixture control below proves — so each is a real
+    // transition again, and none of them depends on this row. That is a repair to the PROOFS, not
+    // to this row: it is NOT a reason to waive the seven paths, to re-record the snapshot, or to
+    // narrow this control to rows it can pass — each of those restores the green and nothing else.
     report.push(prove_rows_green(
         cx,
         gate,
         "control: the real render against the real baseline is additive",
         &[ROW_ADDITIVE_ONLY],
         Overlay::new(),
+    ));
+    // THE FIXTURE CONTROL. Every `ROW_ADDITIVE_ONLY` red proof below starts from this base, so it
+    // must be green on that row — or each of those proofs is measured from a red, and the harness
+    // will say so (`Impossible`) rather than pass it.
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "control: the fixture base (committed snapshot as baseline, empty register) is additive",
+        &[ROW_ADDITIVE_ONLY, ROW_BASELINE],
+        fixture_base(cx),
     ));
 
     // ══ :tracked-sources ═════════════════════════════════════════════════════════════════════════
@@ -335,7 +378,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     let mut ov = baseline_with_waivers(cx, "# no waivers\n", |_| {});
     ov.remove(moved);
     report.push(prove_rows_red(
-        cx,
+        &on_fixture(cx),
         gate,
         "a grammar type that VANISHED from every core-kind root is still a BREAK",
         &[ROW_ADDITIVE_ONLY],
@@ -467,7 +510,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     // beside it. This is the case that distinguishes "the hole is closed" from "the hole is
     // labelled": the row that would have lied is SKIP, never PASS.
     report.push(prove_rows_red(
-        cx,
+        &on_fixture(cx),
         gate,
         "HOLE: an empty baseline leaves the additive check UNPROVEN rather than passing",
         &[ROW_ADDITIVE_ONLY],
@@ -846,7 +889,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
 
     // THE DECISIVE ONE: a waiver for path A must not suppress an unrelated break at path B.
     report.push(prove_rows_red(
-        cx,
+        &on_fixture(cx),
         gate,
         "waiver: a waiver for one path does NOT excuse an unwaived break at another",
         &[ROW_ADDITIVE_ONLY],
@@ -897,7 +940,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     ));
 
     report.push(prove_rows_red(
-        cx,
+        &on_fixture(cx),
         gate,
         "waiver: an EMPTY register weakens nothing — the break stays RED",
         &[ROW_ADDITIVE_ONLY],
@@ -908,7 +951,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     // A COMMENT IS NOT A WAIVER. The register's format ignores `#`, and a break "waived" in a
     // comment is not waived at all.
     report.push(prove_rows_red(
-        cx,
+        &on_fixture(cx),
         gate,
         "waiver: a waiver commented out is not a waiver",
         &[ROW_ADDITIVE_ONLY],
@@ -919,7 +962,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     // A MALFORMED REGISTER MUST NOT LET THE ADDITIVE CHECK CLAIM A PASS: it is the register the
     // breaks are judged against, so nothing can be judged without it.
     report.push(prove_rows_red(
-        cx,
+        &on_fixture(cx),
         gate,
         "waiver: a malformed register leaves the additive check UNPROVEN rather than passing",
         &[ROW_ADDITIVE_ONLY],
