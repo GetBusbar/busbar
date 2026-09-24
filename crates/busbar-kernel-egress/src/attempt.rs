@@ -24,7 +24,10 @@
 
 use busbar_contract::caps::{Pass, Route};
 use busbar_contract::transport::wire::{Conn, WireStatusClass};
-use busbar_contract::{Ctx, EgressBody, Frame, Plane, Transport, Unit};
+use busbar_contract::{
+    Ctx, EgressBody, Frame, Plane, PlaneSessionState, SessionPlane, Transport, Unit,
+    VerifiedDestination,
+};
 use futures::StreamExt;
 
 use crate::ports::{
@@ -34,6 +37,62 @@ use crate::ports::{
 use crate::race;
 use crate::select::ProbeGuard;
 use crate::wire::{Delivered, Shed};
+
+/// The plane a hop is encoded and decoded by, and whether it keeps codec state per upstream.
+///
+/// The contract gives a plane's cross-frame codec state exactly one home: a [`PlaneSessionState`]
+/// half, one per dialed upstream, opened by [`SessionPlane::open_upstream`]. A plane that keeps one
+/// decides at `encode_egress` what kind of exchange the request opens and reads that decision back
+/// at `decode_response` — because the wire alone cannot always say it: a whole answer that opens an
+/// incremental exchange looks exactly like a one-shot answer. Handing both calls `None` threw that
+/// decision away, so every incremental answer read as one-shot and ended on its first answering
+/// frame: the rest were never relayed and the unit closed on the first.
+///
+/// One value carries the plane in both shapes, so the half an attempt opens can never belong to a
+/// different plane than the one that encodes and decodes with it.
+#[derive(Clone, Copy)]
+pub enum PlaneRef<'a> {
+    /// A plane that keeps no codec state across the frames of one upstream's answer.
+    Stateless(&'a dyn Plane),
+    /// A plane that opens one codec-state half per dialed upstream.
+    Session(&'a dyn SessionPlane),
+}
+
+impl<'a> PlaneRef<'a> {
+    /// The plane, as its codec methods are called.
+    #[must_use]
+    pub fn plane(self) -> &'a dyn Plane {
+        match self {
+            PlaneRef::Stateless(plane) => plane,
+            PlaneRef::Session(plane) => plane,
+        }
+    }
+
+    /// Open the upstream half for one dialed destination, where the plane keeps one.
+    #[must_use]
+    pub fn open_upstream(
+        self,
+        dest: &VerifiedDestination,
+        ctx: &Ctx<'_>,
+    ) -> Option<PlaneSessionState> {
+        match self {
+            PlaneRef::Stateless(_) => None,
+            PlaneRef::Session(plane) => Some(plane.open_upstream(dest, ctx)),
+        }
+    }
+}
+
+impl<'a> From<&'a dyn Plane> for PlaneRef<'a> {
+    fn from(plane: &'a dyn Plane) -> Self {
+        PlaneRef::Stateless(plane)
+    }
+}
+
+impl<'a> From<&'a dyn SessionPlane> for PlaneRef<'a> {
+    fn from(plane: &'a dyn SessionPlane) -> Self {
+        PlaneRef::Session(plane)
+    }
+}
 
 /// Everything one hop shares, borrowed and cheap to pass down the stages.
 ///
@@ -61,8 +120,8 @@ pub struct Hop<'a> {
     pub telemetry: &'a dyn Telemetry,
     /// The transport that dials this destination.
     pub transport: &'a dyn Transport,
-    /// The plane that says what the bytes mean.
-    pub plane: &'a dyn Plane,
+    /// The plane that says what the bytes mean, and the upstream half it keeps where it keeps one.
+    pub plane: PlaneRef<'a>,
     /// The transport's key material.
     pub keys: &'a busbar_contract::TransportKeyHandle,
     /// The destination the trust unit sealed.
@@ -283,10 +342,15 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
     // mid-send.
     let mut journal = JournalGuard::arm(hop.journal, &record);
 
+    // The plane's codec state for THIS upstream: one half per dialed destination, opened before the
+    // encode and carried through every frame's decode, so what the encode decided about the
+    // exchange is what the decode reads back. A plane that keeps none gets `None`, as it always has.
+    let mut upstream = hop.plane.open_upstream(hop.dest, ctx);
+
     // 2-5. Assemble: the plane's egress encode, the egress-auth decoration, and the lane
     //      cross-check on the bytes that decoration produced. A failure at any of the three is an
     //      internal failure before any send.
-    let wire = match assemble(&hop, unit, ctx) {
+    let wire = match assemble(&hop, unit, upstream.as_mut(), ctx) {
         Ok(bytes) => bytes,
         Err(shed) => {
             journal.abandon();
@@ -354,7 +418,17 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
         return classify_failure(&hop, status, permit, now);
     }
 
-    deliver(&hop, first, permit, &mut probe_guard, ctx, now, anchor_ms).await
+    deliver(
+        &hop,
+        first,
+        permit,
+        &mut probe_guard,
+        upstream.as_mut(),
+        ctx,
+        now,
+        anchor_ms,
+    )
+    .await
 }
 
 // ── assemble ────────────────────────────────────────────────────────────────────────────────────
@@ -375,10 +449,16 @@ struct Wire<'a> {
 /// destination but never holds a credential; the egress-auth unit decorates and substitutes every
 /// secret itself; and the lane cross-check runs on the RESULT, so a decoration cannot quietly move
 /// the request onto a cheaper or a different lane.
-fn assemble<'a>(hop: &Hop<'_>, unit: &Unit<'a>, ctx: &Ctx<'a>) -> Result<Wire<'a>, Shed> {
+fn assemble<'a>(
+    hop: &Hop<'_>,
+    unit: &Unit<'a>,
+    upstream: Option<&mut PlaneSessionState>,
+    ctx: &Ctx<'a>,
+) -> Result<Wire<'a>, Shed> {
     let encoded: EgressBody<'_> = hop
         .plane
-        .encode_egress(unit, hop.dest, None, ctx)
+        .plane()
+        .encode_egress(unit, hop.dest, upstream, ctx)
         .map_err(|_| Shed::internal())?;
 
     let mut request = OutboundRequest {
@@ -651,11 +731,14 @@ fn remaining_ms(clock: &dyn Clock, anchor_ms: u128, budget_ms: u64) -> Option<u6
 /// destination's lifetime budget under a refund guard, and relay the frames.
 ///
 /// `anchor_ms` is the instant the send started, which is what the deadline is measured from.
+/// `upstream` is the half the encode wrote into; every frame's decode reads the same one.
+#[allow(clippy::too_many_arguments)]
 async fn deliver(
     hop: &Hop<'_>,
     first: FirstFrame,
     permit: Permit,
     probe_guard: &mut Option<ProbeGuard<'_>>,
+    mut upstream: Option<&mut PlaneSessionState>,
     ctx: &Ctx<'_>,
     now: u64,
     anchor_ms: u128,
@@ -714,7 +797,11 @@ async fn deliver(
         };
         let carried = [frame];
         let mut cursor = busbar_contract::FrameCursor::new(&carried);
-        match hop.plane.decode_response(&mut cursor, hop.dest, None, ctx) {
+        match hop
+            .plane
+            .plane()
+            .decode_response(&mut cursor, hop.dest, upstream.as_deref_mut(), ctx)
+        {
             Ok(busbar_contract::Progress::NeedMore) => {
                 relayed += 1;
             }

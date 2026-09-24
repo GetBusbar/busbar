@@ -24,9 +24,9 @@
 //! answer rather than starting another attempt.
 
 use busbar_contract::caps::{Pass, Route};
-use busbar_contract::{Ctx, Plane, Transport, Unit, VerifiedDestination};
+use busbar_contract::{Ctx, Transport, Unit, VerifiedDestination};
 
-use crate::attempt::{attempt, AttemptInput, AttemptOutcome, Hop};
+use crate::attempt::{attempt, AttemptInput, AttemptOutcome, Hop, PlaneRef};
 use crate::exhaustion::handle_exhaustion_for_pool;
 use crate::pool::{Member, PoolTable};
 use crate::ports::{Breaker, Capacity, Clock, Disposition, EgressAuth, Journal, Telemetry};
@@ -56,8 +56,10 @@ pub struct RouteRequest<'a> {
     pub telemetry: &'a dyn Telemetry,
     /// The transport that dials these destinations.
     pub transport: &'a dyn Transport,
-    /// The plane that says what the bytes mean.
-    pub plane: &'a dyn Plane,
+    /// The plane that says what the bytes mean. A plane that keeps codec state per upstream is
+    /// handed over in that shape, so each attempt opens its own half and the encode and every
+    /// frame's decode share it.
+    pub plane: PlaneRef<'a>,
     /// The transport's key material.
     pub keys: &'a busbar_contract::TransportKeyHandle,
     /// The verified set, indexed by the destination ids the pool's members carry.

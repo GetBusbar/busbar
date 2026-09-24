@@ -15,6 +15,7 @@ mod deadline_tests;
 mod exhaustion_tests;
 mod pick_order_tests;
 mod probe_tests;
+mod upstream_half_tests;
 mod walk_tests;
 
 use std::sync::Arc;
@@ -39,6 +40,9 @@ pub(crate) struct Node {
     pub telemetry: Arc<TestTelemetry>,
     pub transport: Arc<TestTransport>,
     pub plane: Arc<TestPlane>,
+    /// A plane that keeps codec state per upstream, routed through in place of [`Node::plane`]
+    /// when set.
+    pub session_plane: Option<Arc<dyn busbar_contract::SessionPlane>>,
     pub pools: PoolTable,
     pub verified: Vec<VerifiedDestination>,
     pub floor: WeightedFloor,
@@ -63,6 +67,7 @@ impl Node {
             telemetry: Arc::new(TestTelemetry::new()),
             transport: Arc::new(TestTransport::new()),
             plane: Arc::new(TestPlane::new()),
+            session_plane: None,
             pools: PoolTable::new(),
             verified: lanes.iter().map(|lane| sealed(lane)).collect(),
             floor: WeightedFloor::new(),
@@ -156,7 +161,10 @@ impl Node {
             clock: self.clock.as_ref(),
             telemetry: self.telemetry.as_ref(),
             transport: self.transport.as_ref(),
-            plane: self.plane.as_ref(),
+            plane: match &self.session_plane {
+                Some(plane) => crate::PlaneRef::Session(plane.as_ref()),
+                None => crate::PlaneRef::Stateless(self.plane.as_ref()),
+            },
             keys: &keys,
             verified: &self.verified,
             pools: &self.pools,
