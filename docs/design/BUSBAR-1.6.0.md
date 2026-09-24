@@ -427,6 +427,48 @@ Concretely, ALL of:
 
 ---
 
+## LAW 8 — A MEASUREMENT MUST STATE ITS DENOMINATOR, AND PROVE IT PARTITIONS
+
+Law 0 says an instrument that cannot produce a NO is not a check. Law 8 is its other half, and it
+was learned the expensive way — twice in one day, once by the code and once by the audit of it.
+
+**A count is not a measurement until you can say what it is a count OF, and prove nothing fell
+outside.** Every false green this release has produced is one of three shapes:
+
+1. **The hand-written denominator.** An instrument checks a list somebody typed, and nothing forces
+   the list to keep up with the thing it enumerates. `money-invariants` names 8 record types where
+   `records.rs` defines 17. `instance-noun-neutrality` holds 25 nouns and not one of them is a
+   dialect, so it cannot see `DEFAULT_PROTOCOL`. The oracle's admin corpus is a fixture frozen at
+   the 1.5.5 op set, so eleven new served paths have no cell and no mechanism that could ever give
+   them one. Each gate is *correct about what it was told to look at*, and silent about the rest.
+
+2. **The absent floor.** `--strict` returns success on one owed cell of 2,318 because the only
+   check is `owed.is_empty()`. Lesser gates in the same tree declare `DENOMINATOR_FLOOR = 1_700`,
+   `SCAN_FLOOR = 200`, `BINDING_FLOOR = 40`. A denominator with no floor is a denominator that can
+   be reduced to one without anybody noticing.
+
+3. **The partition that was never checked.** A sweep assigned all 3,915 tracked files to ten
+   slices by path prefix and called that a coverage proof. Slice 2 took `a..busbar-k`, slice 3 took
+   `busbar-l..z`, and `busbar-k` < `busbar-kernel` < `busbar-l` — so the nine kernel crates, 574
+   files and 242,730 lines of CORE, fell in neither and were never examined. The file count was
+   right. The scope was not. **Proving every element has an owner is not the same statement as
+   proving the owners' scopes cover every element**, and the second is the one that matters.
+
+**The rule.** An instrument declares the set it measures over and a floor beneath which its own
+result is a refusal rather than a pass. A census reports the LIST it scanned, not the count, and
+coverage is computed as the union of those lists reconciled against the whole — AFTER the work,
+never before. Where a roster of instances must exist, it is derived from the instances' own
+declarations; a roster maintained by hand is a defect with a date on it.
+
+**A name is not a thing.** Six wrong conclusions in this release came from grepping a name: a
+`#[cfg]` one line above the `pub mod` it gated; a path that had been renamed since the tag, where
+`git show <ref>:<missing>` prints nothing and `grep -c` reports `0`; a type name where the rule
+barred a concept; `prove_red` where the tree's own helper is `prove_rows_red`; a field doc on one
+struct used to indict a writer on another. And `design_bindings/tables.rs` carries 409 prose
+strings naming functions, so any census keyed on names reads them as references and scores dead
+code live — which is precisely how an unwired money backstop stayed invisible. **Run a positive
+control before believing a zero: search for something you know is there, and show it.**
+
 # PART 2 — THE 85 LOCKED DECISIONS
 
 > *Absorbed verbatim from `DECISIONS.md`, which this document replaced and DELETED (`49ab4aca2`) — that name is history, not a path. Row numbers are cited from source comments, gate ledgers and commit messages — they are permanent. Cite a row; never re-litigate it.*
