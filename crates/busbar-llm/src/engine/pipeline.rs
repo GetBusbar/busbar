@@ -825,7 +825,7 @@ async fn run_failover_loop(
 /// returned: the plain "no members" 503 when the pool is empty, or the configured exhaustion mode
 /// otherwise. `Ok` is a picked lane ready for [`prepare_attempt`]; `Err` is the response the loop
 /// must return immediately, in place of the `return` the inline code used to make here.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::result_large_err)]
 async fn pick_lane_or_exhaust(
     host: &Arc<dyn EngineHost>,
     rt: &Arc<NativeRuntime>,
@@ -1559,6 +1559,8 @@ async fn resolve_base_policy(
 /// no behavior change; see its call site). Turns a decided [`PolicyOutcome`] into the ranked order
 /// (or `None` ⇒ SWRR) plus the policy name to advertise, exactly as the inline `match` did; `Err` is
 /// the same ingress-native rejection the inline code returned early with.
+// `result_large_err`: `Err` is the plane's own finished `Response`, returned as-is (see `assemble.rs`).
+#[allow(clippy::result_large_err)]
 fn apply_policy_outcome(
     outcome: PolicyOutcome,
     rt: &Arc<NativeRuntime>,

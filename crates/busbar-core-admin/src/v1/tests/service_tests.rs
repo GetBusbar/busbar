@@ -3400,7 +3400,7 @@ mod one_recorded_usage_every_surface {
         // 1.5.5 customer observes today and they are recorded in the shadow oracle
         // (`billing|group-usage|*`, `billing|key-usage|*`, `llm|*|over_budget*`). Moving one is
         // moving a golden, which no agent may do.
-        let flat_micros = i64::from(RATE_CURRENT as i64) * (TOKENS as i64) * 2;
+        let flat_micros = (RATE_CURRENT as i64) * (TOKENS as i64) * 2;
         assert_eq!(
             hook_micros, flat_micros,
             "the enforcement fold prices both postings at the card in force NOW"
@@ -3425,7 +3425,7 @@ mod one_recorded_usage_every_surface {
         // The gap between the book and the bill, pinned exactly. This is the figure the report
         // carries to the owner: 19,000 of 39,000 micro-units — 48.7% of this slice's bill — is
         // the distance between what the ledger says and what three of the five surfaces answer.
-        let served = i64::from(group_cents) * MICROS_PER_CENT;
+        let served = group_cents * MICROS_PER_CENT;
         assert_eq!(
             one_micros - served,
             19_000,

@@ -149,7 +149,6 @@ pub(crate) mod testing {
     /// Take EXCLUSIVE use of the fold log for the rest of the caller's test, installing the shared
     /// recorder on first use and clearing whatever a previous test left behind. Hold the returned
     /// guard for as long as you intend to read [`folds`].
-    #[must_use]
     pub(crate) fn exclusive() -> std::sync::MutexGuard<'static, ()> {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| {
