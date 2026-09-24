@@ -238,7 +238,12 @@ impl Gate for ServiceImagesGate {
         match &table {
             Some(pins) => {
                 rows.push(rule_shape(pins));
-                rows.push(rule_every_pin_used(&found, pins, workflows.is_ok()));
+                rows.push(rule_every_pin_used(
+                    &found,
+                    &script_references(cx),
+                    pins,
+                    workflows.is_ok(),
+                ));
                 rows.push(rule_release_check(cx, pins));
                 rows.push(rule_scripts(cx, pins));
             }
@@ -1341,7 +1346,28 @@ fn rule_shape(pins: &[Pin]) -> Row {
     }
 }
 
-fn rule_every_pin_used(found: &[ImageRef], pins: &[Pin], scanned: bool) -> Row {
+/// Every container reference the scripts run — `release-check.sh` and the discovered set — as the
+/// whole `image[@digest]` string. A pin a script runs is a used pin: `mysql:8.0` and the Autobahn
+/// suite are run by scripts and by no workflow, and a table row for them is not a dead pin.
+fn script_references(cx: &Ctx) -> Vec<String> {
+    let mut out: Vec<String> = cx
+        .read(RELEASE_CHECK)
+        .map(|t| release_check_tags(&t))
+        .unwrap_or_default();
+    if let Ok(scripts) = container_scripts(cx) {
+        for f in &scripts {
+            out.extend(container_refs(&f.text).into_iter().map(|(_, r)| r));
+        }
+    }
+    out
+}
+
+fn rule_every_pin_used(
+    found: &[ImageRef],
+    script_refs: &[String],
+    pins: &[Pin],
+    scanned: bool,
+) -> Row {
     if !scanned {
         return Row::fail(
             ROW_EVERY_PIN_USED,
@@ -1351,7 +1377,7 @@ fn rule_every_pin_used(found: &[ImageRef], pins: &[Pin], scanned: bool) -> Row {
     }
     // A pin counts as USED only where the workflow reference MATCHED it. A row whose digest
     // disagrees is reported by its own rule and must not also count as this row's evidence.
-    let used: BTreeSet<&str> = found
+    let mut used: BTreeSet<&str> = found
         .iter()
         .filter(|i| {
             pins.iter()
@@ -1359,6 +1385,16 @@ fn rule_every_pin_used(found: &[ImageRef], pins: &[Pin], scanned: bool) -> Row {
         })
         .map(|i| i.reference.as_str())
         .collect();
+    for r in script_refs {
+        if let Some((image, Some(digest))) = split_reference(r) {
+            if let Some(p) = pins
+                .iter()
+                .find(|p| p.image == image && p.digest.as_deref() == Some(digest))
+            {
+                used.insert(p.image.as_str());
+            }
+        }
+    }
     let unused: Vec<&str> = pins
         .iter()
         .map(|p| p.image.as_str())
@@ -1367,13 +1403,13 @@ fn rule_every_pin_used(found: &[ImageRef], pins: &[Pin], scanned: bool) -> Row {
     if unused.is_empty() {
         Row::pass(
             ROW_EVERY_PIN_USED,
-            "every pinned image is referenced by at least one workflow",
+            "every pinned image is referenced by at least one workflow or script",
             format!("{} pin(s)", pins.len()),
         )
     } else {
         Row::fail(
             ROW_EVERY_PIN_USED,
-            "a pinned image is referenced by no workflow",
+            "a pinned image is referenced by no workflow or script",
             format!(
                 "unused: {} — delete the row or wire the service, but do not leave a pin nobody \
                  bumps",

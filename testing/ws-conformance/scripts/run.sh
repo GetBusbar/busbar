@@ -100,7 +100,7 @@ run_autobahn() {
   docker run --rm --network host \
     -v "$cfg:/config/fuzzingclient.json:ro" \
     -v "$outdir:/reports" \
-    crossbario/autobahn-testsuite \
+    crossbario/autobahn-testsuite@sha256:519915fb568b04c9383f70a1c405ae3ff44ab9e35835b085239c258b6fac3074 \
     wstest -m fuzzingclient -s /config/fuzzingclient.json
   rm -f "$cfg"
 }

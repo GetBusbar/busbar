@@ -42,3 +42,5 @@ valkey	valkey/valkey:8	sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be1
 vault	hashicorp/vault	sha256:5be49781ecf78bfe775c5309c6a4d9f4e9e040b6c885c99eb2b12fb69855e1a2	-	8200	18200	60
 wiremock	wiremock/wiremock:3.9.2	sha256:d13997cd7b52583528a766019cfe7d4e91c4d224a67bdaa6f60efbb532f32176	-	8080	-	60
 openldap	osixia/openldap:1.5.0	sha256:18742e9c449c9c1afe129d3f2f3ee15fb34cc43e5f940a20f3399728f41d7c28	-	389	-	60
+mysql80	mysql:8.0	sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b	-	3306	-	120
+autobahn	crossbario/autobahn-testsuite	sha256:519915fb568b04c9383f70a1c405ae3ff44ab9e35835b085239c258b6fac3074	-	9001	-	60

@@ -56,11 +56,13 @@ VK_PORT="${ORACLE_VK_PORT:-6379}"
 DB_USER="${ORACLE_STORE_USER:-busbar}"
 DB_PASS="${ORACLE_STORE_PASS:-busbar}"
 DB_NAME="${ORACLE_STORE_DB:-busbar}"
-# Pinned images: a byte-parity harness must not let a floating `latest` change the backend under it
+# Pinned images, BY DIGEST (testing/fleet-fixtures/service-images.tsv is the one table; the
+# `service-images` gate holds this file to it): a byte-parity harness must not let a floating tag
+# change the backend under it
 # between the golden recording and a candidate run.
-PG_IMAGE="${ORACLE_PG_IMAGE:-postgres:16}"
-MY_IMAGE="${ORACLE_MY_IMAGE:-mysql:8.0}"
-VK_IMAGE="${ORACLE_VK_IMAGE:-valkey/valkey:8}"
+PG_IMAGE="${ORACLE_PG_IMAGE:-postgres:16@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b}"
+MY_IMAGE="${ORACLE_MY_IMAGE:-mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b}"
+VK_IMAGE="${ORACLE_VK_IMAGE:-valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6}"
 PG_NAME="${ORACLE_PG_NAME:-oracle-store-postgres}"
 MY_NAME="${ORACLE_MY_NAME:-oracle-store-mysql}"
 VK_NAME="${ORACLE_VK_NAME:-oracle-store-valkey}"

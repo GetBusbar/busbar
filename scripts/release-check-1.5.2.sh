@@ -289,8 +289,8 @@ sha256_of() {
 #    tag (never :latest). Both are stood up with docker-run from LOCAL images + LOCAL fixtures — no
 #    external network is contacted by the flow itself (only a one-time image pull if the tag is not
 #    already cached; a fully-offline runner with the images pre-pulled never touches the network). ──
-WIREMOCK_IMAGE="wiremock/wiremock:3.9.2"   # github OAuth token/user/orgs endpoints, stubbed from JSON
-OPENLDAP_IMAGE="osixia/openldap:1.5.0"     # real OpenLDAP, seeded with scripts/fixtures/auth-ldap/seed.ldif
+WIREMOCK_IMAGE="wiremock/wiremock:3.9.2@sha256:d13997cd7b52583528a766019cfe7d4e91c4d224a67bdaa6f60efbb532f32176"   # github OAuth token/user/orgs endpoints, stubbed from JSON
+OPENLDAP_IMAGE="osixia/openldap:1.5.0@sha256:18742e9c449c9c1afe129d3f2f3ee15fb34cc43e5f940a20f3399728f41d7c28"     # real OpenLDAP, seeded with scripts/fixtures/auth-ldap/seed.ldif
 
 # docker present AND the daemon reachable? A LOCAL run without docker LOUD-SKIPS the live arms (never a
 # silent pass); a CI/self-hosted runner WITH docker RUNS them. `BUSBAR_1_5_2_SKIP_DOCKER=1` force-skips.
