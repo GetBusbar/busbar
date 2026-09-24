@@ -30,6 +30,7 @@ fn lay_down(written: &[Record]) -> Vec<u8> {
         Box::new(crate::ship::NullShipper::new()),
         crate::wal::Mode::OnDisk,
         TEST_CEILING,
+        crate::tests::fixtures::wall_ms,
     )
     .unwrap();
     let token = durability_token();
@@ -49,9 +50,13 @@ fn recover_from(bytes: &[u8]) -> Vec<Record> {
     let shared = crate::backend::SharedBytes::new(std::sync::Mutex::new(bytes.to_vec()));
     let backend = Box::new(crate::backend::MemorySegment::over(shared));
     let mut segment = Segment::open_at(backend, 0, 0, TEST_CEILING).unwrap();
-    recover_and_truncate(&mut segment, &mut MemoryFactory::new())
-        .unwrap()
-        .records
+    recover_and_truncate(
+        &mut segment,
+        &mut MemoryFactory::new(),
+        crate::tests::fixtures::wall_ms,
+    )
+    .unwrap()
+    .records
 }
 
 /// How many whole records survive a cut at `offset`, given the frame count of each record.
@@ -151,7 +156,8 @@ fn recovery_cuts_the_backing_so_the_next_append_lands_on_a_boundary() {
     let backend = Box::new(crate::backend::MemorySegment::over(shared.clone()));
     let mut segment = Segment::open_at(backend, 0, 0, TEST_CEILING).unwrap();
     let mut sink = MemoryFactory::new();
-    let recovered = recover_and_truncate(&mut segment, &mut sink).unwrap();
+    let recovered =
+        recover_and_truncate(&mut segment, &mut sink, crate::tests::fixtures::wall_ms).unwrap();
 
     assert_eq!(recovered.records.len(), 2);
     assert!(recovered.was_torn());
@@ -177,6 +183,7 @@ fn a_restart_replays_to_the_recovered_head_and_appends_after_it() {
             Box::new(crate::ship::NullShipper::new()),
             crate::wal::Mode::OnDisk,
             TEST_CEILING,
+            crate::tests::fixtures::wall_ms,
         )
         .unwrap();
         wal.append_batch(&token, busbar_contract::caps::StepName::Meter, &first)
@@ -194,6 +201,7 @@ fn a_restart_replays_to_the_recovered_head_and_appends_after_it() {
         Box::new(crate::ship::NullShipper::new()),
         crate::wal::Mode::OnDisk,
         TEST_CEILING,
+        crate::tests::fixtures::wall_ms,
     )
     .unwrap();
     assert_eq!(wal.recovered(), &first[..1]);

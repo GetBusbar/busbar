@@ -27,7 +27,7 @@ fn a_memory_buffered_log_creates_no_file_anywhere() {
     );
     let cwd_before = cwd_segment_names();
 
-    let mut wal = Wal::memory_buffered();
+    let mut wal = Wal::memory_buffered(crate::tests::fixtures::wall_ms);
     assert_eq!(wal.mode(), Mode::MemoryBuffered);
     let token = durability_token();
     // Enough records, and enough of them large enough to continue across frames, that any
@@ -60,13 +60,17 @@ fn a_memory_buffered_log_creates_no_file_anywhere() {
 fn the_default_log_is_the_memory_buffered_one() {
     // Stated as a test because "the default is no disk" is a product claim, and a default that
     // quietly changed would otherwise be found by an operator rather than by the suite.
-    assert_eq!(Wal::memory_buffered().mode(), Mode::MemoryBuffered);
+    assert_eq!(
+        Wal::memory_buffered(crate::tests::fixtures::wall_ms).mode(),
+        Mode::MemoryBuffered
+    );
 }
 
 #[test]
 fn a_memory_buffered_log_ships_every_committed_batch_synchronously() {
     let shipper = crate::ship::BufferShipper::new();
-    let mut wal = Wal::memory_buffered_to(Box::new(shipper.clone()));
+    let mut wal =
+        Wal::memory_buffered_to(Box::new(shipper.clone()), crate::tests::fixtures::wall_ms);
     let token = durability_token();
     let first = records(4, 1, 3, 30);
     let second = records(4, 4, 2, 30);
@@ -91,7 +95,12 @@ fn a_log_in_a_directory_does_write_files_there_and_nowhere_else() {
     let dir = TempDir::new("on-disk");
     let inner = dir.path().join("wal");
     {
-        let mut wal = Wal::in_directory(&inner, Box::new(crate::ship::NullShipper::new())).unwrap();
+        let mut wal = Wal::in_directory(
+            &inner,
+            Box::new(crate::ship::NullShipper::new()),
+            crate::tests::fixtures::wall_ms,
+        )
+        .unwrap();
         assert_eq!(wal.mode(), Mode::OnDisk);
         let token = durability_token();
         wal.append_batch(
@@ -110,7 +119,12 @@ fn a_log_in_a_directory_does_write_files_there_and_nowhere_else() {
     assert!(files[0].starts_with(&inner));
 
     // And it reopens onto what it wrote.
-    let wal = Wal::in_directory(&inner, Box::new(crate::ship::NullShipper::new())).unwrap();
+    let wal = Wal::in_directory(
+        &inner,
+        Box::new(crate::ship::NullShipper::new()),
+        crate::tests::fixtures::wall_ms,
+    )
+    .unwrap();
     assert_eq!(wal.recovered().len(), 3);
     assert!(wal.holds(1, 2));
 }

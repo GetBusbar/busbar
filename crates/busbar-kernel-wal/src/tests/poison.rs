@@ -26,6 +26,7 @@ fn wal_with_faults() -> (
         Box::new(crate::ship::NullShipper::new()),
         Mode::OnDisk,
         CEILING,
+        crate::tests::fixtures::wall_ms,
     )
     .unwrap();
     (wal, switch, memory)
@@ -205,6 +206,7 @@ fn the_on_disk_catch_up_queue_is_bounded_and_says_what_it_gave_up_on() {
         Box::new(Refuses),
         Mode::OnDisk,
         u64::MAX / 2,
+        crate::tests::fixtures::wall_ms,
     )
     .unwrap();
     let token = durability_token();
@@ -246,7 +248,7 @@ fn a_store_that_refuses_a_memory_buffered_batch_is_a_durability_loss() {
             Err(crate::ship::ShipError::Unavailable("under test".into()))
         }
     }
-    let mut wal = Wal::memory_buffered_to(Box::new(Refuses));
+    let mut wal = Wal::memory_buffered_to(Box::new(Refuses), crate::tests::fixtures::wall_ms);
     let token = durability_token();
     let batch = records(1, 1, 2, 20);
     wal.append_batch(&token, busbar_contract::caps::StepName::Meter, &batch)
@@ -304,8 +306,14 @@ impl crate::ship::Shipper for RefusesOnce {
 fn an_on_disk_batch_the_store_refused_is_offered_again_rather_than_discarded() {
     let (shipper, taken) = RefusesOnce::new(1);
     let (factory, _switch, _memory) = FaultyFactory::new();
-    let mut wal =
-        Wal::with_parts(Box::new(factory), Box::new(shipper), Mode::OnDisk, CEILING).unwrap();
+    let mut wal = Wal::with_parts(
+        Box::new(factory),
+        Box::new(shipper),
+        Mode::OnDisk,
+        CEILING,
+        crate::tests::fixtures::wall_ms,
+    )
+    .unwrap();
     let token = durability_token();
 
     let refused = records(1, 1, 2, 20);
@@ -350,7 +358,8 @@ fn a_memory_buffered_retry_after_a_refusal_does_not_write_the_records_twice() {
     use crate::journal::{Entry, Journal, RecordClass};
 
     let (shipper, taken) = RefusesOnce::new(1);
-    let mut journal = Journal::memory_buffered_to(4, Box::new(shipper));
+    let mut journal =
+        Journal::memory_buffered_to(4, Box::new(shipper), crate::tests::fixtures::wall_ms);
     let token = durability_token();
 
     let first: Vec<Entry> = (0..2)
@@ -396,8 +405,14 @@ fn a_store_that_refuses_an_on_disk_batch_does_not_fail_the_commit() {
         }
     }
     let (factory, _switch, _memory) = FaultyFactory::new();
-    let mut wal =
-        Wal::with_parts(Box::new(factory), Box::new(Refuses), Mode::OnDisk, CEILING).unwrap();
+    let mut wal = Wal::with_parts(
+        Box::new(factory),
+        Box::new(Refuses),
+        Mode::OnDisk,
+        CEILING,
+        crate::tests::fixtures::wall_ms,
+    )
+    .unwrap();
     let token = durability_token();
     wal.append_batch(
         &token,

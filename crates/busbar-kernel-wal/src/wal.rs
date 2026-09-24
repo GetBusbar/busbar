@@ -124,9 +124,15 @@ impl From<io::Error> for OpenError {
     }
 }
 
+/// THE WALL CLOCK a log is handed, in unix milliseconds. The composition root owns the clock and
+/// passes it down; the log calls it only to stamp a corrupt remainder it sets aside, so this crate
+/// reads no clock of its own and a test can hand it a reproducible one.
+pub type Clock = fn() -> u64;
+
 /// The write-ahead log.
 pub struct Wal {
     factory: Box<dyn SegmentFactory>,
+    clock: Clock,
     shipper: Box<dyn Shipper>,
     mode: Mode,
     segment: Segment,
@@ -169,24 +175,26 @@ impl Wal {
     ///
     /// A node built this way cannot create a file even by mistake, because the only thing that
     /// knows how to open one is the directory factory and this log does not hold one.
-    pub fn memory_buffered() -> Self {
+    pub fn memory_buffered(clock: Clock) -> Self {
         Wal::with_parts(
             Box::new(MemoryFactory::new()),
             Box::new(NullShipper::new()),
             Mode::MemoryBuffered,
             SEGMENT_BYTES,
+            clock,
         )
         .expect("a memory segment cannot fail to open")
     }
 
     /// A memory-buffered log shipping to `shipper`. This is the shape a deployment that names a
     /// store but no data directory runs: the buffer stages, the store keeps.
-    pub fn memory_buffered_to(shipper: Box<dyn Shipper>) -> Self {
+    pub fn memory_buffered_to(shipper: Box<dyn Shipper>, clock: Clock) -> Self {
         Wal::with_parts(
             Box::new(MemoryFactory::new()),
             shipper,
             Mode::MemoryBuffered,
             SEGMENT_BYTES,
+            clock,
         )
         .expect("a memory segment cannot fail to open")
     }
@@ -199,9 +207,16 @@ impl Wal {
     pub fn in_directory(
         dir: impl AsRef<std::path::Path>,
         shipper: Box<dyn Shipper>,
+        clock: Clock,
     ) -> Result<Self, OpenError> {
         let factory = DirectoryFactory::new(dir.as_ref())?;
-        Wal::with_parts(Box::new(factory), shipper, Mode::OnDisk, SEGMENT_BYTES)
+        Wal::with_parts(
+            Box::new(factory),
+            shipper,
+            Mode::OnDisk,
+            SEGMENT_BYTES,
+            clock,
+        )
     }
 
     /// Build a log over any factory and shipper. The seam the batteries drive: a factory that fails
@@ -215,11 +230,13 @@ impl Wal {
         shipper: Box<dyn Shipper>,
         mode: Mode,
         ceiling: u64,
+        clock: Clock,
     ) -> Result<Self, OpenError> {
-        let (segment, recovered, quarantined) = open_tail(factory.as_mut(), ceiling)?;
+        let (segment, recovered, quarantined) = open_tail(factory.as_mut(), ceiling, clock)?;
         let segments_used = segment.index() + 1;
         let mut wal = Wal {
             factory,
+            clock,
             shipper,
             mode,
             segment,
@@ -548,7 +565,7 @@ impl Wal {
         // A segment being rolled into is normally new and empty. If it is not, it is recovered on
         // the same terms as the one a boot resumes in: a torn tail is cut, a corrupt one is set
         // aside first.
-        let recovered = recover_and_truncate(&mut segment, self.factory.as_mut())?;
+        let recovered = recover_and_truncate(&mut segment, self.factory.as_mut(), self.clock)?;
         if let Some(q) = recovered.quarantined {
             self.take_quarantine(q);
         }
@@ -604,6 +621,7 @@ impl Wal {
 fn open_tail(
     factory: &mut dyn SegmentFactory,
     ceiling: u64,
+    clock: Clock,
 ) -> Result<(Segment, Recovered, Vec<Quarantine>), OpenError> {
     let mut index = factory.highest_index()?.unwrap_or(0);
     let mut quarantined = Vec::new();
@@ -614,7 +632,7 @@ fn open_tail(
         // that — on a torn tail silently, on a corrupt one only after the damaged remainder is
         // durable somewhere else. Appending then resumes at the boundary rather than at whatever
         // length the crash happened to leave behind.
-        let mut recovered = recover_and_truncate(&mut segment, factory)?;
+        let mut recovered = recover_and_truncate(&mut segment, factory, clock)?;
         // The quarantine travels in the list, not twice.
         if let Some(q) = recovered.quarantined.take() {
             quarantined.push(q);

@@ -2183,12 +2183,14 @@ pub fn build_with_cards(
     history: HistorySource,
     cards: Option<&'static crate::root::kernel::RootHistory>,
 ) -> Result<Durability, OpenError> {
+    // The journal is handed the root's wall clock: the log unit reads none of its own.
+    let clock = busbar_substrate_values::store::now_ms;
     let journal = match cfg.data_dir.as_deref() {
         // The previous release's shape: nothing is opened, nothing is probed, and durability is
         // whatever the store the batches are shipped to provides.
-        None => Journal::memory_buffered_to(node, shipper),
+        None => Journal::memory_buffered_to(node, shipper, clock),
         // The operator asked for a journal on this node's own disk. This call is that decision.
-        Some(dir) => Journal::in_directory(node, dir, shipper)?,
+        Some(dir) => Journal::in_directory(node, dir, shipper, clock)?,
     };
 
     let mut durability = Durability {

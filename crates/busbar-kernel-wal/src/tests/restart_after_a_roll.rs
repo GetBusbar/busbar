@@ -213,6 +213,7 @@ fn open_over_dir(dir: &std::path::Path) -> Wal {
         Box::new(NullShipper::new()),
         Mode::OnDisk,
         CEILING,
+        crate::tests::fixtures::wall_ms,
     )
     .expect("the log opens over its data directory")
 }
@@ -223,6 +224,7 @@ fn open_over_memory(factory: &MemoryFactory) -> Wal {
         Box::new(NullShipper::new()),
         Mode::MemoryBuffered,
         CEILING,
+        crate::tests::fixtures::wall_ms,
     )
     .expect("a memory segment cannot fail to open")
 }

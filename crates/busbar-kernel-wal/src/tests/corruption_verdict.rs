@@ -27,7 +27,12 @@ fn four() -> Vec<Record> {
 
 /// Write `written` to a fresh log in `dir`, close it, and return the committed bytes of segment 0.
 fn lay_down(dir: &Path, written: &[Record]) -> Vec<u8> {
-    let mut wal = Wal::in_directory(dir, Box::new(NullShipper::new())).unwrap();
+    let mut wal = Wal::in_directory(
+        dir,
+        Box::new(NullShipper::new()),
+        crate::tests::fixtures::wall_ms,
+    )
+    .unwrap();
     let ack = wal
         .append_batch(&durability_token(), METER, written)
         .unwrap();
@@ -76,8 +81,12 @@ fn a_mid_log_checksum_flip_boots_keeps_the_prefix_and_quarantines_exactly_the_da
     let damaged = std::fs::read(segment_path(dir.path())).unwrap()[..original.len()].to_vec();
 
     // Boot is never blocked.
-    let wal = Wal::in_directory(dir.path(), Box::new(NullShipper::new()))
-        .expect("a corrupt segment does not stop the log opening");
+    let wal = Wal::in_directory(
+        dir.path(),
+        Box::new(NullShipper::new()),
+        crate::tests::fixtures::wall_ms,
+    )
+    .expect("a corrupt segment does not stop the log opening");
 
     // Every record before the damage is kept.
     assert_eq!(wal.recovered(), &written[..1]);
@@ -136,7 +145,12 @@ fn a_torn_tail_is_cut_silently_and_nothing_is_quarantined() {
     }
     std::fs::write(&path, bytes).unwrap();
 
-    let wal = Wal::in_directory(dir.path(), Box::new(NullShipper::new())).unwrap();
+    let wal = Wal::in_directory(
+        dir.path(),
+        Box::new(NullShipper::new()),
+        crate::tests::fixtures::wall_ms,
+    )
+    .unwrap();
     assert_eq!(wal.recovered(), &written[..3]);
     assert!(wal.quarantined().is_empty());
     assert!(quarantine_files(dir.path()).is_empty());
@@ -153,7 +167,12 @@ fn a_flipped_byte_in_the_final_record_is_a_torn_tail() {
     let written = four();
     lay_down(dir.path(), &written);
     flip(dir.path(), 3 * FRAME_BYTES + 200);
-    let wal = Wal::in_directory(dir.path(), Box::new(NullShipper::new())).unwrap();
+    let wal = Wal::in_directory(
+        dir.path(),
+        Box::new(NullShipper::new()),
+        crate::tests::fixtures::wall_ms,
+    )
+    .unwrap();
     assert_eq!(wal.recovered(), &written[..3]);
     assert!(wal.quarantined().is_empty());
     assert!(quarantine_files(dir.path()).is_empty());
@@ -249,6 +268,7 @@ fn a_crash_between_the_quarantine_copy_and_the_cut_loses_nothing() {
         Box::new(NullShipper::new()),
         Mode::OnDisk,
         crate::segment::SEGMENT_BYTES,
+        crate::tests::fixtures::wall_ms,
     );
     assert!(matches!(crashed, Err(OpenError::Io(_))));
     // The copy is durable AND the segment is uncut: both halves of the damage exist.
@@ -262,7 +282,12 @@ fn a_crash_between_the_quarantine_copy_and_the_cut_loses_nothing() {
 
     // The next boot completes. Nothing was lost across the two: the kept prefix and the first
     // copy together are every byte that was on the medium.
-    let wal = Wal::in_directory(dir.path(), Box::new(NullShipper::new())).unwrap();
+    let wal = Wal::in_directory(
+        dir.path(),
+        Box::new(NullShipper::new()),
+        crate::tests::fixtures::wall_ms,
+    )
+    .unwrap();
     assert_eq!(wal.recovered(), &written[..1]);
     let mut rebuilt = std::fs::read(&path).unwrap();
     rebuilt.extend(std::fs::read(&first[0]).unwrap());
@@ -312,6 +337,7 @@ fn a_quarantine_that_cannot_be_made_leaves_the_damage_in_place_and_writes_elsewh
             Box::new(NullShipper::new()),
             Mode::OnDisk,
             64 * FRAME_BYTES as u64,
+            crate::tests::fixtures::wall_ms,
         )
         .unwrap();
         wal.append_batch(&durability_token(), METER, &written)
@@ -326,6 +352,7 @@ fn a_quarantine_that_cannot_be_made_leaves_the_damage_in_place_and_writes_elsewh
         Box::new(NullShipper::new()),
         Mode::OnDisk,
         64 * FRAME_BYTES as u64,
+        crate::tests::fixtures::wall_ms,
     )
     .expect("a failed copy does not stop the log opening");
     assert_eq!(wal.recovered(), &written[..1]);
@@ -353,6 +380,7 @@ fn a_memory_log_keeps_the_quarantined_bytes_in_the_factory() {
             Box::new(NullShipper::new()),
             Mode::MemoryBuffered,
             64 * FRAME_BYTES as u64,
+            crate::tests::fixtures::wall_ms,
         )
         .unwrap();
         wal.append_batch(&durability_token(), METER, &written)
@@ -367,6 +395,7 @@ fn a_memory_log_keeps_the_quarantined_bytes_in_the_factory() {
         Box::new(NullShipper::new()),
         Mode::MemoryBuffered,
         64 * FRAME_BYTES as u64,
+        crate::tests::fixtures::wall_ms,
     )
     .unwrap();
     assert_eq!(wal.recovered(), &written[..2]);
@@ -386,7 +415,12 @@ fn the_journal_puts_a_durable_record_of_each_quarantine_on_the_chain() {
     lay_down(dir.path(), &four());
     flip(dir.path(), FRAME_BYTES + 3);
 
-    let wal = Wal::in_directory(dir.path(), Box::new(NullShipper::new())).unwrap();
+    let wal = Wal::in_directory(
+        dir.path(),
+        Box::new(NullShipper::new()),
+        crate::tests::fixtures::wall_ms,
+    )
+    .unwrap();
     let q = wal.quarantined()[0].clone();
     let QuarantineKept::File(file) = &q.kept else {
         panic!("an on-disk log quarantines to a file");
@@ -424,7 +458,12 @@ fn the_journal_puts_a_durable_record_of_each_quarantine_on_the_chain() {
     let clean = TempDir::new("quarantine-record-clean");
     lay_down(clean.path(), &four());
     let mut journal = Journal::over(
-        Wal::in_directory(clean.path(), Box::new(NullShipper::new())).unwrap(),
+        Wal::in_directory(
+            clean.path(),
+            Box::new(NullShipper::new()),
+            crate::tests::fixtures::wall_ms,
+        )
+        .unwrap(),
         3,
     );
     assert!(journal

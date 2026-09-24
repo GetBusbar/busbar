@@ -98,7 +98,7 @@ pub use recover::{
 };
 pub use segment::{Segment, SegmentError, GROWTH_STEP_BYTES, SEGMENT_BYTES};
 pub use ship::{BufferShipper, NullShipper, ShipError, Shipper};
-pub use wal::{BatchAck, Mode, OpenError, Wal};
+pub use wal::{BatchAck, Clock, Mode, OpenError, Wal};
 
 /// The largest record the log will carry, header and payload together — the contract's own cap on a
 /// journal record. A body larger than one frame's payload area is continued into further frames, so

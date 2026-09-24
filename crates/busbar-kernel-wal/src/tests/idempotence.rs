@@ -43,6 +43,7 @@ fn on_disk_wal() -> Wal {
         Box::new(NullShipper::new()),
         Mode::OnDisk,
         CEILING,
+        crate::tests::fixtures::wall_ms,
     )
     .expect("a healthy disk opens")
 }
@@ -261,8 +262,14 @@ fn an_on_disk_reappend_that_the_log_already_holds_offers_the_store_nothing() {
     let (factory, _switch, _memory) = FaultyFactory::new();
     let shipper = RecordingShipper::default();
     let offers = std::sync::Arc::clone(&shipper.offers);
-    let mut wal = Wal::with_parts(Box::new(factory), Box::new(shipper), Mode::OnDisk, CEILING)
-        .expect("a healthy disk opens");
+    let mut wal = Wal::with_parts(
+        Box::new(factory),
+        Box::new(shipper),
+        Mode::OnDisk,
+        CEILING,
+        crate::tests::fixtures::wall_ms,
+    )
+    .expect("a healthy disk opens");
     let token = durability_token();
 
     let batch = records(1, 1, 3, 16);
@@ -322,6 +329,7 @@ fn a_retry_after_a_refused_ship_reoffers_the_debt_without_appending_again() {
         Box::new(shipper),
         Mode::MemoryBuffered,
         CEILING,
+        crate::tests::fixtures::wall_ms,
     )
     .expect("a healthy disk opens");
     let token = durability_token();

@@ -397,9 +397,13 @@ fn look_past(segment: &Segment, from: u64, stop_at: u64, len: u64) -> io::Result
 ///
 /// After this returns — on every arm but the last — the backing holds exactly the records reported
 /// and nothing else, so an append lands on a frame boundary and no reader meets the damage again.
+///
+/// `clock` is the composition root's wall clock in unix milliseconds. It is read once, and only on
+/// the corrupt arm, to stamp when the damage was set aside; this crate never reads a clock itself.
 pub fn recover_and_truncate(
     segment: &mut Segment,
     factory: &mut dyn SegmentFactory,
+    clock: crate::wal::Clock,
 ) -> io::Result<Recovered> {
     let mut recovered = scan(segment)?;
     if recovered.was_torn() {
@@ -424,9 +428,7 @@ pub fn recover_and_truncate(
         filled += n;
     }
     copy.truncate(filled);
-    let at_unix_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+    let at_unix_ms = clock();
     // The copy is durable before a single byte of the segment is cut. The order is the whole
     // guarantee: a crash between the two leaves both.
     let kept = match factory.quarantine(segment.index(), offset, at_unix_ms, &copy) {

@@ -76,7 +76,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::record::Record;
 use crate::ship::Shipper;
-use crate::wal::{BatchAck, Mode, OpenError, Wal};
+use crate::wal::{BatchAck, Clock, Mode, OpenError, Wal};
 
 /// The four bytes every journal record's header opens with.
 pub const JOURNAL_MAGIC: [u8; 4] = *b"BJRN";
@@ -730,15 +730,15 @@ impl std::fmt::Debug for Journal {
 impl Journal {
     /// A journal over a memory-buffered log that ships nowhere and touches no disk.
     #[must_use]
-    pub fn memory_buffered(node: u64) -> Self {
-        Journal::over(Wal::memory_buffered(), node)
+    pub fn memory_buffered(node: u64, clock: Clock) -> Self {
+        Journal::over(Wal::memory_buffered(clock), node)
     }
 
     /// A journal over a memory-buffered log shipping through `shipper` — the shape a deployment that
     /// names a store but no data directory runs.
     #[must_use]
-    pub fn memory_buffered_to(node: u64, shipper: Box<dyn Shipper>) -> Self {
-        Journal::over(Wal::memory_buffered_to(shipper), node)
+    pub fn memory_buffered_to(node: u64, shipper: Box<dyn Shipper>, clock: Clock) -> Self {
+        Journal::over(Wal::memory_buffered_to(shipper, clock), node)
     }
 
     /// A journal whose log keeps its segments as files under `dir`, resuming from whatever chain is
@@ -751,8 +751,9 @@ impl Journal {
         node: u64,
         dir: impl AsRef<std::path::Path>,
         shipper: Box<dyn Shipper>,
+        clock: Clock,
     ) -> Result<Self, OpenError> {
-        Ok(Journal::over(Wal::in_directory(dir, shipper)?, node))
+        Ok(Journal::over(Wal::in_directory(dir, shipper, clock)?, node))
     }
 
     /// A journal over an already-open log, resuming from the tail the log recovered.
