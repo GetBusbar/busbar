@@ -87,8 +87,11 @@ fn a_changed_upstream_timeout_rebuilds_the_client_an_unrelated_apply_reuses_it()
     // the new timeout never takes effect until restart.
     let prior2 = build_once(cfg(), None).expect("boot");
     let mut changed_cfg = cfg();
-    changed_cfg.limits.upstream_request_timeout_secs =
-        prior2.client_settings.upstream_request_timeout_secs + 7;
+    changed_cfg.limits.upstream_request_timeout_secs = prior2
+        .llm_runtime()
+        .client_settings
+        .upstream_request_timeout_secs
+        + 7;
     let rebuilt = build_once(changed_cfg, Some(&prior2)).expect("apply with a changed timeout");
     assert!(
         !rebuilt
@@ -99,8 +102,15 @@ fn a_changed_upstream_timeout_rebuilds_the_client_an_unrelated_apply_reuses_it()
          timeout takes effect"
     );
     assert_eq!(
-        rebuilt.client_settings.upstream_request_timeout_secs,
-        prior2.client_settings.upstream_request_timeout_secs + 7,
+        rebuilt
+            .llm_runtime()
+            .client_settings
+            .upstream_request_timeout_secs,
+        prior2
+            .llm_runtime()
+            .client_settings
+            .upstream_request_timeout_secs
+            + 7,
         "the rebuilt client's carried settings snapshot must reflect the new timeout"
     );
 }
