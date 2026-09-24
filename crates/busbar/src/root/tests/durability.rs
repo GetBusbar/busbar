@@ -977,7 +977,7 @@ fn settle_one(durability: &mut Durability, key: &TotalsKey, reserved: u64, used:
 }
 
 /// PB-58: A SPEND PAST THE RESERVATION IS CARRIED OUT AS AN OVERDRAFT — the unit runs to its end
-/// and settles, and the part nothing reserved is carried, DERIVED AT READ (#71, Q9).
+/// and settles, and the part nothing reserved is carried, DERIVED AT READ (#71).
 ///
 /// A unit reserved 1,000 and spent 1,500. It is not ended for money: its hold closes by a
 /// settlement, like any other. The chain holds that settlement's counts and epoch and no figure,
