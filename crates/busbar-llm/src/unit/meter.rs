@@ -68,10 +68,12 @@
 //! in the window the pinned arrival epoch names, which is the window the charge landed in, so a
 //! request that straddles a boundary refunds where it charged.
 //!
-//! **A stream that ends in an error bills ZERO tokens.** Not the tokens observed before the error,
-//! and not a floor: the accrual is skipped entirely, exactly as the live taps skip it when the
-//! translator reports a terminal error or an abort. The figures observed either side of it are
-//! evidence, and evidence is not a charge.
+//! **A stream that ends in an error bills the tokens it streamed.** A terminal error, a translate
+//! abort, a transport cut or a timeout is an interruption, not a reversal of incurred cost: the
+//! customer pays for what was actually delivered up to the cut, exactly as the live taps accrue it
+//! (#62, owner-locked). The readers were fed only the frames that arrived before the end, so what
+//! they report IS what streamed; a transfer that failed before a byte reached the client reported
+//! nothing and bills nothing, with no gate of its own.
 //!
 //! **A response that reports no usage bills ZERO and still counts its request.** The token ledger
 //! is untouched — nothing is charged to the key's budget — and the metering series records one
@@ -140,8 +142,6 @@ pub(crate) struct MeterFacts {
     pub(crate) usage: Option<busbar_substrate_values::billing::TokenUsage>,
     /// The status the CLIENT saw — the fee basis, decided at the frame that carried it.
     pub(crate) status: u16,
-    /// The terminal-error/abort/cut fact the taps read at the end of the response.
-    pub(crate) billing_failed: bool,
     /// Whether the unit reached an upstream at all, which is what makes it a fee-bearing client
     /// request rather than a turn-away that never dialled.
     pub(crate) upstream_leg: bool,
@@ -153,20 +153,19 @@ pub(crate) struct MeterFacts {
 impl MeterFacts {
     /// FOLD A TAP'S REPORT INTO THESE FACTS.
     ///
-    /// The three figures the Route step could not fill are the tap's, and this is where they land:
-    /// the serving lane, the usage the dialect's reader found, and whether those figures are
-    /// evidence rather than a charge. Route calls it on the way out, which fills them for every end
+    /// The figures the Route step could not fill are the tap's, and this is where they land:
+    /// the serving lane and the usage the dialect's reader found up to the end the response reached,
+    /// which is the charge on every end (#62). Route calls it on the way out, which fills them for every end
     /// the tap had already reached — every buffered answer, and every transfer that failed before a
     /// body could flow. A stream's report does not exist yet at that moment, so nothing is folded and
     /// the facts stay as they were, `accrued` says the tap owns the posting, and the tap's own
     /// accrual is the unit's one accrual.
     ///
-    /// A report is folded ONCE and never partially: reading three figures out of two different
+    /// A report is folded ONCE and never partially: reading two figures out of two different
     /// observations of the same response is the divergence this takes the whole report to avoid.
     pub(crate) fn fold(&mut self, report: &crate::engine::TapReport) {
         self.lane = Some(report.lane);
         self.usage = report.usage.clone();
-        self.billing_failed = report.billing_failed;
     }
 }
 
@@ -183,7 +182,6 @@ pub struct MeterCtx<'a> {
     status: u16,
     charged: bool,
     upstream_leg: bool,
-    billing_failed: bool,
     accrued: bool,
 }
 
@@ -194,8 +192,8 @@ impl<'a> MeterCtx<'a> {
     /// client-facing frame. `charged` is the admit step's: whether the admission charge landed, and
     /// therefore whether there is anything a non-2xx could refund. `upstream_leg` says the unit
     /// routed to an upstream, which is what makes it a fee-bearing client request rather than a
-    /// kernel verb or a delivery. `billing_failed` is the terminal-error/abort fact the stream taps
-    /// read off the translator.
+    /// kernel verb or a delivery. How the response ENDED is not a parameter: a cut stream bills
+    /// what it streamed (#62), so `usage` is the whole charge on every end.
     ///
     /// `allow(dead_code)` while the module is dark: the Route step is what builds one of these on
     /// the request path, and it does not exist yet.
@@ -208,7 +206,6 @@ impl<'a> MeterCtx<'a> {
         status: u16,
         charged: bool,
         upstream_leg: bool,
-        billing_failed: bool,
     ) -> Self {
         MeterCtx {
             host,
@@ -218,7 +215,6 @@ impl<'a> MeterCtx<'a> {
             status,
             charged,
             upstream_leg,
-            billing_failed,
             // The step is the posting unless something before it says otherwise; `bind` is what
             // says otherwise.
             accrued: false,
@@ -246,7 +242,6 @@ impl<'a> MeterCtx<'a> {
             status: facts.status,
             charged,
             upstream_leg: facts.upstream_leg,
-            billing_failed: facts.billing_failed,
             accrued: facts.accrued,
         }
     }
@@ -342,10 +337,10 @@ pub fn meter(
     // own answer and the report handed over to be priced, so the two cannot come to different
     // answers about the same unit.
     let fee_count = u32::from(delivered && ctx.upstream_leg);
-    // A stream whose end carried a terminal error, or whose translation aborted, bills ZERO: the
-    // accrual is skipped, not floored. The figures seen before the error are evidence only.
-    let bills = !ctx.billing_failed;
-    let reported = if bills { ctx.usage } else { None };
+    // A stream whose end carried a terminal error, whose translation aborted or whose transport was
+    // cut bills what it streamed up to that end (#62): the reported usage is the charge on every end,
+    // and there is no end that turns it back into mere evidence.
+    let reported = ctx.usage;
 
     // THE LIVE ACCRUAL, unchanged: the tier split onto the key's budget chain in the pinned
     // window, then the raw per-model series row. Both through the one seam the stream-end tap,
@@ -364,35 +359,33 @@ pub fn meter(
     // and a meter half to attribute it to, which is the honest statement that there is nothing to
     // price — and it is the same `None` a unit that billed nothing reports.
     let mut report = None;
-    if bills {
-        if let (Some(sink), Some(lane)) = (ctx.sink, ctx.lane) {
-            // The tier split, projected once and read twice: the ledger accrues against it, and the
-            // card prices the same counts. Hoisted out of the accrual arm so a unit the walk already
-            // posted still prices what it delivered — sealing is not a reason to spend nothing.
-            let tier = reported
-                .map(busbar_llm_codec::wire_shim::tier_usage)
-                .unwrap_or_default();
-            if !ctx.accrued {
-                crate::engine::usage::ledger_and_meter(ctx.host, sink, lane, reported, &tier);
-                posted = true;
-            }
-            row = Some(metering_row(sink, lane, reported));
-            // THE REPORT, and it is where the money used to be. The step used to reach the legacy
-            // host seam here and come back with an amount; what it hands over now is the tier split
-            // it already projected, the billable count it already decided, and the two names the row
-            // it belongs to is keyed by — and the side that holds a card turns that into a total.
-            //
-            // The lane is the SERVING lane's config name, after any failover. That is the key space
-            // rates are written in and the same key the metering row above attributes to, so the
-            // line this reports and the entry that prices it are keyed by the same name with no
-            // translation between them.
-            report = Some(crate::unit::walk::LateReport {
-                usage: tier,
-                fee_count,
-                lane: lane.model.clone(),
-                provider: lane.provider.clone(),
-            });
+    if let (Some(sink), Some(lane)) = (ctx.sink, ctx.lane) {
+        // The tier split, projected once and read twice: the ledger accrues against it, and the
+        // card prices the same counts. Hoisted out of the accrual arm so a unit the walk already
+        // posted still prices what it delivered — sealing is not a reason to spend nothing.
+        let tier = reported
+            .map(busbar_llm_codec::wire_shim::tier_usage)
+            .unwrap_or_default();
+        if !ctx.accrued {
+            crate::engine::usage::ledger_and_meter(ctx.host, sink, lane, reported, &tier);
+            posted = true;
         }
+        row = Some(metering_row(sink, lane, reported));
+        // THE REPORT, and it is where the money used to be. The step used to reach the legacy
+        // host seam here and come back with an amount; what it hands over now is the tier split
+        // it already projected, the billable count it already decided, and the two names the row
+        // it belongs to is keyed by — and the side that holds a card turns that into a total.
+        //
+        // The lane is the SERVING lane's config name, after any failover. That is the key space
+        // rates are written in and the same key the metering row above attributes to, so the
+        // line this reports and the entry that prices it are keyed by the same name with no
+        // translation between them.
+        report = Some(crate::unit::walk::LateReport {
+            usage: tier,
+            fee_count,
+            lane: lane.model.clone(),
+            provider: lane.provider.clone(),
+        });
     }
 
     // The report the posting is made against: one line per non-zero tier, in canonical order. A

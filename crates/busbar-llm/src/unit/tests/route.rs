@@ -549,10 +549,6 @@ async fn route_reports_the_taps_figures_for_an_answer_that_finished() {
         "the split the dialect's reader found, carried to the step that reports it"
     );
     assert!(
-        !routed.facts.billing_failed,
-        "an answer that finished is a charge, not evidence"
-    );
-    assert!(
         !routed.facts.accrued,
         "the walk held no meter half on this fixture, so the Meter step is the posting — and it \
          now has a lane and a split to post"

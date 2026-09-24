@@ -386,7 +386,6 @@ async fn the_sealed_end_is_the_taps_where_there_is_one_and_the_status_where_ther
         cell.report(crate::engine::TapReport {
             lane: 0,
             usage: None,
-            billing_failed: !matches!(finish, crate::engine::TapFinish::Complete),
             finish,
         });
         let mut resp = (StatusCode::OK, "ok").into_response();

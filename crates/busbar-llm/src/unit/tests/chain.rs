@@ -641,9 +641,9 @@ struct Metering {
     fee_count: u32,
     refund: bool,
     /// What the METER step was bound to, as the Route step handed it over: the serving lane, the
-    /// reported split, and whether those figures are evidence rather than a charge. Empty while
-    /// the answer was still in flight when the step ran, which is every stream.
-    bound: (Option<usize>, Option<(u64, u64)>, bool),
+    /// reported split, which is the charge on every end (#62). Empty while the answer was still in
+    /// flight when the step ran, which is every stream.
+    bound: (Option<usize>, Option<(u64, u64)>),
     /// How the AUDIT step sealed the end, at the moment it really runs.
     finish: Option<busbar_contract::FinishClass>,
     /// What the walk's tap reported, read AFTER the body was drained — which for a stream is the
@@ -659,7 +659,7 @@ impl Metering {
             posted_here: false,
             fee_count: 0,
             refund: false,
-            bound: (None, None, false),
+            bound: (None, None),
             finish: None,
             tap: None,
         }
@@ -967,11 +967,7 @@ async fn drive(
     metering.refund = metered.refund;
     // What the step was actually BOUND to, read off the facts rather than off the response: the
     // three figures Route folds out of the tap where the tap had already finished.
-    metering.bound = (
-        facts.lane,
-        split(facts.usage.as_ref()),
-        facts.billing_failed,
-    );
+    metering.bound = (facts.lane, split(facts.usage.as_ref()));
     // The hold reaches no exit path in this rehearsal: the exit is the kernel's, and there is no
     // plane-side settle. Held to the end of the unit so the accounting is not silently dropped.
     let _hold = metered.hold;
@@ -1051,7 +1047,8 @@ const TAP_CASES: [Fixture; 2] = [Fixture::StreamCut, Fixture::StreamFailedTransf
 /// Both fixtures are served on 2xx headers and neither delivers the answer, so the status line
 /// says the same thing about both and about a stream that succeeded — which is precisely why the
 /// tap has to report a CLASS. The cut relayed a frame and stopped: `Partial`. The failed transfer
-/// relayed nothing at all: `Error`. Both bill zero tokens, both name the lane that served them,
+/// relayed nothing at all: `Error`. Both bill the tokens that streamed before them (#62) — zero
+/// here, because neither streamed a usage frame — both name the lane that served them,
 /// and the legacy plane and the chained steps still leave a client and an operator looking at the
 /// same thing on both.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1088,13 +1085,17 @@ async fn the_tap_reports_the_end_a_status_line_cannot() {
             report.lane, 0,
             "{fixture:?}: and the lane that served it, which is what the accrual is keyed on"
         );
-        assert!(
-            report.billing_failed,
-            "{fixture:?}: an answer that never finished bills zero — the figures are evidence"
+        // Both ends bill what STREAMED before them (#62), and on these two fixtures that is zero
+        // tokens because no usage frame had arrived: the cut relayed one content chunk and no usage,
+        // the failed transfer relayed nothing. The charge follows the report, not the end.
+        assert_eq!(
+            split(report.usage.as_ref()).map_or(0, |(i, o)| i + o),
+            0,
+            "{fixture:?}: no usage frame streamed before the end, so there is no token to bill"
         );
 
         // And nothing was billed, on either leg: the ledger and the metering series are empty
-        // for a token charge that the report says must not be made.
+        // because nothing that streamed carried a token count.
         fn field(o: &Observed, k: &str) -> String {
             o.0.iter()
                 .find(|(f, _)| *f == k)
@@ -1120,7 +1121,7 @@ async fn the_tap_reports_the_end_a_status_line_cannot() {
             "{fixture:?}: the terminal ran at the head, on a 2xx, exactly as it always has"
         );
         assert_eq!(
-            (metering.bound.0, metering.bound.1),
+            metering.bound,
             (None, None),
             "{fixture:?}: and the Meter step was bound to nothing, because nothing existed yet"
         );

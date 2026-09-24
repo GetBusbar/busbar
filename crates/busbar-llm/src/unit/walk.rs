@@ -466,7 +466,7 @@ impl Walk {
     /// a second book to post onto.
     ///
     /// `None` where there is nothing to report: the cell is still empty, the Route step never ran, or
-    /// no lane answered. A response the tap marked as billing failed reports an EMPTY tier rather
+    /// no lane answered. A response whose reader found nothing reports an EMPTY tier rather
     /// than nothing at all — the unit reached a lane and consumed nothing the node will charge for,
     /// which is a different statement from "no reading could be taken", and it still carries the fee
     /// count the previous release charges on it.
@@ -478,20 +478,19 @@ impl Walk {
         facts.fold(report);
         let tables = crate::engine::EngineTables::new(&self.rt);
         let lane = facts.lane.and_then(|i| tables.lanes().get(i))?;
-        // A terminal error, an abort or a cut transfer bills ZERO tokens, so the tier is empty. The
-        // FEE is not gated on it: a stream whose end carried a terminal error was still answered 2xx
-        // at the frame that decided the fee, and the previous release keeps that request in its
-        // billable count and does not refund it. The count is the Meter step's own, on the same base
-        // the legacy accounting charges on, and it is read here rather than decided a second time.
-        let usage = if facts.billing_failed {
-            busbar_substrate_values::billing::Usage::default()
-        } else {
-            facts
-                .usage
-                .as_ref()
-                .map(busbar_llm_codec::wire_shim::tier_usage)
-                .unwrap_or_default()
-        };
+        // A terminal error, an abort or a cut transfer bills the tokens that streamed up to it — the
+        // same figures the tap accrued: a mid-stream cut is an interruption, not a reversal of
+        // incurred cost (#62). A transfer that delivered nothing reported nothing, and its tier is
+        // empty. The FEE is not gated on the end either: a stream whose end carried a terminal error
+        // was still answered 2xx at the frame that decided the fee, and the previous release keeps
+        // that request in its billable count and does not refund it. The count is the Meter step's
+        // own, on the same base the legacy accounting charges on, and it is read here rather than
+        // decided a second time.
+        let usage = facts
+            .usage
+            .as_ref()
+            .map(busbar_llm_codec::wire_shim::tier_usage)
+            .unwrap_or_default();
         Some(LateReport {
             usage,
             fee_count: carry.fee_count,

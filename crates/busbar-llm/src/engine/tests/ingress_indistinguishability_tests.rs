@@ -1452,12 +1452,17 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_anthropic_sse() {
     );
 }
 
-/// An upstream TRANSPORT error mid-stream must NOT token-bill the partial usage accumulated
-/// before the cut — symmetric with the terminal-error / translate-abort no-bill gates (every other
-/// failure path suppresses or refunds). Drives the real FirstByteBody: an anthropic egress stream that
-/// sets usage (100 input on message_start + 50 output on message_delta = 150 billable), then a real
-/// reqwest transport Error. After the drop the gov must have charged ZERO. Pre-fix (no `stream_failed`
-/// gate) the Drop billing site charged the 150 partial tokens = 15c.
+/// An upstream TRANSPORT error mid-stream BILLS the partial usage accumulated before the cut.
+/// #62 (owner-locked): a mid-stream cut is NOT a refund — the customer pays for what actually
+/// streamed; the plane reports the units streamed to the cut, the ledger records them. Drives the
+/// real FirstByteBody: an anthropic egress stream that sets usage (100 input on message_start + 50
+/// output on message_delta = 150 billable), then a real reqwest transport Error. After the drop the
+/// token ledger must hold exactly those 150 — the ledger fault this pins was the `stream_failed`
+/// Drop gate, which recorded ZERO for tokens that had streamed.
+///
+/// NAME IS STALE, KEPT DELIBERATELY: `qa/design-bindings.json` / the design-bindings table bind
+/// PB-27 to this exact name, and those files are not this test's to edit. Renaming it rides with
+/// PB-27's rebinding to #62.
 #[tokio::test]
 async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
     crate::testkit::install_test_seams();
@@ -1548,8 +1553,8 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
     // Drain (emits the mid-stream error frame then None), then the body drops → Drop billing gate runs.
     let _ = fbb.into_body().collect().await;
 
-    // Poll briefly: a pre-fix Drop would ledger the 150 partial tokens; the fixed gate records
-    // nothing, so the token ledger stays 0.
+    // Poll briefly: the Drop's accrual may land off this task. It must ledger the 150 streamed
+    // tokens; the pre-#62 gate recorded nothing, leaving the ledger at 0.
     let mut tokens = 0;
     for _ in 0..150 {
         tokio::task::yield_now().await;
@@ -1564,8 +1569,8 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
         tokio::time::sleep(std::time::Duration::from_millis(1)).await;
     }
     assert_eq!(
-        tokens, 0,
-        "a mid-stream transport error must NOT bill the partial usage (pre-fix ledgered 150 tokens)"
+        tokens, 150,
+        "#62: a mid-stream transport cut bills what streamed before it (100 input + 50 output)"
     );
 }
 
@@ -3686,9 +3691,15 @@ async fn test_streaming_nonsse_post_first_byte_cut_refunds_the_lane_unit() {
 /// `tap.terminal_error` (no in-band `{"type":"error"}` frame was ever scanned). A
 /// `Poll::Ready(None)` arm that reverses the optimistic 2xx breaker success ONLY on `terminal_error`
 /// misses the translate-abort SIBLING, and therefore (a) records the
-/// optimistic success un-reversed (cell stays Closed) AND (b) billed the partial captured tokens
-/// via `record_tokens`. After the fix BOTH gates treat `terminal_error.is_some() ||
-/// translate.aborted()` as failed: the cell trips Closed→Open AND no token fee is charged.
+/// optimistic success un-reversed (cell stays Closed). The breaker gate treats
+/// `terminal_error.is_some() || translate.aborted()` as failed: the cell trips Closed→Open.
+///
+/// BILLING is NOT gated on the abort: the tokens the readers captured before it streamed, and
+/// #62 (owner-locked) bills a mid-stream cut for what streamed — the abort is a cut, not a
+/// refund. So the captured 1000 tokens ARE ledgered.
+///
+/// NAME IS STALE, KEPT DELIBERATELY: PB-27 in `qa/design-bindings.json` binds this exact name and
+/// is not this test's to edit; the rename rides with PB-27's rebinding to #62.
 #[tokio::test]
 async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
     crate::testkit::install_test_seams();
@@ -3825,18 +3836,17 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
              (cell Closed→Open), not stand as the optimistic 2xx success"
     );
 
-    // (2) BILLING: a captured-nonzero-token aborted stream must NOT be token-billed. The old
-    // code's accrual of the captured 1000 tokens would show in the key's window ledger; the fix
-    // skips the call entirely, so the window stays at 0 tokens.
+    // (2) BILLING: the captured 1000 tokens streamed before the abort, so they bill (#62). The
+    // pre-#62 gate skipped the accrual and left the key's window at 0 tokens.
     let ledgered = gov
         .usage_for(cost.as_ref(), &key.id, charged_at)
         .expect("usage read")
         .map(|u| u.tokens)
         .unwrap_or(0);
     assert_eq!(
-        ledgered, 0,
-        "an aborted cross-protocol stream must NOT charge a token fee \
-             (record_usage must not be called)"
+        ledgered, 1000,
+        "#62: an aborted cross-protocol stream bills what streamed before the abort \
+             (600 input + 400 output)"
     );
 }
 
@@ -3955,15 +3965,15 @@ async fn test_cancel_drop_bills_partial_tokens() {
     );
 }
 
-/// INVERSE of `test_cancel_drop_bills_partial_tokens`: the Drop path must SKIP billing when the
-/// cross-protocol translate ABORTED (e.g. a reassembly-buffer overflow) before the drop, even
-/// though usage was captured. Feed a usage chunk (usage accumulates) THEN an overflow chunk
+/// The SAME rule as `test_cancel_drop_bills_partial_tokens`, on an aborted translate: the Drop
+/// path BILLS the captured usage when the cross-protocol translate ABORTED (e.g. a reassembly-buffer
+/// overflow) before the drop. #62 (owner-locked): a mid-stream cut — and an abort is one — bills
+/// what streamed up to it. Feed a usage chunk (usage accumulates) THEN an overflow chunk
 /// (`> MAX_FRAME_BYTES`, no SSE terminator → `translate.aborted()` trips), poll those two chunks
-/// but NOT to `Poll::Ready(None)` (so `usage_sink` stays `Some`), then DROP the body. The Drop's
-/// `aborted()` guard (mirroring the `Poll::Ready(None)` no-bill-on-failure gate) must suppress
-/// the charge → the key's spend stays 0.
+/// but NOT to `Poll::Ready(None)` (so `usage_sink` stays `Some`), then DROP the body. The Drop
+/// must ledger the 1000 captured tokens; the pre-#62 `aborted()` guard recorded 0.
 #[tokio::test]
-async fn test_cancel_drop_skips_billing_on_aborted_translate() {
+async fn test_cancel_drop_bills_streamed_tokens_on_aborted_translate() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
     use busbar_kernel::governance::NewKeySpec;
@@ -4052,22 +4062,26 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
         futures::pin_mut!(body);
         let _ = body.next().await; // usage chunk → accumulate IrUsage
         let _ = body.next().await; // overflow chunk → translate.abort() trips aborted()
-                                   // body dropped here → Drop's aborted() guard must skip billing.
+                                   // body dropped here → Drop bills what streamed (#62).
     }
 
-    // Give any (erroneous) deferred accrual a chance to land, then confirm the ledger is still 0.
+    // The Drop's accrual may land off this task; drain it with a bounded poll.
+    let mut ledgered = 0;
     for _ in 0..200 {
+        ledgered = gov
+            .usage_for(cost.as_ref(), &key.id, charged_at)
+            .expect("usage read")
+            .map(|u| u.tokens)
+            .unwrap_or(0);
+        if ledgered > 0 {
+            break;
+        }
         tokio::task::yield_now().await;
     }
-    let ledgered = gov
-        .usage_for(cost.as_ref(), &key.id, charged_at)
-        .expect("usage read")
-        .map(|u| u.tokens)
-        .unwrap_or(0);
     assert_eq!(
-        ledgered, 0,
-        "a mid-stream drop after a translate ABORT must NOT bill (the Drop's aborted() guard \
-             suppresses the charge), inverse of test_cancel_drop_bills_partial_tokens"
+        ledgered, 1000,
+        "#62: a mid-stream drop after a translate ABORT bills what streamed before it \
+             (600 input + 400 output), exactly as test_cancel_drop_bills_partial_tokens does"
     );
 }
 

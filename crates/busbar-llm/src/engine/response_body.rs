@@ -87,12 +87,11 @@ pub(crate) struct TapReport {
     /// The SERVING lane, as an index into the engine's lane table — the lane that actually
     /// answered, after any failover. The accounting key for both the ledger and the metering series.
     pub(crate) lane: usize,
-    /// The token usage the dialect's reader found, or `None` where nothing reported any. Present as
-    /// EVIDENCE even on an end that bills nothing: `billing_failed` is what decides the charge.
+    /// The token usage the dialect's reader found up to the end the response reached, or `None`
+    /// where nothing reported any. It is the CHARGE on every end, a cut one included: a mid-stream
+    /// cut is an interruption, not a reversal of incurred cost, so what streamed before it bills
+    /// (#62). A transfer that delivered nothing has nothing read here, which is what bills it zero.
     pub(crate) usage: Option<busbar_substrate_values::billing::TokenUsage>,
-    /// The terminal-error / abort / transport-cut fact the tap reads at the end of the response.
-    /// True means the figures above are evidence and not a charge.
-    pub(crate) billing_failed: bool,
     /// How the response ENDED, as the plane says it.
     pub(crate) finish: TapFinish,
 }
@@ -226,13 +225,6 @@ pub(crate) struct FirstByteBody<S, P> {
     /// Set once the stream has fully ended (after any translation terminator), so a later poll
     /// returns None instead of re-polling a finished inner stream.
     ended: bool,
-    /// Set when the stream failed via an upstream TRANSPORT error mid/pre-stream (`Poll::Ready(Some(
-    /// Err))`). Unlike a reader-emitted in-band `Error` (which sets `translate.terminal_error`) or a
-    /// translate buffer-overflow (`translate.aborted`), a raw transport error leaves both clear — so
-    /// without this flag the `Drop` billing gate would token-bill the PARTIAL usage accumulated before
-    /// the cut, asymmetric with every other failure path (which suppress/refund). Gates `Drop` billing
-    /// off, mirroring the terminal-error suppression.
-    stream_failed: bool,
     /// Bounded reassembly buffer for a SAME-PROTOCOL NON-STREAM (`!is_sse`, `translate == None`)
     /// `application/json` body that reqwest delivers across multiple transport frames. This is the
     /// non-stream analog of the streaming read-for-IR-emit-verbatim path: the body is relayed to the
@@ -269,7 +261,7 @@ pub(crate) struct FirstByteBody<S, P> {
     ceiling: std::pin::Pin<Box<tokio::time::Sleep>>,
     /// THE REPORT-BACK. Filled exactly once, at whichever of this body's four ends is reached — the
     /// clean stream end, the mid-stream cut, the pre-first-byte cut, or the drop-time partial — with
-    /// the serving lane, the usage the reader found, the billing-failed fact and the finish class.
+    /// the serving lane, the usage the reader found and the finish class.
     /// The steps that ran BEFORE this body existed read it through the cell; nothing in this file
     /// ever reads it back.
     tap: TapCell,
@@ -334,7 +326,6 @@ where
             usage_sink,
             budget_spent,
             ended: false,
-            stream_failed: false,
             nonstream_buf: Vec::new(),
             nonstream_buf_truncated: false,
             ceiling,
@@ -491,10 +482,10 @@ where
                     return Poll::Ready(Some(Ok(chunk)));
                 }
                 Poll::Ready(Some(Err(e))) => {
-                    // An upstream transport error delivered a broken/partial response — suppress
-                    // Drop-time token billing (both this SSE arm and the non-SSE arm below), symmetric
-                    // with the terminal-error / abort no-bill gates.
-                    this.stream_failed = true;
+                    // An upstream transport error (or the stream ceiling) cut the response. What
+                    // streamed before the cut is still billed — by the Drop below, which runs after
+                    // either arm and accrues the usage the readers accumulated up to the cut (#62: a
+                    // mid-stream cut is not a refund).
                     let had_first = this.first_byte_sent;
                     if had_first && this.is_sse {
                         // Mid-stream failure after first byte in SSE mode: record breaker failure then emit SSE error event
@@ -521,13 +512,12 @@ where
                         // THE REPORT-BACK, on the cut. The client HAS bytes — first_byte_sent is
                         // what put us in this arm — and the answer stopped short of its end, which
                         // is the one thing a 2xx status line can never say. `Partial`, with the
-                        // figures the readers had accumulated carried as EVIDENCE: a post-first-byte
-                        // transport cut bills zero, exactly as the drop gate's `stream_failed` check
-                        // and the older release's arm do.
+                        // figures the readers had accumulated up to the cut — and those figures are
+                        // the charge: the customer pays for what actually streamed (#62), and the
+                        // Drop bills exactly these.
                         this.tap.report(TapReport {
                             lane: this.lane_idx,
                             usage: this.translate.as_ref().and_then(|t| t.usage()),
-                            billing_failed: true,
                             finish: TapFinish::Partial,
                         });
                         // The raw reqwest/transport error (`e`) must NEVER reach the client body: its
@@ -627,7 +617,8 @@ where
                         // spend (unlimited lane, or budget already 0) must not be refunded, since
                         // `refund_budget` is an unconditional `fetch_add` that would otherwise push the
                         // budget above its cap. Mark the stream ended and clear the flag so the inner
-                        // stream's trailing `Poll::Ready(None)` neither double-refunds nor token-bills.
+                        // stream's trailing `Poll::Ready(None)` neither double-refunds nor token-bills
+                        // (the Drop is the one place a cut's streamed usage is accrued).
                         if this.budget_spent {
                             if let Some(host) = this.host.as_ref() {
                                 host.lane_store().refund_budget(this.lane_idx);
@@ -641,11 +632,12 @@ where
                         // transfer failed, and `Error` is what the plane says. A cut after the first
                         // byte on a NON-SSE body delivered a prefix the caller cannot use as a whole
                         // answer, which is `Partial` — the same class its SSE sibling above reports,
-                        // decided by the same flag rather than by the content type.
+                        // decided by the same flag rather than by the content type. Either way the
+                        // usage is what the readers saw before the cut, and it bills (#62); a cut
+                        // before the first byte fed no reader and so bills nothing.
                         this.tap.report(TapReport {
                             lane: this.lane_idx,
                             usage: this.translate.as_ref().and_then(|t| t.usage()),
-                            billing_failed: true,
                             finish: if had_first {
                                 TapFinish::Partial
                             } else {
@@ -673,8 +665,9 @@ where
                     // leaves `tap.terminal_error` clear (no in-band `{"type":"error"}` frame was ever
                     // scanned). That is the SIBLING condition to a mid-body terminal error:
                     // both deliver a partial/aborted response the caller cannot use, so BOTH must be
-                    // treated as a failed stream by ALL THREE downstream gates (breaker, token
-                    // billing, json-array byte-shaping). The json-array close path below previously
+                    // treated as a failed stream by BOTH downstream gates (breaker, json-array
+                    // byte-shaping) and reported as an `Error` end. It is NOT a billing gate: what
+                    // streamed before the failure bills (#62). The json-array close path below previously
                     // read `aborted()` locally for its own byte-shaping; that single read is hoisted
                     // here and reused so the three gates can never diverge.
                     let translate_aborted = this
@@ -686,7 +679,7 @@ where
                     // event was seen (the IR-sourced `translate.terminal_error()`) OR the cross-protocol
                     // translate aborted mid-flight. Every same-proto/cross-proto SSE+eventstream stream flows
                     // through `translate`, so the terminal error is observable at this point in the arm
-                    // for all of them; the billing gate re-evaluates the same predicate AFTER the bedrock
+                    // for all of them; the end's report re-evaluates the same predicate AFTER the bedrock
                     // deferred `finish()` below (whose `metadata` frame can surface usage/error at end).
                     let stream_terminal_error = this
                         .translate
@@ -824,70 +817,60 @@ where
                         } else {
                             None
                         };
-                    // Charge this request's token usage to the virtual key's budget (once) — but ONLY
-                    // for a cleanly-terminated stream. A stream that saw a reader-emitted terminal ERROR
-                    // event (`translate.terminal_error()`) OR whose cross-protocol translate aborted
-                    // mid-flight (`translate_aborted`) delivered a partial/aborted response the caller
-                    // cannot use, and billing it contradicts the flat-fee-only-on-success policy (the
-                    // per-request fee is charged at admission by
-                    // `ingress::budget_check`→`try_charge_request_within_budget`, and `ingress::finish`
-                    // REFUNDS it on a non-2xx, so the net flat fee lands only on a 2xx). Mirror that
-                    // here with the SAME `failed` predicate the breaker gate above uses: a failed
-                    // stream is not token-billed, covering BOTH the SSE-ingress and json-array close
-                    // paths (the json-array path previously fell through and billed an aborted
-                    // stream's partial tokens). A same-proto non-stream body has no terminal-error/abort
-                    // path here (it is `!is_sse`), so `billing_failed` is false there.
-                    // Re-read the terminal error AFTER the deferred bedrock `finish()` above (whose
-                    // `metadata`/exception frame can surface an error only at stream end), OR'd with
-                    // the hoisted translate-abort flag — keeping the SAME failed semantics the breaker
-                    // gate used. An aborted translate's `feed` is a no-op, so the `translate_aborted`
-                    // snapshot taken at the top of the arm is still authoritative. Read ONCE, here,
-                    // because the billing gate below and the report-back are the same question and a
-                    // second read could answer it differently.
-                    let billing_failed = this
+                    // Charge this request's token usage to the virtual key's budget (once), on EVERY
+                    // end this arm reaches — a clean one, and one whose stream carried a reader-emitted
+                    // terminal ERROR event (`translate.terminal_error()`) or whose cross-protocol
+                    // translate aborted mid-flight (`translate_aborted`). A failed stream is a CUT, and
+                    // a mid-stream cut is not a refund: the customer pays for what actually streamed
+                    // up to it (#62, owner-locked). The readers' usage is exactly that — they were fed
+                    // only the frames that arrived before the failure — so the accrual takes it as-is.
+                    // The failure is still read, ONCE and AFTER the deferred bedrock `finish()` above
+                    // (whose `metadata`/exception frame can surface an error only at stream end), OR'd
+                    // with the hoisted translate-abort flag — the SAME predicate the breaker gate used —
+                    // but it decides the END the tap reports, never the charge. An aborted translate's
+                    // `feed` is a no-op, so the `translate_aborted` snapshot is still authoritative.
+                    let stream_failed = this
                         .translate
                         .as_ref()
                         .and_then(|t| t.terminal_error())
                         .is_some()
                         || translate_aborted;
                     if let Some(sink) = this.usage_sink.take() {
-                        if !billing_failed {
-                            // Ledger + meter the SERVING lane (`lane_idx` is the lane that
-                            // actually answered, post-failover) through the one accrual seam.
-                            // Readers normalize `input_tokens` to UNCACHED and keep the cache
-                            // fields ADDITIVE, so the four tiers are correct provider-agnostically.
-                            let tier = token_usage
+                        // Ledger + meter the SERVING lane (`lane_idx` is the lane that
+                        // actually answered, post-failover) through the one accrual seam.
+                        // Readers normalize `input_tokens` to UNCACHED and keep the cache
+                        // fields ADDITIVE, so the four tiers are correct provider-agnostically.
+                        let tier = token_usage
+                            .as_ref()
+                            .map(crate::engine::usage::tier_usage)
+                            .unwrap_or_default();
+                        if let (Some(host), Some(lane)) = (
+                            this.host.as_ref(),
+                            this.rt
                                 .as_ref()
-                                .map(crate::engine::usage::tier_usage)
-                                .unwrap_or_default();
-                            if let (Some(host), Some(lane)) = (
-                                this.host.as_ref(),
-                                this.rt.as_ref().and_then(|rt| {
-                                    EngineTables::new(rt).lanes().get(this.lane_idx)
-                                }),
-                            ) {
-                                crate::engine::usage::ledger_and_meter(
-                                    host,
-                                    &sink,
-                                    lane,
-                                    token_usage.as_ref(),
-                                    &tier,
-                                );
-                            }
+                                .and_then(|rt| EngineTables::new(rt).lanes().get(this.lane_idx)),
+                        ) {
+                            crate::engine::usage::ledger_and_meter(
+                                host,
+                                &sink,
+                                lane,
+                                token_usage.as_ref(),
+                                &tier,
+                            );
                         }
                     }
                     // THE REPORT-BACK, on the end that actually arrived, and after the accrual so the
                     // figures move rather than copy. The whole answer reached the client unless the
                     // reader emitted a terminal error frame or the translation aborted, and those two
                     // are the plane's `Error`: the response ended because the destination said it had
-                    // failed, not because it had finished. Nothing on this plane ever reports
-                    // `TurnComplete` — these six dialects are one-shot, so the end of a completion is
-                    // the end of the unit rather than the end of one turn of a session.
+                    // failed, not because it had finished. The usage rides out on both, as the charge.
+                    // Nothing on this plane ever reports `TurnComplete` — these six dialects are
+                    // one-shot, so the end of a completion is the end of the unit rather than the end
+                    // of one turn of a session.
                     this.tap.report(TapReport {
                         lane: this.lane_idx,
                         usage: token_usage,
-                        billing_failed,
-                        finish: if billing_failed {
+                        finish: if stream_failed {
                             TapFinish::Error
                         } else {
                             TapFinish::Complete
@@ -925,27 +908,23 @@ impl<S, P> Drop for FirstByteBody<S, P> {
         // `Poll::Ready(None)` and THEN drops through here; the cell would ignore a second report, and
         // the guard makes that a fact about this file rather than about the cell.
         //
-        // Unlike the cut, a disconnect is NOT `billing_failed`: the tokens below were really
-        // generated and really delivered before the caller went away, and the arm underneath bills
-        // them. The terminal-error / abort gate is the same predicate the accrual uses, read once.
+        // The tokens below were really generated and really delivered before the caller went away,
+        // and the arm underneath bills them — as it bills a cut's (#62).
         if !self.ended {
-            let translate = self.translate.as_ref();
-            let failed = self.stream_failed
-                || translate.and_then(|t| t.terminal_error()).is_some()
-                || translate.map(|t| t.aborted()).unwrap_or(false);
             self.tap.report(TapReport {
                 lane: self.lane_idx,
-                usage: translate.and_then(|t| t.usage()),
-                billing_failed: failed,
+                usage: self.translate.as_ref().and_then(|t| t.usage()),
                 finish: TapFinish::Partial,
             });
         }
         // Token-fee billing normally fires in `Poll::Ready(None)` (natural stream end), which TAKES
         // `usage_sink`. So a `None` here means "already billed" and this Drop is a no-op — no
-        // double-charge. A `Some` means the body was DROPPED MID-STREAM (client disconnect /
-        // cancellation) before the natural end, so the token-fee site never ran and the tokens already
-        // generated + delivered would go unbilled — an under-billing on every cancel. Bill the
-        // tokens the readers accumulated up to the drop point instead.
+        // double-charge. A `Some` means the body ended WITHOUT reaching that arm: DROPPED MID-STREAM
+        // (client disconnect / cancellation), or CUT by an upstream transport error or the stream
+        // ceiling (both transport arms set `ended` and leave the sink in place for this site). Either
+        // way the natural-end site never ran, and the tokens already generated + delivered would go
+        // unbilled. Bill the tokens the readers accumulated up to the cut point instead: a
+        // mid-stream cut is an interruption, not a reversal of incurred cost (#62, owner-locked).
         //
         // Best-effort: the provider's terminal usage frame may not have arrived before the cancel, so
         // `translate.usage()` may be partial or absent — partial/zero usage bills partial/zero
@@ -955,18 +934,10 @@ impl<S, P> Drop for FirstByteBody<S, P> {
         let Some(sink) = self.usage_sink.take() else {
             return;
         };
-        // Mirror the `Poll::Ready(None)` failed-gate EXACTLY: do not bill a stream that surfaced a
-        // terminal reader error OR whose cross-protocol translate aborted mid-flight (buffer overflow
-        // etc.) — both delivered a partial/aborted response the caller cannot use, and billing either
-        // contradicts the no-bill-on-failure policy (asserted by
-        // `test_streaming_translate_abort_trips_breaker_and_skips_billing`).
-        let translate = self.translate.as_ref();
-        if self.stream_failed
-            || translate.and_then(|t| t.terminal_error()).is_some()
-            || translate.map(|t| t.aborted()).unwrap_or(false)
-        {
-            return;
-        }
+        // A terminal reader error, a translate abort or a transport cut does NOT gate this: the
+        // readers were fed only the frames that arrived before it, so their usage is what streamed
+        // (`test_mid_stream_transport_error_does_not_bill_partial_usage`, whose name PB-27 still binds). Nothing streamed
+        // before the first byte, so a cut there has no reader usage and accrues nothing below.
         let usage = self.translate.as_ref().and_then(|t| t.usage());
         let tier = usage
             .as_ref()

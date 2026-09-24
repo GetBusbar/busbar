@@ -233,7 +233,6 @@ async fn the_step_accrues_the_same_metering_row_as_the_live_tap() {
         200,
         true,
         true,
-        false,
     );
     let (seal, unit_token, usage_token) = tokens();
     let metered = meter(&unit_token, &usage_token, &ctx, None, &Outcome::Completed);
@@ -349,16 +348,7 @@ fn the_fee_and_the_refund_are_decided_by_the_status_and_the_charge() {
             "a post-admission 404 is charged, unbilled and refunded",
         ),
     ] {
-        let ctx = MeterCtx::new(
-            &host,
-            None,
-            None,
-            None,
-            status,
-            charged,
-            upstream_leg,
-            false,
-        );
+        let ctx = MeterCtx::new(&host, None, None, None, status, charged, upstream_leg);
         let metered = meter(&unit_token, &usage_token, &ctx, None, &Outcome::Completed);
         assert_eq!(metered.fee_count, fee, "{why}: fee_count");
         assert_eq!(metered.refund, refund, "{why}: refund");
@@ -369,14 +359,17 @@ fn the_fee_and_the_refund_are_decided_by_the_status_and_the_charge() {
     }
 }
 
-/// A stream that ended in an error bills ZERO tokens — the accrual is skipped, not floored —
-/// and the fee it already earned is not taken back.
+/// A stream that ended in an error bills the tokens it STREAMED — the accrual follows what was
+/// delivered up to the cut, not the way the stream ended — and the fee it already earned is not
+/// taken back.
 ///
-/// The two halves are deliberately different: the tokens follow the evidence (there is none
-/// that survived the error), and the fee follows the status that was settled at the first frame
-/// relayed to the client, which a later abort does not reverse.
+/// #62 (owner-locked): a mid-stream cut is NOT a refund. Breaker, disconnect, revoked auth or
+/// timeout, the customer pays for what actually streamed; the plane reports the units, the ledger
+/// records them, the money view prices them. The tokens the readers found before the error are the
+/// charge, and the fee follows the status that was settled at the first frame relayed to the
+/// client, which a later abort does not reverse either.
 #[test]
-fn a_stream_that_died_bills_zero_tokens_and_keeps_the_fee_it_earned() {
+fn a_stream_that_died_bills_the_tokens_it_streamed_and_keeps_the_fee_it_earned() {
     let host: Arc<dyn EngineHost> =
         busbar_kernel::test_support::engine_host(&crate::test_support::TestApp::new().build());
     let (seal, unit_token, usage_token) = tokens();
@@ -385,7 +378,10 @@ fn a_stream_that_died_bills_zero_tokens_and_keeps_the_fee_it_earned() {
         output: OUTPUT,
         ..Default::default()
     };
-    let ctx = MeterCtx::new(&host, None, None, Some(&reported), 200, true, true, true);
+    // Everything the step is told about this unit: a 2xx went out, the readers had counted INPUT and
+    // OUTPUT by the time the stream died. How it died is the provisional end below, and it is not a
+    // fact the charge turns on.
+    let ctx = MeterCtx::new(&host, None, None, Some(&reported), 200, true, true);
     let metered = meter(
         &unit_token,
         &usage_token,
@@ -401,14 +397,21 @@ fn a_stream_that_died_bills_zero_tokens_and_keeps_the_fee_it_earned() {
         "the 2xx that went out is not reversed"
     );
     assert!(!metered.refund, "the client saw a success");
-    assert!(metered.row.is_none(), "nothing was accrued");
+    assert!(
+        metered.row.is_none(),
+        "no sink and no lane on this rig, so nothing to attribute a row to"
+    );
     let usage = metered.decision.into_result(&seal).expect("still a report");
     assert_eq!(
         usage.total(),
-        0,
-        "the tokens seen before the error are evidence, not a charge"
+        INPUT + OUTPUT,
+        "#62: the tokens that streamed before the cut are the charge, not evidence"
     );
-    assert!(usage.lines().is_empty());
+    assert_eq!(
+        usage.lines().len(),
+        2,
+        "one line per streamed tier: input and output"
+    );
 }
 
 /// The step is the `Units::meter` row's shape, as a value.
@@ -521,7 +524,6 @@ fn the_step_says_whether_it_posted_or_only_sealed() {
             200,
             true,
             true,
-            false,
         ),
         None,
         &Outcome::Completed,
@@ -541,7 +543,6 @@ fn the_step_says_whether_it_posted_or_only_sealed() {
         lane: Some(0),
         usage: Some(reported.clone()),
         status: 200,
-        billing_failed: false,
         upstream_leg: true,
         accrued: true,
     };
