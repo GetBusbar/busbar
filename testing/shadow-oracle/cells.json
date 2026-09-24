@@ -55,16 +55,16 @@
     }
   ],
   "counts": {
-    "total": 2318,
+    "total": 2401,
     "by_plane": {
       "a2a": 468,
-      "core": 789,
+      "core": 872,
       "llm": 149,
       "mcp": 912
     },
     "by_family": {
       "a2a": 468,
-      "admin.ops": 240,
+      "admin.ops": 323,
       "auth.lifecycle": 3,
       "billing": 14,
       "boot.refusal": 206,
@@ -5240,6 +5240,39 @@
       "why": "upstream refuses/times out -> Route failover / native upstream error"
     },
     {
+      "id": "admin.ops|DeleteAgentsName|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "DELETE",
+        "path": "/api/v1/admin/agents/{name}",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "needs fixture: x-busbar-plane: agents. Mounted only on a node whose config carries a `agents:` block (Law 7); on a node without one the path answers the router's 404 not_found",
+      "needs_fixture": true
+    },
+    {
+      "id": "admin.ops|DeleteAgentsName|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "DELETE",
+        "path": "/api/v1/admin/agents/{name}",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
       "id": "admin.ops|DeleteExportName|if-match-malformed",
       "plane": "core",
       "family": "admin.ops",
@@ -6055,6 +6088,39 @@
       "why": "no credential -> 401 envelope"
     },
     {
+      "id": "admin.ops|DeleteToolsName|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "DELETE",
+        "path": "/api/v1/admin/tools/{name}",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "needs fixture: x-busbar-plane: tools. Mounted only on a node whose config carries a `tools:` block (Law 7); on a node without one the path answers the router's 404 not_found. ",
+      "needs_fixture": true
+    },
+    {
+      "id": "admin.ops|DeleteToolsName|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "DELETE",
+        "path": "/api/v1/admin/tools/{name}",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
       "id": "admin.ops|GetAdminAuth|ok",
       "plane": "core",
       "family": "admin.ops",
@@ -6079,6 +6145,168 @@
       "request": {
         "method": "GET",
         "path": "/api/v1/admin/admin-auth",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|GetAgentsName|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/agents/{name}",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "needs fixture: x-busbar-plane: agents. Mounted only on a node whose config carries a `agents:` block (Law 7); on a node without one the path answers the router's 404 not_found",
+      "needs_fixture": true
+    },
+    {
+      "id": "admin.ops|GetAgentsName|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/agents/{name}",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|GetAgents|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/agents",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "needs fixture: x-busbar-plane: agents. Mounted only on a node whose config carries a `agents:` block (Law 7); on a node without one the path answers the router's 404 not_found",
+      "needs_fixture": true
+    },
+    {
+      "id": "admin.ops|GetAgents|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/agents",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|GetAuditHead|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/audit/head",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "200 {recipe,signature_domain,algorithm,next_seq,head}: the audit record chain's tip (head null when nothing is sealed). 1.6.0-additive: the published 1.5.5 bina"
+    },
+    {
+      "id": "admin.ops|GetAuditHead|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/audit/head",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|GetAuditKeys|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/audit/keys",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "200 {recipe,signature_domain,algorithm,keys}: the public verifying keys (empty when the node signs nothing). 1.6.0-additive: the published 1.5.5 binary has no s"
+    },
+    {
+      "id": "admin.ops|GetAuditKeys|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/audit/keys",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|GetAuditRange|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/audit/range?from=0&to=10",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "Both ?from= and ?to= are required (missing, non-numeric or inverted: 400). A node that retains no sealed records answers 404 not_found rather than an empty wind"
+    },
+    {
+      "id": "admin.ops|GetAuditRange|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/audit/range?from=0&to=10",
         "headers": {},
         "body": null,
         "auth": "none",
@@ -7088,6 +7316,166 @@
       "why": "no credential -> 401 envelope"
     },
     {
+      "id": "admin.ops|GetLedgerCheckpoints|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/ledger/checkpoints",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "200 {checkpoints:[...]}: sealed checkpoint figures, oldest first; signature presence only. 1.6.0-additive: the published 1.5.5 binary has no such route, so its "
+    },
+    {
+      "id": "admin.ops|GetLedgerCheckpoints|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/ledger/checkpoints",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|GetLedgerMigration|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/ledger/migration",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "200 {migrated,marker}: the marker the first boot after the upgrade sealed (null marker when not migrated). 1.6.0-additive: the published 1.5.5 binary has no suc"
+    },
+    {
+      "id": "admin.ops|GetLedgerMigration|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/ledger/migration",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|GetLedgerOpenapiJson|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/ledger/openapi.json",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "200: the one administrative OpenAPI document, the same bytes GET /openapi.json serves (normalise info.version). 1.6.0-additive: the published 1.5.5 binary has n"
+    },
+    {
+      "id": "admin.ops|GetLedgerOpenapiJson|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/ledger/openapi.json",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|GetLedgerReconciliation|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/ledger/reconciliation",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "200 {holds,discrepancies}: the ledger's postings against the previous release's rows. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recor"
+    },
+    {
+      "id": "admin.ops|GetLedgerReconciliation|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/ledger/reconciliation",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|GetLedgerTotals|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/ledger/totals",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "200 {rows:[{bucket,day,lane,provider,priced_nanos,priced_micros,fee_count}]}: money as decimal text, each line priced at the card in force at its own arrival. 5"
+    },
+    {
+      "id": "admin.ops|GetLedgerTotals|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/ledger/totals",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
       "id": "admin.ops|GetModels|ok",
       "plane": "core",
       "family": "admin.ops",
@@ -7144,6 +7532,38 @@
       "request": {
         "method": "GET",
         "path": "/api/v1/admin/openapi.json",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|GetPlaneFacts|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/plane-facts",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "Read-only new verb, never dual-controlled. This build binds NO EFFECT to the verb: an admitted call answers 404 not_found. Baseline: [404]. 1.6.0-additive: the "
+    },
+    {
+      "id": "admin.ops|GetPlaneFacts|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/plane-facts",
         "headers": {},
         "body": null,
         "auth": "none",
@@ -7346,6 +7766,138 @@
       "why": "no credential -> 401 envelope"
     },
     {
+      "id": "admin.ops|GetToolsNameChanges|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/tools/{name}/changes",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "needs fixture: x-busbar-plane: tools. Mounted only on a node whose config carries a `tools:` block (Law 7); on a node without one the path answers the router's 404 not_found. ",
+      "needs_fixture": true
+    },
+    {
+      "id": "admin.ops|GetToolsNameChanges|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/tools/{name}/changes",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|GetToolsNameHealth|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/tools/{name}/health",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "needs fixture: x-busbar-plane: tools. Mounted only on a node whose config carries a `tools:` block (Law 7); on a node without one the path answers the router's 404 not_found. ",
+      "needs_fixture": true
+    },
+    {
+      "id": "admin.ops|GetToolsNameHealth|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/tools/{name}/health",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|GetToolsName|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/tools/{name}",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "needs fixture: x-busbar-plane: tools. Mounted only on a node whose config carries a `tools:` block (Law 7); on a node without one the path answers the router's 404 not_found. ",
+      "needs_fixture": true
+    },
+    {
+      "id": "admin.ops|GetToolsName|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/tools/{name}",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|GetTools|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/tools",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "needs fixture: x-busbar-plane: tools. Mounted only on a node whose config carries a `tools:` block (Law 7); on a node without one the path answers the router's 404 not_found. ",
+      "needs_fixture": true
+    },
+    {
+      "id": "admin.ops|GetTools|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/tools",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
       "id": "admin.ops|GetUsage|no-usage-after-mutation",
       "plane": "core",
       "family": "admin.ops",
@@ -7398,6 +7950,71 @@
       "request": {
         "method": "GET",
         "path": "/api/v1/admin/usage",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|GetVerify|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/verify",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "Read-only new verb, never dual-controlled. This build binds NO EFFECT to the verb: an admitted call answers 404 not_found. Baseline: [404]. 1.6.0-additive: the "
+    },
+    {
+      "id": "admin.ops|GetVerify|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/verify",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|PatchAgentsNameSettings|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/v1/admin/agents/{name}/settings",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "needs fixture: x-busbar-plane: agents. Mounted only on a node whose config carries a `agents:` block (Law 7); on a node without one the path answers the router's 404 not_found",
+      "needs_fixture": true
+    },
+    {
+      "id": "admin.ops|PatchAgentsNameSettings|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/v1/admin/agents/{name}/settings",
         "headers": {},
         "body": null,
         "auth": "none",
@@ -8160,6 +8777,173 @@
       "why": "no credential -> 401 envelope"
     },
     {
+      "id": "admin.ops|PatchToolsNameSettings|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/v1/admin/tools/{name}/settings",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "needs fixture: x-busbar-plane: tools. Mounted only on a node whose config carries a `tools:` block (Law 7); on a node without one the path answers the router's 404 not_found. ",
+      "needs_fixture": true
+    },
+    {
+      "id": "admin.ops|PatchToolsNameSettings|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/v1/admin/tools/{name}/settings",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|PostAdjust|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/adjust",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"amends\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"now\":{\"input_tokens\":\"1\"},\"reason\":\"oracle count correction\"}",
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "Owner ruling Q9: a correction to a recorded unit's COUNTS (decimal text per class), never money; answers 200 {seq,hash,amends,lane,card_epoch_ms,now}. Irreducib"
+    },
+    {
+      "id": "admin.ops|PostAdjust|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/adjust",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"amends\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"now\":{\"input_tokens\":\"1\"},\"reason\":\"oracle count correction\"}",
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|PostAgentsNameApprove|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/agents/{name}/approve",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "needs fixture: x-busbar-plane: agents. Mounted only on a node whose config carries a `agents:` block (Law 7); on a node without one the path answers the router's 404 not_found",
+      "needs_fixture": true
+    },
+    {
+      "id": "admin.ops|PostAgentsNameApprove|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/agents/{name}/approve",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|PostAgentsNameConnect|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/agents/{name}/connect",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "needs fixture: x-busbar-plane: agents. Mounted only on a node whose config carries a `agents:` block (Law 7); on a node without one the path answers the router's 404 not_found",
+      "needs_fixture": true
+    },
+    {
+      "id": "admin.ops|PostAgentsNameConnect|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/agents/{name}/connect",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|PostApprove|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/approve",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "The maker-checker verb, never itself dual-controlled. This build binds NO EFFECT to the verb: an admitted call answers 404 not_found. Body not read. Baseline: ["
+    },
+    {
+      "id": "admin.ops|PostApprove|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/approve",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
       "id": "admin.ops|PostAuthCacheFlush|bad-body",
       "plane": "core",
       "family": "admin.ops",
@@ -8208,6 +8992,70 @@
           "Content-Type": "application/json"
         },
         "body": "{}",
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|PostChainBreak|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/chain-break",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "Disaster recovery; effect lands on the store (204 no body). Irreducible: under the baseline recorder config the fleet's operator key is unset, so the operator g"
+    },
+    {
+      "id": "admin.ops|PostChainBreak|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/chain-break",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|PostCommitUpgrade|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/commit-upgrade",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "Irreducible: under the baseline recorder config the fleet's operator key is unset, so the operator gate refuses it 403 forbidden before any effect. This build b"
+    },
+    {
+      "id": "admin.ops|PostCommitUpgrade|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/commit-upgrade",
+        "headers": {},
+        "body": null,
         "auth": "none",
         "listener": "admin"
       },
@@ -8570,6 +9418,166 @@
           "Content-Type": "application/json"
         },
         "body": "{\"config\":{\"admin_listen\":\"{ADMIN_LISTEN_ADDR}\",\"auth\":{\"admin_auth\":[\"admin-tokens\"],\"chain\":[\"keys\"],\"signing_key\":{\"file\":\"{WORK}/signing.key\"}},\"export\":{\"metrics\":{\"module\":\"prometheus\",\"settings\":{\"buffer_seconds\":60}}},\"groups\":{\"broke\":{\"limits\":[{\"per\":\"day\",\"requests\":1},{\"budget\":1,\"per\":\"day\"}]},\"oracle\":{\"limits\":[{\"budget\":1000000,\"per\":\"day\"}]}},\"identity-providers\":{\"admin-tokens\":{\"module\":\"admin-tokens\",\"token\":{\"env\":\"BUSBAR_ADMIN_TOKEN\"}}},\"limits\":{\"request_body_max_bytes\":33554432},\"listen\":\"{LISTEN_ADDR}\",\"models\":{\"m-anthropic\":{\"provider\":\"anthropic\"},\"m-bedrock\":{\"provider\":\"bedrock\"},\"m-cohere\":{\"provider\":\"cohere\"},\"m-gemini\":{\"provider\":\"gemini\"},\"m-openai-chat\":{\"provider\":\"openai-chat\"},\"m-openai-responses\":{\"provider\":\"openai-responses\"}},\"pools\":{\"oracle-unused\":{\"members\":[{\"model\":\"m-openai-chat\"}]}},\"providers\":{\"anthropic\":{\"api_key\":{\"env\":\"ORACLE_UPSTREAM_KEY\"}},\"bedrock\":{\"api_key\":{\"env\":\"ORACLE_UPSTREAM_KEY\"}},\"cohere\":{\"api_key\":{\"env\":\"ORACLE_UPSTREAM_KEY\"}},\"gemini\":{\"api_key\":{\"env\":\"ORACLE_UPSTREAM_KEY\"}},\"openai-chat\":{\"api_key\":{\"env\":\"ORACLE_UPSTREAM_KEY\"}},\"openai-responses\":{\"api_key\":{\"env\":\"ORACLE_UPSTREAM_KEY\"}}}},\"providers\":{\"anthropic\":{\"base_url\":\"{MOCK_URL}\",\"protocol\":\"anthropic\"},\"bedrock\":{\"base_url\":\"{MOCK_URL}\",\"protocol\":\"bedrock\"},\"cohere\":{\"base_url\":\"{MOCK_URL}\",\"protocol\":\"cohere\"},\"gemini\":{\"base_url\":\"{MOCK_URL}\",\"protocol\":\"gemini\"},\"openai-chat\":{\"base_url\":\"{MOCK_URL}\",\"protocol\":\"openai\"},\"openai-responses\":{\"base_url\":\"{MOCK_URL}\",\"protocol\":\"responses\"}}}",
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|PostDisputeMaxAge|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/dispute-max-age",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "Not irreducible. This build binds NO EFFECT to the verb: an admitted call answers 404 not_found. Body not read. Baseline: [404]. 1.6.0-additive: the published 1"
+    },
+    {
+      "id": "admin.ops|PostDisputeMaxAge|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/dispute-max-age",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|PostDisputesResolve|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/disputes/resolve",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "Irreducible: under the baseline recorder config the fleet's operator key is unset, so the operator gate refuses it 403 forbidden before any effect. This build b"
+    },
+    {
+      "id": "admin.ops|PostDisputesResolve|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/disputes/resolve",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|PostDualControl|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/dual-control",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "Irreducible: under the baseline recorder config the fleet's operator key is unset, so the operator gate refuses it 403 forbidden before any effect. This build b"
+    },
+    {
+      "id": "admin.ops|PostDualControl|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/dual-control",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|PostEscrow|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/escrow",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "Irreducible: under the baseline recorder config the fleet's operator key is unset, so the operator gate refuses it 403 forbidden before any effect. This build b"
+    },
+    {
+      "id": "admin.ops|PostEscrow|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/escrow",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|PostExportKeyset|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/export-keyset",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "Admitted while the operator is unset (with set_operator_key / export_keyset). This build binds NO EFFECT to the verb: an admitted call answers 404 not_found. Bo"
+    },
+    {
+      "id": "admin.ops|PostExportKeyset|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/export-keyset",
+        "headers": {},
+        "body": null,
         "auth": "none",
         "listener": "admin"
       },
@@ -9075,6 +10083,138 @@
       "why": "no credential -> 401 envelope"
     },
     {
+      "id": "admin.ops|PostLedgerAmendRateHistory|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/ledger/amend-rate-history",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"effective_from\":0,\"operator_fingerprint\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"per_request_fee\":1,\"reason\":\"oracle correction\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}",
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "A signed, back-dated rate-card correction; answers 200 {history_seq,effective_from,effective_until,amended_at,operator_fingerprint,reason_sha256}. Irreducible: "
+    },
+    {
+      "id": "admin.ops|PostLedgerAmendRateHistory|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/ledger/amend-rate-history",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"effective_from\":0,\"operator_fingerprint\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"per_request_fee\":1,\"reason\":\"oracle correction\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}",
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|PostOperatorKey|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/operator-key",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "Admitted while the operator is unset (with set_operator_key / export_keyset). This build binds NO EFFECT to the verb: an admitted call answers 404 not_found. Bo"
+    },
+    {
+      "id": "admin.ops|PostOperatorKey|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/operator-key",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|PostOverdraftCeiling|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/overdraft-ceiling",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "Not irreducible. This build binds NO EFFECT to the verb: an admitted call answers 404 not_found. Body not read. Baseline: [404]. 1.6.0-additive: the published 1"
+    },
+    {
+      "id": "admin.ops|PostOverdraftCeiling|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/overdraft-ceiling",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|PostPlaneRecordWrite|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/plane-record-write",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "Not irreducible. This build binds NO EFFECT to the verb: an admitted call answers 404 not_found. Body not read. Baseline: [404]. 1.6.0-additive: the published 1"
+    },
+    {
+      "id": "admin.ops|PostPlaneRecordWrite|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/plane-record-write",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
       "id": "admin.ops|PostPluginsInspect|bad-body",
       "plane": "core",
       "family": "admin.ops",
@@ -9345,6 +10485,38 @@
       "why": "no credential -> 401 envelope"
     },
     {
+      "id": "admin.ops|PostResealEpochFloor|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/reseal-epoch-floor",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "Disaster recovery; effect lands on the store (204 no body). Irreducible: under the baseline recorder config the fleet's operator key is unset, so the operator g"
+    },
+    {
+      "id": "admin.ops|PostResealEpochFloor|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/reseal-epoch-floor",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
       "id": "admin.ops|PostRestart|bad-body",
       "plane": "core",
       "family": "admin.ops",
@@ -9423,6 +10595,125 @@
       "request": {
         "method": "POST",
         "path": "/api/v1/admin/signing-key/rotate",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|PostSlicesResolve|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/slices/resolve",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "Not irreducible. This build binds NO EFFECT to the verb: an admitted call answers 404 not_found. Body not read. Baseline: [404]. 1.6.0-additive: the published 1"
+    },
+    {
+      "id": "admin.ops|PostSlicesResolve|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/slices/resolve",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|PostStoreRestore|bad-body",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/store-restore",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{}",
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "expect [400]"
+    },
+    {
+      "id": "admin.ops|PostStoreRestore|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/store-restore",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"backup_ref\":\"oracle-backup\"}",
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "Disaster recovery; effect lands on the store (204 no body). A body naming no `backup_ref` string is 400 invalid_request BEFORE the ceremony (bad_body). Irreduci"
+    },
+    {
+      "id": "admin.ops|PostStoreRestore|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/store-restore",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"backup_ref\":\"oracle-backup\"}",
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|PostToolsNameConnect|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/tools/{name}/connect",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "needs fixture: x-busbar-plane: tools. Mounted only on a node whose config carries a `tools:` block (Law 7); on a node without one the path answers the router's 404 not_found. ",
+      "needs_fixture": true
+    },
+    {
+      "id": "admin.ops|PostToolsNameConnect|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/tools/{name}/connect",
         "headers": {},
         "body": null,
         "auth": "none",
@@ -9532,6 +10823,39 @@
           "Content-Type": "application/json"
         },
         "body": "{\"admin_auth\":[\"admin-tokens\"]}",
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|PutAgentsName|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "PUT",
+        "path": "/api/v1/admin/agents/{name}",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "needs fixture: x-busbar-plane: agents. Mounted only on a node whose config carries a `agents:` block (Law 7); on a node without one the path answers the router's 404 not_found",
+      "needs_fixture": true
+    },
+    {
+      "id": "admin.ops|PutAgentsName|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "PUT",
+        "path": "/api/v1/admin/agents/{name}",
+        "headers": {},
+        "body": null,
         "auth": "none",
         "listener": "admin"
       },
@@ -10187,6 +11511,39 @@
           "Content-Type": "application/json"
         },
         "body": "{\"module\":\"admin-tokens\",\"token\":{\"env\":\"BUSBAR_ADMIN_TOKEN\"}}",
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|PutToolsName|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "PUT",
+        "path": "/api/v1/admin/tools/{name}",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "needs fixture: x-busbar-plane: tools. Mounted only on a node whose config carries a `tools:` block (Law 7); on a node without one the path answers the router's 404 not_found. ",
+      "needs_fixture": true
+    },
+    {
+      "id": "admin.ops|PutToolsName|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "PUT",
+        "path": "/api/v1/admin/tools/{name}",
+        "headers": {},
+        "body": null,
         "auth": "none",
         "listener": "admin"
       },

@@ -345,9 +345,9 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   `GET /api/v1/admin/ledger/{rate-history,repricings}`, a new operator-signed write
   `POST /api/v1/admin/ledger/amend-rate-history`, and optional `?as_of=<history_seq>` and
   `?currency=<CCY>` on the existing ledger reads. A card prices in one or more currencies natively,
-  with no pivot and no conversion. No 1.5.5 path, field or byte is touched; the new operations are
-  described at `docs/openapi-1.6.0-additive.json`, reached by name at
-  `GET /api/v1/admin/ledger/openapi.json`.
+  with no pivot and no conversion. No 1.5.5 path or field is changed; the new operations are
+  described in the one administrative OpenAPI document, which `GET /api/v1/admin/ledger/openapi.json`
+  also serves.
 - **A stream that dies mid-flight is no longer served, and billed, as a completed one.** Two
   upstream failure shapes reached the client as a clean success in 1.5.5. An OpenAI-compatible
   backend (OpenAI, Azure, vLLM, OpenRouter) that fails after its 200 headers are on the wire sends
@@ -424,10 +424,10 @@ identically, and every 1.5.5 key and minted secret carries over.
 - 1.6.0 Changed: the always-null `at` field on the hook view gives way to `fires_at` (rewritten for
   you by --migrate-config). Every hook object served by `GET /api/v1/admin/hooks[/{name}]`, and the
   follow-up read of a hook write, gains `fires_at` (the resolved stage set), `groups` and `phase`
-  and no longer carries `at`, which was always `null` in 1.5.5 and told a caller nothing.
+  beside `at`, which is still served exactly as in 1.5.5 (always `null`) and tells a caller nothing.
   **Migration:** `busbar --migrate-config` rewrites the single-stage tap `at: <stage>` config key
-  for you, and a persisted overlay auto-migrates it at boot; a client or dashboard that READ the
-  `at` field off a hook view must read `fires_at` instead. See
+  for you, and a persisted overlay auto-migrates it at boot; a client or dashboard that wants a
+  hook's stages reads `fires_at`, since `at` is always `null`. See
   [the 1.6.0 migration guide](docs/migration-1.6.md).
 - 1.6.0 Improvements: rotate refuses an overlong key id like its siblings. `POST
   /api/v1/admin/keys/{id}/rotate` was the one `/keys/{id}` handler that never enforced the 64-byte
@@ -477,8 +477,8 @@ Four retired 1.5.x spellings that were never the documented form are rewritten f
 than accepted: the hook `plugin:` key (the read-only alias of `module:`) and the single-stage tap
 `at: <stage>` key are rewritten by `busbar --migrate-config` and auto-migrated in a persisted
 overlay at boot; the accepted-then-ignored `persist:` field on `PUT /api/v1/admin/config/settings`
-is now a `400` naming the field; and the always-`null` `at` field on the hook view gives way to
-`fires_at`. Details in [the 1.6.0 migration guide](docs/migration-1.6.md).
+is now a `400` naming the field; and the always-`null` `at` field on the hook view is joined by
+`fires_at`, which carries the resolved stages (`at` itself is still served, as in 1.5.5). Details in [the 1.6.0 migration guide](docs/migration-1.6.md).
 
 ### Deprecated env vars still honoured
 
@@ -555,6 +555,17 @@ moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
 
 ### Added
 
+- **One OpenAPI document describes every administrative operation, and a node serves only what
+  it mounts.** The document is generated from the code and now also describes the 26 operations
+  1.6.0 adds — the money-governance verbs, the five ledger views and the three audit-chain reads —
+  each marked `x-busbar-since: 1.6.0`. The `tools:`/`agents:` operations are marked
+  `x-busbar-plane`, and `GET /api/v1/admin/openapi.json` serves the document filtered to the planes
+  the node configured: a plane you did not configure contributes no operation and no schema, so a
+  node running a 1.5.5 config describes no `tools`/`agents` path. A verb this release resolves but
+  binds no effect to is marked `x-busbar-effect-bound: false` and documents the `404` it answers.
+  Every 1.5.5 operation's entry is unchanged; `info.x-busbar-marks` explains the marks. The full,
+  unfiltered document is the release asset and is served at
+  `GET /api/v1/admin/ledger/openapi.json`. See [the admin API guide](docs/admin-api.md).
 - **Two 64-bit ARM Linux builds, and the default one got faster.** The default arm64 artifacts
   (the `busbar-aarch64-unknown-linux-gnu.tar.gz` download and the multi-arch image's `linux/arm64`
   entry) now target ARMv8.1+, using the CPU's native atomic instructions instead of the baseline's

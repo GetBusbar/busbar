@@ -291,11 +291,31 @@ fn mount_plane_admin_routes(mut router: Router<Arc<AppHandle>>) -> Router<Arc<Ap
     for decl in busbar_kernel::plane::registry::plane_decls() {
         if let Some(admin_routes) = decl.admin_routes {
             for spec in admin_routes(&() as &dyn std::any::Any) {
-                router = mount_one_admin_spec(router, decl.key, spec);
+                router = mount_one_admin_spec(router, decl, spec);
             }
         }
     }
     router
+}
+
+/// LAW 7 (BUSBAR-1.6.0.md: "Core loads a plugin **iff** its configuration section is present"): an admin
+/// path of a plane this generation did NOT configure answers exactly what the unmounted path answers
+/// (the router fallback's `404`), so a 1.5.5 config sees 1.5.5's surface. `None` = serve it.
+pub(crate) fn unconfigured_plane(
+    handle: &AppHandle,
+    decl: Option<&busbar_kernel::plane::registry::PlaneDecl>,
+) -> Option<Response> {
+    if decl.is_none_or(|d| handle.load().plane_configured(d)) {
+        return None;
+    }
+    #[cfg_attr(not(any(test, feature = "test-support")), allow(unused_mut))]
+    let mut resp = err_json(&AdminError::not_found("resource"));
+    // The unmounted path's answer is no operation's emission, exactly as the router fallback's (which
+    // matches no route) never is: it carries no taxonomy tag for the recording layer to attribute.
+    #[cfg(any(test, feature = "test-support"))]
+    resp.extensions_mut()
+        .remove::<busbar_kernel::admin::v1::contract::taxonomy::observed::Tag>();
+    Some(resp)
 }
 
 /// Mount ONE neutral [`busbar_kernel::admin_verbs::AdminRouteSpec`] onto the admin router. This is
@@ -307,9 +327,10 @@ fn mount_plane_admin_routes(mut router: Router<Arc<AppHandle>>) -> Router<Arc<Ap
 /// `connect` did (applied on a view, rejected on a look refusal, NOTHING on the resolve-time `404`).
 fn mount_one_admin_spec(
     router: Router<Arc<AppHandle>>,
-    plane: &'static str,
+    decl: &'static busbar_kernel::plane::registry::PlaneDecl,
     spec: busbar_kernel::admin_verbs::AdminRouteSpec,
 ) -> Router<Arc<AppHandle>> {
+    let plane = decl.key;
     use busbar_kernel::admin_verbs::{AdminReqCtx, AdminRouteSpec};
     let AdminRouteSpec {
         method,
@@ -326,6 +347,9 @@ fn mount_one_admin_spec(
                      body: axum::body::Bytes| {
         let handler = handler.clone();
         async move {
+            if let Some(resp) = unconfigured_plane(&handle, Some(decl)) {
+                return resp;
+            }
             let principal = principal.map(|axum::Extension(p)| p);
             // LOAD + MINT stays 100% core-side (the plane names neither `AppHandle` nor the host
             // factory). `from_handle` mirrors the data-plane adapter; the verbs here read only the BOUND
@@ -341,7 +365,15 @@ fn mount_one_admin_spec(
             finish_admin_reply(plane, &name, kind, principal, handler(ctx).await)
         }
     };
-    router.route(&path, axum::routing::on(method_filter, shim))
+    // Wrong method: the router's `405`, or — plane unconfigured (Law 7) — the unmounted path's `404`.
+    let wrong_method = move |State(handle): State<Arc<AppHandle>>| async move {
+        unconfigured_plane(&handle, Some(decl))
+            .unwrap_or_else(|| err_json(&AdminError::MethodNotAllowed))
+    };
+    router.route(
+        &path,
+        axum::routing::on(method_filter, shim).fallback(wrong_method),
+    )
 }
 
 /// Frame a plane handler's [`busbar_kernel::admin_verbs::AdminReply`] onto the wire, and record the
@@ -499,6 +531,18 @@ fn with_config_etag(mut resp: Response, version: u64) -> Response {
 
 mod handlers;
 pub(crate) use handlers::*;
+
+/// The 1.6.0 kernel verbs' contracts, documented in the one generated document.
+mod kernel_verbs;
+
+/// THE ONE ADMINISTRATIVE OPENAPI DOCUMENT, unfiltered — the committed, generated `openapi.json`,
+/// byte for byte: every operation the BUILD can serve. The composition root serves it at
+/// `GET /ledger/openapi.json`; this crate's `GET /openapi.json` serves it filtered to the planes the
+/// node configured (Law 7).
+#[must_use]
+pub fn openapi_document() -> String {
+    handlers::openapi_json()
+}
 // An extracted plane contributes its trust verbs' typed response schemas through
 // this exact helper (`admin_view::openapi_schemas`). It is relocated to the neutral substrate
 // (`busbar_kernel::api::set_response_schema`) so the plane names it directly; re-exported here at

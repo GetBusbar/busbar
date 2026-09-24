@@ -90,25 +90,34 @@ Guarded mutations: `POST /hooks`, `PUT|DELETE /hooks/{name}`, `PATCH /hooks/{nam
 GET /api/v1/admin/openapi.json
 ```
 
-The OpenAPI 3.1 schema of the whole surface: generate a client, or point tooling at it. Every path it lists resolves; its error-code enum matches the envelope above exactly; every operation is annotated with `x-busbar-required-scope` from the same matrix the middleware enforces (all three are test-locked). Browse it rendered, endpoint by endpoint, in the [API reference](https://getbusbar.com/docs/api/).
+The OpenAPI 3.1 schema of the whole surface: generate a client, or point tooling at it. Every path it lists resolves (a node serves it filtered to the planes it configured — see below); its error-code enum matches the envelope above exactly; every operation is annotated with `x-busbar-required-scope` from the same matrix the middleware enforces (all three are test-locked). Browse it rendered, endpoint by endpoint, in the [API reference](https://getbusbar.com/docs/api/).
 
 ### Pinning a released schema
 
 The live endpoint requires a booted, authenticated instance. So that tooling can consume the contract without one, every tagged release **attaches the schema as a release asset**: `busbar-openapi-<tag>.json` on the [GitHub Release](https://github.com/GetBusbar/busbar/releases). CI emits it in-repo from the same `openapi_doc()` the gateway serves (test-locked against drift), and its `info.version` is stamped from the binary's version, so each release's artifact is self-identifying. Downstream tooling can pin a client to an exact version and diff the API surface release-over-release without decompiling or running the gateway.
 
-### The 1.6.0 additive document
+### One document, and how to read its marks
 
-```
-GET /api/v1/admin/ledger/openapi.json
-```
+There is one administrative OpenAPI document. It is generated from the code and describes every
+operation the build can serve — the 1.6.0 additions included. A node serves it at
+`GET /api/v1/admin/openapi.json` filtered to the planes that node configured, so a node running a
+1.5.5 config describes no `tools`/`agents` operation; the release asset is the full document. Three marks say what a reader cannot
+tell from the path alone (the document explains them itself, under `info.x-busbar-marks`):
 
-The document above is **fixed**: a client that fetched it before upgrading to 1.6.0 and after it
-receives the same bytes, so nothing that reads it can be surprised by a path it does not know. The
-operations 1.6.0 adds are therefore described in a second document, at a path of its own, and asked
-for by name. The repository's copy is [`docs/openapi-1.6.0-additive.json`](openapi-1.6.0-additive.json);
-the endpoint serves those bytes verbatim.
+- **`x-busbar-plane: <section>`** — the operation belongs to a plane (`tools`, `agents`) and is
+  mounted only on a node whose config carries that `<section>:` block. On any other node its path
+  answers `404 not_found`, exactly as a path the surface has never had, and the document that node
+  serves leaves the operation out (with every schema only it references).
+- **`x-busbar-since: 1.6.0`** — one of the 26 operations 1.6.0 adds to the closed verb table, answered
+  by the node's administrative loop: the 18 money-governance verbs, the five ledger views and the
+  three audit-chain reads.
+- **`x-busbar-effect-bound: false`** — the verb resolves and runs its gates (scope, rate class, the
+  operator ceremony, dual control) and writes its audit row, but this build binds no effect to it:
+  an admitted call answers `404 not_found`. Such an operation documents no success response.
 
-It currently describes the five read-only ledger views:
+`GET /api/v1/admin/ledger/openapi.json` serves the full document, unfiltered.
+
+The ledger views and audit-chain reads:
 
 | Operation | Path | Scope |
 | --- | --- | --- |
@@ -117,12 +126,20 @@ It currently describes the five read-only ledger views:
 | `GetLedgerReconciliation` | `GET /api/v1/admin/ledger/reconciliation` | `read-only` |
 | `GetLedgerMigration` | `GET /api/v1/admin/ledger/migration` | `read-only` |
 | `GetLedgerOpenapiJson` | `GET /api/v1/admin/ledger/openapi.json` | `read-only` |
+| `GetAuditHead` | `GET /api/v1/admin/audit/head` | `read-only` |
+| `GetAuditRange` | `GET /api/v1/admin/audit/range?from=&to=` | `read-only` |
+| `GetAuditKeys` | `GET /api/v1/admin/audit/keys` | `read-only` |
 
 Every one is a read and takes exactly what `GET /api/v1/admin/usage` takes — the same credential,
 presented the same way. Money figures come back as **decimal strings**, not JSON numbers: the ledger
 keeps them in 128-bit integers and a JSON number is a double, exact only to 2^53, so a busy day's
 nano-unit total would silently lose its last digits while still looking like money. Counts are
 ordinary numbers.
+
+`POST /api/v1/admin/adjust` corrects a recorded unit's **counts** — per billable class, as decimal
+strings — never a money figure; what the unit costs stays a read-time view of its counts at its own
+rate-card epoch. `POST /api/v1/admin/ledger/amend-rate-history` appends a correction signed by the
+fleet's operator key to the dated rate-card history.
 
 These paths are served by the composition root's own loop. A node built without it answers them
 exactly as it answers any other path it does not have — the same `404` envelope, no hint that the

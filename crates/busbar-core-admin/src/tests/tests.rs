@@ -13235,6 +13235,25 @@ fn documented_operations() -> Vec<(
 #[test]
 fn rate_limit_doc_table_matches_classifier() {
     use busbar_kernel::admin::v1::contract::taxonomy::MethodTag;
+    // The classifier folds each registered plane's named-map section into the CONFIG class, so the
+    // planes must be registered before it is asked — independent of which test ran first.
+    crate::ensure_seam();
+    // The 1.6.0 kernel verbs are answered by the node's administrative loop, which rate-classes
+    // them by VERB (`rate::MutationClass::for_verb`), never by this path classifier: they are in
+    // the one document but not in this table's jurisdiction.
+    let loop_verbs: std::collections::BTreeSet<&'static str> = crate::verb::NEW_VERBS
+        .iter()
+        .chain(crate::verb::LEDGER_VERBS)
+        .chain(crate::verb::AUDIT_VERBS)
+        .filter_map(|v| crate::verb::verb_name(*v))
+        .collect();
+    let answered_by_loop = |rel: &str, method: MethodTag| {
+        crate::admin_codec::verbs::resolve(
+            &method.as_str().to_uppercase(),
+            &format!("{}{rel}", busbar_kernel::admin::v1::contract::ADMIN_PREFIX),
+        )
+        .is_some_and(|row| loop_verbs.contains(row.verb))
+    };
 
     // The doc's `config` row, parsed straight out of the committed file — not retyped here — so
     // editing the row is the only step needed to change what this test expects.
@@ -13272,8 +13291,9 @@ fn rate_limit_doc_table_matches_classifier() {
             matches!(
                 method,
                 MethodTag::Post | MethodTag::Put | MethodTag::Patch | MethodTag::Delete
-            ) && busbar_kernel::ratelimit::classify_mutation(rel)
-                == busbar_kernel::ratelimit::MutationClass::Config
+            ) && !answered_by_loop(rel, *method)
+                && busbar_kernel::ratelimit::classify_mutation(rel)
+                    == busbar_kernel::ratelimit::MutationClass::Config
         })
         .collect();
 

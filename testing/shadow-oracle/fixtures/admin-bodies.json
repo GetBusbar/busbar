@@ -1,6 +1,6 @@
 {
  "_comment": [
-  "Shadow-oracle request material for busbar 1.5.5's admin API: one entry per operationId of fixtures/openapi-1.5.5.json (66 operations / 49 paths).",
+  "Shadow-oracle request material for busbar's admin API: one entry per SERVED admin operation. 66 are the operationIds of fixtures/openapi-1.5.5.json (66 operations / 49 paths); 41 are 1.6.0 additions: the 15 plane-section operations (`tools:` / `agents:`, mounted only when the plane is configured) and the 26 kernel verbs of the closed verb table (18 money-governance verbs, 5 ledger views, 3 audit-chain reads). crates/busbar-core-admin's served-surface reconciliation test fails when a served operation has no entry here (or no admin.ops cell) and when an entry or cell names an operation the build does not serve.",
   "Sources: openapi-1.5.5.json (schemas, x-busbar-required-scope, If-Match params), docs/design/inventory/1.5.5-routes-admin.md (ADM-001..066), docs/design/inventory/1.5.5-config.md section 2 (config shapes), testing/shadow-oracle/oracle-config.sh (what exists at record time).",
   "Auth: every request carries `Authorization: Bearer <ORACLE_ADMIN_TOKEN>` (the admin-tokens provider; x-admin-token is the equivalent header). Bodies are sent with Content-Type: application/json where `body` is non-null.",
   "Placeholders substituted by the recorder: {KEY_OK} {KEY_BROKE} {KEY_NOSCOPE} (minted key ids), {TMP} (a writable temp dir), {WORK} (the oracle work dir holding signing.key), {LISTEN_ADDR} / {ADMIN_LISTEN_ADDR} (the oracle's `127.0.0.1:<port>` listen strings), {MOCK_URL} (`http://127.0.0.1:<mock_port>`). {GROUP} {HOOK} {EXPORT} {IDP} {PLUGIN_FILE} {SECTION} {V} are resolved to concrete names here (oracle-added / none / oracle-log,metrics / oracle-idp2,admin-tokens / none / root / 0).",
@@ -10,8 +10,37 @@
   "Rate classes: Config-class mutations (/config/*, /admin-auth, /overlay/*, /plugins/reload, /plugins/rollback, /restart, /identity-providers/*, /export/*) share ONE 10-per-minute window per principal, including the If-Match/bad_body probes; the recorder must pace them or it will record 429 rate_limited with Retry-After: 60.",
   "Volatile response fields to normalise before diffing: audit seq/ts/hash, config version numbers/ETag, usage as_of/window, minted key ids/tokens, info build fields, openapi info.version."
  ],
- "needs_fixture": [],
+ "needs_fixture": [
+  "DeleteAgentsName",
+  "DeleteToolsName",
+  "GetAgents",
+  "GetAgentsName",
+  "GetTools",
+  "GetToolsName",
+  "GetToolsNameChanges",
+  "GetToolsNameHealth",
+  "PatchAgentsNameSettings",
+  "PatchToolsNameSettings",
+  "PostAgentsNameApprove",
+  "PostAgentsNameConnect",
+  "PostToolsNameConnect",
+  "PutAgentsName",
+  "PutToolsName"
+ ],
  "ops": {
+  "DeleteAgentsName": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "DELETE",
+   "mutating": true,
+   "not_found": null,
+   "notes": "x-busbar-plane: agents. Mounted only on a node whose config carries a `agents:` block (Law 7); on a node without one the path answers the router's 404 not_found. ok: null until the recorder has a config variant that declares a `agents:` entry (the pinned engine's Variant set is baseline / queue-timeout / inbound-concurrency-2 / hooks). 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": null,
+   "path": "/api/v1/admin/agents/{name}",
+   "restart": false,
+   "scope": "full"
+  },
   "DeleteExportName": {
    "bad_body": null,
    "idempotent": false,
@@ -191,6 +220,19 @@
    "scope": "full",
    "variant": "hooks"
   },
+  "DeleteToolsName": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "DELETE",
+   "mutating": true,
+   "not_found": null,
+   "notes": "x-busbar-plane: tools. Mounted only on a node whose config carries a `tools:` block (Law 7); on a node without one the path answers the router's 404 not_found. ok: null until the recorder has a config variant that declares a `tools:` entry (the pinned engine's Variant set is baseline / queue-timeout / inbound-concurrency-2 / hooks). 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": null,
+   "path": "/api/v1/admin/tools/{name}",
+   "restart": false,
+   "scope": "full"
+  },
   "GetAdminAuth": {
    "bad_body": null,
    "idempotent": false,
@@ -207,6 +249,32 @@
     "headers": {}
    },
    "path": "/api/v1/admin/admin-auth",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetAgents": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "x-busbar-plane: agents. Mounted only on a node whose config carries a `agents:` block (Law 7); on a node without one the path answers the router's 404 not_found. ok: null until the recorder has a config variant that declares a `agents:` entry (the pinned engine's Variant set is baseline / queue-timeout / inbound-concurrency-2 / hooks). 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": null,
+   "path": "/api/v1/admin/agents",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetAgentsName": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "x-busbar-plane: agents. Mounted only on a node whose config carries a `agents:` block (Law 7); on a node without one the path answers the router's 404 not_found. ok: null until the recorder has a config variant that declares a `agents:` entry (the pinned engine's Variant set is baseline / queue-timeout / inbound-concurrency-2 / hooks). 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": null,
+   "path": "/api/v1/admin/agents/{name}",
    "restart": false,
    "scope": "read-only"
   },
@@ -229,6 +297,67 @@
     }
    },
    "path": "/api/v1/admin/audit",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetAuditHead": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 {recipe,signature_domain,algorithm,next_seq,head}: the audit record chain's tip (head null when nothing is sealed). 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/audit/head",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetAuditKeys": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 {recipe,signature_domain,algorithm,keys}: the public verifying keys (empty when the node signs nothing). 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/audit/keys",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetAuditRange": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "Both ?from= and ?to= are required (missing, non-numeric or inverted: 400). A node that retains no sealed records answers 404 not_found rather than an empty window, which is the production node's answer. Baseline: [404]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     404
+    ],
+    "headers": {},
+    "query": {
+     "from": "0",
+     "to": "10"
+    }
+   },
+   "path": "/api/v1/admin/audit/range",
    "restart": false,
    "scope": "read-only"
   },
@@ -731,6 +860,101 @@
    "restart": false,
    "scope": "read-only"
   },
+  "GetLedgerCheckpoints": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 {checkpoints:[...]}: sealed checkpoint figures, oldest first; signature presence only. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/ledger/checkpoints",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetLedgerMigration": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 {migrated,marker}: the marker the first boot after the upgrade sealed (null marker when not migrated). 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/ledger/migration",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetLedgerOpenapiJson": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200: the one administrative OpenAPI document, the same bytes GET /openapi.json serves (normalise info.version). 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/ledger/openapi.json",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetLedgerReconciliation": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 {holds,discrepancies}: the ledger's postings against the previous release's rows. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/ledger/reconciliation",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetLedgerTotals": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 {rows:[{bucket,day,lane,provider,priced_nanos,priced_micros,fee_count}]}: money as decimal text, each line priced at the card in force at its own arrival. 503 unavailable when the book holds a refused counts row. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/ledger/totals",
+   "restart": false,
+   "scope": "read-only"
+  },
   "GetModels": {
    "bad_body": null,
    "idempotent": false,
@@ -766,6 +990,25 @@
     "headers": {}
    },
    "path": "/api/v1/admin/openapi.json",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetPlaneFacts": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "Read-only new verb, never dual-controlled. This build binds NO EFFECT to the verb: an admitted call answers 404 not_found. Baseline: [404]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     404
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/plane-facts",
    "restart": false,
    "scope": "read-only"
   },
@@ -884,6 +1127,58 @@
    "restart": false,
    "scope": "read-only"
   },
+  "GetTools": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "x-busbar-plane: tools. Mounted only on a node whose config carries a `tools:` block (Law 7); on a node without one the path answers the router's 404 not_found. ok: null until the recorder has a config variant that declares a `tools:` entry (the pinned engine's Variant set is baseline / queue-timeout / inbound-concurrency-2 / hooks). 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": null,
+   "path": "/api/v1/admin/tools",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetToolsName": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "x-busbar-plane: tools. Mounted only on a node whose config carries a `tools:` block (Law 7); on a node without one the path answers the router's 404 not_found. ok: null until the recorder has a config variant that declares a `tools:` entry (the pinned engine's Variant set is baseline / queue-timeout / inbound-concurrency-2 / hooks). 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": null,
+   "path": "/api/v1/admin/tools/{name}",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetToolsNameChanges": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "x-busbar-plane: tools. Mounted only on a node whose config carries a `tools:` block (Law 7); on a node without one the path answers the router's 404 not_found. ok: null until the recorder has a config variant that declares a `tools:` entry (the pinned engine's Variant set is baseline / queue-timeout / inbound-concurrency-2 / hooks). 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": null,
+   "path": "/api/v1/admin/tools/{name}/changes",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetToolsNameHealth": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "x-busbar-plane: tools. Mounted only on a node whose config carries a `tools:` block (Law 7); on a node without one the path answers the router's 404 not_found. ok: null until the recorder has a config variant that declares a `tools:` entry (the pinned engine's Variant set is baseline / queue-timeout / inbound-concurrency-2 / hooks). 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": null,
+   "path": "/api/v1/admin/tools/{name}/health",
+   "restart": false,
+   "scope": "read-only"
+  },
   "GetUsage": {
    "bad_body": null,
    "idempotent": false,
@@ -902,6 +1197,38 @@
    "path": "/api/v1/admin/usage",
    "restart": false,
    "scope": "read-only"
+  },
+  "GetVerify": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "Read-only new verb, never dual-controlled. This build binds NO EFFECT to the verb: an admitted call answers 404 not_found. Baseline: [404]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     404
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/verify",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "PatchAgentsNameSettings": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "PATCH",
+   "mutating": true,
+   "not_found": null,
+   "notes": "x-busbar-plane: agents. Mounted only on a node whose config carries a `agents:` block (Law 7); on a node without one the path answers the router's 404 not_found. ok: null until the recorder has a config variant that declares a `agents:` entry (the pinned engine's Variant set is baseline / queue-timeout / inbound-concurrency-2 / hooks). 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": null,
+   "path": "/api/v1/admin/agents/{name}/settings",
+   "restart": false,
+   "scope": "full"
   },
   "PatchExportNameSettings": {
    "bad_body": {
@@ -1110,6 +1437,91 @@
    "restart": false,
    "scope": "full"
   },
+  "PatchToolsNameSettings": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "PATCH",
+   "mutating": true,
+   "not_found": null,
+   "notes": "x-busbar-plane: tools. Mounted only on a node whose config carries a `tools:` block (Law 7); on a node without one the path answers the router's 404 not_found. ok: null until the recorder has a config variant that declares a `tools:` entry (the pinned engine's Variant set is baseline / queue-timeout / inbound-concurrency-2 / hooks). 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": null,
+   "path": "/api/v1/admin/tools/{name}/settings",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostAdjust": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "Owner ruling Q9: a correction to a recorded unit's COUNTS (decimal text per class), never money; answers 200 {seq,hash,amends,lane,card_epoch_ms,now}. Irreducible: under the baseline recorder config the fleet's operator key is unset, so the operator gate refuses it 403 forbidden before any effect. Baseline: [403]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": {
+     "amends": "0000000000000000000000000000000000000000000000000000000000000000",
+     "now": {
+      "input_tokens": "1"
+     },
+     "reason": "oracle count correction"
+    },
+    "expect": [
+     403
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "path": "/api/v1/admin/adjust",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostAgentsNameApprove": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "x-busbar-plane: agents. Mounted only on a node whose config carries a `agents:` block (Law 7); on a node without one the path answers the router's 404 not_found. ok: null until the recorder has a config variant that declares a `agents:` entry (the pinned engine's Variant set is baseline / queue-timeout / inbound-concurrency-2 / hooks). 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": null,
+   "path": "/api/v1/admin/agents/{name}/approve",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostAgentsNameConnect": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "x-busbar-plane: agents. Mounted only on a node whose config carries a `agents:` block (Law 7); on a node without one the path answers the router's 404 not_found. ok: null until the recorder has a config variant that declares a `agents:` entry (the pinned engine's Variant set is baseline / queue-timeout / inbound-concurrency-2 / hooks). 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": null,
+   "path": "/api/v1/admin/agents/{name}/connect",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostApprove": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "The maker-checker verb, never itself dual-controlled. This build binds NO EFFECT to the verb: an admitted call answers 404 not_found. Body not read. Baseline: [404]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     404
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/approve",
+   "restart": false,
+   "scope": "full"
+  },
   "PostAuthCacheFlush": {
    "bad_body": {
     "body": {
@@ -1138,6 +1550,44 @@
     }
    },
    "path": "/api/v1/admin/auth/cache/flush",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostChainBreak": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "Disaster recovery; effect lands on the store (204 no body). Irreducible: under the baseline recorder config the fleet's operator key is unset, so the operator gate refuses it 403 forbidden before any effect. Body not read. Baseline: [403]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     403
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/chain-break",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostCommitUpgrade": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "Irreducible: under the baseline recorder config the fleet's operator key is unset, so the operator gate refuses it 403 forbidden before any effect. This build binds NO EFFECT to the verb: an admitted call answers 404 not_found. Body not read. Baseline: [403]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     403
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/commit-upgrade",
    "restart": false,
    "scope": "full"
   },
@@ -1593,6 +2043,101 @@
    "restart": false,
    "scope": "read-only"
   },
+  "PostDisputeMaxAge": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "Not irreducible. This build binds NO EFFECT to the verb: an admitted call answers 404 not_found. Body not read. Baseline: [404]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     404
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/dispute-max-age",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostDisputesResolve": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "Irreducible: under the baseline recorder config the fleet's operator key is unset, so the operator gate refuses it 403 forbidden before any effect. This build binds NO EFFECT to the verb: an admitted call answers 404 not_found. Body not read. Baseline: [403]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     403
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/disputes/resolve",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostDualControl": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "Irreducible: under the baseline recorder config the fleet's operator key is unset, so the operator gate refuses it 403 forbidden before any effect. This build binds NO EFFECT to the verb: an admitted call answers 404 not_found. Body not read. Baseline: [403]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     403
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/dual-control",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostEscrow": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "Irreducible: under the baseline recorder config the fleet's operator key is unset, so the operator gate refuses it 403 forbidden before any effect. This build binds NO EFFECT to the verb: an admitted call answers 404 not_found. Body not read. Baseline: [403]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     403
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/escrow",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostExportKeyset": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "Admitted while the operator is unset (with set_operator_key / export_keyset). This build binds NO EFFECT to the verb: an admitted call answers 404 not_found. Body not read. Baseline: [404]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     404
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/export-keyset",
+   "restart": false,
+   "scope": "full"
+  },
   "PostGroups": {
    "bad_body": {
     "body": {
@@ -1762,6 +2307,90 @@
    "restart": false,
    "scope": "full"
   },
+  "PostLedgerAmendRateHistory": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "A signed, back-dated rate-card correction; answers 200 {history_seq,effective_from,effective_until,amended_at,operator_fingerprint,reason_sha256}. Irreducible: under the baseline recorder config the fleet's operator key is unset, so the operator gate refuses it 403 forbidden before any effect. Baseline: [403]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": {
+     "effective_from": 0,
+     "operator_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000",
+     "per_request_fee": 1,
+     "reason": "oracle correction",
+     "signature": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "expect": [
+     403
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "path": "/api/v1/admin/ledger/amend-rate-history",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostOperatorKey": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "Admitted while the operator is unset (with set_operator_key / export_keyset). This build binds NO EFFECT to the verb: an admitted call answers 404 not_found. Body not read. Baseline: [404]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     404
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/operator-key",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostOverdraftCeiling": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "Not irreducible. This build binds NO EFFECT to the verb: an admitted call answers 404 not_found. Body not read. Baseline: [404]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     404
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/overdraft-ceiling",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostPlaneRecordWrite": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "Not irreducible. This build binds NO EFFECT to the verb: an admitted call answers 404 not_found. Body not read. Baseline: [404]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     404
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/plane-record-write",
+   "restart": false,
+   "scope": "full"
+  },
   "PostPlugins": {
    "bad_body": {
     "body": {
@@ -1886,6 +2515,25 @@
    "scope": "full",
    "variant": "hooks"
   },
+  "PostResealEpochFloor": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "Disaster recovery; effect lands on the store (204 no body). Irreducible: under the baseline recorder config the fleet's operator key is unset, so the operator gate refuses it 403 forbidden before any effect. Body not read. Baseline: [403]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     403
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/reseal-epoch-floor",
+   "restart": false,
+   "scope": "full"
+  },
   "PostRestart": {
    "bad_body": {
     "body": {
@@ -1938,6 +2586,69 @@
    "restart": false,
    "scope": "full"
   },
+  "PostSlicesResolve": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "Not irreducible. This build binds NO EFFECT to the verb: an admitted call answers 404 not_found. Body not read. Baseline: [404]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     404
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/slices/resolve",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostStoreRestore": {
+   "bad_body": {
+    "body": {},
+    "expect": [
+     400
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "Disaster recovery; effect lands on the store (204 no body). A body naming no `backup_ref` string is 400 invalid_request BEFORE the ceremony (bad_body). Irreducible: under the baseline recorder config the fleet's operator key is unset, so the operator gate refuses it 403 forbidden before any effect. Baseline: ok [403], bad_body [400]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": {
+     "backup_ref": "oracle-backup"
+    },
+    "expect": [
+     403
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "path": "/api/v1/admin/store-restore",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostToolsNameConnect": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "x-busbar-plane: tools. Mounted only on a node whose config carries a `tools:` block (Law 7); on a node without one the path answers the router's 404 not_found. ok: null until the recorder has a config variant that declares a `tools:` entry (the pinned engine's Variant set is baseline / queue-timeout / inbound-concurrency-2 / hooks). 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": null,
+   "path": "/api/v1/admin/tools/{name}/connect",
+   "restart": false,
+   "scope": "full"
+  },
   "PutAdminAuth": {
    "bad_body": {
     "body": {
@@ -1970,6 +2681,19 @@
     }
    },
    "path": "/api/v1/admin/admin-auth",
+   "restart": false,
+   "scope": "full"
+  },
+  "PutAgentsName": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "PUT",
+   "mutating": true,
+   "not_found": null,
+   "notes": "x-busbar-plane: agents. Mounted only on a node whose config carries a `agents:` block (Law 7); on a node without one the path answers the router's 404 not_found. ok: null until the recorder has a config variant that declares a `agents:` entry (the pinned engine's Variant set is baseline / queue-timeout / inbound-concurrency-2 / hooks). 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": null,
+   "path": "/api/v1/admin/agents/{name}",
    "restart": false,
    "scope": "full"
   },
@@ -2195,6 +2919,19 @@
     "path": "/api/v1/admin/identity-providers/oracle-idp2"
    },
    "path": "/api/v1/admin/identity-providers/{name}",
+   "restart": false,
+   "scope": "full"
+  },
+  "PutToolsName": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "PUT",
+   "mutating": true,
+   "not_found": null,
+   "notes": "x-busbar-plane: tools. Mounted only on a node whose config carries a `tools:` block (Law 7); on a node without one the path answers the router's 404 not_found. ok: null until the recorder has a config variant that declares a `tools:` entry (the pinned engine's Variant set is baseline / queue-timeout / inbound-concurrency-2 / hooks). 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": null,
+   "path": "/api/v1/admin/tools/{name}",
    "restart": false,
    "scope": "full"
   }

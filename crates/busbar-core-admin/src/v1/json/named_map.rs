@@ -85,7 +85,8 @@ pub(crate) fn routes() -> Router<Arc<AppHandle>> {
         router = router
             .route(
                 s.path_root().as_ref(),
-                get(move |state: State<Arc<AppHandle>>| list(state, s)),
+                get(move |state: State<Arc<AppHandle>>| list(state, s))
+                    .fallback(move |state: State<Arc<AppHandle>>| wrong_method(state, s)),
             )
             .route(
                 &format!("{}/{{name}}", s.path_root()),
@@ -108,7 +109,8 @@ pub(crate) fn routes() -> Router<Arc<AppHandle>> {
                           headers: axum::http::HeaderMap| {
                         delete(state, principal, path, headers, s)
                     },
-                ),
+                )
+                .fallback(move |state: State<Arc<AppHandle>>| wrong_method(state, s)),
             )
             .route(
                 &format!("{}/{{name}}/settings", s.path_root()),
@@ -120,7 +122,8 @@ pub(crate) fn routes() -> Router<Arc<AppHandle>> {
                           body: axum::body::Bytes| {
                         patch_settings(state, principal, path, headers, body, s)
                     },
-                ),
+                )
+                .fallback(move |state: State<Arc<AppHandle>>| wrong_method(state, s)),
             );
     }
     router
@@ -129,6 +132,9 @@ pub(crate) fn routes() -> Router<Arc<AppHandle>> {
 /// `GET /api/v1/admin/<section>` — every definition in the section (+ the config-plane `ETag`, so a
 /// caller chains straight into an `If-Match` mutation without a second read).
 async fn list(State(handle): State<Arc<AppHandle>>, section: NamedMapSection) -> Response {
+    if let Some(resp) = plane_gate(&handle, section) {
+        return resp;
+    }
     let version = handle.load().config_version;
     with_config_etag(
         respond(
@@ -145,6 +151,9 @@ async fn get_one(
     Path(name): Path<String>,
     section: NamedMapSection,
 ) -> Response {
+    if let Some(resp) = plane_gate(&handle, section) {
+        return resp;
+    }
     let version = handle.load().config_version;
     with_config_etag(
         respond(
@@ -153,6 +162,24 @@ async fn get_one(
         ),
         version,
     )
+}
+
+/// A method the path does not serve: the router's `405` — or, for an unconfigured plane's section, the
+/// `404` its unmounted path gives (Law 7), so the wrong method leaks no plane surface either.
+async fn wrong_method(State(handle): State<Arc<AppHandle>>, section: NamedMapSection) -> Response {
+    plane_gate(&handle, section).unwrap_or_else(|| err_json(&AdminError::MethodNotAllowed))
+}
+
+/// LAW 7: a PLANE section whose plane this generation did not configure is not served — the same
+/// `404` its unmounted path gives. The two core sections are always served.
+pub(super) fn plane_gate(handle: &AppHandle, section: NamedMapSection) -> Option<Response> {
+    let decl = match section {
+        NamedMapSection::Plane(key) => {
+            busbar_kernel::plane::registry::plane_decl_for_config_section(key)
+        }
+        _ => None,
+    };
+    super::unconfigured_plane(handle, decl)
 }
 
 /// What a mutation does to the section's overlay entry — the ONE axis the three write verbs differ
@@ -194,6 +221,9 @@ async fn put(
     body: axum::body::Bytes,
     section: NamedMapSection,
 ) -> Response {
+    if let Some(resp) = plane_gate(&handle, section) {
+        return resp;
+    }
     let def: serde_json::Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(e) => {
@@ -232,6 +262,9 @@ async fn patch_settings(
     body: axum::body::Bytes,
     section: NamedMapSection,
 ) -> Response {
+    if let Some(resp) = plane_gate(&handle, section) {
+        return resp;
+    }
     let req: NamedSettingsReq = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(e) => {
@@ -276,6 +309,9 @@ async fn delete(
     headers: axum::http::HeaderMap,
     section: NamedMapSection,
 ) -> Response {
+    if let Some(resp) = plane_gate(&handle, section) {
+        return resp;
+    }
     apply(handle, principal, section, name, headers, Mutation::Remove).await
 }
 

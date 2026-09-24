@@ -205,7 +205,11 @@ fn openapi_operations_carry_stable_operation_ids() {
     // This assertion is why the two plane sections could not land on `dev` independently without
     // one of them noticing the other: 76 was correct for either section alone and wrong for both
     // together.
-    assert_eq!(checked, 81, "expected exactly 81 admin operations");
+    //
+    // 107 = those 81 + the 26 operations the 1.6.0 closed verb table adds (18 money-governance verbs,
+    // 5 ledger views, 3 audit-chain reads), which the node's administrative loop answers and which
+    // the one document now describes (items 45/46: no side-car document).
+    assert_eq!(checked, 107, "expected exactly 107 admin operations");
     // Spot-check the exact naming scheme against a few representative paths.
     assert_eq!(
         doc["paths"]["/api/v1/admin/keys"]["get"]["operationId"],
@@ -446,6 +450,21 @@ fn openapi_every_operation_has_a_typed_response_schema() {
             let success = responses
                 .keys()
                 .find(|s| s.starts_with('2') && s.as_str() != "204");
+            // A verb with NO EFFECT BOUND in this build (`x-busbar-effect-bound: false`) has no
+            // success to document: an admitted call answers `404 not_found`. It is held to the
+            // stricter shape instead — no 2xx of any kind, and the 404 it does answer documented —
+            // so the mark cannot be used to hide a success body that exists.
+            if op[super::kernel_verbs::EFFECT_BOUND_KEY] == serde_json::Value::Bool(false) {
+                assert!(
+                    !responses.keys().any(|s| s.starts_with('2')),
+                    "{method} {path} is marked effect-unbound but documents a success"
+                );
+                assert!(
+                    responses.contains_key("404"),
+                    "{method} {path} is marked effect-unbound but does not document its 404"
+                );
+                continue;
+            }
             let Some(status) = success else {
                 // A 204-only op (DELETE) legitimately has no success body.
                 assert!(
@@ -633,6 +652,24 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         // change what it does. Its sibling `POST /agents/{name}/approve` is NOT here — that one
         // carries the fingerprint the operator is attesting they saw, which is the whole trust root.
         ("post", "/api/v1/admin/agents/{name}/connect"),
+        // The 1.6.0 kernel verbs whose body the node's administrative loop never reads. The two
+        // recovery verbs are pure commands (the effect is the store's; the verb IS the argument),
+        // and the eleven POSTs with no effect bound in this build reach nothing that could read a
+        // body. Their siblings that DO take one — `store-restore` (`backup_ref`), `adjust` (the
+        // count correction) and `ledger/amend-rate-history` (the signed correction) — are not here.
+        ("post", "/api/v1/admin/chain-break"),
+        ("post", "/api/v1/admin/reseal-epoch-floor"),
+        ("post", "/api/v1/admin/plane-record-write"),
+        ("post", "/api/v1/admin/operator-key"),
+        ("post", "/api/v1/admin/escrow"),
+        ("post", "/api/v1/admin/dual-control"),
+        ("post", "/api/v1/admin/overdraft-ceiling"),
+        ("post", "/api/v1/admin/dispute-max-age"),
+        ("post", "/api/v1/admin/commit-upgrade"),
+        ("post", "/api/v1/admin/disputes/resolve"),
+        ("post", "/api/v1/admin/slices/resolve"),
+        ("post", "/api/v1/admin/export-keyset"),
+        ("post", "/api/v1/admin/approve"),
     ];
 
     let doc = openapi_doc_seamed();
@@ -691,11 +728,12 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         "every BODYLESS entry must name a real operation; saw {bodyless_seen:?}"
     );
     assert_eq!(
-        declared, 27,
-        "27 mutating operations take a body; a change here is a deliberate API change. 27 = 22 \
+        declared, 30,
+        "30 mutating operations take a body; a change here is a deliberate API change. 30 = 22 \
          + each plane section's PUT and PATCH-settings (both DELETEs are bodyless, above) + the \
          A2A plane's approve verb, whose body carries the fingerprint the \
-         operator is attesting they read"
+         operator is attesting they read + the three 1.6.0 kernel verbs that read one \
+         (`store-restore`, `adjust`, `ledger/amend-rate-history`)"
     );
 }
 
@@ -762,3 +800,8 @@ fn openapi_summaries_do_not_advertise_forbidden_body_fields() {
         }
     }
 }
+
+/// The served admin surface reconciled against the oracle's admin corpus and the one generated
+/// OpenAPI document (1.6.0 items 44/45/46).
+#[path = "served_surface.rs"]
+mod served_surface;

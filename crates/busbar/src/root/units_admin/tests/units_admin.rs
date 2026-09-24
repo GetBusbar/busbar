@@ -3332,30 +3332,36 @@ fn every_1_6_0_row_names_a_kernel_verb_and_no_name_is_empty() {
     );
 }
 
-/// The additive document describes exactly the operations the closed table declares, and not one
-/// path the pinned 1.5.5 document already has.
+/// THE LEDGER VIEWS ARE DESCRIBED IN THE ONE DOCUMENT, and their own document path serves it.
 ///
-/// That second clause is the additivity claim itself. "Additive" is not a promise that the new
-/// document is small; it is the statement that nothing in it collides with a path a 1.5.5 client
-/// already knows, so the two documents can be read side by side without either contradicting the
-/// other.
+/// There used to be a side-car document here, hand-maintained so the served one's bytes need not
+/// move. It is gone (owner ruling Q41, items 45/46): the served document is generated from the code,
+/// and `GET /ledger/openapi.json` answers with exactly its bytes. What the side-car's test proved
+/// still has to hold of the one document — every ledger view is described, under the method the
+/// table declares, at the scope it is served at, with the table's own verb as its operationId — and
+/// the views are still NEW surface: none of their paths is in the pinned 1.5.5 document.
+#[cfg(feature = "root-admin")]
 #[test]
-fn the_additive_document_describes_the_ledger_views_and_nothing_the_pinned_one_has() {
-    let additive: serde_json::Value =
-        serde_json::from_str(LEDGER_OPENAPI_ADDITIVE).expect("the additive document is JSON");
-    let paths = additive["paths"].as_object().expect("it declares paths");
-
-    let mut declared: Vec<&str> = paths.keys().map(String::as_str).collect();
-    declared.sort_unstable();
-    let mut expected: Vec<&str> = LEDGER_PATHS.to_vec();
-    expected.sort_unstable();
+fn the_ledger_document_path_serves_the_one_document_and_it_describes_the_views() {
+    let answer = answer_over_seeded_ledger(a_ledger_request("/api/v1/admin/ledger/openapi.json"));
+    assert_eq!(answer.status, 200);
+    let served = String::from_utf8(answer.body).expect("the document is text");
     assert_eq!(
-        declared, expected,
-        "the document and the closed table declare different operations"
+        served,
+        busbar_core_admin::v1::json::openapi_document(),
+        "the ledger's document path must serve the one generated document, byte for byte"
+    );
+    let document: serde_json::Value = serde_json::from_str(&served).expect("it is JSON");
+    let paths = document["paths"].as_object().expect("it declares paths");
+    assert!(
+        paths.contains_key("/api/v1/admin/usage"),
+        "the ledger path serves a document that is not the administrative one"
     );
 
-    for (path, item) in paths {
-        let op = &item["get"];
+    for path in LEDGER_PATHS {
+        let op = &paths
+            .get(*path)
+            .unwrap_or_else(|| panic!("{path} is served and in no document"))["get"];
         assert!(
             op.is_object(),
             "{path} is described under a method the table does not declare"
@@ -3381,24 +3387,17 @@ fn the_additive_document_describes_the_ledger_views_and_nothing_the_pinned_one_h
     )))
     .expect("the pinned fixture is JSON");
     let pinned_paths = pinned["paths"].as_object().expect("it declares paths");
-    for path in paths.keys() {
-        assert!(
-            !pinned_paths.contains_key(path),
-            "{path} collides with a path the pinned 1.5.5 document already declares"
-        );
-    }
-    // And from the other side: the served 1.5.5 document has no ledger path at all, which is
-    // what leaving the released document's bytes alone means.
     assert!(
         !pinned_paths
             .keys()
             .any(|p| p.starts_with("/api/v1/admin/ledger/")),
-        "the pinned document has grown a ledger path"
+        "the ledger views are 1.6.0 surface; the pinned 1.5.5 document must not carry them"
     );
 }
 
 /// `GetLedgerTotals` -> `get_ledger_totals`, so the test above can compute the expected verb
 /// name rather than hand-transcribing a second copy of the five-row mapping.
+#[cfg(feature = "root-admin")]
 fn snake_of(operation_id: &str) -> String {
     let mut out = String::new();
     for (i, c) in operation_id.chars().enumerate() {

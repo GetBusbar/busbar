@@ -1713,27 +1713,16 @@ fn render_ledger_view(
         KernelVerb::GetLedgerMigration => {
             render_migration(view.migration_marker().as_ref()).into_bytes()
         }
-        KernelVerb::GetLedgerOpenapiJson => LEDGER_OPENAPI_ADDITIVE.as_bytes().to_vec(),
+        // THE ONE DOCUMENT, at the path the ledger views named for theirs. There used to be a
+        // second, hand-maintained side-car here so the served document's bytes need not move; the
+        // served document is now generated from the code and describes every operation this build
+        // can serve, these five included (owner ruling Q41, items 45/46).
+        KernelVerb::GetLedgerOpenapiJson => {
+            busbar_core_admin::v1::json::openapi_document().into_bytes()
+        }
         _ => return Err(busbar_core_admin::GovernanceError::NotFound),
     })
 }
-
-/// The document describing the 1.6.0 ledger operations.
-///
-/// A SECOND document, served at a path of its own, and that is the whole of the design's answer to
-/// how a new operation gets documented without moving a byte of the pinned one. The 1.5.5
-/// `openapi.json` is a fixed artefact: a client that fetched it before the upgrade and after it gets
-/// the same bytes, so nothing that reads it can be surprised by a path it does not know. An operator
-/// who wants the new surface asks for the new document by name.
-///
-/// It is `include_str!` of a committed file rather than a literal here for the same reason the
-/// verbs unit reads its conformance fixture that way: a document is an artefact somebody reviews as
-/// a document, and a test below parses this same file to check it describes exactly the operations
-/// the closed table declares.
-const LEDGER_OPENAPI_ADDITIVE: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../docs/openapi-1.6.0-additive.json"
-));
 
 /// One JSON string, quoted and escaped.
 ///

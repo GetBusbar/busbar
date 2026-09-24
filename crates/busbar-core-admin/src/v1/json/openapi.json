@@ -75,6 +75,77 @@
         ],
         "type": "object"
       },
+      "AdjustReq": {
+        "description": "`POST /adjust`: a correction to a recorded unit's COUNTS, never to a money figure. The\nprincipal, lane, card epoch and what the counts WERE are read from the book, by the digest of\nthe journal record `amends` names — never from this body.",
+        "properties": {
+          "amends": {
+            "description": "The chain digest of the journal record being corrected (64 hex characters).",
+            "type": "string"
+          },
+          "now": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The corrected count per billable class, each an exact non-negative decimal integer as TEXT.\nAt least one class.",
+            "type": "object"
+          },
+          "reason": {
+            "description": "Why. Required and non-blank.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "amends",
+          "now",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "AdjustView": {
+        "description": "`POST /adjust`'s answer: the sealed amendment's position and digest and the counts the unit now\nstands at.",
+        "properties": {
+          "amends": {
+            "description": "The digest of the record it corrects.",
+            "type": "string"
+          },
+          "card_epoch_ms": {
+            "description": "The instant, in milliseconds, whose rate card the counts price at (read from the book;\na correction never moves it).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "hash": {
+            "description": "The amendment's digest.",
+            "type": "string"
+          },
+          "lane": {
+            "description": "The lane the counts were recorded on (read from the book).",
+            "type": "string"
+          },
+          "now": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The corrected counts per class, as decimal TEXT.",
+            "type": "object"
+          },
+          "seq": {
+            "description": "The amendment's position on the node amendment journal.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "seq",
+          "hash",
+          "amends",
+          "lane",
+          "card_epoch_ms",
+          "now"
+        ],
+        "type": "object"
+      },
       "AdminAuthPutView": {
         "description": "`PUT /admin-auth`: the resource post-state (`{configured, modules}`, the same shape\n`GET /admin-auth` returns) plus apply metadata, so a client uses the PUT response as post-state.",
         "properties": {
@@ -129,6 +200,138 @@
         ],
         "type": "object"
       },
+      "AmendRateHistoryReq": {
+        "description": "`POST /ledger/amend-rate-history`: a signed, back-dated correction to the dated rate-card\nhistory. It out-ranks the entry it corrects and rewrites nothing.",
+        "properties": {
+          "effective_from": {
+            "description": "The start of the corrected window, in the history's instant scale (milliseconds).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "effective_until": {
+            "default": null,
+            "description": "The end of the corrected window; when present it must lie strictly after\n`effective_from`. Absent or null: open-ended.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operator_fingerprint": {
+            "description": "`sha256` of the fleet's sealed operator key, as hex: which key signed this correction.",
+            "type": "string"
+          },
+          "per_request_fee": {
+            "default": null,
+            "description": "The corrected flat per-request fee. Never negative.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rates": {
+            "description": "The corrected rates. A correction must move at least one figure: a rate here or the fee.",
+            "items": {
+              "$ref": "#/components/schemas/AmendRateRow"
+            },
+            "type": "array"
+          },
+          "reason": {
+            "description": "Why. Required and non-empty; the record keeps its SHA-256, not the text.",
+            "type": "string"
+          },
+          "signature": {
+            "description": "The detached ed25519 signature (128 hex characters) over the canonical correction payload,\nverified strictly against the sealed operator key.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "effective_from",
+          "operator_fingerprint",
+          "signature",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "AmendRateHistoryView": {
+        "description": "`POST /ledger/amend-rate-history`'s answer: the history entry an invoice will cite. It names no\nfigure — the corrected rates go into the card, never into the answer.",
+        "properties": {
+          "amended_at": {
+            "description": "When the correction was appended, in milliseconds.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "effective_from": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "effective_until": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "history_seq": {
+            "description": "The history sequence number the correction was appended at.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "operator_fingerprint": {
+            "type": "string"
+          },
+          "reason_sha256": {
+            "description": "The SHA-256 of the reason, as hex.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "history_seq",
+          "effective_from",
+          "effective_until",
+          "amended_at",
+          "operator_fingerprint",
+          "reason_sha256"
+        ],
+        "type": "object"
+      },
+      "AmendRateRow": {
+        "description": "One corrected rate.",
+        "properties": {
+          "class": {
+            "description": "The billable class.",
+            "type": "string"
+          },
+          "lane": {
+            "description": "The lane the rate is written against.",
+            "type": "string"
+          },
+          "micro_per_unit": {
+            "description": "The rate, in micro-units per unit. Finite and non-negative.",
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "lane",
+          "class",
+          "micro_per_unit"
+        ],
+        "type": "object"
+      },
+      "Amount": {
+        "description": "A money figure: a decimal integer carried as TEXT. The ledger keeps money in 128-bit integers and\nJSON's number is a double, exact only to 2^53; a nano-unit total passes that on a busy day, and a\nfigure that silently lost its last digits would still look like money.",
+        "pattern": "^-?[0-9]+$",
+        "type": "string"
+      },
       "ApproveReq": {
         "additionalProperties": false,
         "description": "The `approve` request body. ONE required field, and it is required because it is the operator's\nevidence that they looked.",
@@ -140,6 +343,220 @@
         },
         "required": [
           "fingerprint"
+        ],
+        "type": "object"
+      },
+      "AuditChainHeadView": {
+        "description": "`GET /audit/head`: where the audit record chain is now, and the recipe a verifier applies.",
+        "properties": {
+          "algorithm": {
+            "description": "The signature algorithm.",
+            "type": "string"
+          },
+          "head": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AuditChainSignedHead"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The tip, or null when the chain has sealed nothing (a true answer, not an error)."
+          },
+          "next_seq": {
+            "description": "The position the NEXT record will take.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "recipe": {
+            "description": "The name of the published digest recipe.",
+            "type": "string"
+          },
+          "signature_domain": {
+            "description": "The signature domain-separation string.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "recipe",
+          "signature_domain",
+          "algorithm",
+          "next_seq",
+          "head"
+        ],
+        "type": "object"
+      },
+      "AuditChainKeyView": {
+        "description": "One published verifying key. Public halves only.",
+        "properties": {
+          "algorithm": {
+            "type": "string"
+          },
+          "key_id": {
+            "type": "string"
+          },
+          "public_key": {
+            "description": "The verifying key, as hex.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key_id",
+          "algorithm",
+          "public_key"
+        ],
+        "type": "object"
+      },
+      "AuditChainKeysView": {
+        "description": "`GET /audit/keys`: the public keys the chain is signed with.",
+        "properties": {
+          "algorithm": {
+            "type": "string"
+          },
+          "keys": {
+            "description": "Every public key this node signs records under; empty when it signs none.",
+            "items": {
+              "$ref": "#/components/schemas/AuditChainKeyView"
+            },
+            "type": "array"
+          },
+          "recipe": {
+            "type": "string"
+          },
+          "signature_domain": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "recipe",
+          "signature_domain",
+          "algorithm",
+          "keys"
+        ],
+        "type": "object"
+      },
+      "AuditChainRangeView": {
+        "description": "`GET /audit/range`: records by position, `from` through `to` inclusive, each carrying every\nfield its digest was taken over, plus the head this node published at or before `to`.",
+        "properties": {
+          "algorithm": {
+            "type": "string"
+          },
+          "anchor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AuditChainSignedHead"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The head published at or before `to`, or null when none was."
+          },
+          "from": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "recipe": {
+            "type": "string"
+          },
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/AuditChainRecordView"
+            },
+            "type": "array"
+          },
+          "signature_domain": {
+            "type": "string"
+          },
+          "to": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "recipe",
+          "signature_domain",
+          "algorithm",
+          "from",
+          "to",
+          "anchor",
+          "records"
+        ],
+        "type": "object"
+      },
+      "AuditChainRecordView": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/AuditRecipeValue"
+        },
+        "description": "One sealed record: the digest recipe's fields, in the recipe's order (text as strings, numbers as\nnumbers, each repeated group as an array under its own name), then the record's digest and\nsignature.",
+        "properties": {
+          "hash": {
+            "type": "string"
+          },
+          "key_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "signature": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "hash",
+          "signature",
+          "key_id"
+        ],
+        "type": "object"
+      },
+      "AuditChainSignedHead": {
+        "description": "One signed head of the audit record chain.",
+        "properties": {
+          "hash": {
+            "description": "The chain digest at that position.",
+            "type": "string"
+          },
+          "key_id": {
+            "description": "Which key signed it, or null for an unsigned chain.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "seq": {
+            "description": "The chain position this head seals.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "signature": {
+            "description": "The head's signature, or null for an unsigned chain.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "wall": {
+            "description": "When the head was sealed, in whole seconds.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "seq",
+          "hash",
+          "signature",
+          "key_id",
+          "wall"
         ],
         "type": "object"
       },
@@ -225,6 +642,47 @@
           "next_cursor"
         ],
         "type": "object"
+      },
+      "AuditRecipeElement": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/AuditRecipeScalar"
+          },
+          {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AuditRecipeScalar"
+            },
+            "type": "object"
+          }
+        ],
+        "description": "One element of a repeated group: a single value, or an object of the group's members."
+      },
+      "AuditRecipeScalar": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        ],
+        "description": "One recipe scalar: text is a string, a number is an unsigned 64-bit integer."
+      },
+      "AuditRecipeValue": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/AuditRecipeScalar"
+          },
+          {
+            "items": {
+              "$ref": "#/components/schemas/AuditRecipeElement"
+            },
+            "type": "array"
+          }
+        ],
+        "description": "One digest-recipe value: a scalar, or a repeated group published as an array under its own name."
       },
       "AuthView": {
         "description": "The ingress auth chain read (`GET /api/v1/admin/auth`): the ordered module names that authenticate\ncallers + the upstream-credential mode. Never a secret: module names and the mode are config\nidentifiers, not credentials. An empty `chain` is the open front door (admits every request).",
@@ -1033,6 +1491,11 @@
         ],
         "type": "object"
       },
+      "Hash": {
+        "description": "A 32-byte digest as 64 lower-case hex characters.",
+        "pattern": "^[0-9a-f]{64}$",
+        "type": "string"
+      },
       "HookDesiredStatus": {
         "description": "The DESIRED settings side of `hooks/{name}/status`: busbar's registry copy of the hook's settings\n(KEY NAMES only, see [`super::HookView::settings_keys`]) and their version.",
         "properties": {
@@ -1593,6 +2056,432 @@
           "created_at",
           "labels",
           "state"
+        ],
+        "type": "object"
+      },
+      "LedgerChainHead": {
+        "description": "One node's journal head, as a checkpoint sealed it.",
+        "properties": {
+          "hash": {
+            "$ref": "#/components/schemas/Hash"
+          },
+          "node": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "node_seq": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "node",
+          "node_seq",
+          "hash"
+        ],
+        "type": "object"
+      },
+      "LedgerCheckpoint": {
+        "description": "One sealed checkpoint. `body_hash` is what an auditor re-derives independently;\n`body_hash_verifies` is this node's own answer to the same question. A signature's presence is\nreported and its bytes are not.",
+        "properties": {
+          "backup_watermark": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "body_hash": {
+            "$ref": "#/components/schemas/Hash"
+          },
+          "body_hash_verifies": {
+            "description": "This node's own answer to whether the sealed body re-hashes to `body_hash`.",
+            "type": "boolean"
+          },
+          "checkpoint_seq": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "heads": {
+            "items": {
+              "$ref": "#/components/schemas/LedgerChainHead"
+            },
+            "type": "array"
+          },
+          "node": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "signed": {
+            "description": "Whether a signature is present. The signature's bytes are never served.",
+            "type": "boolean"
+          },
+          "store_seq_high_water": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "totals": {
+            "items": {
+              "$ref": "#/components/schemas/LedgerTotalsCell"
+            },
+            "type": "array"
+          },
+          "wall": {
+            "description": "When it was sealed, in whole seconds.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "checkpoint_seq",
+          "node",
+          "wall",
+          "backup_watermark",
+          "store_seq_high_water",
+          "body_hash",
+          "body_hash_verifies",
+          "signed",
+          "heads",
+          "totals"
+        ],
+        "type": "object"
+      },
+      "LedgerCheckpoints": {
+        "description": "`GET /ledger/checkpoints`: the sealed checkpoint figures, oldest first.",
+        "properties": {
+          "checkpoints": {
+            "items": {
+              "$ref": "#/components/schemas/LedgerCheckpoint"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "checkpoints"
+        ],
+        "type": "object"
+      },
+      "LedgerDiscrepancy": {
+        "description": "One row on which the identity does not hold. Spend and fee count are checked separately\nbecause they fail separately.",
+        "properties": {
+          "bucket": {
+            "type": "string"
+          },
+          "day": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "lane": {
+            "type": "string"
+          },
+          "ledger_fee_count": {
+            "description": "What the ledger's postings charged fees for on this row.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "legacy_billable_requests": {
+            "description": "What the previous release's row says was billable.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "residual": {
+            "$ref": "#/components/schemas/LedgerResidual"
+          }
+        },
+        "required": [
+          "bucket",
+          "day",
+          "lane",
+          "provider",
+          "residual",
+          "ledger_fee_count",
+          "legacy_billable_requests"
+        ],
+        "type": "object"
+      },
+      "LedgerMigration": {
+        "description": "`GET /ledger/migration`: whether this deployment has migrated, and the marker if it has.\n`migrated` is a field of its own rather than inferred from a null marker.",
+        "properties": {
+          "marker": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LedgerMigrationMarker"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "migrated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "migrated",
+          "marker"
+        ],
+        "type": "object"
+      },
+      "LedgerMigrationMarker": {
+        "description": "The marker the first boot after the upgrade sealed.",
+        "properties": {
+          "balances": {
+            "description": "How many balances the opening carries.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "body_hash": {
+            "$ref": "#/components/schemas/Hash"
+          },
+          "cells_read": {
+            "description": "How many of the previous release's cells were read to arrive at them.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "checkpoint_seq": {
+            "description": "The checkpoint the migration sealed.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "node": {
+            "description": "Which node sealed it.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rate_card_version": {
+            "description": "Which card version the opening entries were priced under.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sealed_at": {
+            "description": "When, in whole seconds.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "checkpoint_seq",
+          "node",
+          "sealed_at",
+          "body_hash",
+          "balances",
+          "cells_read",
+          "rate_card_version"
+        ],
+        "type": "object"
+      },
+      "LedgerReconciliation": {
+        "description": "`GET /ledger/reconciliation`: whether the ledger's postings reconcile with the previous\nrelease's rows, and every row on which they do not.",
+        "properties": {
+          "discrepancies": {
+            "items": {
+              "$ref": "#/components/schemas/LedgerDiscrepancy"
+            },
+            "type": "array"
+          },
+          "holds": {
+            "description": "True when every row reconciles. `discrepancies` is then empty.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "holds",
+          "discrepancies"
+        ],
+        "type": "object"
+      },
+      "LedgerResidual": {
+        "description": "The spend residual of one row.",
+        "properties": {
+          "accounted": {
+            "$ref": "#/components/schemas/Amount",
+            "description": "Where the value the ledger drew is now."
+          },
+          "amount": {
+            "$ref": "#/components/schemas/Amount",
+            "description": "`accounted` minus `drawn`. Zero is the good answer; the sign says which side is missing the\ndifference."
+          },
+          "drawn": {
+            "$ref": "#/components/schemas/Amount",
+            "description": "What the previous release's row records as taken."
+          }
+        },
+        "required": [
+          "accounted",
+          "drawn",
+          "amount"
+        ],
+        "type": "object"
+      },
+      "LedgerTotals": {
+        "description": "`GET /ledger/totals`: what the ledger's lines come to, per bucket, day, lane and provider.",
+        "properties": {
+          "rows": {
+            "description": "The rows, in bucket, day, lane and provider order.",
+            "items": {
+              "$ref": "#/components/schemas/LedgerTotalsRow"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "rows"
+        ],
+        "type": "object"
+      },
+      "LedgerTotalsCell": {
+        "description": "One sealed balance, as the checkpoint holds it. Every money figure is an [`Amount`].",
+        "properties": {
+          "adjustments": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "bucket": {
+            "type": "string"
+          },
+          "budget": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "cross_window_transfers": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "dimension": {
+            "type": "string"
+          },
+          "disputed": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "drawn": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "oldest_dispute_age_secs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "oldest_open_hold_age_secs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "open_dispute_count": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "open_holds": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "open_slice_remainders": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "overdraft_carried_in": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "overdraft_carried_out": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "released": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "settled": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "unreconciled": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "window": {
+            "description": "The window's opening instant, in whole seconds.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "bucket",
+          "dimension",
+          "scope",
+          "window",
+          "budget",
+          "drawn",
+          "released",
+          "settled",
+          "open_holds",
+          "open_slice_remainders",
+          "adjustments",
+          "unreconciled",
+          "overdraft_carried_in",
+          "overdraft_carried_out",
+          "cross_window_transfers",
+          "disputed",
+          "oldest_open_hold_age_secs",
+          "open_dispute_count",
+          "oldest_dispute_age_secs"
+        ],
+        "type": "object"
+      },
+      "LedgerTotalsRow": {
+        "description": "One row of `GET /ledger/totals`. The row width is the reconciliation's, so a discrepancy found\non one endpoint is looked up on the other by the same four-part name.",
+        "properties": {
+          "bucket": {
+            "description": "Whose budget the usage was attributed to.",
+            "type": "string"
+          },
+          "day": {
+            "description": "The UTC-day bucket, as the unix second it opens at.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "fee_count": {
+            "description": "One per billable client request on this row.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "lane": {
+            "description": "The serving lane's configured model name (empty where the node keeps no finer width).",
+            "type": "string"
+          },
+          "priced_micros": {
+            "$ref": "#/components/schemas/Amount",
+            "description": "The same figure in micro-units: ONE truncating divide over the summed nano-units, never a\nsum of per-line divides."
+          },
+          "priced_nanos": {
+            "$ref": "#/components/schemas/Amount",
+            "description": "The summed priced amount of the row's lines in nano-units, each line priced against the\nrate card in force at its own arrival instant."
+          },
+          "provider": {
+            "description": "The serving lane's provider (empty where the node keeps no finer width).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "bucket",
+          "day",
+          "lane",
+          "provider",
+          "priced_nanos",
+          "priced_micros",
+          "fee_count"
         ],
         "type": "object"
       },
@@ -2757,6 +3646,19 @@
         ],
         "type": "object"
       },
+      "StoreRestoreReq": {
+        "description": "`POST /store-restore`: the backup to restore. There is no default and no empty one.",
+        "properties": {
+          "backup_ref": {
+            "description": "The backup the operator names. A request that names none is refused before the ceremony.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "backup_ref"
+        ],
+        "type": "object"
+      },
       "TopologyInfo": {
         "description": "Pool/model/provider counts (`InfoView.topology`).",
         "properties": {
@@ -2947,10 +3849,127 @@
   "info": {
     "description": "The frozen, additive-only /api/v1/admin surface. Errors use the stable envelope {\"error\":{\"code\",\"message\"}}; tooling branches on `code`.",
     "title": "Busbar Admin API",
-    "version": "1.6.0"
+    "version": "1.6.0",
+    "x-busbar-marks": {
+      "money": "Every money figure is a JSON string holding a decimal integer; every count is a JSON number.",
+      "scope": "ONE generated document, describing every administrative operation this build can serve; a node serves it filtered to the planes it configured.",
+      "x-busbar-effect-bound": "`false`: no effect is bound to the verb in this build; an admitted call answers `404 not_found`.",
+      "x-busbar-plane": "The operation is mounted only on a node whose config carries that plane's `<section>:` block; elsewhere its path answers `404 not_found` and the node's served `GET /openapi.json` omits it (and every schema only it references).",
+      "x-busbar-since": "Added in that release, and answered by the node's administrative loop."
+    }
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/admin/adjust": {
+      "post": {
+        "description": "Takes counts, never a money figure: what a recorded unit costs stays a read-time view of its counts at its own card epoch. The principal, lane, card epoch and what the counts WERE are read from the book by the digest `amends` names, never from the body. The correction is sealed on the node amendment journal.",
+        "operationId": "PostAdjust",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdjustReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdjustView"
+                }
+              }
+            },
+            "description": "The sealed amendment and the counts the unit now stands at"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: malformed body, a blank `amends` or `reason`, an empty `now`, a count that is not an exact decimal, a count below zero, a scope below `full`, or a request body that could not be read to the operator's size cap"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: the book holds no counts-bearing entry under `amends`"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit, or could not seal the amendment. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Correct a recorded unit's COUNTS, never a money figure (irreducible above `adjust_threshold`)",
+        "x-busbar-required-scope": "full",
+        "x-busbar-since": "1.6.0"
+      }
+    },
     "/api/v1/admin/admin-auth": {
       "get": {
         "operationId": "GetAdminAuth",
@@ -3168,6 +4187,7 @@
           }
         ],
         "summary": "Every `agents:` DEFINITION (the 1.5.3 named-definition map: name -> {module, settings, ...}, referenced by bare name). Secrets are never projected",
+        "x-busbar-plane": "agents",
         "x-busbar-required-scope": "read-only"
       }
     },
@@ -3277,6 +4297,7 @@
           }
         ],
         "summary": "Remove one `agents:` definition, refused while another config section still references it by bare name",
+        "x-busbar-plane": "agents",
         "x-busbar-required-scope": "full"
       },
       "get": {
@@ -3352,6 +4373,7 @@
           }
         ],
         "summary": "One `agents:` definition",
+        "x-busbar-plane": "agents",
         "x-busbar-required-scope": "read-only"
       },
       "put": {
@@ -3468,6 +4490,7 @@
           }
         ],
         "summary": "Create or REPLACE one `agents:` definition (upsert), persisted to the config overlay and live after an atomic rebuild-and-swap. A base-config-defined entry is 409 (edit config.yaml)",
+        "x-busbar-plane": "agents",
         "x-busbar-required-scope": "full"
       }
     },
@@ -3575,6 +4598,7 @@
           }
         ],
         "summary": "Lock a registered agent to the card fingerprint the operator has SEEN. The card is re-fetched and re-verified, and an approval naming any other fingerprint is refused",
+        "x-busbar-plane": "agents",
         "x-busbar-required-scope": "full"
       }
     },
@@ -3662,6 +4686,7 @@
           }
         ],
         "summary": "Fetch a registered agent's card, verify it against the operator's out-of-band root, and report the fingerprint. Approves nothing and writes nothing",
+        "x-busbar-plane": "agents",
         "x-busbar-required-scope": "full"
       }
     },
@@ -3788,7 +4813,89 @@
           }
         ],
         "summary": "Replace ONLY the opaque `settings:` bag of one `agents:` definition; every other field is left byte-identical",
+        "x-busbar-plane": "agents",
         "x-busbar-required-scope": "full"
+      }
+    },
+    "/api/v1/admin/approve": {
+      "post": {
+        "description": "Resolves in the closed verb table and runs the verb's gates (scope, rate class, the operator ceremony and dual control) and writes its audit row. This build binds NO EFFECT to it: an admitted call reaches a surface with no handler for it and answers `404 not_found`. The request body is not read.",
+        "operationId": "PostApprove",
+        "responses": {
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: the call was admitted and no effect is bound to this verb in this build"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "The maker-checker approval verb",
+        "x-busbar-effect-bound": false,
+        "x-busbar-required-scope": "full",
+        "x-busbar-since": "1.6.0"
       }
     },
     "/api/v1/admin/audit": {
@@ -3894,6 +5001,278 @@
         ],
         "summary": "Admin audit log: every mutation with its outcome (newest first). Page: ?limit=, ?cursor=; returns {items, next_cursor}",
         "x-busbar-required-scope": "read-only"
+      }
+    },
+    "/api/v1/admin/audit/head": {
+      "get": {
+        "description": "A pull, never a push: the node answers and opens no connection. A read: it mutates nothing and is never posture-gated.",
+        "operationId": "GetAuditHead",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditChainHeadView"
+                }
+              }
+            },
+            "description": "The recipe, the next position and the tip (null when nothing is sealed)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: this node binds no audit chain to read"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit, or the chain did not answer. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "The audit record chain's tip: position, digest, signature, key identifier and clock",
+        "x-busbar-required-scope": "read-only",
+        "x-busbar-since": "1.6.0"
+      }
+    },
+    "/api/v1/admin/audit/keys": {
+      "get": {
+        "description": "A pull, never a push: the node answers and opens no connection. A read: it mutates nothing and is never posture-gated.",
+        "operationId": "GetAuditKeys",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditChainKeysView"
+                }
+              }
+            },
+            "description": "The published verifying keys (empty when the node signs nothing)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: this node binds no audit chain to read"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit, or the chain did not answer. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "The public keys the audit chain is signed with",
+        "x-busbar-required-scope": "read-only",
+        "x-busbar-since": "1.6.0"
+      }
+    },
+    "/api/v1/admin/audit/range": {
+      "get": {
+        "description": "A pull, never a push: the node answers and opens no connection. A read: it mutates nothing and is never posture-gated.",
+        "operationId": "GetAuditRange",
+        "parameters": [
+          {
+            "description": "The window's first position, inclusive. Both are required; `from` must not exceed `to`. A window running off either end of what the node holds is simply shorter.",
+            "in": "query",
+            "name": "from",
+            "required": true,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The window's last position, inclusive. Both are required; `from` must not exceed `to`. A window running off either end of what the node holds is simply shorter.",
+            "in": "query",
+            "name": "to",
+            "required": true,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditChainRangeView"
+                }
+              }
+            },
+            "description": "The window's records and the head published at or before `to`"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: `from` or `to` missing or not a non-negative integer, or `from` after `to`"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: this node binds no audit chain, or retains no sealed records to answer a window from (an absent record set is never rendered as an empty window)"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit, or the chain did not answer. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Audit records by position, each with every field its digest was taken over",
+        "x-busbar-required-scope": "read-only",
+        "x-busbar-since": "1.6.0"
       }
     },
     "/api/v1/admin/auth": {
@@ -4038,6 +5417,170 @@
         ],
         "summary": "Flush the credential cache: one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window",
         "x-busbar-required-scope": "full"
+      }
+    },
+    "/api/v1/admin/chain-break": {
+      "post": {
+        "description": "Admitted through the same gates as every other new verb, then handed to the store. The request body is not read.",
+        "operationId": "PostChainBreak",
+        "responses": {
+          "204": {
+            "description": "Applied: the chain is broken. No body"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: the store names no such resource"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit, or the store failed. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Deliberately break the journal chain (disaster recovery; irreducible)",
+        "x-busbar-required-scope": "full",
+        "x-busbar-since": "1.6.0"
+      }
+    },
+    "/api/v1/admin/commit-upgrade": {
+      "post": {
+        "description": "Resolves in the closed verb table and runs the verb's gates (scope, rate class, the operator ceremony and dual control) and writes its audit row. This build binds NO EFFECT to it: an admitted call reaches a surface with no handler for it and answers `404 not_found`. The request body is not read.",
+        "operationId": "PostCommitUpgrade",
+        "responses": {
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: the call was admitted and no effect is bound to this verb in this build"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Commit the schema/version upgrade (irreducible)",
+        "x-busbar-effect-bound": false,
+        "x-busbar-required-scope": "full",
+        "x-busbar-since": "1.6.0"
       }
     },
     "/api/v1/admin/config": {
@@ -4955,6 +6498,330 @@
         "x-busbar-required-scope": "read-only"
       }
     },
+    "/api/v1/admin/dispute-max-age": {
+      "post": {
+        "description": "Resolves in the closed verb table and runs the verb's gates (scope, rate class, the operator ceremony and dual control) and writes its audit row. This build binds NO EFFECT to it: an admitted call reaches a surface with no handler for it and answers `404 not_found`. The request body is not read.",
+        "operationId": "PostDisputeMaxAge",
+        "responses": {
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: the call was admitted and no effect is bound to this verb in this build"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Set `dispute_max_age`",
+        "x-busbar-effect-bound": false,
+        "x-busbar-required-scope": "full",
+        "x-busbar-since": "1.6.0"
+      }
+    },
+    "/api/v1/admin/disputes/resolve": {
+      "post": {
+        "description": "Resolves in the closed verb table and runs the verb's gates (scope, rate class, the operator ceremony and dual control) and writes its audit row. This build binds NO EFFECT to it: an admitted call reaches a surface with no handler for it and answers `404 not_found`. The request body is not read.",
+        "operationId": "PostDisputesResolve",
+        "responses": {
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: the call was admitted and no effect is bound to this verb in this build"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Resolve an open dispute (irreducible above `adjust_threshold`)",
+        "x-busbar-effect-bound": false,
+        "x-busbar-required-scope": "full",
+        "x-busbar-since": "1.6.0"
+      }
+    },
+    "/api/v1/admin/dual-control": {
+      "post": {
+        "description": "Resolves in the closed verb table and runs the verb's gates (scope, rate class, the operator ceremony and dual control) and writes its audit row. This build binds NO EFFECT to it: an admitted call reaches a surface with no handler for it and answers `404 not_found`. The request body is not read.",
+        "operationId": "PostDualControl",
+        "responses": {
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: the call was admitted and no effect is bound to this verb in this build"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Flip dual-control posture between `single` and `required` (irreducible)",
+        "x-busbar-effect-bound": false,
+        "x-busbar-required-scope": "full",
+        "x-busbar-since": "1.6.0"
+      }
+    },
+    "/api/v1/admin/escrow": {
+      "post": {
+        "description": "Resolves in the closed verb table and runs the verb's gates (scope, rate class, the operator ceremony and dual control) and writes its audit row. This build binds NO EFFECT to it: an admitted call reaches a surface with no handler for it and answers `404 not_found`. The request body is not read.",
+        "operationId": "PostEscrow",
+        "responses": {
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: the call was admitted and no effect is bound to this verb in this build"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Set the M-of-N key-loss escrow (irreducible)",
+        "x-busbar-effect-bound": false,
+        "x-busbar-required-scope": "full",
+        "x-busbar-since": "1.6.0"
+      }
+    },
     "/api/v1/admin/export": {
       "get": {
         "operationId": "GetExport",
@@ -5010,6 +6877,87 @@
         ],
         "summary": "Every `export:` DEFINITION (the 1.5.3 named-definition map: name -> {module, settings, ...}, referenced by bare name). Secrets are never projected",
         "x-busbar-required-scope": "read-only"
+      }
+    },
+    "/api/v1/admin/export-keyset": {
+      "post": {
+        "description": "Resolves in the closed verb table and runs the verb's gates (scope, rate class, the operator ceremony and dual control) and writes its audit row. This build binds NO EFFECT to it: an admitted call reaches a surface with no handler for it and answers `404 not_found`. The request body is not read.",
+        "operationId": "PostExportKeyset",
+        "responses": {
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: the call was admitted and no effect is bound to this verb in this build"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Export the deployment keyset, sealed to a recipient public key (irreducible; admitted while the operator is unset)",
+        "x-busbar-effect-bound": false,
+        "x-busbar-required-scope": "full",
+        "x-busbar-since": "1.6.0"
       }
     },
     "/api/v1/admin/export/{name}": {
@@ -8441,6 +10389,467 @@
         "x-busbar-required-scope": "read-only"
       }
     },
+    "/api/v1/admin/ledger/amend-rate-history": {
+      "post": {
+        "description": "The correction out-ranks the entry it corrects and rewrites nothing; recompute reprices the corrected window against the new entry. It must be signed by the fleet's sealed operator key (`operator_fingerprint` names it; `signature` verifies strictly over the canonical payload). A body carrying `currency` is refused. The durable record is written ahead of the append.",
+        "operationId": "PostLedgerAmendRateHistory",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AmendRateHistoryReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AmendRateHistoryView"
+                }
+              }
+            },
+            "description": "The history entry the correction was appended as"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: malformed body, an empty or inverted window, no signer, signature or reason, a `currency` key, a negative fee or rate, a correction that moves no figure, an unknown operator fingerprint, a signature that does not verify, or a request body that could not be read to the operator's size cap"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: the history has no opening entry to correct"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit, or no amendment journal will record it. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Append a signed, back-dated correction to the dated rate-card history (irreducible)",
+        "x-busbar-required-scope": "full",
+        "x-busbar-since": "1.6.0"
+      }
+    },
+    "/api/v1/admin/ledger/checkpoints": {
+      "get": {
+        "description": "`body_hash` is what an auditor re-derives; `body_hash_verifies` is this node's own answer. A signature's presence is reported, its bytes are not. A read: it mutates nothing, is never posture-gated, and needs no more authority than `GET /usage`.",
+        "operationId": "GetLedgerCheckpoints",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LedgerCheckpoints"
+                }
+              }
+            },
+            "description": "The sealed checkpoints, oldest first"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit, or the book holds a refused counts row the read cannot price (the read is refused whole rather than served without it). The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "The sealed checkpoint figures",
+        "x-busbar-required-scope": "read-only",
+        "x-busbar-since": "1.6.0"
+      }
+    },
+    "/api/v1/admin/ledger/migration": {
+      "get": {
+        "description": "`migrated` is a field of its own rather than inferred from a null marker. A read: it mutates nothing, is never posture-gated, and needs no more authority than `GET /usage`.",
+        "operationId": "GetLedgerMigration",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LedgerMigration"
+                }
+              }
+            },
+            "description": "Whether this deployment has migrated, and the marker if it has"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit, or the book holds a refused counts row the read cannot price (the read is refused whole rather than served without it). The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "The marker the first boot after the upgrade sealed",
+        "x-busbar-required-scope": "read-only",
+        "x-busbar-since": "1.6.0"
+      }
+    },
+    "/api/v1/admin/ledger/openapi.json": {
+      "get": {
+        "description": "The committed, generated document, unfiltered: every operation this BUILD can serve, including each plane's. `GET /openapi.json` serves the same document filtered to the planes this node configured.",
+        "operationId": "GetLedgerOpenapiJson",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "An OpenAPI 3.1 document (this document's shape)",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The one administrative OpenAPI document"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "The full administrative OpenAPI 3.1 document, served at the ledger's own path",
+        "x-busbar-required-scope": "read-only",
+        "x-busbar-since": "1.6.0"
+      }
+    },
+    "/api/v1/admin/ledger/reconciliation": {
+      "get": {
+        "description": "An empty `discrepancies` list with `holds: true` is the good answer; a residual names its row and the amount it is out by. A read: it mutates nothing, is never posture-gated, and needs no more authority than `GET /usage`.",
+        "operationId": "GetLedgerReconciliation",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LedgerReconciliation"
+                }
+              }
+            },
+            "description": "Whether the identity holds, and every row on which it does not"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit, or the book holds a refused counts row the read cannot price (the read is refused whole rather than served without it). The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "The residual of the ledger's postings against the previous release's rows",
+        "x-busbar-required-scope": "read-only",
+        "x-busbar-since": "1.6.0"
+      }
+    },
+    "/api/v1/admin/ledger/totals": {
+      "get": {
+        "description": "Each line is priced against the rate card in force at its own arrival instant, and the row's micro-unit figure is one divide over its summed nano-units. A read: it mutates nothing, is never posture-gated, and needs no more authority than `GET /usage`.",
+        "operationId": "GetLedgerTotals",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LedgerTotals"
+                }
+              }
+            },
+            "description": "The rows, in bucket, day, lane and provider order"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit, or the book holds a refused counts row the read cannot price (the read is refused whole rather than served without it). The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "What the ledger's lines come to, per bucket, day, lane and provider",
+        "x-busbar-required-scope": "read-only",
+        "x-busbar-since": "1.6.0"
+      }
+    },
     "/api/v1/admin/models": {
       "get": {
         "operationId": "GetModels",
@@ -8554,6 +10963,168 @@
         ],
         "summary": "This OpenAPI 3.1 document",
         "x-busbar-required-scope": "read-only"
+      }
+    },
+    "/api/v1/admin/operator-key": {
+      "post": {
+        "description": "Resolves in the closed verb table and runs the verb's gates (scope, rate class, the operator ceremony and dual control) and writes its audit row. This build binds NO EFFECT to it: an admitted call reaches a surface with no handler for it and answers `404 not_found`. The request body is not read.",
+        "operationId": "PostOperatorKey",
+        "responses": {
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: the call was admitted and no effect is bound to this verb in this build"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Set the fleet's operator public key (irreducible; admitted while the operator is unset)",
+        "x-busbar-effect-bound": false,
+        "x-busbar-required-scope": "full",
+        "x-busbar-since": "1.6.0"
+      }
+    },
+    "/api/v1/admin/overdraft-ceiling": {
+      "post": {
+        "description": "Resolves in the closed verb table and runs the verb's gates (scope, rate class, the operator ceremony and dual control) and writes its audit row. This build binds NO EFFECT to it: an admitted call reaches a surface with no handler for it and answers `404 not_found`. The request body is not read.",
+        "operationId": "PostOverdraftCeiling",
+        "responses": {
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: the call was admitted and no effect is bound to this verb in this build"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Set a bucket's overdraft ceiling",
+        "x-busbar-effect-bound": false,
+        "x-busbar-required-scope": "full",
+        "x-busbar-since": "1.6.0"
       }
     },
     "/api/v1/admin/overlay/{section}": {
@@ -8670,6 +11241,158 @@
         ],
         "summary": "DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions|identity-providers|export|tools|agents). Per-section reset: the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)",
         "x-busbar-required-scope": "full"
+      }
+    },
+    "/api/v1/admin/plane-facts": {
+      "get": {
+        "description": "Resolves in the closed verb table and runs the verb's gates (scope, rate class, the operator ceremony and dual control) and writes its audit row. This build binds NO EFFECT to it: an admitted call reaches a surface with no handler for it and answers `404 not_found`. The request body is not read.",
+        "operationId": "GetPlaneFacts",
+        "responses": {
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: the call was admitted and no effect is bound to this verb in this build"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Read a plane's own declared facts",
+        "x-busbar-effect-bound": false,
+        "x-busbar-required-scope": "read-only",
+        "x-busbar-since": "1.6.0"
+      }
+    },
+    "/api/v1/admin/plane-record-write": {
+      "post": {
+        "description": "Resolves in the closed verb table and runs the verb's gates (scope, rate class, the operator ceremony and dual control) and writes its audit row. This build binds NO EFFECT to it: an admitted call reaches a surface with no handler for it and answers `404 not_found`. The request body is not read.",
+        "operationId": "PostPlaneRecordWrite",
+        "responses": {
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: the call was admitted and no effect is bound to this verb in this build"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Write a plane record entry",
+        "x-busbar-effect-bound": false,
+        "x-busbar-required-scope": "full",
+        "x-busbar-since": "1.6.0"
       }
     },
     "/api/v1/admin/plugins": {
@@ -9506,6 +12229,89 @@
         "x-busbar-required-scope": "read-only"
       }
     },
+    "/api/v1/admin/reseal-epoch-floor": {
+      "post": {
+        "description": "Admitted through the same gates as every other new verb, then handed to the store. The request body is not read.",
+        "operationId": "PostResealEpochFloor",
+        "responses": {
+          "204": {
+            "description": "Applied: the floor is resealed. No body"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: the store names no such resource"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit, or the store failed. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Reseal the epoch floor after a chain break or restore (irreducible)",
+        "x-busbar-required-scope": "full",
+        "x-busbar-since": "1.6.0"
+      }
+    },
     "/api/v1/admin/restart": {
       "post": {
         "operationId": "PostRestart",
@@ -9680,6 +12486,190 @@
         "x-busbar-required-scope": "full"
       }
     },
+    "/api/v1/admin/slices/resolve": {
+      "post": {
+        "description": "Resolves in the closed verb table and runs the verb's gates (scope, rate class, the operator ceremony and dual control) and writes its audit row. This build binds NO EFFECT to it: an admitted call reaches a surface with no handler for it and answers `404 not_found`. The request body is not read.",
+        "operationId": "PostSlicesResolve",
+        "responses": {
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: the call was admitted and no effect is bound to this verb in this build"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Resolve a slice-level dispute",
+        "x-busbar-effect-bound": false,
+        "x-busbar-required-scope": "full",
+        "x-busbar-since": "1.6.0"
+      }
+    },
+    "/api/v1/admin/store-restore": {
+      "post": {
+        "description": "The body names the backup; there is no default. A body that names none is refused before the ceremony runs. Otherwise admitted through the same gates as every other new verb, then handed to the store.",
+        "operationId": "PostStoreRestore",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StoreRestoreReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Applied: the store is restored. No body"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: the body names no `backup_ref` string, or a request body that could not be read to the operator's size cap"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: the store holds no backup under `backup_ref`"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit, or the store failed. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Restore the store from a named backup (disaster recovery; irreducible)",
+        "x-busbar-required-scope": "full",
+        "x-busbar-since": "1.6.0"
+      }
+    },
     "/api/v1/admin/tools": {
       "get": {
         "operationId": "GetTools",
@@ -9734,6 +12724,7 @@
           }
         ],
         "summary": "Every `tools:` DEFINITION (the 1.5.3 named-definition map: name -> {module, settings, ...}, referenced by bare name). Secrets are never projected",
+        "x-busbar-plane": "tools",
         "x-busbar-required-scope": "read-only"
       }
     },
@@ -9843,6 +12834,7 @@
           }
         ],
         "summary": "Remove one `tools:` definition, refused while another config section still references it by bare name",
+        "x-busbar-plane": "tools",
         "x-busbar-required-scope": "full"
       },
       "get": {
@@ -9918,6 +12910,7 @@
           }
         ],
         "summary": "One `tools:` definition",
+        "x-busbar-plane": "tools",
         "x-busbar-required-scope": "read-only"
       },
       "put": {
@@ -10034,6 +13027,7 @@
           }
         ],
         "summary": "Create or REPLACE one `tools:` definition (upsert), persisted to the config overlay and live after an atomic rebuild-and-swap. A base-config-defined entry is 409 (edit config.yaml)",
+        "x-busbar-plane": "tools",
         "x-busbar-required-scope": "full"
       }
     },
@@ -10111,6 +13105,7 @@
           }
         ],
         "summary": "The changes queue for one MCP server, derived from the LAST observation. Contacts nothing",
+        "x-busbar-plane": "tools",
         "x-busbar-required-scope": "read-only"
       }
     },
@@ -10208,6 +13203,7 @@
           }
         ],
         "summary": "Fetch a registered MCP server's LIVE tool list, hash it, and record the observation. Approves nothing: adopting what was seen is a separate operator act",
+        "x-busbar-plane": "tools",
         "x-busbar-required-scope": "full"
       }
     },
@@ -10285,6 +13281,7 @@
           }
         ],
         "summary": "Whether one MCP server currently serves, and why not when it does not",
+        "x-busbar-plane": "tools",
         "x-busbar-required-scope": "read-only"
       }
     },
@@ -10411,6 +13408,7 @@
           }
         ],
         "summary": "Replace ONLY the opaque `settings:` bag of one `tools:` definition; every other field is left byte-identical",
+        "x-busbar-plane": "tools",
         "x-busbar-required-scope": "full"
       }
     },
@@ -10500,6 +13498,77 @@
         ],
         "summary": "Metering: current UTC-day bucket ({window, as_of, currency, total, by_model, by_key}), raw token split + derived spend_micros",
         "x-busbar-required-scope": "read-only"
+      }
+    },
+    "/api/v1/admin/verify": {
+      "get": {
+        "description": "Resolves in the closed verb table and runs the verb's gates (scope, rate class, the operator ceremony and dual control) and writes its audit row. This build binds NO EFFECT to it: an admitted call reaches a surface with no handler for it and answers `404 not_found`. The request body is not read.",
+        "operationId": "GetVerify",
+        "responses": {
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: the call was admitted and no effect is bound to this verb in this build"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Verify a claim or signature outside the normal request path",
+        "x-busbar-effect-bound": false,
+        "x-busbar-required-scope": "read-only",
+        "x-busbar-since": "1.6.0"
       }
     }
   }

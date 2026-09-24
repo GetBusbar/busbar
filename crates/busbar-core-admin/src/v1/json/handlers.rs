@@ -1408,13 +1408,24 @@ pub(crate) async fn reset_overlay_section(
     let actor = principal.actor_id().to_string();
     // Validate the section name BEFORE the If-Match parse so an unknown section is always a plain
     // 400 (never masked by a header error). Unknown → invalid_request (the taxonomy's 400).
-    let Some(section) = OverlaySection::parse(&section) else {
+    // LAW 7: a plane's named-map section is a section only while its plane is configured, so the
+    // valid set is `OverlaySection::all` minus the unconfigured planes' sections.
+    let served = |s: &OverlaySection| match s {
+        OverlaySection::NamedMap(m) => super::named_map::plane_gate(&handle, *m).is_none(),
+        _ => true,
+    };
+    let Some(section) = OverlaySection::parse(&section).filter(served) else {
         // The valid set is DERIVED from `OverlaySection::all`, never restated here. The
         // hand-written version of this sentence outlived the addition of the `named_maps` section
         // and told operators `export` was not a section for a whole release.
+        let names: Vec<String> = OverlaySection::all()
+            .iter()
+            .filter(|s| served(s))
+            .map(|s| format!("`{}`", s.as_str()))
+            .collect();
         return err_json(&AdminError::Validation(format!(
             "unknown overlay section `{section}`: expected one of {}",
-            OverlaySection::valid_names()
+            names.join(", ")
         )));
     };
     let resource = format!("overlay:{}", section.as_str());
@@ -4757,6 +4768,20 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         sview::SigningKeyRotateView
     );
 
+    // ── THE 1.6.0 KERNEL VERBS (items 45/46) ─────────────────────────────────────────────────────
+    // The 26 operations the closed verb table adds — the money-governance verbs, the ledger views
+    // and the audit-chain reads — answered by the node's administrative loop rather than by this
+    // router. Enumerated from the verb lists and joined to the table's own rows, so the one document
+    // describes exactly what the mount resolves; each carries its own complete response set (the
+    // loop's refusals render at their own statuses, not this router's algorithmic 429/500), which is
+    // why they are inserted AFTER the stamping passes above rather than run through them.
+    for (path, method, op) in super::kernel_verbs::operations(&mut gen, &mut req_gen) {
+        let item = paths.entry(path).or_insert_with(|| json!({}));
+        if let Some(obj) = item.as_object_mut() {
+            obj.insert(method, op);
+        }
+    }
+
     // The discovery endpoint returns THIS very OpenAPI 3.1 document — an arbitrary object. There is
     // no named struct for "an OpenAPI document"; an inline permissive object schema is the honest
     // description (fully modeling the OpenAPI meta-schema is out of scope + circular).
@@ -4992,6 +5017,36 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }),
     );
 
+    // PLANE-CONDITIONAL OPERATIONS. A plane's named-definition section and its trust verbs are
+    // mounted only when that plane is configured (a plane with no config section mounts nothing), so
+    // the document marks every operation a plane contributes with `x-busbar-plane: <section>`. The
+    // document still describes every operation this BUILD can serve — one static document, served
+    // identically whatever the deployment configured — and the mark is how a reader tells "present
+    // on every node" from "present on a node that configured `<section>:`".
+    for decl in busbar_kernel::plane::registry::plane_decls() {
+        if decl.openapi.is_none() && decl.named_def_list.is_none() {
+            continue;
+        }
+        let root = ap(&format!("/{}", decl.config_section));
+        let nested = format!("{root}/");
+        for (path, item) in paths.iter_mut() {
+            if *path != root && !path.starts_with(&nested) {
+                continue;
+            }
+            let Some(item) = item.as_object_mut() else {
+                continue;
+            };
+            for (method, op) in item.iter_mut() {
+                if method.starts_with("x-") {
+                    continue;
+                }
+                if let Some(op) = op.as_object_mut() {
+                    op.insert("x-busbar-plane".to_string(), json!(decl.config_section));
+                }
+            }
+        }
+    }
+
     // Stamp a deterministic `operationId` on every
     // operation. Third-party OpenAPI generators (Go/TS) synthesize method names from the path when
     // `operationId` is absent, so those names churn whenever a path is touched; a stable id fixes
@@ -5019,7 +5074,23 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "title": "Busbar Admin API",
             "version": env!("CARGO_PKG_VERSION"),
             "description": "The frozen, additive-only /api/v1/admin surface. Errors use the stable \
-                            envelope {\"error\":{\"code\",\"message\"}}; tooling branches on `code`."
+                            envelope {\"error\":{\"code\",\"message\"}}; tooling branches on `code`.",
+            // ADDITIVE, beside the 1.5.5 description rather than in it (that string is a byte a 1.5.5
+            // client already has): how to read the marks the one document carries.
+            "x-busbar-marks": {
+                "scope": "ONE generated document, describing every administrative operation this \
+                          build can serve; a node serves it filtered to the planes it configured.",
+                "x-busbar-plane": "The operation is mounted only on a node whose config carries \
+                                   that plane's `<section>:` block; elsewhere its path answers \
+                                   `404 not_found` and the node's served `GET /openapi.json` \
+                                   omits it (and every schema only it references).",
+                "x-busbar-since": "Added in that release, and answered by the node's \
+                                   administrative loop.",
+                "x-busbar-effect-bound": "`false`: no effect is bound to the verb in this build; \
+                                          an admitted call answers `404 not_found`.",
+                "money": "Every money figure is a JSON string holding a decimal integer; every \
+                          count is a JSON number."
+            }
         },
         "components": {
             "securitySchemes": {
@@ -5132,8 +5203,32 @@ fn accept_encoding_allows_gzip(headers: &axum::http::HeaderMap) -> bool {
 /// client pays a per-request inflate. `Vary: Accept-Encoding` because the body now differs by
 /// that header. No axum compression layer exists on this router (checked), so nothing
 /// double-compresses.
-pub(crate) async fn openapi(headers: axum::http::HeaderMap) -> Response {
+///
+/// FILTERED TO THE CONFIGURED PLANES (Law 7). The committed document describes every operation the
+/// BUILD can serve — it is what SDK and provider generation read. What a NODE serves is that
+/// document minus every operation marked `x-busbar-plane: <section>` whose plane this generation did
+/// not configure, and minus every component schema only those operations referenced, so a node
+/// running a 1.5.5 config describes no plane surface it does not mount. The check is the core's one
+/// generic `App::plane_configured`; this names no plane. When every marked plane is configured
+/// nothing is dropped and the committed bytes are served exactly as before.
+pub(crate) async fn openapi(
+    State(handle): State<Arc<AppHandle>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
     const VARY: (axum::http::HeaderName, &str) = (axum::http::header::VARY, "accept-encoding");
+    let app = handle.load();
+    let configured = |section: &str| {
+        busbar_kernel::plane::registry::plane_decl_for_config_section(section)
+            .is_some_and(|decl| app.plane_configured(decl))
+    };
+    if let Some(filtered) = openapi_for_configured_planes(&openapi_json(), configured) {
+        return (
+            StatusCode::OK,
+            [(CONTENT_TYPE, busbar_kernel::proxy::APPLICATION_JSON), VARY],
+            filtered,
+        )
+            .into_response();
+    }
     if accept_encoding_allows_gzip(&headers) {
         (
             StatusCode::OK,
@@ -5153,6 +5248,93 @@ pub(crate) async fn openapi(headers: axum::http::HeaderMap) -> Response {
         )
             .into_response()
     }
+}
+
+/// The committed document with every operation of an UNCONFIGURED plane removed, or `None` when no
+/// marked operation's plane is unconfigured (serve the committed bytes unchanged).
+///
+/// Removed: each operation whose `x-busbar-plane` names a section `configured` answers `false` for,
+/// each path left with no operation, and each component schema reachable from the full document
+/// but no longer reachable from what remains — exactly the schemas only the dropped operations
+/// referenced. Re-rendered the way the committed file is (pretty, trailing newline), so an
+/// operation that stays is byte-for-byte the committed one.
+pub(crate) fn openapi_for_configured_planes(
+    committed: &str,
+    configured: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let mut doc: serde_json::Value = serde_json::from_str(committed).ok()?;
+    let reachable_before = openapi_reachable_schemas(&doc);
+    let mut dropped = false;
+    let paths = doc.get_mut("paths")?.as_object_mut()?;
+    for item in paths.values_mut() {
+        let Some(item) = item.as_object_mut() else {
+            continue;
+        };
+        item.retain(|method, op| {
+            if method.starts_with("x-") {
+                return true;
+            }
+            match op.get("x-busbar-plane").and_then(|p| p.as_str()) {
+                Some(section) if !configured(section) => {
+                    dropped = true;
+                    false
+                }
+                _ => true,
+            }
+        });
+    }
+    if !dropped {
+        return None;
+    }
+    paths.retain(|_, item| {
+        item.as_object()
+            .is_some_and(|o| o.keys().any(|k| !k.starts_with("x-")))
+    });
+    let reachable_after = openapi_reachable_schemas(&doc);
+    if let Some(schemas) = doc
+        .pointer_mut("/components/schemas")
+        .and_then(|s| s.as_object_mut())
+    {
+        schemas.retain(|name, _| {
+            !reachable_before.contains(name) || reachable_after.contains(name)
+        });
+    }
+    serde_json::to_string_pretty(&doc)
+        .ok()
+        .map(|text| format!("{text}\n"))
+}
+
+/// Every component schema reachable from the document's paths (and from the `Error` envelope every
+/// error response names), following `$ref`s through the schemas themselves.
+fn openapi_reachable_schemas(doc: &serde_json::Value) -> std::collections::BTreeSet<String> {
+    fn refs(v: &serde_json::Value, out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::Object(map) => {
+                if let Some(r) = map.get("$ref").and_then(|r| r.as_str()) {
+                    if let Some(name) = r.strip_prefix("#/components/schemas/") {
+                        out.push(name.to_string());
+                    }
+                }
+                map.values().for_each(|v| refs(v, out));
+            }
+            serde_json::Value::Array(items) => items.iter().for_each(|v| refs(v, out)),
+            _ => {}
+        }
+    }
+    let schemas = doc.pointer("/components/schemas");
+    let mut pending = Vec::new();
+    if let Some(paths) = doc.get("paths") {
+        refs(paths, &mut pending);
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    while let Some(name) = pending.pop() {
+        if seen.insert(name.clone()) {
+            if let Some(schema) = schemas.and_then(|s| s.get(&name)) {
+                refs(schema, &mut pending);
+            }
+        }
+    }
+    seen
 }
 
 /// The `POST /api/v1/admin/config/validate` request body: a full proposed config — the `config.yaml`

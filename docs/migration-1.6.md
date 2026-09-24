@@ -247,10 +247,11 @@ its history is the boot card from instant zero, as in 1.5.5.
 **No currencies.** Rate-card figures are abstract cost units with no currency and no conversion. A
 correction body that names a `currency` is refused.
 
-**New, additive ledger surface.** No 1.5.5 path, field or byte is touched — the committed
-`openapi.json` is unchanged, and the 1.6.0 reads are described at
-`docs/openapi-1.6.0-additive.json`, reached by name at `GET /api/v1/admin/ledger/openapi.json`. What
-is served today is exactly these:
+**New, additive ledger surface.** No 1.5.5 path or field is changed. The one administrative OpenAPI
+document (`GET /api/v1/admin/openapi.json`; the unfiltered copy at
+`GET /api/v1/admin/ledger/openapi.json`) now describes these operations beside every 1.5.5 one, each
+marked `x-busbar-since: 1.6.0`; a 1.5.5 operation's entry is unchanged. What is served today is
+exactly these:
 
 - `GET /api/v1/admin/ledger/totals`, `/checkpoints`, `/reconciliation`, `/migration` and
   `/openapi.json` — the five additive reads.

@@ -118,14 +118,17 @@ async fn the_legacy_admin_surface_has_never_heard_of_a_ledger_path() {
     serving.abort();
 }
 
-/// The 1.5.5 document the surface serves has no ledger path in it either.
+/// The one document describes the ledger views, and marks them as the administrative loop's.
 ///
-/// The other half of "additive": the new operations are absent from the pinned document as well as
-/// from the router, so a 1.5.5 client that reads `openapi.json` to discover what a node can do gets
-/// the same list it always got. The operations are described in a document of their own, which the
-/// root-leg tests check against the closed table.
+/// This used to assert the opposite — that the served document had no ledger path, because the
+/// 1.6.0 operations were described in a side-car document of their own so the served bytes need not
+/// move. That side-car is gone (owner ruling Q41, items 45/46): there is ONE administrative
+/// document, generated from the code, describing every operation the build can serve. The views
+/// are answered by the composition root's loop, which this leg does not run — so the document says
+/// who answers them (`x-busbar-since: 1.6.0`, the loop's mark), and the test above still proves
+/// this leg's router answers them exactly as it answers a path it has never heard of.
 #[tokio::test]
-async fn the_pinned_document_gained_no_ledger_path() {
+async fn the_served_document_describes_the_ledger_views_as_the_loops() {
     busbar_kernel::metrics::init();
     busbar_core_admin::install();
     let app = busbar_kernel::test_support::TestApp::new()
@@ -147,16 +150,16 @@ async fn the_pinned_document_gained_no_ledger_path() {
     let paths = document["paths"].as_object().expect("it declares paths");
 
     for path in LEDGER_PATHS {
-        assert!(
-            !paths.contains_key(*path),
-            "{path} appears in the document whose bytes are pinned"
+        let op = &paths
+            .get(*path)
+            .unwrap_or_else(|| panic!("{path} is a served verb and in no document"))["get"];
+        assert_eq!(
+            op["x-busbar-since"], "1.6.0",
+            "{path} is answered by the administrative loop and the document must say so"
         );
+        assert_eq!(op["x-busbar-required-scope"], "read-only");
     }
-    assert!(
-        !paths.keys().any(|p| p.starts_with("/api/v1/admin/ledger")),
-        "the pinned document has grown a ledger path"
-    );
-    // Not a vacuous absence: the document is the real one, with the operations it has always had.
+    // The document is the real one, with the operations it has always had.
     assert!(
         paths.contains_key("/api/v1/admin/usage"),
         "the served document is not the administrative document"
