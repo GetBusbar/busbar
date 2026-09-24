@@ -107,6 +107,12 @@ pub struct SessionCore<C> {
     /// deployment: every call is served in-process and a client-authored result is carried upstream
     /// verbatim, which is exactly what this runtime did before the governed wait existed.
     governed: Option<GovernedSession>,
+    /// When this session opened — the start of the wall clock [`Self::ceiling`] bounds.
+    opened: std::time::Instant,
+    /// The hard session wall-clock ceiling (`streams.session_max_secs:`), `None` until a runtime
+    /// binds one ([`Self::with_session_ceiling`]). Compared on the sweep tick beside the pump
+    /// ([`Self::enforce_ceiling`]): a session past it is hard-closed exactly as a dry budget is.
+    ceiling: Option<std::time::Duration>,
 }
 
 impl<C> SessionCore<C>
@@ -139,7 +145,34 @@ where
             model,
             carrier,
             governed: None,
+            opened: std::time::Instant::now(),
+            ceiling: None,
         }
+    }
+
+    /// Bind the hard session wall-clock ceiling, in seconds (`streams.session_max_secs:`).
+    ///
+    /// The value was declared, defaulted, parsed and plumbed onto the runtime and then compared with
+    /// nothing, so an operator who set it to bound a session's worst-case cost bounded nothing. It is
+    /// taken literally: the session may run for exactly this many seconds of wall clock.
+    #[must_use]
+    pub fn with_session_ceiling(mut self, secs: u32) -> Self {
+        self.ceiling = Some(std::time::Duration::from_secs(u64::from(secs)));
+        self
+    }
+
+    /// **The ceiling's comparison.** Hard-close the carrier when the session has run for its ceiling
+    /// as of `now`, and say whether it is (now or already) closed on that account. A session with no
+    /// ceiling bound is never closed here.
+    pub fn enforce_ceiling(&self, now: std::time::Instant) -> bool {
+        let Some(ceiling) = self.ceiling else {
+            return false;
+        };
+        if now.saturating_duration_since(self.opened) < ceiling {
+            return false;
+        }
+        self.carrier.hard_close();
+        true
     }
 
     /// Bind this session to the node's open-call table.
@@ -463,6 +496,11 @@ where
             // A closed carrier is a conversation that is over; nothing left on it can be answered and
             // the pump is on its way out anyway.
             if core.carrier().is_closed() {
+                return;
+            }
+            // The session wall-clock ceiling is time passing, too, and so is noticed here: a session
+            // past it is hard-closed and the pump ends with the sweep.
+            if core.enforce_ceiling(std::time::Instant::now()) {
                 return;
             }
             core.sweep_expired(now_ms());

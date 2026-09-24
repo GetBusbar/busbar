@@ -899,6 +899,47 @@ async fn serving_a_session_to_its_teardown_settles_and_evicts_its_row() {
     );
 }
 
+/// The session wall-clock ceiling is COMPARED: a session past `streams.session_max_secs:` is
+/// hard-closed and its pump ends.
+///
+/// The ceiling was declared, defaulted, parsed and plumbed onto the runtime and then compared with
+/// nothing, so a session could run (and bill) for as long as its sockets stayed up.
+#[tokio::test]
+async fn a_session_past_its_wall_clock_ceiling_is_hard_closed() {
+    let mut rt = VoiceRuntimeFixture::runtime();
+    rt.session_max_secs = 1;
+    let (core, _handle, _guard) = crate::topology::begin_session(
+        &rt,
+        OpenAiRealtimeCodec,
+        "acct-1",
+        "call-long",
+        None,
+        Carrier::sideband(),
+        crate::topology::SessionBudget {
+            estimate_nanos: 1_000,
+            fee_nanos: 0,
+            cap_nanos: None,
+        },
+        None,
+        1,
+    )
+    .expect("the session opens");
+    // A pump that never ends on its own: only the ceiling can end this session.
+    let served = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        crate::runtime::serve_with_sweep(Arc::clone(&core), futures::future::pending::<()>()),
+    )
+    .await;
+    assert!(
+        served.is_ok(),
+        "a one-second ceiling ends the session well inside five seconds"
+    );
+    assert!(
+        core.carrier().is_closed(),
+        "the ceiling hard-closes the carrier"
+    );
+}
+
 /// The runtime these three cells open sessions on: the production money hop over the mock host.
 struct VoiceRuntimeFixture;
 impl VoiceRuntimeFixture {

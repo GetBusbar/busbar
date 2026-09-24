@@ -66,7 +66,8 @@ pub struct VoiceRuntime {
     /// re-applies it server-side so a client `session.update` is reconciled against it, never trusted
     /// blind.
     pub session_defaults: crate::ir::config::SessionConfig,
-    /// The hard session wall-clock ceiling (`streams.session_max_secs:`) the pump enforces.
+    /// The hard session wall-clock ceiling (`streams.session_max_secs:`), bound onto every session
+    /// core at open and compared on the sweep tick beside the pump (`SessionCore::enforce_ceiling`).
     pub session_max_secs: u32,
     /// The context-window ceiling (`streams.context_window_tokens:`).
     pub context_window_tokens: u32,
