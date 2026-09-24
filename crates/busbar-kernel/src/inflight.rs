@@ -248,7 +248,6 @@ pub struct UnitSlot {
     cancel: CancelToken,
     marked: AtomicBool,
     last_progress: AtomicU64,
-    entered: Millis,
 }
 
 impl UnitSlot {
@@ -295,16 +294,6 @@ impl UnitSlot {
     /// this, and reads nothing else, because those two are exactly what "making progress" means.
     pub fn touch(&self, now: Millis) {
         self.last_progress.store(now, Ordering::Release);
-    }
-
-    /// When the unit entered the table — the arrival reading it was entered under, never moved.
-    ///
-    /// Kept apart from the progress stamp because they answer different questions: progress is what
-    /// the sweep judges a unit ALIVE by, and moves; entry is which window a unit the sweep settles is
-    /// charged in, and must not — a unit that arrived before midnight posts in that day's window
-    /// whenever its task was found gone.
-    pub fn entered(&self) -> Millis {
-        self.entered
     }
 
     /// How long since it last did anything.
@@ -527,7 +516,6 @@ impl InFlight {
             cancel: CancelToken::new(),
             marked: AtomicBool::new(false),
             last_progress: AtomicU64::new(request.now),
-            entered: request.now,
         });
         shard.insert(request.key, Arc::clone(&slot));
         Ok(slot)

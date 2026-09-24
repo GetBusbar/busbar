@@ -182,6 +182,9 @@ fn posting() -> Posting {
         rate_card_version: 3,
         wall: 1_700_000_000,
         mono: 42,
+        principal: "vk_a".to_string(),
+        kind: PostingKind::Settlement,
+        incarnation: 1,
     }
 }
 
@@ -917,4 +920,298 @@ fn a_posting_the_exit_path_built_settles_exactly_as_a_hold_does() {
         through_posting.ledger.book().get(&key, 86_400)
     );
     assert_eq!(through_hold.journal.head(), through_posting.journal.head());
+}
+
+/// Settle one hold of `reserved` at `used` onto `durability`, through the one settle path, with a
+/// journal record — the arrival reading `mono` naming the unit.
+fn settle_one(durability: &mut Durability, key: &TotalsKey, reserved: u64, used: u64, mono: u64) {
+    use busbar_contract::caps::{
+        Admittance, Consumption, Grant, Hold, KernelSeal, MeterClassId, PrincipalId,
+        QuantitySource, Usage, UsageLine, WriteMoney,
+    };
+    let seal = KernelSeal::acquire_for_kernel();
+    let principal = PrincipalId::new(key.bucket.as_str());
+    let durability_token = token();
+    let mut at = settling(key, &durability_token);
+    at.stamp.mono = mono;
+    durability
+        .open_hold(&at, &principal, reserved)
+        .expect("the journal takes the hold");
+    let hold = Hold::open(&Grant::<Admittance>::mint(&seal), principal, reserved);
+    let usage = Usage::report(
+        &Grant::<Consumption>::mint(&seal),
+        vec![UsageLine {
+            class: MeterClassId::new("nano_units"),
+            quantity: used,
+            source: QuantitySource::Count,
+            estimated: false,
+        }],
+    )
+    .expect("one line");
+    durability
+        .settle(
+            &at,
+            hold,
+            u128::from(used),
+            &usage,
+            &Grant::<WriteMoney>::mint(&seal),
+        )
+        .expect("the journal takes the posting");
+}
+
+/// ITEM 128: THE RESTART RECONCILIATION COMPARES THE REAL BOOK, and goes RED on a book that lost a
+/// row.
+///
+/// The restart used to open `Ledger::dual_writing` over NOTHING with no checkpoints, so the money
+/// view reset to zero on every boot and the reconciliation passed because both sides were zero.
+/// Here two units settle on a node with a data directory, the node restarts, and the book it comes
+/// back with is the book it had — and the reconciliation, which now compares the book with what the
+/// journal rebuilds, is clean over it and RED the moment a row goes missing.
+#[test]
+fn the_restart_reconciliation_goes_red_on_a_book_that_lost_a_row() {
+    let scratch = ScratchDir::new("restart-reconcile");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let key = totals_key("vk_restart");
+    let other = totals_key("vk_other");
+    let before = {
+        let mut durability = build_for_node(&cfg, 7, Box::new(NullShipper::new()), rows())
+            .expect("the directory is writable");
+        settle_one(&mut durability, &key, 5_000, 4_200, 1);
+        settle_one(&mut durability, &other, 1_000, 1_500, 2);
+        durability.ledger.book().snapshot()
+    };
+    assert_eq!(before.len(), 2);
+
+    let mut restarted = build_for_node(&cfg, 7, Box::new(NullShipper::new()), rows())
+        .expect("the journal reopens onto what it wrote");
+    assert_eq!(
+        restarted.ledger.book().snapshot(),
+        before,
+        "the restarted book is the book the node had, not an empty one"
+    );
+    let figures = restarted.ledger.book().get(&key, 86_400);
+    assert_eq!(figures.settled, 4_200);
+    assert_eq!(figures.drawn, 5_000);
+    assert_eq!(figures.open_holds, 0);
+    assert_eq!(
+        restarted
+            .ledger
+            .book()
+            .get(&other, 86_400)
+            .overdraft_carried_out,
+        500,
+        "the overdraft is replayed once, not once per record of the settlement"
+    );
+    assert!(
+        restarted.restart_findings.is_empty(),
+        "a clean restart reconciles clean: {:?}",
+        restarted.restart_findings
+    );
+    assert_eq!(restarted.recovered_holds, 0, "every hold was closed");
+    assert_eq!(restarted.incarnation, 2, "the second boot of this journal");
+
+    // A book that lost a row.
+    restarted.ledger.book_mut().retain_from(86_401);
+    let findings = restarted.reconcile_with_journal();
+    assert_eq!(
+        findings.len(),
+        2,
+        "both balances left the book: {findings:?}"
+    );
+    assert!(
+        findings.iter().any(|f| matches!(
+            f,
+            JournalDisagreement::Balance { key: k, window: 86_400, journal, book }
+                if *k == key && journal.settled == 4_200 && book.settled == 0
+        )),
+        "the finding names the balance and both readings: {findings:?}"
+    );
+    assert!(findings[0]
+        .to_string()
+        .contains("the journal rebuilds settled"));
+}
+
+/// And a single figure edited in memory, with no record behind it, is named too.
+#[test]
+fn the_reconciliation_names_a_figure_the_book_moved_without_a_record() {
+    let mut durability = memory_node();
+    let key = totals_key("vk_edit");
+    settle_one(&mut durability, &key, 1_000, 900, 3);
+    assert!(durability.reconcile_with_journal().is_empty());
+    durability
+        .ledger
+        .book_mut()
+        .entry(key.clone(), 86_400)
+        .settled += 1;
+    assert_eq!(durability.reconcile_with_journal().len(), 1);
+}
+
+/// ITEM 127: A HOLD SURVIVES A KILL -9.
+///
+/// Every production journal write used to happen at or after settle time, so a hold existed only in
+/// memory and a node killed mid-unit took it with it: nothing on the chain said it was ever opened,
+/// and `recovery::recover_all` — the code that settles what a dead incarnation left open — had no
+/// production caller. Here a hold is opened on a node with a data directory and the process is
+/// killed without settling it or running a single destructor. The next boot reads the hold back,
+/// recovers it through the recovery table, and posts it; the boot after that finds nothing open.
+#[test]
+fn a_hold_survives_a_kill_9() {
+    let scratch = ScratchDir::new("hold-kill9");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let key = totals_key("vk_killed");
+    {
+        let mut durability = build_for_node(&cfg, 9, Box::new(NullShipper::new()), rows())
+            .expect("the directory is writable");
+        let durability_token = token();
+        let mut at = settling(&key, &durability_token);
+        at.stamp.mono = 77;
+        durability
+            .open_hold(
+                &at,
+                &busbar_contract::caps::PrincipalId::new("vk_killed"),
+                2_000,
+            )
+            .expect("the hold goes on the chain");
+        assert_eq!(durability.ledger.book().get(&key, 86_400).open_holds, 2_000);
+        // kill -9: no settle, no destructor, nothing flushed on the way out.
+        std::mem::forget(durability);
+    }
+
+    let restarted = build_for_node(&cfg, 9, Box::new(NullShipper::new()), rows())
+        .expect("the journal reopens onto what it wrote");
+    assert_eq!(
+        restarted.recovered_holds, 1,
+        "the hold survived the kill and was recovered"
+    );
+    let figures = restarted.ledger.book().get(&key, 86_400);
+    assert_eq!(figures.open_holds, 0, "the recovered hold is closed");
+    assert_eq!(figures.drawn, 2_000);
+    assert_eq!(
+        figures.settled, 0,
+        "a crash is not evidence of consumption: the recovery table posts the lower figure"
+    );
+    assert_eq!(
+        figures.open_slice_remainders, 2_000,
+        "the reservation went back to the slice"
+    );
+    assert!(
+        restarted.restart_findings.is_empty(),
+        "{:?}",
+        restarted.restart_findings
+    );
+    let replayed = restarted
+        .journal
+        .replay()
+        .expect("reads")
+        .expect("verifies");
+    let posting = replayed
+        .iter()
+        .filter_map(Posting::from_record)
+        .find(|p| p.kind == PostingKind::Settlement)
+        .expect("the recovery posted onto the chain");
+    assert_eq!(posting.key, key);
+    assert_eq!(
+        posting.incarnation, 1,
+        "closed under the incarnation that opened it"
+    );
+    assert_eq!(posting.mono, 77, "and under the unit's own arrival reading");
+    drop(restarted);
+
+    let third = build_for_node(&cfg, 9, Box::new(NullShipper::new()), rows())
+        .expect("the journal reopens again");
+    assert_eq!(
+        third.recovered_holds, 0,
+        "a recovered hold is not recovered twice"
+    );
+    // The second boot wrote nothing under its own number — the recovery closed the hold under the
+    // number that opened it — so no record carries a 2 and the third boot may take it again. What
+    // an incarnation has to be is distinct from every number already on the chain, and it is.
+    assert_eq!(third.incarnation, 2);
+    assert!(
+        third.restart_findings.is_empty(),
+        "{:?}",
+        third.restart_findings
+    );
+}
+
+/// ITEM 26: a settled figure the journal could not confirm is moved to `unreconciled`, and moves back
+/// once a later append succeeds — `drawn` and `unreconciled` are written by the protocol now, not
+/// structurally zero.
+#[test]
+fn a_posting_the_journal_lost_is_unreconciled_until_the_log_confirms_it() {
+    struct Flaky(std::sync::Arc<std::sync::atomic::AtomicBool>);
+    impl busbar_kernel_wal::Shipper for Flaky {
+        fn ship(
+            &mut self,
+            _records: &[busbar_kernel_wal::Record],
+        ) -> Result<(), busbar_kernel_wal::ShipError> {
+            if self.0.load(std::sync::atomic::Ordering::Acquire) {
+                Err(busbar_kernel_wal::ShipError::Unavailable(
+                    "store down".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+    let down = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut durability = build(
+        &DurabilityConfig { data_dir: None },
+        Box::new(Flaky(std::sync::Arc::clone(&down))),
+        rows(),
+    )
+    .expect("memory-buffered");
+    let key = totals_key("vk_flaky");
+    settle_one(&mut durability, &key, 1_000, 600, 1);
+    assert_eq!(
+        durability.ledger.book().get(&key, 86_400).drawn,
+        1_000,
+        "drawn is written"
+    );
+
+    down.store(true, std::sync::atomic::Ordering::Release);
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
+    let principal = busbar_contract::caps::PrincipalId::new("vk_flaky");
+    let durability_token = token();
+    let hold = busbar_contract::caps::Hold::open(
+        &busbar_contract::caps::Grant::<busbar_contract::caps::Admittance>::mint(&seal),
+        principal,
+        0,
+    );
+    let usage = busbar_contract::caps::Usage::report(
+        &busbar_contract::caps::Grant::<busbar_contract::caps::Consumption>::mint(&seal),
+        Vec::new(),
+    )
+    .expect("empty");
+    let lost = durability.settle(
+        &settling(&key, &durability_token),
+        hold,
+        250,
+        &usage,
+        &busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(&seal),
+    );
+    assert!(lost.is_err(), "the store refused the batch");
+    let figures = durability.ledger.book().get(&key, 86_400);
+    assert_eq!(
+        figures.unreconciled, 250,
+        "not reported as settled until the store confirms it"
+    );
+    assert_eq!(figures.settled, 600);
+    assert!(busbar_kernel_ledger::identity::holds(
+        &Totals::zero(),
+        &figures
+    ));
+
+    down.store(false, std::sync::atomic::Ordering::Release);
+    settle_one(&mut durability, &key, 0, 0, 3);
+    let figures = durability.ledger.book().get(&key, 86_400);
+    assert_eq!(
+        figures.unreconciled, 0,
+        "the next append re-offered it and it was confirmed"
+    );
+    assert_eq!(figures.settled, 850);
 }

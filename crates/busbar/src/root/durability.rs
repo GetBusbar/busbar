@@ -98,9 +98,12 @@ use busbar_kernel_ledger::checkpoint::Checkpoint;
 use busbar_kernel_ledger::legacy::{LegacyRows, RecordingRows};
 use busbar_kernel_ledger::migration::{MigrationError, MigrationMarker, MigrationRecords};
 use busbar_kernel_ledger::settle::{Ledger, Settlement};
-use busbar_kernel_ledger::totals::{TotalsKey, WindowStart};
+use busbar_kernel_ledger::totals::{
+    BucketId, BucketScope, CapDimension, Totals, TotalsKey, WindowStart,
+};
 use busbar_kernel_wal::{
-    BodyWriter, Entry, Journal, JournalAck, Mode, OpenError, RecordClass, Shipper,
+    BodyReader, BodyWriter, Entry, Journal, JournalAck, JournalRecord, Mode, OpenError,
+    RecordClass, Shipper,
 };
 
 /// What the root reads out of configuration to decide the durability shape.
@@ -136,6 +139,28 @@ pub struct Durability {
     /// journal has taken the record: a seal this node kept but never got onto the chain would be a
     /// figure with no position, which is the one thing the journal exists to prevent.
     pub checkpoints: Vec<Checkpoint>,
+    /// WHICH BOOT OF THIS JOURNAL this process is: one more than the highest any record on the
+    /// chain was written under, and 1 on a chain that holds none.
+    ///
+    /// A unit's key and its monotonic reading both restart at every boot, so on their own they do
+    /// not name one unit across a restart. Every hold and posting record carries the incarnation
+    /// that wrote it, and a hold opened under one incarnation is closed only by a posting written
+    /// under the same one — which is what lets a boot tell a hold its predecessor left open from a
+    /// hold this process has not got to yet.
+    pub incarnation: u64,
+    /// What the RESTART RECONCILIATION found when this book was built (item 128): every balance on
+    /// which the book in memory and the book the journal rebuilds disagree, and any journal record
+    /// that could not be read. Empty is the only good answer. See [`Durability::reconcile_with_journal`].
+    pub restart_findings: Vec<JournalDisagreement>,
+    /// How many holds a predecessor left open that this boot RECOVERED and posted (item 127).
+    pub recovered_holds: usize,
+    /// Settled figures the book moved whose journal record the log has not confirmed yet.
+    ///
+    /// Each was moved out of `settled` into `unreconciled` when its append came back as a
+    /// durability loss (ARCHITECTURE.md 4.2: nothing is reported as settled that the store has not
+    /// confirmed), and each moves back when a later append succeeds — the log re-offers a retained
+    /// batch ahead of the next one, so a later success is the confirmation.
+    unconfirmed: Vec<(TotalsKey, WindowStart, i128)>,
 }
 
 impl std::fmt::Debug for Durability {
@@ -237,6 +262,165 @@ impl Durability {
             .and_then(|r| migration_marker_from(&r.body))
     }
 
+    /// OPEN A HOLD ON THE BOOK AND ON THE JOURNAL, before the unit it reserves for runs (item 127).
+    ///
+    /// The half of the protocol that was never written: every production journal write used to
+    /// happen at or after SETTLE time, so a node killed mid-unit left a hold that existed only in
+    /// memory — nothing on the chain said it had been opened, so nothing at the next boot could
+    /// settle it. This record is what a boot reads back: a hold opened here and closed by no
+    /// posting of the same incarnation is a hold a predecessor left open, and
+    /// [`build_for_node`] recovers and posts it.
+    ///
+    /// The book moves as the identity describes a reservation (item 26): the amount is DRAWN from
+    /// the store into the slice, and spent out of the slice into the hold — `drawn` and
+    /// `open_holds` rise together and the slice nets to nothing. The settlement that closes it moves
+    /// the other half, through [`Ledger::post`].
+    ///
+    /// `at.stamp.mono` is the unit's own arrival reading, and the posting that closes the hold must
+    /// carry the same one on the same balance and window: with the incarnation, that names the unit
+    /// on the chain.
+    ///
+    /// # Errors
+    ///
+    /// As [`Durability::journal_audit`]. The book has moved either way, and a failed append is
+    /// retained and re-offered by the log — it is never a refusal at the door.
+    pub fn open_hold(
+        &mut self,
+        at: &Settling<'_>,
+        principal: &busbar_contract::caps::PrincipalId,
+        reserved: u64,
+    ) -> Result<JournalAck, DurabilityLost> {
+        let opened = HoldOpened {
+            key: at.key.clone(),
+            window: at.window,
+            principal: principal.as_str().to_string(),
+            reserved,
+            incarnation: self.incarnation,
+            wall: at.stamp.wall,
+            mono: at.stamp.mono,
+        };
+        apply_opened(&mut self.ledger, &opened);
+        let entry =
+            Entry::new(RecordClass::Transaction, opened.body()).at(opened.wall, opened.mono);
+        let appended = self.journal.append(at.durability, at.step, &[entry]);
+        self.confirm(appended.as_ref().ok());
+        appended
+    }
+
+    /// THE RESTART RECONCILIATION (item 128): the book in memory against the book the journal
+    /// rebuilds, balance by balance.
+    ///
+    /// The check that used to be here compared an EMPTY book with empty checkpoints: every restart
+    /// began from `Ledger::dual_writing` over nothing, so the money view reset to zero and the
+    /// identity passed because both sides were zero — an instrument that could not say no. This one
+    /// compares two things that can disagree: the figures this node holds, and the figures its own
+    /// chain says it should hold. A balance the book lost, or moved without a record, is named with
+    /// both readings.
+    ///
+    /// `settled` is compared together with `unreconciled`, because a posting whose append the log
+    /// has not confirmed is moved between those two and has not left the book.
+    #[must_use]
+    pub fn reconcile_with_journal(&self) -> Vec<JournalDisagreement> {
+        let records = match self.journal.replay() {
+            Ok(Ok(records)) => records,
+            Ok(Err(broken)) => {
+                return vec![JournalDisagreement::Unreadable(format!(
+                    "the journal does not verify: {broken:?}"
+                ))]
+            }
+            Err(e) => {
+                return vec![JournalDisagreement::Unreadable(format!(
+                    "the journal could not be read: {e}"
+                ))]
+            }
+        };
+        let mut rebuilt = Ledger::new();
+        let replay = replay_into(&mut rebuilt, &records);
+        let mut findings: Vec<JournalDisagreement> = replay
+            .unreadable
+            .into_iter()
+            .map(JournalDisagreement::Unreadable)
+            .collect();
+        let journal = rebuilt.book().snapshot();
+        let book = self.ledger.book().snapshot();
+        let mut keys: Vec<&(TotalsKey, WindowStart)> = journal.keys().chain(book.keys()).collect();
+        keys.sort();
+        keys.dedup();
+        for at in keys {
+            let from_journal = journal.get(at).copied().unwrap_or_default();
+            let in_book = book.get(at).copied().unwrap_or_default();
+            if !same_movement(&from_journal, &in_book) {
+                findings.push(JournalDisagreement::Balance {
+                    key: at.0.clone(),
+                    window: at.1,
+                    journal: Box::new(from_journal),
+                    book: Box::new(in_book),
+                });
+            }
+        }
+        findings
+    }
+
+    /// Note what a journal append said about the settled figures the log had not confirmed.
+    ///
+    /// A success means every batch the log was retaining went out ahead of this one, so each
+    /// unconfirmed figure moves back into `settled`. A success that DROPPED records to make room
+    /// (an overflow, named on the chain by a break) cannot say which went, so nothing moves back.
+    fn confirm(&mut self, ack: Option<&JournalAck>) {
+        if ack.is_some_and(|ack| ack.overflow.is_none()) {
+            for (key, window, amount) in std::mem::take(&mut self.unconfirmed) {
+                self.ledger
+                    .record_unreconciled(&key, window, amount.saturating_neg());
+            }
+        }
+    }
+
+    /// Recover every hold a predecessor left open: materialise it from its record and settle it
+    /// through the recovery table, then post that settlement onto the book and the chain as if the
+    /// unit had ended — under the incarnation and arrival reading that OPENED it, so the posting
+    /// closes that hold and no later boot recovers it twice.
+    fn recover(&mut self, open: Vec<HoldOpened>) {
+        if open.is_empty() {
+            return;
+        }
+        let kernel = busbar_kernel::teller::Kernel::new();
+        let token = kernel.durability_token();
+        let canary = busbar_contract::caps::Canary::new();
+        let current = busbar_contract::slice::Epoch(self.incarnation);
+        let records: Vec<busbar_kernel::recovery::HoldRecord> = open
+            .iter()
+            .map(|hold| busbar_kernel::recovery::HoldRecord {
+                unit: busbar_contract::UnitKey::new(hold.mono),
+                principal: busbar_contract::caps::PrincipalId::new(hold.principal.as_str()),
+                reserved: hold.reserved,
+                // No accrual checkpoint and no dispatch record is journalled, so the table's
+                // recovery row posts zero, marked void: a crash is not evidence of consumption.
+                checkpointed: 0,
+                dispatched: false,
+                lease_epoch: busbar_contract::slice::Epoch(hold.incarnation),
+            })
+            .collect();
+        let posted = busbar_kernel::recovery::recover_all(&kernel, &records, current, &canary);
+        for (hold, posted) in open.iter().zip(posted) {
+            let at = Settling {
+                key: &hold.key,
+                window: hold.window,
+                durability: &token,
+                step: StepName::Meter,
+                stamp: PostingStamp {
+                    rate_card_version: busbar_kernel_ledger::cost::HistorySeq::OPENING.get(),
+                    wall: hold.wall,
+                    mono: hold.mono,
+                },
+            };
+            let settlement = self.ledger.post(at.key, at.window, posted);
+            // A durability loss here is retained and re-offered like any other; the book has
+            // moved and the hold is settled in memory either way.
+            let _ = self.journal_settlement_as(&at, settlement, hold.incarnation);
+            self.recovered_holds = self.recovered_holds.saturating_add(1);
+        }
+    }
+
     /// Settle a hold and put what it produced on the journal, in that order.
     ///
     /// The binding the journal was built for, and the reason [`Durability::journal_posting`] is a
@@ -294,8 +478,24 @@ impl Durability {
         at: &Settling<'_>,
         settlement: Settlement,
     ) -> Result<Settled, DurabilityLost> {
+        self.journal_settlement_as(at, settlement, self.incarnation)
+    }
+
+    /// [`Durability::journal_settlement`], naming the incarnation the posting belongs to — this
+    /// process's own for every live settlement, and the opening incarnation's for a hold recovered
+    /// at boot.
+    fn journal_settlement_as(
+        &mut self,
+        at: &Settling<'_>,
+        settlement: Settlement,
+        incarnation: u64,
+    ) -> Result<Settled, DurabilityLost> {
         let stamp = at.stamp;
+        let principal = settlement.posted.principal().as_str().to_string();
         let posting = Posting {
+            principal: principal.clone(),
+            kind: PostingKind::Settlement,
+            incarnation,
             key: at.key.clone(),
             window: at.window,
             reserved: i128::from(settlement.posted.reserved()),
@@ -310,6 +510,9 @@ impl Durability {
         // a replay adds up. What this record holds that nothing else does is the carry, on the
         // chain, in order, beside the posting it came out of.
         let overdraft = settlement.overdraft.as_ref().map(|note| Posting {
+            principal: principal.clone(),
+            kind: PostingKind::Carry,
+            incarnation,
             key: note.key.clone(),
             window: note.window,
             reserved: 0,
@@ -330,12 +533,28 @@ impl Durability {
                 Entry::new(RecordClass::Transaction, record.body()).at(record.wall, record.mono)
             })
             .collect();
-        self.journal.append(at.durability, at.step, &entries)?;
-        Ok(Settled {
-            settlement,
-            posting,
-            overdraft,
-        })
+        match self.journal.append(at.durability, at.step, &entries) {
+            Ok(ack) => {
+                self.confirm(Some(&ack));
+                Ok(Settled {
+                    settlement,
+                    posting,
+                    overdraft,
+                })
+            }
+            Err(lost) => {
+                // The books moved and the chain does not have it yet (item 26). What was settled is
+                // MOVED to `unreconciled` — not reported as settled until the log confirms it — and
+                // moves back on the next append that succeeds. The figure is still accounted for,
+                // so the identity does not move.
+                let settled = posting.settled;
+                if settled != 0 {
+                    self.ledger.record_unreconciled(at.key, at.window, settled);
+                    self.unconfirmed.push((at.key.clone(), at.window, settled));
+                }
+                Err(lost)
+            }
+        }
     }
 
     /// The ledger's own records, on the journal.
@@ -487,6 +706,12 @@ impl MoneyBook for SharedBook {
 /// out of the second could not be replayed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Posting {
+    /// Whose unit it was.
+    pub principal: String,
+    /// Whether this is the settlement itself or the overdraft carry beside it.
+    pub kind: PostingKind,
+    /// Which boot of this node's journal the unit belonged to.
+    pub incarnation: u64,
     /// Which balance moved.
     pub key: TotalsKey,
     /// Which window it moved in.
@@ -506,7 +731,15 @@ pub struct Posting {
 }
 
 impl Posting {
-    /// The journal body: the balance it moved, the window, and the three figures.
+    /// The journal body: the balance it moved, the window, and the three figures — and then what a
+    /// restart needs to rebuild the book from it.
+    ///
+    /// The first six fields are the record every reader already knew, unchanged and in the same
+    /// place. What follows them is the tail a boot reads (items 127/128): which of the two records
+    /// of one settlement this is (only the settlement moves the book — the carry repeats its
+    /// overdraft), which incarnation wrote it and whose unit it was (which, with the record's
+    /// monotonic reading, names the hold it closes), and the balance as FIELDS rather than as the
+    /// display string above, which a rebuild could not parse back unambiguously.
     #[must_use]
     pub fn body(&self) -> Vec<u8> {
         let mut body = BodyWriter::new();
@@ -516,7 +749,352 @@ impl Posting {
         body.figure(self.settled);
         body.figure(self.overdraft);
         body.num(self.rate_card_version);
+        body.text(POSTING_TAIL);
+        body.num(self.kind.code());
+        body.num(self.incarnation);
+        body.text(&self.principal);
+        write_key(&mut body, &self.key);
         body.finish()
+    }
+
+    /// Read a posting back off the chain. `None` for a record that is not one — an audit record, a
+    /// hold, or a posting written before the tail existed, which a rebuild cannot place.
+    #[must_use]
+    pub fn from_record(record: &JournalRecord) -> Option<Posting> {
+        if record.class != RecordClass::Transaction {
+            return None;
+        }
+        let mut body = BodyReader::new(&record.body);
+        let shown = body.text()?;
+        let window = body.num()?;
+        let reserved = body.figure()?;
+        let settled = body.figure()?;
+        let overdraft = body.figure()?;
+        let rate_card_version = body.num()?;
+        if body.text()? != POSTING_TAIL {
+            return None;
+        }
+        let kind = PostingKind::from_code(body.num()?)?;
+        let incarnation = body.num()?;
+        let principal = body.text()?.to_string();
+        let key = read_key(&mut body)?;
+        // The two spellings of the balance must name the same one, or this is not a body this
+        // build wrote and reading it would be guessing.
+        if !body.is_done() || key.to_string() != shown {
+            return None;
+        }
+        Some(Posting {
+            principal,
+            kind,
+            incarnation,
+            key,
+            window,
+            reserved,
+            settled,
+            overdraft,
+            rate_card_version,
+            wall: record.wall,
+            mono: record.mono,
+        })
+    }
+}
+
+/// Which of a settlement's two records a [`Posting`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostingKind {
+    /// The settlement: what was reserved and what was posted. The one a rebuild moves the book by.
+    Settlement,
+    /// The overdraft carry beside it, repeating the part nothing reserved. Replaying it as well
+    /// would count that part twice.
+    Carry,
+}
+
+impl PostingKind {
+    fn code(self) -> u64 {
+        match self {
+            PostingKind::Settlement => 1,
+            PostingKind::Carry => 2,
+        }
+    }
+
+    fn from_code(code: u64) -> Option<Self> {
+        match code {
+            1 => Some(PostingKind::Settlement),
+            2 => Some(PostingKind::Carry),
+            _ => None,
+        }
+    }
+}
+
+/// The tag between a posting's original fields and the tail a rebuild reads.
+const POSTING_TAIL: &str = "posting.v2";
+
+/// The tag a hold's journal record opens with. No posting can begin with it: a posting's first
+/// field is a balance's display, which always carries a `/`.
+const HOLD_OPENED: &str = "hold.open";
+
+/// A hold as the journal carries it (item 127): opened, and not yet closed by a posting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HoldOpened {
+    /// Which balance it reserves against.
+    pub key: TotalsKey,
+    /// Which window.
+    pub window: WindowStart,
+    /// Whose unit it is.
+    pub principal: String,
+    /// What was reserved.
+    pub reserved: u64,
+    /// Which boot of this node's journal opened it.
+    pub incarnation: u64,
+    /// The unit's arrival, whole seconds.
+    pub wall: u64,
+    /// The unit's arrival on the node's monotonic clock — with the balance, the window and the
+    /// incarnation, the name of the unit on the chain.
+    pub mono: u64,
+}
+
+impl HoldOpened {
+    /// Its journal body.
+    #[must_use]
+    pub fn body(&self) -> Vec<u8> {
+        let mut body = BodyWriter::new();
+        body.text(HOLD_OPENED);
+        body.num(self.incarnation);
+        body.text(&self.principal);
+        write_key(&mut body, &self.key);
+        body.num(self.window);
+        body.num(self.reserved);
+        body.finish()
+    }
+
+    /// Read one back. `None` for a record that is not a hold.
+    #[must_use]
+    pub fn from_record(record: &JournalRecord) -> Option<HoldOpened> {
+        if record.class != RecordClass::Transaction {
+            return None;
+        }
+        let mut body = BodyReader::new(&record.body);
+        if body.text()? != HOLD_OPENED {
+            return None;
+        }
+        let incarnation = body.num()?;
+        let principal = body.text()?.to_string();
+        let key = read_key(&mut body)?;
+        let window = body.num()?;
+        let reserved = body.num()?;
+        body.is_done().then_some(HoldOpened {
+            key,
+            window,
+            principal,
+            reserved,
+            incarnation,
+            wall: record.wall,
+            mono: record.mono,
+        })
+    }
+
+    /// The name of the unit on the chain: which boot, which balance and window, and which arrival.
+    ///
+    /// The balance rather than the principal, because the balance is what both ends are keyed by:
+    /// the hold is opened on it and the settlement moves it, whichever principal the steps between
+    /// settled on.
+    fn unit(&self) -> (u64, TotalsKey, WindowStart, u64) {
+        (self.incarnation, self.key.clone(), self.window, self.mono)
+    }
+}
+
+/// A balance as fields: bucket, then dimension and scope as a tag and a name each.
+fn write_key(body: &mut BodyWriter, key: &TotalsKey) {
+    body.text(key.bucket.as_str());
+    let (dimension, class) = match &key.dimension {
+        CapDimension::NanoUnits => (0, ""),
+        CapDimension::Requests => (1, ""),
+        CapDimension::Concurrent => (2, ""),
+        CapDimension::Class(class) => (3, class.as_str()),
+    };
+    body.num(dimension);
+    body.text(class);
+    let (scope, pool) = match &key.scope {
+        BucketScope::All => (0, ""),
+        BucketScope::Pool(pool) => (1, pool.as_str()),
+    };
+    body.num(scope);
+    body.text(pool);
+}
+
+fn read_key(body: &mut BodyReader<'_>) -> Option<TotalsKey> {
+    let bucket = BucketId::new(body.text()?);
+    let dimension = match (body.num()?, body.text()?) {
+        (0, _) => CapDimension::NanoUnits,
+        (1, _) => CapDimension::Requests,
+        (2, _) => CapDimension::Concurrent,
+        (3, class) => CapDimension::Class(class.to_string()),
+        _ => return None,
+    };
+    let scope = match (body.num()?, body.text()?) {
+        (0, _) => BucketScope::All,
+        (1, pool) => BucketScope::Pool(pool.to_string()),
+        _ => return None,
+    };
+    Some(TotalsKey::new(bucket, dimension, scope))
+}
+
+/// A reservation's movement on the book: drawn into the slice and spent out of it into the hold.
+fn apply_opened(ledger: &mut Ledger, hold: &HoldOpened) {
+    let amount = i128::from(hold.reserved);
+    ledger.record_draw(&hold.key, hold.window, amount);
+    ledger.record_slice_spent(&hold.key, hold.window, amount);
+    ledger.record_hold_opened(&hold.key, hold.window, hold.reserved);
+}
+
+/// What replaying a chain into a book left over.
+struct Replayed {
+    /// Holds opened and closed by no posting of the same unit, in chain order.
+    open: Vec<HoldOpened>,
+    /// The highest incarnation any record carried; 0 on a chain with none.
+    incarnation: u64,
+    /// Records that look like this build's money records and could not be read.
+    unreadable: Vec<String>,
+}
+
+impl Replayed {
+    /// What a chain that could not be read at all leaves: nothing to rebuild from.
+    fn nothing() -> Self {
+        Replayed {
+            open: Vec::new(),
+            incarnation: 0,
+            unreadable: Vec::new(),
+        }
+    }
+}
+
+/// REBUILD A BOOK FROM THE CHAIN, in chain order: every hold opened, every settlement posted.
+///
+/// Reads every `Transaction` record, not only the migration marker (the two replays this module
+/// had filtered `Migration` alone, so a restart read nothing a unit had done). Audit records share
+/// the class and are passed over; a posting written before the tail existed cannot be placed on a
+/// balance, and is named rather than silently skipped.
+fn replay_into(ledger: &mut Ledger, records: &[JournalRecord]) -> Replayed {
+    let mut open: Vec<HoldOpened> = Vec::new();
+    let mut incarnation = 0;
+    let mut unreadable = Vec::new();
+    for record in records
+        .iter()
+        .filter(|r| r.class == RecordClass::Transaction)
+    {
+        if let Some(hold) = HoldOpened::from_record(record) {
+            incarnation = incarnation.max(hold.incarnation);
+            apply_opened(ledger, &hold);
+            open.push(hold);
+        } else if let Some(posting) = Posting::from_record(record) {
+            incarnation = incarnation.max(posting.incarnation);
+            if posting.kind == PostingKind::Settlement {
+                let (Ok(reserved), Ok(settled), Ok(overdraft)) = (
+                    u64::try_from(posting.reserved),
+                    u64::try_from(posting.settled),
+                    u64::try_from(posting.overdraft),
+                ) else {
+                    unreadable.push(format!(
+                        "node {} record {}: a posting with a negative figure",
+                        record.node, record.node_seq
+                    ));
+                    continue;
+                };
+                ledger.replay_post(
+                    &posting.key,
+                    posting.window,
+                    &posting.principal,
+                    reserved,
+                    settled,
+                    overdraft,
+                );
+                let unit = (
+                    posting.incarnation,
+                    posting.key.clone(),
+                    posting.window,
+                    posting.mono,
+                );
+                if let Some(at) = open.iter().position(|hold| hold.unit() == unit) {
+                    open.remove(at);
+                }
+            }
+        } else if looks_like_a_posting(record) {
+            unreadable.push(format!(
+                "node {} record {}: a posting this build cannot place on a balance",
+                record.node, record.node_seq
+            ));
+        }
+    }
+    Replayed {
+        open,
+        incarnation,
+        unreadable,
+    }
+}
+
+/// A posting without the tail: a balance display, a window and three figures and a version, and
+/// nothing else. An audit record never has this shape — it opens with two digests.
+fn looks_like_a_posting(record: &JournalRecord) -> bool {
+    let mut body = BodyReader::new(&record.body);
+    body.text().is_some_and(|shown| shown.contains('/'))
+        && body.num().is_some()
+        && body.figure().is_some()
+        && body.figure().is_some()
+        && body.figure().is_some()
+        && body.num().is_some()
+}
+
+/// Whether two readings of one balance moved it the same way. `settled` is read together with
+/// `unreconciled`: a posting the log has not confirmed moves between those two, not out of the book.
+fn same_movement(journal: &Totals, book: &Totals) -> bool {
+    journal.drawn == book.drawn
+        && journal.open_holds == book.open_holds
+        && journal.open_slice_remainders == book.open_slice_remainders
+        && journal.overdraft_carried_out == book.overdraft_carried_out
+        && journal.settled.saturating_add(journal.unreconciled)
+            == book.settled.saturating_add(book.unreconciled)
+}
+
+/// Something the restart reconciliation found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JournalDisagreement {
+    /// The chain, or a money record on it, could not be read.
+    Unreadable(String),
+    /// A balance the book and the chain disagree about.
+    Balance {
+        /// Which balance.
+        key: TotalsKey,
+        /// Which window.
+        window: WindowStart,
+        /// What the chain rebuilds it to. Boxed, as the book's reading beside it is: a finding is
+        /// rare and a full set of figures is wide.
+        journal: Box<Totals>,
+        /// What the book holds.
+        book: Box<Totals>,
+    },
+}
+
+impl std::fmt::Display for JournalDisagreement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JournalDisagreement::Unreadable(why) => f.write_str(why),
+            JournalDisagreement::Balance {
+                key,
+                window,
+                journal,
+                book,
+            } => write!(
+                f,
+                "{key} in the window opening at {window}: the journal rebuilds settled {} / held {} \
+                 / drawn {}, the book holds settled {} / held {} / drawn {}",
+                journal.settled.saturating_add(journal.unreconciled),
+                journal.open_holds,
+                journal.drawn,
+                book.settled.saturating_add(book.unreconciled),
+                book.open_holds,
+                book.drawn
+            ),
+        }
     }
 }
 
@@ -766,7 +1344,7 @@ pub fn build_for_node(
         Some(dir) => Journal::in_directory(node, dir, shipper)?,
     };
 
-    Ok(Durability {
+    let mut durability = Durability {
         journal,
         // Not `Ledger::new()`. The reconciliation identity and rollback both require the dual
         // write, and both are release requirements rather than deployment choices.
@@ -777,7 +1355,57 @@ pub fn build_for_node(
         // do it for itself would stop being replayable from its inputs.
         legacy: AuditLog::with(Box::new(RootWallClock), Box::new(NoSeam)),
         checkpoints: Vec::new(),
-    })
+        // Set from the chain below, before anything can write under it.
+        incarnation: 0,
+        restart_findings: Vec::new(),
+        recovered_holds: 0,
+        unconfirmed: Vec::new(),
+    };
+
+    // THE BOOK IS REBUILT FROM THE CHAIN, not opened empty (item 128). An empty book here was the
+    // money view resetting to zero on every restart — and the reconciliation passing, because both
+    // sides were zero. Every hold opened and every settlement posted is replayed through the
+    // ledger's own arithmetic, the dual write included, so the book and the rows it feeds are what
+    // they were when the node stopped. A memory-buffered journal replays nothing: it starts empty.
+    let (replayed, unreadable) = match durability.journal.replay() {
+        Ok(Ok(records)) => (replay_into(&mut durability.ledger, &records), None),
+        Ok(Err(broken)) => (
+            Replayed::nothing(),
+            Some(format!("the journal does not verify: {broken:?}")),
+        ),
+        Err(e) => (
+            Replayed::nothing(),
+            Some(format!("the journal could not be read: {e}")),
+        ),
+    };
+    durability.incarnation = replayed.incarnation.saturating_add(1);
+
+    // THE HOLDS A PREDECESSOR LEFT OPEN ARE RECOVERED HERE, before anything can settle onto this
+    // book (item 127): `recovery::recover_all` had no production caller, so a hold whose node died
+    // mid-unit was never posted by anybody. Each is posted per the recovery table and closed on the
+    // chain under the incarnation that opened it.
+    durability.recover(replayed.open);
+
+    // AND THE RESTART RECONCILIATION RUNS OVER THE REAL BOOK: what is in memory now, against what
+    // the chain rebuilds. It is a comparison of two things that can disagree, reported rather than
+    // refused — a node boots over what it can read, and the finding says what it could not.
+    let mut findings: Vec<JournalDisagreement> = unreadable
+        .into_iter()
+        .map(JournalDisagreement::Unreadable)
+        .collect();
+    findings.extend(
+        replayed
+            .unreadable
+            .into_iter()
+            .map(JournalDisagreement::Unreadable),
+    );
+    findings.extend(durability.reconcile_with_journal());
+    findings.dedup();
+    for finding in &findings {
+        tracing::error!(finding = %finding, "the restart reconciliation found the book and the journal disagree");
+    }
+    durability.restart_findings = findings;
+    Ok(durability)
 }
 
 /// Every path this node may write to, given its configuration.

@@ -883,10 +883,11 @@ ceiling = 61
 # not separate files: they are two of the three jobs inside tick.rs, and the label says so.
 #
 # The ceiling is today's measurement, not the abolished 500: a ratchet, so the first line that
-# grows this file is the line that has to justify itself.
+# grows this file is the line that has to justify itself. Re-pinned DOWN 193 -> 192 on 2026-09-24:
+# item 130 took the sweep's named-grant line out (the take now mints its grant in the argument).
 label = "tick: session tick, node tick and the drain sweep"
 patterns = ["tick.rs"]
-ceiling = 193
+ceiling = 192
 
 # ── REPOINTED 2026-09-22, the same repair `ticks` above already had. ───────────────────────────
 # Neither `arena.rs` nor `masking.rs` exists anywhere in the tree, so this row measured the empty

@@ -84,8 +84,8 @@ pub use backend::{
     SharedBytes,
 };
 pub use journal::{
-    body_digest, decode_run, tail_of, verify as verify_journal, BodyWriter, Entry, Journal,
-    JournalAck, JournalBreak, JournalBreakKind, JournalRecord, Overflow, RecordClass,
+    body_digest, decode_run, tail_of, verify as verify_journal, BodyReader, BodyWriter, Entry,
+    Journal, JournalAck, JournalBreak, JournalBreakKind, JournalRecord, Overflow, RecordClass,
     JOURNAL_HEADER_BYTES, JOURNAL_MAGIC, JOURNAL_VERSION, MEMORY_BUFFER_RECORDS,
 };
 pub use record::{

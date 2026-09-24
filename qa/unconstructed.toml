@@ -277,16 +277,12 @@ why       = "Recovered::stopped_because is written and never read, and recover_a
 unshipped = true
 switch    = "STRIKE THIS ROW in the commit that makes recover_and_truncate branch on the verdict — refusing or alarming on Corrupt and truncating only a genuine Torn tail. This is a DURABILITY decision and wants an owner ruling on the refuse-vs-alarm arm."
 
-# THE CRASH-RECOVERY MODULE IS REACHED BY NOTHING.
-[[capability]]
-id        = "crash-recovery-open-holds"
-built     = "crates/busbar-kernel/src/recovery.rs"
-symbol    = "recover_all"
-construct = ["recover_all("]
-scope     = ["crates"]
-why       = "The settle/void table for holds a crash left open — what happens after the power goes out — is an entire module nothing reaches: recover_all has no production caller and no production code constructs a HoldRecord to feed it."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that calls recover_all on the boot path. Note its TailVerdict::truncates already encodes the Corrupt-vs-Torn policy the WAL row above is missing, so the two should be reconciled rather than solved twice."
+# THE CRASH-RECOVERY MODULE — row `crash-recovery-open-holds` STRUCK 2026-09-24 (item 127): the
+# boot path calls it. `crates/busbar/src/root/durability.rs` → `build_for_node` reads every hold the
+# journal holds open (written at unit entry by `Durability::open_hold`) back into a `HoldRecord` and
+# hands them to `busbar_kernel::recovery::recover_all`, before anything can settle onto the book.
+# The note it carried still stands: `TailVerdict::truncates` encodes the Corrupt-vs-Torn policy the
+# `wal-corruption-verdict` row above is missing, and the two should be reconciled when that row is.
 
 # THE ROOT BREAKER OBSERVES NOTHING FOR ANY POOL.
 [[capability]]

@@ -841,7 +841,13 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                     let meter = run.meter;
                     // THE ONE AWAIT is inside this scope, and so is the only place a caller that
                     // goes away can drop the loop. The guard owns the terminal for the length of it.
-                    let mut abandoned = Abandoned::arm(kernel, units, route, ctx, run, settling);
+                    let mut abandoned = Abandoned {
+                        kernel,
+                        units,
+                        route,
+                        ctx,
+                        ending: Some((run, settling)),
+                    };
                     let outcome = under_hold(kernel, units, route, ctx, meter, &destinations).await;
                     abandoned.reached(outcome)
                 }
@@ -1154,25 +1160,7 @@ struct Abandoned<'k, 'r, U: Units, R: RouteAwait> {
     ending: Option<(Run<'r>, Settling)>,
 }
 
-impl<'k, 'r, U: Units, R: RouteAwait> Abandoned<'k, 'r, U, R> {
-    /// Take the terminal, for the length of the await.
-    fn arm(
-        kernel: &'k Kernel,
-        units: &'k U,
-        route: &'k R,
-        ctx: &'k UnitCtx,
-        run: Run<'r>,
-        settling: Settling,
-    ) -> Self {
-        Abandoned {
-            kernel,
-            units,
-            route,
-            ctx,
-            ending: Some((run, settling)),
-        }
-    }
-
+impl<U: Units, R: RouteAwait> Abandoned<'_, '_, U, R> {
     /// The unit reached its own end: take the terminal back out and run it there.
     fn reached(&mut self, outcome: Outcome) -> Ended {
         match self.ending.take() {

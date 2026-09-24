@@ -3068,9 +3068,13 @@ fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
     drop(Occupied {
         node: &node,
         slot: Arc::clone(&slot),
+        arrived: Arrived::at(EPOCH * 1_000, 7),
         reached_end: false,
     });
-    assert!(slot.is_marked(), "the guard MARKS the slot it could not end");
+    assert!(
+        slot.is_marked(),
+        "the guard MARKS the slot it could not end"
+    );
     assert!(
         node.inflight.get(key).is_some(),
         "and leaves it in the table, where the sweep can see it"
@@ -3131,6 +3135,7 @@ fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
     drop(Occupied {
         node: &node,
         slot: Arc::clone(&slot),
+        arrived: Arrived::at(EPOCH * 1_000, 8),
         reached_end: true,
     });
     assert!(!slot.is_marked());

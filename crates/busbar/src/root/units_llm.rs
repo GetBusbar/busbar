@@ -251,6 +251,12 @@ pub struct LlmNode {
     /// marked for the sweep (see [`Occupied`]), and the sweep only walks the table when there is
     /// something marked in it, so the ordinary arrival pays one atomic read and nothing more.
     marked: AtomicU64,
+    /// The ARRIVAL of every unit whose slot the drop guard marked, by key, until the sweep takes it.
+    ///
+    /// What the sweep posts has to land where the unit's own exit would have posted it: the window
+    /// it arrived in, and the arrival reading that — with the balance and the journal's
+    /// incarnation — names the unit on the chain and closes the hold its entry opened there.
+    lost: Mutex<HashMap<UnitKey, Arrived>>,
     /// THE NODE'S MONOTONIC CLOCK, for the second stamp on every audit record and every posting
     /// this node writes: a counter that only ever goes up, whatever the wall clock does.
     ///
@@ -350,6 +356,7 @@ impl LlmNode {
             }),
             next_key: AtomicU64::new(1),
             marked: AtomicU64::new(0),
+            lost: Mutex::new(HashMap::new()),
             mono: AtomicU64::new(0),
             // THE PRODUCTION HALF, which awaits the leg it is handed and returns that leg's own
             // value. Composed here because composing is what this file does: the plane names the
@@ -442,6 +449,35 @@ impl LlmNode {
         );
     }
 
+    /// Open this unit's hold on the book and on the journal, if this node has a book (item 127).
+    ///
+    /// On the same balance, in the same window and under the same arrival reading the exit arm
+    /// will settle it with ([`settle`]), so the posting that ends the unit closes this record on the
+    /// chain. A journal that will not take it is not a refusal: the log retains the record and
+    /// offers it again, and the previous release served through a store hiccup.
+    fn open_on_book(&self, principal: &PrincipalId, arrived: Arrived, reserved: u64) {
+        let Some(book) = self.book.get() else {
+            return;
+        };
+        let key = balance(principal);
+        let at = crate::root::durability::Settling {
+            key: &key,
+            window: busbar_kernel_budget::budget_window(
+                busbar_kernel_budget::window::WINDOW_DAY,
+                arrived.secs(),
+            ),
+            durability: &self.durability_token,
+            step: busbar_contract::caps::StepName::Admit,
+            stamp: crate::root::durability::PostingStamp {
+                rate_card_version: 0,
+                wall: arrived.secs(),
+                mono: arrived.mono(),
+            },
+        };
+        let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
+        let _opened = durability.open_hold(&at, principal, reserved);
+    }
+
     /// THE SWEEP: the second holder of a key to every unit's hold cell, run over the slots the drop
     /// guard MARKED (item 129).
     ///
@@ -494,10 +530,17 @@ impl LlmNode {
             if let Some(end) = end {
                 if let Ok(posted) = end.posted() {
                     let principal = posted.principal().clone();
-                    // The window the unit ENTERED in, read off the slot rather than the clock: a
-                    // unit found gone after midnight was admitted, and is charged, in the day before.
-                    let entered =
-                        Arrived::at(slot.entered(), self.mono.fetch_add(1, Ordering::AcqRel));
+                    // The unit's own ARRIVAL, as its guard recorded it: a unit found gone after
+                    // midnight was admitted, and is charged, in the day before — and the same
+                    // reading closes the hold its entry opened on the journal. Every slot in this
+                    // node's table is marked by that guard, so the fallback — the sweeping arrival's
+                    // own reading — is an answer for a slot nothing on this node could have marked.
+                    let entered = self
+                        .lost
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remove(&slot.key())
+                        .unwrap_or(now);
                     let card = crate::root::kernel::ROOT_CARD.pin();
                     self.settle_end(
                         &principal,
@@ -513,6 +556,10 @@ impl LlmNode {
                     );
                 }
             }
+            self.lost
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&slot.key());
             self.inflight.remove(slot.key());
             swept += 1;
         }
@@ -614,6 +661,11 @@ impl LlmNode {
 
         let hold =
             busbar_kernel::inflight::arrival_hold(&self.kernel, &self.door, principal.clone());
+        // What this unit reserves, read off the hold it enters the table with. The door on this
+        // plane opens its own hold at ZERO (busbar-llm `unit/admit.rs`), so the arrival hold's
+        // figure is the unit's reservation for its whole life; a door that reserved would be the
+        // place to journal the difference.
+        let reserved = hold.reserved();
         let entered = self.inflight.insert(busbar_kernel::inflight::Enter {
             key,
             origin: OriginKind::Client,
@@ -638,9 +690,14 @@ impl LlmNode {
                 // how many units this node has in flight, so the one thing that must not depend on
                 // the unit finishing is giving the slot back — and a client that hangs up is exactly
                 // the case where it does not finish.
+                // THE HOLD, ON THE JOURNAL, before the unit runs (item 127): what this unit holds
+                // is written down now, so a node killed mid-unit leaves a record the next boot
+                // recovers and posts rather than a hold that only ever existed in memory.
+                self.open_on_book(&principal, arrived, reserved);
                 let mut occupied = Occupied {
                     node: self,
                     slot: Arc::clone(&slot),
+                    arrived,
                     reached_end: false,
                 };
                 let ctx = UnitCtx {
@@ -1091,6 +1148,8 @@ impl Drop for LateBody {
 struct Occupied<'n> {
     node: &'n LlmNode,
     slot: Arc<busbar_kernel::inflight::UnitSlot>,
+    /// The unit's arrival, handed to the sweep with the mark.
+    arrived: Arrived,
     /// Set once the unit's end has been reached and settled on the ordinary path.
     reached_end: bool,
 }
@@ -1100,6 +1159,11 @@ impl Drop for Occupied<'_> {
         if self.reached_end {
             self.node.inflight.remove(self.slot.key());
         } else {
+            self.node
+                .lost
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(self.slot.key(), self.arrived);
             self.slot.mark();
             self.node.marked.fetch_add(1, Ordering::AcqRel);
         }
