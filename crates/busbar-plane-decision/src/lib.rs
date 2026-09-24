@@ -33,8 +33,8 @@
 //! `codec.rs`, and neither `state` nor `answers` is on that list. The body is still forwarded
 //! byte-identically (the point of a passthrough dialect), but nothing this plane READS — no fact,
 //! no record leg, no content fact — can ever carry those bytes, because it never looked at them.
-//! `tests/pii_witness.rs` (mirrored in `src/tests`) drives a fixture whose body echoes both and
-//! asserts no fact this plane emits contains either value.
+//! `tests/jev.rs::pii_witness_never_surfaces_state_or_answers_in_any_fact` drives a fixture whose
+//! body echoes both and asserts no fact this plane emits contains either value.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -53,9 +53,14 @@ use busbar_contract::plugin::{AbiVersion, Kind, Plugin};
 /// One configured decision provider this plane may name.
 ///
 /// Every string is borrowed for the life of the program, because a plane's declarations are read at
-/// registration and sealed. Configured names reach here through the seam that says so:
-/// [`busbar_contract::ids::Registration`]. The composition root builds one at boot, interns every
-/// config-derived key through it exactly once, and hands over names that outlive it.
+/// registration and sealed. The seam a configured name must reach here through is
+/// [`busbar_contract::ids::Registration`]: whoever builds this plane from a `decisions:` block
+/// interns every config-derived key through it exactly once and hands over names that outlive it.
+///
+/// Nothing does that yet. The composition root (`busbar/src/root/plane_decision.rs`) installs this
+/// plane's identity and config seam and builds no `DecisionPlane` today — its `build` is `None` —
+/// so outside this crate's own tests no `DecisionProvider` is constructed and no request reaches
+/// the plane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DecisionProvider {
     /// The name the operator gave this provider, and the resource the scope unit judges.
@@ -117,3 +122,7 @@ impl Plugin for DecisionPlane {
         AbiVersion(1)
     }
 }
+
+#[cfg(test)]
+#[path = "tests/lib.rs"]
+mod tests;

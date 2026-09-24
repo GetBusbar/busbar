@@ -52,7 +52,8 @@ pub const CONTENT_FACTS: &[&str] = &[FACT_OP, FACT_HAS_ERROR, FACT_USAGE_UNITS];
 /// The literal member names this plane forbids itself from ever resolving a pointer at.
 ///
 /// Not read anywhere in this crate's decode/encode path — listed here once, so the PII witness test
-/// (`tests/pii_witness.rs`) and a reviewer both have one place that names the two members a
+/// (`tests/jev.rs::pii_witness_never_surfaces_state_or_answers_in_any_fact`) and a reviewer both
+/// have one place that names the two members a
 /// `decision` plane's whole design exists to keep off the fact/record surface.
 pub const NEVER_READ_MEMBERS: &[&str] = &["state", "answers"];
 
