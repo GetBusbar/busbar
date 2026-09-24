@@ -332,12 +332,12 @@ fn the_arrival_door_opens_a_hold_that_reserves_nothing() {
 }
 
 /// The whole assembly, end to end: a kernel, a durability stack that opened nothing, the
-/// configured breaker ladders, the configured metering policy and a scope policy that permits
-/// only what it was told about — composed into the one type the loop reaches a unit through.
+/// configured breaker ladders and a scope policy that permits only what it was told about —
+/// composed into the one type the loop reaches a unit through.
 ///
 /// Every argument is a value configuration decided. That is the shape that makes it impossible
 /// to build these units and forget one: there is no constructor that fills a policy in from a
-/// default, so a deployment that never read its rate cards does not compile.
+/// default.
 #[test]
 fn the_units_assemble_from_values_configuration_decided() {
     let durability = crate::root::durability::build(
@@ -353,7 +353,6 @@ fn the_units_assemble_from_values_configuration_decided() {
         AuthChain::new(Vec::new(), false),
         durability,
         crate::root::adapters::BreakerPolicy::new(),
-        crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
         crate::root::policy::ScopePolicy::new(),
         #[cfg(feature = "root-admin")]
         crate::root::units_admin::AdminBinding::new(std::sync::Arc::new(
@@ -374,6 +373,40 @@ fn the_units_assemble_from_values_configuration_decided() {
     assert!(!durability.on_disk());
     assert!(durability.ledger.is_dual_writing());
     assert!(units.scope_policy.is_empty());
+}
+
+/// **The units carry no metering policy, and the root has no pool-expansion boot check** (items
+/// 239/246).
+///
+/// `ProductionUnits.meter_policy` was built from `MeterPolicyConfig::default()` at its one
+/// production site and read by nothing, and `pools_without_expansion` — the check written to guard
+/// it — had no production caller. Neither priced anything: what prices a unit is the rate card,
+/// through the one function Tally governs. A policy field on the assembly is a second place a
+/// reader would look for how a unit is priced, and it would answer with an empty default. So the
+/// assembly holds none, and the check that guarded it is gone with it.
+#[test]
+fn the_units_carry_no_metering_policy_and_the_root_names_no_pool_check() {
+    fn code(source: &str) -> String {
+        source
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    let kernel = code(include_str!("../kernel.rs"));
+    let start = kernel
+        .find("pub struct ProductionUnits {")
+        .expect("the assembly is declared in kernel.rs");
+    let body = &kernel[start..];
+    let body = &body[..body.find("\n}").expect("the struct closes")];
+    assert!(
+        !body.contains("meter_policy") && !body.contains("MeterPolicyHandle"),
+        "ProductionUnits carries a metering policy again"
+    );
+    assert!(
+        !code(include_str!("../policy.rs")).contains("fn pools_without_expansion"),
+        "the root grew its unread pool-expansion check back"
+    );
 }
 
 /// The breaker unit the root assembles reports an unrecognized `error_map` class rather than
@@ -415,7 +448,6 @@ fn an_unrecognized_error_map_class_reaches_the_roots_sink() {
         AuthChain::new(Vec::new(), false),
         durability,
         crate::root::adapters::BreakerPolicy::new(),
-        crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
         crate::root::policy::ScopePolicy::new(),
         #[cfg(feature = "root-admin")]
         crate::root::units_admin::AdminBinding::new(Arc::new(

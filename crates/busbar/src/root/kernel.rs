@@ -611,9 +611,6 @@ pub struct ProductionUnits {
     /// no read can see a unit half-settled, and no reader can write, because what crosses the seam
     /// is a value and never the ledger.
     pub durability: Arc<Mutex<crate::root::durability::Durability>>,
-    /// What the usage unit meters against — built from the configured rate cards, never from the
-    /// unit's own default, because an empty lane expansion disputes every pooled posting.
-    pub meter_policy: crate::root::policy::MeterPolicyHandle,
     /// What the scope unit reads at Approve. Silence is a refusal.
     pub scope_policy: crate::root::policy::ScopePolicy,
     /// The admin plane's bindings: the seam an operation's body is reached through, and the table
@@ -655,8 +652,10 @@ impl ProductionUnits {
     // The argument list IS the point, and shortening it would cost the property the doc comment
     // above claims. Every parameter is one decision configuration made; bundling them into a struct
     // would give that struct a `Default`, and a `Default` is exactly how a deployment ends up with a
-    // metering policy it never read its rate cards for. A long list that cannot be built wrong beats
-    // a short one that can.
+    // value it never read its configuration for. A long list that cannot be built wrong beats a
+    // short one that can. There is no metering policy among them (items 239/246): nothing the loop
+    // reaches prices through one — what prices is the rate card, through the one function Tally
+    // governs.
     #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
@@ -664,7 +663,6 @@ impl ProductionUnits {
         auth_chain: AuthChain,
         durability: crate::root::durability::Durability,
         breaker_policy: crate::root::adapters::BreakerPolicy,
-        meter_policy: crate::root::policy::MeterPolicyHandle,
         scope_policy: crate::root::policy::ScopePolicy,
         #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
         store: Arc<dyn busbar_contract::verb_store::Store + Send + Sync>,
@@ -674,7 +672,6 @@ impl ProductionUnits {
             auth_chain,
             Arc::new(Mutex::new(durability)),
             breaker_policy,
-            meter_policy,
             scope_policy,
             #[cfg(feature = "root-admin")]
             admin,
@@ -695,7 +692,6 @@ impl ProductionUnits {
         auth_chain: AuthChain,
         durability: Arc<Mutex<crate::root::durability::Durability>>,
         breaker_policy: crate::root::adapters::BreakerPolicy,
-        meter_policy: crate::root::policy::MeterPolicyHandle,
         scope_policy: crate::root::policy::ScopePolicy,
         #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
         store: Arc<dyn busbar_contract::verb_store::Store + Send + Sync>,
@@ -722,7 +718,6 @@ impl ProductionUnits {
             trust: Trust,
             arrival_door: AdmissionDoor,
             durability,
-            meter_policy,
             scope_policy,
             #[cfg(feature = "root-admin")]
             admin,
@@ -749,9 +744,8 @@ impl ProductionUnits {
     ///
     /// One plane has been switched onto the loop, and this is the composition for it: the journal is
     /// memory-buffered because the administrative surface writes no money and probes no directory,
-    /// the metering policy is the empty one because the plane declares no meter classes to price
-    /// against, and the store is the unconfigured one because no admin operation this root drives
-    /// reaches the disaster-recovery subset. Every one of those is a decision this constructor
+    /// and the store is the unconfigured one because no admin operation this root drives reaches
+    /// the disaster-recovery subset. Both of those is a decision this constructor
     /// MAKES rather than defaults into, and each is the reason the corresponding argument of
     /// [`ProductionUnits::new`] is not asked for here.
     ///
@@ -816,7 +810,6 @@ impl ProductionUnits {
             AuthChain::new(Vec::new(), false),
             Arc::clone(&durability),
             crate::root::adapters::BreakerPolicy::new(),
-            crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
             crate::root::policy::ScopePolicy::new(),
             crate::root::units_admin::AdminBinding::new(dispatch),
             Arc::new(RefusingStore),

@@ -125,35 +125,6 @@ fn a_class_tightening_reaches_the_unit_and_a_loosening_is_ignored() {
     );
 }
 
-/// The boot check: a configured pool with no expansion is nameable while the pool is still in
-/// scope, rather than turning up later as a disputed posting that names nothing.
-#[test]
-fn a_pool_with_no_expansion_is_named_at_boot() {
-    let cfg = MeterPolicyConfig {
-        pools: vec![
-            PoolExpansion {
-                pool: POOL.into(),
-                lanes: vec![LANE_A.into()],
-            },
-            PoolExpansion {
-                pool: "pool-empty".into(),
-                lanes: vec![],
-            },
-        ],
-        ..MeterPolicyConfig::default()
-    };
-    let policy = build(&cfg);
-    assert_eq!(pools_without_expansion(&cfg, &policy), vec!["pool-empty"]);
-}
-
-/// And a fully configured deployment names none.
-#[test]
-fn a_configured_deployment_has_no_unexpanded_pool() {
-    let cfg = a_configured_card();
-    let policy = build(&cfg);
-    assert!(pools_without_expansion(&cfg, &policy).is_empty());
-}
-
 /// **The hazard**, on the transport axis: a client built from the crate's own `Default` ignores
 /// what the operator wrote. A deployment that caps request bodies at 1 KiB gets a transport that
 /// buffers 32 MiB, and the door and the transport then disagree about which bodies exist. Every
