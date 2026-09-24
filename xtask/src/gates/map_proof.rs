@@ -96,7 +96,9 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::ctx::{Ctx, Overlay};
-use crate::gates::{prove_red, prove_rows_green, Gate, Report};
+use crate::gates::{
+    prove_red, prove_red_by_configuration, prove_rows_green, CasePlan, Gate, Report,
+};
 use crate::ledger::{Row, Verdict as GateVerdict};
 
 // ---------------------------------------------------------------------------------------------
@@ -130,6 +132,7 @@ fn row_reproduces(slug: &str) -> String {
 // ---------------------------------------------------------------------------------------------
 
 /// One source document, with the floors that prove the extractor reached it.
+#[derive(Clone)]
 pub struct Source {
     pub path: &'static str,
     pub slug: &'static str,
@@ -1352,9 +1355,14 @@ impl Census {
 
 /// Run the whole corpus and score it.
 pub fn census(cx: &Ctx) -> Census {
+    census_over(cx, CORPUS)
+}
+
+/// [`census`] over an explicit corpus table — the shipped [`CORPUS`], or a selftest's fixture table.
+fn census_over(cx: &Ctx, corpus: &[Source]) -> Census {
     let mut out = Census::default();
     let deadline = Instant::now() + TOTAL_BUDGET;
-    for src in CORPUS {
+    for src in corpus {
         let text = match cx.read(src.path) {
             Ok(t) => t,
             Err(e) => {
@@ -1629,223 +1637,246 @@ pub struct MapProofGate;
 
 impl MapProofGate {
     fn rows(cx: &Ctx) -> Vec<Row> {
-        let c = census(cx);
-        let mut rows = Vec::new();
-
-        // --- extraction ----------------------------------------------------------------------
-        let mut short = Vec::new();
-        let mut total_expect = 0usize;
-        for src in CORPUS {
-            let found = c.extraction.iter().find(|(p, ..)| *p == src.path);
-            match found {
-                None => short.push(format!("{}: not measured at all", src.path)),
-                Some((_, _, _, Some(err))) => {
-                    short.push(format!("{}: unreadable — {err}", src.path))
-                }
-                Some((_, cmds, exps, None)) => {
-                    total_expect += *exps;
-                    if *cmds < src.floor_commands {
-                        short.push(format!(
-                            "{}: {cmds} fenced command(s), floor {}",
-                            src.path, src.floor_commands
-                        ));
-                    }
-                    if *exps < src.floor_expectations {
-                        short.push(format!(
-                            "{}: {exps} bound expectation(s), floor {}",
-                            src.path, src.floor_expectations
-                        ));
-                    }
-                }
-            }
-        }
-        if total_expect < CORPUS_EXPECTATION_FLOOR {
-            short.push(format!(
-                "corpus-wide: {total_expect} bound expectation(s), floor {CORPUS_EXPECTATION_FLOOR}"
-            ));
-        }
-        rows.push(if short.is_empty() {
-            Row::pass(
-                ROW_EXTRACTION,
-                "the extractor reached every map-corpus document",
-                format!(
-                    "{} document(s), {} fenced command(s), {total_expect} bound `# ->` \
-                     expectation(s); every per-document floor met",
-                    CORPUS.len(),
-                    c.extraction.iter().map(|(_, n, ..)| n).sum::<usize>()
-                ),
-            )
-        } else {
-            Row::fail(
-                ROW_EXTRACTION,
-                "the map-proof extractor came back short — a parser that matches nothing reads \
-                 exactly like a corpus that reproduces",
-                listing(&short, 8),
-            )
-        });
-
-        // --- floored ------------------------------------------------------------------------
-        // A floor of zero passes for every possible tree. Name those documents out loud rather
-        // than letting the extraction row report "every per-document floor met" over them.
-        let unfloored: Vec<String> = CORPUS
-            .iter()
-            .filter(|src| src.floor_expectations == 0)
-            .map(|src| {
-                let bound = c
-                    .extraction
-                    .iter()
-                    .find(|(p, ..)| *p == src.path)
-                    .map(|(_, _, e, _)| *e)
-                    .unwrap_or(0);
-                format!(
-                    "{}: floor_expectations 0 (unenforceable), binds {bound}",
-                    src.path
-                )
-            })
-            .collect();
-        rows.push(if unfloored.is_empty() {
-            Row::pass(
-                ROW_FLOORED,
-                "every map-corpus document carries an enforceable bound-expectation floor",
-                format!(
-                    "{} document(s), every floor_expectations >= 1",
-                    CORPUS.len()
-                ),
-            )
-        } else {
-            Row::fail(
-                ROW_FLOORED,
-                "a bound-expectation floor of zero cannot produce a NO — these documents print \
-                 commands and bind none of their numbers, and the extraction row calls that a pass",
-                listing(&unfloored, 8),
-            )
-        });
-
-        // --- bound ---------------------------------------------------------------------------
-        let orphans: Vec<String> = c
-            .orphans
-            .iter()
-            .map(|(d, l, p)| {
-                format!(
-                    "{d}:{l} `# -> {}` with no command above it",
-                    truncate(p, 50)
-                )
-            })
-            .collect();
-        let unbound: Vec<String> = c
-            .unbound_figures
-            .iter()
-            .map(|(d, l, n)| format!("{d}:{l} **{n}**"))
-            .collect();
-        let bound_detail = format!(
-            "{} bold figure(s) printed across the corpus; {} have no `# ->` command that \
-             produces them; {} orphan arrow(s). Unbound: {}",
-            c.bold_figures,
-            c.unbound_figures.len(),
-            c.orphans.len(),
-            listing(&unbound, 6)
-        );
-        // THE ROW USED TO BE DECIDED BY `orphans` ALONE.
-        //
-        // `unbound_figures` was computed, formatted into the detail, and never judged — so the
-        // headline this row exists to report (two thirds of the corpus's printed figures have no
-        // command behind them) could not turn it red. The count appeared only inside a `format!`,
-        // which reads exactly like a measurement and asserts nothing.
-        //
-        // NO CEILING IS PINNED HERE ON PURPOSE. A ceiling set to today's count is the
-        // `BACKWARDS = 33` trap one directory over: the rule then passes forever at whatever
-        // number happened to be true the day somebody wrote it down. A figure printed in bold with
-        // no command that produces it is unverified, and the honest verdict is that the row is red
-        // until every one of them is bound or struck.
-        let bound_fail = !orphans.is_empty() || !unbound.is_empty();
-        rows.push(if !bound_fail {
-            Row::pass(
-                ROW_BOUND,
-                "every printed figure is produced by a command, and every `# ->` has one above it",
-                bound_detail,
-            )
-        } else {
-            let mut why: Vec<String> = Vec::new();
-            if !orphans.is_empty() {
-                why.push(format!("{} orphan arrow(s)", orphans.len()));
-            }
-            if !unbound.is_empty() {
-                why.push(format!("{} unbound figure(s)", unbound.len()));
-            }
-            Row::fail(
-                ROW_BOUND,
-                "printed figures have no command that produces them — a bold number nobody can \
-                 re-derive is a claim, not a measurement",
-                format!("{} — {bound_detail}", why.join(", ")),
-            )
-        });
-
-        // --- runnable / unrefused / countable -------------------------------------------------
-        for (id, title, pass_title, pick) in [
-            (
-                ROW_RUNNABLE,
-                "a bound command could not execute — an unrunnable proof is an unproven claim",
-                "every bound command executed",
-                0u8,
-            ),
-            (
-                ROW_UNREFUSED,
-                "this gate refused to run a bound command — the claim behind it is unverified",
-                "no bound command was refused by the safety screen",
-                1,
-            ),
-            (
-                ROW_COUNTABLE,
-                "a `# ->` payload is prose this gate cannot compare — the figure beside it is \
-                 unchecked",
-                "every `# ->` payload is in the machine-checkable convention",
-                2,
-            ),
-        ] {
-            let hits: Vec<String> = c
-                .scored
-                .iter()
-                .filter(|s| {
-                    matches!(
-                        (pick, &s.verdict),
-                        (0, Verdict::Unrunnable { .. })
-                            | (1, Verdict::Refused { .. })
-                            | (2, Verdict::Uncheckable { .. })
-                    )
-                })
-                .map(Scored::one_line)
-                .collect();
-            rows.push(if hits.is_empty() {
-                Row::pass(
-                    id,
-                    pass_title,
-                    format!("{} bound command(s) scored", c.scored.len()),
-                )
-            } else {
-                Row::fail(
-                    id,
-                    title,
-                    format!(
-                        "{} of {}: {}",
-                        hits.len(),
-                        c.scored.len(),
-                        listing(&hits, 6)
-                    ),
-                )
-            });
-        }
-
-        // --- reproduces, per document ---------------------------------------------------------
-        // Sharded by document on purpose. The corpus-wide claim is the conjunction of these, and
-        // a document that is clean is a row that can be driven GREEN -> RED by a plant — which is
-        // the only way `prove_red` accepts a proof. A single global row would be red on arrival
-        // and every plant against it would honestly report `Impossible`.
-        for src in CORPUS {
-            let mine: Vec<&Scored> = c.scored.iter().filter(|s| s.slug == src.slug).collect();
-            rows.push(reproduces_row(src, &mine));
-        }
-        rows
+        rows_over(cx, CORPUS)
     }
+}
+
+/// Every row, over an explicit corpus table. The shipped gate passes [`CORPUS`]; the selftest's
+/// floored case passes a fixture table, because that row's subject is the TABLE and not the tree.
+fn rows_over(cx: &Ctx, corpus: &[Source]) -> Vec<Row> {
+    let c = census_over(cx, corpus);
+    let mut rows = Vec::new();
+
+    // --- extraction ----------------------------------------------------------------------
+    let mut short = Vec::new();
+    let mut total_expect = 0usize;
+    for src in corpus {
+        let found = c.extraction.iter().find(|(p, ..)| *p == src.path);
+        match found {
+            None => short.push(format!("{}: not measured at all", src.path)),
+            Some((_, _, _, Some(err))) => short.push(format!("{}: unreadable — {err}", src.path)),
+            Some((_, cmds, exps, None)) => {
+                total_expect += *exps;
+                if *cmds < src.floor_commands {
+                    short.push(format!(
+                        "{}: {cmds} fenced command(s), floor {}",
+                        src.path, src.floor_commands
+                    ));
+                }
+                if *exps < src.floor_expectations {
+                    short.push(format!(
+                        "{}: {exps} bound expectation(s), floor {}",
+                        src.path, src.floor_expectations
+                    ));
+                }
+            }
+        }
+    }
+    if total_expect < CORPUS_EXPECTATION_FLOOR {
+        short.push(format!(
+            "corpus-wide: {total_expect} bound expectation(s), floor {CORPUS_EXPECTATION_FLOOR}"
+        ));
+    }
+    rows.push(if short.is_empty() {
+        Row::pass(
+            ROW_EXTRACTION,
+            "the extractor reached every map-corpus document",
+            format!(
+                "{} document(s), {} fenced command(s), {total_expect} bound `# ->` \
+                 expectation(s); every per-document floor met",
+                corpus.len(),
+                c.extraction.iter().map(|(_, n, ..)| n).sum::<usize>()
+            ),
+        )
+    } else {
+        Row::fail(
+            ROW_EXTRACTION,
+            "the map-proof extractor came back short — a parser that matches nothing reads \
+             exactly like a corpus that reproduces",
+            listing(&short, 8),
+        )
+    });
+
+    // --- floored ------------------------------------------------------------------------
+    // A floor of zero passes for every possible tree. Name those documents out loud rather
+    // than letting the extraction row report "every per-document floor met" over them.
+    let unfloored: Vec<String> = corpus
+        .iter()
+        .filter(|src| src.floor_expectations == 0)
+        .map(|src| {
+            let bound = c
+                .extraction
+                .iter()
+                .find(|(p, ..)| *p == src.path)
+                .map(|(_, _, e, _)| *e)
+                .unwrap_or(0);
+            format!(
+                "{}: floor_expectations 0 (unenforceable), binds {bound}",
+                src.path
+            )
+        })
+        .collect();
+    rows.push(if unfloored.is_empty() {
+        Row::pass(
+            ROW_FLOORED,
+            "every map-corpus document carries an enforceable bound-expectation floor",
+            format!(
+                "{} document(s), every floor_expectations >= 1",
+                corpus.len()
+            ),
+        )
+    } else {
+        Row::fail(
+            ROW_FLOORED,
+            "a bound-expectation floor of zero cannot produce a NO — these documents print \
+             commands and bind none of their numbers, and the extraction row calls that a pass",
+            listing(&unfloored, 8),
+        )
+    });
+
+    // --- bound ---------------------------------------------------------------------------
+    let orphans: Vec<String> = c
+        .orphans
+        .iter()
+        .map(|(d, l, p)| {
+            format!(
+                "{d}:{l} `# -> {}` with no command above it",
+                truncate(p, 50)
+            )
+        })
+        .collect();
+    let unbound: Vec<String> = c
+        .unbound_figures
+        .iter()
+        .map(|(d, l, n)| format!("{d}:{l} **{n}**"))
+        .collect();
+    // THE ORPHANS ARE NAMED, not only counted. The list was built above and then used for its
+    // `is_empty()` alone, so a red on this row said "1 orphan arrow(s)" and never said WHERE —
+    // the selftest's orphan plant, once it ran over a baseline where this row is green, found
+    // exactly that.
+    let bound_detail = format!(
+        "{} bold figure(s) printed across the corpus; {} have no `# ->` command that \
+         produces them; {} orphan arrow(s). Orphans: {}. Unbound: {}",
+        c.bold_figures,
+        c.unbound_figures.len(),
+        c.orphans.len(),
+        listing(&orphans, 6),
+        listing(&unbound, 6)
+    );
+    // THE ROW USED TO BE DECIDED BY `orphans` ALONE.
+    //
+    // `unbound_figures` was computed, formatted into the detail, and never judged — so the
+    // headline this row exists to report (two thirds of the corpus's printed figures have no
+    // command behind them) could not turn it red. The count appeared only inside a `format!`,
+    // which reads exactly like a measurement and asserts nothing.
+    //
+    // NO CEILING IS PINNED HERE ON PURPOSE. A ceiling set to today's count is the
+    // `BACKWARDS = 33` trap one directory over: the rule then passes forever at whatever
+    // number happened to be true the day somebody wrote it down. A figure printed in bold with
+    // no command that produces it is unverified, and the honest verdict is that the row is red
+    // until every one of them is bound or struck.
+    let bound_fail = !orphans.is_empty() || !unbound.is_empty();
+    rows.push(if !bound_fail {
+        Row::pass(
+            ROW_BOUND,
+            "every printed figure is produced by a command, and every `# ->` has one above it",
+            bound_detail,
+        )
+    } else {
+        let mut why: Vec<String> = Vec::new();
+        if !orphans.is_empty() {
+            why.push(format!("{} orphan arrow(s)", orphans.len()));
+        }
+        if !unbound.is_empty() {
+            why.push(format!("{} unbound figure(s)", unbound.len()));
+        }
+        Row::fail(
+            ROW_BOUND,
+            "printed figures have no command that produces them — a bold number nobody can \
+             re-derive is a claim, not a measurement",
+            format!("{} — {bound_detail}", why.join(", ")),
+        )
+    });
+
+    // --- runnable / unrefused / countable -------------------------------------------------
+    for (id, title, pass_title, pick) in [
+        (
+            ROW_RUNNABLE,
+            "a bound command could not execute — an unrunnable proof is an unproven claim",
+            "every bound command executed",
+            0u8,
+        ),
+        (
+            ROW_UNREFUSED,
+            "this gate refused to run a bound command — the claim behind it is unverified",
+            "no bound command was refused by the safety screen",
+            1,
+        ),
+        (
+            ROW_COUNTABLE,
+            "a `# ->` payload is prose this gate cannot compare — the figure beside it is \
+             unchecked",
+            "every `# ->` payload is in the machine-checkable convention",
+            2,
+        ),
+    ] {
+        let hits: Vec<String> = c
+            .scored
+            .iter()
+            .filter(|s| {
+                matches!(
+                    (pick, &s.verdict),
+                    (0, Verdict::Unrunnable { .. })
+                        | (1, Verdict::Refused { .. })
+                        | (2, Verdict::Uncheckable { .. })
+                )
+            })
+            .map(Scored::one_line)
+            .collect();
+        rows.push(if hits.is_empty() {
+            Row::pass(
+                id,
+                pass_title,
+                format!("{} bound command(s) scored", c.scored.len()),
+            )
+        } else {
+            Row::fail(
+                id,
+                title,
+                format!(
+                    "{} of {}: {}",
+                    hits.len(),
+                    c.scored.len(),
+                    listing(&hits, 6)
+                ),
+            )
+        });
+    }
+
+    // --- reproduces, per document ---------------------------------------------------------
+    // Sharded by document on purpose. The corpus-wide claim is the conjunction of these, and
+    // a document that is clean is a row that can be driven GREEN -> RED by a plant — which is
+    // the only way `prove_red` accepts a proof. A single global row would be red on arrival
+    // and every plant against it would honestly report `Impossible`.
+    for src in corpus {
+        let mine: Vec<&Scored> = c.scored.iter().filter(|s| s.slug == src.slug).collect();
+        rows.push(reproduces_row(src, &mine));
+    }
+    rows
+}
+
+/// The owed row ids over one corpus table.
+fn owed_over(corpus: &[Source]) -> Vec<String> {
+    let mut v = vec![
+        ROW_EXTRACTION.to_string(),
+        ROW_FLOORED.to_string(),
+        ROW_BOUND.to_string(),
+        ROW_RUNNABLE.to_string(),
+        ROW_UNREFUSED.to_string(),
+        ROW_COUNTABLE.to_string(),
+    ];
+    v.extend(corpus.iter().map(|s| row_reproduces(s.slug)));
+    v
 }
 
 /// `map-proof:reproduces/<slug>` for one document, from that document's scored proofs.
@@ -1919,16 +1950,7 @@ impl Gate for MapProofGate {
     }
 
     fn owed(&self) -> Vec<String> {
-        let mut v = vec![
-            ROW_EXTRACTION.to_string(),
-            ROW_FLOORED.to_string(),
-            ROW_BOUND.to_string(),
-            ROW_RUNNABLE.to_string(),
-            ROW_UNREFUSED.to_string(),
-            ROW_COUNTABLE.to_string(),
-        ];
-        v.extend(CORPUS.iter().map(|s| row_reproduces(s.slug)));
-        v
+        owed_over(CORPUS)
     }
 
     fn run(&self, cx: &Ctx) -> GateVerdict {
@@ -1937,7 +1959,6 @@ impl Gate for MapProofGate {
 
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::new();
-        let c = census(cx);
 
         // THE GREEN ARM IS NARROWED, and it has to be. `prove_green` asks whether the WHOLE gate
         // is green, and this gate is red on arrival because the corpus it measures is red — which
@@ -1958,31 +1979,31 @@ impl Gate for MapProofGate {
             clean,
         ));
 
-        // RED, per document: A PRINTED FIGURE THAT DOES NOT REPRODUCE, named with BOTH numbers.
+        // THE RED ARMS PLANT INTO A FIXTURE CORPUS, NOT INTO THE REAL ONE (item 89).
         //
-        // Wherever the document already has a figure that re-derives, the plant changes THAT
-        // figure and nothing else — the command stays exactly as the document wrote it, so the
-        // planted red is "the document now claims a number the tree does not return" and nothing
-        // more. It also leaves the executed script byte-identical, so the plant costs a cache
-        // lookup rather than a re-run of the corpus.
-        // A document with NO re-deriving figure of its own (one that prints no commands, or
-        // whose commands all failed) still owes a red case, or its row could be deleted with the
-        // battery still green. There the plant appends a figure that cannot come back.
-        let plants: Vec<(&Source, String)> = CORPUS
-            .iter()
-            .map(|src| {
-                let text = plant_wrong_figure(cx, &c, src).unwrap_or_else(|| {
-                    let base = cx.read(src.path).unwrap_or_default();
-                    format!("{base}\n\n```sh\necho 7   # -> 987654\n```\n")
-                });
-                (src, text)
-            })
-            .collect();
-        for (src, text) in &plants {
-            let mut ov = Overlay::new();
-            ov.set(src.path, text.clone());
+        // Every red arm below used to plant into the real corpus documents, and on this tree most
+        // of their rows are RED ON ARRIVAL — `reproduces/map-proof` has figures that do not
+        // reproduce, `reproduces/done-readout` and `reproduces/ledger` bind nothing, `runnable`,
+        // `unrefused`, `countable` and `bound` carry the corpus's own findings. A plant into a row
+        // that is already red proves nothing, and the harness said so: nine cases were PROOF
+        // IMPOSSIBLE. The real reds are the corpus's debt and stay RED on `gate`; what the
+        // selftest owes is a baseline on which each row is GREEN, so the plant's red is the plant's.
+        //
+        // So the baseline is the SAME GATE over the SAME paths, with every corpus document replaced
+        // by a synthetic one that meets its floors and re-derives every figure it binds. Each case
+        // then plants ONE defect into that fixture. The rule code is untouched — only the tree the
+        // rule reads is chosen so the question can be asked.
+        let fixture = fixture_corpus();
+        let base = cx.with_overlay(fixture.clone());
+
+        // RED, per document: A PRINTED FIGURE THAT DOES NOT REPRODUCE, named with BOTH numbers.
+        // Only the expected value moves; the command stays byte-identical, so the planted red is
+        // "the document now claims a number the tree does not return" and nothing more.
+        for src in CORPUS {
+            let mut ov = fixture.clone();
+            ov.set(src.path, spoil_first_figure(&fixture_doc(src)));
             report.push(prove_red(
-                cx,
+                &base,
                 self,
                 format!(
                     "a figure in {} that does not reproduce is named with both numbers",
@@ -1990,20 +2011,20 @@ impl Gate for MapProofGate {
                 ),
                 &[&row_reproduces(src.slug)],
                 ov,
-                &["does not reproduce"],
+                &["does not reproduce", "the document prints 987654"],
             ));
         }
 
         // RED — AN UNRUNNABLE PROOF. A pin that no longer resolves is a verdict of its own, never
         // a silent skip and never the `0` its dead pipeline prints.
         report.push(prove_red(
-            cx,
+            &base,
             self,
             "a command whose pin no longer resolves is UNRUNNABLE, not the zero its dead pipeline \
              prints",
             &[ROW_RUNNABLE],
             appended(
-                cx,
+                &fixture,
                 target,
                 "git show deadbeefdeadbeefdeadbeefdeadbeefdeadbeef:docs/design/gone.md \
                  | grep -c x   # -> 3",
@@ -2013,28 +2034,23 @@ impl Gate for MapProofGate {
 
         // RED — AN ORPHAN ARROW: a printed expectation with no command behind it.
         report.push(prove_red(
-            cx,
+            &base,
             self,
             "an expectation printed with no command behind it is caught",
             &[ROW_BOUND],
-            {
-                let text = cx.read(target.path).unwrap_or_default();
-                let mut ov = Overlay::new();
-                ov.set(target.path, format!("{text}\n\n```sh\n# -> 4242\n```\n"));
-                ov
-            },
+            appended(&fixture, target, "# -> 4242"),
             &["no command above it"],
         ));
 
         // RED — THE FALSE ZERO IN THE INSTRUMENT ITSELF. A corpus document the extractor comes
         // back empty on is a broken extractor, not a clean document.
         report.push(prove_red(
-            cx,
+            &base,
             self,
             "a corpus document that yields no commands is a broken extractor, not a clean doc",
             &[ROW_EXTRACTION],
             {
-                let mut ov = Overlay::new();
+                let mut ov = fixture.clone();
                 ov.set(target.path, "# nothing here\n");
                 ov
             },
@@ -2043,27 +2059,65 @@ impl Gate for MapProofGate {
 
         // RED — A REFUSED COMMAND. The instrument declining is its own verdict.
         report.push(prove_red(
-            cx,
+            &base,
             self,
             "a command the safety screen refuses is reported, never skipped",
             &[ROW_UNREFUSED],
-            appended(cx, target, "rm -rf /tmp/map-proof-probe   # -> 1"),
+            appended(&fixture, target, "rm -rf /tmp/map-proof-probe   # -> 1"),
             &["REFUSED"],
         ));
 
         // RED — A PROSE EXPECTATION. A figure bound by prose is a figure nobody checked.
         report.push(prove_red(
-            cx,
+            &base,
             self,
             "a `# ->` payload that is prose is reported as unchecked",
             &[ROW_COUNTABLE],
             appended(
-                cx,
+                &fixture,
                 target,
                 "echo hello   # -> roughly what you would expect",
             ),
             &["prose"],
         ));
+
+        // RED — A ZERO FLOOR (item 90: `map-proof:floored` had no RED case at all).
+        //
+        // This row's subject is the [`CORPUS`] TABLE, not the tree: a `floor_expectations` of 0 is
+        // unenforceable whatever the documents say. No overlay can reach a const, so the plant is
+        // the configuration — `prove_red_by_configuration`, the harness's form for exactly this.
+        // The shipped table is RED on this row today (done-readout and ledger carry floor 0; that
+        // is the corpus's debt), so the baseline configuration is the shipped table with every
+        // floor raised to at least 1, and the planted twin puts ONE document back to 0.
+        report.push(CasePlan::new(move || {
+            let floored = TableGate {
+                key: "every-floor-enforceable",
+                corpus: CORPUS
+                    .iter()
+                    .cloned()
+                    .map(|mut s| {
+                        s.floor_expectations = s.floor_expectations.max(1);
+                        s
+                    })
+                    .collect(),
+            };
+            let mut planted = TableGate {
+                key: "one-floor-zero",
+                corpus: floored.corpus.clone(),
+            };
+            let zeroed = &mut planted.corpus[0];
+            zeroed.floor_expectations = 0;
+            let want = format!("{}: floor_expectations 0 (unenforceable)", zeroed.path);
+            prove_red_by_configuration(
+                &base,
+                &floored,
+                &planted,
+                "a corpus document whose bound-expectation floor is 0 is named as unenforceable",
+                &[ROW_FLOORED],
+                &[want.as_str()],
+            )
+            .take()
+        }));
 
         report
     }
@@ -2091,12 +2145,75 @@ fn cheap_target() -> &'static Source {
         .unwrap_or(&CORPUS[0])
 }
 
-/// `target`'s real text with one extra fenced block holding `command`.
-fn appended(cx: &Ctx, target: &'static Source, command: &str) -> Overlay {
-    let text = cx.read(target.path).unwrap_or_default();
-    let mut ov = Overlay::new();
+/// The fixture corpus with `target`'s fixture document carrying one extra fenced block holding
+/// `command`. Every other fixture document is carried over unchanged, because an overlay REPLACES
+/// the one the base context holds rather than layering on it.
+fn appended(fixture: &Overlay, target: &'static Source, command: &str) -> Overlay {
+    let text = fixture_doc(target);
+    let mut ov = fixture.clone();
     ov.set(target.path, format!("{text}\n\n```sh\n{command}\n```\n"));
     ov
+}
+
+/// A SYNTHETIC CORPUS DOCUMENT standing in for `src` in the selftest's fixture corpus: one fenced
+/// block of `echo N   # -> N`, long enough to meet the document's command floor and binding at
+/// least one expectation. Every figure re-derives on any tree, no line is refused or prose, and
+/// the body prints no bold figure — so every row the red arms cover is GREEN over it.
+fn fixture_doc(src: &Source) -> String {
+    let n = src.floor_commands.max(src.floor_expectations).max(1) + 2;
+    let mut out = format!(
+        "# fixture corpus document standing in for {}\n\n```sh\n",
+        src.slug
+    );
+    for i in 1..=n {
+        out.push_str(&format!("echo {i}   # -> {i}\n"));
+    }
+    out.push_str("```\n");
+    out
+}
+
+/// Every [`CORPUS`] path, replaced by its [`fixture_doc`].
+fn fixture_corpus() -> Overlay {
+    let mut ov = Overlay::new();
+    for src in CORPUS {
+        ov.set(src.path, fixture_doc(src));
+    }
+    ov
+}
+
+/// `doc` with its first bound figure changed to one no tree returns; the command is left as is.
+fn spoil_first_figure(doc: &str) -> String {
+    doc.replacen("echo 1   # -> 1\n", "echo 1   # -> 987654\n", 1)
+}
+
+/// THE SAME RULES OVER A DIFFERENT CORPUS TABLE — the one configuration a plant cannot reach,
+/// because [`CORPUS`] is a const. Only the floored case builds one; the shipped gate is
+/// [`MapProofGate`] and reads [`CORPUS`] and nothing else.
+struct TableGate {
+    key: &'static str,
+    corpus: Vec<Source>,
+}
+
+impl Gate for TableGate {
+    fn name(&self) -> &'static str {
+        "map-proof"
+    }
+
+    fn baseline_key(&self) -> Option<String> {
+        Some(format!("map-proof/table:{}", self.key))
+    }
+
+    fn owed(&self) -> Vec<String> {
+        owed_over(&self.corpus)
+    }
+
+    fn run(&self, cx: &Ctx) -> GateVerdict {
+        GateVerdict::of(rows_over(cx, &self.corpus))
+    }
+
+    fn selftest<'a>(&'a self, _cx: &'a Ctx) -> Report<'a> {
+        Report::new()
+    }
 }
 
 /// `src`'s text with the FIRST figure that currently re-derives changed to one the tree cannot
@@ -2105,6 +2222,7 @@ fn appended(cx: &Ctx, target: &'static Source, command: &str) -> Overlay {
 /// Only the expected value moves. The command is left byte-identical, which is what makes the
 /// planted run a question about the DOCUMENT rather than about a different command — and what
 /// keeps the plant inside the executed-script cache.
+#[cfg(test)]
 fn plant_wrong_figure(cx: &Ctx, c: &Census, src: &'static Source) -> Option<String> {
     let good = c
         .scored
