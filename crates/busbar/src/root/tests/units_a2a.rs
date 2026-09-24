@@ -5,39 +5,47 @@
 use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// **The metered line's direction is the side its quantity was measured on.**
+/// **The metered quantity is the payload relayed BOTH ways, under the plane's declared direction.**
 ///
-/// The quantity is the RESPONSE document's size — the draft's `response_bytes`, not its
-/// `request_bytes` — so the locator that carries it says `Response`. A direction is not a label
-/// on a line: it is the axis a class cap, a rate-card entry and the usage projection all
-/// partition on, so a line metered as ingress while the deployment capped egress is a line that
-/// is silently exempt from its own limit and still shows up on the bill.
+/// OWNER RULING Q30c/Q35: a billed A2A byte is the payload relayed both ways per hop — request
+/// plus response — under the one class `bytes`. The line used to carry the answer document alone,
+/// so the request half of every exchange was never metered (128 + 256 → 256 on this fixture; now
+/// 384). The two sides are asserted against ONE draft whose two byte counts differ, so a line that
+/// took only one side shows up here as a quantity mismatch rather than passing by coincidence.
 ///
-/// The two fields are asserted against ONE draft whose two byte counts differ, so a line that
-/// took its quantity from the other side would show up here as a quantity mismatch rather than
-/// pass by coincidence.
+/// The direction is the one the plane declares for that class (the response: the count is known
+/// once the agent has answered) — a direction is the axis a class cap, a rate-card entry and the
+/// usage projection partition on, so it is the declared one and no other.
 #[test]
-fn the_metered_lines_direction_is_the_side_its_quantity_came_from() {
+fn the_metered_bytes_are_the_payload_relayed_both_ways() {
     let draft = draft(ops::OP_MESSAGE_SEND);
     assert_ne!(
         draft.request_bytes, draft.response_bytes,
-        "the fixture's two sides differ, so the quantity below names one of them"
+        "the fixture's two sides differ, so the quantity below names both of them"
     );
 
     let located = bytes_located(&draft);
     assert_eq!(located.class, CLASS_BYTES, "the plane's one class");
     assert_eq!(
-        located.quantity, draft.response_bytes,
-        "the quantity is measured off the answer document"
+        located.quantity,
+        draft.request_bytes + draft.response_bytes,
+        "the quantity is the request document plus the answer document"
     );
+    assert_eq!(located.quantity, 384, "128 request + 256 response");
     match located.source {
         busbar_contract::caps::QuantitySource::Locator { direction, .. } => assert_eq!(
             direction,
             busbar_contract::ids::ClassDirection::Response,
-            "and the direction says so, rather than naming the side it did not come from"
+            "and the direction is the one the plane declares for its one class"
         ),
         other => panic!("this plane carries its quantity by locator, not {other:?}"),
     }
+
+    // A count is never a refusal: two sides that together overflow saturate.
+    let mut huge = draft;
+    huge.request_bytes = u64::MAX;
+    huge.response_bytes = 1;
+    assert_eq!(bytes_located(&huge).quantity, u64::MAX);
 }
 
 /// **The record's two clocks are two readings, and the monotonic one cannot be walked back.**

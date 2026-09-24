@@ -532,7 +532,8 @@ pub struct A2aDraft {
     pub legs: Vec<Leg>,
     /// The whole request document's length, which is what this plane prices its input on.
     pub request_bytes: u64,
-    /// What the metering step's locator carried — the size of the answer the plane read.
+    /// The size of the answer the plane read. The metered quantity is this PLUS `request_bytes`
+    /// (OWNER RULING Q30c/Q35: a billed A2A byte is payload relayed both ways).
     pub response_bytes: u64,
     /// How the plane says the unit finished.
     pub finish: FinishClass,
@@ -1559,7 +1560,9 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         _provisional: &Outcome,
         _destinations: &[busbar_contract::caps::VerifiedDestination],
     ) -> Decision<Meter> {
-        let retained = RetainedLocatorValues::new(vec![bytes_located(&self.draft)]);
+        let located = bytes_located(&self.draft);
+        let relayed = located.quantity;
+        let retained = RetainedLocatorValues::new(vec![located]);
         // The kernel's own floor for this unit is what it moved on the way in. It is the tripwire
         // beside the located figure, never the charge.
         let kernel = KernelCounts::new(vec![busbar_kernel_ledger::usage::KernelLine {
@@ -1587,7 +1590,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             Err(_) => Decision::refuse(token, Refusal::new(ReasonCode::MeterDisputed)),
             Ok(metered) => {
                 let mut progress = read_through_poison(&self.progress);
-                progress.metered = Some(self.draft.response_bytes);
+                progress.metered = Some(relayed);
                 progress.disputed = metered.disputed();
                 Decision::proceed(token, metered.usage)
             }
@@ -1718,18 +1721,20 @@ fn fee_evidence(
 
 /// This plane's one metered line: how many bytes, and which side of the exchange they came off.
 ///
-/// One class, one line, and the quantity is one the plane already had in front of it: the size of
-/// the document it read. There is no pointer to walk, so the locator carries the value.
+/// One class, one line. THE QUANTITY IS THE PAYLOAD RELAYED BOTH WAYS — the request document plus
+/// the answer document — per the owner's billed-byte ruling (Q30c/Q35: *a billed A2A byte = payload
+/// bytes relayed BOTH ways per hop (request + response), class `bytes`, priced by
+/// `agents.rate_card`; no card → 0*), the same count the relay ledgers in `busbar-a2a` (72178d0ed).
+/// It used to be the answer alone, so the request half of every exchange was never metered. There is
+/// no pointer to walk, so the locator carries the value. Saturating: a count is never a refusal.
 ///
-/// The DIRECTION is the side that quantity was measured on, and here that is the response — the
-/// answer document, not the request. It is not a label: a direction is what a class cap, a rate-card
-/// entry and a usage projection all partition on, so a line metered against one side while the
-/// deployment configured the other is a line silently exempt from its own limit. Written out here,
-/// beside the field it describes, so the two cannot be changed apart.
+/// The DIRECTION is the one the plane declares for its one class, the response: the count is known
+/// once the agent has answered. A direction is what a class cap, a rate-card entry and a usage
+/// projection all partition on, so it is the declared one and no other.
 fn bytes_located(draft: &A2aDraft) -> LocatedValue {
     LocatedValue {
         class: CLASS_BYTES,
-        quantity: draft.response_bytes,
+        quantity: draft.request_bytes.saturating_add(draft.response_bytes),
         source: busbar_contract::caps::QuantitySource::Locator {
             direction: busbar_contract::ids::ClassDirection::Response,
             // The quantity was not at a pointer: it is the size of the document the plane just
