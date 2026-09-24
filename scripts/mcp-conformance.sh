@@ -398,20 +398,34 @@ the tree is wrong and no verdict from this script means anything."
   ( cd "$MCP_BATTERY_DIR" && ./scripts/setup-control.sh && ./scripts/run-control.sh push,pr ) \
     || die "the in-house battery could not judge its own pinned control peer. A finding about the \
 harness, not about busbar."
-  [ -f "$report" ] || die "the control run did not write $report. It cannot have executed, and no \
+  assert_battery_report "$report" "control"
+}
+
+# THE BATTERY'S ANTI-VACUITY ASSERTION, shared by both battery legs so neither can drift from the
+# other. The report must exist (the caller DELETED it before the run, so an existing one is this
+# run's), and it must record at least BATTERY_MIN_EXECUTED executed tests — a run that skipped
+# almost everything proves nothing about the harness (control) or about busbar (subject).
+BATTERY_MIN_EXECUTED=20
+assert_battery_report() {
+  local report="$1" label="$2"
+  [ -f "$report" ] || die "the $label run did not write $report. It cannot have executed, and no \
 other report file is an acceptable substitute — reading one from a previous run is how a gate \
 reports a state it never reached."
-  python3 - "$report" <<'PY'
+  python3 - "$report" "$label" "$BATTERY_MIN_EXECUTED" <<'PY' || exit 1
 import json, sys
-r = json.load(open(sys.argv[1]))
+path, label, floor = sys.argv[1], sys.argv[2], int(sys.argv[3])
+try:
+    r = json.load(open(path))
+except (OSError, ValueError) as e:
+    raise SystemExit(f"FAIL: the {label} report {path} is not readable JSON: {e}")
 tests = r.get("tests") or r.get("results") or []
 ran = [t for t in tests if str(t.get("verdict", t.get("status", ""))).upper() not in ("SKIP", "SKIPPED")]
-if len(ran) < 20:
+if len(ran) < floor:
     raise SystemExit(
-        f"FAIL: the control report contains only {len(ran)} executed tests. A control leg that "
-        f"skipped almost everything proves nothing about the harness."
+        f"FAIL: the {label} report contains only {len(ran)} executed tests (floor {floor}). A leg "
+        f"that skipped almost everything is not a verdict."
     )
-print(f"  ok: {len(ran)} control tests executed")
+print(f"  ok: {len(ran)} {label} tests executed")
 PY
 }
 
@@ -543,6 +557,13 @@ battery_subject() {
   fi
 
   require_armed "battery subject" MCP_SUBJECT_BUSBAR_BIN MCP_SUBJECT_SERVER_CMD MCP_SUBJECT_CLIENT_CMD
+  # THE CALLEE'S EXIT CODE IS NOT THE VERDICT (item 497) — the control leg above has never trusted
+  # it, and this leg is the one that judges busbar. The reports are DELETED FIRST, so the checks
+  # after the run can only ever read what THIS run wrote: `run-subject.sh` never removes them, and
+  # a report from a previous run is exactly the evidence a gate must not believe.
+  local subj_report="$MCP_BATTERY_DIR/reports/subject.json"
+  local subj_diff="$MCP_BATTERY_DIR/reports/differential.json"
+  rm -f "$subj_report" "$subj_diff"
   # MCP_NO_SKIPS: a skipping test is not a passing test. Set HERE and not on the control legs,
   # because on the control legs a skip is the harness telling the truth about a peer it was never
   # pointed at, whereas here it is a green tick over a surface of BUSBAR that nobody touched.
@@ -565,6 +586,9 @@ battery_subject() {
       2) die "the differential did not run, so this leg proves nothing. See the reason above; it is not a verdict about busbar." ;;
       *) die "the in-house battery found a defect in busbar." ;;
     esac
+  assert_battery_report "$subj_report" "battery subject"
+  [ -f "$subj_diff" ] || die "the battery subject run exited 0 but wrote no $subj_diff — the \
+differential against the control did not run, so this leg proves nothing."
 }
 
 # --selftest: prove the anti-vacuity assertions BITE, before any verdict from this script is
@@ -745,6 +769,61 @@ selftest() {
     failures=$((failures+1))
   else
     say "  ok: a non-existent subject binary is refused"
+  fi
+
+  # ---------------------------------------------------------------------------------------------
+  # THE BATTERY SUBJECT LEG DOES NOT TRUST ITS CALLEE'S EXIT CODE (item 497), exactly as the control
+  # leg never did. Driven against a FAKE battery directory whose `run-subject.sh` is the fixture, so
+  # the real leg function runs end to end with no busbar and no node.
+  bat_fixture() { # $1 dir, $2 what run-subject.sh does (shell body)
+    mkdir -p "$1/scripts" "$1/reports"
+    printf '#!/usr/bin/env bash\ncd "$(dirname "$0")/.."\n%s\n' "$2" >"$1/scripts/run-subject.sh"
+    chmod +x "$1/scripts/run-subject.sh"
+  }
+  bat_report() { # $1 path, $2 executed count, $3 skipped count
+    python3 - "$1" "$2" "$3" <<'PY'
+import json, sys
+p, ran, skip = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+res = [{"id": f"T{i}", "verdict": "PASS"} for i in range(ran)] + \
+      [{"id": f"S{i}", "verdict": "SKIP"} for i in range(skip)]
+json.dump({"results": res}, open(p, "w"))
+PY
+  }
+  bat_probe() { ( MCP_BATTERY_DIR="$1" MCP_SUBJECT_SERVER_CMD="fixture" MCP_SUBJECT_BUSBAR_BIN="" \
+                  battery_subject ) >/dev/null 2>&1; }
+
+  # RED 10: the callee exits 0 and writes NOTHING, over a STALE report from a previous run.
+  bat_fixture "$tmp/bat-stale" 'exit 0'
+  bat_report "$tmp/bat-stale/reports/subject.json" 50 0
+  printf '{}' >"$tmp/bat-stale/reports/differential.json"
+  if bat_probe "$tmp/bat-stale"; then
+    say "  MISS: a battery subject run that wrote no report was accepted on a STALE one"
+    failures=$((failures+1))
+  else
+    say "  ok: a stale subject report from a previous run is not evidence"
+  fi
+
+  # RED 11: the callee exits 0 over a report that executed almost nothing.
+  bat_fixture "$tmp/bat-thin" 'python3 - <<PY
+import json; json.dump({"results": [{"verdict": "PASS"}]*3 + [{"verdict": "SKIP"}]*40}, open("reports/subject.json", "w"))
+PY
+printf "{}" >reports/differential.json; exit 0'
+  if bat_probe "$tmp/bat-thin"; then
+    say "  MISS: a battery subject report with 3 executed tests was accepted"
+    failures=$((failures+1))
+  else
+    say "  ok: a battery subject report under the executed-test floor is refused"
+  fi
+
+  # GREEN 6: a fresh report with a real executed count and a differential is accepted.
+  bat_fixture "$tmp/bat-good" 'python3 - <<PY
+import json; json.dump({"results": [{"verdict": "PASS"}]*25}, open("reports/subject.json", "w"))
+PY
+printf "{}" >reports/differential.json; exit 0'
+  if bat_probe "$tmp/bat-good"; then
+    say "  ok: a fresh, non-vacuous battery subject report is accepted"
+  else
+    say "  MISS: a fresh, non-vacuous battery subject report was refused"; failures=$((failures+1))
   fi
 
   # RED 6: the battery must be IN THIS REPOSITORY. It was moved here so no leg needs a secret or a
