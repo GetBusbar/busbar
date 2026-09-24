@@ -43,7 +43,7 @@
 //! The ABI is uniform — every kind's response carries the same two arrays through the same seam.
 //! What the host DOES with them is the host's decision, and #85 says so in those words. Today the
 //! decision differs in exactly one place, and deliberately: see [`KernelPluginObserver::observe`]'s
-//! `hook` arm.
+//! `hook` arm, which stands down the METRICS fold for that kind — diagnostics fold for every kind.
 
 use busbar_plugin_loader::observe::PluginObserver;
 
@@ -260,13 +260,18 @@ impl PluginObserver for KernelPluginObserver {
         // folding them here would give hook metrics a SECOND path with a DIFFERENT freshness (every
         // call, instead of once per TTL) and a DIFFERENT exposition (`/metrics`, not
         // `/metrics/hooks`). Either would be an observable behaviour change to a frozen kind. So the
-        // host's decision for this kind is: the envelope is carried and NOT folded. When the freeze
-        // lifts, this arm is what changes — one place, named.
+        // host's decision for this kind is: the envelope's METRICS are carried and NOT folded. When
+        // the freeze lifts, this arm is what changes — one place, named.
+        //
+        // The freeze is about metrics and covers nothing else. A hook's DIAGNOSTICS have no second
+        // path — `hooks::scrape` knows no diagnostic, and a 1.5.5 hook had no way to raise one — so
+        // silencing them here would not preserve any frozen behaviour, it would only drop the one
+        // banner the host promises to look up and emit. They are folded for every kind, first.
+        fold_diagnostics(plugin, diagnostics);
         if kind == busbar_plugin::cold::kind::HOOK {
             return;
         }
         fold_metrics(plugin, metrics);
-        fold_diagnostics(plugin, diagnostics);
     }
 }
 
