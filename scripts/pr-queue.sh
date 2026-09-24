@@ -181,9 +181,19 @@ flush_batch() {
     [ -z "$ignored" ] || echo "pr-queue.sh: NOTE — ignoring the local proof flags on this line ($ignored). CI judges this landing, not this laptop."
     # shellcheck disable=SC2086  # $hashes and $waitflag are argv fragments by design
     if [ "$dry" = 1 ]; then
+      # THE LANDER'S DRY RUN CARRIES ITS REFUSAL IN ITS EXIT CODE (pr-land.sh: "dry-run RED -- a
+      # real run would have REFUSED"), and this used to throw it away with `|| true` and count the
+      # line as opened -- so a rehearsal of a queue in which every line would refuse (gh logged
+      # out, auto-merge disabled) printed "N PR(s) opened, 0 red" and exited 0. A refusal in the
+      # rehearsal is a red, and it stops the rehearsal exactly where the real run would stop.
       echo "+ $PR_LAND $hashes --base $base $waitflag --dry-run"
-      bash "$PR_LAND" $hashes --base "$base" $waitflag --dry-run || true
-      opened=$((opened + 1))
+      if bash "$PR_LAND" $hashes --base "$base" $waitflag --dry-run; then
+        opened=$((opened + 1))
+      else
+        failed=$((failed + 1)); rc=1
+        echo "pr-queue.sh: STOPPING (dry-run) — the lander's rehearsal of $hashes REFUSED; a real run would stop here." >&2
+        break
+      fi
     elif bash "$PR_LAND" $hashes --base "$base" $waitflag; then
       opened=$((opened + 1))
       printf '%s\t%s\tOPENED\tbase=%s\tignored=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$hashes" "$base" "${ignored:-none}" >>"$ledger"
@@ -211,5 +221,9 @@ while IFS= read -r rec; do
 done <"$plan"
 [ "$failed" -eq 0 ] && { flush_batch || true; }
 
-echo "pr-queue.sh: $opened PR(s) opened, $failed red; ledger: $ledger"
+if [ "$dry" = 1 ]; then
+  echo "pr-queue.sh: dry-run — $opened PR(s) would open, $failed would refuse; nothing was opened"
+else
+  echo "pr-queue.sh: $opened PR(s) opened, $failed red; ledger: $ledger"
+fi
 [ "$failed" -eq 0 ] || exit 1

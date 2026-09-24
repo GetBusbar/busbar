@@ -17,6 +17,7 @@
 #   E  a red landing stops the queue, leaves the rest queued, and writes a RED ledger row.
 #   F  the ledger records one row per landing, with the ignored flags named.
 #   G  a commit with an EMPTY path set is refused, like a merge, instead of batching with anything.
+#   H  --dry-run carries the lander's refusal: non-zero, never "N opened, 0 red".
 #
 # EVERY CASE THAT OPENS A PR ALSO ASSERTS WHICH HASHES REACHED THE LANDER. Counting calls is not the
 # claim; landing what the queue said is. See the `landed` helper below.
@@ -176,8 +177,24 @@ grep -q "OPENED" "$wt/land-queue.done" && ok "ledger carries an OPENED row" || b
 landed "$B1" "$C1"
 ledger_hashes_present "$wt/land-queue.done"
 
+# ── CASE H: A DRY RUN CARRIES THE LANDER'S REFUSAL ────────────────────────────────────────────────
+# The lander's own --dry-run exits non-zero when a real run would refuse. A rehearsal that swallows
+# that and reports "N opened, 0 red" tells the operator to go on a queue that would refuse.
+echo "case H — --dry-run reports the lander's refusal as red, not as opened"
+out="$(SHIM_RED="$A1" run_queue "$A1
+$B1" --base dev --dry-run)"; rc=$?
+[ "$rc" -ne 0 ] && ok "exit non-zero ($rc)" || bad "a rehearsal whose lander refused exited 0: $out"
+case "$out" in *"0 red"*|*"0 would refuse"*) bad "reported zero reds over a refusing lander: $out" ;; *) ok "does not report zero reds" ;; esac
+grep -q -- '--dry-run' "$SHIM_LOG" && ok "the lander was asked for a dry run" || bad "the lander never saw --dry-run"
+grep -q "$B1" "$SHIM_LOG" && bad "rehearsed past the refusal" || ok "the rehearsal stops at the refusal, as a real run would"
+# …and the control: a rehearsal the lander accepts is still green.
+out="$(run_queue "$A1
+$B1" --base dev --dry-run)"; rc=$?
+[ "$rc" -eq 0 ] && ok "a clean rehearsal exits 0" || bad "a clean rehearsal exited $rc: $out"
+landed "$A1" "$B1"
+
 if [ "$fails" -eq 0 ]; then
-  echo "pr-queue-selftest: GREEN — 7 cases; flags ignored aloud, STOP honoured, batching by disjoint files, every queued hash landed, ledger written"
+  echo "pr-queue-selftest: GREEN — 8 cases; flags ignored aloud, STOP honoured, batching by disjoint files, every queued hash landed, ledger written"
   exit 0
 fi
 echo "pr-queue-selftest: RED — $fails assertion(s) failed" >&2
