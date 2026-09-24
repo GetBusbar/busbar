@@ -8,10 +8,19 @@
 //! them into the neutral per-capability-keyed registry in `busbar_kernel::plane_host` as
 //! fn-pointers, mirroring `busbar_admin::install()`.
 //!
-//! DORMANT: [`install`] registers ZERO planes, so every gauntlet/session path stays on the substrate
-//! loop, byte-identical to the shipped release. The per-plane FLIP onto the unified kernel loop is one
-//! line — [`flip_one_shot_to_kernel`] or [`flip_session_to_kernel`] for that plane's capability key —
-//! and each is gated on the fleet-box money oracle (#29).
+//! LIVE, NOT DORMANT: [`install`] is called unconditionally at boot and FLIPS ALL FOUR planes (mcp,
+//! a2a, llm-native, voice — each behind the default-on feature that pulls its crate), so every
+//! `run_gauntlet[_session]` call for those planes dispatches into the kernel loop through this
+//! registry. The substrate loop it replaced no longer exists; an unflipped plane runs
+//! `run_gauntlet`'s inline verify-then-`drive` fallback.
+//!
+//! MONEY-NEUTRAL BY CONSTRUCTION, and MEASURED (item 125, 2026-09-24, pin 079a16efc): the
+//! kernel-loop runner opens a ZERO hold and reports zero evidence (see `gauntlet_kernel.rs`), so
+//! the plane's own metering inside `drive` stays the only money path. A build with the four flips
+//! commented out recorded the two diverging C3 money cells
+//! (`billing|key-usage|after-upstream-down`, `billing|rate-card|history-mid-window`) byte-identical
+//! to the flipped build. The per-plane money authority for LLM is the separate `root-llm` feature,
+//! not this seam.
 
 use std::future::Future;
 use std::pin::Pin;
