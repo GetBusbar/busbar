@@ -72,8 +72,18 @@
 # accepted-differences entry's premise is evaluated against the build under test (item 119). Still a
 # feature branch head; re-pin to the integration/merge commit when that branch lands.
 #
+# 2026-09-24 (owner ruling Q42, Q8 pattern): moved 57da1eb -> 6067df5 (branch
+# `fix/oracle-candidate-upgrade-step`, cut from 57da1eb) — the OPERATOR UPGRADE STEP. busbar 1.6.0
+# refuses a rate card that does not configure every billable class its plane declares (dbc02c8b9),
+# so at HEAD every cell was unrecordable ("busbar did not come up", ZERO ROWS IS RED). The engine now
+# `--validate`s the config the binary under test is about to run and adds, at 0, exactly the classes
+# that build names (never a hardcoded list), on every entry of the named card — http boot config,
+# exec cell config, `config` subcommand, and a new `upgrade-config` subcommand the script cells call.
+# The published 1.5.5 names none, so the golden side runs every config byte for byte. Still a
+# feature branch head; re-pin to the integration/merge commit when that branch lands.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=57da1eb
+release_ref=6067df5
 crate=busbar-release-oracle
 bin=busbar-oracle
