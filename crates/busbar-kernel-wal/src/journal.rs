@@ -816,6 +816,35 @@ impl Journal {
         journal
     }
 
+    /// Put every quarantine the log made at open on the chain, as one `ChainBreak` record each —
+    /// the durable statement of what recovery set aside: the segment file, the byte offset, the
+    /// byte count and where the bytes went. See [`crate::recover::Quarantine::body`].
+    ///
+    /// Called once, by the composition root, right after a boot that found corruption: this crate
+    /// holds no token and reads no clock, so the root supplies both. `wall` is seconds since the
+    /// Unix epoch. Nothing is appended when the log set nothing aside.
+    ///
+    /// # Errors
+    ///
+    /// The journal could not make the records durable.
+    pub fn record_quarantines(
+        &mut self,
+        token: &Grant<DurableWrite>,
+        at: StepName,
+        wall: u64,
+    ) -> Result<Option<JournalAck>, DurabilityLost> {
+        let entries: Vec<Entry> = self
+            .log
+            .quarantined()
+            .iter()
+            .map(|q| Entry::new(RecordClass::ChainBreak, q.body()).at(wall, 0))
+            .collect();
+        if entries.is_empty() {
+            return Ok(None);
+        }
+        self.append(token, at, &entries).map(Some)
+    }
+
     /// The same journal with a different buffer bound. For batteries that need to reach the bound
     /// without writing [`MEMORY_BUFFER_RECORDS`] records to get there.
     #[must_use]

@@ -259,23 +259,20 @@ why       = "The kind: export plugin open has zero callers anywhere in the tree,
 unshipped = true
 switch    = "STRIKE THIS ROW in the commit that gives open_export a production caller, or delete the kind if export is not shipping in 1.6.0."
 
-# MID-LOG CORRUPTION IS TRUNCATED EXACTLY LIKE A CLEAN CRASH TAIL.
-[[capability]]
-id        = "wal-corruption-verdict"
-built     = "crates/busbar-kernel-wal/src/recover.rs"
-symbol    = "was_torn"
-construct = [".was_torn("]
-scope     = ["crates"]
-why       = "Recovered::stopped_because is written and never read, and recover_and_truncate cuts whenever discarded_bytes > 0 regardless of WHY the scan stopped — so data loss from a checksum failure mid-log is indistinguishable from a clean torn tail on every node."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that makes recover_and_truncate branch on the verdict — refusing or alarming on Corrupt and truncating only a genuine Torn tail. This is a DURABILITY decision and wants an owner ruling on the refuse-vs-alarm arm."
+# MID-LOG CORRUPTION — row `wal-corruption-verdict` STRUCK 2026-09-24 by OWNER RULING (Q38):
+# `recover_and_truncate` now branches on the scan's verdict (`.was_torn(`): a torn tail is cut
+# silently; a Corrupt one has its damaged remainder copied and synced to
+# `<segment>.quarantine-<unix_ms>` BEFORE the cut, and the verdict is returned through
+# `Wal::quarantined()` for the root to log, count and journal (`Journal::record_quarantines`).
 
 # THE CRASH-RECOVERY MODULE — row `crash-recovery-open-holds` STRUCK 2026-09-24 (item 127): the
 # boot path calls it. `crates/busbar/src/root/durability.rs` → `build_for_node` reads every hold the
 # journal holds open (written at unit entry by `Durability::open_hold`) back into a `HoldRecord` and
 # hands them to `busbar_kernel::recovery::recover_all`, before anything can settle onto the book.
-# The note it carried still stands: `TailVerdict::truncates` encodes the Corrupt-vs-Torn policy the
-# `wal-corruption-verdict` row above is missing, and the two should be reconciled when that row is.
+# Its note is RECONCILED with the struck `wal-corruption-verdict` row: the log's own
+# `busbar_kernel_wal::TailVerdict` carries the same three arms (Clean / Torn / Corrupt { at }) and
+# the same `truncates()` policy as `busbar_kernel::recovery::TailVerdict` — only a non-Corrupt
+# verdict is cut without a copy.
 
 # THE ROOT BREAKER OBSERVES NOTHING FOR ANY POOL.
 [[capability]]

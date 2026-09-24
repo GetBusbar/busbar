@@ -80,8 +80,8 @@ pub mod ship;
 pub mod wal;
 
 pub use backend::{
-    DirectoryFactory, FileSegment, MemoryFactory, MemorySegment, SegmentBackend, SegmentFactory,
-    SharedBytes,
+    DirectoryFactory, FileSegment, MemoryFactory, MemorySegment, QuarantinedBytes, SegmentBackend,
+    SegmentFactory, SharedBytes,
 };
 pub use journal::{
     body_digest, decode_run, tail_of, verify as verify_journal, BodyReader, BodyWriter, Entry,
@@ -92,7 +92,10 @@ pub use record::{
     decode_frame, FrameError, FrameHeader, Record, FRAME_BYTES, FRAME_HEADER_BYTES, FRAME_MAGIC,
     FRAME_PAYLOAD_BYTES, FRAME_VERSION,
 };
-pub use recover::{recover_and_truncate, scan, Recovered};
+pub use recover::{
+    recover_and_truncate, scan, Quarantine, QuarantineKept, Recovered, TailVerdict,
+    QUARANTINE_BODY_TAG,
+};
 pub use segment::{Segment, SegmentError, GROWTH_STEP_BYTES, SEGMENT_BYTES};
 pub use ship::{BufferShipper, NullShipper, ShipError, Shipper};
 pub use wal::{BatchAck, Mode, OpenError, Wal};

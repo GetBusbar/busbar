@@ -51,7 +51,7 @@ use busbar_contract::caps::{DurabilityLost, DurableWrite, Grant, StepName};
 
 use crate::backend::{DirectoryFactory, MemoryFactory, SegmentFactory};
 use crate::record::Record;
-use crate::recover::{recover_and_truncate, Recovered};
+use crate::recover::{recover_and_truncate, Quarantine, Recovered};
 use crate::segment::{Segment, SegmentError, SEGMENT_BYTES};
 use crate::ship::{NullShipper, ShipError, Shipper};
 
@@ -148,6 +148,8 @@ pub struct Wal {
     recovered: Vec<Record>,
     /// How many segments have been rolled through, poison included.
     segments_used: u64,
+    /// Every corrupt remainder recovery set aside, at open and at any roll since, oldest first.
+    quarantined: Vec<Quarantine>,
 }
 
 impl std::fmt::Debug for Wal {
@@ -214,7 +216,7 @@ impl Wal {
         mode: Mode,
         ceiling: u64,
     ) -> Result<Self, OpenError> {
-        let (segment, recovered) = open_tail(factory.as_mut(), ceiling)?;
+        let (segment, recovered, quarantined) = open_tail(factory.as_mut(), ceiling)?;
         let segments_used = segment.index() + 1;
         let mut wal = Wal {
             factory,
@@ -230,12 +232,39 @@ impl Wal {
             store_debt_dropped: 0,
             recovered: Vec::new(),
             segments_used,
+            quarantined: Vec::new(),
         };
         for record in &recovered.records {
             wal.mark_written(record.node, record.node_seq);
         }
         wal.recovered = recovered.records;
+        for q in quarantined {
+            wal.take_quarantine(q);
+        }
         Ok(wal)
+    }
+
+    /// Every corrupt remainder recovery set aside — at open, and at any roll since — oldest first.
+    ///
+    /// Empty is the only good answer. Each entry is acknowledged records that are no longer in the
+    /// log: the caller raises the alarm (a log line, a counter, a durable record naming the file,
+    /// the offset, the byte count and where the bytes went). A torn tail never appears here: it is
+    /// a crash mid-append, and cutting it loses nothing that was acknowledged.
+    pub fn quarantined(&self) -> &[Quarantine] {
+        &self.quarantined
+    }
+
+    /// Hold on to a quarantine, and mark every identity in the set-aside bytes as taken.
+    ///
+    /// Those records were acknowledged, so a store may already hold them under the same
+    /// `(node, node_seq)`. Handing one of those numbers out again would put a NEW record under an
+    /// identity a deduplicating store passes over as a re-offer — a lost write reported as a
+    /// success. Marking them costs a visible gap in the numbering and never a record.
+    fn take_quarantine(&mut self, quarantine: Quarantine) {
+        for &(node, node_seq) in &quarantine.identities {
+            self.mark_written(node, node_seq);
+        }
+        self.quarantined.push(quarantine);
     }
 
     /// Which mode this log is in.
@@ -516,8 +545,13 @@ impl Wal {
         let next = self.segment.index() + 1;
         let backend = self.factory.open(next)?;
         let mut segment = Segment::open_at(backend, next, 0, self.ceiling)?;
-        let recovered = recover_and_truncate(&mut segment)?;
-        segment.truncate_to(recovered.durable_end)?;
+        // A segment being rolled into is normally new and empty. If it is not, it is recovered on
+        // the same terms as the one a boot resumes in: a torn tail is cut, a corrupt one is set
+        // aside first.
+        let recovered = recover_and_truncate(&mut segment, self.factory.as_mut())?;
+        if let Some(q) = recovered.quarantined {
+            self.take_quarantine(q);
+        }
         self.segment = segment;
         self.segments_used += 1;
         Ok(())
@@ -559,21 +593,34 @@ impl Wal {
 /// rather than passed over. It costs a duplicate in the log, never a fork in the chain — the head
 /// and the next sequence number come off the newest record that exists, which is the thing this
 /// function is for.
+///
+/// ## A corrupt segment on the way
+///
+/// The walk recovers each segment it steps through on the verdict's terms: a torn tail is cut, a
+/// corrupt remainder is set aside in a quarantine before anything is cut, and every quarantine met
+/// is handed back so the log can mark its identities taken and the caller can raise the alarm. A
+/// segment whose whole content was set aside holds no complete record, so the walk steps back over
+/// it exactly as it steps over one a crash left empty.
 fn open_tail(
     factory: &mut dyn SegmentFactory,
     ceiling: u64,
-) -> Result<(Segment, Recovered), OpenError> {
+) -> Result<(Segment, Recovered, Vec<Quarantine>), OpenError> {
     let mut index = factory.highest_index()?.unwrap_or(0);
+    let mut quarantined = Vec::new();
     loop {
         let backend = factory.open(index)?;
         let mut segment = Segment::open_at(backend, index, 0, ceiling)?;
         // The scan decides where the writes really end, and the cut makes the backing agree with
-        // that. Appending then resumes at the boundary rather than at whatever length the crash
-        // happened to leave behind.
-        let recovered = recover_and_truncate(&mut segment)?;
-        segment.truncate_to(recovered.durable_end)?;
+        // that — on a torn tail silently, on a corrupt one only after the damaged remainder is
+        // durable somewhere else. Appending then resumes at the boundary rather than at whatever
+        // length the crash happened to leave behind.
+        let mut recovered = recover_and_truncate(&mut segment, factory)?;
+        // The quarantine travels in the list, not twice.
+        if let Some(q) = recovered.quarantined.take() {
+            quarantined.push(q);
+        }
         if !recovered.records.is_empty() || index == 0 {
-            return Ok((segment, recovered));
+            return Ok((segment, recovered, quarantined));
         }
         index -= 1;
     }

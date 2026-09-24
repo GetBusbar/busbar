@@ -4,6 +4,7 @@
 //! The batteries.
 
 mod bounds;
+mod corruption_verdict;
 mod fixtures;
 mod idempotence;
 mod journal_chain;

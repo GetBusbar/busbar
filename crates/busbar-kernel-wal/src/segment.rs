@@ -148,6 +148,15 @@ impl Segment {
         Ok(())
     }
 
+    /// Close the segment to further writes without cutting anything.
+    ///
+    /// Recovery calls this when a corrupt remainder could not be copied into a quarantine: the
+    /// damaged bytes stay in place rather than being cut or overwritten, and the next append rolls
+    /// to a fresh segment exactly as it does after a lost sync.
+    pub fn close_to_writes(&mut self) {
+        self.poisoned = true;
+    }
+
     /// Append a whole batch and make it durable: one positional write, then one sync.
     ///
     /// The batch is framed into one contiguous buffer first, so a group commit is a single write

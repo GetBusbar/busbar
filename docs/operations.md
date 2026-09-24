@@ -347,6 +347,7 @@ All metrics are Prometheus counters/histograms exposed at `/metrics`, which is o
 | `busbar_webhook_logs_dropped_total` | counter | n/a | Request-log webhook deliveries shed because the in-flight delivery pool was saturated (a slow/unreachable webhook endpoint). A non-zero rate means request logs are being silently dropped, scale the endpoint or alert. |
 | `busbar_file_logs_dropped_total` | counter | n/a | Request-log file appends shed because that sink's in-flight append pool was saturated (a slow/stalled filesystem: full disk, hung NFS/EBS mount). A non-zero rate means request-log lines are being dropped, check the mount or alert. |
 | `busbar_billing_truncated_total` | counter | n/a | Same-protocol non-stream responses whose body exceeded the translate-body cap, so the terminal `usage` frame was missed and the request billed zero tokens (the client still got a full response). A non-zero rate signals an over-cap billing gap. |
+| `busbar_journal_quarantined_total` | counter | n/a | Journal segments whose damaged remainder boot recovery moved into a quarantine file because a record failed its checksum with valid records after it. Any non-zero value is an incident: acknowledged postings and holds are off the book. See [Journal corruption at boot](#journal-corruption-at-boot). A torn tail after a crash is not counted. |
 
 `/metrics` requires a valid key with a non-empty `auth.chain`, it is treated as an
 information-disclosure surface and goes through the same auth check as other routes.
@@ -634,6 +635,91 @@ durable revocation denylist immediately.
 > Limit windows are per-process, and the caps are enforced per node even over a shared store
 > (see the fleet caveat above).
 
+## Journal corruption at boot
+
+This applies only to a node that keeps its own journal on disk, which is a node started with
+`BUSBAR_DATA_DIR` set. The journal lives in that directory as numbered segment files
+(`0000000000000000.wal`, `0000000000000001.wal`, ...). A node with no data directory keeps no
+journal files and never sees this.
+
+At every boot busbar reads the newest segment back and checks every record against its own
+checksum. Two different things can stop that read early, and busbar treats them differently:
+
+- **A torn tail.** The process or the machine died in the middle of writing the last batch, so the
+  final record is incomplete and nothing after it checks out. That batch was never acknowledged.
+  busbar cuts the incomplete bytes off and carries on, silently. This is normal after a crash and
+  needs no action.
+- **Corruption in the middle of the log.** A record fails its checksum but there are whole, valid
+  records after it. A crash cannot produce that. Something changed bytes that were already
+  durable: a failing disk, a bad controller, a filesystem problem, or a person or process editing
+  the file. The records from the damaged one onward had been acknowledged.
+
+On corruption busbar **still boots**. It keeps every record before the damage and does these three
+things:
+
+1. **It moves the damaged remainder aside, byte for byte.** Everything from the end of the last
+   good record to the end of what was written is copied into a quarantine file next to the
+   segment, named `<segment>.quarantine-<unix_ms>`, for example
+   `/var/lib/busbar/0000000000000003.wal.quarantine-1758700000000`. The copy is written and
+   flushed to disk *before* the segment is shortened, so a crash between the two loses nothing.
+   After a crash like that, the next boot finds the same damage and makes a second copy with a
+   later timestamp. The first copy is left alone. Nothing is ever deleted. If the copy cannot be
+   written (the volume is full, for example), the segment is not shortened at all. The damaged
+   bytes stay where they are, the segment is closed to new writes, and new records go to the next
+   segment.
+2. **It logs an error**, at `ERROR` level, naming the segment file, the byte offset of the damage,
+   how many bytes were set aside and where they went:
+
+   ```
+   ERROR journal corruption in /var/lib/busbar/0000000000000003.wal at byte 1536: 2048 byte(s)
+         from byte 1536 holding 4 record identity(ies) are no longer on the book (the frame's own
+         bytes do not hash to the digest stored in it); quarantined to
+         /var/lib/busbar/0000000000000003.wal.quarantine-1758700000000
+   ```
+
+3. **It counts the event and records it durably.** The `busbar_journal_quarantined_total` counter
+   on `/metrics` goes up by one for each quarantine (it is only visible if you have opted in to
+   metrics). busbar also appends a `ChainBreak` record to the journal itself. The record names the
+   segment file, the byte offset, the byte count, the quarantine file and the time, so the event
+   stays on the node's own history after the log line has rotated away.
+
+### What it means
+
+The records in the quarantine file are **not on the book**. They are money postings and holds
+that this node had acknowledged, and the rebuilt book at boot no longer includes them. Usage,
+spend and ledger figures from this node read **lower than what was actually served** by the
+amount in those records. Anything that reads the book, such as usage views, budgets and
+reconciliation, sees the lower figure. busbar never hands the quarantined records' sequence
+numbers out again, so a store that already has copies of them is not confused by new records under
+the same identity.
+
+A store configured behind the node (the `store:` plugin) may already hold copies of some or all of
+the quarantined records, because on-disk journals ship to the store as they write.
+
+### What to do
+
+1. **Keep the quarantine file.** Do not delete, move or edit it, and do not edit the segment files.
+   Copy the whole data directory somewhere safe before doing anything else, including the
+   `*.quarantine-*` files.
+2. **Check the disk.** Mid-log corruption means the storage under the data directory changed bytes
+   it had already acknowledged. Check the kernel log and the device's health (SMART data, the cloud
+   volume's status, filesystem errors) before trusting the volume with more writes. If the device
+   is failing, move the node to healthy storage.
+3. **Recover the missing figures.** Either restore the data directory from a backup taken before the
+   corruption, or send support the quarantine file together with the `ERROR` line and the node's
+   version. The quarantine file holds the original bytes exactly, so the records that are still
+   intact in it can be read back. There is no command that puts quarantined records back
+   automatically.
+4. **Confirm the node is healthy:**
+   - after the next restart, the boot log has no new `journal corruption` error;
+   - `busbar_journal_quarantined_total` stays flat. It resets to zero on restart, so check it
+     over the time since the last boot;
+   - no new `*.quarantine-*` file has appeared in the data directory;
+   - the restart reconciliation reports no disagreement between the book and the journal (it logs
+     an `ERROR` for every disagreement it finds at boot).
+
+   A torn tail after a crash produces none of these signals. It is expected and needs no action.
+
 ## Running on 64-bit ARM — two builds, one release
 
 Every release ships **two** 64-bit ARM Linux artifacts. They are the same code and the same
@@ -716,4 +802,5 @@ documented semantics, not as observed. If you run either on Windows, report what
 | Startup panic: "unset environment variable" | A `${VAR}` (possibly in a comment) isn't exported. |
 | Startup panic: "not found in providers.yaml" | A `config.yaml` provider name isn't in the catalog. |
 | Cross-protocol responses missing fields | Expected: only the modeled IR subset survives a cross-protocol hop. Everything the IR does not model is dropped with a `warn!` naming the field, so `grep` the logs for `dropping` on the request id; the constructs with no target-protocol representation at all are listed in [Fields the target protocol cannot express](https://getbusbar.com/docs/protocols/#fields-the-target-protocol-cannot-express). Same-protocol routes are byte-for-byte and lose nothing. |
+| `journal corruption in ... quarantined to ...` error at boot | A journal segment in the data directory was damaged mid-log. The node booted without the damaged records. Keep the quarantine file and follow [Journal corruption at boot](#journal-corruption-at-boot). |
 | High `busbar_failovers_total` for one lane | That backend is flapping; inspect its `busbar_upstream_failures_total` `disposition`. |

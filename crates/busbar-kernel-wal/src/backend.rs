@@ -69,6 +69,36 @@ pub trait SegmentFactory: Send {
     /// Whether this factory can put anything on a disk. A memory factory says no, and the log
     /// reports it so an operator can see which mode a node is in without inspecting a directory.
     fn is_durable(&self) -> bool;
+
+    /// The file segment `index` lives in, on a factory that keeps files.
+    fn segment_file(&self, index: u64) -> Option<PathBuf>;
+
+    /// Keep `bytes` — the damaged remainder of segment `index`, starting at `offset`, found at
+    /// `unix_ms` — somewhere they will survive the segment being cut, and make that durable BEFORE
+    /// returning.
+    ///
+    /// `Ok(Some(path))` names the file they went to; `Ok(None)` is a factory with no disk, which
+    /// keeps them in memory. An error means they were NOT made durable, and the caller must not
+    /// cut the segment. No default, for the reason [`SegmentFactory::highest_index`] has none: a
+    /// factory that silently dropped these would turn a corrupt segment back into a silent loss.
+    fn quarantine(
+        &mut self,
+        index: u64,
+        offset: u64,
+        unix_ms: u64,
+        bytes: &[u8],
+    ) -> io::Result<Option<PathBuf>>;
+}
+
+/// One remainder a memory factory set aside: which segment, from which byte, and the bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuarantinedBytes {
+    /// Which segment they came out of.
+    pub segment: u64,
+    /// The byte offset inside it they started at.
+    pub offset: u64,
+    /// The bytes, exactly as they stood.
+    pub bytes: Vec<u8>,
 }
 
 /// The bytes of one memory segment, shared so that closing and reopening a segment — which is what
@@ -167,6 +197,8 @@ struct Segments {
     retained: Vec<SharedBytes>,
     /// Whether this factory keeps every segment alive itself.
     retain: bool,
+    /// What recovery set aside from a corrupt segment. Never dropped: nothing is deleted.
+    quarantined: Vec<QuarantinedBytes>,
 }
 
 /// Hands out memory segments. The default, and the only backing a node without a data directory
@@ -229,6 +261,17 @@ impl MemoryFactory {
     }
 }
 
+impl MemoryFactory {
+    /// Every remainder recovery has set aside on this factory, oldest first.
+    pub fn quarantined(&self) -> Vec<QuarantinedBytes> {
+        self.segments
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .quarantined
+            .clone()
+    }
+}
+
 impl SegmentFactory for MemoryFactory {
     fn open(&mut self, index: u64) -> io::Result<Box<dyn SegmentBackend>> {
         Ok(Box::new(MemorySegment::over(self.segment_bytes(index))))
@@ -251,6 +294,29 @@ impl SegmentFactory for MemoryFactory {
 
     fn is_durable(&self) -> bool {
         false
+    }
+
+    fn segment_file(&self, _index: u64) -> Option<PathBuf> {
+        None
+    }
+
+    fn quarantine(
+        &mut self,
+        index: u64,
+        offset: u64,
+        _unix_ms: u64,
+        bytes: &[u8],
+    ) -> io::Result<Option<PathBuf>> {
+        self.segments
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .quarantined
+            .push(QuarantinedBytes {
+                segment: index,
+                offset,
+                bytes: bytes.to_vec(),
+            });
+        Ok(None)
     }
 }
 
@@ -406,5 +472,57 @@ impl SegmentFactory for DirectoryFactory {
 
     fn is_durable(&self) -> bool {
         true
+    }
+
+    fn segment_file(&self, index: u64) -> Option<PathBuf> {
+        Some(self.segment_path(index))
+    }
+
+    /// `<segment>.quarantine-<unix_ms>` beside the segment, created fresh — never over an existing
+    /// file, so a second recovery of the same damage writes a second copy rather than replacing the
+    /// first. The file's data is synced, then the directory holding it, and only then does this
+    /// return. The name does not end in `.wal`, so [`DirectoryFactory::highest_index`] never reads
+    /// a quarantine as a segment.
+    fn quarantine(
+        &mut self,
+        index: u64,
+        _offset: u64,
+        unix_ms: u64,
+        bytes: &[u8],
+    ) -> io::Result<Option<PathBuf>> {
+        use std::io::Write as _;
+        let segment = self.segment_path(index);
+        let stem = format!(
+            "{}.quarantine-{unix_ms}",
+            segment
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        );
+        let mut attempt = 0u32;
+        let (path, mut file) = loop {
+            let name = if attempt == 0 {
+                stem.clone()
+            } else {
+                format!("{stem}-{attempt}")
+            };
+            let path = self.dir.join(name);
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(file) => break (path, file),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists && attempt < 1024 => {
+                    attempt += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        };
+        file.write_all(bytes)?;
+        // The full sync, not the data sync: the file is new, and its length is metadata.
+        file.sync_all()?;
+        sync_holding_dir(&path);
+        Ok(Some(path))
     }
 }
