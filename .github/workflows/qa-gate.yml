@@ -32,10 +32,9 @@
 #
 # ── THE SHAPE OF THE RUN, AND WHY ────────────────────────────────────────────────────────────────
 #
-#     build ─┐                      compile ONCE, upload target/ as an artifact
-#     fast ──┼─→ slow (matrix)  ─┐  one leg per live-mock segment, HYDRATES, never rebuilds
-#            └─→ loader        ──┼─→ umbrella (if: !cancelled())
-#                                ┘
+#     build ──→ fast ─┬─→ slow (matrix) ─┐  build compiles ONCE and uploads target/; every job
+#                     └─→ loader        ──┴─→ umbrella (if: !cancelled())
+#                                             after it HYDRATES from that artifact, never rebuilds
 #
 # On a green run wall clock is max(job), not sum(job), so matrix WIDTH and BALANCE are the entire
 # win, and per-job FIXED COST is the entire risk, because it is paid N times. This workspace builds
@@ -44,12 +43,14 @@
 # hydrates from the artifact. See qa-gate-run.sh's `hydrate` for the mtime trap that makes a naive
 # artifact restore a silent no-op, and for why the Latchkey Fast Cache alone cannot do this job.
 #
-# `fast` does NOT gate `build`; they are siblings. Serialising a cheap tier in FRONT of the long
-# pole would spend 100% of its duration on every green run and save nothing. But `slow` needs BOTH,
-# which costs zero wall clock for as long as fast < build, while still keeping the real-money legs
-# from starting behind a broken fast tier. That inequality is load-bearing, so `fast` carries a
-# deliberately tight timeout-minutes: if it ever grows into the pole, it fails instead of quietly
-# eating the budget.
+# `fast` RUNS AFTER `build` (`needs: [build]`), so the cheap tier IS serialised in front of the
+# real-money legs. It was first written as a sibling of `build`; the first real run showed that
+# could not work -- with no artifact `fast` rebuilt the whole workspace itself, and `hook-bindings`
+# needs a cdylib only `build` produces (the corrected rationale sits on the job, above its `needs`).
+# So the critical path is build + fast + max(slow leg), and fast's duration is paid on every green
+# run. That is why `fast` carries a deliberately tight timeout-minutes: if it ever grows into a
+# pole of its own, it fails instead of quietly eating the budget. `slow` and `loader` still wait
+# for `fast`, so the real-money legs never start behind a broken fast tier.
 #
 # THE CEILING ON ALL OF THIS is the account-wide concurrent-job cap. If the matrix is wider than the
 # runners available, legs queue and wall clock silently becomes sum-of-batches again. That is why
@@ -130,9 +131,9 @@ env:
   # so `BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS` is exported there with the reasoning intact.
 
 jobs:
-  # ── fast: cheap tier + the matrix that drives the fan-out. Sibling of `build`, never in front of
-  # it. Also the job that converts qa/segments.toml into strategy.matrix contents, because it has
-  # the triggering SHA checked out and finishes long before anything needs the answer.
+  # ── fast: cheap tier + the matrix that drives the fan-out. Runs after `build` and hydrates from
+  # its artifact (see the CORRECTED note below). Also the job that converts qa/segments.toml into
+  # strategy.matrix contents, because it has the triggering SHA checked out.
   fast:
     name: fast tier + matrix
     # Only run for a REAL CI success on `qa` (never on a failed/cancelled CI run, and never for CI
