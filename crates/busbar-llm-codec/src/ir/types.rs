@@ -1005,6 +1005,29 @@ pub struct IrUsageDetail {
     /// `promptTokenCount` on the wire instead of inside it. Like every other field on this struct it
     /// is invisible to `billable_tokens`, so reading it can never double-count the charge.
     pub tool_use_prompt_tokens: Option<u64>,
+    /// Gemini/Vertex `usageMetadata.trafficType` — which billing LANE served the turn (`ON_DEMAND`
+    /// vs `PROVISIONED`). INFORMATIONAL, not a count: it says nothing about how many tokens were
+    /// used, only which capacity pool paid for them, so unlike every counted field on this struct it
+    /// carries no number a customer could reconcile a bill against and `billable_tokens` ignores it
+    /// for that reason as much as for the "never touch totals" one. Only the Gemini reader populates
+    /// it and only the Gemini writer re-emits it; other protocols have no native analog and leave it
+    /// `None` (OWNER RULING Q1, docs/design/1.6.0-QUESTIONS.md Q36 — carry it rather than declare it
+    /// a gap; keep it OUT of billing).
+    pub traffic_type: Option<String>,
+    /// Gemini/Vertex top-level `createTime` — an RFC3339 timestamp the vendor stamps on every
+    /// `GenerateContentResponse` (`2026-09-07T16:54:20.179017Z`). NOT a usage figure at all; it
+    /// rides on this struct rather than `IrResponse` (its natural home) because every
+    /// `IrUsageDetail` literal in the tree already ends `..Default::default()` — the sub-bucket
+    /// convention this struct's own doc comment explains — while `IrResponse` has no such
+    /// convention and is constructed field-by-field at ~50 sites across five other dialects' own
+    /// reader/test files; adding a required field there breaks every one of them for a Gemini-only
+    /// datum none of them can populate. Carried as the wire STRING rather than folded into
+    /// `IrResponse::created` (Unix epoch seconds): converting would lose precision, and the field
+    /// is Gemini-only so a foreign writer has nowhere to put it either way. `None` for every
+    /// non-Gemini protocol and for a Gemini body that carried none. Only the Gemini reader
+    /// populates it and only the Gemini writer re-emits it (OWNER RULING Q1,
+    /// docs/design/1.6.0-QUESTIONS.md Q36 — carry it rather than declare it a gap).
+    pub create_time: Option<String>,
     // ADDED (cohere field-carry, 2026-08-30): Cohere reports usage TWICE — a raw `tokens` bucket and
     // a separately-metered `billed_units` bucket that ROUNDS/attributes the charge (e.g. a short
     // request still bills a minimum). The raw totals live in `IrUsage.{input,output}_tokens`; these

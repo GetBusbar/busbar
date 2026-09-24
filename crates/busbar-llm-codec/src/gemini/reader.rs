@@ -2,11 +2,14 @@ use super::*;
 
 impl ProtocolReader for GeminiReader {
     /// The FIRST `finishReason` is the first candidate's — the one `read_response` reads its stop
-    /// reason from — mapped through the same `map_gemini_finish_reason`.
-    fn raw_stop_reason(&self, body: &[u8]) -> Option<crate::ir::IrStopReason> {
-        // `FIELD_FINISH_REASON`, quoted — spelled as bytes so the lookup allocates nothing.
-        super::super::usage_tail::first_string_value_after(body, b"\"finishReason\"")
-            .map(map_gemini_finish_reason)
+    /// reason from. `FIELD_FINISH_REASON`, quoted, spelled as bytes so the lookup allocates nothing.
+    fn stop_reason_key(&self) -> Option<&'static [u8]> {
+        Some(b"\"finishReason\"")
+    }
+
+    /// The same `map_gemini_finish_reason` `read_response` maps it through.
+    fn stop_reason_of_token(&self, token: &str) -> Option<crate::ir::IrStopReason> {
+        Some(map_gemini_finish_reason(token))
     }
 
     fn recover_truncated_usage(
@@ -1616,10 +1619,13 @@ impl ProtocolReader for GeminiReader {
         // Capture the upstream response identity so same-protocol (Gemini→Gemini) passthrough
         // preserves it byte-for-byte. The native generateContent body carries an opaque
         // `responseId` (surfaced by the official `google-genai` SDK as
-        // `GenerateContentResponse.response_id`); Gemini bodies carry NO `created`/timestamp field,
-        // so `created` stays `None` here and the writer omits it (synthesizing one would be a
-        // fabricated field a native client never sees). `system_fingerprint`/`stop_sequence` have
-        // no Gemini analogue and remain `None`.
+        // `GenerateContentResponse.response_id`); Gemini bodies carry NO OpenAI-style `created`
+        // epoch field, so `created` stays `None` here and the writer omits it (synthesizing one
+        // would be a fabricated field a native client never sees). `system_fingerprint`/
+        // `stop_sequence` have no Gemini analogue and remain `None`. A Vertex body DOES carry its
+        // own top-level timestamp, `createTime` (RFC3339, not a Unix epoch) — read into
+        // `usage.detail.create_time` by `gemini_billed_usage` below (OWNER RULING Q1; see that
+        // field's doc comment for why it rides the usage-detail bag rather than this struct).
         let id = obj
             .get(FIELD_RESPONSE_ID)
             .and_then(|i| i.as_str())

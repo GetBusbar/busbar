@@ -1479,6 +1479,8 @@ fn merge_trailing_usage_detail(
         billed_output_tokens,
         billed_classifications,
         usage_identity_note,
+        traffic_type,
+        create_time,
     } = trailing;
 
     if reasoning_tokens.is_some() {
@@ -1541,6 +1543,18 @@ fn merge_trailing_usage_detail(
     }
     if billed_classifications.is_some() {
         acc.billed_classifications = *billed_classifications;
+    }
+    // A streamed Gemini egress reports `usageMetadata.trafficType` only on the trailing
+    // usage-bearing chunk (same shape as `tool_use_prompt_tokens` above), so folding only the four
+    // totals would drop the billing-lane attribution on every streamed Gemini/Vertex turn while the
+    // buffered twin kept it (OWNER RULING Q1, docs/design/1.6.0-QUESTIONS.md Q36).
+    if traffic_type.is_some() {
+        acc.traffic_type = traffic_type.clone();
+    }
+    // Same shape as `traffic_type` immediately above: a streamed Gemini/Vertex turn's top-level
+    // `createTime` rides the trailing usage-bearing chunk too (OWNER RULING Q1).
+    if create_time.is_some() {
+        acc.create_time = create_time.clone();
     }
 }
 
