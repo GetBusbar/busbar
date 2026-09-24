@@ -200,6 +200,64 @@ PHASE_NEEDS_BIN=()
 PHASE_DESC=()
 add_phase() { PHASE_IDS+=("$1"); PHASE_NEEDS_BIN+=("$2"); PHASE_DESC+=("$3"); }
 
+# ── Verdict printers (see 'Fail-fast diagnostics' below for the ERR trap that uses them) ─────────
+SECONDS=0
+PHASE="startup"
+
+# --- TWO KINDS OF RED, AND WHY THE GATE NOW SAYS WHICH ----------------------------------------
+# The 1.5.3 full plugin gate went RED TWICE and found ZERO product defects. Both failures were
+# INFRASTRUCTURE: sibling plugin repos cloned at a stale branch, and fixture configs naming secrets
+# that nothing in the harness set. Every one of those runs printed "DO NOT TAG THIS RELEASE", which
+# is exactly right for a product defect and exactly wrong for an unset environment variable.
+#
+# That is not a cosmetic complaint. A gate that cries wolf twice per release teaches everyone to
+# RERUN it rather than READ it, and a gate people rerun without reading is how a real defect gets
+# waved through. The verdict has to distinguish "busbar is broken" from "this harness is broken",
+# because the two demand completely different actions from completely different people.
+#
+# So a phase that cannot even ASK its question calls `setup_fail`, which exits SETUP_EXIT (78,
+# sysexits.h EX_CONFIG) and prints a HARNESS/ENVIRONMENT verdict. Any other non-zero exit keeps the
+# old, correct, alarming product verdict. Deliberately NOT a classifier over phase output: guessing
+# a category from error text would produce a third failure mode, silent misclassification, which is
+# worse than the two it replaces. A call site knows which kind it is; only call sites decide.
+SETUP_EXIT=78
+
+# The two verdicts, each printed from exactly one place so they cannot drift apart.
+verdict_setup() {
+  echo
+  echo "!!! RELEASE GATE COULD NOT RUN during phase: ${PHASE} (exit ${1}) !!!"
+  echo "    Elapsed: ${SECONDS}s."
+  echo "    CATEGORY: HARNESS / ENVIRONMENT, not a product defect."
+  echo "    This says NOTHING about whether busbar is releasable: the gate never got far enough"
+  echo "    to ask. Fix the harness or the environment named above and re-run. Do NOT read this"
+  echo "    as a reason to tag, and do NOT read it as a reason not to."
+}
+verdict_product() {
+  echo
+  echo "!!! RELEASE GATE FAILED during phase: ${PHASE} (exit ${1}) !!!"
+  echo "    Elapsed: ${SECONDS}s."
+  echo "    CATEGORY: PRODUCT. A check ran and busbar did not do what it must do."
+  echo "    This means: DO NOT TAG THIS RELEASE."
+}
+# Timings so far are still the most useful thing a failed run can hand back.
+verdict_tail() {
+  end_phase "FAILED" 2>/dev/null || true
+  print_timing_summary 2>/dev/null || true
+}
+
+# setup_fail <message...> -- the gate could not run its check, as distinct from the check failing.
+# It prints its own verdict rather than relying on the ERR trap, because `exit` does NOT fire an ERR
+# trap in bash: only a command returning non-zero under `set -e` does. Routing this through the trap
+# would have printed no banner at all, which is how this was written the first time and why it is
+# worth the comment.
+setup_fail() {
+  echo
+  echo "  [SETUP] $*" >&2
+  verdict_setup "$SETUP_EXIT"
+  verdict_tail
+  exit "$SETUP_EXIT"
+}
+
 # The `gate: suite` phases are derived from plugins.yaml (the registry is the single source of truth
 # for "what plugins exist"), so a new suite plugin gets a phase id here with zero edits to this file.
 # Read up front, not lazily: a parse/shape failure must fail loudly rather than yield an empty gate.
@@ -265,6 +323,17 @@ while read -r _pr; do
     *)               add_phase "$_pid" yes "plugin phase for ${_pr}" ;;
   esac
 done <<<"$(all_plugin_repos)"
+# THE THREE SPECIAL (non-suite) PLUGIN PHASES, DERIVED LIKE THE SUITE ONES. Their bodies below are
+# keyed by repo (they build ../store-sqlite, ../headroom-hook, ../webrequest-hook), so their ids come
+# from plugin_phase_id on that repo -- the SAME function the registry used above. They used to be
+# written as literals (phase-1-sqlite-binary, ...) while the registry derived them from the plugins.yaml
+# ALIAS, so one alias rename made every segmented run record the phase `not-in-segment` and skip it.
+SQLITE_BINARY_PHASE="$(plugin_phase_id store-sqlite)" \
+  || setup_fail "plugins.yaml has no store-sqlite entry, but Phase 1 builds ../store-sqlite: the registry and this gate disagree."
+HEADROOM_SMOKE_PHASE="$(plugin_phase_id headroom-hook)" \
+  || setup_fail "plugins.yaml has no headroom-hook entry, but Phase 5 smokes ../headroom-hook: the registry and this gate disagree."
+WEBREQUEST_SMOKE_PHASE="$(plugin_phase_id webrequest-hook)" \
+  || setup_fail "plugins.yaml has no webrequest-hook entry, but Phase 5 smokes ../webrequest-hook: the registry and this gate disagree."
 add_phase phase-admin-cli          yes "Phase: busbar-admin CLI driven against the fresh busbar"
 add_phase phase-152-feature-gate   yes "Phase: 1.5.2 feature gate (plugins.fetch + token-exchange + admin authz)"
 
@@ -475,63 +544,10 @@ any_selected_needs_service() {
 }
 
 # ── Fail-fast diagnostics ────────────────────────────────────────────────────────────────────────
-SECONDS=0
-PHASE="startup"
-
-# --- TWO KINDS OF RED, AND WHY THE GATE NOW SAYS WHICH ----------------------------------------
-# The 1.5.3 full plugin gate went RED TWICE and found ZERO product defects. Both failures were
-# INFRASTRUCTURE: sibling plugin repos cloned at a stale branch, and fixture configs naming secrets
-# that nothing in the harness set. Every one of those runs printed "DO NOT TAG THIS RELEASE", which
-# is exactly right for a product defect and exactly wrong for an unset environment variable.
-#
-# That is not a cosmetic complaint. A gate that cries wolf twice per release teaches everyone to
-# RERUN it rather than READ it, and a gate people rerun without reading is how a real defect gets
-# waved through. The verdict has to distinguish "busbar is broken" from "this harness is broken",
-# because the two demand completely different actions from completely different people.
-#
-# So a phase that cannot even ASK its question calls `setup_fail`, which exits SETUP_EXIT (78,
-# sysexits.h EX_CONFIG) and prints a HARNESS/ENVIRONMENT verdict. Any other non-zero exit keeps the
-# old, correct, alarming product verdict. Deliberately NOT a classifier over phase output: guessing
-# a category from error text would produce a third failure mode, silent misclassification, which is
-# worse than the two it replaces. A call site knows which kind it is; only call sites decide.
-SETUP_EXIT=78
-
-# The two verdicts, each printed from exactly one place so they cannot drift apart.
-verdict_setup() {
-  echo
-  echo "!!! RELEASE GATE COULD NOT RUN during phase: ${PHASE} (exit ${1}) !!!"
-  echo "    Elapsed: ${SECONDS}s."
-  echo "    CATEGORY: HARNESS / ENVIRONMENT, not a product defect."
-  echo "    This says NOTHING about whether busbar is releasable: the gate never got far enough"
-  echo "    to ask. Fix the harness or the environment named above and re-run. Do NOT read this"
-  echo "    as a reason to tag, and do NOT read it as a reason not to."
-}
-verdict_product() {
-  echo
-  echo "!!! RELEASE GATE FAILED during phase: ${PHASE} (exit ${1}) !!!"
-  echo "    Elapsed: ${SECONDS}s."
-  echo "    CATEGORY: PRODUCT. A check ran and busbar did not do what it must do."
-  echo "    This means: DO NOT TAG THIS RELEASE."
-}
-# Timings so far are still the most useful thing a failed run can hand back.
-verdict_tail() {
-  end_phase "FAILED" 2>/dev/null || true
-  print_timing_summary 2>/dev/null || true
-}
-
-# setup_fail <message...> -- the gate could not run its check, as distinct from the check failing.
-# It prints its own verdict rather than relying on the ERR trap, because `exit` does NOT fire an ERR
-# trap in bash: only a command returning non-zero under `set -e` does. Routing this through the trap
-# would have printed no banner at all, which is how this was written the first time and why it is
-# worth the comment.
-setup_fail() {
-  echo
-  echo "  [SETUP] $*" >&2
-  verdict_setup "$SETUP_EXIT"
-  verdict_tail
-  exit "$SETUP_EXIT"
-}
-
+# SECONDS/PHASE and the two verdict printers (setup_fail, verdict_setup/_product) are defined ABOVE
+# the phase registry, because the registry read is the first thing that can call setup_fail. They
+# used to be defined ~300 lines below that call, so an empty registry died as a bare
+# `setup_fail: command not found` (exit 127, PRODUCT bucket) instead of the HARNESS verdict (78).
 on_err() {
   local ec=$?
   # A propagated 78 (a helper or subshell that itself hit setup_fail) keeps the harness verdict.
@@ -620,9 +636,70 @@ gap_phases() {
   done
 }
 
-# The verdict. Exits non-zero when gaps exist AND the caller asked for them to be fatal.
+# --- THE ABSENCE OF INPUT ------------------------------------------------------------------------
+# gap_phases() can only see statuses that were WRITTEN. A phase in scope for this run that wrote no
+# record at all, or wrote `not-in-segment` while being in the selected segment (a literal id that
+# drifted from the registry-derived one), is invisible to it -- so a run in which ZERO phases
+# executed printed "Every phase in scope for this run EXECUTED" and exited 0. The scope is therefore
+# diffed against the records BY NAME, and zero executed phases is RED on its own (the sibling gate's
+# rule, scripts/release-gate/gate.sh: "ZERO EXECUTED CHECKS IS RED"). Both are fatal in every mode:
+# unlike a missing sibling they are not a fact of local life, they are this harness lying.
+in_scope_phases() {
+  if [ -z "$SELECTED_PHASES" ]; then all_phase_ids; else printf '%s\n' "$SELECTED_PHASES"; fi
+}
+
+# Print "<phase-id> <why>" for every in-scope phase with no record, or recorded not-in-segment.
+unaccounted_phases() {
+  local p i found
+  while read -r p; do
+    [ -n "$p" ] || continue
+    found=""
+    i=0
+    while [ "$i" -lt "${#PHASE_RUN_IDS[@]}" ]; do
+      if [ "${PHASE_RUN_IDS[$i]}" = "$p" ]; then found="${PHASE_RUN_STATUS[$i]}"; fi
+      i=$((i + 1))
+    done
+    if [ -z "$found" ]; then
+      printf '%s %s\n' "$p" "no-record"
+    elif [ "$found" = "not-in-segment" ]; then
+      printf '%s %s\n' "$p" "in-segment-but-recorded-not-in-segment"
+    fi
+  done <<<"$(in_scope_phases)"
+  return 0
+}
+
+executed_count() {
+  local i=0 n=0
+  while [ "$i" -lt "${#PHASE_RUN_IDS[@]}" ]; do
+    if [ "${PHASE_RUN_STATUS[$i]}" = "ran" ]; then n=$((n + 1)); fi
+    i=$((i + 1))
+  done
+  echo "$n"
+}
+
+# The verdict. Exits non-zero when gaps exist AND the caller asked for them to be fatal, and ALWAYS
+# when an in-scope phase is unaccounted for or nothing executed at all.
 print_verdict() {
-  local gaps n
+  local gaps n unacc nu ran
+  unacc="$(unaccounted_phases)"
+  nu="$(printf '%s' "$unacc" | grep -c . || true)"
+  ran="$(executed_count)"
+  if [ "$nu" -ne 0 ] || [ "$ran" -eq 0 ]; then
+    phase "RELEASE GATE INCOMPLETE${SEGMENT:+ (segment: ${SEGMENT})}: ${ran} PHASE(S) EXECUTED, ${nu} IN-SCOPE PHASE(S) UNACCOUNTED FOR"
+    echo
+    if [ "$ran" -eq 0 ]; then
+      echo "ZERO PHASES EXECUTED. A run that executed nothing proves nothing, whatever else it says."
+    fi
+    printf '%s\n' "$unacc" | while read -r p why; do
+      [ -n "$p" ] || continue
+      printf '  UNACCOUNTED  %-34s %s\n' "$p" "$why"
+    done
+    echo
+    echo "This is fatal in every mode: an in-scope phase that left no 'ran' record did not run, and"
+    echo "the harness did not say why. Fix the phase id / registry drift named above and re-run."
+    return 1
+  fi
+
   gaps="$(gap_phases)"
   n="$(printf '%s' "$gaps" | grep -c . || true)"
 
@@ -664,6 +741,12 @@ print_verdict() {
   return 0
 }
 
+# `.lanes // []`: soak_wait_saturated's curl fallback is `{}`, which has no .lanes; a bare `.lanes[]` is a jq
+# ERROR on that (rc 5, "Cannot iterate over null"), which under -eE killed the whole gate as a
+# PRODUCT failure on one transient /stats miss instead of taking the loop's next iteration.
+# Defined up here, above --selftest, so the selftest drives the very filter the poll uses.
+SOAK_AT_CAPACITY_FILTER='(.lanes // [])[] | select(.model=="slow-model") | .at_capacity'
+
 # --- SELFTEST: prove the verdict distinguishes a clean pass from a gap ---------------------------
 # The whole defect was a gap that READ AS a pass, so the thing that must be proven is precisely that
 # these two produce different output and different exit codes. Cheap, offline, no gate run.
@@ -678,42 +761,106 @@ run_selftest() {
 
   # 1. No gaps: a clean pass, exit 0, and the banner does NOT carry a gap qualifier.
   PHASE_RUN_IDS=(a b); PHASE_RUN_SECS=(1 2); PHASE_RUN_STATUS=(ran ran)
+  SELECTED_PHASES=$'a\nb'
   REQUIRE_SIBLINGS=0
   out="$(print_verdict)"; rc=$?
   check "a clean run exits 0" "0" "$rc"
   check "a clean run says PASSED with no qualifier" "yes" \
-    "$(case "$out" in *"RELEASE GATE PASSED WITH GAPS"*) echo no ;; *"RELEASE GATE PASSED"*) echo yes ;; *) echo no ;; esac)"
+    "$(case "$out" in (*"RELEASE GATE PASSED WITH GAPS"*) echo no ;; (*"RELEASE GATE PASSED"*) echo yes ;; (*) echo no ;; esac)"
 
   # 2. not-in-segment is BY DESIGN and must NOT be counted as a gap, or every segmented job would
   #    report gaps and the signal would be worthless within a day.
   PHASE_RUN_IDS=(a b); PHASE_RUN_SECS=(1 0); PHASE_RUN_STATUS=(ran not-in-segment)
+  SELECTED_PHASES=a
   out="$(print_verdict)"
   check "not-in-segment is not a coverage gap" "yes" \
-    "$(case "$out" in *"WITH GAPS"*) echo no ;; *) echo yes ;; esac)"
+    "$(case "$out" in (*"WITH GAPS"*) echo no ;; (*) echo yes ;; esac)"
 
   # 3. THE DEFECT. A missing sibling must be visibly different from a pass, and must NAME the phase.
   PHASE_RUN_IDS=(a phase-admin-cli); PHASE_RUN_SECS=(1 0); PHASE_RUN_STATUS=(ran sibling-missing)
+  SELECTED_PHASES=$'a\nphase-admin-cli'
   out="$(print_verdict)"; rc=$?
   check "a missing sibling still exits 0 by default" "0" "$rc"
   check "a missing sibling does NOT read as a clean pass" "yes" \
-    "$(case "$out" in *"RELEASE GATE PASSED WITH GAPS"*) echo yes ;; *) echo no ;; esac)"
+    "$(case "$out" in (*"RELEASE GATE PASSED WITH GAPS"*) echo yes ;; (*) echo no ;; esac)"
   check "the gap banner names the phase that did not run" "yes" \
-    "$(case "$out" in *"DID NOT RUN"*phase-admin-cli*) echo yes ;; *) echo no ;; esac)"
+    "$(case "$out" in (*"DID NOT RUN"*phase-admin-cli*) echo yes ;; (*) echo no ;; esac)"
 
   # 4. Under --require-siblings the same state is FATAL.
   REQUIRE_SIBLINGS=1
   out="$(print_verdict)" && rc=0 || rc=1
   check "a missing sibling is fatal under --require-siblings" "1" "$rc"
   check "the fatal banner says INCOMPLETE, not PASSED" "yes" \
-    "$(case "$out" in *"RELEASE GATE INCOMPLETE"*) echo yes ;; *) echo no ;; esac)"
+    "$(case "$out" in (*"RELEASE GATE INCOMPLETE"*) echo yes ;; (*) echo no ;; esac)"
 
   # 5. skip-docker is a coverage gap too: a suite phase whose real service never booted tested
-  #    nothing about that backend.
+  #    nothing about that backend. (One phase ran alongside it; a run where NOTHING ran is case 6.)
   REQUIRE_SIBLINGS=0
-  PHASE_RUN_IDS=(phase-2-suite-store-postgres); PHASE_RUN_SECS=(0); PHASE_RUN_STATUS=(skip-docker)
+  PHASE_RUN_IDS=(a phase-2-suite-store-postgres); PHASE_RUN_SECS=(1 0); PHASE_RUN_STATUS=(ran skip-docker)
+  SELECTED_PHASES=$'a\nphase-2-suite-store-postgres'
   out="$(print_verdict)"
   check "skip-docker counts as a coverage gap" "yes" \
-    "$(case "$out" in *"WITH GAPS"*) echo yes ;; *) echo no ;; esac)"
+    "$(case "$out" in (*"WITH GAPS"*) echo yes ;; (*) echo no ;; esac)"
+
+  # 6. THE ABSENCE OF INPUT (item 481). Every in-scope phase recorded not-in-segment: ZERO executed.
+  #    This printed "RELEASE GATE PASSED ... Every phase in scope for this run EXECUTED" and rc 0.
+  REQUIRE_SIBLINGS=1
+  PHASE_RUN_IDS=(a b); PHASE_RUN_SECS=(0 0); PHASE_RUN_STATUS=(not-in-segment not-in-segment)
+  SELECTED_PHASES=$'a\nb'
+  out="$(print_verdict)" && rc=0 || rc=$?
+  check "zero phases executed is fatal" "1" "$rc"
+  check "zero phases executed does NOT read as PASSED" "yes" \
+    "$(case "$out" in (*"RELEASE GATE PASSED"*) echo no ;; (*"ZERO PHASES EXECUTED"*) echo yes ;; (*) echo no ;; esac)"
+  REQUIRE_SIBLINGS=0
+  PHASE_RUN_IDS=(); PHASE_RUN_SECS=(); PHASE_RUN_STATUS=()
+  out="$(print_verdict)" && rc=0 || rc=$?
+  check "a run with no phase records at all is fatal, even without --require-siblings" "1" "$rc"
+
+  # 7. An in-scope phase with no record, next to one that ran, is named and fatal.
+  PHASE_RUN_IDS=(a); PHASE_RUN_SECS=(1); PHASE_RUN_STATUS=(ran)
+  SELECTED_PHASES=$'a\nb'
+  out="$(print_verdict)" && rc=0 || rc=$?
+  check "an in-scope phase that left no record is fatal" "1" "$rc"
+  check "and it is named" "yes" \
+    "$(case "$out" in (*"UNACCOUNTED"*" b "*) echo yes ;; (*) echo no ;; esac)"
+  SELECTED_PHASES=""
+
+  # 8. NO PLUGIN PHASE ID IS A LITERAL (item 541). Every non-suite plugin phase id is derived from
+  #    plugins.yaml at runtime; a literal copy of one drifts silently on an alias rename. Checked
+  #    against this file's own non-comment text for every id the registry currently derives.
+  local pid lit_hits=""
+  while read -r pid; do
+    [ -n "$pid" ] || continue
+    case "$pid" in phase-2-suite-*) continue ;; esac
+    if grep -v '^[[:space:]]*#' "${REPO_ROOT}/scripts/release-check.sh" | grep -qF -- "$pid"; then
+      lit_hits="${lit_hits} ${pid}"
+    fi
+  done <<<"$(list_plugin_phase_ids)"
+  check "no registry-derived plugin phase id is written as a literal" "" "${lit_hits# }"
+
+  # 9. A /stats miss is not a jq error (item 540). The poll's own `{}` fallback must yield an empty
+  #    answer, rc 0, so the loop takes its next iteration instead of firing the ERR trap.
+  local jout jrc
+  jout="$(echo '{}' | jq -r "$SOAK_AT_CAPACITY_FILTER" 2>&1)" && jrc=0 || jrc=$?
+  check "the soak poll filter over its own {} fallback exits 0" "0" "$jrc"
+  check "and yields nothing" "" "$jout"
+  jout="$(echo '{"lanes":[{"model":"slow-model","at_capacity":true}]}' | jq -r "$SOAK_AT_CAPACITY_FILTER")"
+  check "and still reads at_capacity off a real snapshot (control)" "true" "$jout"
+
+  # 10. AN EMPTY REGISTRY IS A HARNESS VERDICT, exit 78 (item 539). Driven for real: this script in
+  #     a scratch tree whose plugin-registry-check.sh prints nothing. setup_fail used to be called
+  #     before it was defined, so this was `command not found`, exit 127, no banner.
+  local st_tmp st_out st_rc
+  st_tmp="$(mktemp -d "${TMPDIR:-/tmp}/release-check-selftest.XXXXXX")"
+  mkdir -p "${st_tmp}/scripts"
+  cp "${REPO_ROOT}/scripts/release-check.sh" "${st_tmp}/scripts/release-check.sh"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"${st_tmp}/scripts/plugin-registry-check.sh"
+  chmod +x "${st_tmp}/scripts/plugin-registry-check.sh"
+  st_out="$(bash "${st_tmp}/scripts/release-check.sh" --list-phases 2>&1)" && st_rc=0 || st_rc=$?
+  rm -rf "$st_tmp"
+  check "an empty registry exits 78 (HARNESS), not 127" "78" "$st_rc"
+  check "and prints the [SETUP] harness verdict" "yes" \
+    "$(case "$st_out" in (*"[SETUP]"*"HARNESS / ENVIRONMENT"*) echo yes ;; (*) echo no ;; esac)"
 
   echo
   if [ "$fails" -ne 0 ]; then echo "release-check.sh --selftest FAILED (${fails} case(s))"; return 1; fi
@@ -1082,7 +1229,7 @@ soak_wait_saturated() {
   local snap ac
   for _ in $(seq 1 50); do
     snap="$(curl -fsS "http://127.0.0.1:${SOAK_LISTEN_PORT}/stats" 2>/dev/null || echo '{}')"
-    ac="$(echo "$snap" | jq -r '.lanes[] | select(.model=="slow-model") | .at_capacity')"
+    ac="$(echo "$snap" | jq -r "$SOAK_AT_CAPACITY_FILTER")"
     if [ "$ac" = "true" ]; then
       echo "$snap" | jq -c '.lanes[] | select(.model=="slow-model") | {at_capacity,available,inflight,availability,recovery_hint_ms}'
       return 0
@@ -1378,10 +1525,10 @@ EOF
 #    prove busbar's real HTTP + restart-durability story against it when the sibling is available
 #    locally (dockerless, fastest feedback loop of the three backends). ────────────────────────────
 STORE_SQLITE_SRC="${REPO_ROOT}/../store-sqlite"
-if ! phase_selected phase-1-sqlite-binary; then
-  record_phase_skip phase-1-sqlite-binary "not-in-segment"
+if ! phase_selected "${SQLITE_BINARY_PHASE}"; then
+  record_phase_skip "${SQLITE_BINARY_PHASE}" "not-in-segment"
 elif [ -d "$STORE_SQLITE_SRC" ]; then
-  begin_phase phase-1-sqlite-binary "Phase 1: store-sqlite-plugin — sibling checkout: real busbar, real HTTP traffic, real restart durability"
+  begin_phase "${SQLITE_BINARY_PHASE}" "Phase 1: store-sqlite-plugin — sibling checkout: real busbar, real HTTP traffic, real restart durability"
   note "store-sqlite no longer lives in-tree — it brings 100% of what it needs in its own repo, a"
   note "same-repo 2-crate workspace (busbar-store-sqlite + busbar-store-sqlite-plugin). Its own"
   note "store-sqlite-plugin/tests/e2e.rs already covers the hermetic in-process dlopen ABI path."
@@ -1409,7 +1556,7 @@ else
   echo "Gate incomplete — SQLite coverage could not run. Check out ../store-sqlite for full" >&2
   echo "coverage before tagging, or confirm that repo's own CI is green." >&2
   SQLITE_SKIPPED=1
-  record_phase_skip phase-1-sqlite-binary "sibling-missing"
+  record_phase_skip "${SQLITE_BINARY_PHASE}" "sibling-missing"
 fi
 
 # ── Phase 2: the registry-driven sibling-suite loop ───────────────────────────────────────────────
@@ -1671,26 +1818,26 @@ EOF
   ok "${name}: busbar --validate confirms the real dlopen'd plugin loads (${out##*$'\n'})"
 }
 
-if ! phase_selected phase-5-smoke-headroom; then
-  record_phase_skip phase-5-smoke-headroom "not-in-segment"
+if ! phase_selected "${HEADROOM_SMOKE_PHASE}"; then
+  record_phase_skip "${HEADROOM_SMOKE_PHASE}" "not-in-segment"
 elif [ -d "$HEADROOM_SRC" ]; then
-  begin_phase phase-5-smoke-headroom "Phase 5: headroom-hook — busbar --validate dlopen smoke"
+  begin_phase "${HEADROOM_SMOKE_PHASE}" "Phase 5: headroom-hook — busbar --validate dlopen smoke"
   run_validate_smoke "headroom" "${HEADROOM_SRC}/Cargo.toml" "headroom_hook" hook needs
   end_phase ran
 else
   note "SKIP: ../headroom-hook not present as a sibling checkout on this machine."
-  record_phase_skip phase-5-smoke-headroom "sibling-missing"
+  record_phase_skip "${HEADROOM_SMOKE_PHASE}" "sibling-missing"
 fi
 
-if ! phase_selected phase-5-smoke-webrequest; then
-  record_phase_skip phase-5-smoke-webrequest "not-in-segment"
+if ! phase_selected "${WEBREQUEST_SMOKE_PHASE}"; then
+  record_phase_skip "${WEBREQUEST_SMOKE_PHASE}" "not-in-segment"
 elif [ -d "$WEBREQUEST_SRC" ]; then
-  begin_phase phase-5-smoke-webrequest "Phase 5: webrequest-hook — busbar --validate dlopen smoke"
+  begin_phase "${WEBREQUEST_SMOKE_PHASE}" "Phase 5: webrequest-hook — busbar --validate dlopen smoke"
   run_validate_smoke "webrequest" "${WEBREQUEST_SRC}/Cargo.toml" "busbar_webrequest_hook_plugin" hook
   end_phase ran
 else
   note "SKIP: ../webrequest-hook not present as a sibling checkout on this machine."
-  record_phase_skip phase-5-smoke-webrequest "sibling-missing"
+  record_phase_skip "${WEBREQUEST_SMOKE_PHASE}" "sibling-missing"
 fi
 
 # ── busbar-admin (busbarctl) — the REVERSE of the plugin phases ────────────────────────────────
@@ -1749,7 +1896,7 @@ for p in ${SUITE_SKIPPED[@]+"${SUITE_SKIPPED[@]}"}; do
   echo "its coverage was SKIPPED, not passed. Run on a machine with the sibling checked out (and"
   echo "Docker up) for full coverage before tagging, or confirm that repo's own CI is green."
 done
-if phase_selected phase-1-sqlite-binary; then
+if phase_selected "${SQLITE_BINARY_PHASE}"; then
   if [ -n "${SQLITE_SKIPPED:-}" ]; then
     echo "NOTE: ../store-sqlite was not present locally — SQLite coverage was skipped, not passed. Run"
     echo "on a machine with ../store-sqlite checked out for full coverage before tagging, or confirm"
@@ -1758,7 +1905,7 @@ if phase_selected phase-1-sqlite-binary; then
     echo "SQLite phase passed with real assertions (sibling checkout)."
   fi
 fi
-if phase_selected phase-5-smoke-headroom || phase_selected phase-5-smoke-webrequest; then
+if phase_selected "${HEADROOM_SMOKE_PHASE}" || phase_selected "${WEBREQUEST_SMOKE_PHASE}"; then
   if [ ! -d "$HEADROOM_SRC" ] || [ ! -d "$WEBREQUEST_SRC" ]; then
     echo "NOTE: one or both hook-plugin sibling repos were not present locally — that phase was"
     echo "partially or fully skipped. Run on a machine with ../headroom-hook and ../webrequest-hook"
