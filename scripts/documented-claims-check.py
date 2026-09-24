@@ -33,8 +33,16 @@ WHAT IS ASSERTED, and why each arm is here:
      and the behaviour the code actually has, and is pinned by a cell like any other row. This is
      the register's sharpest claim -- the code, not the document, is the parity target -- and
      downgrading such a row to ordinary prose would quietly delete a known documentation defect.
+  6. EVERY ID STILL ADDRESSES ITS CLAIM. The ids are line addresses into the cross-check document,
+     and arms 1-5 never opened it -- so one edit above the tables shifted all 56 by a line, the
+     CONTRADICTED pin README:1061 came to name a different, CONFIRMED row, and this gate stayed
+     green (item 493). Each claim's quote must be found on the line its id names: every word of
+     the quote (a leading `x.y.z:` version tag dropped) must appear on that line. Measured on the
+     real register, the right line scores 1.00 on every claim and a line one off scores at most
+     0.58; QUOTE_MATCH_FLOOR sits between them. An unreadable document is RED, never "no drift".
 
 Existence and content only; nothing is executed and no cell is recorded.
+`--selftest` plants a register and a document and proves arm 6 reds on a shifted id.
 """
 from __future__ import annotations
 
@@ -48,6 +56,11 @@ ROOT = Path(__file__).resolve().parents[1]
 CLAIMS = ROOT / "qa" / "documented-claims.json"
 CELLS = ROOT / "testing" / "shadow-oracle" / "cells.json"
 LEDGER = ROOT / "testing" / "shadow-oracle" / "golden" / "1.5.5" / "ledger.tsv"
+DOC = ROOT / "docs" / "design" / "inventory" / "1.5.5-ops-observability.md"
+# Arm 6: the fraction of a quote's words that must appear on the line its id addresses.
+QUOTE_MATCH_FLOOR = 0.9
+_WORD = re.compile(r"[a-z0-9]+")
+_VERSION_TAG = re.compile(r"^\s*[0-9]+\.[0-9]+\.[0-9]+:\s*")
 
 # The two runs the binding names, as (prefix, first, last). These are line addresses into
 # docs/design/inventory/1.5.5-ops-observability.md's two cross-check sections, so the span is part
@@ -71,7 +84,39 @@ def golden_recorded(ledger: Path) -> set[str]:
     return out
 
 
-def check(claims_path: Path, cells_path: Path, ledger_path: Path) -> list[str]:
+def quote_match(quote: str, line: str) -> float:
+    """Fraction of the quote's words (version tag dropped) present on `line`."""
+    words = _WORD.findall(_VERSION_TAG.sub("", quote).lower())
+    have = set(_WORD.findall(line.lower()))
+    return sum(1 for w in words if w in have) / len(words) if words else 0.0
+
+
+def address_drift(claims: list, doc_path: Path) -> list[str]:
+    """Arm 6: every claim id's line in the document carries that claim's quote."""
+    try:
+        lines = doc_path.read_text(encoding="utf-8").splitlines()
+    except OSError as e:
+        return [f"{doc_path}: unreadable cross-check document ({e}) -- the claim ids address "
+                f"nothing that can be checked"]
+    bad: list[str] = []
+    for c in claims:
+        m = _ID.match(str(c.get("id", "")))
+        quote = str(c.get("quote", ""))
+        if not m or not quote.strip():
+            continue  # arm 1 already reports it
+        n = int(m.group(2))
+        line = lines[n - 1] if 1 <= n <= len(lines) else ""
+        score = quote_match(quote, line)
+        if score < QUOTE_MATCH_FLOOR:
+            near = [k for k in range(max(1, n - 3), min(len(lines), n + 3) + 1)
+                    if quote_match(quote, lines[k - 1]) >= QUOTE_MATCH_FLOOR]
+            bad.append(f"{c['id']}: {doc_path.name}:{n} does not carry this claim's quote "
+                       f"({score:.2f} of its words)"
+                       + (f"; it is at line {', '.join(map(str, near))}" if near else ""))
+    return bad
+
+
+def check(claims_path: Path, cells_path: Path, ledger_path: Path, doc_path: Path = DOC) -> list[str]:
     """Every problem with the register, one human-readable line each. Empty means green."""
     bad: list[str] = []
     try:
@@ -173,7 +218,39 @@ def check(claims_path: Path, cells_path: Path, ledger_path: Path) -> list[str]:
         if c.get("contradicted") is True and cid not in CONTRADICTED:
             bad.append(f"{cid}: flagged `contradicted`, but the design names only "
                        + " and ".join(CONTRADICTED))
+
+    # 6. every id still addresses its claim
+    bad.extend(address_drift(claims, doc_path))
     return bad
+
+
+def selftest() -> int:
+    """Arm 6 over a planted document: aligned ids GREEN, a shifted document RED naming where the
+    quote went, a missing document RED."""
+    import tempfile
+    fails = 0
+    claims = [{"id": "README:2", "quote": "Six wire protocols, first class on both sides."},
+              {"id": "CHANGELOG:3", "quote": "1.5.5: There is no config change."}]
+    doc = ["| head |", '| "Six wire protocols, first class on both sides." | `README.md:22` |',
+           '| 1.5.5 | "There is no config change." | `:11` |']
+    with tempfile.TemporaryDirectory() as t:
+        p = Path(t) / "doc.md"
+        p.write_text("\n".join(doc) + "\n", encoding="utf-8")
+        got = address_drift(claims, p)
+        print(("ok  " if not got else "FAIL") + "  aligned ids carry their quotes" + (f": {got}" if got else ""))
+        fails += bool(got)
+        p.write_text("\n".join(["| inserted line |"] + doc) + "\n", encoding="utf-8")
+        got = address_drift(claims, p)
+        ok = len(got) == 2 and "README:2" in got[0] and "it is at line 3" in got[0]
+        print(("ok  " if ok else "FAIL") + "  a line inserted above the table reds every shifted id, naming the new line"
+              + ("" if ok else f": {got}"))
+        fails += not ok
+        got = address_drift(claims, Path(t) / "absent.md")
+        ok = len(got) == 1 and "unreadable" in got[0]
+        print(("ok  " if ok else "FAIL") + "  a missing document is RED, not 'no drift'")
+        fails += not ok
+    print("documented-claims-check.py selftest: " + ("PASS" if not fails else "FAIL"))
+    return 1 if fails else 0
 
 
 def main(argv: list[str]) -> int:
@@ -181,10 +258,14 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--claims", default=str(CLAIMS))
     ap.add_argument("--cells", default=str(CELLS))
     ap.add_argument("--golden-ledger", default=str(LEDGER))
+    ap.add_argument("--doc", default=str(DOC), help="the cross-check document the claim ids address")
+    ap.add_argument("--selftest", action="store_true", help="prove arm 6 on planted fixtures")
     ap.add_argument("--quiet", action="store_true", help="print problems only, no green line")
     a = ap.parse_args(argv)
 
-    bad = check(Path(a.claims), Path(a.cells), Path(a.golden_ledger))
+    if a.selftest:
+        return selftest()
+    bad = check(Path(a.claims), Path(a.cells), Path(a.golden_ledger), Path(a.doc))
     if bad:
         print(f"documented claims: RED -- {len(bad)} problem(s) in {a.claims}:")
         for b in bad:
