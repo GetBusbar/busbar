@@ -1842,58 +1842,74 @@ impl MapProofGate {
         // and every plant against it would honestly report `Impossible`.
         for src in CORPUS {
             let mine: Vec<&Scored> = c.scored.iter().filter(|s| s.slug == src.slug).collect();
-            let bad: Vec<String> = mine
-                .iter()
-                .filter(|s| matches!(s.verdict, Verdict::DoesNotReproduce { .. }))
-                .map(|s| s.one_line())
-                .collect();
-            let good = mine
-                .iter()
-                .filter(|s| matches!(s.verdict, Verdict::Reproduces { .. }))
-                .count();
-            let checkable = mine
-                .iter()
-                .filter(|s| !matches!(s.verdict, Verdict::Uncheckable { .. }))
-                .count();
-            let id = row_reproduces(src.slug);
-            // VACUITY IS NOT A PASS. A document whose every command was unrunnable has proven
-            // nothing, and "no figure failed" is exactly what that looks like from here. It is
-            // checked AFTER the real finding: a document with one failing figure and nothing else
-            // must report the figure, not the vacuity.
-            if bad.is_empty() && checkable > 0 && good == 0 {
-                rows.push(Row::fail(
-                    id,
-                    format!("not one figure in {} was re-derived", src.slug),
-                    format!(
-                        "{checkable} checkable expectation(s) and {good} re-derived — this row is \
-                         vacuous, not clean; see map-proof:runnable and map-proof:unrefused"
-                    ),
-                ));
-                continue;
-            }
-            rows.push(if bad.is_empty() {
-                Row::pass(
-                    id,
-                    format!("every checkable figure in {} reproduces", src.slug),
-                    format!(
-                        "{good} of {} bound expectation(s) re-derived against this tree",
-                        mine.len()
-                    ),
-                )
-            } else {
-                Row::fail(
-                    id,
-                    format!("a printed figure in {} does not reproduce", src.slug),
-                    format!(
-                        "{} of {} do not reproduce ({good} do): {}",
-                        bad.len(),
-                        mine.len(),
-                        listing(&bad, 8)
-                    ),
-                )
-            });
+            rows.push(reproduces_row(src, &mine));
         }
         rows
+    }
+}
+
+/// `map-proof:reproduces/<slug>` for one document, from that document's scored proofs.
+///
+/// VACUITY IS NOT A PASS. A document that re-derived NOTHING has proven nothing, and "no figure
+/// failed" is exactly what that looks like from here. That covers every way to re-derive nothing:
+/// every command unrunnable or uncheckable, AND (item 204) a document that binds no `# ->`
+/// expectation at all — the guard used to require `checkable > 0`, so the emptiest document fell
+/// straight through to PASS "0 of 0 bound expectation(s) re-derived". It is checked AFTER the real
+/// finding: a document with one failing figure and nothing else must report the figure.
+fn reproduces_row(src: &Source, mine: &[&Scored]) -> Row {
+    let bad: Vec<String> = mine
+        .iter()
+        .filter(|s| matches!(s.verdict, Verdict::DoesNotReproduce { .. }))
+        .map(|s| s.one_line())
+        .collect();
+    let good = mine
+        .iter()
+        .filter(|s| matches!(s.verdict, Verdict::Reproduces { .. }))
+        .count();
+    let checkable = mine
+        .iter()
+        .filter(|s| !matches!(s.verdict, Verdict::Uncheckable { .. }))
+        .count();
+    let id = row_reproduces(src.slug);
+    if bad.is_empty() && good == 0 {
+        let detail = if mine.is_empty() {
+            format!(
+                "{} binds 0 `# ->` expectation(s), so 0 figures were re-derived — this row is \
+                 vacuous, not clean; see map-proof:floored",
+                src.path
+            )
+        } else {
+            format!(
+                "{checkable} checkable expectation(s) and {good} re-derived — this row is \
+                 vacuous, not clean; see map-proof:runnable and map-proof:unrefused"
+            )
+        };
+        return Row::fail(
+            id,
+            format!("not one figure in {} was re-derived", src.slug),
+            detail,
+        );
+    }
+    if bad.is_empty() {
+        Row::pass(
+            id,
+            format!("every checkable figure in {} reproduces", src.slug),
+            format!(
+                "{good} of {} bound expectation(s) re-derived against this tree",
+                mine.len()
+            ),
+        )
+    } else {
+        Row::fail(
+            id,
+            format!("a printed figure in {} does not reproduce", src.slug),
+            format!(
+                "{} of {} do not reproduce ({good} do): {}",
+                bad.len(),
+                mine.len(),
+                listing(&bad, 8)
+            ),
+        )
     }
 }
 
@@ -2111,6 +2127,25 @@ fn plant_wrong_figure(cx: &Ctx, c: &Census, src: &'static Source) -> Option<Stri
 
 #[cfg(test)]
 mod tests {
+    // ITEM 204: a corpus document that binds ZERO expectations re-derived nothing, and a row that
+    // re-derived nothing is not a PASS. `done-readout` and `ledger` were in exactly this state.
+    #[test]
+    fn a_document_binding_no_expectation_is_vacuous_not_clean() {
+        let src = CORPUS
+            .iter()
+            .find(|s| s.slug == "done-readout")
+            .expect("done-readout is a corpus document");
+        let row = reproduces_row(src, &[]);
+        assert_eq!(
+            row.status,
+            crate::ledger::Status::Fail,
+            "zero bound expectations must not PASS: {} | {}",
+            row.title,
+            row.detail
+        );
+        assert!(row.detail.contains("vacuous"), "{}", row.detail);
+    }
+
     use super::*;
 
     #[test]
