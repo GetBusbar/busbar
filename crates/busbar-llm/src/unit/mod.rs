@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE LLM PLANE'S TELLER STEPS — one file per step, written dark behind `teller-waist`.
+//! THE LLM PLANE'S TELLER STEPS — one file per step, behind `teller-waist`, and LIVE: the default
+//! build's `root-llm` feature turns the flag on and `busbar/src/root/units_llm.rs` drives every step.
 //!
 //! The whole directory is gated by the inner attribute below rather than by a `#[cfg]` on each
 //! `pub mod` line, so the flag is stated ONCE and "the flag is down" and "the directory is not in

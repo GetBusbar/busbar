@@ -126,9 +126,6 @@ use busbar_kernel::plane_host::EngineHost;
 /// walk just before the Meter step binds — because the cell rides on the response and may fill in
 /// between. Folding takes the whole report or none of it, so the second fold rewrites the same three
 /// figures with themselves where the first already ran.
-// Built by the Route step and read by the chain that drives the two together; both are dark until
-// the composition root installs these steps, which is what this allow covers and what retires it.
-#[allow(dead_code)]
 #[derive(Clone)]
 pub(crate) struct MeterFacts {
     /// The serving lane, as an index into the engine's lane table — the lane that actually answered
@@ -226,9 +223,10 @@ impl<'a> MeterCtx<'a> {
     /// kernel verb or a delivery. How the response ENDED is not a parameter: a cut stream bills
     /// what it streamed (#62), so `usage` is the whole charge on every end.
     ///
-    /// `allow(dead_code)` while the module is dark: the Route step is what builds one of these on
-    /// the request path, and it does not exist yet.
-    #[allow(clippy::too_many_arguments, dead_code)]
+    /// TEST-ONLY: production binds through [`MeterCtx::bind`] from what the Route step observed;
+    /// this spelled-out form is what the step's own tests drive.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         host: &'a Arc<dyn EngineHost>,
         sink: Option<&'a crate::engine::UsageSink>,
@@ -258,7 +256,6 @@ impl<'a> MeterCtx<'a> {
     /// The expression that did not exist: a [`MeterFacts`] plus the two things the facts cannot
     /// own — the host seam and the borrowed lane the index names — is a context. `charged` is still
     /// the admit step's, because whether the admission charge landed is not a fact about the walk.
-    #[allow(dead_code)]
     pub(crate) fn bind(
         host: &'a Arc<dyn EngineHost>,
         sink: Option<&'a crate::engine::UsageSink>,

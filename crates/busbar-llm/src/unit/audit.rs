@@ -48,11 +48,6 @@
 //! this file, so "every outcome is rendered at the terminal" is a property the compiler and the gate
 //! hold jointly rather than a convention.
 
-// BUILT DARK, as the Route step beside it is: the doors below have no production caller until the
-// unit's own shell is assembled, and the identity harness at the bottom is what drives them until
-// then. The allow is scoped to this file so it retires with the step it covers.
-#![allow(dead_code)]
-
 use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Instant;

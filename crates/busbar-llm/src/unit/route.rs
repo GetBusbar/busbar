@@ -48,12 +48,6 @@
 //! upstream, same client bytes, same breaker mutations, same pick order and the same single
 //! correlation stamp through this step as through the live path.
 
-// BUILT DARK. This step has no production caller until the unit's own shell is assembled and the
-// composition root installs its ingress tables; until then the only thing that drives it is the
-// identity harness below, which is the point of building it dark in the first place. The allow is
-// scoped to this file rather than the directory so it retires with the step it covers.
-#![allow(dead_code)]
-
 use std::sync::Arc;
 
 use axum::body::Bytes;
@@ -236,6 +230,11 @@ pub(crate) struct RouteParts {
 /// The body is [`route_parts`]; this is the sealing, and it is the whole of the difference between
 /// them. Keeping the two apart is what lets a driver run the walk on the runtime and seal the answer
 /// on the thread the loop's token was minted on, without either half learning about the other's.
+///
+/// TEST-ONLY, and compiled only there: the production driver is [`crate::unit::walk::Walk::route`],
+/// which awaits [`route_parts`] and calls [`seal`] itself. This joined form is what the rehearsal in
+/// `unit/tests/chain.rs` drives.
+#[cfg(test)]
 pub(crate) async fn route(unit_token: &Pass<Route>, input: RouteInput<'_>) -> Routed {
     seal(unit_token, route_parts(input).await)
 }
