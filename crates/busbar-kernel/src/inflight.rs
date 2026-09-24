@@ -6,8 +6,9 @@
 //! The in-flight table is the node's own memory of what it is doing. One slot per unit, and the
 //! slot owns four things: the unit's HOLD CELL, the count of children spending against it, its
 //! CANCELLATION token, and how far through the steps it got. The Teller borrows the slot while it
-//! runs; exactly two callers ever take the hold out of it — the exit path, and the tick sweep — and
-//! the cell makes the second one lose.
+//! runs; exactly three callers ever take the hold out of it — the exit path, a child's end into its
+//! parent's hold (both in the teller), and the tick sweep — and the cell makes whichever arrives
+//! second lose.
 //!
 //! It is also the node's admission control on itself. A unit enters the table before it does
 //! anything, and if the table is full it does not enter. Two details matter and both are money:
