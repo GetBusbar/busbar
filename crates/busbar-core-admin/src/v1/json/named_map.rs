@@ -516,7 +516,7 @@ async fn apply(
                     Some(&snapshot),
                 )
             })();
-            let (built, gov_rotate) = match built {
+            let (built, gov_rotate, limits) = match built {
                 Ok(v) => v,
                 // The rebuild rejected the mutated config — NOTHING was persisted or swapped.
                 Err(e) => {
@@ -560,6 +560,8 @@ async fn apply(
                     })
                 },
                 move || {
+                    // Past persist AND swap: keep the limits this build installed.
+                    limits.keep();
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
