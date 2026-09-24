@@ -737,9 +737,6 @@ impl BudgetHost for BillingProbe {
     fn cost_model_unpriced(&self, _: &str) -> bool {
         false
     }
-    fn session_meter(&self) -> Arc<dyn session_meter::SessionMeter> {
-        Arc::new(session_meter::LocalMeteringPort)
-    }
     fn meter_ledger(
         &self,
         _: &MeterPin,

@@ -106,26 +106,3 @@ impl SessionAccount {
                 .is_some_and(|h| h <= 0.0)
     }
 }
-
-/// RETIRED WITH THE D2 LEASE (Q21b). Spelled only by three kernel files outside the voice slot
-/// (`BudgetHost::session_meter`, the host-double testkit, a probe test); nothing drives it. The patch
-/// `tmp/busbar-run/P2-voice-session-meter-shell.patch` deletes it with them.
-pub trait SessionMeter: Send + Sync {}
-
-/// See [`SessionMeter`].
-pub struct HostMeteringPort;
-
-impl HostMeteringPort {
-    /// See [`SessionMeter`].
-    #[must_use]
-    pub fn new<T: ?Sized>(_retired: Arc<T>) -> Self {
-        HostMeteringPort
-    }
-}
-
-impl SessionMeter for HostMeteringPort {}
-
-/// See [`SessionMeter`].
-pub struct LocalMeteringPort;
-
-impl SessionMeter for LocalMeteringPort {}

@@ -38,7 +38,6 @@ use busbar_kernel::breaker::{CanonicalSignal, Disposition};
 use busbar_kernel::hooks::{RequestedSignals, ResolvedPolicy, TapEntry};
 use busbar_kernel::plane::approvals::Sealer;
 use busbar_kernel::plane::calllog::CallInput;
-use busbar_kernel::plane_host::session_meter::{LocalMeteringPort, SessionMeter};
 use busbar_kernel::plane_host::{
     AdmissionHost, AdmitHandle, AudienceBinding, BreakerHost, BudgetHost, ClockHost,
     CompletionHost, DispatchScope, EngineHost, GateOutcome, GovAdmit, GovHandle, HookConfigHost,
@@ -553,10 +552,6 @@ impl BudgetHost for FixtureHost {
     // No card here, so nothing a card could miss.
     fn cost_model_unpriced(&self, _model: &str) -> bool {
         false
-    }
-    // The retired lease's name, still required by the trait (see its kernel doc).
-    fn session_meter(&self) -> Arc<dyn SessionMeter> {
-        Arc::new(LocalMeteringPort)
     }
     fn meter_ledger(
         &self,

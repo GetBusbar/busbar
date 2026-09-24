@@ -47,7 +47,6 @@ pub mod journal;
 pub mod pipe;
 pub mod scope;
 pub mod session_meter;
-pub mod testkit;
 pub mod trust;
 pub mod vtable;
 
@@ -881,10 +880,6 @@ impl busbar_kernel::plane_host::BudgetHost for EngineHostImpl {
         // The SAME read the in-place pre-admission guard makes off `app.cost`: `false` for every name
         // when no card is configured (there is no card to miss).
         self.app.cost.model_unpriced(model)
-    }
-
-    fn session_meter(&self) -> Arc<dyn session_meter::SessionMeter> {
-        Arc::new(session_meter::HostMeteringPort::new(Arc::new(self.clone())))
     }
 
     fn meter_ledger(
@@ -2562,10 +2557,9 @@ pub struct SettleOutcome {
 /// THE KERNEL'S PRICING SIDE of a live carrier — the reserve-then-settle cost lease and the rate card
 /// that prices each increment. KERNEL-INTERNAL (#43: "a plane plugin NEVER sees its rate card or
 /// fees"): it is NOT a supertrait of [`EngineHost`], so no plane-side host implements it and no plane
-/// names it. A plane meters a live carrier through the count-only
-/// [`SessionMeter`](session_meter::SessionMeter) its host hands out
-/// ([`BudgetHost::session_meter`]); the kernel's [`HostMeteringPort`](session_meter::HostMeteringPort)
-/// drives this trait underneath it.
+/// names it. A plane meters a live carrier through the kernel's count-only
+/// [`SessionAccount`](session_meter::SessionAccount), which prices nothing (Q21b); what drives this
+/// trait is the hot-ABI cost slots.
 ///
 /// The lease legs DEFAULT to the kernel's own host-owned `CostHold` registry ([`cost_host`]) — the SAME
 /// registry the hot-ABI `cost_reserve`/`cost_settle` slots fill, so every lease is one ledger. An
@@ -2886,8 +2880,8 @@ pub trait HookConfigHost: Send + Sync {
 
 /// The BUDGET/METERING slice: the money-path seams a plane drives — COUNTS in, VERDICTS out. The
 /// governance handle and [`MeterPin`] mints, the record-usage / record-metering accruals, the
-/// reserve-then-charge meter, the live-carrier [`SessionMeter`](session_meter::SessionMeter), and the
-/// pure headroom/budget projections. No method names a cost or price type: pricing is the kernel's
+/// reserve-then-charge meter, and the pure headroom/budget projections (a live carrier's
+/// [`SessionAccount`](session_meter::SessionAccount) is built over them). No method names a cost or price type: pricing is the kernel's
 /// ([`MeteringHost`], #43), so a plane-side host implements this slice without naming one. Split off
 /// `EngineHost` as a supertrait; the accrual seams read the pin kernel-side, no `HostCtx`.
 pub trait BudgetHost: Send + Sync {
@@ -2944,11 +2938,6 @@ pub trait BudgetHost: Send + Sync {
     /// `false` for every name when no card is configured (there is no card to miss). A verdict, not a
     /// rate: the plane fails the request closed on `true` and never learns a figure.
     fn cost_model_unpriced(&self, model: &str) -> bool;
-
-    /// The count-only [`SessionMeter`](session_meter::SessionMeter) a live carrier reports its turns
-    /// to: open over a kernel-derived budget, raw counts per turn, [`TurnVerdict`](session_meter::TurnVerdict)
-    /// back. The kernel's host binds it over its own lease registry and rate card.
-    fn session_meter(&self) -> Arc<dyn session_meter::SessionMeter>;
 
     /// LEDGER one delivered response's tier-split counts against the key's budget chain — the
     /// host-driven form of `sink.gov.record_usage(&sink.cost, key, pool, model, tokens, now)` over the
