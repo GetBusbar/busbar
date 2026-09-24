@@ -779,16 +779,33 @@ impl Gate for UnconstructedGate {
         let real = cx.read(DURABILITY).unwrap_or_default();
         let decls = cx.read(DECLARATIONS).unwrap_or_default();
 
+        // ── THE ONE STANDING RED THESE CONTROLS MUST NOT STAND ON (item 89). ────────────────
+        // `money-one-function-view` is declared `unshipped` and HAS a production construction
+        // site today, so `stale-declaration` is RED on the real tree. That is a money row, PARKED
+        // for its owner, and this selftest does not answer it: `gate unconstructed` stays RED on
+        // it. But every control that covers `stale-declaration` (and the whole-gate green arm)
+        // would then be planting into a row that is already red — PROOF IMPOSSIBLE, and the
+        // harness said so. So those controls run over a FIXTURE: the real tree with that one
+        // site's needle masked, i.e. the tree as the declaration still describes it. Everything
+        // else those controls read is the real tree, and every other control is unchanged.
+        let masked = parked_money_masked(cx);
+        let base = cx.with_overlay(masked.clone());
+        let on_base = |path: &str, content: String| {
+            let mut ov = masked.clone();
+            ov.set(path, content);
+            ov
+        };
+
         // ── CONTROL 1 — THE GREEN ARM. ──────────────────────────────────────────────────────
         // The unplanted tree must be green, or every RED below proves only that the gate is red
         // about everything. It covers EVERY owed row, which is what makes the informational
         // `unshipped` rows exercised rather than merely declared.
         let owed: Vec<String> = self.owed();
         report.push(prove_green(
-            cx,
+            &base,
             self,
-            "the real tree is GREEN: every declared capability is constructed, or declared \
-             unshipped and still unconstructed",
+            "the real tree, with the one parked money site masked, is GREEN: every declared \
+             capability is constructed, or declared unshipped and still unconstructed",
             &owed.iter().map(String::as_str).collect::<Vec<_>>(),
         ));
 
@@ -887,16 +904,12 @@ impl Gate for UnconstructedGate {
             "record: AuditChain::new().signing_with(key),",
         );
         report.push(prove_rows_red(
-            cx,
+            &base,
             self,
             "wiring the audit signer reds `stale-declaration`: an unshipped row that ACQUIRES a \
              construction site must be struck",
             &[ROW_STALE],
-            {
-                let mut ov = Overlay::new();
-                ov.set(DURABILITY, signed);
-                ov
-            },
+            on_base(DURABILITY, signed),
             &["declared `unshipped` but NOW HAS", "audit-chain-signing"],
         ));
 
@@ -962,21 +975,17 @@ impl Gate for UnconstructedGate {
 
         // ── CONTROL 10 — A DECLARATION THAT OUTLIVED ITS SUBJECT. ───────────────────────────
         report.push(prove_rows_red(
-            cx,
+            &base,
             self,
             "a declaration naming a symbol its `built` file no longer defines reds \
              `stale-declaration`",
             &[ROW_STALE],
-            {
-                let mut ov = Overlay::new();
-                ov.set(
-                    SETTLE,
-                    cx.read(SETTLE)
-                        .unwrap_or_default()
-                        .replace("pub fn dual_writing(", "pub fn renamed_away("),
-                );
-                ov
-            },
+            on_base(
+                SETTLE,
+                cx.read(SETTLE)
+                    .unwrap_or_default()
+                    .replace("pub fn dual_writing(", "pub fn renamed_away("),
+            ),
             &["defines no such item"],
         ));
 
@@ -1003,8 +1012,19 @@ impl Gate for UnconstructedGate {
         // ── CONTROL 11 — RESTORING THE SITE RETURNS THE ROW TO GREEN. ───────────────────────
         // Control 2's overlay with the call put back. This is what proves control 2's RED is about
         // THE MISSING CALL and not about the edit, the overlay, or the file having been touched.
+        //
+        // THE BASELINE IS CONTROL 2'S PLANTED TREE, not the real one (item 209). Taken over the
+        // real tree, "put the call back" wrote the bytes `durability.rs` already has — a plant that
+        // planted nothing, so its green was a statement about the unplanted tree. Over the tree
+        // with the site REMOVED, restoring it is a real edit, and the row going green is the
+        // restoration's doing.
+        let site_removed = {
+            let mut ov = Overlay::new();
+            ov.set(DURABILITY, gone.clone());
+            cx.with_overlay(ov)
+        };
         report.push(prove_rows_green(
-            cx,
+            &site_removed,
             self,
             "restoring the construction site returns the row to GREEN",
             &[&row_site("ledger-dual-write")],
@@ -1020,6 +1040,28 @@ impl Gate for UnconstructedGate {
 
         report
     }
+}
+
+/// The production file carrying the construction site that makes `money-one-function-view` stale,
+/// and the needle there. PARKED-OWNER money: the selftest masks it for its `stale-declaration`
+/// controls and answers nothing about it. Once the owner's ruling lands (the row struck, or the
+/// site removed) the needle is gone and the mask is empty, so it cannot hide anything else.
+const PARKED_MONEY_SITE: &str = "crates/busbar-core-admin/src/v1/service.rs";
+const PARKED_MONEY_NEEDLE: &str = "LedgerEntry::new(";
+
+/// The fixture overlay: [`PARKED_MONEY_SITE`] with [`PARKED_MONEY_NEEDLE`] rewritten to a name no
+/// declaration constructs, or an empty overlay when the needle is not there.
+fn parked_money_masked(cx: &Ctx) -> Overlay {
+    let mut ov = Overlay::new();
+    if let Ok(text) = cx.read(PARKED_MONEY_SITE) {
+        if text.contains(PARKED_MONEY_NEEDLE) {
+            ov.set(
+                PARKED_MONEY_SITE,
+                text.replace(PARKED_MONEY_NEEDLE, "LedgerEntry::parked_owner_masked("),
+            );
+        }
+    }
+    ov
 }
 
 /// The id of the self-test's planted, self-declared unshipped capability.
