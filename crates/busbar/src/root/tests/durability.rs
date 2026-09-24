@@ -4,7 +4,6 @@
 
 use super::*;
 use busbar_contract::caps::KernelSeal;
-use busbar_kernel_audit::{Clock, NoSeam};
 use busbar_kernel_ledger::legacy::RecordingRows;
 use busbar_kernel_wal::{decode_run, verify_journal, NullShipper};
 
@@ -272,11 +271,6 @@ fn a_sealed_audit_record_goes_on_the_journal() {
     // hashes, so a reader holding one can find the other.
     assert!(String::from_utf8_lossy(&record.body).contains(&sealed.hash));
     assert_eq!(durability.record.sealed(), 1);
-    assert_eq!(
-        durability.legacy.len(),
-        0,
-        "journalling a sealed record must not touch the previous release's chain"
-    );
 }
 
 /// The set branch: the operator asked for a journal on this node's disk, so one appears. The
@@ -323,7 +317,6 @@ fn both_branches_build_the_same_ledger_and_audit_streams() {
     // The audit chains start at the same place on both, because neither is a function of where
     // the journal lives.
     assert_eq!(buffered.record.next_seq(), on_disk.record.next_seq());
-    assert_eq!(buffered.legacy.len(), on_disk.legacy.len());
     assert!(buffered.ledger.is_dual_writing());
     assert!(on_disk.ledger.is_dual_writing());
     // And the journal starts at genesis on both.
@@ -474,15 +467,19 @@ fn with_a_data_dir_the_marker_survives_a_restart() {
     );
 }
 
-/// The previous release's administrative chain is UNTOUCHED by any of this.
+/// Journalling carries no administrative row, and the root holds no administrative ring (item 237).
 ///
-/// Said by building two logs and driving one of them through a node that is also journalling:
-/// every entry, including the digest that a deployment's whole history verifies against, is
-/// identical. A journal that had quietly become an input to that digest would report every
-/// deployed chain as tampered at the next boot, and that is the one change this release may not
-/// make.
+/// There is ONE administrative audit ring: the kernel's durable one, written by the core-admin
+/// handlers and served by `GET /api/v1/admin/audit`. The root used to hold a second, RAM-only copy
+/// behind a seam that persisted nothing and that no endpoint read. Two halves:
+///
+/// - a node journalling postings has only its own records on the journal — an administrative row
+///   never leaks onto it;
+/// - the durability stack's own source constructs no administrative ring: no `AuditLog`, no
+///   `NoSeam`. The end-to-end cell `the_served_audit_body_is_byte_identical_with_and_without_the_root`
+///   pins that the served body did not move.
 #[test]
-fn journalling_does_not_touch_the_legacy_admin_chain() {
+fn journalling_carries_no_admin_row_and_the_root_holds_no_second_admin_ring() {
     let mut durability = build_for_node(
         &DurabilityConfig { data_dir: None },
         4,
@@ -491,51 +488,11 @@ fn journalling_does_not_touch_the_legacy_admin_chain() {
     )
     .expect("memory-buffered cannot fail");
     let token = token();
-    // The digest covers the timestamp, so the two logs are put on one fixed clock: the claim is
-    // about what journalling does to the chain, and a wall clock ticking between two writes
-    // would make the comparison say nothing.
-    durability.legacy = AuditLog::with(Box::new(PinnedClock), Box::new(NoSeam));
-    let alone = AuditLog::with(Box::new(PinnedClock), Box::new(NoSeam));
-
-    let mutations = [
-        ("key.create", "vk_a"),
-        ("key.rotate", "vk_a"),
-        ("key.delete", "vk_b"),
-    ];
-
-    for (action, resource) in mutations {
-        // The node is journalling between administrative writes, exactly as it would be.
+    for _ in 0..3 {
         durability
             .journal_posting(&posting(), &token, StepName::Meter)
             .expect("the posting goes on the chain");
-        durability.legacy.record_by(
-            action,
-            resource,
-            busbar_kernel_audit::OUTCOME_APPLIED,
-            "admin",
-        );
-        alone.record_by(
-            action,
-            resource,
-            busbar_kernel_audit::OUTCOME_APPLIED,
-            "admin",
-        );
     }
-
-    // The WIRE, field for field, digest included: what an administrative read returns is what a
-    // node with no journal at all would have returned.
-    let on_the_wire = |log: &AuditLog| {
-        serde_json::to_string(&log.export()).expect("the previous release's record encodes")
-    };
-    assert_eq!(durability.legacy.len(), 3);
-    assert_eq!(
-        on_the_wire(&durability.legacy),
-        on_the_wire(&alone),
-        "the administrative chain differs from one written on a node with no journal at all"
-    );
-    assert!(durability.legacy.verify());
-    // And the journal has only its own records on it — the administrative entries did not leak
-    // onto it either, which is the other half of "the two do not merge".
     let replayed = durability
         .journal
         .replay()
@@ -543,15 +500,18 @@ fn journalling_does_not_touch_the_legacy_admin_chain() {
         .expect("verifies");
     assert_eq!(replayed.len(), 3);
     assert!(replayed.iter().all(|r| r.class == RecordClass::Transaction));
-}
 
-/// A clock that does not move, so two chains written independently are comparable.
-#[derive(Debug)]
-struct PinnedClock;
-
-impl Clock for PinnedClock {
-    fn now(&self) -> u64 {
-        1_700_000_000
+    let source = include_str!("../durability.rs");
+    let code: String = source
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for needle in ["AuditLog", "NoSeam"] {
+        assert!(
+            !code.contains(needle),
+            "root/durability.rs builds a second administrative ring again: `{needle}`"
+        );
     }
 }
 

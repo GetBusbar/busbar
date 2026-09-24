@@ -598,7 +598,7 @@ pub struct ProductionUnits {
     pub trust: Trust,
     /// The arrival door, bound to the admission unit and to nothing else.
     pub arrival_door: AdmissionDoor,
-    /// The journal, the ledger and the audit unit's two chains.
+    /// The journal, the ledger and the audit record chain.
     ///
     /// Behind one lock because all four are append-only and a unit's settlement touches more than
     /// one of them: the record is sealed, the ledger moves and the journal takes the batch, and a

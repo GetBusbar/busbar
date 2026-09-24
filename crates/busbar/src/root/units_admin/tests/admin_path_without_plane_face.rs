@@ -21,7 +21,8 @@
 //!    `Plane`'s: decode resolves the verb off the same closed table, authenticate/verify resolve and
 //!    keep the principal, approve compares the 1.5.5 matrix against the grant, admit takes no
 //!    concurrency lease, ROUTE hands the operation to the mounted surface, METER reports the empty
-//!    line, and AUDIT seals the mutation onto the previous release's chain;
+//!    line, and AUDIT seals the operation class and finish — the mutation's row on the ONE
+//!    administrative ring is the kernel's, written by the core-admin handler at Route (item 237);
 //! 5. the answer the surface produced comes back through the exit path, byte for byte.
 //!
 //! So these cells assert two things the removal must not have cost: that a real verb still travels
@@ -155,36 +156,17 @@ fn a_recording_surface(log: Arc<SurfaceLog>) -> axum::Router {
 
 /// A node whose book this cell holds the other half of.
 ///
-/// The durability is built HERE rather than inside `ProductionUnits::admin_only` so that the audit
-/// chain the walk seals onto is a chain this cell can read back. Same value, two holders: that is
-/// the whole point — a second chain read here would be a second answer to what the walk wrote.
+/// The book is built HERE rather than inside `ProductionUnits::admin_only` so that the rows the
+/// ledger dual-writes onto are rows this cell can read back. Same value, two holders.
 #[cfg(feature = "root-admin")]
 struct ANodeWhoseChainThisCellReads {
     router: axum::Router,
-    durability: Arc<std::sync::Mutex<crate::root::durability::Durability>>,
     rows: busbar_kernel_ledger::legacy::RecordingRows,
     surface: Arc<SurfaceLog>,
 }
 
 #[cfg(feature = "root-admin")]
 impl ANodeWhoseChainThisCellReads {
-    /// How many entries the previous release's administrative chain holds right now, and whether it
-    /// is still linked.
-    fn chain(&self) -> (usize, bool) {
-        let durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
-        (durability.legacy.len(), durability.legacy.verify())
-    }
-
-    /// The most recent entry on that chain.
-    fn last_entry(&self) -> busbar_kernel_audit::legacy::AuditEntry {
-        let durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
-        durability
-            .legacy
-            .list(1)
-            .pop()
-            .expect("the chain holds at least one entry")
-    }
-
     /// Every money posting the node's book has taken, which for an administrative walk must be none.
     ///
     /// Read off the write half the node was built over, which is the half the ledger dual-writes
@@ -205,8 +187,7 @@ fn a_node() -> ANodeWhoseChainThisCellReads {
         Box::new(rows.clone()),
     )
     .expect("a memory-buffered journal cannot fail to open");
-    let durability = Arc::new(std::sync::Mutex::new(durability));
-    let held = Arc::clone(&durability);
+    let held = Arc::new(std::sync::Mutex::new(durability));
     let read = Arc::new(rows.clone());
     // The SAME ingress cap `main.rs` hands the wrap, so the body read below is the one a deployment
     // configured rather than one this cell invented.
@@ -224,10 +205,62 @@ fn a_node() -> ANodeWhoseChainThisCellReads {
     );
     ANodeWhoseChainThisCellReads {
         router,
-        durability,
         rows,
         surface,
     }
+}
+
+/// The REAL administrative surface, twice: bare (the leg a node without the root serves, which
+/// never had a root-held ring) and wrapped by the root's mount exactly as `main.rs` wraps it.
+///
+/// Both answer `GET /api/v1/admin/audit` off the kernel's one administrative ring, which the
+/// core-admin handlers write as each mutation applies. The ring is process-wide, so every cell
+/// that reads it filters on a resource only that cell minted.
+#[cfg(feature = "root-admin")]
+fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
+    busbar_kernel::metrics::init();
+    busbar_core_admin::install();
+    // Governance ON, with a signer, so a key can be minted, renamed, revoked and deleted.
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
+        &[0x5a; 32],
+        busbar_kernel::governance::signing::DEFAULT_KID,
+    );
+    let gov = Arc::new(
+        busbar_kernel::governance::GovState::new_with_signer(
+            Arc::new(busbar_kernel::governance::MemoryStore::new()),
+            None,
+            Some(signer),
+        )
+        .expect("governance"),
+    );
+    let app = busbar_kernel::test_support::TestApp::new()
+        .admin_chain(vec![])
+        .governance(gov)
+        .build();
+    let (_data, bare, _handle) =
+        busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
+    let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
+    let durability = crate::root::durability::build(
+        &crate::root::durability::DurabilityConfig { data_dir: None },
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(rows.clone()),
+    )
+    .expect("a memory-buffered journal cannot fail to open");
+    let held = Arc::new(std::sync::Mutex::new(durability));
+    let read = Arc::new(rows);
+    let mounted = mount(
+        bare.clone(),
+        crate::root::kernel::new_kernel(),
+        1 << 20,
+        move |dispatch| {
+            crate::root::kernel::ProductionUnits::admin_only_sharing(dispatch, held, read)
+                .with_auth_chain(a_door_that_identifies_the_operator())
+                .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+                    ADirectoryThatMintedIt,
+                )))
+        },
+    );
+    (bare, mounted)
 }
 
 /// One request over the mounted listener, with the operator's credential on it.
@@ -237,6 +270,17 @@ async fn over_the_listener(
     method: &str,
     path: &str,
     body: &'static [u8],
+) -> (u16, Vec<u8>, Vec<(String, String)>) {
+    over(&node.router, method, path, body.to_vec()).await
+}
+
+/// One request over any router, with the operator's credential on it.
+#[cfg(feature = "root-admin")]
+async fn over(
+    router: &axum::Router,
+    method: &str,
+    path: &str,
+    body: Vec<u8>,
 ) -> (u16, Vec<u8>, Vec<(String, String)>) {
     use tower::ServiceExt;
 
@@ -250,8 +294,7 @@ async fn over_the_listener(
         .header(axum::http::header::CONTENT_TYPE, "application/json")
         .body(axum::body::Body::from(body))
         .expect("the request builds");
-    let response = node
-        .router
+    let response = router
         .clone()
         .oneshot(request)
         .await
@@ -305,81 +348,147 @@ async fn a_real_verb_still_answers_end_to_end_over_the_admin_listener() {
     );
 }
 
-/// AND THE AUDIT THE CHAIN PERFORMS IS STILL PERFORMED — by the admin units, on the admin path.
+/// The served audit rows for one resource, as the operator's `/audit` page returns them.
+#[cfg(feature = "root-admin")]
+async fn audit_rows_for(router: &axum::Router, resource: &str) -> (u16, Vec<u8>) {
+    let (status, body, _headers) = over(
+        router,
+        "GET",
+        &format!("/api/v1/admin/audit?resource={resource}&limit=50"),
+        Vec::new(),
+    )
+    .await;
+    (status, body)
+}
+
+/// `(action, outcome)` for every served row, newest first.
+#[cfg(feature = "root-admin")]
+fn actions_and_outcomes(body: &[u8]) -> Vec<(String, String)> {
+    let page: serde_json::Value = serde_json::from_slice(body).expect("the audit page is JSON");
+    page["items"]
+        .as_array()
+        .expect("the page carries items")
+        .iter()
+        .map(|row| {
+            (
+                row["action"].as_str().unwrap_or_default().to_string(),
+                row["outcome"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect()
+}
+
+/// Mint one key over `router`, and name the resource the ring files it under.
+#[cfg(feature = "root-admin")]
+async fn a_key_minted_over(router: &axum::Router, name: &str) -> String {
+    let (status, body, _headers) = over(
+        router,
+        "POST",
+        "/api/v1/admin/keys",
+        format!(r#"{{"name":"{name}"}}"#).into_bytes(),
+    )
+    .await;
+    assert_eq!(status, 201, "the mint reached the operation");
+    let minted: serde_json::Value = serde_json::from_slice(&body).expect("the mint answers JSON");
+    let id = minted["id"].as_str().expect("the minted key has an id");
+    format!("key:{id}")
+}
+
+/// AND THE AUDIT IS STILL PERFORMED — ONCE, ON THE ONE RING (item 237).
 ///
-/// This is the money-adjacent half of the removal. If the walk had been getting its audit through
-/// the plane face, deleting the face would have silently stopped recording administrative
-/// mutations, and an empty history reads exactly like a quiet fleet. It was not: the `audit` step
-/// of `impl RegisteredUnits for AdminPlane` seals onto the previous release's chain, and it still
-/// does.
-///
-/// One mutating verb, one entry — under the operation's own name, the applied outcome, and the
-/// identity the door resolved (never the credential, which is a secret and stays off the chain) —
-/// and the chain still verifies as linked afterwards.
+/// If the walk had been getting its audit through the plane face, deleting the face would have
+/// silently stopped recording administrative mutations, and an empty history reads exactly like a
+/// quiet fleet. It was not: the mutation's row is written by the core-admin handler the walk reaches
+/// at Route, onto the kernel's durable ring, and that is what the operator's `/audit` page serves.
+/// The root used to write a second copy onto a RAM-only ring of its own; one mutation is now ONE row.
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_mutating_verb_still_seals_exactly_one_entry_onto_the_audit_chain() {
-    let node = a_node();
-    let (before, linked) = node.chain();
-    assert!(linked, "the chain starts linked");
+    let (_bare, mounted) = the_real_surface_bare_and_mounted();
+    let resource = a_key_minted_over(&mounted, "p2-rootcleanup-one-entry").await;
 
-    let (status, _body, _headers) = over_the_listener(
-        &node,
-        "POST",
-        "/api/v1/admin/keys",
-        br#"{"name":"a-key-this-cell-asked-for"}"#,
-    )
-    .await;
-    assert_eq!(status, 200, "the mutation reached the operation");
-
-    let (after, linked) = node.chain();
-    assert_eq!(after, before + 1, "one unit, one entry");
-    assert!(linked, "the chain is still linked");
-
-    let entry = node.last_entry();
-    assert_eq!(entry.action, "post_keys");
-    assert_eq!(entry.resource, "/api/v1/admin/keys");
-    assert_eq!(entry.outcome, busbar_kernel_audit::OUTCOME_APPLIED);
+    let (status, body) = audit_rows_for(&mounted, &resource).await;
+    assert_eq!(status, 200);
     assert_eq!(
-        entry.principal,
-        crate::root::auth_bindings::ADMIN_PRINCIPAL_ID
-    );
-    assert!(
-        !entry.principal.contains(THE_OPERATORS_CREDENTIAL),
-        "the chain names the identity, never the credential"
+        actions_and_outcomes(&body),
+        vec![("key.create".to_string(), "applied".to_string())],
+        "one mutation, one row, on the ring the operator reads"
     );
 }
 
 /// A READ still seals nothing, which is the other half of the same step.
-///
-/// A cell that only counted entries after a mutation would pass just as well against a step that
-/// recorded EVERY unit — and a chain that grew on every GET buries the mutations an operator came
-/// to find. So the read is walked over the same node, right after the mutation, and the chain does
-/// not move.
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_read_verb_still_seals_nothing_onto_the_audit_chain() {
-    let node = a_node();
-    let (status, _body, _headers) = over_the_listener(
-        &node,
-        "POST",
-        "/api/v1/admin/keys",
-        br#"{"name":"a-key-this-cell-asked-for"}"#,
+    let (_bare, mounted) = the_real_surface_bare_and_mounted();
+    let resource = a_key_minted_over(&mounted, "p2-rootcleanup-read-seals-nothing").await;
+    let (_status, after_the_mutation) = audit_rows_for(&mounted, &resource).await;
+
+    let (status, _body, _headers) = over(
+        &mounted,
+        "GET",
+        &format!("/api/v1/admin/{}", resource.replacen("key:", "keys/", 1)),
+        Vec::new(),
     )
     .await;
-    assert_eq!(status, 200);
-    let (after_the_mutation, _) = node.chain();
-
-    let (status, _body, _headers) =
-        over_the_listener(&node, "GET", "/api/v1/admin/audit", b"").await;
     assert_eq!(status, 200, "the read reached the operation");
-    let (after_the_read, linked) = node.chain();
+    let (_status, after_the_read) = audit_rows_for(&mounted, &resource).await;
 
     assert_eq!(
         after_the_read, after_the_mutation,
-        "a read is not a mutation and the chain does not record it"
+        "a read is not a mutation and the ring does not record it"
     );
-    assert!(linked, "the chain is still linked");
+}
+
+/// THE SERVED AUDIT BODY IS BYTE-IDENTICAL THROUGH THE ROOT AND WITHOUT IT (item 237).
+///
+/// A fixed sequence of mutations — mint, disable, revoke, delete one key — is walked through the
+/// root's mount over the real surface. The operator's `/audit` page for that key is then asked for
+/// twice: through the root, and through the bare surface a node without the root serves, which
+/// never held a second ring. The two bodies are the same bytes, and they list exactly one row per
+/// mutation, in order: the root adds no second answer to "what changed" and routes the read to the
+/// kernel's one ring. Run at the phase-start tree (the root still keeping its RAM-only ring) this
+/// cell passes with the same literal, which is the before/after comparison: deleting the ring moved
+/// no served byte.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn the_served_audit_body_is_byte_identical_with_and_without_the_root() {
+    let (bare, mounted) = the_real_surface_bare_and_mounted();
+    let resource = a_key_minted_over(&mounted, "p2-rootcleanup-byte-identity").await;
+    let path = format!("/api/v1/admin/{}", resource.replacen("key:", "keys/", 1));
+
+    let (status, _, _) = over(
+        &mounted,
+        "PATCH",
+        &path,
+        br#"{"enabled":false}"#.to_vec(),
+    )
+    .await;
+    assert_eq!(status, 200, "the disable applied");
+    let (status, _, _) = over(&mounted, "POST", &format!("{path}/revoke"), b"{}".to_vec()).await;
+    assert!((200..300).contains(&status), "the revoke applied: {status}");
+    let (status, _, _) = over(&mounted, "DELETE", &path, Vec::new()).await;
+    assert!((200..300).contains(&status), "the delete applied: {status}");
+
+    let (status, through_the_root) = audit_rows_for(&mounted, &resource).await;
+    assert_eq!(status, 200);
+    let (status, without_the_root) = audit_rows_for(&bare, &resource).await;
+    assert_eq!(status, 200);
+
+    assert_eq!(
+        through_the_root, without_the_root,
+        "the served audit body differs through the root"
+    );
+    assert_eq!(
+        actions_and_outcomes(&through_the_root),
+        vec![
+            ("key.delete".to_string(), "applied".to_string()),
+            ("key.revoke".to_string(), "applied".to_string()),
+            ("key.patch".to_string(), "applied".to_string()),
+            ("key.create".to_string(), "applied".to_string()),
+        ],
+        "one row per mutation, newest first, and no second copy"
+    );
 }
 
 /// AND THE METER STEP STILL RUNS, AND STILL PRICES AN ADMIN VERB AT NOTHING.
@@ -431,12 +540,11 @@ async fn an_admin_verb_still_meters_to_nothing_and_posts_nothing() {
 /// underneath. That is the property that keeps `/healthz` — which answers on this listener with the
 /// auth chain bypassed entirely and is not an administrative verb — answering. It is asserted here
 /// because it is the one place the closed table still decides something on the live path, and the
-/// removal must not have moved it: the surface still sees the request, and the chain still does not.
+/// removal must not have moved it: the surface still sees the request, once.
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_path_the_table_does_not_declare_reaches_the_surface_without_the_loop() {
     let node = a_node();
-    let (before, _) = node.chain();
 
     let (status, body, _headers) = over_the_listener(&node, "GET", "/healthz", b"").await;
     assert_eq!(status, 200);
@@ -445,11 +553,5 @@ async fn a_path_the_table_does_not_declare_reaches_the_surface_without_the_loop(
         node.surface.seen().len(),
         1,
         "the surface answered it, once"
-    );
-
-    let (after, _) = node.chain();
-    assert_eq!(
-        after, before,
-        "a request that never entered the loop never reached the audit step"
     );
 }

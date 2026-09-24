@@ -4,15 +4,6 @@
 
 use super::*;
 
-/// The legacy ring binds no clock of its own; a pinned one keeps records comparable.
-#[derive(Debug)]
-struct PinnedClock;
-impl busbar_kernel_audit::Clock for PinnedClock {
-    fn now(&self) -> u64 {
-        1_700_000_000
-    }
-}
-
 /// A key no other request in this binary is walking. The unit key names one live unit, so two
 /// fixtures sharing a literal would be two requests claiming one entry in the units table.
 fn a_fresh_unit() -> u64 {
@@ -341,26 +332,18 @@ fn a_header_count_larger_than_the_frame_is_refused_not_reserved() {
     assert_eq!(header_capacity(2, 4_096), 2);
 }
 
-/// A mutation's record names the caller, and never the bytes the caller presented.
+/// Neither audit door carries the presented credential into what it seals.
 ///
-/// Both doors are walked, because both write a row and either one leaking is the whole leak: the
-/// completed mutation and the refused one. The credential in the fixture is deliberately not a
-/// substring of the identity, so "the row does not contain the credential" and "the row is the
-/// identity" are two independent assertions rather than one restated.
-///
-/// The chain this writes to is the one an operator's audit page reads and a store persists, so a
-/// row carrying a live bearer token publishes it to everybody entitled to read history — a wider
-/// set than the set entitled to hold the token.
+/// Both doors are walked, completed and refused, with a live-looking credential on the request.
+/// The facts they seal are the operation class and the finish, and nothing the caller presented;
+/// the administrative ring that names a principal is the kernel's one ring (item 237), written by
+/// the core-admin handler, not by this step.
 #[test]
-fn a_recorded_mutation_names_the_principal_and_not_the_credential() {
+fn the_audit_doors_carry_no_credential_into_the_sealed_facts() {
     let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     let binding = AdminBinding::new(Arc::new(RefusingDispatch));
 
-    let rows = |completed: bool| -> Vec<busbar_kernel_audit::legacy::AuditEntry> {
-        let log = busbar_kernel_audit::AuditLog::with(
-            Box::new(PinnedClock),
-            Box::new(busbar_kernel_audit::NoSeam),
-        );
+    for completed in [true, false] {
         let key = UnitKey::new(1);
         let mut request = a_request();
         request.method = "PUT".to_string();
@@ -387,35 +370,22 @@ fn a_recorded_mutation_names_the_principal_and_not_the_credential() {
         .into_result(&seal);
 
         let audit_token: Pass<Audit> = Pass::mint(&seal);
-        if completed {
-            let _ =
-                audit(&binding, &log, &audit_token, &ctx, &Outcome::Completed).into_result(&seal);
+        let facts = if completed {
+            audit(&binding, &audit_token, &ctx, &Outcome::Completed).into_result(&seal)
         } else {
-            let _ = audit_refused(
+            audit_refused(
                 &binding,
-                &log,
                 &audit_token,
                 &ctx,
                 &Refusal::new(ReasonCode::ScopeDenied),
             )
-            .into_result(&seal);
+            .into_result(&seal)
         }
+        .expect("the door seals the mutation");
         binding.units.close(key);
-        log.export()
-    };
-
-    for completed in [true, false] {
-        let entries = rows(completed);
-        assert_eq!(entries.len(), 1, "the mutation was not recorded");
-        assert_eq!(
-            entries[0].principal, "key_operator_7",
-            "the record does not name the identity the auth step resolved"
-        );
         assert!(
-            !entries[0]
-                .principal
-                .contains("sk-live-the-presented-secret"),
-            "the presented credential reached the administrative chain"
+            !format!("{facts:?}").contains("sk-live-the-presented-secret"),
+            "the presented credential reached the sealed facts"
         );
     }
 }
@@ -1300,135 +1270,74 @@ fn a_verb_the_table_never_named_has_nowhere_to_go_and_a_resolved_one_has_nowhere
     );
 }
 
-/// One admin unit seals exactly one entry on the chain, and a read seals none.
+/// The audit step seals the resolved operation class and its finish, and appends to no ring.
 ///
-/// THE audit STEP, over the loop. The rig column reads the fresh four-op chain from the outside;
-/// this reads the same chain from the step that writes it, which is where "exactly one" is
-/// actually decided. Three answers, and each is a different way the step could be wrong:
+/// Item 237: there is ONE administrative audit ring, the kernel's durable one, written by the
+/// core-admin handler as a mutation applies (the end-to-end cell in
+/// `admin_path_without_plane_face.rs` reads it back over the served `/audit`). The step used to
+/// append a second copy onto a RAM-only root ring; it now takes no ring at all, so what is left to
+/// assert here is what it still decides — the facts the audit unit seals:
 ///
-/// - a mutating verb appends exactly ONE entry, under the operation's own name and the applied
-///   outcome — not zero, and not one per step that ran;
-/// - a READ appends none, because the chain is a record of what changed and a listing changed
-///   nothing. A chain that grew on every GET would bury the mutations an operator came to find;
-/// - a unit refused before Admit still appends one, under the rejected outcome, because the
-///   attempt happened and a chain that recorded only successes is the one an attacker wants —
-///   PROVIDED an identity was resolved for it. A unit refused before that has nobody to
-///   attribute to, and the fourth answer below is that it appends nothing rather than
-///   attributing an anonymous caller's refused mutation to the configured administrator.
-///
-/// The chain is verified after each, so the entries are linked rather than merely counted.
+/// - a mutating verb completes under its own write class and a complete finish;
+/// - a READ completes under its read class;
+/// - a refused mutation, attributed or not, seals an error finish under its write class.
 #[cfg(feature = "root-admin")]
 #[test]
-fn one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none() {
-    let legacy = busbar_kernel_audit::AuditLog::with(
-        Box::new(PinnedClock),
-        Box::new(busbar_kernel_audit::NoSeam),
-    );
-
-    // A mutation: an operator-key write, on the mutating side of the closed split.
+fn the_audit_doors_seal_the_resolved_class_and_append_to_no_ring() {
     let mut mutating = a_request();
     mutating.method = "POST".to_string();
     mutating.path = "/api/v1/admin/operator-key".to_string();
-    let (binding, ctx, seal) = a_bound_unit(mutating);
+    let (binding, ctx, seal) = a_bound_unit(mutating.clone());
     let resolved = binding
         .units
         .verb(ctx.key)
         .expect("the operator-key write is a row the table names");
     assert!(!resolved.read_only, "the fixture must be a mutation");
-    // Verify is what keeps the resolved identity, and the fixture stands in for it: a unit that
-    // reaches the audit door having been authenticated has one, and that is what the record is
-    // attributed to.
     binding
         .units
         .set_principal(ctx.key, PrincipalId::new(AN_IDENTIFIED_OPERATOR));
+    let facts = audit(&binding, &Pass::mint(&seal), &ctx, &Outcome::Completed)
+        .into_result(&seal)
+        .expect("the door seals a completed mutation");
+    assert_eq!(facts.op_class, resolved.op_class());
+    assert_eq!(facts.finish, busbar_contract::FinishClass::Complete);
 
-    let before = legacy.len();
-    let _ = audit(
-        &binding,
-        &legacy,
-        &Pass::mint(&seal),
-        &ctx,
-        &Outcome::Completed,
-    );
-    assert_eq!(legacy.len(), before + 1, "one unit, one entry");
-    let entry = legacy.list(1).pop().expect("the entry just sealed");
-    assert_eq!(entry.action, resolved.verb);
-    assert_eq!(entry.outcome, busbar_kernel_audit::OUTCOME_APPLIED);
-    // The record names the identity Verify resolved -- never the credential the request
-    // presented, which is a secret and stays out of the chain.
-    assert_eq!(entry.principal, AN_IDENTIFIED_OPERATOR);
-    assert!(!entry.principal.contains("admin-token"));
-    assert!(legacy.verify(), "the chain is linked");
-
-    // A read changes nothing and records nothing.
+    // A read.
     let (binding, ctx, seal) = a_bound_unit(a_request());
-    assert!(
-        binding
-            .units
-            .verb(ctx.key)
-            .expect("the audit listing is a row the table names")
-            .read_only,
-        "the fixture must be a read"
-    );
-    let before = legacy.len();
-    let _ = audit(
-        &binding,
-        &legacy,
-        &Pass::mint(&seal),
-        &ctx,
-        &Outcome::Completed,
-    );
-    assert_eq!(legacy.len(), before, "a read is not a mutation");
-
-    // A refused mutation by somebody the node identified is recorded as an attempt, not dropped.
-    let mut mutating = a_request();
-    mutating.method = "POST".to_string();
-    mutating.path = "/api/v1/admin/operator-key".to_string();
-    let (binding, ctx, seal) = a_bound_unit(mutating);
-    binding
+    let read = binding
         .units
-        .set_principal(ctx.key, PrincipalId::new(AN_IDENTIFIED_OPERATOR));
-    let before = legacy.len();
-    let _ = audit_refused(
-        &binding,
-        &legacy,
-        &Pass::mint(&seal),
-        &ctx,
-        &Refusal::new(ReasonCode::OverBudget),
+        .verb(ctx.key)
+        .expect("the audit listing is a row the table names");
+    assert!(read.read_only, "the fixture must be a read");
+    let facts = audit(&binding, &Pass::mint(&seal), &ctx, &Outcome::Completed)
+        .into_result(&seal)
+        .expect("the door seals a read");
+    assert_eq!(facts.op_class, read.op_class());
+    assert_ne!(
+        facts.op_class,
+        resolved.op_class(),
+        "a read and a write seal under two classes"
     );
-    assert_eq!(legacy.len(), before + 1, "the attempt is on the chain");
-    let entry = legacy.list(1).pop().expect("the entry just sealed");
-    assert_eq!(entry.outcome, busbar_kernel_audit::OUTCOME_REJECTED);
-    assert_eq!(entry.principal, AN_IDENTIFIED_OPERATOR);
-    assert!(legacy.verify(), "the chain is still linked");
 
-    // AND THE SAME MUTATION BY NOBODY IS NOT. No principal was ever set on this unit, which is
-    // the state of every request refused at or before Authenticate. The previous release's
-    // chain holds no row for one, and neither does this: a record naming the configured
-    // administrator for a request that administrator never made would let an anonymous caller
-    // grow that operator's history one refused write at a time.
-    let mut mutating = a_request();
-    mutating.method = "POST".to_string();
-    mutating.path = "/api/v1/admin/operator-key".to_string();
-    let (binding, ctx, seal) = a_bound_unit(mutating);
-    assert!(
-        binding.units.principal(ctx.key).is_none(),
-        "the fixture must be a unit no identity was resolved for"
-    );
-    let before = legacy.len();
-    let _ = audit_refused(
-        &binding,
-        &legacy,
-        &Pass::mint(&seal),
-        &ctx,
-        &Refusal::new(ReasonCode::Unauthenticated),
-    );
-    assert_eq!(
-        legacy.len(),
-        before,
-        "an unattributable refusal appends nothing"
-    );
-    assert!(legacy.verify(), "the chain is still linked");
+    // A refused mutation, by somebody the node identified and by nobody.
+    for identified in [true, false] {
+        let (binding, ctx, seal) = a_bound_unit(mutating.clone());
+        if identified {
+            binding
+                .units
+                .set_principal(ctx.key, PrincipalId::new(AN_IDENTIFIED_OPERATOR));
+        }
+        let facts = audit_refused(
+            &binding,
+            &Pass::mint(&seal),
+            &ctx,
+            &Refusal::new(ReasonCode::OverBudget),
+        )
+        .into_result(&seal)
+        .expect("the refused door seals the attempt");
+        assert_eq!(facts.op_class, resolved.op_class());
+        assert_eq!(facts.finish, busbar_contract::FinishClass::Error);
+    }
 }
 
 /// The identity a fixture stands Verify's answer in for. Deliberately NOT the word the
@@ -1795,10 +1704,6 @@ fn an_unresolved_unit_is_sealed_by_the_method_it_asked_with() {
 #[cfg(feature = "root-admin")]
 #[test]
 fn the_refused_door_seals_the_refusal_that_happened() {
-    let legacy = busbar_kernel_audit::AuditLog::with(
-        Box::new(PinnedClock),
-        Box::new(busbar_kernel_audit::NoSeam),
-    );
     // A path the plane's table does not declare, so the verb never resolves and the door takes
     // its unresolved arm — the one that used to fabricate.
     let mut unrouted = a_request();
@@ -1812,7 +1717,6 @@ fn the_refused_door_seals_the_refusal_that_happened() {
 
     let facts = audit_refused(
         &binding,
-        &legacy,
         &Pass::mint(&seal),
         &ctx,
         &Refusal::new(ReasonCode::Unauthenticated),
@@ -1825,7 +1729,6 @@ fn the_refused_door_seals_the_refusal_that_happened() {
         "the DELETE it asked with, not the read it used to be sealed as"
     );
     assert_eq!(facts.finish, busbar_contract::FinishClass::Error);
-    assert_eq!(legacy.len(), 0, "and nobody was attributed for it");
 }
 
 // ── the five ledger views ───────────────────────────────────────────────────────────────────

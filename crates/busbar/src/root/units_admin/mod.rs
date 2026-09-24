@@ -2902,10 +2902,7 @@ fn mints_its_own_identity(verb: KernelVerb) -> bool {
 /// secret — and it also attributes two callers sharing one token to two different actors while
 /// attributing one caller rotating a token to one actor per rotation.
 ///
-/// `None` where no identity was resolved, which is the answer the audit doors act on: a unit refused
-/// at or before Authenticate has no actor, so the previous release's chain takes no row for it. The
-/// literal that used to stand in was the CONFIGURED administrator's name, which made every refused
-/// unauthenticated mutation a row in that operator's own history.
+/// `None` where no identity was resolved: a unit refused at or before Authenticate has no actor.
 fn resolved_actor(binding: &AdminBinding, key: UnitKey) -> Option<String> {
     binding.units.principal(key).map(|p| p.as_str().to_string())
 }
@@ -2914,8 +2911,6 @@ fn resolved_actor(binding: &AdminBinding, key: UnitKey) -> Option<String> {
 ///
 /// Reached only by Route, and Route is downstream of Authenticate — a unit that reaches it has a
 /// principal, so this is the shape of an impossibility rather than a fallback anything exercises.
-/// It is NOT what the audit doors use: those decline to write at all, because a record naming a
-/// non-participant is a worse answer than no record.
 const UNRESOLVED_ACTOR: &str = "admin";
 
 /// The identity a step that cannot decline is handed. See [`UNRESOLVED_ACTOR`].
@@ -2963,20 +2958,21 @@ pub(crate) fn meter(
     }
 }
 
-/// Step 7. The end, sealed onto the previous release's administrative chain.
+/// Step 7. The end, stated as the facts the audit unit seals.
 ///
-/// The chain is `busbar-unit-audit`'s legacy one: the mutation history an operator's `/audit` page
-/// has always read, moved rather than rewritten, so that a digest change cannot silently report every
-/// deployment's history as tampered. A read is not a mutation and is not appended; the chain is a
-/// record of what changed.
+/// THIS STEP APPENDS TO NO ADMINISTRATIVE RING. There is one — the kernel's durable ring, written by
+/// the core-admin handler as the mutation applies, and it is what an operator's `/audit` page reads.
+/// This step used to append a second copy of every mutation onto a root-held ring behind a seam that
+/// persisted nothing and that no endpoint served (item 237); a second ring is a second answer to
+/// "what changed", and the one an operator could never read. What the step still decides is the
+/// operation class and the finish the audit unit seals.
 pub(crate) fn audit(
     binding: &AdminBinding,
-    legacy: &busbar_kernel_audit::AuditLog,
     token: &Pass<Audit>,
     ctx: &UnitCtx,
     outcome: &Outcome,
 ) -> Decision<Audit> {
-    let (Some(request), Some(resolved)) =
+    let (Some(_), Some(resolved)) =
         (binding.units.request(ctx.key), binding.units.verb(ctx.key))
     else {
         return Decision::proceed(
@@ -2991,11 +2987,6 @@ pub(crate) fn audit(
             ),
         );
     };
-    if !resolved.read_only {
-        if let Some(actor) = resolved_actor(binding, ctx.key) {
-            legacy.record_by(resolved.verb, &request.path, outcome_word(outcome), &actor);
-        }
-    }
     Decision::proceed(
         token,
         busbar_contract::AuditFacts {
@@ -3005,16 +2996,16 @@ pub(crate) fn audit(
     )
 }
 
-/// Step 7, the other door. A unit that never passed Admit was charged nothing, and the chain records
-/// the attempt rather than pretending it did not happen.
+/// Step 7, the other door. A unit that never passed Admit was charged nothing, and the sealed facts
+/// record the attempt rather than pretending it did not happen. Like [`audit`], it appends to no
+/// administrative ring (item 237).
 pub(crate) fn audit_refused(
     binding: &AdminBinding,
-    legacy: &busbar_kernel_audit::AuditLog,
     token: &Pass<Audit>,
     ctx: &UnitCtx,
     refusal: &Refusal,
 ) -> Decision<Audit> {
-    let (Some(request), Some(resolved)) =
+    let (Some(_), Some(resolved)) =
         (binding.units.request(ctx.key), binding.units.verb(ctx.key))
     else {
         // THE REFUSAL THAT HAPPENED, not one composed here. This arm used to seal every unresolved
@@ -3040,24 +3031,6 @@ pub(crate) fn audit_refused(
             ),
         );
     };
-    // A REFUSAL BEFORE THE IDENTITY RESOLVED APPENDS NOTHING. The previous release's chain is what
-    // an operator's history page reads, and for an unauthenticated administrative request it holds
-    // no row at all — the credential was never accepted, so no principal ever acted. Writing one
-    // anyway put a mutation in the history under the configured administrator's name for a request
-    // that administrator never made, which is worse than a gap: an anonymous caller could grow that
-    // operator's history one refused `DELETE` at a time. The attempt is still reported — it is the
-    // refusal the caller receives and the sealed facts below — it is simply not attributed to
-    // somebody who was not there.
-    if !resolved.read_only {
-        if let Some(actor) = resolved_actor(binding, ctx.key) {
-            legacy.record_by(
-                resolved.verb,
-                &request.path,
-                busbar_kernel_audit::OUTCOME_REJECTED,
-                &actor,
-            );
-        }
-    }
     Decision::proceed(
         token,
         busbar_contract::AuditFacts {
@@ -3106,13 +3079,6 @@ const OP_UNRESOLVED_WRITE: &str = "admin_write";
 /// direction for a column an audit review is read for.
 fn is_read_method(method: &str) -> bool {
     method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD")
-}
-
-fn outcome_word(outcome: &Outcome) -> &'static str {
-    match outcome {
-        Outcome::Completed => busbar_kernel_audit::OUTCOME_APPLIED,
-        _ => busbar_kernel_audit::OUTCOME_REJECTED,
-    }
 }
 
 fn finish_of(outcome: &Outcome) -> busbar_contract::FinishClass {
@@ -3308,8 +3274,7 @@ impl RegisteredUnits for AdminPlane {
         ctx: &UnitCtx,
         outcome: &Outcome,
     ) -> Decision<Audit> {
-        let durability = root.durability.lock().unwrap_or_else(|p| p.into_inner());
-        audit(&root.admin, &durability.legacy, token, ctx, outcome)
+        audit(&root.admin, token, ctx, outcome)
     }
 
     fn audit_refused(
@@ -3319,8 +3284,7 @@ impl RegisteredUnits for AdminPlane {
         ctx: &UnitCtx,
         refusal: &Refusal,
     ) -> Decision<Audit> {
-        let durability = root.durability.lock().unwrap_or_else(|p| p.into_inner());
-        audit_refused(&root.admin, &durability.legacy, token, ctx, refusal)
+        audit_refused(&root.admin, token, ctx, refusal)
     }
 
     fn encode(

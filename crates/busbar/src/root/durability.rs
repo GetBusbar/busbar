@@ -77,23 +77,22 @@
 //! rows this one wrote. It is constructed before anything listens, because the first accepted
 //! connection can settle.
 //!
-//! ## Two audit streams that do not merge, and a journal that touches neither
+//! ## One administrative audit ring, and it is not here
 //!
-//! The audit unit keeps a legacy chain and a record chain, and they stay apart deliberately. The
-//! legacy chain is the previous release's administrative mutation chain — moved, not rewritten,
-//! because a change to its digest would report every deployment's history as tampered. The record
-//! chain is the new fixed record. The root holds both; the legacy chain is fed by the verbs unit's
-//! administrative path and the record chain by the audit step.
+//! The root holds the audit unit's RECORD chain — the new fixed record, fed by the audit step and
+//! journalled beside the postings. It holds no administrative mutation ring. The previous release's
+//! administrative chain is the kernel's one durable ring, written by the core-admin handlers as each
+//! mutation applies and served by `GET /api/v1/admin/audit`. The root used to keep a second,
+//! RAM-only copy of it behind a seam that persisted nothing and that no endpoint read (item 237);
+//! a second ring is a second answer to "what changed", so there is one.
 //!
-//! Journalling a sealed record does not touch the legacy chain, and there is a test below that says
-//! so by building two logs and comparing them byte for byte. An administrative read is the previous
-//! release's read of the previous release's entries; the journal is additional, and additional has
-//! to mean invisible from that side.
+//! Journalling a sealed record does not touch the administrative ring: the journal carries only
+//! its own record classes, and there is a test below that says so.
 
 use std::path::{Path, PathBuf};
 
 use busbar_contract::caps::{DurabilityLost, DurableWrite, Grant, StepName};
-use busbar_kernel_audit::{AuditChain, AuditLog, AuditRecord, Clock, NoSeam};
+use busbar_kernel_audit::{AuditChain, AuditRecord};
 use busbar_kernel_ledger::checkpoint::Checkpoint;
 use busbar_kernel_ledger::legacy::{LegacyRows, RecordingRows};
 use busbar_kernel_ledger::migration::{MigrationError, MigrationMarker, MigrationRecords};
@@ -116,7 +115,7 @@ pub struct DurabilityConfig {
     pub data_dir: Option<PathBuf>,
 }
 
-/// The durability stack the root owns: the journal, the ledger and the two audit chains.
+/// The durability stack the root owns: the journal, the ledger and the audit record chain.
 pub struct Durability {
     /// The one journal. On disk only where a data directory was configured; otherwise
     /// memory-buffered and shipped through the store adapter's plane-record verbs.
@@ -125,8 +124,6 @@ pub struct Durability {
     pub ledger: Ledger,
     /// The new fixed record's chain.
     pub record: AuditChain,
-    /// The previous release's administrative mutation chain, moved rather than rewritten.
-    pub legacy: AuditLog,
     /// The seals this node made, oldest first.
     ///
     /// Retained here rather than re-read off the journal, because the journal does not keep enough
@@ -1571,7 +1568,7 @@ impl MigrationRecords for JournalMigrationRecords<'_> {
     }
 }
 
-/// Build the journal, the ledger and the two audit chains, as node zero.
+/// Build the journal, the ledger and the audit record chain, as node zero.
 ///
 /// # Errors
 ///
@@ -1592,7 +1589,7 @@ pub fn build(
 /// one set of rows while its views read another, and the identity over that pair reports every row
 /// as out.
 pub struct NodeBook {
-    /// The journal, the ledger and the two audit chains, behind the one lock every settlement and
+    /// The journal, the ledger and the audit record chain, behind the one lock every settlement and
     /// every view takes.
     pub durability: std::sync::Arc<std::sync::Mutex<Durability>>,
     /// The previous release's rows, as the dual write fills them. The write half is inside the
@@ -1633,24 +1630,8 @@ pub fn node_book() -> NodeBook {
     }
 }
 
-/// The root's wall clock, in whole seconds since the Unix epoch, as every other reading on this
-/// path spells it: a clock that reads before the epoch gives zero rather than panicking.
-///
-/// It lives HERE, in the composition root, because reading the wall clock is the root's job. The
-/// audit unit takes a [`Clock`] and has no implementation of its own — a unit that could read the
-/// clock could produce a different record from the same inputs, and then replaying the inputs would
-/// no longer reproduce the record.
-struct RootWallClock;
 
-impl Clock for RootWallClock {
-    fn now(&self) -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs())
-    }
-}
-
-/// Build the journal, the ledger and the two audit chains.
+/// Build the journal, the ledger and the audit record chain.
 ///
 /// The whole decision is the first `match`. Everything after it is the same on both branches, which
 /// is the point: a node without a data directory is not running a reduced stack, it is running the
@@ -1684,10 +1665,6 @@ pub fn build_for_node(
         // write, and both are release requirements rather than deployment choices.
         ledger: Ledger::dual_writing(legacy_rows),
         record: AuditChain::new(),
-        // The ring takes the ROOT's clock. The audit unit has none of its own to fall back on, which
-        // is the point: reading the wall clock is the composition root's job, and a unit that could
-        // do it for itself would stop being replayable from its inputs.
-        legacy: AuditLog::with(Box::new(RootWallClock), Box::new(NoSeam)),
         checkpoints: Vec::new(),
         // Set from the chain below, before anything can write under it.
         incarnation: 0,
