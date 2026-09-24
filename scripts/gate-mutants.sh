@@ -25,7 +25,7 @@
 # comfortable number. The command below is the four gates' own proof, plus the library unit tests.
 #
 # USAGE
-#   scripts/gate-mutants.sh --scope            print the in-scope changed files; exit 0 always
+#   scripts/gate-mutants.sh --scope            print the in-scope changed files; exit 2 if the base ref does not resolve
 #   scripts/gate-mutants.sh --gates            print the gate self-proofs this diff needs
 #   scripts/gate-mutants.sh --diff FILE        write the scoped merge-base..HEAD diff to FILE
 #   scripts/gate-mutants.sh --shard K/N        run shard K of N; red if any mutant SURVIVES
@@ -395,6 +395,13 @@ gm_selftest() {
       _with_base refs/heads/no-such-base-ever gm_scope "$here"
   _c "a base that does not resolve refuses the DIFF too" 2 \
       _with_base refs/heads/no-such-base-ever gm_diff "$root/d.diff" "$here"
+  # -- the USAGE the script prints must promise what the case above pins (item 545): --scope
+  #    refuses (exit 2) on an unresolvable base, so no usage line may say "exit 0 always".
+  _c "--help prints the usage"                       2 bash "$here/scripts/gate-mutants.sh" --help
+  if grep -qiE 'exit 0 always' "$GM_OUT"; then
+    printf '  FAIL %-58s\n' "USAGE does not promise 'exit 0 always'"; fails=$((fails+1))
+  else printf '  ok   %-58s\n' "USAGE does not promise 'exit 0 always'"; fi
+  _g "USAGE names --scope's exit 2 on an unresolvable base" "$GM_OUT" '[-]-scope .*exit 2'
 
   # -- the real base resolves to a commit
   if base="$(gm_base "$here" 2>/dev/null)" && [ ${#base} -ge 7 ]; then
