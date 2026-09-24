@@ -806,18 +806,24 @@ fn a_session_closes_when_it_goes_quiet_or_its_budget_runs_dry() {
         session_tick(1_000, 0, SESSION_IDLE_MAX_MS, None, false, false, false),
         SessionTick::Close {
             reason: ReasonCode::DeadlineExceeded,
+            elapsed: 0,
+            checkpoint: None,
         }
     );
     assert_eq!(
         session_tick(1_000, 0, 0, None, true, true, false),
         SessionTick::Close {
             reason: ReasonCode::OverBudget,
+            elapsed: 0,
+            checkpoint: None,
         }
     );
     assert_eq!(
         session_tick(1_000, 0, 0, None, false, false, true),
         SessionTick::Close {
             reason: ReasonCode::Revoked,
+            elapsed: 0,
+            checkpoint: None,
         }
     );
 }
