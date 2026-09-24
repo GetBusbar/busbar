@@ -191,6 +191,18 @@ watchdog_armed() {  # watchdog_armed <file> -> 0 when the guard is present in EX
   grep -Eq 'exec[[:space:]]+(g)?timeout' <<<"$code"
 }
 
+# The self-test's verdict line: both halves are COUNTS (item 550 -- the failure half used to be the
+# literal 0, printed immediately above "SELF-TEST FAILED").
+selftest_verdict() {  # selftest_verdict <groups-passed> <groups-failed>
+  note "self-test: $1 fixture group(s) passed, $2 failed"
+  if [ "$2" -ne 0 ]; then
+    note "release-script-lint SELF-TEST FAILED — the scanner would let the hang antipattern through"
+    return 1
+  fi
+  note "ok"
+  return 0
+}
+
 run_selftest() {
   hdr "release-script-lint SELF-TEST (the GATE-HANG scanner cannot be lied to)"
   local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
@@ -211,15 +223,15 @@ run_selftest() {
   if watchdog_armed "${tmp}/wd-real.sh"; then
     pass=$((pass+1)); note "WATCHDOG: a real armed re-exec is accepted"
   else
-    fail=1; note "WATCHDOG FAILED: a genuine guard was rejected — the rule no longer passes anything"
+    fail=$((fail+1)); note "WATCHDOG FAILED: a genuine guard was rejected — the rule no longer passes anything"
   fi
   if watchdog_armed "${tmp}/wd-prose.sh"; then
-    fail=1; note "WATCHDOG FAILED: PROSE naming the guard satisfied the rule"
+    fail=$((fail+1)); note "WATCHDOG FAILED: PROSE naming the guard satisfied the rule"
   else
     pass=$((pass+1)); note "WATCHDOG: prose naming the guard does not satisfy it"
   fi
   if watchdog_armed "${tmp}/wd-commented.sh"; then
-    fail=1; note "WATCHDOG FAILED: a COMMENTED-OUT guard satisfied the rule"
+    fail=$((fail+1)); note "WATCHDOG FAILED: a COMMENTED-OUT guard satisfied the rule"
   else
     pass=$((pass+1)); note "WATCHDOG: a commented-out guard does not satisfy it"
   fi
@@ -235,7 +247,7 @@ run_selftest() {
   if watchdog_armed "${tmp}/wd-long.sh"; then
     pass=$((pass+1)); note "WATCHDOG: a real guard above a long tail is found, not raced away"
   else
-    fail=1; note "WATCHDOG FAILED: a guard on line 1 of a long file read as MISSING (the SIGPIPE race)"
+    fail=$((fail+1)); note "WATCHDOG FAILED: a guard on line 1 of a long file read as MISSING (the SIGPIPE race)"
   fi
 
   # ── THE EXEC-BIT RULE MUST REFUSE A SCAN OF NOTHING ────────────────────────────────────────────
@@ -251,7 +263,7 @@ run_selftest() {
   if [ "$n_empty" -eq 0 ]; then
     pass=$((pass+1)); note "EXEC-BIT: an empty workflow directory yields zero paths (the vacuous input exists)"
   else
-    fail=1; note "EXEC-BIT FAILED: an empty workflow directory yielded ${n_empty} path(s)"
+    fail=$((fail+1)); note "EXEC-BIT FAILED: an empty workflow directory yielded ${n_empty} path(s)"
   fi
   # And the real tree must yield many, or the floor below is a tripwire that only ever fires.
   local n_real
@@ -259,7 +271,7 @@ run_selftest() {
   if [ "$n_real" -ge 1 ]; then
     pass=$((pass+1)); note "EXEC-BIT: the real workflows yield ${n_real} directly-run script path(s)"
   else
-    fail=1; note "EXEC-BIT FAILED: the real workflows yielded NO paths — the floor would fire on a healthy tree"
+    fail=$((fail+1)); note "EXEC-BIT FAILED: the real workflows yielded NO paths — the floor would fire on a healthy tree"
   fi
 
   # RED fixtures — each is the real hang antipattern; the scanner MUST flag every one.
@@ -280,7 +292,7 @@ RED
   if [ "$red_n" -eq 3 ]; then
     pass=$((pass+1)); note "RED: flagged all 3 backgrounded-server-without-stdout-redirect lines"
   else
-    fail=1; note "RED FAILED: expected 3 flags, got ${red_n}:"; printf '%s\n' "$red_hits"
+    fail=$((fail+1)); note "RED FAILED: expected 3 flags, got ${red_n}:"; printf '%s\n' "$red_hits"
   fi
 
   # GREEN fixtures — the fix (stdout redirected) plus benign backgrounds the scanner must NOT flag.
@@ -305,7 +317,7 @@ GREEN
   if [ -z "$green_hits" ]; then
     pass=$((pass+1)); note "GREEN: flagged none of the redirected / benign / commented backgrounds"
   else
-    fail=1; note "GREEN FAILED: expected 0 flags, got:"; printf '%s\n' "$green_hits"
+    fail=$((fail+1)); note "GREEN FAILED: expected 0 flags, got:"; printf '%s\n' "$green_hits"
   fi
 
   # ── rule 3: LOST-REGISTRATION ────────────────────────────────────────────────────────────────
@@ -336,7 +348,7 @@ RED3
   if [ "$red3_n" -eq 4 ]; then
     pass=$((pass+1)); note "RED3: flagged all 4 lines that capture a cleanup-registering helper"
   else
-    fail=1; note "RED3 FAILED: expected 4 flags, got ${red3_n}:"; printf '%s\n' "$red3_hits"
+    fail=$((fail+1)); note "RED3 FAILED: expected 4 flags, got ${red3_n}:"; printf '%s\n' "$red3_hits"
   fi
 
   # GREEN — the fix shape, plus the three things the scanner must NEVER flag: a helper whose array is
@@ -370,7 +382,7 @@ GREEN3
   if [ -z "$green3_hits" ]; then
     pass=$((pass+1)); note "GREEN3: flagged none of the fixed / local-array / plain-call / commented forms"
   else
-    fail=1; note "GREEN3 FAILED: expected 0 flags, got:"; printf '%s\n' "$green3_hits"
+    fail=$((fail+1)); note "GREEN3 FAILED: expected 0 flags, got:"; printf '%s\n' "$green3_hits"
   fi
 
   # ── rule 4: EXEC-BIT direct-invocation detector ──────────────────────────────────────────────
@@ -393,7 +405,7 @@ WF
   if [ "$eb_hits" = "$eb_want" ]; then
     pass=$((pass+1)); note "EXEC-BIT: listed exactly the 2 directly-run scripts (not interpreted / sourced / commented)"
   else
-    fail=1; note "EXEC-BIT FAILED: expected two paths, got:"; printf '%s\n' "$eb_hits"
+    fail=$((fail+1)); note "EXEC-BIT FAILED: expected two paths, got:"; printf '%s\n' "$eb_hits"
   fi
 
   # ── A SCAN OF NOTHING IS NOT A CLEAN SCAN, FOR EVERY RULE (item 524) ─────────────────────────────
@@ -409,19 +421,39 @@ WF
   if [ "$v_rc" -ne 0 ] && [ "$v_n" -eq 3 ]; then
     pass=$((pass+1)); note "VACUOUS: rules 1, 2 and 3 each refuse a scan of nothing (rc ${v_rc})"
   else
-    fail=1; note "VACUOUS FAILED: an empty root gave rc ${v_rc} and ${v_n}/3 VACUOUS SCAN refusals"
+    fail=$((fail+1)); note "VACUOUS FAILED: an empty root gave rc ${v_rc} and ${v_n}/3 VACUOUS SCAN refusals"
+  fi
+
+  # ── THE TALLY IS A COUNT, NOT A LITERAL (item 550) ─────────────────────────────────────────────
+  # The failure half used to be the literal `0`, printed above "SELF-TEST FAILED". The verdict line
+  # is one function, proven here in both directions, and no failing arm may SET the count instead
+  # of adding to it (that is how a second failure reads as one).
+  local t_out t_rc=0
+  t_out="$( (selftest_verdict 7 2) 2>&1 )" || t_rc=$?
+  if [ "$t_rc" -ne 0 ] && printf '%s' "$t_out" | grep -q '7 fixture group(s) passed, 2 failed'; then
+    pass=$((pass+1)); note "TALLY: two failures print '2 failed' and the verdict is non-zero"
+  else
+    fail=$((fail+1)); note "TALLY FAILED: (7 passed, 2 failed) printed '${t_out//$'\n'/ | }' rc ${t_rc}"
+  fi
+  t_rc=0; t_out="$( (selftest_verdict 7 0) 2>&1 )" || t_rc=$?
+  if [ "$t_rc" -eq 0 ] && printf '%s' "$t_out" | grep -q '7 fixture group(s) passed, 0 failed'; then
+    pass=$((pass+1)); note "TALLY: no failures print '0 failed' and the verdict is zero"
+  else
+    fail=$((fail+1)); note "TALLY FAILED: (7 passed, 0 failed) printed '${t_out//$'\n'/ | }' rc ${t_rc}"
+  fi
+  local t_set
+  t_set="$(sed -n '/^run_selftest() {/,/^if \[ "\${1:-}" = "--selftest" \]/p' scripts/release-script-lint.sh | sed 's/#.*//' \
+           | grep -cE '(^|[^_[:alnum:]])fail=[1-9]' || true)"
+  if [ "$t_set" -eq 0 ]; then
+    pass=$((pass+1)); note "TALLY: every failing arm adds to the count (no fail=<literal>)"
+  else
+    fail=$((fail+1)); note "TALLY FAILED: ${t_set} failing arm(s) SET the count with fail=<literal>"
   fi
 
   # The denominator was the literal 5 and the numerator a counter, so adding a fixture group printed
   # "10/5 passed" — a tally that cannot be read is a tally nobody checks. `fail` is what decides;
   # this line now just says how many groups there were.
-  note "self-test: ${pass} fixture group(s) passed, 0 failed"
-  if [ "$fail" -ne 0 ]; then
-    note "release-script-lint SELF-TEST FAILED — the scanner would let the hang antipattern through"
-    return 1
-  fi
-  note "ok"
-  return 0
+  selftest_verdict "$pass" "$fail"
 }
 
 if [ "${1:-}" = "--selftest" ]; then run_selftest; exit $?; fi
