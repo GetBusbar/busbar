@@ -126,7 +126,40 @@ pub fn derive_spend_micros_row(
     .map(|(k, v)| (k.to_string(), v))
     .collect();
     let resolved = cost.resolve_model_alias(model);
+    // A PLANE'S ROW (`"<plane>\u{1f}<lane>"`, see [`row_lane`]) prices its requests the way the
+    // budget book does (#47): one PER_REQUEST each on that plane's FEE LANE, at the plane's own
+    // `fees.per_request` (0 for a plane that configured none) — never the pools plane's flat fee.
+    let (plane, _) = busbar_kernel_ledger::cost::split_plane_lane(resolved);
+    if !plane.is_empty() {
+        let fees = std::collections::BTreeMap::from([(
+            busbar_kernel_ledger::cost::PER_REQUEST.to_string(),
+            b.requests,
+        )]);
+        let fee_lane = busbar_kernel_ledger::cost::plane_fee_lane(plane);
+        let lanes = [(fee_lane.as_str(), &fees)]
+            .into_iter()
+            .chain((!units.is_empty()).then_some((resolved, &units)));
+        return cost.derive_spend_micros(lanes, 0, false);
+    }
     cost.derive_spend_micros([(resolved, &units)].into_iter(), b.requests, true)
+}
+
+/// **THE LANE A METERING ROW PRICES ON.** A row a non-pools plane metered carries that plane's
+/// registry key in its `provider` column and its unqualified subject (the namespaced tool, the
+/// resource) in `model`; its lane is the two joined — `"<plane>\u{1f}<model>"`, exactly as the
+/// plane's own ledger lane and admission pool are spelt — so the one function prices it with that
+/// plane's card and fees (#42 "scoped per plane", #47). A pools-plane row (its provider is an
+/// upstream provider, never a plane key; or the fallback plane's key) keeps its model as its lane,
+/// and its requests carry the flat `per_request_fee:` — byte-identical to the previous release.
+pub fn row_lane<'a>(model: &'a str, provider: &str) -> std::borrow::Cow<'a, str> {
+    match busbar_kernel::plane::registry::plane_decl_for(provider) {
+        Some(decl) if !decl.fallback => std::borrow::Cow::Owned(format!(
+            "{}{}{model}",
+            decl.key,
+            busbar_kernel_ledger::cost::PLANE_LANE_SEP
+        )),
+        _ => std::borrow::Cow::Borrowed(model),
+    }
 }
 
 /// A usage read the one function REFUSED, as the admin wire answers it (OWNER RULING Q25b). A card
@@ -282,17 +315,32 @@ pub fn derive_spend_micros_row_at_card(
     model: &str,
     b: &UsageBreakdown,
 ) -> Result<i64, busbar_kernel_ledger::cost::MoneyError> {
+    use busbar_kernel_ledger::cost::{plane_fee_lane, split_plane_lane, LedgerEntry, PER_REQUEST};
     let lane = cost.resolve_model_alias(model);
     // ONE ROW OF A LEDGER SLICE, which is what the metering book projects onto without arithmetic:
     // a lane, counts keyed by meter class, a fee count, and THE INSTANT (#79's resolution key, in
     // MILLISECONDS — `row_priced_at_ms` is what decides which instant this row claims).
-    let entry = row_counts(b)
-        .fold(
-            busbar_kernel_ledger::cost::LedgerEntry::new(lane, arrived_ms),
-            |e, (class, quantity)| e.with_whole(class, quantity),
-        )
-        .with_fee_count(b.requests);
-    busbar_kernel_ledger::cost::price_in_view(std::slice::from_ref(&entry), view)?.micros_i64()
+    let tokens = row_counts(b).fold(
+        LedgerEntry::new(lane, arrived_ms),
+        |e, (class, quantity)| e.with_whole(class, quantity),
+    );
+    let (plane, _) = split_plane_lane(lane);
+    let entries = if plane.is_empty() {
+        vec![tokens.with_fee_count(b.requests)]
+    } else {
+        // A PLANE'S ROW (see [`row_lane`]): its requests are that plane's fee units, one PER_REQUEST
+        // each on its FEE LANE — the budget book's own spelling (#47) — so they price at the plane's
+        // `fees.per_request` (0 when it configured none), never at the pools plane's flat fee. Its
+        // tokens, if it carried any, price on its plane-qualified lane with no fee of their own.
+        let fees =
+            LedgerEntry::new(plane_fee_lane(plane), arrived_ms).with_whole(PER_REQUEST, b.requests);
+        let mut entries = vec![fees];
+        if row_counts(b).next().is_some() {
+            entries.push(tokens);
+        }
+        entries
+    };
+    busbar_kernel_ledger::cost::price_in_view(&entries, view)?.micros_i64()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -324,7 +372,9 @@ pub fn derive_spend_micros_row_at_card(
 /// `publish = false` and mandatory-compiled-in, and this module is the one documented door to them.
 #[cfg(any(test, feature = "test-support"))]
 pub mod read_path_money {
-    pub use super::{derive_spend_micros_row, derive_spend_micros_row_at_card, row_priced_at_ms};
+    pub use super::{
+        derive_spend_micros_row, derive_spend_micros_row_at_card, row_lane, row_priced_at_ms,
+    };
 }
 /// Process start instant, for the `info` uptime read. Stamped ONCE at startup by `mark_start()`.
 /// A missing value (never stamped — e.g. a unit test that skips `main`) yields a `None` uptime

@@ -1475,14 +1475,17 @@ impl AdminService {
             // card at the instant below and prices against it. See
             // `derive_spend_micros_row_at_card`.
             let at = row_priced_at_ms(window.start, r.priced_from_ms);
+            // THE ROW'S LANE: a non-pools plane's row is priced as that plane's (`row_lane`) — its
+            // requests at the plane's own fee, as the budget book charges them (#47).
+            let lane = row_lane(&r.model, &r.provider);
             let row_spend = match view.as_ref() {
                 Some(v) => match v.card_at(at) {
                     Some((_card_seq, card)) => {
-                        derive_spend_micros_row_at_card(v, at, card, &cost, &r.model, &row_view)
+                        derive_spend_micros_row_at_card(v, at, card, &cost, &lane, &row_view)
                     }
                     None => Err(busbar_kernel_ledger::cost::MoneyError::NoCardInForce { at }),
                 },
-                None => derive_spend_micros_row(&cost, &r.model, &row_view),
+                None => derive_spend_micros_row(&cost, &lane, &row_view),
             };
             // A REFUSED figure fails the read (#42, items 31 and 374): the card is present and
             // silent about this row's model or class, no entry covers the row's instant, or the
