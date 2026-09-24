@@ -2153,3 +2153,58 @@ async fn the_server_advertises_a_max_concurrent_streams_cap() {
         "the server must advertise its per-connection stream cap, not hyper's unbounded default"
     );
 }
+
+/// Item 146: the DIAL side's HTTP/2 preface is bounded — a peer that completes the transport leg
+/// below and then never speaks a byte of the h2 preface does not park the dial task (and the
+/// socket under it) for the life of the process. `start_paused` lets the runtime auto-advance
+/// virtual time to the budget rather than this test actually waiting on it.
+#[tokio::test(start_paused = true)]
+async fn dial_side_stalled_preface_is_dropped() {
+    // The far half of the duplex is held open and never read from: exactly a peer that answers the
+    // transport leg below and then never drains a byte — a TCP zero-window peer, on a real socket.
+    // `hyper`'s h2 client handshake only WRITES the local preface (it does not wait to read the
+    // peer's own SETTINGS back before returning; see `h2::client::Connection::handshake2`), so what
+    // this proves the budget against is the write blocking on a full send buffer, which is why the
+    // duplex is sized to 1 byte — the smallest buffer that still forces that write to actually
+    // suspend rather than fitting the whole preface in one go, the way a real (larger) OS socket
+    // buffer would for a peer that had merely gone briefly quiet rather than one throttling its
+    // receive window to zero.
+    let (a, _silent_peer) = tokio::io::duplex(1);
+    let (stream, _cut) = crate::conn::Cuttable::new(Box::new(a));
+    let started = tokio::time::Instant::now();
+    let result = crate::client::handshake_h2(stream, "irrelevant", Duration::from_millis(50)).await;
+    let err = match result {
+        Err(e) => e,
+        Ok(_) => panic!("a stalled preface must not hang the dial forever"),
+    };
+    assert_eq!(err, TransportError::Timeout, "the budget, not a protocol error, ends it");
+    assert!(
+        started.elapsed() >= Duration::from_millis(50),
+        "the budget is what ended it"
+    );
+}
+
+/// Item 146: the ACCEPT side's HTTP/2 preface is bounded too — the mirror of the dial-side case
+/// above. A peer that opens the accepted socket and never sends a byte does not hold the task
+/// `serve_connection` spawned forever; the connection ends, reported the same way any other
+/// framing failure on this side is (`TransportError::Reset` on the inbound channel), rather than
+/// leaking a task and a stream for the life of the process.
+#[tokio::test(start_paused = true)]
+async fn accept_side_stalled_preface_is_dropped() {
+    let (a, _silent_peer) = tokio::io::duplex(64 * 1024);
+    let state = crate::conn::ConnState::new(None, vec!["grpc"], 0);
+    crate::server::serve_connection(Box::new(a), state.clone(), Duration::from_millis(50));
+
+    let mut guard = state.inbound_rx.lock().await;
+    let rx = guard.as_mut().expect("the inbound receiver is still here to read from");
+    let first = rx.recv().await;
+    assert!(
+        matches!(first, Some(Err(TransportError::Reset))),
+        "a stalled preface must end the connection, not hang the accept task forever: got {first:?}"
+    );
+    let second = rx.recv().await;
+    assert!(
+        second.is_none(),
+        "the inbound side ends once the stalled connection's task is done"
+    );
+}

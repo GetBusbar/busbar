@@ -71,12 +71,25 @@ impl tower::Service<http::Request<tonic::body::Body>> for Dialer {
 pub(crate) async fn handshake_h2(
     stream: crate::conn::Cuttable,
     authority: &str,
+    preface_timeout: std::time::Duration,
 ) -> Result<(Dialer, http::Uri, ConnectionOver), TransportError> {
     let io = TokioIo::new(stream);
-    let (send_request, connection) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
-        .handshake::<_, tonic::body::Body>(io)
-        .await
-        .map_err(|_| TransportError::HandshakeFailed)?;
+    // Bounded, the same shape as `tls`'s `HANDSHAKE_TIMEOUT` and `ws`'s `HANDSHAKE_BUDGET` on the
+    // identical vector: the TCP (or TLS) leg below already proved the far side answered, not that
+    // it will ever complete the HTTP/2 preface — an upstream that stops right there would
+    // otherwise park this dial task, and the socket under it, for the life of the process. Unlike
+    // the accept side (`crate::conn::PrefaceGuard`), the client handshake future here already IS
+    // just the preface — `hyper`'s client builder returns the moment it completes, before any
+    // request goes out — so this `timeout` wraps it directly, on the budget the transport was
+    // built with ([`crate::conn::PREFACE_TIMEOUT`] unless a caller shortened it).
+    let (send_request, connection) = tokio::time::timeout(
+        preface_timeout,
+        hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+            .handshake::<_, tonic::body::Body>(io),
+    )
+    .await
+    .map_err(|_| TransportError::Timeout)?
+    .map_err(|_| TransportError::HandshakeFailed)?;
     let (over_tx, over_rx) = tokio::sync::oneshot::channel::<ConnectionEnd>();
     tokio::spawn(async move {
         // HOW it ended, not merely that it did. A GOAWAY the upstream sent, a protocol error, a

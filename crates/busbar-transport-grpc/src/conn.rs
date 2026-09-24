@@ -156,6 +156,100 @@ impl tokio::io::AsyncWrite for Cuttable {
     }
 }
 
+/// How long the HTTP/2 connection preface — the 24-octet magic string plus the first `SETTINGS`
+/// frame either side must send before anything else — has to arrive before this crate gives the
+/// connection up.
+///
+/// This crate's own constant: `tls` has `HANDSHAKE_TIMEOUT` and `ws` has `HANDSHAKE_BUDGET`, both
+/// on the same shape of vector (a peer that completes the transport leg below and then never
+/// speaks the protocol this layer expects), and neither is imported here — a transport does not
+/// name a sibling transport. Unbounded, a peer that opens the socket and then sends nothing holds
+/// the accept or dial task, and everything it reached for, for the life of the process: the
+/// classic slow-loris. Same budget both directions, for the same reason the siblings use one
+/// number each way: a peer that never talks is the same unbounded wait whichever side opened the
+/// connection.
+pub(crate) const PREFACE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Wraps a lower stream so the ACCEPT side of the HTTP/2 preface is bounded.
+///
+/// `hyper`'s server-side HTTP/2 builder has no separate handshake step to put a
+/// [`tokio::time::timeout`] around the way the dial side's `hyper::client::conn::http2::Builder::
+/// handshake` does (see `client::handshake_h2`) — `serve_connection` is one future that reads the
+/// preface AND drives the connection's whole life, so timing the whole future would cut off every
+/// long-lived call the moment the budget passed, not just a stalled preface. What the preface
+/// actually needs bounded is narrower: SOME byte from the peer, inside the budget, proving it is
+/// there at all. This wraps the raw stream so its first read event (data, or a clean EOF) disarms
+/// the clock; a peer that never produces one fails the read with `TimedOut`, which `hyper` surfaces
+/// as this connection ending in error — exactly the path `serve_connection` already takes for any
+/// other framing failure.
+pub(crate) struct PrefaceGuard<T> {
+    io: T,
+    deadline: Option<Pin<Box<tokio::time::Sleep>>>,
+}
+
+impl<T> PrefaceGuard<T> {
+    /// Arm the clock now, at construction — the moment this connection was accepted, which is
+    /// exactly when a slow-loris peer's silence starts costing this process a task and a socket.
+    pub(crate) fn new(io: T, budget: std::time::Duration) -> Self {
+        Self {
+            io,
+            deadline: Some(Box::pin(tokio::time::sleep(budget))),
+        }
+    }
+}
+
+impl<T: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for PrefaceGuard<T> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if let Some(deadline) = self.deadline.as_mut() {
+            if deadline.as_mut().poll(cx).is_ready() {
+                self.deadline = None;
+                return std::task::Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "gRPC connection preface timed out",
+                )));
+            }
+        }
+        let poll = Pin::new(&mut self.io).poll_read(cx, buf);
+        // ANY read event — bytes, or a clean end-of-stream — is the peer proving it is there
+        // (or gone, which is `hyper`'s own business to read off an empty preface, not a stall this
+        // clock owns). Either way the preface is no longer stalled, so the clock stops: a
+        // legitimate connection that goes on to sit idle for the rest of its life is not timed out
+        // for that, only for never having spoken at all.
+        if poll.is_ready() {
+            self.deadline = None;
+        }
+        poll
+    }
+}
+
+impl<T: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for PrefaceGuard<T> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.io).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        Pin::new(&mut self.io).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        Pin::new(&mut self.io).poll_shutdown(cx)
+    }
+}
+
 /// How many inbound frames one connection may hold for a `frames()` consumer that is not keeping
 /// up — the per-unit frame buffer the architecture's backpressure rule names.
 pub(crate) const INBOUND_FRAME_BUFFER: usize = 64;
