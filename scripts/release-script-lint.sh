@@ -396,6 +396,22 @@ WF
     fail=1; note "EXEC-BIT FAILED: expected two paths, got:"; printf '%s\n' "$eb_hits"
   fi
 
+  # ── A SCAN OF NOTHING IS NOT A CLEAN SCAN, FOR EVERY RULE (item 524) ─────────────────────────────
+  # Rule 4 has refused a vacuous input since it was written; rules 1, 2 and 3 used to print
+  # "nothing to scan" / "not present" and leave `fail` at 0. Driven END TO END: a copy of this lint
+  # run from an otherwise EMPTY root, where every rule's input is absent, must name a VACUOUS SCAN
+  # for each of the three and exit non-zero.
+  mkdir -p "${tmp}/vroot/scripts"
+  cp scripts/release-script-lint.sh "${tmp}/vroot/scripts/"
+  local v_out v_rc=0 v_n
+  v_out="$(bash "${tmp}/vroot/scripts/release-script-lint.sh" 2>&1)" || v_rc=$?
+  v_n="$(printf '%s\n' "$v_out" | grep -c 'VACUOUS SCAN' || true)"
+  if [ "$v_rc" -ne 0 ] && [ "$v_n" -eq 3 ]; then
+    pass=$((pass+1)); note "VACUOUS: rules 1, 2 and 3 each refuse a scan of nothing (rc ${v_rc})"
+  else
+    fail=1; note "VACUOUS FAILED: an empty root gave rc ${v_rc} and ${v_n}/3 VACUOUS SCAN refusals"
+  fi
+
   # The denominator was the literal 5 and the numerator a counter, so adding a fixture group printed
   # "10/5 passed" — a tally that cannot be read is a tally nobody checks. `fail` is what decides;
   # this line now just says how many groups there were.
@@ -420,8 +436,13 @@ scripts_to_scan=()
 # script that launches one — scripts/no-plugins-gate.sh starts a mock upstream and self-test stubs
 # exactly the way release-check.sh does, and is covered here rather than being a second blind spot.
 for f in scripts/release-check*.sh scripts/no-plugins-gate.sh; do [ -f "$f" ] && scripts_to_scan+=("$f"); done
+# A SCAN OF NOTHING IS RED (item 524), for the reason rule 4 states below: a count of zero is not a
+# clean scan, it is a scan that did not happen. The glob matching nothing means the gate scripts
+# moved or were renamed, and this rule would otherwise print a pass over files it never read.
 if [ ${#scripts_to_scan[@]} -eq 0 ]; then
-  note "no server-launching gate scripts found — nothing to scan"
+  note "GATE-HANG: VACUOUS SCAN — no scripts/release-check*.sh or scripts/no-plugins-gate.sh found,"
+  note "  so nothing was adjudicated. RED, not a clean scan: point the glob at where the gates live."
+  fail=1
 else
   hits="$(scan_backgrounded_servers "${scripts_to_scan[@]}" || true)"
   if [ -n "$hits" ]; then
@@ -441,7 +462,9 @@ fi
 # ── Rule 3: LOST-REGISTRATION — a cleanup registrar must not be called inside `$(...)` ────────────
 hdr "LOST-REGISTRATION (a helper that appends to a cleanup array must not be run in a subshell)"
 if [ ${#scripts_to_scan[@]} -eq 0 ]; then
-  note "no gate scripts found — nothing to scan"
+  note "LOST-REGISTRATION: VACUOUS SCAN — the gate-script set is empty (see GATE-HANG above), so"
+  note "  nothing was adjudicated. RED, not a clean scan."
+  fail=1
 else
   lr_hits="$(scan_lost_registrations "${scripts_to_scan[@]}" || true)"
   if [ -n "$lr_hits" ]; then
@@ -474,7 +497,10 @@ eb_scanned=0
 # on its way to "release-script-lint passed". A count of zero is not a clean scan; it is a scan that
 # did not happen, and this rule exists because a script tracked non-executable fails a workflow at
 # run time with exit 126.
-eb_paths="$(list_direct_invoked_scripts .github/workflows/*.yml)"
+# A producer that FAILS (the glob matched nothing, so awk was handed a literal pattern) yields the
+# empty set here rather than aborting the whole lint under `set -e` before the rules after this one
+# have run; the floor just below is what turns that empty set into RED.
+eb_paths="$(list_direct_invoked_scripts .github/workflows/*.yml 2>/dev/null)" || eb_paths=""
 eb_paths_n="$(printf '%s\n' "$eb_paths" | awk 'NF{c++} END{print c+0}')"
 # The floor is 1 rather than today's 44: the point is to refuse a VACUOUS scan, not to pin a number
 # that a legitimate workflow deletion turns into a false red.
@@ -521,7 +547,9 @@ fi
 hdr "WATCHDOG (release-check-1.5.2.sh keeps its \`timeout\` re-exec so any hang fails fast)"
 wd="scripts/release-check-1.5.2.sh"
 if [ ! -f "$wd" ]; then
-  note "ok (${wd} not present — nothing to check)"
+  note "WATCHDOG: VACUOUS SCAN — ${wd} is not present, so no guard was checked. RED, not a pass: if"
+  note "  the 1.5.2 gate was retired or renamed, retarget this rule in the same change."
+  fail=1
 elif watchdog_armed "$wd"; then
   note "ok (armed-sentinel + \`exec timeout\` re-exec present)"
 else
