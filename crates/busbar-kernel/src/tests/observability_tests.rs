@@ -929,3 +929,30 @@ fn planted_blocked_targets_are_refused_by_the_telemetry_guard() {
         println!("observability::host_is_internal  REFUSED  {target}");
     }
 }
+
+/// NO PROVIDER, NO "ENABLED" LINE (item 570).
+///
+/// The "OTLP tracing enabled" info line used to be gated on the endpoint being configured, so an
+/// endpoint whose exporter failed to build — `build_otlp` prints its failure to stderr and returns
+/// `None` — still logged "enabled" while no provider was installed and no span would ever leave the
+/// process. The line is now the installing step's own, so an endpoint with nothing built behind it
+/// says nothing, and nothing global is touched.
+#[test]
+fn an_endpoint_whose_exporter_did_not_build_never_logs_enabled() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let cap = WarnCapture::capturing_debug();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    tracing::subscriber::with_default(subscriber, || {
+        install_otlp(None, Some("https://collector.example:4318/v1/traces"));
+    });
+    assert!(
+        !cap.contains("OTLP tracing enabled"),
+        "no provider was built, so nothing may claim tracing is enabled; captured: {:?}",
+        cap.messages()
+    );
+    assert!(
+        TRACER_PROVIDER.get().is_none(),
+        "a failed build must not install a provider"
+    );
+}
