@@ -8,6 +8,11 @@
 //! own identity — advertising one audience in its metadata document and enforcing another in its
 //! verifier. That failure is invisible from inside busbar and fatal for every client.
 
+use super::config::{
+    SamplingCfg, DEFAULT_MAX_SAMPLING_MESSAGES, DEFAULT_MAX_SAMPLING_PROMPT_BYTES,
+    DEFAULT_MAX_STOP_SEQUENCES, DEFAULT_MAX_STOP_SEQUENCE_BYTES, DEFAULT_TEMPERATURE_MAX_MILLI,
+    DEFAULT_TEMPERATURE_MIN_MILLI,
+};
 use super::{McpCfg, McpCfgError, McpResource};
 
 fn cfg(uri: &str) -> McpCfg {
@@ -214,5 +219,76 @@ fn the_config_block_parses_from_yaml_and_refuses_an_unknown_key() {
         typo.is_err(),
         "an unknown key must be refused: silently ignoring `allowed_origin` leaves a config that \
          reads as permissive and behaves as closed"
+    );
+}
+
+/// `tools.<server>.sampling:` ROUND-TRIPS through YAML — owner ruling Q22c / Q35's input-side
+/// bounds included. An operator who declares only the three original fields (`model`, `max_tokens`,
+/// `max_requests_per_minute`) gets the shipped defaults on the four new ones; an operator who
+/// spells all seven gets back exactly what they wrote; and an unknown key is still refused, because
+/// `SamplingCfg` staying `deny_unknown_fields` while gaining optional fields is the whole point of
+/// `#[serde(default = ...)]` over a blanket `#[serde(default)]` on the struct.
+#[test]
+fn the_sampling_block_round_trips_through_yaml_and_the_new_bounds_default_when_omitted() {
+    let minimal: SamplingCfg = serde_yaml::from_str(
+        "model: sampler-model\n\
+         max_tokens: 512\n\
+         max_requests_per_minute: 30\n",
+    )
+    .expect("the pre-existing three-field shape must still parse");
+    assert_eq!(minimal.model, "sampler-model");
+    assert_eq!(minimal.max_tokens, 512);
+    assert_eq!(minimal.max_requests_per_minute, 30);
+    assert_eq!(minimal.max_messages, DEFAULT_MAX_SAMPLING_MESSAGES);
+    assert_eq!(minimal.max_prompt_bytes, DEFAULT_MAX_SAMPLING_PROMPT_BYTES);
+    assert_eq!(minimal.max_stop_sequences, DEFAULT_MAX_STOP_SEQUENCES);
+    assert_eq!(
+        minimal.max_stop_sequence_bytes,
+        DEFAULT_MAX_STOP_SEQUENCE_BYTES
+    );
+    assert_eq!(minimal.temperature_min_milli, DEFAULT_TEMPERATURE_MIN_MILLI);
+    assert_eq!(minimal.temperature_max_milli, DEFAULT_TEMPERATURE_MAX_MILLI);
+
+    let full: SamplingCfg = serde_yaml::from_str(
+        "model: sampler-model\n\
+         max_tokens: 512\n\
+         max_requests_per_minute: 30\n\
+         max_messages: 16\n\
+         max_prompt_bytes: 4096\n\
+         max_stop_sequences: 2\n\
+         max_stop_sequence_bytes: 16\n\
+         temperature_min_milli: 100\n\
+         temperature_max_milli: 1200\n",
+    )
+    .expect("the full seven-field shape must parse");
+    let expected = SamplingCfg {
+        model: "sampler-model".to_string(),
+        max_tokens: 512,
+        max_requests_per_minute: 30,
+        max_messages: 16,
+        max_prompt_bytes: 4096,
+        max_stop_sequences: 2,
+        max_stop_sequence_bytes: 16,
+        temperature_min_milli: 100,
+        temperature_max_milli: 1200,
+    };
+    assert_eq!(full, expected);
+    // ROUND-TRIP: serialising what was just parsed and re-parsing it must land on the same value,
+    // so a config an operator saved back out (a UI, a formatter) is not a second spelling.
+    let yaml = serde_yaml::to_string(&full).expect("a fully-populated policy must serialise");
+    let reparsed: SamplingCfg =
+        serde_yaml::from_str(&yaml).expect("what busbar serialises, busbar must parse back");
+    assert_eq!(reparsed, expected);
+
+    let typo = serde_yaml::from_str::<SamplingCfg>(
+        "model: sampler-model\n\
+         max_tokens: 512\n\
+         max_requests_per_minute: 30\n\
+         max_mesages: 16\n",
+    );
+    assert!(
+        typo.is_err(),
+        "an unknown key must be refused: silently ignoring `max_mesages` would leave the real \
+         `max_messages` at its default, unbounded by what the operator thought they wrote"
     );
 }

@@ -40,6 +40,20 @@
 //! model leg is entered, so a refused completion costs nothing, and it is carried across config
 //! applies on the engine snapshot like the spent-approval ledger, because spend that happened is
 //! evidence, not intent, and an apply must not refill it.
+//!
+//! ## AND THE BOUND ALL FOUR OF THEM MISS: HOW LARGE ONE ASK IS (owner ruling Q22c / Q35)
+//!
+//! Read the four again and the hole is in plain sight. Every one of them limits HOW MANY
+//! completions happen — one dispatch's rounds, one principal's budget, one upstream's minute, one
+//! completion's output tokens — and not one of them limits HOW LARGE A SINGLE ASK IS. The
+//! `messages` array, the system prompt, the stop list and the temperature arrive on an UPSTREAM'S
+//! ask, which is the least trusted input this plane handles, and they are charged to the INBOUND
+//! CALLER'S budget. A caller's budget bounds what the caller asked for; it cannot bound what
+//! somebody else appended to it, and prompt tokens are the larger half of a completion's bill. So
+//! the input side is bounded HERE, beside the translation that builds the body, CONFIGURABLY under
+//! `tools.<server>.sampling` (see [`super::config::SamplingCfg::max_messages`] and its three
+//! neighbours) — every one of them is a COUNT or a RANGE, never a price: what it is worth is the
+//! money plane's business.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -166,7 +180,7 @@ pub(crate) async fn satisfy_upstream_ask(
             cfg.max_requests_per_minute,
             now,
         )?;
-        let body = chat_body(request.get("params"), cfg)?;
+        let body = chat_body(request.get("params"), cfg, server)?;
         let result = complete(host, gov, cfg, body).await?;
         responses.insert(entry.clone(), result);
     }
@@ -186,16 +200,44 @@ pub(crate) async fn satisfy_upstream_ask(
 fn chat_body(
     params: Option<&serde_json::Value>,
     cfg: &super::config::SamplingCfg,
+    server: &str,
 ) -> Result<serde_json::Value, String> {
     let params = params.and_then(|p| p.as_object());
     let mut messages: Vec<serde_json::Value> = Vec::new();
+    // THE RUNNING PROMPT SIZE, accumulated as the body is built. A `usize` of BYTES — a count, not
+    // a price, and no float anywhere near it. Checked as each piece is added, not after: refusing
+    // after building a body of any size the upstream chose is refusing at the cost the bound exists
+    // to avoid paying.
+    let mut prompt_bytes = 0usize;
     if let Some(system) = params
         .and_then(|p| p.get("systemPrompt"))
         .and_then(|s| s.as_str())
     {
         if !system.is_empty() {
+            // THE SYSTEM PROMPT COUNTS. It is prompt tokens like any other, and a bound that
+            // skipped it would be a bound with a hole the upstream chooses the size of.
+            prompt_bytes = prompt_bytes.saturating_add(system.len());
+            if prompt_bytes > cfg.max_prompt_bytes as usize {
+                return Err(oversized_prompt(cfg, server));
+            }
             messages.push(serde_json::json!({ "role": "system", "content": system }));
         }
+    }
+    // THE MESSAGE COUNT, judged BEFORE the walk: refusing after building a large array is refusing
+    // at the cost the bound exists to avoid paying.
+    let asked = params
+        .and_then(|p| p.get("messages"))
+        .and_then(|m| m.as_array())
+        .map(Vec::len)
+        .unwrap_or(0);
+    if asked as u64 > u64::from(cfg.max_messages) {
+        return Err(format!(
+            "the sampling ask carries {asked} messages; busbar completes at most \
+             {} per ask, which is the ceiling `tools.{server}.sampling.max_messages` declares. \
+             The prompt an upstream sends is spent against the CALLER'S budget, so its size is \
+             bounded here rather than by the caller who never wrote it. The ask terminates here.",
+            cfg.max_messages
+        ));
     }
     for (i, message) in params
         .and_then(|p| p.get("messages"))
@@ -231,6 +273,10 @@ fn chat_body(
                  ask terminates here"
             ));
         };
+        prompt_bytes = prompt_bytes.saturating_add(text.len());
+        if prompt_bytes > cfg.max_prompt_bytes as usize {
+            return Err(oversized_prompt(cfg, server));
+        }
         messages.push(serde_json::json!({ "role": role, "content": text }));
     }
     if messages.is_empty() {
@@ -252,19 +298,86 @@ fn chat_body(
         "messages": messages,
         "max_tokens": max_tokens,
     });
-    if let Some(t) = params
-        .and_then(|p| p.get("temperature"))
-        .filter(|t| t.is_number())
-    {
+    // TEMPERATURE IS RANGE-CHECKED, not merely type-checked, against the OPERATOR'S configured
+    // `temperature_min..=temperature_max` — `is_number()` alone admits `-1`, `1e308` and every
+    // other value the range does not, and the number would then ride verbatim into a body a
+    // provider answers with an error the CALLER paid the round trip for. A value outside the range
+    // is the upstream's mistake, refused here rather than forwarded.
+    //
+    // The check reads an `f64` and the BODY still carries the caller's original `Value`: this
+    // function converts nothing. A number that only ever rides through as the token it arrived as
+    // cannot be re-rendered by a float round trip, which is the posture every numeric field on this
+    // plane takes and the reason `t.clone()` stays rather than becoming a re-serialised `value`.
+    if let Some(t) = params.and_then(|p| p.get("temperature")) {
+        let (min, max) = (cfg.temperature_min(), cfg.temperature_max());
+        if !t
+            .as_f64()
+            .is_some_and(|v| v.is_finite() && (min..=max).contains(&v))
+        {
+            return Err(format!(
+                "the sampling ask names temperature {t}, which is not a number in `{min}..={max}`, \
+                 the range `tools.{server}.sampling.temperature_min_milli`/\
+                 `tools.{server}.sampling.temperature_max_milli` declares (in thousandths); the \
+                 ask terminates here"
+            ));
+        }
         body["temperature"] = t.clone();
     }
-    if let Some(stop) = params
-        .and_then(|p| p.get("stopSequences"))
-        .filter(|s| s.is_array())
-    {
+    // STOP SEQUENCES ARE COUNTED, MEASURED AND TYPED, against the OPERATOR'S configured ceilings.
+    // Forwarded through as whatever array arrived before this bound existed — any length, any
+    // element type, any element size — which was an upstream's free hand on a request the caller is
+    // charged for; and a non-string element is a body a provider refuses AFTER the caller has paid
+    // for the leg.
+    if let Some(stop) = params.and_then(|p| p.get("stopSequences")) {
+        let Some(list) = stop.as_array() else {
+            return Err(
+                "the sampling ask's `stopSequences` is not an array; the ask terminates here"
+                    .to_string(),
+            );
+        };
+        if list.len() as u64 > u64::from(cfg.max_stop_sequences) {
+            return Err(format!(
+                "the sampling ask names {} stop sequences; busbar forwards at most {}, the \
+                 ceiling `tools.{server}.sampling.max_stop_sequences` declares. The ask \
+                 terminates here.",
+                list.len(),
+                cfg.max_stop_sequences
+            ));
+        }
+        for (i, entry) in list.iter().enumerate() {
+            match entry.as_str() {
+                Some(s) if s.len() as u64 <= u64::from(cfg.max_stop_sequence_bytes) => {}
+                Some(_) => {
+                    return Err(format!(
+                        "the sampling ask's `stopSequences[{i}]` is longer than {} bytes, the \
+                         ceiling `tools.{server}.sampling.max_stop_sequence_bytes` declares; the \
+                         ask terminates here",
+                        cfg.max_stop_sequence_bytes
+                    ))
+                }
+                None => {
+                    return Err(format!(
+                        "the sampling ask's `stopSequences[{i}]` is not a string; the ask \
+                         terminates here"
+                    ))
+                }
+            }
+        }
         body["stop"] = stop.clone();
     }
     Ok(body)
+}
+
+/// The ONE refusal both prompt-size arms (system prompt, message text) return, so they cannot come
+/// to say different things about the same bound.
+fn oversized_prompt(cfg: &super::config::SamplingCfg, server: &str) -> String {
+    format!(
+        "the sampling ask's prompt exceeds {} bytes, the ceiling \
+         `tools.{server}.sampling.max_prompt_bytes` declares. The prompt an upstream sends is \
+         spent against the CALLER'S budget, so its size is bounded here rather than by the caller \
+         who never wrote it. The ask terminates here.",
+        cfg.max_prompt_bytes
+    )
 }
 
 /// DRIVE one completion through the governed pipeline and shape the answer as the protocol's
@@ -337,6 +450,10 @@ const MAX_COMPLETION_BYTES: usize = 8 * 1024 * 1024;
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/sampling_spend_tests.rs"]
 mod sampling_spend_tests;
+
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/sampling_bounds_tests.rs"]
+mod sampling_bounds_tests;
 
 // The SATISFIER's battery hangs on `super::upstream` rather than here, exactly as the roots
 // satisfier's does: its witness is the fake upstream peer plus a recording fake provider, and the

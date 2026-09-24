@@ -45,6 +45,12 @@ fn declared_sampling(per_minute: u32) -> crate::mcp::config::SamplingCfg {
         model: MODEL.to_string(),
         max_tokens: 64,
         max_requests_per_minute: per_minute,
+        max_messages: crate::mcp::config::DEFAULT_MAX_SAMPLING_MESSAGES,
+        max_prompt_bytes: crate::mcp::config::DEFAULT_MAX_SAMPLING_PROMPT_BYTES,
+        max_stop_sequences: crate::mcp::config::DEFAULT_MAX_STOP_SEQUENCES,
+        max_stop_sequence_bytes: crate::mcp::config::DEFAULT_MAX_STOP_SEQUENCE_BYTES,
+        temperature_min_milli: crate::mcp::config::DEFAULT_TEMPERATURE_MIN_MILLI,
+        temperature_max_milli: crate::mcp::config::DEFAULT_TEMPERATURE_MAX_MILLI,
     }
 }
 
