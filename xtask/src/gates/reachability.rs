@@ -1047,9 +1047,12 @@ fn evidence_row(
     // FORWARD — everything the three citing details are about.
     let mut owed: Vec<String> = Vec::new();
     for p in ROSTER {
-        // The two unit-path details are the ones that carry the citation.
-        if findings.get(p.key).is_some_and(|f| f.unit_path.is_err()) {
-            owed.push(format!("{ROOT_DIR}/{}.rs", p.module));
+        // The two unit-path details are the ones that carry the citation. An ABSENT module is
+        // cited by nothing and cannot be written up (the backward half would red a section about a
+        // path the tree has not got), so only a module that exists is owed a write-up.
+        let module_rel = format!("{ROOT_DIR}/{}.rs", p.module);
+        if findings.get(p.key).is_some_and(|f| f.unit_path.is_err()) && cx.exists(&module_rel) {
+            owed.push(module_rel);
         }
     }
     for stem in undeclared_root_modules {
@@ -1241,9 +1244,21 @@ impl Gate for ReachabilityGate {
             };
 
             // 2. THE UNIT PATH.
+            //
+            // AN ABSENT MODULE IS A FINDING, NEVER A PASS (item 180). The roster is #48's locked
+            // list of planes the composition root must serve, so a roster plane with no
+            // `root/units_<plane>.rs` is a plane with no unit path at all — and answering that "there
+            // is nothing to reach" made the two rows that exist to say NO unable to say it, while
+            // DELETING a plane's unit module turned both of its rows from red to green. The plane's
+            // absence is declarable like any other dormancy (a `[[dormant]]` row with `module = ""`),
+            // which is where "not yet built" is written down with its reason and its switch.
             let unit_path = match module {
-                None => Ok(format!(
-                    "no `{module_rel}` in this tree — there is no unit path to reach"
+                None => Err(format!(
+                    "NO UNIT MODULE: roster plane `{}` names `{module_rel}` and there is no such \
+                     file — the composition root has no unit path for this plane at all, so \
+                     nothing `fn main()` reaches can drive its ten steps. Give it a unit path, or \
+                     declare it in {DECLARATIONS} (module = \"\") with the reason and the switch.",
+                    p.key
                 )),
                 Some(m) => {
                     let types = unit_types(m);
@@ -1296,7 +1311,10 @@ impl Gate for ReachabilityGate {
 
             // 3. ROOT REACH — the MODULE, from `fn main()`, transitively.
             let root_reach = match module {
-                None => Ok(format!("no `{module_rel}` in this tree")),
+                None => Err(format!(
+                    "NO UNIT MODULE: `{module_rel}` is not in this tree, so no chain starting at \
+                     {MAIN_RS} can reach it. An absent module is not a reached one."
+                )),
                 Some(_) if mods.contains(p.module) => {
                     Ok(format!("`{module_rel}` is reached from {MAIN_RS}"))
                 }
@@ -1622,6 +1640,19 @@ impl Gate for ReachabilityGate {
             "NO UNIT PATH AT ALL",
         ));
 
+        // THE ABSENT-MODULE SHAPE (item 180): the green fixture with one roster plane's unit
+        // module deleted. Deleting a plane's unit path must red both rows that are about it — it
+        // used to turn them GREEN, which is the direction a gate must never move on a deletion.
+        report.push(red_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a roster plane whose unit module is ABSENT reds its unit-path and root-reach rows",
+            &[row_unit_path("decision"), row_root_reach("decision")],
+            absent_decision_module(),
+            "NO UNIT MODULE",
+        ));
+
         report.push(prove_rows_red_at(
             cx,
             self,
@@ -1758,6 +1789,15 @@ impl Gate for ReachabilityGate {
 
         report
     }
+}
+
+/// The green fixture with the decision plane's unit module (and its test twin) gone — the real
+/// tree's shape, where `crates/busbar/src/root/units_decision.rs` does not exist.
+fn absent_decision_module() -> Overlay {
+    let mut ov = evidenced(Overlay::new());
+    ov.remove("crates/busbar/src/root/units_decision.rs");
+    ov.remove("crates/busbar/src/root/tests/units_decision.rs");
+    ov
 }
 
 /// THE GREEN FIXTURE'S EVIDENCE DOCUMENT, planted rather than committed under `xtask/fixtures/`.
@@ -2056,6 +2096,45 @@ mod tests {
         assert_eq!(mod_statement("mod tests;").as_deref(), Some("tests"));
         assert_eq!(mod_statement("root::money_book::build();"), None);
         assert_eq!(mod_statement("mod inline {"), None);
+    }
+
+    /// ITEM 180: A ROSTER PLANE WITH NO UNIT MODULE IS RED ON BOTH ROWS ABOUT IT, NOT GREEN.
+    /// The real tree has no `root/units_decision.rs`, and both decision rows used to answer "there is
+    /// no unit path to reach" as a PASS — so deleting a plane's unit module turned two rows from
+    /// red to green. Driven over the green fixture with that one module removed; the evidence row
+    /// must stay green, because an absent module is cited by nothing and cannot be written up.
+    #[test]
+    fn an_absent_roster_unit_module_reds_both_of_its_rows() {
+        let cx = Ctx::workspace().expect("workspace context");
+        let fcx = Ctx::at(
+            cx.abs("xtask/fixtures/reachability-green"),
+            cx.scratch().to_path_buf(),
+        )
+        .expect("green fixture");
+        let verdict = crate::gates::execute(
+            &ReachabilityGate,
+            &fcx.with_overlay(absent_decision_module()),
+        );
+        let status = |id: &str| {
+            verdict
+                .rows
+                .iter()
+                .find(|r| r.id == id)
+                .map(|r| (r.status, r.detail.clone()))
+                .unwrap_or_else(|| panic!("no row `{id}`"))
+        };
+        for id in [row_unit_path("decision"), row_root_reach("decision")] {
+            let (st, detail) = status(&id);
+            assert!(
+                st != Status::Pass && detail.contains("NO UNIT MODULE"),
+                "`{id}` must be RED naming the absent module, got {st:?}: {detail}"
+            );
+        }
+        let (st, detail) = status(ROW_EVIDENCE);
+        assert!(
+            st == Status::Pass,
+            "an absent module is owed no write-up: {detail}"
+        );
     }
 
     /// ITEM 88: THE SELF-TEST SCORES EVERY PLANTED CASE AS EXPECTED. Both green controls went RED on
