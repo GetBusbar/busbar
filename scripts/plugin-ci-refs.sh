@@ -39,14 +39,31 @@ set -euo pipefail
 BUSBAR_REPO="${BUSBAR_REPO_URL:-https://github.com/GetBusbar/busbar.git}"
 
 # Resolve a ref-ish string to a commit sha, or print nothing when busbar has no such ref.
-# A 40-hex input is taken as a sha as-is: `git ls-remote` does not list arbitrary commit shas, so
-# asking it about one would wrongly report a valid pin as missing.
+#
+# A 40-HEX INPUT IS VERIFIED, NOT TRUSTED. `git ls-remote` does not list arbitrary commit shas, so
+# asking it about one would wrongly report a valid pin as missing -- and so this function used to
+# pass any 40-hex string straight through. Since `build_matrix` refuses every non-40-hex pin before
+# it gets here, that made the "pin busbar does not have" hard fail below UNREACHABLE: a typo'd
+# sha, a sha from a rewritten history or a fork went straight into the matrix, and the plugin's CI
+# then died inside actions/checkout with an error naming neither the ref nor this file. A sha is
+# now proven to exist by fetching exactly that commit object (`--filter=tree:0`, depth 1: the commit
+# alone, no trees or blobs); the server answers "not our ref" for one it does not have.
 resolve() {
-  local want="$1" line
+  local want="$1" line probe
   [ -n "$want" ] || return 0
-  if printf '%s' "$want" | grep -qE '^[0-9a-f]{40}$'; then printf '%s' "$want"; return 0; fi
   if [ -n "${BUSBAR_REFS_RESOLVE_CMD:-}" ]; then
+    # The offline resolver is asked about EVERYTHING, shas included, so the selftest can drive the
+    # "busbar does not have this sha" branch without a network round trip.
     "$BUSBAR_REFS_RESOLVE_CMD" "$want"
+    return 0
+  fi
+  if printf '%s' "$want" | grep -qE '^[0-9a-f]{40}$'; then
+    probe="$(mktemp -d)"
+    if git init -q --bare "$probe" >/dev/null 2>&1 \
+       && git -C "$probe" fetch -q --depth=1 --filter=tree:0 "$BUSBAR_REPO" "$want" >/dev/null 2>&1; then
+      printf '%s' "$want"
+    fi
+    rm -rf "$probe"
     return 0
   fi
   line="$(git ls-remote "$BUSBAR_REPO" "$want" 2>/dev/null | head -1 || true)"
@@ -142,6 +159,9 @@ selftest() {
 case "$1" in
   main) printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;
   dev)  printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' ;;
+  # The commits busbar HAS, asked by sha. Anything else -- including a well-formed sha -- is unknown.
+  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb|cccccccccccccccccccccccccccccccccccccccc)
+        printf '%s' "$1" ;;
   *)    printf '' ;;
 esac
 FAKE
@@ -208,13 +228,17 @@ FAKE
     "yes" "$(warns build_matrix "${tmp}/two" '5/merge')"
 
   # 5. A PIN BUSBAR DOES NOT HAVE IS A HARD FAILURE. The release cannot build; a warning would be
-  #    a lie. `cccc...` resolves only because the fake table is bypassed for 40-hex input, so this
-  #    case uses a non-hex pin, which the fake resolver reports as unknown.
+  #    a lie. The pin is a WELL-FORMED 40-hex sha that busbar does not have -- the only shape that
+  #    reaches the resolver at all, since a non-hex pin is refused earlier (5b). This case used a
+  #    non-hex pin, which proved the hex check and left this branch unreachable and untested.
   mkdir -p "${tmp}/badpin"
-  printf 'no-such-busbar-ref 1.5.3\n' > "${tmp}/badpin/.busbar-ref"
-  check "an unresolvable .busbar-ref pin fails, it does not warn" \
+  printf 'dddddddddddddddddddddddddddddddddddddddd 1.5.3\n' > "${tmp}/badpin/.busbar-ref"
+  check "a well-formed .busbar-ref sha busbar does not have fails, it does not warn" \
     "exit1" \
     "$(build_matrix "${tmp}/badpin" main >/dev/null 2>&1 && echo exit0 || echo exit1)"
+  WARN_NEEDLE="which busbar does not have"
+  check "and it names the missing pin, rather than emitting it into the matrix" \
+    "yes" "$(warns build_matrix "${tmp}/badpin" main)"
 
   # 5b. AN UNPINNED PIN IS A HARD FAILURE TOO, and it is the one that used to pass loudest. A
   #     `.busbar-ref` holding a moving ref resolves, matches the moving leg, dedupes to ONE leg and
