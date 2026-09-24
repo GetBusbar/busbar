@@ -414,7 +414,7 @@ impl ConstructionGate {
         );
         take(
             "source-denylist",
-            rules2::source_denylist(cx, &tree, &cfg, denylist.as_ref()),
+            rules2::source_denylist(cx, &tree, &cfg, denylist.as_ref().map_err(String::as_str)),
             &mut rows,
         );
         take("lean-core", rules2::lean_core(cx, &tree, &cfg), &mut rows);

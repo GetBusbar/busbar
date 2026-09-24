@@ -425,7 +425,7 @@ pub fn source_denylist(
     cx: &Ctx,
     tree: &Tree,
     cfg: &Cfg,
-    xtask_hits: Option<&BTreeMap<String, Vec<String>>>,
+    xtask_hits: Result<&BTreeMap<String, Vec<String>>, &str>,
 ) -> Result<Vec<CRow>, String> {
     let c = cfg.rule("source-denylist")?;
     let patterns = c.list_of("patterns");
@@ -437,10 +437,9 @@ pub fn source_denylist(
             .join("|"),
     )?;
     let allow = cfg.doc.table_or_empty("rules.source-denylist.allowlist");
-    // `None` = the transitive-closure half never answered. Every row then says so and is RED: an
-    // unproven half of an invariant is not a met one.
-    let unproven = xtask_hits.is_none();
-
+    // `Err` = the transitive-closure half never answered (or answered with its own defects). Every
+    // row then says so, with the reason, and is RED: an unproven half of an invariant is not a met
+    // one.
     let mut rows = Vec::new();
     let mut seen: Vec<(String, String)> = Vec::new();
     for kind in c.list_of("kinds") {
@@ -466,12 +465,11 @@ pub fn source_denylist(
             }
         }
         match xtask_hits {
-            None => offenders.push(
+            Err(why) => offenders.push(format!(
                 "UNPROVEN: `cargo xtask denylist` did not answer, so no transitive dependency was \
-                 checked (reason on stderr)"
-                    .to_string(),
-            ),
-            Some(h) => offenders.extend(h.get(&crate_name).cloned().unwrap_or_default()),
+                 checked ({why})"
+            )),
+            Ok(h) => offenders.extend(h.get(&crate_name).cloned().unwrap_or_default()),
         }
         let current = offenders.len() as i64;
         let detail = format!(
@@ -499,7 +497,6 @@ pub fn source_denylist(
             vec![],
         ));
     }
-    let _ = unproven;
     Ok(rows)
 }
 

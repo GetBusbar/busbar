@@ -62,7 +62,7 @@ fn base_overlay(cx: &Ctx) -> Overlay {
     if let Some(hits) = external::purity_hits(cx) {
         ov.set_command(external::PURITY_HITS_KEY, hits);
     }
-    if let Some(map) = external::denylist_hits(cx) {
+    if let Ok(map) = external::denylist_hits(cx) {
         let mut tsv = String::new();
         for (crate_name, entries) in &map {
             for e in entries {
@@ -79,6 +79,10 @@ fn base_overlay(cx: &Ctx) -> Overlay {
             }
         }
         ov.set_command(external::DENYLIST_KEY, tsv);
+    } else {
+        // Captured as what it is — "did not answer" — so every case sees the same answer the
+        // real run gave instead of each re-running a scan that fails.
+        ov.set_command(external::DENYLIST_KEY, external::DENYLIST_ABSENT);
     }
     ov
 }
@@ -1241,6 +1245,21 @@ fn kind_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         &refs(&ids("source-denylist:", &pure)),
         ov,
         &["zz_planted_io.rs"],
+    ));
+
+    // ITEM 167: THE CLOSURE HALF THAT NEVER ANSWERED. The rule's UNPROVEN arm was unreachable —
+    // every path of `denylist_hits` answered "asked, clean" — so it could not be planted and was
+    // never proven. The rows above are green at baseline; this plant makes the closure scan not
+    // answer and every one of them must go RED saying so.
+    let mut ov = on(base);
+    ov.set_command(external::DENYLIST_KEY, external::DENYLIST_ABSENT);
+    r.push(prove_red(
+        cx,
+        gate,
+        "the transitive-closure scan not answering is not a clean closure",
+        &refs(&ids("source-denylist:", &pure)),
+        ov,
+        &["UNPROVEN: `cargo xtask denylist` did not answer"],
     ));
 
     let Ok(cfg) = ConstructionGate::cfg(cx) else {
