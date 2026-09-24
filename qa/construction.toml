@@ -1750,7 +1750,18 @@ allowed_vocabulary = [
   "as_nanos", "elapsed_nanos", "monotonic_nanos", "latency_nanos",
 ]
 # The cost crate and the cost host modules, named as module paths rather than as words.
-forbidden_module_paths = ["busbar_kernel_ledger::cost::", "busbar_core::cost::", "busbar_core::plane_host::cost_host"]
+#
+# REPOINTED (item 377): two of the three entries were `busbar_core::cost::` and
+# `busbar_core::plane_host::cost_host`, spellings of a crate `673ecdaaa` absorbed into busbar-kernel
+# — so they matched no line in any crate and the module-path half of this ban was two-thirds dead,
+# blind to the exact cost-host seam the `why` names. The rename is git's, not a judgement: that
+# commit carries `R100 crates/{busbar-core => busbar-kernel}/src/cost.rs` and
+# `R100 crates/{busbar-core => busbar-kernel}/src/plane_host/cost_host.rs`. Repointing adds NO
+# finding on today's tree (the only `busbar_kernel::cost::` spellings in scope are in
+# `crates/busbar-llm/src/unit/tests/meter.rs`, test code this rule skips); a planted
+# `busbar_kernel::cost::CostAmount::of(usage)` in `crates/busbar-plane-llm/src/lib.rs` now counts
+# (1 -> 2), where under the dead spelling it did not (1 -> 1).
+forbidden_module_paths = ["busbar_kernel_ledger::cost::", "busbar_kernel::cost::", "busbar_kernel::plane_host::cost_host"]
 # A manifest dependency is the same reach spelled where no source scan would see it.
 forbidden_deps = ["busbar-kernel-ledger"]
 max_hits = 0
