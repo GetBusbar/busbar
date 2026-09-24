@@ -204,8 +204,8 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
-  # SCRIPT SELFTESTS — every bare script whose only harness is its own `--selftest` (KICKOFF §15.5:
-  # "wire the script's own --selftest and make CI call it"), plus the workflow invariants this
+  # SCRIPT SELFTESTS — every bare script whose only harness is its own `--selftest`, wired so CI
+  # calls it, plus the workflow invariants this
   # directory owes. One cheap job, no toolchain, no build, no network: each call is hermetic and
   # seconds long, and each is run plainly so its red is this job's red. A member of the cheap
   # hygiene tier, so `preflight` waits on it and the umbrella scores it.
@@ -2153,7 +2153,7 @@ jobs:
         #
         # busbar-plugin-example-plane is the kind:plane member of that list, and it is the one whose
         # absence is most expensive: `crates/busbar-kernel/tests/plane_abi_rider.rs` is the ONLY proof
-        # that the 1.6.0 plane ABI has a real rider (BUSBAR-1.6.0 §11a, "no 0-caller ABI"), and a
+        # that the plane ABI has a real rider ("no 0-caller ABI"), and a
         # missing artifact would make all seven of its tests pass vacuously. They panic under CI rather
         # than skip for exactly that reason; this line is what keeps them from having to.
         run: |
