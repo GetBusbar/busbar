@@ -27,15 +27,18 @@
 //! token of a zero-check that checks nothing. The manifest half is the same fault: `harness =
 //! false` was looked for anywhere in a manifest with three `[[bench]]` blocks, each carrying one.
 //!
-//! WHY A SOURCE GATE AND NOT A `cargo bench` RUNNER. `xtask` depends on no product crate (the
-//! `segregation` gate), and a Tier::Fast gate builds nothing; the microsecond measurement is the
-//! bench's job and runs in the perf lane. What this gate owns is the CONTRACT — that the instrument
-//! still constructs the vtable, still compares it to a direct call, and still asserts the exact
-//! budget at both percentiles and a zero per-token crossing. Deleting an assertion from the bench is
-//! the drift this catches, and the bench's own `BUSBAR_PERF_STREAM_CROSS` knob is what proves those
-//! assertions can still fire. NOTE WHAT DOES NOT RUN IT: `qa/segments.toml`'s `benches` segment is
-//! `cargo bench --workspace --no-run`, which compiles this bench and never executes it, so on this
-//! tree the source contract below is the only thing standing behind these rows.
+//! TWO MODES: THE CONTRACT AND THE MEASUREMENT. The registered gate (`cargo xtask gate
+//! hot-path-perf`, Tier::Fast) builds nothing — `xtask` depends on no product crate (the
+//! `segregation` gate) — and holds the CONTRACT: the instrument still constructs the vtable, still
+//! compares it to a direct call, and still asserts the exact budget at both percentiles and a zero
+//! per-token crossing. That alone never proved the budget is MET: `qa/segments.toml`'s `benches`
+//! segment is `cargo bench --workspace --no-run`, which compiles this bench and never executes it.
+//! [`HotPathPerfExecGate`] is the other half: the same text rows plus four `:executed*` rows that
+//! RUN the bench (`cargo bench -p busbar-kernel --bench plane_host_vtable_perf`) and judge its real
+//! output — criterion's recorded samples against the `< 1µs` p50/p99 budget, and the bench's own
+//! assertions against its exit. A bench that did not run is RED on every executed row, never
+//! skipped-green. It builds the bench profile, so it runs on the qa cadence through
+//! `xtask/tests/hot_path_gates.rs`'s `--ignored` executing tests, not on every push.
 //!
 //! THE PENDING-RIDER DEPENDENCY. `PlaneHostVtable`
 //! (`crates/busbar-plugin/src/hot/host.rs`) has NO production caller yet — the keystone
@@ -46,7 +49,7 @@
 //! either way. This gate is GREEN now and stays green across that transition.
 
 use crate::ctx::{Ctx, Overlay};
-use crate::gates::{prove_green, prove_red, Gate, Report};
+use crate::gates::{prove_green, prove_red, prove_red_by_configuration, Gate, Report};
 use crate::ledger::{Row, Verdict};
 
 pub const ROW_INSTRUMENT: &str = "hot-path-perf:instrument-present";
@@ -358,21 +361,7 @@ impl Gate for HotPathPerfGate {
     }
 
     fn run(&self, cx: &Ctx) -> Verdict {
-        let mut rows = vec![instrument_row(cx)];
-        // A missing instrument makes every text claim fail too — a rule that could not read its
-        // subject is not a rule that passed.
-        let bench = cx.read(BENCH_REL).and_then(|t| code_tokens(&t));
-        for claim in CLAIMS {
-            match &bench {
-                Ok(code) => rows.push(claim_row_over(claim, BENCH_REL, code, "perf")),
-                Err(e) => rows.push(Row::fail(
-                    claim.row,
-                    claim.bad,
-                    format!("{BENCH_REL}: {e} — the perf instrument could not be read"),
-                )),
-            }
-        }
-        Verdict::of(rows)
+        Verdict::of(text_rows(cx))
     }
 
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
@@ -383,62 +372,537 @@ impl Gate for HotPathPerfGate {
             "the committed perf instrument makes every budget claim",
             &self.owed().iter().map(String::as_str).collect::<Vec<_>>(),
         ));
+        text_cases(cx, self, &mut report);
+        report
+    }
+}
 
-        // INSTRUMENT, NAME HALF: strike the registration's name. The bench source is untouched,
-        // so only this row goes red.
-        let manifest = cx.read(MANIFEST_REL).unwrap_or_default();
-        let mut ov = Overlay::new();
-        ov.set(
-            MANIFEST_REL,
-            manifest.replace(&format!("name = \"{BENCH_NAME}\""), "name = \"struck\""),
-        );
-        report.push(prove_red(
-            cx,
-            self,
-            "an unregistered instrument is RED, not read as present",
-            &[ROW_INSTRUMENT],
-            ov,
-            &["not a registered criterion bench"],
-        ));
+/// The five text rows: the registration row, then one row per claim. A missing instrument makes
+/// every text claim fail too — a rule that could not read its subject is not a rule that passed.
+fn text_rows(cx: &Ctx) -> Vec<Row> {
+    let mut rows = vec![instrument_row(cx)];
+    let bench = cx.read(BENCH_REL).and_then(|t| code_tokens(&t));
+    for claim in CLAIMS {
+        match &bench {
+            Ok(code) => rows.push(claim_row_over(claim, BENCH_REL, code, "perf")),
+            Err(e) => rows.push(Row::fail(
+                claim.row,
+                claim.bad,
+                format!("{BENCH_REL}: {e} — the perf instrument could not be read"),
+            )),
+        }
+    }
+    rows
+}
 
-        // INSTRUMENT, HARNESS HALF: strike `harness = false` from THIS bench's block only. The two
-        // sibling `[[bench]]` blocks keep theirs, which is exactly what a whole-file test reads.
-        let mut ov = Overlay::new();
-        ov.set(
-            MANIFEST_REL,
-            manifest.replace(
-                &format!("name = \"{BENCH_NAME}\"\nharness = false"),
-                &format!("name = \"{BENCH_NAME}\""),
-            ),
-        );
-        report.push(prove_red(
-            cx,
-            self,
-            "an instrument whose own block drops `harness = false` is RED while siblings keep theirs",
-            &[ROW_INSTRUMENT],
-            ov,
-            &["does not itself set `harness = false`"],
-        ));
+/// The text rows' RED plants, each an overlay over the committed bench or manifest. Driven through
+/// `gate`, which is the text-only [`HotPathPerfGate`] for BOTH gates: an overlay cannot reach a
+/// bench binary that is built from disk, so re-running the bench under each text plant would pay a
+/// criterion run to learn nothing — the executing gate's text rows are this same `text_rows`.
+fn text_cases<'a>(cx: &'a Ctx, gate: &'a dyn Gate, report: &mut Report<'a>) {
+    // INSTRUMENT, NAME HALF: strike the registration's name. The bench source is untouched,
+    // so only this row goes red.
+    let manifest = cx.read(MANIFEST_REL).unwrap_or_default();
+    let mut ov = Overlay::new();
+    ov.set(
+        MANIFEST_REL,
+        manifest.replace(&format!("name = \"{BENCH_NAME}\""), "name = \"struck\""),
+    );
+    report.push(prove_red(
+        cx,
+        gate,
+        "an unregistered instrument is RED, not read as present",
+        &[ROW_INSTRUMENT],
+        ov,
+        &["not a registered criterion bench"],
+    ));
 
-        // One RED plant per CLAUSE of every claim: strike it out of the real committed bench, so
-        // that row goes red naming the clause it lost. Every clause, not the first — p50 and p99
-        // must each go red on their OWN assertion with the other's standing.
-        let bench = cx.read(BENCH_REL).unwrap_or_default();
-        for claim in CLAIMS {
-            for clause in claim.clauses {
-                let mut ov = Overlay::new();
-                ov.set(BENCH_REL, strike_clause(&bench, clause));
-                report.push(prove_red(
-                    cx,
-                    self,
-                    format!("a perf instrument that drops `{clause}` is RED"),
-                    &[claim.row],
-                    ov,
-                    &[*clause],
-                ));
+    // INSTRUMENT, HARNESS HALF: strike `harness = false` from THIS bench's block only. The two
+    // sibling `[[bench]]` blocks keep theirs, which is exactly what a whole-file test reads.
+    let mut ov = Overlay::new();
+    ov.set(
+        MANIFEST_REL,
+        manifest.replace(
+            &format!("name = \"{BENCH_NAME}\"\nharness = false"),
+            &format!("name = \"{BENCH_NAME}\""),
+        ),
+    );
+    report.push(prove_red(
+        cx,
+        gate,
+        "an instrument whose own block drops `harness = false` is RED while siblings keep theirs",
+        &[ROW_INSTRUMENT],
+        ov,
+        &["does not itself set `harness = false`"],
+    ));
+
+    // One RED plant per CLAUSE of every claim: strike it out of the real committed bench, so
+    // that row goes red naming the clause it lost. Every clause, not the first — p50 and p99
+    // must each go red on their OWN assertion with the other's standing.
+    let bench = cx.read(BENCH_REL).unwrap_or_default();
+    for claim in CLAIMS {
+        for clause in claim.clauses {
+            let mut ov = Overlay::new();
+            ov.set(BENCH_REL, strike_clause(&bench, clause));
+            report.push(prove_red(
+                cx,
+                gate,
+                format!("a perf instrument that drops `{clause}` is RED"),
+                &[claim.row],
+                ov,
+                &[*clause],
+            ));
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// THE EXECUTING MODE — the bench is RUN and its real output is judged against the budget.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+//
+// The text rows above hold the CONTRACT: the bench still asserts the budget. They cannot hold that
+// the budget is MET, because nothing on this tree ran the bench (`qa/segments.toml`'s `benches`
+// segment is `cargo bench --workspace --no-run`). [`HotPathPerfExecGate`] closes that half: it
+// builds and runs `cargo bench -p busbar-kernel --bench plane_host_vtable_perf` into a FRESH criterion
+// home, then judges three things of what came back, independently of each other:
+//
+// | row | the judgement |
+// | --- | --- |
+// | `:executed` | the bench process was spawned, exited 0, and criterion recorded samples for BOTH legs in this run's fresh home |
+// | `:executed-p50-under-1us` | from criterion's own recorded samples (per-iteration ns), vtable p50 − direct p50 < 1_000ns, and the bench's own p50 assertion did not fire |
+// | `:executed-p99-under-1us` | …the same at p99 |
+// | `:executed-per-token-zero` | the run completed (so the bench's `assert_eq!(per_token_crossings, 0, …)` executed) and it did not fire |
+//
+// A BENCH THAT DID NOT RUN IS RED, NEVER SKIPPED-GREEN. Every executed row is FAIL when the process
+// could not be spawned, exited non-zero, or left no samples: there is no Skip row in this mode, and
+// the criterion home is created empty for every run so a previous run's samples cannot stand in.
+//
+// The p50/p99 judgement is the gate's OWN arithmetic over criterion's samples, not a re-reading of
+// the bench's verdict: the bench computes its own percentiles over its own batches and asserts
+// them (that fires as a non-zero exit and fails `:executed`); the gate reads what criterion
+// measured and holds the same `< 1µs` over it. Two measurements, one budget.
+
+/// The budget the executed rows hold the measurement to. The text row `:delta-p50-under-1us` pins
+/// the bench's own `HOT_PATH_BUDGET_NANOS` to this same `1_000`; a unit test holds the two equal.
+pub(crate) const EXEC_BUDGET_NANOS: f64 = 1_000.0;
+
+pub const ROW_EXEC_RAN: &str = "hot-path-perf:executed";
+pub const ROW_EXEC_P50: &str = "hot-path-perf:executed-p50-under-1us";
+pub const ROW_EXEC_P99: &str = "hot-path-perf:executed-p99-under-1us";
+pub const ROW_EXEC_PER_TOKEN: &str = "hot-path-perf:executed-per-token-zero";
+
+/// The criterion benchmark ids the perf bench registers — the two legs whose samples are judged.
+const DIRECT_ID: &str = "HOT_PATH_DIRECT_CALL";
+const VTABLE_ID: &str = "HOT_PATH_VTABLE_CALL";
+
+/// The bench's own RED knobs. Stripped from every executed run's environment unless the run is a
+/// plant, so an unplanted run measures the committed instrument and nothing a shell left set.
+pub(crate) const BENCH_KNOBS: &[&str] = &["BUSBAR_PERF_STREAM_CROSS", "BUSBAR_ALLOC_INJECT"];
+
+/// How an executing gate is planted for its selftest. `None` is the gate as it ships.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecPlant {
+    /// The shipped configuration: run the committed bench, judge it.
+    None,
+    /// Set one of the bench's own RED knobs (`BUSBAR_PERF_STREAM_CROSS`, `BUSBAR_ALLOC_INJECT`)
+    /// in the bench's environment — a REAL budget violation inside the real bench binary.
+    Env(&'static str),
+    /// Ask cargo for a bench target that does not exist — the "bench did not run" shape.
+    BenchName(&'static str),
+    /// Add this many ns to every vtable-leg per-iteration sample BEFORE judging — a crossing made
+    /// slower than the budget, planted into the real run's recorded measurement.
+    SlowVtableNanos(u64),
+}
+
+/// One executed bench run: its exit, its combined output, and the per-iteration samples criterion
+/// recorded for each requested id (read out of a fresh criterion home before it is removed).
+pub(crate) struct BenchRun {
+    pub(crate) bench: String,
+    /// `Ok(code)` for a process that exited with a code; `Err` for one that could not be spawned
+    /// or was killed by a signal.
+    pub(crate) exit: Result<i32, String>,
+    pub(crate) output: String,
+    pub(crate) samples: std::collections::BTreeMap<String, Result<Vec<f64>, String>>,
+}
+
+impl BenchRun {
+    /// `None` when the run COMPLETED — spawned, exit 0, samples for every id. Otherwise the reason
+    /// it did not, which every executed row carries: a bench that did not run is RED.
+    pub(crate) fn not_completed(&self) -> Option<String> {
+        let bench = &self.bench;
+        match &self.exit {
+            Err(e) => return Some(format!("`cargo bench --bench {bench}` did not run: {e}")),
+            Ok(0) => {}
+            Ok(code) => {
+                return Some(format!(
+                    "`cargo bench --bench {bench}` exited {code}: {}",
+                    self.evidence()
+                ))
             }
         }
+        let missing: Vec<String> = self
+            .samples
+            .iter()
+            .filter_map(|(id, s)| s.as_ref().err().map(|e| format!("{id}: {e}")))
+            .collect();
+        if missing.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "`cargo bench --bench {bench}` exited 0 but recorded no samples ({}) — the \
+                 measurement did not run",
+                missing.join("; ")
+            ))
+        }
+    }
 
+    /// Every output line carrying `marker` — the bench's own budget-assertion panics.
+    pub(crate) fn lines_with(&self, marker: &str) -> Vec<String> {
+        self.output
+            .lines()
+            .filter(|l| l.contains(marker))
+            .map(|l| l.trim().to_string())
+            .collect()
+    }
+
+    /// What to show for a failed run: the bench's own `HOT-PATH` assertion lines when there are
+    /// any, else the last lines cargo printed.
+    fn evidence(&self) -> String {
+        let hot = self.lines_with("HOT-PATH");
+        if !hot.is_empty() {
+            return hot.join(" | ");
+        }
+        let lines: Vec<&str> = self
+            .output
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        lines[lines.len().saturating_sub(4)..].join(" | ")
+    }
+}
+
+/// Criterion's `sample.json` → per-iteration nanoseconds (`times[i] / iters[i]`).
+pub(crate) fn per_iteration_nanos(sample_json: &str) -> Result<Vec<f64>, String> {
+    use crate::json_lite::{parse, Json};
+    let doc = parse(sample_json).map_err(|e| format!("sample.json does not parse: {e}"))?;
+    let obj = doc.as_object().ok_or("sample.json is not an object")?;
+    let nums = |key: &str| -> Result<Vec<f64>, String> {
+        obj.get(key)
+            .and_then(Json::as_array)
+            .ok_or(format!("sample.json has no `{key}` array"))?
+            .iter()
+            .map(|v| match v {
+                Json::Int(i) => Ok(*i as f64),
+                Json::Float(f) => Ok(*f),
+                other => Err(format!(
+                    "sample.json `{key}` carries a non-number {other:?}"
+                )),
+            })
+            .collect()
+    };
+    let (iters, times) = (nums("iters")?, nums("times")?);
+    if iters.is_empty() || iters.len() != times.len() {
+        return Err(format!(
+            "sample.json carries {} iters against {} times — not a measurement",
+            iters.len(),
+            times.len()
+        ));
+    }
+    iters
+        .iter()
+        .zip(&times)
+        .map(|(i, t)| {
+            if *i > 0.0 {
+                Ok(t / i)
+            } else {
+                Err("sample.json records a sample of zero iterations".to_string())
+            }
+        })
+        .collect()
+}
+
+/// `(p50, p99)` of `samples`, indexed exactly as the bench indexes its own distribution.
+pub(crate) fn p50_p99(samples: &[f64]) -> (f64, f64) {
+    let mut v = samples.to_vec();
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = v.len();
+    (v[n / 2], v[((n * 99) / 100).min(n - 1)])
+}
+
+/// Build and RUN `cargo bench -p busbar-kernel --bench <bench>` from `root`, into a criterion home
+/// created empty for this run, and read back the samples for `ids`. The bench's RED knobs are
+/// stripped from the environment, then `env` is applied (a plant's knob).
+pub(crate) fn run_bench(
+    root: &std::path::Path,
+    bench: &str,
+    ids: &[&str],
+    env: &[(&str, &str)],
+) -> BenchRun {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NTH: AtomicUsize = AtomicUsize::new(0);
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| root.join("target"));
+    let home = target.join("xtask-hot-path").join(format!(
+        "{bench}-{}-{}",
+        std::process::id(),
+        NTH.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&home);
+    let mut run = BenchRun {
+        bench: bench.to_string(),
+        exit: Err("not started".to_string()),
+        output: String::new(),
+        samples: Default::default(),
+    };
+    if let Err(e) = std::fs::create_dir_all(&home) {
+        run.exit = Err(format!(
+            "the criterion home {} could not be made: {e}",
+            home.display()
+        ));
+        for id in ids {
+            run.samples
+                .insert((*id).to_string(), Err("no run".to_string()));
+        }
+        return run;
+    }
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let mut cmd = std::process::Command::new(&cargo);
+    cmd.args([
+        "bench",
+        "-p",
+        "busbar-kernel",
+        "--bench",
+        bench,
+        "--",
+        "--noplot",
+    ])
+    .current_dir(root)
+    .env("CRITERION_HOME", &home);
+    for k in BENCH_KNOBS {
+        cmd.env_remove(k);
+    }
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    match cmd.output() {
+        Err(e) => run.exit = Err(format!("{cargo}: {e}")),
+        Ok(out) => {
+            run.output = format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            run.exit = out
+                .status
+                .code()
+                .ok_or_else(|| format!("killed by a signal ({:?})", out.status));
+        }
+    }
+    for id in ids {
+        let path = home.join(id).join("new").join("sample.json");
+        let got = std::fs::read_to_string(&path)
+            .map_err(|e| format!("{} not written ({e})", path.display()))
+            .and_then(|t| per_iteration_nanos(&t));
+        run.samples.insert((*id).to_string(), got);
+    }
+    let _ = std::fs::remove_dir_all(&home);
+    run
+}
+
+/// The executed rows over one run. Pure over the [`BenchRun`], so it is unit-testable against a
+/// synthetic run without building anything.
+pub(crate) fn perf_exec_rows(run: &BenchRun, slow_vtable_nanos: u64) -> Vec<Row> {
+    let not_completed = run.not_completed();
+    let mut rows = Vec::new();
+
+    rows.push(match &not_completed {
+        Some(why) => Row::fail(
+            ROW_EXEC_RAN,
+            "the perf bench did not run to completion",
+            format!("{why} — a bench that did not run is RED, never skipped-green"),
+        ),
+        None => Row::pass(
+            ROW_EXEC_RAN,
+            "the perf bench was executed and completed",
+            format!(
+                "`cargo bench --bench {}` exited 0 with criterion samples for {DIRECT_ID} and \
+                 {VTABLE_ID}",
+                run.bench
+            ),
+        ),
+    });
+
+    let legs = match (run.samples.get(DIRECT_ID), run.samples.get(VTABLE_ID)) {
+        (Some(Ok(d)), Some(Ok(v))) if !d.is_empty() && !v.is_empty() => {
+            let v: Vec<f64> = v.iter().map(|x| x + slow_vtable_nanos as f64).collect();
+            Ok((p50_p99(d), p50_p99(&v)))
+        }
+        _ => Err(not_completed
+            .clone()
+            .unwrap_or_else(|| "no samples for both legs".to_string())),
+    };
+    for (row, pct, idx, marker) in [
+        (ROW_EXEC_P50, "p50", 0usize, "HOT-PATH PERF (p50)"),
+        (ROW_EXEC_P99, "p99", 1usize, "HOT-PATH PERF (p99)"),
+    ] {
+        let fired = run.lines_with(marker);
+        rows.push(match &legs {
+            Err(why) => Row::fail(
+                row,
+                format!("the {pct} crossing delta was not measured"),
+                format!("{why} — no {pct} was measured, so none is under budget"),
+            ),
+            Ok((direct, vtable)) => {
+                let (d, v) = if idx == 0 { (direct.0, vtable.0) } else { (direct.1, vtable.1) };
+                let delta = (v - d).max(0.0);
+                if delta >= EXEC_BUDGET_NANOS {
+                    Row::fail(
+                        row,
+                        format!("the measured {pct} vtable crossing is over budget"),
+                        format!(
+                            "criterion measured direct {pct} {d:.1}ns, vtable {pct} {v:.1}ns: delta \
+                             {delta:.1}ns >= budget {EXEC_BUDGET_NANOS}ns"
+                        ),
+                    )
+                } else if !fired.is_empty() {
+                    Row::fail(
+                        row,
+                        format!("the bench's own {pct} budget assertion fired"),
+                        fired.join(" | "),
+                    )
+                } else {
+                    Row::pass(
+                        row,
+                        format!("the measured {pct} vtable crossing is under 1µs"),
+                        format!(
+                            "criterion measured direct {pct} {d:.1}ns, vtable {pct} {v:.1}ns: delta \
+                             {delta:.1}ns < budget {EXEC_BUDGET_NANOS}ns"
+                        ),
+                    )
+                }
+            }
+        });
+    }
+
+    let fired = run.lines_with("HOT-PATH PER-TOKEN");
+    rows.push(if !fired.is_empty() {
+        Row::fail(
+            ROW_EXEC_PER_TOKEN,
+            "the executed bench crossed the host vtable per token",
+            fired.join(" | "),
+        )
+    } else if let Some(why) = &not_completed {
+        Row::fail(
+            ROW_EXEC_PER_TOKEN,
+            "the per-token crossing count was not measured",
+            format!("{why} — the per-token assertion did not complete, so 0 is unproven"),
+        )
+    } else {
+        Row::pass(
+            ROW_EXEC_PER_TOKEN,
+            "the executed streaming model crossed the host vtable 0 times per token",
+            "the run completed and `assert_eq!(per_token_crossings, 0, …)` held".to_string(),
+        )
+    });
+    rows
+}
+
+/// `hot-path-perf`, EXECUTING: the five text rows AND the four executed rows. Not the registry's
+/// Tier::Fast build (that one builds nothing); this one builds the bench in the bench profile and
+/// runs it, so it belongs to the qa cadence. Driven by `xtask/tests/hot_path_gates.rs`.
+pub struct HotPathPerfExecGate {
+    plant: ExecPlant,
+}
+
+impl HotPathPerfExecGate {
+    pub const fn new() -> Self {
+        HotPathPerfExecGate {
+            plant: ExecPlant::None,
+        }
+    }
+
+    pub const fn planted(plant: ExecPlant) -> Self {
+        HotPathPerfExecGate { plant }
+    }
+}
+
+impl Default for HotPathPerfExecGate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+static PERF_PLANT_STREAM_CROSS: HotPathPerfExecGate =
+    HotPathPerfExecGate::planted(ExecPlant::Env("BUSBAR_PERF_STREAM_CROSS"));
+static PERF_PLANT_NO_BENCH: HotPathPerfExecGate =
+    HotPathPerfExecGate::planted(ExecPlant::BenchName("plane_host_vtable_perf_struck"));
+static PERF_PLANT_SLOW: HotPathPerfExecGate =
+    HotPathPerfExecGate::planted(ExecPlant::SlowVtableNanos(2_000));
+
+impl Gate for HotPathPerfExecGate {
+    fn name(&self) -> &'static str {
+        "hot-path-perf"
+    }
+
+    fn baseline_key(&self) -> Option<String> {
+        Some(format!("hot-path-perf:execute:{:?}", self.plant))
+    }
+
+    fn owed(&self) -> Vec<String> {
+        let mut owed = HotPathPerfGate.owed();
+        owed.extend(
+            [ROW_EXEC_RAN, ROW_EXEC_P50, ROW_EXEC_P99, ROW_EXEC_PER_TOKEN].map(str::to_string),
+        );
+        owed
+    }
+
+    fn run(&self, cx: &Ctx) -> Verdict {
+        let mut rows = text_rows(cx);
+        let (bench, env, slow): (&str, Vec<(&str, &str)>, u64) = match self.plant {
+            ExecPlant::None => (BENCH_NAME, vec![], 0),
+            ExecPlant::Env(k) => (BENCH_NAME, vec![(k, "1")], 0),
+            ExecPlant::BenchName(n) => (n, vec![], 0),
+            ExecPlant::SlowVtableNanos(ns) => (BENCH_NAME, vec![], ns),
+        };
+        let run = run_bench(cx.root(), bench, &[DIRECT_ID, VTABLE_ID], &env);
+        rows.extend(perf_exec_rows(&run, slow));
+        Verdict::of(rows)
+    }
+
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
+        let mut report = Report::new();
+        report.push(prove_green(
+            cx,
+            self,
+            "the committed perf bench, EXECUTED, meets every budget claim",
+            &self.owed().iter().map(String::as_str).collect::<Vec<_>>(),
+        ));
+        text_cases(cx, &HotPathPerfGate, &mut report);
+        report.push(prove_red_by_configuration(
+            cx,
+            self,
+            &PERF_PLANT_STREAM_CROSS,
+            "the executed bench with BUSBAR_PERF_STREAM_CROSS (a per-token crossing) is RED",
+            &[ROW_EXEC_RAN, ROW_EXEC_PER_TOKEN],
+            &["HOT-PATH PER-TOKEN"],
+        ));
+        report.push(prove_red_by_configuration(
+            cx,
+            self,
+            &PERF_PLANT_SLOW,
+            "a vtable leg measured 2µs slower than it ran is RED at p50 and p99",
+            &[ROW_EXEC_P50, ROW_EXEC_P99],
+            &["over budget"],
+        ));
+        report.push(prove_red_by_configuration(
+            cx,
+            self,
+            &PERF_PLANT_NO_BENCH,
+            "a bench that did not run is RED on every executed row, never skipped-green",
+            &[ROW_EXEC_RAN, ROW_EXEC_P50, ROW_EXEC_P99, ROW_EXEC_PER_TOKEN],
+            &["did not run", "not measured"],
+        ));
         report
     }
 }
@@ -587,5 +1051,124 @@ mod tests {
             ROW_PER_TOKEN,
         );
         assert_eq!(st, Status::Fail);
+    }
+
+    fn synthetic_run(
+        exit: Result<i32, String>,
+        output: &str,
+        direct: &[f64],
+        vtable: &[f64],
+    ) -> BenchRun {
+        let mut samples = std::collections::BTreeMap::new();
+        let leg = |v: &[f64]| {
+            if v.is_empty() {
+                Err("sample.json not written".to_string())
+            } else {
+                Ok(v.to_vec())
+            }
+        };
+        samples.insert(DIRECT_ID.to_string(), leg(direct));
+        samples.insert(VTABLE_ID.to_string(), leg(vtable));
+        BenchRun {
+            bench: BENCH_NAME.to_string(),
+            exit,
+            output: output.to_string(),
+            samples,
+        }
+    }
+
+    fn statuses(rows: &[Row]) -> Vec<(String, Status)> {
+        rows.iter().map(|r| (r.id.clone(), r.status)).collect()
+    }
+
+    /// Item 10: the executed rows judge criterion's samples against the SAME budget the bench's
+    /// const carries — the gate's constant cannot drift from the text row's pinned `1_000`.
+    #[test]
+    fn the_executed_budget_is_the_benchs_budget() {
+        assert_eq!(EXEC_BUDGET_NANOS, 1_000.0);
+        assert!(CLAIMS.iter().any(|c| c
+            .clauses
+            .contains(&"const HOT_PATH_BUDGET_NANOS: u64 = 1_000;")));
+    }
+
+    /// Item 10: criterion's `sample.json` is read as per-iteration nanoseconds.
+    #[test]
+    fn criterion_samples_read_as_per_iteration_nanos() {
+        let got = per_iteration_nanos(
+            r#"{"sampling_mode":"Linear","iters":[10.0,20.0],"times":[50.0,300]}"#,
+        )
+        .expect("parses");
+        assert_eq!(got, vec![5.0, 15.0]);
+        assert!(per_iteration_nanos(r#"{"iters":[1.0],"times":[]}"#).is_err());
+        assert!(per_iteration_nanos(r#"{"iters":[0.0],"times":[1.0]}"#).is_err());
+    }
+
+    /// Item 10: a completed run under budget is GREEN on every executed row.
+    #[test]
+    fn a_completed_run_under_budget_is_green() {
+        let d: Vec<f64> = (0..100).map(|i| 1.0 + i as f64 / 100.0).collect();
+        let v: Vec<f64> = d.iter().map(|x| x + 0.5).collect();
+        let rows = perf_exec_rows(&synthetic_run(Ok(0), "", &d, &v), 0);
+        assert!(
+            rows.iter().all(|r| r.status == Status::Pass),
+            "{:?}",
+            statuses(&rows)
+        );
+    }
+
+    /// Item 10: a vtable leg over budget at p99 only is RED at p99 and green at p50 — each
+    /// percentile is its own judgement.
+    #[test]
+    fn a_p99_only_blowout_is_red_at_p99_alone() {
+        let d = vec![1.0; 100];
+        let mut v = vec![1.5; 100];
+        v[99] = 5_000.0;
+        let rows = perf_exec_rows(&synthetic_run(Ok(0), "", &d, &v), 0);
+        let st = statuses(&rows);
+        assert!(
+            st.contains(&(ROW_EXEC_P50.to_string(), Status::Pass)),
+            "{st:?}"
+        );
+        assert!(
+            st.contains(&(ROW_EXEC_P99.to_string(), Status::Fail)),
+            "{st:?}"
+        );
+    }
+
+    /// Item 10: a bench that did not run — not spawned, non-zero exit, or no samples — is RED on
+    /// every executed row, never skipped-green.
+    #[test]
+    fn a_bench_that_did_not_run_is_red_on_every_executed_row() {
+        let d = vec![1.0; 100];
+        for run in [
+            synthetic_run(Err("no cargo".into()), "", &[], &[]),
+            synthetic_run(
+                Ok(101),
+                "thread 'main' panicked\nHOT-PATH PER-TOKEN: crossed 10000",
+                &d,
+                &d,
+            ),
+            synthetic_run(Ok(0), "", &[], &[]),
+        ] {
+            let rows = perf_exec_rows(&run, 0);
+            assert_eq!(rows.len(), 4);
+            for r in &rows {
+                if r.id == ROW_EXEC_P50 || r.id == ROW_EXEC_P99 {
+                    // A per-token-only failure left both legs' samples standing, and the delta
+                    // rows judge those; every other shape has nothing to judge.
+                    if run.exit == Ok(101) {
+                        continue;
+                    }
+                }
+                assert_eq!(
+                    r.status,
+                    Status::Fail,
+                    "{} was not RED for {:?}",
+                    r.id,
+                    run.exit
+                );
+                assert_ne!(r.status, Status::Skip);
+            }
+        }
     }
 }
