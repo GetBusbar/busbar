@@ -35,10 +35,7 @@ use busbar_kernel::plane_host::{
     GovHandle, HookConfigHost, HostCompletion, IdentityHost, JournalHost, LanePoolHost,
     MeteringHost, MountHost, RegistryHost, SettleOutcome, TelemetryHost, TransformVerdict,
 };
-use busbar_kernel::store::{
-    Admit, BreakerCfg, BreakerState, LaneHealthSnapshot, LaneRuntime, LaneSnapshot, Permit,
-    Unavailable,
-};
+use busbar_kernel::store::{BreakerState, HealthState, LaneRuntime, Unavailable};
 use busbar_kernel::trust::validate::{Lapsed, Standing};
 use busbar_kernel::trust::TrustState;
 use busbar_api::{AuthPrincipal, IdentityRefusal, PlaneRequestCtx, VirtualKey};
@@ -113,7 +110,9 @@ pub struct FixtureHost {
     governed: bool,
     next_request_id: AtomicU64,
     next_lease: AtomicU64,
-    lanes: InertLanes,
+    /// The lane store `lane_store` hands out: the kernel's OWN `LaneRuntime` implementor with no
+    /// lanes configured, so this double never re-implements (and never drifts from) that trait.
+    lanes: HealthState,
     /// No hook on the fixture requests a candidate signal (the all-zero mask).
     signals: RequestedSignals,
     /// Whether this host models a BILLED plane (a `rate_card:` present). `true` by default: the
@@ -138,7 +137,7 @@ impl FixtureHost {
             governed: false,
             next_request_id: AtomicU64::new(1),
             next_lease: AtomicU64::new(1),
-            lanes: InertLanes,
+            lanes: HealthState::new(Vec::new()),
             signals: RequestedSignals::default(),
             pricing_enabled: true,
         }
@@ -603,9 +602,6 @@ impl IdentityHost for FixtureHost {
     fn approval_redeem(&self, _nonce: &str, _expires_at: u64, _now: u64) -> bool {
         false
     }
-    fn verify_token_test(&self, _token: &str) -> Option<Arc<VirtualKey>> {
-        None
-    }
     fn identity_audience_binding(&self, _token: &str, _expected_aud: &str) -> AudienceBinding {
         AudienceBinding::Opaque
     }
@@ -769,170 +765,6 @@ impl CompletionHost for FixtureHost {
 
 #[async_trait::async_trait]
 impl EngineHost for FixtureHost {}
-
-// ── An inert lane store: no lanes configured, nothing admits, nothing records ───────────────────
-
-/// The `LaneRuntime` view of a deployment with no model lanes at all — every query answers the empty
-/// value, every record is a no-op. The fixture host's `lane_store` hands this out.
-struct InertLanes;
-
-impl LaneRuntime for InertLanes {
-    fn usable(&self, _lane: usize, _now: u64) -> bool {
-        false
-    }
-    fn usable_in(&self, _pool: &str, _lane: usize, _now: u64) -> bool {
-        false
-    }
-    fn is_ready(&self, _lane: usize, _now: u64) -> bool {
-        false
-    }
-    fn is_ready_any_cell(&self, _lane: usize, _now: u64) -> bool {
-        false
-    }
-    fn ready_in(&self, _pool: &str, _lane: usize, _now: u64) -> bool {
-        false
-    }
-    fn breaker_state_snapshot_in(&self, _pool: &str, _lane: usize) -> BreakerState {
-        BreakerState::Closed
-    }
-    fn error_rate_in(&self, _pool: &str, _lane: usize, _now: u64) -> Option<f64> {
-        None
-    }
-    fn available_permits(&self, _lane: usize) -> usize {
-        0
-    }
-    fn lane_budget_remaining(&self, _lane: usize) -> Option<i64> {
-        None
-    }
-    fn lane_admissible(&self, _lane: usize) -> bool {
-        false
-    }
-    fn lane_latency_ms(&self, _lane: usize) -> Option<f64> {
-        None
-    }
-    fn record_latency_in(&self, _pool: &str, _lane: usize, _latency_ms: f64) {}
-    fn acquire_for_dispatch_in(&self, _pool: &str, _lane: usize, _now: u64) -> bool {
-        false
-    }
-    fn classify(&self, _pool: &str, _lane: usize, _now: u64) -> Result<(), Unavailable> {
-        Err(Unavailable::Dead)
-    }
-    fn try_admit(&self, _pool: &str, _lane: usize, _now: u64) -> Result<Admit, Unavailable> {
-        Err(Unavailable::Dead)
-    }
-    fn lane_semaphore(&self, _lane: usize) -> Option<Arc<tokio::sync::Semaphore>> {
-        None
-    }
-    fn try_admit_breaker(
-        &self,
-        _pool: &str,
-        _lane: usize,
-        _now: u64,
-    ) -> Result<Option<u64>, Unavailable> {
-        Err(Unavailable::Dead)
-    }
-    fn release_probe_in(&self, _pool: &str, _lane: usize) {}
-    fn probe_epoch_in(&self, _pool: &str, _lane: usize) -> u64 {
-        0
-    }
-    fn release_probe_owned_in(&self, _pool: &str, _lane: usize, _owned_epoch: u64) {}
-    fn breaker_state(&self, _lane: usize) -> BreakerState {
-        BreakerState::Closed
-    }
-    fn breaker_state_in(&self, _pool: &str, _lane: usize) -> BreakerState {
-        BreakerState::Closed
-    }
-    fn force_open_in(&self, _pool: &str, _lane: usize, _cooldown_until: u64) {}
-    fn cooldown_remaining(&self, _lane: usize, _now: u64) -> u64 {
-        0
-    }
-    fn cooldown_remaining_in(&self, _pool: &str, _lane: usize, _now: u64) -> u64 {
-        0
-    }
-    fn lane_needs_probe(&self, _lane: usize, _now: u64) -> bool {
-        false
-    }
-    fn record_success(&self, _lane: usize) {}
-    fn record_success_in(&self, _pool: &str, _lane: usize) {}
-    fn record_probe_success_all_cells(&self, _lane: usize) {}
-    fn record_client_fault(&self, _lane: usize) {}
-    fn record_transient(
-        &self,
-        _lane: usize,
-        _what: &str,
-        _cfg: &BreakerCfg,
-        _retry_after: Option<u64>,
-    ) -> bool {
-        false
-    }
-    fn record_transient_in(
-        &self,
-        _pool: &str,
-        _lane: usize,
-        _what: &str,
-        _cfg: &BreakerCfg,
-        _retry_after: Option<u64>,
-    ) -> bool {
-        false
-    }
-    fn record_rate_limit(
-        &self,
-        _lane: usize,
-        _now: u64,
-        _cfg: &BreakerCfg,
-        _retry_after: Option<u64>,
-    ) -> bool {
-        false
-    }
-    fn record_rate_limit_in(
-        &self,
-        _pool: &str,
-        _lane: usize,
-        _now: u64,
-        _cfg: &BreakerCfg,
-        _retry_after: Option<u64>,
-    ) -> bool {
-        false
-    }
-    fn record_hard_down(&self, _lane: usize, _reason: &str) {}
-    fn record_hard_down_all_cells(&self, _lane: usize, _reason: &str) -> bool {
-        false
-    }
-    fn recover_lane(&self, _lane: usize) {}
-    fn record_probe_failure_all_cells(
-        &self,
-        _lane: usize,
-        _what: &str,
-        _resolve_cfg: &dyn Fn(&str) -> BreakerCfg,
-        _retry_after: Option<u64>,
-    ) {
-    }
-    fn try_acquire(&self, _lane: usize) -> Option<Permit> {
-        None
-    }
-    fn spend_budget(&self, _lane: usize) -> bool {
-        false
-    }
-    fn refund_budget(&self, _lane: usize) {}
-    fn select_weighted(&self, _candidates: &[usize], _weights: &[u32], _now: u64) -> Option<usize> {
-        None
-    }
-    fn select_weighted_in(
-        &self,
-        _pool: &str,
-        _candidates: &[usize],
-        _weights: &[u32],
-        _now: u64,
-    ) -> Option<usize> {
-        None
-    }
-    fn snapshot(&self, _lane: usize, _now: u64) -> LaneSnapshot {
-        unreachable!("the inert lane store has no lanes to snapshot")
-    }
-    fn export_health(&self) -> Vec<LaneHealthSnapshot> {
-        Vec::new()
-    }
-}
 
 #[cfg(test)]
 #[path = "tests/fixture_host_tests.rs"]
