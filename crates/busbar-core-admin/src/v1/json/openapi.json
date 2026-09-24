@@ -144,7 +144,7 @@
         "type": "object"
       },
       "AuditEntry": {
-        "description": "One admin audit record. `outcome` is a stable token tooling can branch on. The record is\nHASH-CHAINED for tamper-EVIDENCE: `hash = sha256(prev_hash | seq | ts | action | resource |\noutcome | principal)`, and `prev_hash` is the preceding entry's `hash`. Recomputing the chain detects any\naltered/reordered/deleted entry (detection, not prevention; a compromised host can still rewrite\nthe whole chain; prevention is shipping the log off-box to a SIEM).",
+        "description": "One admin audit record. `outcome` is a stable token tooling can branch on. The record is\nHASH-CHAINED for tamper-EVIDENCE: `hash = sha256(prev_hash | seq | ts | action | resource |\noutcome | principal)` FRAMED UNDER THIS RECORD'S OWN `scheme` (see [`AuditEntry::scheme`]), and\n`prev_hash` is the preceding entry's `hash`. Recomputing the chain detects any\naltered/reordered/deleted entry (detection, not prevention; a compromised host can still rewrite\nthe whole chain; prevention is shipping the log off-box to a SIEM).",
         "properties": {
           "action": {
             "description": "The action, `noun.verb` (e.g. `hook.register`, `hook.delete`).",
@@ -170,6 +170,14 @@
             "description": "The resource acted on (e.g. `hook:compress`). Never a secret.",
             "type": "string"
           },
+          "scheme": {
+            "default": 1,
+            "description": "WHICH FRAMING RULES this entry was sealed under: [`AUDIT_SCHEME_PIPE`] (1) or\n[`AUDIT_SCHEME_LENGTH_PREFIXED`] (2) — see `crate::audit::Framing`.\n\n`#[serde(default)]` to [`AUDIT_SCHEME_PIPE`]: an entry persisted before this field existed\nsimply lacks the key, and an absent tag means exactly scheme 1, because that is what every\nsuch row actually is — no migration of stored data is required. `link` always writes\n[`AUDIT_SCHEME_LENGTH_PREFIXED`] on a FRESH entry; nothing mints scheme 1 going forward. A\nverifier reads this straight off the record (`ChainedRecord::framing`), so a chain mixing\nboth eras checks each entry under the rules it actually used.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
           "seq": {
             "description": "Monotonic sequence number (1-based), unique within a process lifetime.",
             "format": "uint64",
@@ -191,7 +199,8 @@
           "outcome",
           "principal",
           "prev_hash",
-          "hash"
+          "hash",
+          "scheme"
         ],
         "type": "object"
       },
@@ -2259,7 +2268,7 @@
             "type": "string"
           },
           "restart_required_default": {
-            "description": "The kind-derived restart-scoping default (`busbar_plugin_sign::kind_restart_default`), so\nbusbar-ui need not hardcode the kind→default table. Emitted by both schema endpoints (`null`\nonly when the plugin has no resolvable manifest/kind). Declared so codegen'd clients keep it.",
+            "description": "The kind-derived restart-scoping default (`busbar_plugin_loader::sign::kind_restart_default`), so\nbusbar-ui need not hardcode the kind→default table. Emitted by both schema endpoints (`null`\nonly when the plugin has no resolvable manifest/kind). Declared so codegen'd clients keep it.",
             "type": [
               "boolean",
               "null"
@@ -8251,6 +8260,16 @@
               }
             },
             "description": "Rotated (body includes the once-shown new secret; an Idempotency-Key retry replays it verbatim)"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: an id or name exceeds its length cap"
           },
           "401": {
             "content": {
