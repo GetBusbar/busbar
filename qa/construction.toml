@@ -334,10 +334,10 @@ needle = "busbar_kernel::"
 # measurement on the committed tree (HEAD b091b4e83), a raise the owner ruled is a needle repair
 # arming the true count, not a relaxation of what the instrument ever saw. Downward only from here.
 [rules.ports-only.max_per_crate]
-busbar-llm = 265
-busbar-mcp = 288
-busbar-a2a = 252
-busbar-voice = 91
+busbar-llm = 264
+busbar-mcp = 287
+busbar-a2a = 236
+busbar-voice = 89
 
 [rules.ports-only-tests]
 why = """The same reach from test code. Tests that name core internals pin the plane to core's \
@@ -347,9 +347,9 @@ counts can trend to zero at their own pace."""
 # TODAY's measurement on the committed tree (HEAD b091b4e83). Downward only from here.
 [rules.ports-only-tests.max_per_crate]
 busbar-llm = 1045
-busbar-mcp = 204
+busbar-mcp = 201
 busbar-a2a = 99
-busbar-voice = 45
+busbar-voice = 43
 
 # ── 4. no-uninstalled-seam ───────────────────────────────────────────────────────────────────────
 [rules.no-uninstalled-seam]
@@ -864,13 +864,13 @@ ceiling = 659
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"
 patterns = ["pump.rs"]
-ceiling = 453
+ceiling = 450
 
 [rules.loc-ceilings.kernel_files.inflight]
 label = "in-flight/sessions"
 patterns = ["inflight.rs"]
 # RE-BASELINED 2026-09-22: 575 -> 572, the measurement.
-ceiling = 572
+ceiling = 552
 
 [rules.loc-ceilings.kernel_files.recovery]
 label = "recovery"
@@ -892,7 +892,7 @@ patterns = ["registry.rs"]
 # RE-BASELINED 2026-09-22: 887 -> 724, the measurement. The pattern still matches three files by
 # basename — `registry.rs` 314, `plane/registry.rs` 389, `proto/registry.rs` 21 — and all three
 # have drained since the ceiling was last pinned.
-ceiling = 724
+ceiling = 715
 
 [rules.loc-ceilings.kernel_files.grammars]
 label = "grammars incl. JSON span scanner"
@@ -910,7 +910,7 @@ ceiling = 61
 # item 130 took the sweep's named-grant line out (the take now mints its grant in the argument).
 label = "tick: session tick, node tick and the drain sweep"
 patterns = ["tick.rs"]
-ceiling = 192
+ceiling = 191
 
 # ── REPOINTED 2026-09-22, the same repair `ticks` above already had. ───────────────────────────
 # Neither `arena.rs` nor `masking.rs` exists anywhere in the tree, so this row measured the empty
