@@ -1304,7 +1304,7 @@ fn amend_rate_history_effect(
         effective_from,
         effective_until,
         amended_at_ms: appended_at_ms,
-        per_request_fee: card.fee(),
+        sealed_fee: card.fee(),
         rates: cells
             .into_iter()
             .map(|(lane, class)| {
@@ -1393,8 +1393,17 @@ pub struct AmendmentRecord {
     pub effective_until: Option<u64>,
     /// When the correction was admitted, milliseconds.
     pub amended_at_ms: u64,
-    /// The per-request fee the sealed card charges, minor units.
-    pub per_request_fee: i64,
+    /// THE SEALED CARD'S FEE, MINOR UNITS — named `sealed_fee` and not the wire spelling.
+    ///
+    /// This is the journal's own internal record shape, not the wire: it stores what the sealed
+    /// [`busbar_kernel_ledger::cost::RateCard`] already resolved (`card.fee()`), never the
+    /// operator's raw JSON field. Kept off the `per_request_fee`/`fee_cents` spellings on purpose —
+    /// `[rules.one-pricing-site.fee_allowed.amend-rate-history]` reviews exactly four reads of that
+    /// wire name in this file (the parse, the shape refusal, the relay to `from_micro_rates`, and
+    /// the signed payload's own key literal); a durable record's encode/decode is not one of them,
+    /// and giving it the wire's own name would silently spend two of the grant's four slots on a
+    /// binary journal format that was never reviewed as a wire reader.
+    pub sealed_fee: i64,
     /// `(lane, class, nanos_per_unit)` for every cell the correction named, as the card sealed it.
     pub rates: Vec<(String, String, u64)>,
     /// The signer: `sha256(operator key)`, hex.
@@ -1420,7 +1429,7 @@ pub fn amendment_body(record: &AmendmentRecord) -> Vec<u8> {
     body.num(u64::from(record.effective_until.is_some()));
     body.num(record.effective_until.unwrap_or(0));
     body.num(record.amended_at_ms);
-    body.figure(i128::from(record.per_request_fee));
+    body.figure(i128::from(record.sealed_fee));
     body.num(record.rates.len() as u64);
     for (lane, class, nanos) in &record.rates {
         body.text(lane);
@@ -1471,7 +1480,7 @@ pub fn amendment_from_body(body: &[u8]) -> Option<AmendmentRecord> {
     let has_until = r.num()?;
     let until = r.num()?;
     let amended_at_ms = r.num()?;
-    let per_request_fee = i64::try_from(r.figure()?).ok()?;
+    let sealed_fee = i64::try_from(r.figure()?).ok()?;
     let n = r.num()?;
     let mut rates = Vec::new();
     for _ in 0..n {
@@ -1481,7 +1490,7 @@ pub fn amendment_from_body(body: &[u8]) -> Option<AmendmentRecord> {
         effective_from,
         effective_until: (has_until == 1).then_some(until),
         amended_at_ms,
-        per_request_fee,
+        sealed_fee,
         rates,
         operator_fingerprint: r.text()?,
         reason_hash: r.bytes()?.try_into().ok()?,

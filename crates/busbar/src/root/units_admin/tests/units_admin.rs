@@ -3818,7 +3818,7 @@ fn a_sealed_amendment_survives_a_restart_with_its_figures() {
     assert_eq!(record.effective_from, 4_000);
     assert_eq!(record.effective_until, Some(9_000));
     assert_eq!(record.amended_at_ms, 6_000);
-    assert_eq!(record.per_request_fee, 5);
+    assert_eq!(record.sealed_fee, 5);
     assert_eq!(
         record.rates,
         vec![("gpt".to_string(), "input".to_string(), 1_500)],
@@ -3879,7 +3879,7 @@ fn a_thousand_later_amendments_do_not_erase_the_first() {
     let records = replayed_amendments(&restarted.lock().unwrap());
     assert_eq!(records.len(), 1_001, "every amendment is on the journal");
     assert_eq!(
-        records[0].per_request_fee, 7,
+        records[0].sealed_fee, 7,
         "the first amendment is still first"
     );
     assert_eq!(
