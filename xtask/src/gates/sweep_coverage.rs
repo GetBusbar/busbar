@@ -154,6 +154,17 @@ pub fn denominator(cx: &Ctx) -> Result<BTreeSet<String>, String> {
         .collect())
 }
 
+/// The reachability axis's population: every tracked `.rs` file in the denominator. Derived from
+/// the one git answer the gate already refuses on failure and floors, so this row has no oracle of
+/// its own to swallow (item 225).
+pub fn rs_population(denom: &BTreeSet<String>) -> BTreeSet<String> {
+    denom
+        .iter()
+        .filter(|f| f.ends_with(".rs"))
+        .cloned()
+        .collect()
+}
+
 /// Every verdict line across every slice document.
 ///
 /// A markdown table row is `| a | b | c | d |`. Splitting on `|` yields a leading and trailing
@@ -411,10 +422,12 @@ impl SweepCoverageGate {
         });
 
         // --- reachability axis -------------------------------------------------------------
-        let rs: BTreeSet<String> = match cx.git_lines(&["ls-files", "*.rs"]) {
-            Ok(v) => v.into_iter().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect(),
-            Err(_) => BTreeSet::new(),
-        };
+        // THE POPULATION IS THE DENOMINATOR'S `.rs` HALF, NOT A SECOND GIT QUERY (item 225). The
+        // row used to ask git again and turn an Err into an EMPTY set — an empty set has nothing
+        // missing, so an unanswerable question and a clean tree printed the same PASS. The
+        // denominator above is the same `ls-files '*.rs'` answer, already refused on Err and
+        // already held to its floor, so the row reads that one and cannot fake an answer.
+        let rs = rs_population(&denom);
         let prior = cx.read(PRIOR_SWEEP).unwrap_or_default();
         let mut verdicted: BTreeSet<String> = BTreeSet::new();
         for line in prior.lines() {
@@ -433,7 +446,16 @@ impl SweepCoverageGate {
             }
         }
         let missing: Vec<String> = rs.difference(&verdicted).cloned().collect();
-        rows.push(if missing.is_empty() {
+        rows.push(if rs.is_empty() {
+            Row::fail(
+                ROW_REACHABILITY,
+                "the reachability population is empty — the question went unanswered, and an \
+                 unanswered question is not a clean tree",
+                format!(
+                    "git listed no tracked .rs file; nothing was compared against {PRIOR_SWEEP}"
+                ),
+            )
+        } else if missing.is_empty() {
             Row::pass(
                 ROW_REACHABILITY,
                 "every tracked .rs file carries a reachability verdict in the prior sweep",
@@ -472,10 +494,18 @@ impl SweepCoverageGate {
             let stem = file.trim_end_matches(".rs");
             // Search the sibling directory and its parent for a declaration of this module.
             let mut declared_in: Option<String> = None;
-            for probe in [format!("{dir}/mod.rs"), format!("{dir}/lib.rs"), format!("{dir}/main.rs")] {
+            for probe in [
+                format!("{dir}/mod.rs"),
+                format!("{dir}/lib.rs"),
+                format!("{dir}/main.rs"),
+            ] {
                 if let Ok(text) = cx.read(&probe) {
                     let needle = format!("mod {stem};");
-                    if text.lines().any(|l| l.trim_start().trim_start_matches("pub ").starts_with(&needle)) {
+                    if text.lines().any(|l| {
+                        l.trim_start()
+                            .trim_start_matches("pub ")
+                            .starts_with(&needle)
+                    }) {
                         declared_in = Some(probe);
                         break;
                     }
@@ -584,5 +614,42 @@ impl Gate for SweepCoverageGate {
         ));
 
         report
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ITEM 225: the reachability population is the denominator's `.rs` half, so it is exactly as
+    /// answerable as the denominator — which is refused on Err and floored — and never an empty
+    /// stand-in for a failed query.
+    #[test]
+    fn the_reachability_population_is_the_denominators_rs_half() {
+        let denom: BTreeSet<String> = ["a/lib.rs", "Cargo.toml", "b/c.rs", "scripts/x.sh"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let rs = rs_population(&denom);
+        assert_eq!(
+            rs.into_iter().collect::<Vec<_>>(),
+            vec!["a/lib.rs".to_string(), "b/c.rs".to_string()]
+        );
+    }
+
+    /// ITEM 225, ON THE REAL TREE: the row's population is the same set a direct `ls-files '*.rs'`
+    /// gives, so deriving it moved nothing.
+    #[test]
+    fn the_derived_population_equals_git_on_the_tree() {
+        let cx = Ctx::workspace().expect("workspace");
+        let denom = denominator(&cx).expect("the denominator");
+        let direct: BTreeSet<String> = cx
+            .git_lines(&["ls-files", "*.rs"])
+            .expect("git")
+            .into_iter()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        assert_eq!(rs_population(&denom), direct);
     }
 }
