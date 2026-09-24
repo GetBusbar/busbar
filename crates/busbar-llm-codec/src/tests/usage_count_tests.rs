@@ -665,6 +665,69 @@ fn lenient_billed_fields(flat: &str) -> Vec<String> {
     hits
 }
 
+/// A lenient read whose `None` flows, undefaulted, through `.map(..)` into a STRUCT LITERAL — the
+/// third shape item 133 remainder missed. Unlike [`lenient_defaults`] (defaulted to a bare number)
+/// and [`lenient_billed_fields`] (assigned straight to a named billed field), this shape wraps the
+/// `Some(n)`/`None` in a freshly built record (`TokenUsage{input:n,..Default::default()}`) that
+/// itself becomes the caller's only signal of "was there usage" — so an unreadable count collapses
+/// to the SAME `None` as "the provider reported no usage at all", and every downstream view reads
+/// zero for real work. Live at the Gemini and Bedrock embeddings handlers before this fix:
+/// `.and_then(read_count_u64).map(|n| TokenUsage{input:n,..Default::default()})`.
+fn lenient_struct_maps(flat: &str) -> Vec<String> {
+    let wrappers = lenient_wrappers(flat);
+    let mut hits = Vec::new();
+    for w in &wrappers {
+        let mut from = 0;
+        while let Some(hit) = flat[from..].find(w.as_str()) {
+            let at = from + hit;
+            from = at + w.len();
+            if !whole_ident(flat, at, w.len()) {
+                continue;
+            }
+            let mut tail = &flat[from..];
+            if tail.starts_with('(') {
+                // CALL form `w(..)`.
+                let Some(end) = past_balanced(tail, '(', ')') else {
+                    continue;
+                };
+                tail = &tail[end..];
+            } else if let Some(t) = tail.strip_prefix(')') {
+                // PATH form `.and_then(w)`: step past the combinator's own close.
+                tail = t;
+            } else {
+                continue;
+            }
+            // The FIRST `.map(..)` right after the lenient read.
+            let Some(t) = tail.strip_prefix(".map") else {
+                continue;
+            };
+            let Some(end) = past_balanced(t, '(', ')') else {
+                continue;
+            };
+            let body = &t[..end];
+            // A bare scalar transform (`.map(|n| n * 2)`) is not this shape; a struct literal
+            // (`.map(|n| Type{field:n,..})`) is — it repackages the `None` as "no record at all".
+            if !body.contains('{') {
+                continue;
+            }
+            let after = &t[end..];
+            // Already defaulted afterward is `lenient_defaults`'s shape, not this one.
+            const DEFAULTS: &[&str] = &[
+                ".unwrap_or(",
+                ".unwrap_or_default(",
+                ".unwrap_or_else(",
+                ".map_or(",
+            ];
+            if DEFAULTS.iter().any(|d| after.starts_with(d)) {
+                continue;
+            }
+            let site: String = flat[at.saturating_sub(40)..at].to_string();
+            hits.push(format!("…{site}{w}…map{{…}}"));
+        }
+    }
+    hits
+}
+
 /// THE READ-THROUGH-THE-SEAM SPELLING OF THE SILENT ZERO (item 306).
 ///
 /// The two scans above look for the substring `as_u64`, which does not occur inside
@@ -676,7 +739,10 @@ fn lenient_billed_fields(flat: &str) -> Vec<String> {
 /// is named or wrapped, whose `None` is defaulted — so a reintroduction goes red here.
 ///
 /// It also keys on the `None` twin ([`lenient_billed_fields`]): a lenient read assigned undefaulted
-/// to a billed `Option` field, where "unreadable" silently reads as "not reported" (item 133).
+/// to a billed `Option` field, where "unreadable" silently reads as "not reported" (item 133); and
+/// on the struct-map twin ([`lenient_struct_maps`]): a lenient read `.map`ped undefaulted into a
+/// freshly built record, where "unreadable" silently reads as "no record at all" (item 133
+/// remainder — the Gemini and Bedrock embeddings handlers).
 #[test]
 fn no_dialect_defaults_a_lenient_count_read() {
     use std::path::Path;
@@ -751,6 +817,35 @@ fn no_dialect_defaults_a_lenient_count_read() {
         lenient_billed_fields(&is_fine_none)
     );
 
+    // THE STRUCT-MAP TWIN (item 133 remainder). A lenient read piped through `.map(..)` into a
+    // struct literal, never defaulted afterward, repackages "unreadable" as "no record at all" —
+    // neither of the two scans above catch it: nothing is defaulted (so `lenient_defaults` misses
+    // it) and the struct's OWN field name (`input`) is not a `BILLED_OPTION_FIELDS` member (so
+    // `lenient_billed_fields` misses it too). Verbatim (squashed) from gemini/handler.rs and
+    // bedrock/handler.rs before this fix.
+    let was_live_map = squash(
+        "let usage = v.get(\"usageMetadata\").and_then(|u| u.get(\"promptTokenCount\")).and_then(crate::usage_count::read_count_u64).map(|n| busbar_substrate_values::billing::TokenUsage { input: n, ..Default::default() });\n\
+         let usage = v.get(\"inputTextTokenCount\").and_then(crate::usage_count::read_count_u64).map(|n| busbar_substrate_values::billing::TokenUsage { input: n, ..Default::default() });\n",
+    );
+    assert_eq!(
+        lenient_struct_maps(&was_live_map).len(),
+        2,
+        "the detector must flag both the Gemini and Bedrock embeddings shapes: {:?}",
+        lenient_struct_maps(&was_live_map)
+    );
+    // And NOT the refusing seam, or a lenient read `.map`ped to a bare scalar (already covered by
+    // `lenient_defaults` once it is defaulted) rather than a struct.
+    let is_fine_map = squash(
+        "let usage = crate::usage_count::billed_count_opt(v.get(\"usageMetadata\"), \"promptTokenCount\").map_err(|e| CodecError::Malformed(e.to_string()))?.map(|n| busbar_substrate_values::billing::TokenUsage { input: n, ..Default::default() });\n\
+         z: count_of(&v).map(|n| n * 2).unwrap_or(0),\n\
+         search_units: billed_u64(\"search_units\"),\n",
+    );
+    assert!(
+        lenient_struct_maps(&is_fine_map).is_empty(),
+        "{:?}",
+        lenient_struct_maps(&is_fine_map)
+    );
+
     fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
@@ -792,16 +887,18 @@ fn no_dialect_defaults_a_lenient_count_read() {
         for hit in lenient_defaults(&flat)
             .into_iter()
             .chain(lenient_billed_fields(&flat))
+            .chain(lenient_struct_maps(&flat))
         {
             offenders.push(format!("{}: {hit}", f.display()));
         }
     }
     assert!(
         offenders.is_empty(),
-        "a lenient count read (`read_count_u64` or a wrapper of it) has its `None` DEFAULTED, or \
-         lands as-is in a billed `Option` field, so a present-but-unreadable billed count is \
-         ledgered as a number the provider never sent or dropped as \"not reported\". Read it \
-         through `usage_count::billed_count`/`billed_count_opt` and refuse:\n  {}",
+        "a lenient count read (`read_count_u64` or a wrapper of it) has its `None` DEFAULTED, \
+         lands as-is in a billed `Option` field, or is `.map`ped undefaulted into a struct \
+         literal, so a present-but-unreadable billed count is ledgered as a number the provider \
+         never sent or dropped as \"not reported\"/\"no usage at all\". Read it through \
+         `usage_count::billed_count`/`billed_count_opt` and refuse:\n  {}",
         offenders.join("\n  ")
     );
 }

@@ -69,3 +69,33 @@ fn truncated_recovery_yields_no_usage_for_a_stringified_count() {
         .expect("an absent count still recovers");
     assert_eq!((u.input, u.output), (0, 9));
 }
+
+// ── EMBEDDINGS (item 133 remainder) ──────────────────────────────────────────────────────────────
+//
+// `read_embeddings_response` read `usageMetadata.promptTokenCount` as
+// `.and_then(read_count_u64).map(|n| TokenUsage{input:n,..})` — a lenient read whose `None` flowed
+// straight through the `.map`, so a stringified `"1500"` was billed as NO usage at all (0 input)
+// rather than refusing. Now read through `billed_count_opt`.
+
+#[test]
+fn embeddings_response_refuses_an_unreadable_billed_input() {
+    use crate::gemini::handler::read_embeddings_response;
+    let wire = |n: &str| {
+        format!(r#"{{"embedding":{{"values":[0.1]}},"usageMetadata":{{"promptTokenCount":{n}}}}}"#)
+    };
+    assert!(
+        read_embeddings_response(wire(r#""1500""#).as_bytes()).is_err(),
+        "promptTokenCount:\"1500\" is present and unreadable: a refusal, never \"no usage reported\""
+    );
+    assert_eq!(
+        read_embeddings_response(wire("1500").as_bytes())
+            .expect("readable")
+            .usage
+            .map(|u| u.input),
+        Some(1500)
+    );
+    assert!(read_embeddings_response(wire("null").as_bytes())
+        .expect("null is absence")
+        .usage
+        .is_none());
+}
