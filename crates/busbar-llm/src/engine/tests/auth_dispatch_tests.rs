@@ -188,6 +188,9 @@ async fn test_chain_accepts_all_carriers_and_native_401() {
     let server = MockServer::new(state).await;
 
     let auth_cfg = chain_cfg(&["test-groups-module"]);
+    // 1.6.0 item 144: an identified principal is admitted only under a governance key, so the
+    // chain-admitted role is BOUND (omitted `allowed_pools` = every pool). An unbound role earns no
+    // key and is refused — asserted below.
     let app = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -199,6 +202,10 @@ async fn test_chain_accepts_all_carriers_and_native_401() {
         )
         .pool("pa", &[(0, 1)])
         .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
+        .role_bindings(bindings_for(
+            "test-groups-module",
+            &[("carrier", binding(None, None, None))],
+        ))
         .build();
 
     let router = busbar_kernel::test_support::build_router(app);
@@ -278,6 +285,28 @@ async fn test_chain_accepts_all_carriers_and_native_401() {
     assert!(
         env.get("error").is_some(),
         "native error envelope must contain an `error` object: {env}"
+    );
+
+    // A credential the chain IDENTIFIES but whose role is unbound earns no governance key → 401,
+    // same native envelope (item 144: never admitted ungoverned).
+    let r_unbound = client
+        .post(&url)
+        .header("x-api-key", "grp:unbound")
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r_unbound.status().as_u16(),
+        401,
+        "an identified principal with no governance key must be refused"
+    );
+    assert_eq!(
+        r_unbound
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("application/json"),
     );
 
     // Missing credential entirely → 401 (still JSON).
@@ -718,6 +747,9 @@ async fn test_governance_inert_without_admin_token_static_token_admitted() {
         "precondition: engine must be inert (no admin token)"
     );
 
+    // 1.6.0 item 144: an identified principal is admitted only under a governance key, so the
+    // chain-admitted role is BOUND (omitted `allowed_pools` = every pool). The chain, not the inert
+    // engine, still decides admission.
     let app = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -730,6 +762,10 @@ async fn test_governance_inert_without_admin_token_static_token_admitted() {
         .pool("pa", &[(0, 1)])
         .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
         .governance_kit(gov)
+        .role_bindings(bindings_for(
+            "test-groups-module",
+            &[("static", binding(None, None, None))],
+        ))
         .build();
 
     let router = busbar_kernel::test_support::build_router(app);
@@ -1039,6 +1075,9 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
     let static_token = "grp:static-chain";
     let auth_cfg = chain_cfg(&["test-groups-module"]);
 
+    // 1.6.0 item 144: an identified principal is admitted only under a governance key, so the
+    // chain-admitted role is BOUND (omitted `allowed_pools` = every pool). The chain, not the inert
+    // engine, still decides admission.
     let app = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -1051,6 +1090,10 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
         .pool("pa", &[(0, 1)])
         .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
         .governance_kit(gov)
+        .role_bindings(bindings_for(
+            "test-groups-module",
+            &[("static-chain", binding(None, None, None))],
+        ))
         .build();
 
     let router = busbar_kernel::test_support::build_router(app);
