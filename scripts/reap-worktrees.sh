@@ -494,8 +494,18 @@ printf 'load: %s | rustc %s, cargo %s, test-bins %s, tool-bins %s, product %s\n'
 # Anything modified in the last 10 minutes is skipped as possibly in use.
 # ---------------------------------------------------------------------------
 tmp_freed=0; tmp_killed=0
+# THE TWO PASSES MUST NOT DISAGREE. The worktree pass above prints a KEEP/REAP
+# verdict per worktree; this sweep then walked /private/tmp independently and
+# deleted whatever it found. On 2026-09-23 that removed /private/tmp/conf-run --
+# a worktree the pass above had just printed "KEEP -- active 0h ago" for, holding
+# the only reproducible tree behind a completed conformance report -- and left a
+# prunable registration behind. A destructive pass must never overrule a
+# protective one, so the registered worktrees are excluded by name.
+WT_KEEP=$(git -C "$REPO" worktree list --porcelain 2>/dev/null \
+  | awk '/^worktree /{print $2"/"}')
 if [ -d /private/tmp ]; then
   for d in /private/tmp/*/; do
+    case "$WT_KEEP" in *"$d"*) continue ;; esac
     case "$d" in
       /private/tmp/claude-501/|/private/tmp/com.apple.*|/private/tmp/.*) continue ;;
     esac
