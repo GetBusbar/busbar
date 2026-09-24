@@ -1229,8 +1229,17 @@ yet is a vacuous PASS, not a lie): no `?` or early `return` between a HoldCell t
 no identifier typed `Hold` closed over by a `catch_unwind` closure; no `JoinHandle::abort`; no \
 `mem::forget`/`drop(...)` of a value whose name says it is a hold; and a cancellation-token check \
 before every `.await` inside the route step, wherever the route step is async."""
-scope_crates_kernel = ["busbar-kernel"]
-scope_crate_glob = "busbar-unit-*"
+# REPOINTED (item 380), the same dead glob as `lean-core`'s: `busbar-unit-*` matches only
+# `busbar-unit-transport-key`, which holds no hold, so the money settle site
+# (`crates/busbar-kernel-ledger/src/settle.rs`) and the budget crate's hold cell
+# (`crates/busbar-kernel-budget/src/lib.rs`) were outside every one of the five proxies. The glob
+# now names the eight `busbar-kernel-<name>` crates the units became, and the surviving unit crate
+# is kept by name so nothing leaves scope. Measured at e970ed0ae: all four rows that were PASS stay
+# PASS over the wider set (no finding added), and a planted `let hold = cell.take(); let x =
+# maybe()?; Posted::settle(hold, x)` in `settle.rs` now reds `hold-discipline:no-early-exit`, which
+# under the old glob stayed PASS.
+scope_crates_kernel = ["busbar-kernel", "busbar-unit-transport-key"]
+scope_crate_glob = "busbar-kernel-*"
 take_pattern = '\.take\('
 settle_pattern = '::settle\(|\.settle\('
 catch_unwind_pattern = 'catch_unwind'
