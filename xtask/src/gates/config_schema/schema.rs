@@ -220,7 +220,7 @@ fn package_name(text: &str) -> Option<String> {
 /// NON-grammar `Deserialize` types would pull them into the fingerprint. That does not fail
 /// silently: `config-schema:snapshot-drift` goes red and NAMES the type it did not expect. The
 /// answer is the one the drain wants anyway — give that crate's grammar its own `config` module.
-fn grammar_dir(cx: &Ctx, root: &str) -> String {
+pub(super) fn grammar_dir(cx: &Ctx, root: &str) -> String {
     let sub = format!("{root}/config");
     if cx.exists(&sub) {
         sub
@@ -1013,6 +1013,149 @@ pub fn extract(files: &[(String, String)]) -> Result<Value, String> {
     doc.insert("_meta".into(), Value::Object(meta));
     doc.insert("types".into(), Value::Object(types));
     Ok(Value::Object(doc))
+}
+
+// ── what a hand-written `Deserialize` SEES THROUGH to — read beside the render, never into it ────
+
+/// Every tracked source, comment- and `cfg(test)`-stripped exactly as [`extract`] reads it.
+fn stripped(files: &[(String, String)]) -> Vec<(String, Vec<char>)> {
+    files
+        .iter()
+        .map(|(p, t)| {
+            let chars: Vec<char> = t.chars().collect();
+            (
+                p.clone(),
+                scan::strip_cfg_test_mods(&scan::strip_comments(&chars)),
+            )
+        })
+        .collect()
+}
+
+/// Every hand-written `impl<'de> Deserialize<'de> for X` body, as `(X, the body's characters)`.
+fn manual_bodies(files: &[(String, String)]) -> Vec<(String, Vec<char>)> {
+    let mut out = Vec::new();
+    for (_, src) in stripped(files) {
+        for (name, end) in scan::manual_de_impls(&src) {
+            if let Some(open) = (end..src.len()).find(|i| src[*i] == '{') {
+                let close = scan::match_block(&src, open);
+                out.push((name, src[open..close].to_vec()));
+            }
+        }
+    }
+    out
+}
+
+/// THE TYPES A HAND-WRITTEN `Deserialize` FORWARDS ITS INPUT TO, per hand-impl'd type.
+///
+/// `PoolMember`'s hand-written impl dispatches on the node shape and hands a MAP straight to a
+/// derived `RichMember` (`RichMember::deserialize(MapAccessDeserializer::new(map))`), so the map
+/// grammar an operator writes under a pool member IS `RichMember`'s fields. The render records the
+/// hand-impl'd type as a field-less sentinel, and against a baseline that recorded the same type as
+/// a DERIVED struct that read as every one of its fields REMOVED — seven false breaks for a wire
+/// that still parses all seven. This is the list the classifier uses to see through the impl to
+/// the grammar it forwards to (see [`super::classify::SeeThrough`]).
+///
+/// It is read BESIDE the render and never written into it: the frozen snapshot's bytes do not move,
+/// so nothing here needs a regeneration to take effect. Every `Ident::deserialize(` call inside the
+/// impl body is a candidate; the classifier keeps only candidates that are derived structs in the
+/// fresh fingerprint, so `serde_yaml::Value::deserialize` and `String::deserialize` fall away.
+pub fn forwards(files: &[(String, String)]) -> BTreeMap<String, BTreeSet<String>> {
+    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (name, body) in manual_bodies(files) {
+        let pat: Vec<char> = "::deserialize".chars().collect();
+        let n = body.len();
+        let mut i = 0usize;
+        while i + pat.len() <= n {
+            if body[i..i + pat.len()] != pat[..] {
+                i += 1;
+                continue;
+            }
+            let mut k = i + pat.len();
+            while k < n && body[k].is_whitespace() {
+                k += 1;
+            }
+            let call = body.get(k) == Some(&'(');
+            let mut s = i;
+            while s > 0 && scan::is_word(body[s - 1]) {
+                s -= 1;
+            }
+            let ident = scan::text(&body, s..i);
+            if call && ident.chars().next().is_some_and(|c| c.is_ascii_uppercase()) && ident != name
+            {
+                out.entry(name.clone()).or_default().insert(ident);
+            }
+            i += pat.len();
+        }
+    }
+    out
+}
+
+/// The six base input forms serde asks a `Visitor` about, each with the methods serde's default
+/// `Visitor` FORWARDS to it (`visit_string` -> `visit_str`, `visit_i32` -> `visit_i64`, ...).
+const BASE_FORMS: &[(&str, &[&str])] = &[
+    ("str", &["str", "string", "borrowed_str"]),
+    ("u64", &["u64", "u8", "u16", "u32"]),
+    ("i64", &["i64", "i8", "i16", "i32"]),
+    ("f64", &["f64", "f32"]),
+    ("bool", &["bool"]),
+    ("bytes", &["bytes", "byte_buf", "borrowed_bytes"]),
+];
+
+/// THE INPUT FORMS A HAND-WRITTEN `Deserialize` EFFECTIVELY REFUSES, measured from SOURCE.
+///
+/// The snapshot's `refused` list records only EXPLICIT refusals — a `visit_*` whose body can only
+/// fail. That is the right thing to freeze, but it is not the whole refused set: a visitor that
+/// does not implement `visit_u64` at all refuses a bare integer too, through serde's default
+/// `Visitor::visit_u64`, which is an error. Comparing an explicit list on one side against an
+/// explicit list on the other is fair; comparing a SOURCE measurement against a snapshot is not,
+/// so this measures both sides the same way: a base form is refused when every implemented member
+/// of its forwarding family can only fail — vacuously so when none is implemented.
+///
+/// The vacuous half applies ONLY to an impl that drives its own `Visitor` (the body declares one).
+/// An impl that delegates (`Raw::deserialize(d)`, `serde_yaml::Value::deserialize(d)`) accepts
+/// whatever the delegate accepts, which this does not model, so for it only explicit refusals are
+/// recorded — the same conservative rule as [`refused_forms`].
+///
+/// A type with hand-written impls in TWO files is `None`: the measurement cannot say whose.
+pub fn effective_refusals(
+    files: &[(String, String)],
+) -> BTreeMap<String, Option<BTreeSet<String>>> {
+    let mut out: BTreeMap<String, Option<BTreeSet<String>>> = BTreeMap::new();
+    for (name, body) in manual_bodies(files) {
+        let visitor_driven = scan::text(&body, 0..body.len()).contains("Visitor<'de> for");
+        let mut accepting: BTreeSet<String> = BTreeSet::new();
+        let mut refusing: BTreeSet<String> = BTreeSet::new();
+        for (m, after) in scan::visit_fns(&body, 0, body.len()) {
+            let Some(brace) = (after..body.len()).find(|i| body[*i] == '{') else {
+                continue;
+            };
+            let fb = scan::text(&body, brace..scan::match_block(&body, brace));
+            if fb.contains("Err") && !fb.contains("Ok(") {
+                refusing.insert(m);
+            } else {
+                accepting.insert(m);
+            }
+        }
+        let mut refused = BTreeSet::new();
+        for (form, family) in BASE_FORMS {
+            let implemented = family
+                .iter()
+                .any(|m| accepting.contains(*m) || refusing.contains(*m));
+            let any_accepts = family.iter().any(|m| accepting.contains(*m));
+            if (implemented && !any_accepts) || (!implemented && visitor_driven) {
+                refused.insert((*form).to_string());
+            }
+        }
+        match out.get(&name) {
+            None => {
+                out.insert(name, Some(refused));
+            }
+            Some(_) => {
+                out.insert(name, None);
+            }
+        }
+    }
+    out
 }
 
 /// `json.dumps(obj, indent=2, sort_keys=True, ensure_ascii=False) + "\n"`.
