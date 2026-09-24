@@ -1,4 +1,4 @@
-# plane-pricing-blindness burndown ledger — DECISION #43 (Part 7 §13(3)).
+# plane-pricing-blindness burndown ledger.
 #
 # One row per (money category, offending file) in a crate the #83 roster places at defs 16–20.
 # The gate is RED while any finding stands; it goes GREEN when no plane crate touches money and

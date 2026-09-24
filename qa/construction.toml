@@ -86,9 +86,9 @@ test_path_fragments = ["/tests/", "_tests.rs", "_test.rs", "/tests.rs"]
 # pure plane never may. Scanning them here would have run the PURE kind's rule (no I/O, no
 # `busbar-kernel` edge — "no allow-list can excuse it") over a crate whose own docs declared it
 # impure.
-# BOTH HOST CRATES ARE GONE. `busbar-plane-a2a-host` folded back into `busbar-a2a` (858c93966) and
-# `busbar-plane-mcp-host` into `busbar-mcp` (f6561224b) — qa/kind-isolation.toml records both in
-# those words — and DECISIONS #39 spells the roster "no `busbar-plane-mcp-host`". MEASURED
+# BOTH HOST CRATES ARE GONE. `busbar-plane-a2a-host` folded back into `busbar-a2a` and
+# `busbar-plane-mcp-host` into `busbar-mcp` — qa/kind-isolation.toml records both in
+# those words — and the roster spells "no `busbar-plane-mcp-host`". MEASURED
 # 2026-09-22: `crates/busbar-plane-*` matches exactly the five directories listed below and nothing
 # else, so this list EXCLUDES NOTHING TODAY.
 # It stays an EXPLICIT list anyway, and not because of those two: a glob silently re-absorbs the
@@ -433,7 +433,7 @@ stray proof match any call; a forged origin is a plane claiming to be a tick and
 leave it out — a capability confined only by convention is confined until the first author who does \
 not know the convention."""
 patterns = ["Pass::mint(", "Grant::<WriteMoney>::mint(", "Grant::<Consumption>::mint(", "Grant::<Exit>::mint("]
-# ── WIDENED 2026-09-23 (X-177): THIS ROW NAMED FOUR OF TWENTY MARKERS AND CALLED THAT "SEALED" ───
+# ── WIDENED 2026-09-23: THIS ROW NAMED FOUR OF TWENTY MARKERS AND CALLED THAT "SEALED" ───
 #
 # `patterns` above is a list of LITERAL spellings, one per capability somebody happened to write
 # down. But `Grant<C>::mint` and `Pass<S>::mint` are ONE GENERIC CONSTRUCTOR EACH (busbar-contract/
@@ -459,7 +459,7 @@ pattern_families = [
   # The inferred-marker spelling of the same two, which `patterns` covers only for `Pass::mint(`.
   '(?<![A-Za-z0-9_])(Pass|Grant)::mint_bound\(',
   '(?<![A-Za-z0-9_])Grant::mint\(',
-  # QUALIFIED-PATH SYNTAX (X-178) — the fourth spelling X-177 NAMED as a gap and did not close.
+  # QUALIFIED-PATH SYNTAX — the fourth spelling, named earlier as a gap that was not yet closed.
   # `<Grant<Dial>>::mint(` writes the marker inside the type rather than after a turbofish `::`, so
   # it carries no `Grant::<` for the two families above to bite on and no bare `Grant::mint(`
   # either: measured against the pre-X-178 family set, `<Grant<Dial>>::mint(` and
@@ -550,7 +550,7 @@ exclude_files = []
 # admit-token-mint sub-rule below, not by the `patterns` list above, so each seal-site symbol has
 # exactly one scanner.
 #
-# THAT LAST SENTENCE WAS THE BUG (X-177). "Scanned only by the sub-rule, not by the patterns list"
+# THAT LAST SENTENCE WAS THE BUG. "Scanned only by the sub-rule, not by the patterns list"
 # is a correct description of an intent and was a false description of the code: the sub-rule
 # scanned `Grant::<Admittance>::mint\(` and NOTHING scanned the bare-marker variants, the
 # fully-qualified variant, `mint_bound`, or the pre-#73 `AdmitToken::mint(` that the sub-row's own
@@ -1291,9 +1291,9 @@ because these kinds legitimately touch FFI or the wire. This checks the attribut
 crate root — not that every individual unsafe site is itself reviewed, which is a finer-grained \
 check left to `cargo xtask gate blocking-ffi`-style tooling outside this gate."""
 # THE FOURTH TABLE THAT NAMED A KIND THAT DOES NOT EXIST. `[gate.plugin_kinds].plane` was missing
-# the fifth plane (2b2de9712), `[gate.plugin_kinds].export` pointed its family glob at the wrong
-# path (2b5727416), `[rules.source-denylist].kinds` named `pure_auth`/`egress_auth` and so scanned
-# no auth crate at all (383f23875) — and THIS list carried the same two struck names. LOCKED
+# the fifth plane, `[gate.plugin_kinds].export` pointed its family glob at the wrong
+# path, `[rules.source-denylist].kinds` named `pure_auth`/`egress_auth` and so scanned
+# no auth crate at all — and THIS list carried the same two struck names. LOCKED
 # DECISION #3 collapsed them into ONE `auth` kind (inbound-verify and outbound-sign are two
 # OPERATIONS of it), `[gate.plugin_kinds]` has no `pure_auth` or `egress_auth` key, so both
 # resolved to an EMPTY glob list and the auth kind was never held to this rule.
@@ -1659,8 +1659,8 @@ which is the row that can name the home the call belongs in, so one site is neve
 #
 # WHAT THE ROW WAS ACTUALLY MISSING, AND WHY IT IS THIS WIDTH. `busbar-mcp`'s own crate docs say it
 # holds BOTH halves — the codec in `src/codec/` and "the MCP plane ... ~18k lines" in `src/mcp/` —
-# and `busbar-a2a` has the same shape in `src/a2a/`, because `busbar-mcp-codec` (5fbd891e0) and
-# `busbar-a2a-codec` (0e41eeb9e) DISSOLVED INTO THEM under #39; see `[gate.plugin_kinds]`'s own note
+# and `busbar-a2a` has the same shape in `src/a2a/`, because `busbar-mcp-codec` and
+# `busbar-a2a-codec` DISSOLVED INTO THEM; see `[gate.plugin_kinds]`'s own note
 # above, which records exactly that. So `crates/busbar-*-codec/src/*` kept matching the two codec
 # crates that survive (llm, voice) and never went red when the other two folded into the very crates
 # these globs were supposed to reach: the mcp and a2a codec halves have been unscanned since the
@@ -1714,9 +1714,8 @@ which is the row that can name the home the call belongs in, so one site is neve
 # `cap_nanos` / `settled_nanos` / `fee_nanos` / `estimate_nanos` / `reserved_nanos` -- NANODOLLARS,
 # as `metering.rs`'s own header says ("a reserve-then-settle lease over ALREADY-PRICED
 # nanodollars"), not the time-sense `_nanos` this rule's `allowed_vocabulary` excuses. They are real
-# money and real DEBT -- but they are not THIS row's debt. `plane-pricing-blindness` (DECISION #43,
-# Part 7 §13(3),
-# `qa/plane-pricing-blindness.toml`) is the gate built to burn exactly them down, with a per-file
+# money and real DEBT -- but they are not THIS row's debt. `plane-pricing-blindness`
+# (`qa/plane-pricing-blindness.toml`) is the gate built to burn exactly them down, with a per-file
 # ledger and a human-supplied reachability claim on every row; its own worked example row is
 # `crates/busbar-voice/src/runtime/metering.rs`. Counting them a second time under a `max_hits = 0`
 # with no burndown would not fix one of them. It would only bury the one finding this row can still
@@ -1810,7 +1809,7 @@ max_extra_sites = 0
 fee_fields = ["per_request_fee", "per_request_fee_cents", "fee_cents"]
 # busbar-core is DELETED (W4.a, 673ecdaaa) so it matches nothing any more and is dropped, per this
 # row's own "the list shortens as core empties, and never lengthens" -- it emptied all the way.
-# busbar-kernel and busbar-core-admin are ADDED: W4.a (673ecdaaa) absorbed busbar-core's config/
+# busbar-kernel and busbar-core-admin are ADDED: W4.a absorbed busbar-core's config/
 # appbuild/cost fee-display code into busbar-kernel (crates/busbar-kernel/src/{appbuild.rs,cost.rs,
 # config/{mod,migrate,overlay}.rs,config_validate/{mod,secret_refs}.rs,test_support/fixtures.rs} are
 # ports of the identically-named busbar-core files -- `git show --stat 673ecdaaa` shows most as
@@ -2209,7 +2208,7 @@ plane_crates = 4
 #     now carries a single `auth` key whose glob `crates/auth-*` matches the same two directories
 #     (`crates/auth-admin-tokens`, `crates/auth-static-plugin`) that the split spelling claimed
 #     between them. Neither struck key named a glob: both resolved to the empty list, which is how
-#     `[rules.source-denylist].kinds` left the whole auth kind unscanned (383f23875).
+#     `[rules.source-denylist].kinds` left the whole auth kind unscanned.
 #   * `dialect` = 0 and `control` = 0 are STRUCK. Both are kinds DECISIONS #3 cancelled, neither
 #     names a key in `[gate.plugin_kinds]`, and `ceiling-census` reds a pin naming no glob in
 #     exactly the way a ceiling naming no row is red. NOTHING STOPS BEING COUNTED by striking them:
