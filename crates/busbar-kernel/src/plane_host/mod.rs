@@ -2404,7 +2404,11 @@ pub struct CostHandle(pub Arc<dyn std::any::Any + Send + Sync>);
 /// carries its request's pricing context without naming a cost or price type (#43: a plane is
 /// PRICING-BLIND; #71: its money obligation is one raw count per class). The plane hands the pin BACK
 /// to the metering seams ([`BudgetHost::meter_ledger`], [`BudgetHost::rate_headroom`],
-/// [`BudgetHost::budget_state`], [`meter_series_billed`]), which read it kernel-side.
+/// [`BudgetHost::budget_state`], [`BudgetHost::meter_series`]), which read it kernel-side. A plane
+/// calls [`BudgetHost::meter_series`] UNCONDITIONALLY with the counts it observed (#43: no branch, no
+/// knowledge of billing state) — #42's billing-off posture is the VIEW's job (the served figure reads
+/// zero), not the write's; nothing kernel-side gates the row on the pinned card any more (that gate,
+/// `meter_series_billed`, was dead code with no production caller after d09c2e0b0 and is gone).
 ///
 /// A plane-side host (a test double) pins NO card: its pin answers the no-card posture everywhere.
 #[derive(Clone)]
@@ -2967,29 +2971,6 @@ pub trait BudgetHost: Send + Sync {
         usage: Option<&crate::billing::TokenUsage>,
         now: u64,
     );
-}
-
-/// THE BILLING SWITCH, KERNEL-SIDE — DECISION #42 read where #43 puts it.
-///
-/// Record one delivered response's raw metering row ONLY when a rate card is present: with no
-/// `rate_card:` the node is a free failover/routing proxy and emits no per-model usage row (#42). A
-/// plane calls this UNCONDITIONALLY with the counts it observed and never asks whether billing is on
-/// — #43: "a plane appends its counts unconditionally — no branch, no knowledge of billing state".
-/// The switch is a property of the card the plane's [`MeterPin`] carries — the card in force when the
-/// request was admitted — so it is answered here and never in plane code; a pin with no card writes
-/// no row. The row itself is the unchanged [`BudgetHost::meter_series`].
-pub fn meter_series_billed<H: BudgetHost + ?Sized>(
-    host: &H,
-    pin: &MeterPin,
-    key_id: &str,
-    model: &str,
-    provider: &str,
-    usage: Option<&crate::billing::TokenUsage>,
-    now: u64,
-) {
-    if cost_model(&pin.cost).is_some_and(|c| c.pricing_enabled()) {
-        host.meter_series(&pin.gov, key_id, model, provider, usage, now);
-    }
 }
 
 /// The IDENTITY/TRUST slice: inbound identity resolution + the trust/approval seams around it — the
