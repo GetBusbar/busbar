@@ -893,8 +893,8 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     ));
 
     // THE STRICTER ARM, BOTH WAYS. Everywhere else a widened grammar is green; here it is not, and
-    // the asymmetry is the point — for a secret reference the widened form is an inline literal,
-    // the exact shape the type exists to reject and the one that ends up in a boot log.
+    // the asymmetry is the point — for a secret reference a widened form may admit an inline
+    // literal, the exact shape the type exists to reject and the one that ends up in a boot log.
     report.push(additive_red(
         cx,
         gate,

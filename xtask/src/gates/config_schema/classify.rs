@@ -296,8 +296,8 @@ fn refusal_diff(tname: &str, b: &BTreeSet<String>, f: &BTreeSet<String>, out: &m
             format!("{tname}::visit_{v}"),
             "a REFUSED input form is no longer refused (the hand-written impl now accepts it). \
              This widens the grammar, which additive-only would wave through -- and for a secret \
-             reference the widened form is an inline literal, the exact shape the type exists to \
-             reject and the one that ends up in a boot log",
+             reference a widened form may admit an inline literal, the exact shape the type \
+             exists to reject and the one that ends up in a boot log",
         );
     }
     for v in f.difference(b) {
