@@ -1997,8 +1997,24 @@ static NODE: LazyLock<LlmNode> = LazyLock::new(LlmNode::new);
 /// Called by the composition root at boot, with the same handle the administrative views were bound
 /// to. Without it the exit arm settles nothing and the root's ledger stays empty — which reads as a
 /// node that has posted nothing rather than as a node whose postings had nowhere to go.
+///
+/// The process's dated rate-card history is bound to the SAME book here (#79): every applied card
+/// goes on its journal, so a restart rebuilds the history this node priced under. The admin
+/// assembly binds it too, and the second binding is a no-op; binding it only there left a build
+/// with this plane and no admin surface pricing against a history no restart could rebuild.
 pub fn bind_book(book: Arc<Mutex<crate::root::durability::Durability>>) {
-    NODE.bind_book(book);
+    bind_node_book(&NODE, &crate::root::kernel::ROOT_CARD, book);
+}
+
+/// [`bind_book`] for a named node and card holder: the holder's journal first, then the node's
+/// exit arm, both on the one book.
+fn bind_node_book(
+    node: &LlmNode,
+    cards: &crate::root::kernel::RootHistory,
+    book: Arc<Mutex<crate::root::durability::Durability>>,
+) {
+    cards.bind_journal(&book);
+    node.bind_book(book);
 }
 
 /// One body-model arrival, driven through the loop.

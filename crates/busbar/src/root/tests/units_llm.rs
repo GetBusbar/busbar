@@ -3931,3 +3931,83 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     every_cell_agrees("served rerank", &rows, &governance, &history, arrived.ms())
         .expect("both books hold the same search units and the same figure");
 }
+
+/// **THE LLM PLANE'S BOOK BINDING JOURNALS THE APPLIED CARDS** (#79): a build with this plane and no
+/// admin surface binds the dated rate-card history to the book here or nowhere, so a card applied
+/// after the boot must land on the chain through this binding alone. Before, only the admin
+/// assembly bound it: this plane's node settled onto the book while every live apply stayed in
+/// memory, and a restart repriced the node's postings at the boot card.
+#[test]
+fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
+    use crate::root::kernel::{CardApplied, RootHistory};
+    fn apply(holder: &RootHistory, input: f64, at: u64) {
+        let lanes = [(
+            "gpt".to_string(),
+            busbar_substrate_values::billing::RawTierRates {
+                input,
+                output: 0.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
+        )];
+        holder.apply_rates(
+            &busbar_kernel::rate_apply::RawRates {
+                lanes: &lanes,
+                units: &[],
+                flat_minor: 0,
+                present: true,
+                plane_fees: &busbar_kernel::config::PlaneFeesMap::new(),
+            },
+            at,
+        );
+    }
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-llm-book-cards-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+
+    // The production boot's holder: armed, resolved at boot, its history rebuilt by the book.
+    let holder: &'static RootHistory = Box::leak(Box::default());
+    holder.arm_journal();
+    apply(holder, 3.0, 1_000);
+    let book = Arc::new(Mutex::new(
+        crate::root::durability::build_with_cards(
+            &crate::root::durability::DurabilityConfig {
+                data_dir: Some(dir.clone()),
+            },
+            7,
+            Box::new(busbar_kernel_wal::NullShipper::new()),
+            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+            Box::new(move || holder.pin()),
+            Some(holder),
+        )
+        .expect("the journal opens"),
+    ));
+
+    // THE LLM PLANE'S BINDING, and nothing else — no admin assembly.
+    super::bind_node_book(&Node::new(), holder, Arc::clone(&book));
+    apply(holder, 5.0, 20_000);
+
+    let cards = book
+        .lock()
+        .expect("the book")
+        .journal
+        .replay()
+        .expect("reads")
+        .expect("verifies")
+        .iter()
+        .filter(|r| r.class == busbar_kernel_wal::RecordClass::Policy)
+        .filter_map(|r| CardApplied::from_body(&r.body))
+        .map(|applied| applied.effective_from)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        cards,
+        vec![0, 20_000],
+        "the boot card and the card applied after the binding are both on the chain"
+    );
+    drop(book);
+    let _ = std::fs::remove_dir_all(&dir);
+}
