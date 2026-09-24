@@ -484,6 +484,12 @@ fn mount_root_voice(
 /// the switch that routes a frame through it is the one that has to thread the deployment's real
 /// auth, rate cards and data directory in, and it fails to compile until it does.
 ///
+/// NONE OF A SERVED SESSION'S MONEY PASSES THROUGH THIS NODE (OWNER RULING Q21b). The served path
+/// meters on the streaming plane's units: each turn's raw counts per class go to the kernel's
+/// session account over the live host, which ledgers them through the one metering path and closes
+/// the carrier off the kernel's own budget view; the view prices them at read with the `streams`
+/// card. The flat pricer below prices this node's own door, which admits no served frame.
+///
 /// Set-once on the plane's side: a second call is a no-op rather than a silent swap of the table
 /// this node's live sessions are already keyed into.
 #[cfg(feature = "root-voice")]
