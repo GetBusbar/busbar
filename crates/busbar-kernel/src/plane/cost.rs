@@ -132,6 +132,14 @@ pub enum CostError {
         parent_amount: u128,
         children_sum: u128,
     },
+    /// A sum the invariant checks — the top-level lines, or one parent's direct children — does not
+    /// fit a `u128`. The breakdown is ill-formed and is REFUSED: a sum that wrapped (release) could
+    /// otherwise land exactly on `total` and validate a breakdown whose parts do not add up, and a
+    /// sum that saturated could hide the same lie at the ceiling.
+    SumOverflow {
+        /// `None` for the top-level sum; `Some(parent)` for one parent's children.
+        parent: Option<String>,
+    },
 }
 
 impl fmt::Display for CostError {
@@ -167,11 +175,22 @@ impl fmt::Display for CostError {
                 f,
                 "children of {parent:?} sum to {children_sum} > parent {parent_amount}"
             ),
+            CostError::SumOverflow { parent: None } => {
+                f.write_str("cost components' top-level sum overflows the amount type")
+            }
+            CostError::SumOverflow {
+                parent: Some(parent),
+            } => write!(f, "children of {parent:?} sum past the amount type's range"),
         }
     }
 }
 
 impl std::error::Error for CostError {}
+
+/// The invariant checks' one summation: exact, or `None` when the true sum does not fit a `u128`.
+fn checked_sum(mut amounts: impl Iterator<Item = u128>) -> Option<u128> {
+    amounts.try_fold(0u128, u128::checked_add)
+}
 
 /// An itemized, protocol-blind cost: a `total` and the labeled components that make it up.
 ///
@@ -218,11 +237,20 @@ impl CostBreakdown {
         }
 
         // Top-level lines (no parent) must sum to total.
-        let top_level_sum: u128 = components
-            .iter()
-            .filter(|c| c.parent.is_none())
-            .map(|c| c.amount.0)
-            .sum();
+        //
+        // CHECKED, never the raw `Sum`: `u128`'s own `Sum` panics on overflow in a debug build and
+        // WRAPS in a release one, and a wrapped sum can land exactly on `total` — validating a
+        // hostile or buggy plugin's breakdown whose parts do not add up, the one invariant this
+        // type exists to guarantee. The saturating `Sum` on `CostAmount` above is the wrong tool
+        // too: a sum pinned at the ceiling equals a `total` of `u128::MAX` just as falsely. A sum
+        // that does not fit is an ill-formed breakdown, and it is refused.
+        let top_level_sum = checked_sum(
+            components
+                .iter()
+                .filter(|c| c.parent.is_none())
+                .map(|c| c.amount.0),
+        )
+        .ok_or(CostError::SumOverflow { parent: None })?;
         if top_level_sum != total.0 {
             return Err(CostError::TopLevelSumMismatch {
                 total: total.0,
@@ -232,11 +260,15 @@ impl CostBreakdown {
 
         // Each parent's direct children must not exceed it (containment).
         for parent in &components {
-            let children_sum: u128 = components
-                .iter()
-                .filter(|c| c.parent.as_deref() == Some(parent.label.as_str()))
-                .map(|c| c.amount.0)
-                .sum();
+            let children_sum = checked_sum(
+                components
+                    .iter()
+                    .filter(|c| c.parent.as_deref() == Some(parent.label.as_str()))
+                    .map(|c| c.amount.0),
+            )
+            .ok_or_else(|| CostError::SumOverflow {
+                parent: Some(parent.label.clone()),
+            })?;
             if children_sum > parent.amount.0 {
                 return Err(CostError::ChildrenExceedParent {
                     parent: parent.label.clone(),

@@ -267,3 +267,41 @@ fn cost_amount_addition_saturates_instead_of_wrapping() {
     let summed: CostAmount = [big, CostAmount(1), big].into_iter().sum();
     assert_eq!(summed, CostAmount(u128::MAX), "Sum must saturate, not wrap");
 }
+
+/// Item 139: the "parts add up" invariant is checked with a CHECKED sum. Two top-level lines of
+/// `u128::MAX` and `2` wrap, in a release build, to exactly `1` — so a raw `Sum` validated a
+/// breakdown claiming a total of one nano-unit whose parts are astronomically larger (and panicked
+/// in a debug build). An ill-formed breakdown is refused, never validated and never a panic.
+#[test]
+fn a_top_level_sum_that_overflows_is_refused_not_wrapped_onto_the_total() {
+    let err = CostBreakdown::new(
+        CostAmount(1),
+        vec![
+            CostComponent::top("a", CostAmount(u128::MAX)),
+            CostComponent::top("b", CostAmount(2)),
+        ],
+    )
+    .unwrap_err();
+    assert_eq!(err, CostError::SumOverflow { parent: None });
+}
+
+/// The containment check sums a parent's children the same way, and refuses the same way: two
+/// children that wrap to less than their parent must not pass as "contained".
+#[test]
+fn a_children_sum_that_overflows_is_refused_not_wrapped_under_the_parent() {
+    let err = CostBreakdown::new(
+        CostAmount(10),
+        vec![
+            CostComponent::top("p", CostAmount(10)),
+            CostComponent::nested("x", CostAmount(u128::MAX), "p"),
+            CostComponent::nested("y", CostAmount(3), "p"),
+        ],
+    )
+    .unwrap_err();
+    assert_eq!(
+        err,
+        CostError::SumOverflow {
+            parent: Some("p".to_string())
+        }
+    );
+}
