@@ -387,3 +387,29 @@ fn no_dialect_reads_a_billed_count_field_with_a_bare_as_u64() {
         offenders.join("\n  ")
     );
 }
+
+/// A MULTI-BYTE UNREADABLE SPELLING REFUSES; IT DOES NOT PANIC THE CUT.
+///
+/// The bound on the quoted spelling was a byte `truncate(64)`, which panics when byte 64 lands
+/// inside a character. `"` + forty `é` puts every `é` on an odd byte offset, so byte 64 is the
+/// middle of one: the read that exists to REFUSE an unreadable count panicked instead — reachable
+/// from the Gemini and OpenAI transcription/image readers, and from every dialect helper now
+/// routed through `billed_count`.
+#[test]
+fn a_multi_byte_unreadable_spelling_refuses_rather_than_panicking() {
+    let hostile = "é".repeat(40);
+    let err = billed_count(&json!({ "n": hostile }), "n")
+        .expect_err("a string is not a count, however it is spelled");
+    assert_eq!(err.field, "n");
+    assert!(
+        err.spelling.len() <= SPELLING_BUDGET + '…'.len_utf8(),
+        "the quoted spelling stays bounded in bytes, got {} bytes",
+        err.spelling.len()
+    );
+    assert!(
+        err.spelling.ends_with('…'),
+        "a cut spelling says it was cut: {}",
+        err.spelling
+    );
+    assert!(err.spelling.starts_with("\"é"), "{}", err.spelling);
+}

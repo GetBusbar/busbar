@@ -125,7 +125,14 @@ pub fn billed_count(
             spelling: {
                 let mut s = v.to_string();
                 if s.len() > SPELLING_BUDGET {
-                    s.truncate(SPELLING_BUDGET);
+                    // Cut on a CHARACTER boundary at or below the byte budget. `truncate` panics
+                    // when its offset lands inside a multi-byte character, so a byte cut let a
+                    // hostile spelling (forty `é`) panic the read that exists to refuse it.
+                    let mut cut = SPELLING_BUDGET;
+                    while !s.is_char_boundary(cut) {
+                        cut -= 1;
+                    }
+                    s.truncate(cut);
                     s.push('…');
                 }
                 s

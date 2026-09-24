@@ -1724,8 +1724,14 @@ fn tool_input_from_arguments(v: Option<&serde_json::Value>) -> serde_json::Value
 /// count (through the crate's one seam, `read_count_u64`), and a present-but-UNREADABLE count
 /// REFUSES. The lenient read this replaces defaulted an unreadable count to zero, so a stringified
 /// `"1500"` was ledgered as no work at all.
+///
+/// The read itself IS `usage_count::billed_count` — this adapter only lifts its absent-usage-object
+/// case (zero) and maps its refusal onto this reader's error shape, so the contract and the bounded
+/// spelling live in one place and cannot drift per dialect.
 fn billed(usage: Option<&serde_json::Value>, field: &'static str) -> Result<u64, IrError> {
-    Ok(billed_opt(usage, field)?.unwrap_or_default())
+    usage.map_or(Ok(0), |u| {
+        crate::usage_count::billed_count(u, field).map_err(refuse_unreadable_count)
+    })
 }
 
 /// [`billed`] for a count whose ABSENCE the IR keeps distinct from zero (a cache tier): absent or
@@ -1737,21 +1743,18 @@ fn billed_opt(
     match usage.and_then(|u| u.get(field)) {
         None => Ok(None),
         Some(v) if v.is_null() => Ok(None),
-        Some(v) => crate::usage_count::read_count_u64(v)
-            .map(Some)
-            .ok_or_else(|| refuse_unreadable_count(field, v)),
+        Some(_) => billed(usage, field).map(Some),
     }
 }
 
 /// The refusal a present-but-unreadable billed count becomes — the same `ir_parse` shape as every
-/// other response this reader cannot read, with the field and a BOUNDED spelling on the operator's
-/// log (cut on a character, never a byte, so a hostile multi-byte spelling cannot panic the cut).
-fn refuse_unreadable_count(field: &'static str, v: &serde_json::Value) -> IrError {
-    let spelling: String = v.to_string().chars().take(64).collect();
+/// other response this reader cannot read, with the field and the BOUNDED spelling `billed_count`
+/// quoted (cut on a character boundary there, so a hostile multi-byte spelling cannot panic the cut).
+fn refuse_unreadable_count(unreadable: crate::usage_count::UnreadableCount) -> IrError {
     tracing::warn!(
         protocol = "openai_responses",
-        field,
-        spelling = %spelling,
+        field = unreadable.field,
+        spelling = %unreadable.spelling,
         "usage count is present but unreadable; refusing rather than billing it as zero (#42)"
     );
     IrError {
