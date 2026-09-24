@@ -5251,3 +5251,44 @@ fn an_idempotency_key_on_a_durable_node_journals_exactly_one_claim() {
     drop(restarted);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// **THE EXIT TEST FOR ITEM 271's PRODUCTION HOOKUP.** The composition `main.rs` boots the admin
+/// listener through ([`crate::root::kernel::ProductionUnits::admin_only_sharing`]) binds the admin
+/// unit's idempotency claims to the node journal on a node WITH a data directory, and binds nothing
+/// on a memory-buffered node — which keeps the previous release's shape and ships nothing new to its
+/// store.
+#[cfg(feature = "root-admin")]
+#[test]
+fn the_admin_listener_binds_its_claim_journal_on_a_data_dir_node_only() {
+    let compose = |data_dir: Option<std::path::PathBuf>| {
+        let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
+        let durability = crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir },
+            Box::new(busbar_kernel_wal::NullShipper::new()),
+            Box::new(rows.clone()),
+        )
+        .expect("the journal opens");
+        crate::root::kernel::ProductionUnits::admin_only_sharing(
+            Arc::new(AnsweringDispatch),
+            Arc::new(Mutex::new(durability)),
+            Arc::new(rows),
+        )
+    };
+    assert!(
+        compose(None).admin.claims.is_none(),
+        "a memory-buffered node binds no claim journal"
+    );
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-units-admin-claims-bound-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+    let bound = compose(Some(dir.clone())).admin.claims.is_some();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        bound,
+        "a node with a data directory binds the admin claims to its journal"
+    );
+}
