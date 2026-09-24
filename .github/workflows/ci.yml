@@ -1931,7 +1931,7 @@ jobs:
     # plus one set of crate test binaries; `check`'s own workspace clippy+build+test is ~13 min warm
     # and ~40 cold, and a row is a strict subset of that work. 45 leaves cold-cache headroom.
     timeout-minutes: 60
-    # FULL TIER ONLY. Seven legs, each a near-full workspace recompile under a distinct feature
+    # FULL TIER ONLY. Eight legs, each a near-full workspace recompile under a distinct feature
     # closure — a promotion check, not a per-commit one. Skipped on pushes to non-promotion branches
     # (integration/**); runs on every pull request, on dev/qa/main, and on workflow_dispatch. `dev`
     # is train-write-only (DECISIONS #67), so skipping only integration/** costs ~the same as a
@@ -1991,6 +1991,15 @@ jobs:
           - name: sdk pack
             features: busbar-plugin-sdk/pack
             tests: -p busbar-plugin-sdk
+          # The contract's ONE dev-only seam (#65, item 112): `plugin::TestKernelSeal` and its two
+          # impls in `caps/token.rs` compile only under `test-seal`. Twelve crates switch it on from
+          # `[dev-dependencies]`, so the plain workspace test build unifies it in -- but a row that
+          # NAMES it keeps the surface built and linted if those edges ever go, and it runs the
+          # contract's own guards with the feature on: `tests/test_seal_is_dev_only.rs` (no non-dev
+          # edge may enable it) and `tests/feature_invariance.rs` (it stays the one empty exemption).
+          - name: contract test-seal
+            features: busbar-contract/test-seal
+            tests: -p busbar-contract
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0

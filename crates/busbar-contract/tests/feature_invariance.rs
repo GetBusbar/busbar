@@ -9,13 +9,30 @@
 //! a feature on and a kernel built with it off would agree at the manifest and disagree at the
 //! call, and nothing in between would notice.
 //!
-//! ONE EXEMPTION, and it is not on the plugin-visible surface. The transport-facing half folded in
-//! from `busbar-contract-transport` (DECISIONS #38) carries the two NEUTRAL capability features
-//! `dispatch`/`runtime`, which gate the in-tree-only transport-axis enum (`transport::transport`).
-//! That axis is not on the wire (its derive carries no `Serialize`/`repr`) and no plugin manifest
-//! names it — transports are in-tree and never dynamically loaded — so the "plugin and kernel
-//! disagree" hazard does not reach it. The scan therefore allows exactly those two feature gates
-//! and test-only `cfg(test)`, and flags every other conditional item and every other feature.
+//! TWO EXEMPTIONS, and neither is on the plugin-visible surface of a release build.
+//!
+//! 1. The transport-facing half folded in from `busbar-contract-transport` (DECISIONS #38) carries
+//!    the two NEUTRAL capability features `dispatch`/`runtime`, which gate the in-tree-only
+//!    transport-axis enum (`transport::transport`). That axis is not on the wire (its derive carries
+//!    no `Serialize`/`repr`) and no plugin manifest names it — transports are in-tree and never
+//!    dynamically loaded — so the "plugin and kernel disagree" hazard does not reach it.
+//!
+//! 2. `test-seal` (#65, item 112), the contract's ONE dev-only seam. #65 sealed
+//!    `plugin::KernelSeal`, so only this crate can implement it; a plane or a transport may not name
+//!    `caps` (each asserts it in its own purity test) and may not take a dev edge onto the kernel
+//!    (`kind-isolation:test-deps` refuses a plane/transport -> kernel edge as not-allowed), so its
+//!    harness has no other legal way to present a seal. `plugin::TestKernelSeal` and its two impls
+//!    in `caps/token.rs` are that seal. The hazard this file exists for — a plugin and the kernel
+//!    disagreeing at the call — needs the item to exist in a shipped build, and it does not:
+//!    `tests/test_seal_is_dev_only.rs` fails if any non-dev dependency edge anywhere in the
+//!    workspace enables the feature, which is the guard this exemption rests on.
+//!
+//! The exemption is as narrow as it can be written. The feature must be named exactly `test-seal`
+//! and be EMPTY (`[]`: it may switch on no dependency and no other feature). Its conditional items
+//! must be spelled `#[cfg(feature = "test-seal")]` exactly — no `any(...)`/`all(...)` composition —
+//! and the item under each one must be one of [`TEST_SEAL_ITEMS`], in the file that list names.
+//! Any other feature, any non-empty `test-seal`, and any other item behind `test-seal` stays RED;
+//! the `*_red_*` tests below plant each of those and require the finding.
 
 use std::path::{Path, PathBuf};
 
@@ -28,14 +45,30 @@ fn src_dir() -> PathBuf {
 /// (DECISIONS #38). Both are empty and gate only the in-tree, wire-inert transport axis.
 const NEUTRAL_TRANSPORT_FEATURES: [&str; 2] = ["dispatch", "runtime"];
 
-/// The manifest declares no features beyond the two neutral transport-axis capability gates, and no
-/// optional dependencies.
-#[test]
-fn the_crate_declares_no_features() {
-    let manifest =
-        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
-            .expect("the manifest is readable");
-    // The only feature keys permitted are the two neutral transport-axis capabilities, each empty.
+/// The dev-only seal feature (#65, item 112). Empty, and enabled by `[dev-dependencies]` edges only
+/// (`tests/test_seal_is_dev_only.rs`).
+const TEST_SEAL_FEATURE: &str = "test-seal";
+
+/// The one attribute spelling the `test-seal` exemption accepts.
+const TEST_SEAL_CFG: &str = "#[cfg(feature = \"test-seal\")]";
+
+/// Every item `test-seal` may gate: `(file under src/, the item's first line)`. The type and its two
+/// sealed-trait impls, and nothing else.
+const TEST_SEAL_ITEMS: [(&str, &str); 3] = [
+    ("plugin.rs", "pub struct TestKernelSeal;"),
+    (
+        "caps/token.rs",
+        "impl crate::plugin::sealed::KernelSealed for crate::plugin::TestKernelSeal {}",
+    ),
+    (
+        "caps/token.rs",
+        "impl crate::plugin::KernelSeal for crate::plugin::TestKernelSeal {",
+    ),
+];
+
+/// Every finding against the manifest's `[features]` table and optional dependencies.
+fn feature_findings(manifest: &str) -> Vec<String> {
+    let mut out = Vec::new();
     if let Some(section) = manifest.split("[features]").nth(1) {
         for line in section.lines() {
             let line = line.trim();
@@ -46,33 +79,32 @@ fn the_crate_declares_no_features() {
                 break; // next section
             }
             let key = line.split('=').next().unwrap_or_default().trim();
-            assert!(
-                NEUTRAL_TRANSPORT_FEATURES.contains(&key),
-                "the contract declares feature {key:?} beyond the neutral transport-axis gates, so \
-                 its plugin-visible surface is not one surface"
-            );
             let value = line.split('=').nth(1).unwrap_or_default().trim();
-            assert_eq!(
-                value, "[]",
-                "the neutral transport-axis feature {key:?} must stay empty, got {value:?}"
-            );
+            if !(NEUTRAL_TRANSPORT_FEATURES.contains(&key) || key == TEST_SEAL_FEATURE) {
+                out.push(format!(
+                    "the contract declares feature {key:?} beyond the neutral transport-axis gates \
+                     and the dev-only `test-seal`, so its plugin-visible surface is not one surface"
+                ));
+            } else if value != "[]" {
+                out.push(format!(
+                    "the exempt feature {key:?} must stay empty, got {value:?}"
+                ));
+            }
         }
     }
-    assert!(
-        !manifest.contains("optional = true"),
-        "an optional dependency is a feature by another name"
-    );
+    if manifest.contains("optional = true") {
+        out.push("an optional dependency is a feature by another name".to_string());
+    }
+    out
 }
 
-/// No item on the PLUGIN-VISIBLE surface is behind a conditional-compilation attribute. The only
-/// conditionals allowed are the two neutral transport-axis capability gates and test-only
-/// `cfg(test)` (see the module header for why neither reaches a plugin/kernel manifest).
-#[test]
-fn no_item_is_conditionally_compiled() {
-    let mut offenders = Vec::new();
-    walk(&src_dir(), &mut |path, text| {
-        for (n, line) in text.lines().enumerate() {
-            let line = line.trim_start();
+/// Every conditionally compiled item in `(path relative to src/, text)` that no exemption covers.
+fn cfg_findings(files: &[(String, String)]) -> Vec<String> {
+    let mut out = Vec::new();
+    for (rel, text) in files {
+        let lines: Vec<&str> = text.lines().collect();
+        for (n, raw) in lines.iter().enumerate() {
+            let line = raw.trim_start();
             if !(line.starts_with("#[cfg(") || line.starts_with("#![cfg(")) {
                 continue;
             }
@@ -80,19 +112,169 @@ fn no_item_is_conditionally_compiled() {
             if line.starts_with("#[cfg(test)]") || line.starts_with("#![cfg(test)]") {
                 continue;
             }
-            // The two neutral transport-axis capability gates are exempt, and nothing else is.
+            // The two neutral transport-axis capability gates are exempt.
             if NEUTRAL_TRANSPORT_FEATURES
                 .iter()
                 .any(|feat| line.contains(&format!("feature = \"{feat}\"")))
             {
                 continue;
             }
-            offenders.push(format!("{}:{}", path.display(), n + 1));
+            // The dev-only seal: this exact attribute, over one of the named items, in its file.
+            if line.trim_end() == TEST_SEAL_CFG {
+                let item = lines[n + 1..]
+                    .iter()
+                    .map(|l| l.trim())
+                    .find(|l| !l.starts_with("#["))
+                    .unwrap_or_default();
+                if TEST_SEAL_ITEMS
+                    .iter()
+                    .any(|(file, first)| rel == file && item == *first)
+                {
+                    continue;
+                }
+            }
+            out.push(format!("{rel}:{}", n + 1));
         }
+    }
+    out
+}
+
+/// Every `.rs` under `src/`, as `(path relative to src/ with `/` separators, text)`.
+fn src_files() -> Vec<(String, String)> {
+    let root = src_dir();
+    let mut files = Vec::new();
+    walk(&root, &mut |path, text| {
+        let rel = path
+            .strip_prefix(&root)
+            .expect("under src")
+            .to_string_lossy()
+            .replace('\\', "/");
+        files.push((rel, text.to_string()));
     });
+    files
+}
+
+/// The manifest declares no features beyond the two neutral transport-axis capability gates and the
+/// dev-only `test-seal`, each empty, and no optional dependencies.
+#[test]
+fn the_crate_declares_no_features() {
+    let manifest =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+            .expect("the manifest is readable");
+    let findings = feature_findings(&manifest);
+    assert!(findings.is_empty(), "{findings:?}");
+}
+
+/// No item on the PLUGIN-VISIBLE surface is behind a conditional-compilation attribute. The only
+/// conditionals allowed are the two neutral transport-axis capability gates, test-only `cfg(test)`,
+/// and `test-seal` over exactly [`TEST_SEAL_ITEMS`] (see the module header).
+#[test]
+fn no_item_is_conditionally_compiled() {
+    let offenders = cfg_findings(&src_files());
     assert!(
         offenders.is_empty(),
         "conditionally compiled items on the contract surface: {offenders:?}"
+    );
+}
+
+/// The `test-seal` exemption is not vacuous: every item it names is really in the tree, behind the
+/// exact attribute. A renamed or moved item would otherwise leave an exemption that covers nothing
+/// and silently excuses the next item to take the name.
+#[test]
+fn every_test_seal_item_is_present_behind_its_attribute() {
+    let files = src_files();
+    for (file, first) in TEST_SEAL_ITEMS {
+        let (_, text) = files
+            .iter()
+            .find(|(rel, _)| rel == file)
+            .unwrap_or_else(|| panic!("src/{file} is missing"));
+        let lines: Vec<&str> = text.lines().map(str::trim).collect();
+        let at = lines
+            .iter()
+            .position(|l| *l == first)
+            .unwrap_or_else(|| panic!("src/{file} no longer carries `{first}`"));
+        let attr = lines[..at]
+            .iter()
+            .rev()
+            .take_while(|l| l.starts_with("#["))
+            .any(|l| *l == TEST_SEAL_CFG);
+        assert!(
+            attr,
+            "src/{file}: `{first}` is not behind `{TEST_SEAL_CFG}`"
+        );
+    }
+}
+
+/// RED: a feature beyond the three exemptions is refused.
+#[test]
+fn an_extra_feature_is_red() {
+    let m = "[features]\ndispatch = []\nruntime = []\ntest-seal = []\ntest-seal-2 = []\n";
+    assert_eq!(feature_findings(m).len(), 1, "{:?}", feature_findings(m));
+    assert!(feature_findings("[features]\ntest-seal = []\n").is_empty());
+}
+
+/// RED: a `test-seal` that switches on anything is refused — the exemption is for an EMPTY feature.
+#[test]
+fn a_non_empty_test_seal_is_red() {
+    for m in [
+        "[features]\ntest-seal = [\"runtime\"]\n",
+        "[features]\ntest-seal = [\"dep:serde_json\"]\n",
+    ] {
+        assert_eq!(
+            feature_findings(m).len(),
+            1,
+            "{m}: {:?}",
+            feature_findings(m)
+        );
+    }
+}
+
+/// RED: `test-seal` over any item but the three named ones, in any file but its own, or in any
+/// spelling but the exact one, is refused.
+#[test]
+fn test_seal_over_another_item_is_red() {
+    let plant = |rel: &str, text: &str| cfg_findings(&[(rel.to_string(), text.to_string())]);
+    // The named item, in its file: exempt.
+    assert!(plant(
+        "plugin.rs",
+        "#[cfg(feature = \"test-seal\")]\n#[derive(Debug)]\npub struct TestKernelSeal;\n"
+    )
+    .is_empty());
+    // Another item behind the same attribute.
+    assert_eq!(
+        plant(
+            "plugin.rs",
+            "#[cfg(feature = \"test-seal\")]\npub fn helper() {}\n"
+        )
+        .len(),
+        1
+    );
+    // The named item, in the wrong file.
+    assert_eq!(
+        plant(
+            "dest.rs",
+            "#[cfg(feature = \"test-seal\")]\npub struct TestKernelSeal;\n"
+        )
+        .len(),
+        1
+    );
+    // A composed spelling that would also compile it somewhere else.
+    assert_eq!(
+        plant(
+            "plugin.rs",
+            "#[cfg(any(debug_assertions, feature = \"test-seal\"))]\npub struct TestKernelSeal;\n"
+        )
+        .len(),
+        1
+    );
+    // Some other feature entirely.
+    assert_eq!(
+        plant(
+            "plugin.rs",
+            "#[cfg(feature = \"extra\")]\npub struct TestKernelSeal;\n"
+        )
+        .len(),
+        1
     );
 }
 
