@@ -251,7 +251,14 @@ jobs:
         run: |
           set -uo pipefail
 
-          state="$(python3 scripts/ci-images.py --consumer-state)"
+          # A NON-ZERO EXIT IS A REFUSAL, NOT A STATE. `--consumer-state` refuses (non-zero) when it
+          # cannot read ci.yml, and a missing ci.yml must never be read as "nothing consumes the
+          # mirrors" -- that is the answer that keeps this step green. So the exit is checked here and
+          # named, rather than left to errexit to abort the step with no reason on the page.
+          if ! state="$(python3 scripts/ci-images.py --consumer-state)"; then
+            echo "::error::scripts/ci-images.py --consumer-state refused (see its message above), so whether ci.yml consumes the mirrors is UNKNOWN. Unknown is not 'upstream': refusing rather than reporting a notice for a state nobody measured."
+            exit 1
+          fi
           echo "ci.yml service containers currently pull from: ${state}"
 
           # The grace clock runs from the commit that ADDED this workflow, so an unfinished mirror

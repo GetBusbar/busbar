@@ -150,12 +150,14 @@ jobs:
               echo "### CI tier: FAST"
               echo ""
               echo "Push to a non-promotion branch (\`$REF\`), so this run proved:"
-              echo "structure lint, fmt, clippy/build/test, config-stability, public-hygiene,"
+              echo "structure lint, fmt, script selftests, clippy/build/test, config-stability, public-hygiene,"
               echo "generated-artifact-drift, shadow-oracle, llm-conformance, design-bindings"
               echo "and construction-gate (blocking on its posture: a NEW red fails the run)."
               echo ""
-              echo "It did NOT run: openapi-schema, migration-corpus, executable-config,"
-              echo "no-default-features, no-plugins-gate, txn-guards, timing, windows."
+              echo "It did NOT run: openapi-schema, migration-corpus, executable-config-lint,"
+              echo "no-default-features, deletion-test-matrix, feature-sets, no-plugins-gate,"
+              echo "txn-guards, timing, windows, coverage, perf-build-gate, teller-steps, and"
+              echo "plane-rigs unless this push changed a plane path."
               echo ""
               echo "Those run on every pull request, on dev/qa/main, and on demand via"
               echo "\`gh workflow run ci.yml -R GetBusbar/busbar --ref $REF_NAME\`."
@@ -169,7 +171,7 @@ jobs:
   # `fmt`, split out of the bundled `check` job below so a `cargo fmt --check` verdict costs SECONDS
   # on a latchkey-small runner instead of riding a full workspace build. It is one member of the
   # cheap hygiene tier — the fast (<~2 min), deterministic, no-full-build checks: this `fmt`,
-  # `structure-lint`, `config-stability`, the `changes` classifier, `public-hygiene`,
+  # `script-selftests`, `structure-lint`, `config-stability`, the `changes` classifier, `public-hygiene`,
   # `service-image-pins` and `generated-artifact-drift`. They stay INDEPENDENT jobs (not chained
   # steps) so every cheap failure surfaces in ONE pass: a dev sees fmt AND structure-lint AND a
   # config drift together, fixes them together, and the expensive tier runs ONCE.
@@ -202,6 +204,96 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
+  # SCRIPT SELFTESTS — every bare script whose only harness is its own `--selftest` (KICKOFF §15.5:
+  # "wire the script's own --selftest and make CI call it"), plus the workflow invariants this
+  # directory owes. One cheap job, no toolchain, no build, no network: each call is hermetic and
+  # seconds long, and each is run plainly so its red is this job's red. A member of the cheap
+  # hygiene tier, so `preflight` waits on it and the umbrella scores it.
+  #   * .github/workflows/lint/workflow-invariants.py — the invariants the 1.6.0 workflow findings
+  #     named (one named check per finding), self-test first: each check is planted with the defect
+  #     it exists for and must fire.
+  #   * scripts/prove-remote.sh --selftest — the hand-back scope resolver, incl. the refusal of a
+  #     .keep-proof.toml off a keep-* branch.
+  #   * scripts/release-gate/gate.sh --selftest — the release gate's short-list refusal, staged
+  #     record digests and version anchors, and ledger-selftest.sh riding along.
+  #   * .github/scripts/required-status-checks-selftest.sh — the required-status-checks doc against
+  #     the workflow files it describes.
+  #   * scripts/mcp-subject/h2-lib.sh and boot.sh --selftest — the MCP subject rig's library and
+  #     boot script, which need no binary and no network in selftest mode.
+  #   * scripts/a2a-subject/h2-lib.sh and h2-route-failover.sh --selftest — the A2A twins, same
+  #     footing. (a2a-subject/boot.sh --selftest is already run by qa-conformance-a2a.yml.)
+  #   * scripts/rooms.sh --selftest — the sweep denominator ("rooms"), against a throwaway repository.
+  #   * scripts/proof-manifest.py --selftest — the proof-manifest collator's claim-to-evidence map.
+  #   * scripts/plane-noun-gate.sh, pr-land.sh, pr-queue.sh and preflight.sh --selftest — the
+  #     plane-noun gate's pipeline, the lander and its queue (against shims, never the real `gh`),
+  #     and the local preflight's verdict logic on fixtures. None ran anywhere before this job.
+  #   * scripts/ci-runners-down.sh, ci-service-endpoints.sh, land-remote.sh, snapshot-refs.sh,
+  #     documented-claims-check.py, extract-inline-tests.py --selftest, and
+  #     secret-accessor-seal-witness.sh --selftest AND --check (the witness's verdict over the six
+  #     cdylib plugin crates, which reads source only).
+  #   * scripts/qa-gate-run.sh selftest (its own spelling, no dashes) and
+  #     scripts/release-check-1.5.2.sh --selftest.
+  #     (verify-1.6.0-done.sh --selftest needs the xtask runner, so it rides structure-lint instead.)
+  script-selftests:
+    name: script selftests (bare scripts prove themselves; workflow invariants)
+    runs-on: latchkey-small
+
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. NEW JOB, no run history yet:
+    # floored at 10 per that section's rule. Every step is a hermetic script run of seconds.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Workflow invariants self-test (every check fires on the defect it exists for)
+        run: python3 .github/workflows/lint/workflow-invariants.py --selftest
+      - name: Workflow invariants
+        run: python3 .github/workflows/lint/workflow-invariants.py
+      - name: prove-remote scope resolver self-test
+        run: ./scripts/prove-remote.sh --selftest
+      - name: release gate self-test
+        run: ./scripts/release-gate/gate.sh --selftest
+      - name: required-status-checks doc self-test
+        run: ./.github/scripts/required-status-checks-selftest.sh
+      - name: MCP subject h2 library self-test
+        run: ./scripts/mcp-subject/h2-lib.sh --selftest
+      - name: MCP subject boot self-test
+        run: ./scripts/mcp-subject/boot.sh --selftest
+      - name: A2A subject h2 library self-test
+        run: ./scripts/a2a-subject/h2-lib.sh --selftest
+      - name: A2A subject route-failover judge self-test
+        run: ./scripts/a2a-subject/h2-route-failover.sh --selftest
+      - name: rooms self-test
+        run: ./scripts/rooms.sh --selftest
+      - name: proof-manifest collator self-test
+        run: python3 scripts/proof-manifest.py --selftest
+      - name: plane-noun gate self-test
+        run: ./scripts/plane-noun-gate.sh --selftest
+      - name: pr-land self-test
+        run: ./scripts/pr-land.sh --selftest
+      - name: pr-queue self-test
+        run: ./scripts/pr-queue.sh --selftest
+      - name: preflight verdict-logic self-test
+        run: ./scripts/preflight.sh --selftest
+      - name: ci-runners-down self-test
+        run: ./scripts/ci-runners-down.sh --selftest
+      - name: ci-service-endpoints self-test
+        run: ./scripts/ci-service-endpoints.sh --selftest
+      - name: land-remote self-test
+        run: ./scripts/land-remote.sh --selftest
+      - name: snapshot-refs self-test
+        run: ./scripts/snapshot-refs.sh --selftest
+      - name: documented-claims check self-test
+        run: python3 scripts/documented-claims-check.py --selftest
+      - name: extract-inline-tests self-test
+        run: python3 scripts/extract-inline-tests.py --selftest
+      - name: secret-accessor seal witness self-test
+        run: ./scripts/secret-accessor-seal-witness.sh --selftest
+      - name: secret-accessor seal witness (no cdylib plugin reaches a kernel secret accessor)
+        run: ./scripts/secret-accessor-seal-witness.sh --check
+      - name: qa-gate runner self-test
+        run: ./scripts/qa-gate-run.sh selftest
+      - name: release-check 1.5.2 self-test
+        run: ./scripts/release-check-1.5.2.sh --selftest
+
   # THE PREFLIGHT BARRIER. `needs:` every member of the cheap hygiene tier; its only step is a green
   # echo. It has NO `if:` on purpose: the implicit `success()` means it runs (and goes green) only
   # when ALL of its dependencies succeeded, and is SKIPPED the moment one fails or is skipped — which
@@ -212,6 +304,7 @@ jobs:
     name: preflight (cheap hygiene tier green — the expensive tier may launch)
     needs:
       - fmt
+      - script-selftests
       - structure-lint
       - config-stability
       - changes
@@ -225,7 +318,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Cheap hygiene tier is green
-        run: echo "fmt, structure-lint, config-stability, changes, public-hygiene, service-image-pins and generated-artifact-drift all passed — the expensive tier may launch."
+        run: echo "fmt, script-selftests, structure-lint, config-stability, changes, public-hygiene, service-image-pins and generated-artifact-drift all passed — the expensive tier may launch."
 
   # LAYOUT GATE — its OWN job, deliberately. It used to be the first step of `check`, ahead of
   # clippy/build/test, which made it a MASK: any layout violation aborted the job before a single
@@ -243,9 +336,10 @@ jobs:
     # over the last 20 green runs of this job; ceiling is p95 x1.5, floor 10.
     timeout-minutes: 22
     steps:
-      # FULL HISTORY, for the `audit-ledger` step at the end of this job: every record in
-      # qa/audit-ledger.json stamps the COMMIT it read, and the gate resolves each one. A depth-1
-      # clone cannot, and the gate is red on a stamp it cannot check rather than passing over it.
+      # FULL HISTORY, for the gates below that measure against a BASE COMMIT: `kind-isolation`
+      # reads its base through xtask/src/gates/construction/ceilings.rs `base_ref`, which is `HEAD~1`
+      # or the merge-base with the line's remote tip. A depth-1 clone has neither, and the gate is
+      # red on a base it cannot establish rather than passing over it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
@@ -452,21 +546,6 @@ jobs:
       # nothing, so it costs a second.
       - name: Gate registry vs this workflow
         run: cargo xtask full-gate --selftest
-      # THE AUDIT REGISTER. `audit-ledger` judges the instrument that judges everything else — scope
-      # coverage, open HIGH/MEDIUM findings, a `fixed` stamped with nobody confirming it, and a
-      # record's hash against the commit it claims to have read. Until now its only caller was
-      # scripts/verify-1.6.0-done.sh, at release time; per push the register was unguarded and its
-      # own excuse entry said so. It reads a JSON file and asks git for hashes, so it costs a second.
-      # It needs the HISTORY, which is why this job's checkout is unshallow: a record naming a commit
-      # a depth-1 clone cannot resolve is RED, and correctly so — an unresolvable stamp is a stamp
-      # nobody can check.
-      # THE AUDIT PINS, WHICH NO CHECKOUT CARRIES.
-      # `audit-ledger` accepts a record whose `audited_at` commit is reachable from HEAD OR from an
-      # audit pin. Pins are written locally under `refs/audit-pins/*` and MIRRORED to
-      # `refs/backup/audit-pins/*`, and neither `git clone` nor `actions/checkout` carries anything
-      # outside `refs/heads/*` and `refs/tags/*` — `git ls-remote origin 'refs/audit-pins/*'`
-      # returns nothing. So on this runner the pin set was EMPTY and the gate degenerated to "an
-      # ancestor of HEAD": measured on this base, 13 of the 23 records name a commit that is not an
       # QA-GATE DISPATCHER DRIFT. `workflow_run` ALWAYS loads the workflow file from the DEFAULT
       # branch, so the gate that actually fires after a push to `qa` is `main`'s copy, never the
       # promoted commit's. That has already cost a silent green: measured on qa c736177 the
@@ -482,8 +561,9 @@ jobs:
       # is meant to gate. Self-test first, as everywhere else here.
       - name: qa-gate dispatcher drift self-test
         run: cargo xtask gate qa-gate-dispatch --selftest
-      # `fetch-depth: 0` is not set on this job's checkout, so origin/main may be absent; fetch it
-      # explicitly rather than letting the lint fail closed for a reason that is not drift.
+      # `fetch-depth: 0` brings history but `actions/checkout` still creates no `origin/main`
+      # remote-tracking ref on a non-main run, so fetch it explicitly rather than letting the lint
+      # fail closed for a reason that is not drift.
       - name: Fetch the default branch (the dispatcher that will actually fire)
         run: git fetch --no-tags --depth=1 origin main
       - name: qa-gate dispatcher drift
@@ -496,6 +576,19 @@ jobs:
       # rows unchanged. Its eight cases each construct one malformation and require it be refused.
       - name: Artifact-contract wholeness self-test
         run: python3 scripts/verify-artifact.py --selftest
+      # ARTIFACT CONTRACT coverage: a declared row that no verified target executes is a property
+      # the contract advertises and nothing checks. `--coverage` derives the verified set from the
+      # same predicates release-stage.yml builds its `verify-artifact` and `verify-image` matrices
+      # from, needs no archive and no runner, and exits 1 on any GAP. release-stage.yml cites this
+      # command as the detector for exactly that; before this step no workflow ran it.
+      - name: Artifact-contract coverage (every declared row is executed by a verified target)
+        run: python3 scripts/verify-artifact.py --coverage
+      # THE DONE CLAIM'S OWN SELF-TEST. scripts/verify-1.6.0-done.sh is the release-time DONE
+      # verdict; its --selftest proves the verdict arithmetic and that every bless/repoint variable
+      # is refused. It reads `cargo xtask gate --list`, which is why it rides this job (the xtask
+      # runner is already built above) rather than the toolchain-free script-selftests job.
+      - name: verify-1.6.0-done self-test
+        run: bash scripts/verify-1.6.0-done.sh --selftest
       # RELEASE-CHECK VERDICT ACCOUNTING. release-check.sh used to end with an unconditional
       # "RELEASE GATE PASSED" banner even when phases had not run at all, so a green gate did not
       # prove those phases executed. This selftest proves the two are now distinguishable: a
@@ -800,27 +893,17 @@ jobs:
       # container) — see docs/plugins.md and scripts/release-check.sh's Vault phase for how the
       # monorepo now gates on that repo's own test suite via a sibling checkout instead.
     steps:
-      # FULL HISTORY AND THE AUDIT PINS, FOR THE SAME REASON THE structure-lint JOB TAKES THEM.
-      # `cargo test -p xtask` below runs `gates::audit_ledger::tests::…`, and those two tests assert
-      # the same two facts the blocking `audit-ledger` gate asserts over there: that every record's
-      # `audited_at` commit RESOLVES, and that the tree it stamps is the one that commit held. Both
-      # questions are answered by asking git. This job's checkout answered neither: `actions/checkout`
-      # defaults to depth 1, and it carries nothing outside `refs/heads/*` and `refs/tags/*`, so the
-      # pin set here was empty and `reachable()` degenerated to "an ancestor of HEAD". Measured on
-      # this base: 23 records name 23 commits, TEN of which are ancestors of HEAD — the other
-      # thirteen are green only because thirteen `refs/audit-pins/*` refs exist, and no checkout
-      # brings them. So the job ran a claim it had not been given the inputs to judge, and reported
-      # `audit-ledger:audited-at-reachable: FAIL` and `audit-ledger:hash-matches-commit: FAIL` about
-      # a register that is sound. The claim is right; what was missing is the history it reads.
+      # FULL HISTORY, FOR THE SAME REASON THE structure-lint JOB TAKES IT. `cargo test --workspace`
+      # below includes the xtask suite, and the xtask gates that measure against a base commit
+      # (`kind-isolation`, the construction ceilings) resolve it through `base_ref` in
+      # xtask/src/gates/construction/ceilings.rs: `HEAD~1` or the merge-base with the line's remote
+      # tip, neither of which a depth-1 clone carries. (This checkout used to be justified by, and
+      # followed by a fetch of `refs/backup/audit-pins/*` for, the `audit-ledger` gate. That gate,
+      # its tests and qa/audit-ledger.json were deleted in 647f2fae9, so the pin fetch served
+      # nothing and is gone.)
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-      # `fetch-depth: 0` is depth, not namespace: it cannot bring a ref the remote never advertises
-      # under `refs/heads/*`. Pins are written locally under `refs/audit-pins/*` and MIRRORED to
-      # `refs/backup/audit-pins/*`, which is the namespace this fetch reads. `|| true`: a repository
-      # with no pins yet is not a broken job, and the tests are what decide whether one is missing.
-      - name: Fetch the audit pins (no checkout carries refs/audit-pins/*)
-        run: git fetch origin '+refs/backup/audit-pins/*:refs/audit-pins/*' || true
 
       # SERVICE CONTAINERS ARE ADDRESSED BY CONTAINER IP, NOT localhost. On a GitHub-hosted runner
       # a job owned the whole machine, so `ports: - 5432:5432` and `localhost:5432` were the same
@@ -1046,7 +1129,7 @@ jobs:
           # instrument prints green for the same reason a clean one does.
           if [ "${binaries:-0}" -lt 1 ]; then
             echo "::error::the test-binary census found ${binaries:-0} binaries after the workspace run."
-            echo "::error::`cargo test --no-run --message-format=json` produced no artifact this step could list,"
+            echo "::error::\`cargo test --no-run --message-format=json\` produced no artifact this step could list,"
             echo "::error::so the collected-vs-ran and staleness checks below cannot see anything. Fix the census."
             exit 1
           fi
@@ -1094,10 +1177,10 @@ jobs:
         # laundered through a pipe.
         run: |
           set -uo pipefail
+          rc=0
           cargo test -p busbar-voice --features runtime,test-support \
                      -p busbar-voice-codec --features runtime \
-                     --locked --verbose 2>&1 | tee "$RUNNER_TEMP/voice-test.log"
-          rc=${PIPESTATUS[0]}
+                     --locked --verbose 2>&1 | tee "$RUNNER_TEMP/voice-test.log" || rc=${PIPESTATUS[0]}
           total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/voice-test.log" \
                   | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
                   | awk '{s+=$1} END {print s+0}')
@@ -1131,9 +1214,9 @@ jobs:
         # alone cannot tell a clean run from a run that also had failures.
         run: |
           set -uo pipefail
+          rc=0
           cargo test -p busbar-timing --features timing \
-                     --locked --verbose 2>&1 | tee "$RUNNER_TEMP/timing-test.log"
-          rc=${PIPESTATUS[0]}
+                     --locked --verbose 2>&1 | tee "$RUNNER_TEMP/timing-test.log" || rc=${PIPESTATUS[0]}
           total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/timing-test.log" \
                   | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
                   | awk '{s+=$1} END {print s+0}')
@@ -1167,8 +1250,8 @@ jobs:
         # exactly like a clean one.
         run: |
           set -uo pipefail
-          cargo test -p busbar-llm --features teller-waist --locked --lib unit:: 2>&1 | tee "$RUNNER_TEMP/llm-unit-test.log"
-          rc=${PIPESTATUS[0]}
+          rc=0
+          cargo test -p busbar-llm --features teller-waist --locked --lib unit:: 2>&1 | tee "$RUNNER_TEMP/llm-unit-test.log" || rc=${PIPESTATUS[0]}
           total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/llm-unit-test.log" \
                   | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
                   | awk '{s+=$1} END {print s+0}')
@@ -1767,8 +1850,8 @@ jobs:
         # a tight number would false-red on feature churn. PIPESTATUS[0] is cargo's own exit.
         run: |
           set -uo pipefail
-          cargo test --no-default-features --locked --verbose 2>&1 | tee "$RUNNER_TEMP/ndf-test.log"
-          rc=${PIPESTATUS[0]}
+          rc=0
+          cargo test --no-default-features --locked --verbose 2>&1 | tee "$RUNNER_TEMP/ndf-test.log" || rc=${PIPESTATUS[0]}
           total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/ndf-test.log" \
                   | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
                   | awk '{s+=$1} END {print s+0}')
@@ -2077,7 +2160,7 @@ jobs:
               - 'crates/busbar-plane-*/**'
               - 'crates/busbar-mcp/**'
               - 'crates/busbar-a2a/**'
-              -               - 'crates/busbar-kernel/**'
+              - 'crates/busbar-kernel/**'
               - 'scripts/mcp-subject/**'
               - 'scripts/a2a-subject/**'
               - '.github/workflows/ci.yml'
@@ -2613,8 +2696,8 @@ jobs:
           set -uo pipefail
           # `tee` keeps the full log in the job output (the point of --verbose) while the same bytes
           # are captured for the count. PIPESTATUS[0], not $?, is cargo's own exit status.
-          cargo test --workspace --verbose 2>&1 | tee "$RUNNER_TEMP/windows-test.log"
-          rc=${PIPESTATUS[0]}
+          rc=0
+          cargo test --workspace --verbose 2>&1 | tee "$RUNNER_TEMP/windows-test.log" || rc=${PIPESTATUS[0]}
 
           # SUM across every test binary, not a single grep line: `test result: ok. N passed`
           # is printed once PER binary, so a single-line match would floor against one binary and
@@ -2919,8 +3002,8 @@ jobs:
           ALLOC_GATE_MIN_TESTS: "2"
         run: |
           set -uo pipefail
-          cargo test -p busbar-llm --lib alloc_gate -- --nocapture 2>&1 | tee "$RUNNER_TEMP/alloc-gate.log"
-          rc=${PIPESTATUS[0]}
+          rc=0
+          cargo test -p busbar-llm --lib alloc_gate -- --nocapture 2>&1 | tee "$RUNNER_TEMP/alloc-gate.log" || rc=${PIPESTATUS[0]}
           total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/alloc-gate.log" \
                   | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
                   | awk '{s+=$1} END {print s+0}')
@@ -3097,75 +3180,6 @@ jobs:
           fi
           git -C "$pub" commit -m "ci(proof): refresh docs/proof/${VERSION}.json from ${VERSION}@${GITHUB_SHA}"
           git -C "$pub" push origin "HEAD:refs/heads/proof-manifests"
-
-  # COVERAGE — instrumented run of the same workspace suite `check` runs, uploaded to Codecov for
-  # the README badge and per-PR line-coverage context. Deliberately ADDITIVE and NON-GATING:
-  #
-  #   * It is NOT in the ci-umbrella `needs`/RESULTS below, so it is never a required check and can
-  #     never turn `dev`/`qa`/`main` red. Coverage reporting is an OBSERVATION, not a correctness
-  #     gate — the correctness gate is `check`, which this must never be able to mask or block.
-  #   * It is a SEPARATE job, not a step folded into `check`, on purpose: `cargo llvm-cov` compiles
-  #     with `-C instrument-coverage` and drops `*.profraw` files, which would trip `check`'s
-  #     "working tree clean" assertion. Isolating it keeps that assertion honest.
-  #   * The upload uses `fail_ci_if_error: false` so a Codecov outage or a tokenless-rate-limit is a
-  #     no-op here, not a red job — a reporting dependency must never be able to fail the build.
-  #   * FULL TIER ONLY, same `if:` as windows/openapi/etc., so a feature-branch push doesn't pay for
-  #     a full instrumented rebuild; it runs on every PR and on dev/qa/main/dispatch.
-  #
-  # Same digest-pinned postgres/valkey services + BUSBAR_TEST_POSTGRES_URL / VALKEY_URL as `check`,
-  # so the store-postgres / store-valkey roundtrip tests are covered here too rather than skipped.
-  coverage:
-    name: coverage (llvm-cov · codecov)
-    runs-on: ubuntu-latest
-    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
-    services:
-      postgres:
-        image: postgres:16@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b
-        env:
-          POSTGRES_USER: busbar
-          POSTGRES_PASSWORD: busbar
-          POSTGRES_DB: busbar_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U busbar"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-      valkey:
-        image: valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "valkey-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools-preview
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
-      - name: Collect coverage (workspace, live-DB tests wired)
-        env:
-          BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
-          VALKEY_URL: redis://localhost:6379
-        run: cargo llvm-cov --workspace --locked --ignore-run-fail --lcov --output-path lcov.info
-      - name: Upload to Codecov (never fails the build)
-        uses: codecov/codecov-action@v5
-        with:
-          # Codecov rejects tokenless uploads on protected branches (dev/qa/main) with
-          # "Token required because branch is protected". This org-level secret authenticates
-          # the upload on every branch. Still never gates CI (fail_ci_if_error: false).
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: lcov.info
-          slug: GetBusbar/busbar
-          fail_ci_if_error: false
 
   # ── ci umbrella: the SINGLE required status for branch protection on `qa` and `main`.
   #
@@ -3560,7 +3574,7 @@ jobs:
   # blocks, the standing work does not block it, and draining a row is a diff somebody reads.
   # THE FLIP IS DONE. What remains is to empty CONSTRUCTION_STANDING_REDS, one row at a time.
   # TELLER STEPS — tracker H2's claim in executable form: "conformance rigs carry one cell per Teller
-  # step per plane". Three assertions, each doing something the other two cannot:
+  # step per plane". Four assertions, each doing something the other three cannot:
   #   1. --selftest  the matrix LOADER refuses a matrix that lies — root evidence borrowed from
   #      another leg's file, a root verdict carrying a label instead of an argument, a plane no root
   #      leg answers to, a leg that proves zero steps over the loop.
@@ -3572,6 +3586,7 @@ jobs:
   #      itself it is a spreadsheet.
   # All three were run by scripts/verify-1.6.0-done.sh alone — the release-time DONE claim — so a cell
   # that stopped executing would have stayed invisible until a release was being cut. Wired here so it
+  # reddens on the push that stops a cell executing, not at release time.
   #   4. --root-legs-gating  the shipped-leg bar: a `root-*` feature in the manifest's own `default`
   #      line is the SHIPPED path for its plane, so a GATING step that no cell drives over that leg
   #      is a half-answer, not a queue entry. It is a different question from --root-legs (which
@@ -3697,7 +3712,7 @@ jobs:
           mkdir -p target/construction
           # 2>&1: --posture names the NEW or STALE rows on stderr, and those lines are the whole
           # point of the report when this job fails.
-          cargo xtask gate construction --posture 2>&1 | tee target/construction/report.md; rc="${PIPESTATUS[0]}"
+          rc=0; cargo xtask gate construction --posture 2>&1 | tee target/construction/report.md || rc="${PIPESTATUS[0]}"
           echo "$rc" > target/construction/rc
           exit "$rc"
       - name: Name the verdict for the umbrella
@@ -3891,6 +3906,7 @@ jobs:
     needs:
       - gate-tier
       - fmt
+      - script-selftests
       - preflight
       - structure-lint
       - changes
@@ -3965,6 +3981,7 @@ jobs:
       RESULTS: |
         gate-tier|fast|${{ needs.gate-tier.result }}
         fmt|fast|${{ needs.fmt.result }}
+        script-selftests|fast|${{ needs.script-selftests.result }}
         preflight|fast|${{ needs.preflight.result }}
         structure-lint|fast|${{ needs.structure-lint.result }}
         changes|fast|${{ needs.changes.result }}
