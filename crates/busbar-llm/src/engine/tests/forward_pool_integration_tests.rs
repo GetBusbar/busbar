@@ -858,10 +858,14 @@ async fn test_failover_exclusions_remove_member_from_pool() {
 /// GET /metrics through the REAL router (route table + auth middleware) in `auth.mode=none`
 /// (open relay) returns the Prometheus exposition without a bearer token — `/metrics` is NOT
 /// auth-exempt; it is admitted here only because the mode is None, where `validate_token`
-/// returns `true` unconditionally. The sole always-open route is `/healthz` (auth.rs).
-/// The companion test `test_metrics_requires_auth_in_token_mode` asserts that a missing-token
-/// request to `/metrics` at `auth.mode=token` is rejected (401), covering the security fix that
-/// supersedes the 0.16.2 note describing `/metrics` as intentionally open.
+/// returns `true` unconditionally. An always-open route is one whose MOUNT declares
+/// `RouteAuth::None` — `/healthz` and the `/auth/token` token-exchange route on this core router
+/// (busbar-kernel router.rs), plus the open routes a plane declares at its own mount (OAuth2
+/// metadata/endpoints, the A2A push-callback receiver, …) — and `/metrics` is not one of them.
+/// The companion test `test_metrics_requires_auth_in_chain_mode` asserts that a no-credential
+/// request to `/metrics` under a configured auth chain is rejected (401) while `/healthz` and
+/// `/auth/token` are still reached, covering the security fix that supersedes the 0.16.2 note
+/// describing `/metrics` as intentionally open.
 #[tokio::test]
 async fn test_metrics_admitted_in_open_relay_mode() {
     crate::testkit::install_test_seams();
@@ -904,8 +908,10 @@ async fn test_metrics_admitted_in_open_relay_mode() {
 /// configured, a GET /metrics with NO credential is rejected with 401 - `/metrics` is
 /// auth-gated, NOT exempt like `/healthz`. This guards the [Unreleased] security fix that made
 /// `/metrics` auth-gated (superseding the 0.16.2 review note that described it as intentionally
-/// open): a regression that re-added `/metrics` to the always-open allowlist alongside
-/// `/healthz` (auth.rs) would let this unauthenticated scrape through and fail here. The same
+/// open): a regression that declared `/metrics` `RouteAuth::None` the way `/healthz` and
+/// `/auth/token` are declared would let this unauthenticated scrape through and fail here. The
+/// same no-credential client DOES reach those two declared-open routes (200), so the 401 is the
+/// `/metrics` declaration, not a chain that shuts every door. The same
 /// request WITH a chain-admitted credential is admitted (200), proving the gate is
 /// credential-based, not a blanket block. (The static `tokens` allowlist is REMOVED in 1.5.0;
 /// the test-only groups module stands in for a real chain module.)
@@ -957,6 +963,32 @@ async fn test_metrics_requires_auth_in_chain_mode() {
         unauthed.status().as_u16(),
         401,
         "/metrics must require auth in token mode; a 200 means it was re-exempted like /healthz"
+    );
+
+    // The declared-open routes on the SAME router, with the SAME missing credential, are reached
+    // (their HANDLER answers, never the middleware's 401): `/healthz` (503 here — no healthy lane —
+    // is the probe's own verdict) and the token-exchange route (`?logout=1` is its stateless
+    // signed-out page, 200). Both are mounted `RouteAuth::None`, so `/healthz` is NOT the sole
+    // always-open route.
+    let healthz = client
+        .get(format!("http://{addr}/healthz"))
+        .send()
+        .await
+        .expect("GET /healthz no credential");
+    assert!(
+        matches!(healthz.status().as_u16(), 200 | 503),
+        "/healthz is mounted RouteAuth::None: the probe answers (200/503), never the chain's 401; got {}",
+        healthz.status()
+    );
+    let exchange = client
+        .get(format!("http://{addr}/auth/token?logout=1"))
+        .send()
+        .await
+        .expect("GET /auth/token no credential");
+    assert_eq!(
+        exchange.status().as_u16(),
+        200,
+        "/auth/token is mounted RouteAuth::None and must serve its signed-out page with no credential"
     );
 
     // With the configured token, the scrape is admitted (200) — the gate is token-based.
