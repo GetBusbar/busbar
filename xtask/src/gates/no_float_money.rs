@@ -94,6 +94,12 @@
 //! ruling implemented twice, which is resolved to one implementation and not to a shim, and which
 //! is not touched here because that crate is inside a live crate fold.
 //!
+//! AND THE LIST GREW ONCE, BY MEASUREMENT (item 178). The "fixed" codec reads had moved their
+//! silent zero one call down, into `.and_then(read_count_u64).unwrap_or(0)`, and the accessor
+//! needles could not see the helper — so the allowances went away because the detector went blind,
+//! not because the sites did. [`COUNT_HELPERS`] makes them visible; the 32 it found are armed as
+//! pending under [`PENDING_CEILING`], which may only fall.
+//!
 //! # THE THIRD BAN: A PERSISTED COUNT WITHOUT ITS SCALE (#81a)
 //!
 //! A count is written down as its MANTISSA, which is meaningless without the scale beside it. #81a
@@ -509,6 +515,18 @@ const SUPERSEDED_SEAM: &str = "crates/busbar-llm-codec/src/usage_count.rs";
 /// pair because a count that arrives through a double has already lost the exactness #81 requires.
 pub const NUMBER_ACCESSORS: &[&str] = &["as_u64", "as_i64", "as_f64", "as_u128", "as_i128"];
 
+/// THE HOUSE COUNT READERS: a helper that answers `Option<count>` for a JSON value, where `None`
+/// means "present and unreadable" as well as "absent". Defaulting one to zero is the SAME silent
+/// zero the accessors above produce — the helper only moved it one call down (item 178).
+///
+/// `read_count_u64` is the LLM codec's own seam, and every billed read in that crate goes through
+/// it. The accessor list alone could not see a single one of them: the needle is `read_count_u64`,
+/// not `as_u64`, so 32 live `.and_then(read_count_u64).unwrap_or(0)` sites read as a clean tree
+/// while the row's title promised the opposite. The seam's own doc names the idiom as the defect
+/// (`usage_count.rs`: "Why this exists rather than `.and_then(read_count_u64).unwrap_or(0)`") and
+/// points at `billed_count`, which keeps absent-is-zero and makes unreadable a refusal.
+pub const COUNT_HELPERS: &[&str] = &["read_count_u64"];
+
 /// A default's argument, whitespace removed, that silently substitutes NOTHING for a count. A
 /// NON-zero default (`unwrap_or(idx as u64)`) is deliberately out of scope: it substitutes a value
 /// the author chose and named, which is a different act from recording that no work happened.
@@ -564,6 +582,13 @@ pub struct Allow {
 
 /// How far back from a match the allowance needle is looked for.
 const ALLOW_WINDOW: usize = 200;
+
+/// THE MOST [`AllowClass::PendingConversion`] HITS THE ROW WILL CARRY. Armed 2026-09-23 at the
+/// number measured the day [`COUNT_HELPERS`] made the codec's 32 helper reads visible: 5 in the
+/// voice codec plus those 32. A needle names a site's shape, not its count, so without this a
+/// second defaulted read beside an allowed one rode the same allowance for free. It may only go
+/// DOWN, in the diff that converts a site; a run above it is a finding.
+pub const PENDING_CEILING: usize = 37;
 
 /// THE SURVIVING SITES, EVERY ONE NAMED AND REASONED. Measured 2026-09-22 against this tree.
 ///
@@ -664,6 +689,57 @@ pub const ALLOWED_COUNT_READS: &[Allow] = &[
         needle: "get(\"cachedContentTokenCount\")",
         class: AllowClass::PendingConversion,
         why: "a billed count that reads zero when the provider spells it as a float",
+    },
+    // ── ARMED 2026-09-23 (item 178): the LLM codec's billed reads through its own helper ───────
+    //
+    // Invisible to this row until the helper joined [`COUNT_HELPERS`]: every one of them is
+    // `.and_then(read_count_u64).unwrap_or(0)`, which records ZERO for a usage count that was
+    // present and unreadable. Measured on the day the row learned to see them: 32 sites across
+    // these seven files, every one a real billed count. They are armed here at that number — the
+    // row could not see them, so this is the first measurement, not a relaxation — and
+    // [`PENDING_CEILING`] holds the total so no file on this list can add one. The fix each one is
+    // owed is `usage_count::billed_count`, which keeps absent-is-zero and REFUSES unreadable.
+    Allow {
+        file: "crates/busbar-llm-codec/src/anthropic/reader.rs",
+        needle: "read_count_u64",
+        class: AllowClass::PendingConversion,
+        why: "a billed count defaulted to zero through the codec's own helper; owed billed_count",
+    },
+    Allow {
+        file: "crates/busbar-llm-codec/src/bedrock/reader.rs",
+        needle: "read_count_u64",
+        class: AllowClass::PendingConversion,
+        why: "a billed count defaulted to zero through the codec's own helper; owed billed_count",
+    },
+    Allow {
+        file: "crates/busbar-llm-codec/src/cohere/reader.rs",
+        needle: "read_count_u64",
+        class: AllowClass::PendingConversion,
+        why: "a billed count defaulted to zero through the codec's own helper; owed billed_count",
+    },
+    Allow {
+        file: "crates/busbar-llm-codec/src/gemini/mod.rs",
+        needle: "read_count_u64",
+        class: AllowClass::PendingConversion,
+        why: "a billed count defaulted to zero through the codec's own helper; owed billed_count",
+    },
+    Allow {
+        file: "crates/busbar-llm-codec/src/gemini/reader.rs",
+        needle: "read_count_u64",
+        class: AllowClass::PendingConversion,
+        why: "a billed count defaulted to zero through the codec's own helper; owed billed_count",
+    },
+    Allow {
+        file: "crates/busbar-llm-codec/src/openai_chat/reader.rs",
+        needle: "read_count_u64",
+        class: AllowClass::PendingConversion,
+        why: "a billed count defaulted to zero through the codec's own helper; owed billed_count",
+    },
+    Allow {
+        file: "crates/busbar-llm-codec/src/openai_responses/reader.rs",
+        needle: "read_count_u64",
+        class: AllowClass::PendingConversion,
+        why: "a billed count defaulted to zero through the codec's own helper; owed billed_count",
     },
 ];
 
@@ -1058,7 +1134,7 @@ fn zero_default_after(flat: &Flat, i: usize) -> Option<usize> {
 fn scan_count_reads(text: &str) -> Vec<CountHit> {
     let flat = flatten(text);
     let mut hits = Vec::new();
-    for &accessor in NUMBER_ACCESSORS {
+    for &accessor in NUMBER_ACCESSORS.iter().chain(COUNT_HELPERS) {
         for start in word_positions(&flat.text, accessor) {
             let Some(end) = zero_default_after(&flat, start + accessor.len()) else {
                 continue;
@@ -1096,6 +1172,18 @@ fn row_count_read(scan: &CountReadScan) -> Row {
                  read records zero for work that really happened",
                 scan.offenders.len(),
                 scan.offenders.join(" | ")
+            ),
+        );
+    }
+    if scan.pending > PENDING_CEILING {
+        return Row::fail(
+            ROW_COUNT_READ,
+            "a count is read with a silent zero default instead of a refusal (#81)",
+            format!(
+                "{} defaulted count read(s) ride a pending-conversion allowance, above the armed \
+                 ceiling of {PENDING_CEILING} — a NEW silent zero landed beside an allowed one; \
+                 read it through `billed_count` so an unreadable count REFUSES",
+                scan.pending
             ),
         );
     }
@@ -1967,6 +2055,17 @@ impl Gate for NoFloatMoneyGate {
             ("the as_i64 sibling", "v.as_i64().unwrap_or(0)"),
             ("the as_f64 sibling", "v.as_f64().unwrap_or(0.0)"),
             ("an unwrap_or_else zero", "v.as_u64().unwrap_or_else(|| 0)"),
+            // ITEM 178: THE CODEC'S OWN COUNT HELPER. Its `None` means "present and unreadable"
+            // as well as "absent", so a zero default on it is the same silent zero — and every
+            // billed read in the codec is spelled this way, none of which the row could see.
+            (
+                "the count helper, path form",
+                "Some(v).and_then(crate::usage_count::read_count_u64).unwrap_or(0)",
+            ),
+            (
+                "the count helper, call form",
+                "read_count_u64(v).unwrap_or_default()",
+            ),
             (
                 "a line break inside the chain",
                 "v\n        .as_u64()\n        .unwrap_or(0)",
@@ -2412,7 +2511,8 @@ mod tests {
             .count();
         assert!(nested_count > 0, "the control needs a populated inner home");
         let floor = alone.len() + 1;
-        let homes: &'static [&'static str] = &["crates/busbar-a2a/src/a2a", "crates/busbar-a2a/src"];
+        let homes: &'static [&'static str] =
+            &["crates/busbar-a2a/src/a2a", "crates/busbar-a2a/src"];
         let got = walk_area(
             &cx,
             &CountRoot {
@@ -2430,6 +2530,41 @@ mod tests {
                 alone.len()
             ),
         }
+    }
+
+    /// ITEM 178: A ZERO DEFAULT ON THE CODEC'S COUNT HELPER IS THE SAME SILENT ZERO. The accessor
+    /// list alone saw none of the 32 live `.and_then(read_count_u64).unwrap_or(0)` sites.
+    #[test]
+    fn a_defaulted_read_through_the_count_helper_is_a_hit() {
+        let src = "fn f(u: &Value) -> u64 {\n    u.get(\"input_tokens\")\n        \
+                   .and_then(crate::usage_count::read_count_u64)\n        .unwrap_or(0)\n}\n\
+                   fn g(v: &Value) -> u64 { read_count_u64(v).unwrap_or_default() }\n\
+                   fn h(v: &Value) -> Option<u64> { read_count_u64(v) }\n";
+        let hits = scan_count_reads(src);
+        let lines: Vec<(usize, &str)> = hits.iter().map(|h| (h.line, h.accessor)).collect();
+        assert_eq!(
+            lines,
+            vec![(3, "read_count_u64"), (6, "read_count_u64")],
+            "the helper defaulted to zero must be a hit, and the undefaulted read must not"
+        );
+    }
+
+    /// ITEM 178: THE PENDING ALLOWANCES ARE HELD TO THEIR ARMED NUMBER. A needle names a shape, so
+    /// a second site beside an allowed one would otherwise ride it for free.
+    #[test]
+    fn pending_conversions_above_the_ceiling_are_a_finding() {
+        let at = CountReadScan {
+            offenders: Vec::new(),
+            used: std::collections::BTreeSet::new(),
+            pending: PENDING_CEILING,
+        };
+        assert_eq!(row_count_read(&at).status, Status::Pass);
+        let over = CountReadScan {
+            pending: PENDING_CEILING + 1,
+            ..at
+        };
+        let row = row_count_read(&over);
+        assert_eq!(row.status, Status::Fail, "{}", row.detail);
     }
 
     /// Both arms of the framework, over the real tree.
