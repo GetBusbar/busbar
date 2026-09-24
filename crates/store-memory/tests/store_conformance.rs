@@ -17,9 +17,9 @@
 //! Its own file rather than a second inline `mod` in `src/lib.rs`, per the repo's test-locality rule
 //! (at most one inline test body per file; see `docs/code-layout.md`).
 
-/// The `Store` contract conformance suite. It WAS `busbar-plugin-testkit`; the owner ruled that
-/// crate deleted on 2026-09-22 and #2 forbids a shared test util between plugins, so this backend
-/// owns its copy. See the module doc inside for the full provenance.
+// The `Store` contract conformance suite. It WAS `busbar-plugin-testkit`; the owner ruled that
+// crate deleted on 2026-09-22 and #2 forbids a shared test util between plugins, so this backend
+// owns its copy. See the module doc inside for the full provenance.
 #[allow(dead_code)]
 mod conf {
     //! # PROVENANCE, 2026-09-22 — this file was `busbar-plugin-testkit`
