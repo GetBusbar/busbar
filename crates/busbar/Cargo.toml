@@ -208,8 +208,8 @@ plane-mcp = ["dep:busbar-mcp", "busbar-kernel/plane-mcp", "busbar-core-admin/pla
 # plane out while core still routes LLM + MCP (the plane-split deletion test).
 plane-a2a = ["dep:busbar-a2a", "busbar-kernel/plane-a2a", "busbar-core-admin/plane-a2a"]
 # THE VOICE PLANE, the busbar-voice crate, behind this switch. The analogue of `plane-a2a` — one
-# switch for the crate edge + the core/substrate forwards — EXCEPT it is deliberately absent from
-# `default`. `dep:busbar-voice` pulls the crate; `busbar-voice?/runtime` turns on its live-session
+# switch for the crate edge + the core/substrate forwards — and, like it, IN `default` (voice ships
+# default-ON + deletable; `--no-default-features` compiles it out). `dep:busbar-voice` pulls the crate; `busbar-voice?/runtime` turns on its live-session
 # runtime (the same feature it would be under `busbar-voice/runtime`, since `dep:busbar-voice` here
 # enables the crate). The `?/` spelling is deliberate: it makes the forward an OPTIONAL-dep feature
 # reference, so the strong-form deletion gate (scripts/plane-delete-test.sh) strips it with the same
