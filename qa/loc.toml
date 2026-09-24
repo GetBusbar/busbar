@@ -14,9 +14,16 @@
 [scan]
 # Directories whose IMMEDIATE subdirectories are each one crate. The crate's name, for every row
 # and every ceiling, is the DIRECTORY name: that is what `qa/construction.toml` is keyed on and what
-# the script this replaces used. Two directories in this tree disagree with their `package.name`
-# (`crates/secret-ref`, `crates/hooks-ranking`); re-keying the ceilings onto package names is a
-# separate decision from fixing the counter, and doing both at once would make neither reviewable.
+# the script this replaces used. THIRTEEN directories in this tree disagree with their
+# `package.name` (this said "two", naming only the last two below; item 465), measured 2026-09-24 by
+#   for d in crates/*/; do b=$(basename $d); n=$(grep -m1 '^name' $d/Cargo.toml | cut -d'"' -f2);
+#     [ "$n" != "$b" ] && echo "$b -> $n"; done
+# api, auth-admin-tokens, auth-static-plugin, export-example-plugin, hook-test-plugin,
+# hooks-ranking, plane-example (-> busbar-plugin-example-plane), plugin-loader, plugin-sdk,
+# secret-example-plugin, secret-ref, store-example-plugin, store-memory — every one but
+# plane-example is its directory with `busbar-` prefixed. Re-run it before quoting the count.
+# Re-keying the ceilings onto package names is a separate decision from fixing the counter, and
+# doing both at once would make neither reviewable.
 crate_roots = ["crates"]
 
 # Single-crate directories outside those roots. `xtask` is deliberately NOT here: it is the tooling
