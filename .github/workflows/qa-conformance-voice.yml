@@ -31,13 +31,18 @@ name: Voice conformance
 #   provider-dial      (the provider-dial leg) a session actually dials the composed provider through a loopback socket,
 #                      and its D2 metering lease settles the usage that arrived over it. Its own job
 #                      (not folded into `composition`) because it is the one leg that opens a socket.
+#   tool-reply         a tool call the node does not serve is answered by the client through the
+#                      governed wait (wake, unknown-call refusal, deadline sweep), on both duplex
+#                      dialects of the streaming plane. Its own job: before it had one, the leg file
+#                      existed and nothing ran it.
 #   governance-probe   the 5 vision checkpoints (incl. D2 hard-close-on-exhaustion). NOT A
 #                      CONFORMANCE RESULT — separated in the runner, exactly as a2a-governance is.
 #
 # AND `verdict` IS NOT OPTIONAL. Ten green ticks mean nothing if one is green because it never ran.
 # The last job asserts, per leg BY NAME, that the leg reached `success`; skipped or cancelled is RED
 # there. Its `needs:` list is held to SET EQUALITY with the workflow's job set by
-# `testing/verdict-covers-every-leg.py`, run in gate-selftest below.
+# `testing/verdict-covers-every-leg.py`, run in gate-selftest below — which also derives the LEGS from
+# `testing/voice-conformance/legs/*.sh` and refuses any leg file that no judged job runs via `--leg`.
 #
 # THE INPUTS LATER LEGS CONSUME (authored by another agent; referenced, not created, here):
 #   testing/voice-conformance/fixtures/{openai,gemini}/   captured transcripts + spec fixtures
@@ -316,6 +321,46 @@ jobs:
           path: voice-provider-dial.log
           if-no-files-found: warn
 
+  # The streaming plane's voice dialect, tool half of the moat: a call the node does NOT serve can only
+  # be answered by the client, so its leg is a WAIT, and this job proves something on the socket ends
+  # it — the client's reply wakes it, a reply naming no waiting call is refused, and an unanswered
+  # call is swept at the plane's declared deadline. The leg file shipped with no job running it, and
+  # the verdict-coverage lint (whose denominator was then JOBS, not legs) could not see the gap; it
+  # now derives legs from `testing/*/legs/*.sh`, so a leg with no job is RED there.
+  tool-reply:
+    name: "tool-reply · streaming plane, voice dialect: an unserved tool call is answered by the client"
+    needs: gate-selftest
+    runs-on: latchkey-small
+    # BOUNDED. A new job with no run history yet; the ceiling is the 10-minute floor of the
+    # `p95 x 1.5` rule ci.yml documents, the same as every sibling harness-driven leg.
+    timeout-minutes: 10
+    env:
+      VOICE_CONFORM_BIN: ${{ github.workspace }}/target/debug/voice-conform
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+      # The harness this leg drives is the ONE gate-selftest built and proved itself against; no
+      # Rust toolchain is needed here because $VOICE_CONFORM_BIN short-circuits conform-bin.sh's
+      # build. The executable bit does not survive the artifact zip, so restore it.
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: voice-conform-bin
+          path: target/debug
+      - name: Restore the harness's executable bit
+        run: chmod +x target/debug/voice-conform
+      - name: Run the tool-reply leg
+        run: |
+          set -euo pipefail
+          bash testing/voice-conformance/voice-conformance.sh --leg tool-reply | tee voice-tool-reply.log
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: voice-tool-reply
+          path: voice-tool-reply.log
+          if-no-files-found: warn
+
   composition:
     name: "composition · provider credential, per-key lease, session scope, gemini route, admit/route/audit/exit"
     needs: gate-selftest
@@ -480,6 +525,7 @@ jobs:
       - cross-parity
       - composition
       - provider-dial
+      - tool-reply
       - boot-validate
       - governance-probe
     steps:
@@ -496,6 +542,7 @@ jobs:
           CROSS_PARITY: ${{ needs.cross-parity.result }}
           COMPOSITION: ${{ needs.composition.result }}
           PROVIDER_DIAL: ${{ needs.provider-dial.result }}
+          TOOL_REPLY: ${{ needs.tool-reply.result }}
           BOOT_VALIDATE: ${{ needs.boot-validate.result }}
           GOVERNANCE_PROBE: ${{ needs.governance-probe.result }}
         run: |
@@ -515,6 +562,7 @@ jobs:
           strict cross-parity      "$CROSS_PARITY"
           strict composition       "$COMPOSITION"
           strict provider-dial     "$PROVIDER_DIAL"
+          strict tool-reply        "$TOOL_REPLY"
           strict boot-validate     "$BOOT_VALIDATE"
           strict governance-probe  "$GOVERNANCE_PROBE"
 
