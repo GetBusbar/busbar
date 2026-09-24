@@ -67,14 +67,24 @@ enum PathRule {
     Prefix(&'static str),
 }
 
-/// THE single source of truth for which admin mutation endpoints are in the tight CONFIG class
-/// (10/min) versus the roomy CRUD class (60/min). `classify_mutation` reads this table; nothing
-/// else decides class membership. `docs/admin-api.md`'s rate-limit table is a hand-written
-/// restatement of exactly this list — kept honest by
-/// `admin::tests::tests::rate_limit_doc_table_matches_classifier`, which enumerates every
-/// mutation operation in the committed `openapi.json`, classifies each via this table, and fails
-/// if the resulting CONFIG set differs from the doc's `config` row by even one endpoint in either
-/// direction.
+/// The FIXED endpoints of the tight CONFIG class (10/min), as against the roomy CRUD class (60/min).
+///
+/// This table is NOT the whole decision, and it used to say it was ("nothing else decides class
+/// membership", item 558). The one decider is [`classify_mutation`], and it reads four things in
+/// this order, first answer wins: the `/config/validate` carve-out (CRUD, although this table's
+/// `/config/` prefix covers it), the `/plugins/inspect` carve-out (its own class), every
+/// registry-derived named-map root (CONFIG — one per `NamedMapSection::sections()`, so a plane's
+/// section joins without an edit here), and only then this table. `docs/admin-api.md`'s rate-limit
+/// table is a hand-written restatement of the CONFIG set that FUNCTION produces — kept honest by
+/// `rate_limit_doc_table_matches_classifier` (busbar-core-admin's tests), which classifies every
+/// mutation operation in the committed `openapi.json` through [`classify_mutation`] and fails if the
+/// CONFIG set differs from the doc's `config` row by one endpoint in either direction; so all four
+/// deciders are inside that check, not only this table.
+///
+/// This is the classifier the admin HTTP middleware runs (`auth` → `classify_mutation`). The
+/// admin-VERB path classifies with a SECOND table, `busbar_core_admin::rate::CONFIG_CLASS_RULES`
+/// (`MutationClass::for_verb`), which hardcodes the two core named-map roots and which nothing
+/// compares with this one.
 ///
 /// This used to be an inline `if`/`else` boolean expression with the same six clauses — sound,
 /// but a predicate can only answer "is this one in?", never "which ones are in?", so nothing
@@ -100,11 +110,11 @@ const CONFIG_CLASS_RULES: &[PathRule] = &[
     PathRule::Exact("/restart"),
 ];
 
-/// Classify a mutation request's ADMIN_PREFIX-relative path. Pure function of
-/// [`CONFIG_CLASS_RULES`] plus the carve-outs: `/config/validate` is a read-only dry-run that must
-/// not contend with the CONFIG budget despite living under `/config/`, and `/plugins/inspect` is a
-/// read-only archive preview that must not contend with EITHER the CONFIG or the shared CRUD budget
-/// — it gets its own dedicated [`MutationClass::PluginInspect`] bucket.
+/// Classify a mutation request's ADMIN_PREFIX-relative path: the two carve-outs, then the
+/// registry-derived named-map roots, then [`CONFIG_CLASS_RULES`] — in that order. `/config/validate`
+/// is a read-only dry-run that must not contend with the CONFIG budget despite living under
+/// `/config/`, and `/plugins/inspect` is a read-only archive preview that must not contend with
+/// EITHER the CONFIG or the shared CRUD budget — it gets its own [`MutationClass::PluginInspect`].
 pub fn classify_mutation(rel: &str) -> MutationClass {
     if rel == crate::admin::v1::contract::PATH_CONFIG_VALIDATE {
         return MutationClass::Crud;
