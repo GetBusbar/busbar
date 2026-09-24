@@ -738,7 +738,7 @@ kernel_crate = "busbar-kernel"
 # 52950 (slack 1414)" — 1,414 lines the Teller/pump/admit surface could grow by with no row
 # reporting it. Downward only; this is the figure the crate measures, committed-tree, not the
 # working tree (whose uncommitted kernel edits read 51543 and are not this file's to bless).
-kernel_ceiling = 51536
+kernel_ceiling = 51439
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
@@ -836,7 +836,7 @@ patterns = ["teller.rs"]
 # mis-pin: a no-headroom ceiling exists precisely so the next line that grows the loop is the line
 # that has to justify itself. Re-measure (`cargo xtask loc --per-file busbar-kernel`) before reading
 # either number as current, and use `--write` to re-pin rather than editing by hand.
-ceiling = 661
+ceiling = 659
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"
