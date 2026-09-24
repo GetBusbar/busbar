@@ -67,7 +67,7 @@ use std::time::Duration;
 
 /// One governed hop's end-to-end ceiling. Bounds `send()` so a wedged upstream cannot pin the
 /// streaming task forever. Phase 2 derives this from the App's resolved upstream limits
-/// ([`crate::state::UpstreamClientSettings`]); the scaffold uses a fixed, conservative ceiling.
+/// (`limits.upstream_request_timeout_secs`); the scaffold uses a fixed, conservative ceiling.
 const EGRESS_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How many network chunks the streaming task may run ahead of the plane's polling. Bounded so a

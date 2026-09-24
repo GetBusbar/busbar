@@ -987,9 +987,6 @@ pub fn build_app_from_config(
         );
     }
     let http1_only = upstream_bool_env_override(http1_env, cfg.limits.upstream_http1_only);
-    let mut new_client_settings = crate::state::UpstreamClientSettings::from_limits(&cfg.limits);
-    new_client_settings.upstream_h2_prior_knowledge = h2_prior_knowledge;
-    new_client_settings.upstream_http1_only = http1_only;
     let llm_client_settings = ClientSettingsInput {
         upstream_request_timeout_secs: cfg.limits.upstream_request_timeout_secs,
         pool_max_idle_per_host: cfg.limits.pool_max_idle_per_host,
@@ -1726,7 +1723,6 @@ pub fn build_app_from_config(
             }
             m
         },
-        client_settings: new_client_settings,
         auth: auth_mw.clone(),
         rewrite_hooks,
         tap_hooks,

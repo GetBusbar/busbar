@@ -19,8 +19,8 @@
 //! PARITY LEDGER — every facility the reqwest builder provided, re-provided or made structural
 //! (see `appbuild.rs`'s old builder comments, preserved there):
 //!   * pooling: `pool_max_idle_per_host` / `pool_idle_timeout` / Tokio pool timer — same knobs,
-//!     same per-shard division; warm-pool reuse on config apply keyed by the same
-//!     `UpstreamClientSettings` snapshot.
+//!     same per-shard division; warm-pool reuse on config apply keyed by the plane's own
+//!     `ClientSettingsInput` snapshot (the core `UpstreamClientSettings` it replaced is deleted).
 //!   * TLS trust: rustls + compiled-in webpki (Mozilla) roots — byte-identical trust story to
 //!     reqwest's `rustls-tls` feature. ALPN offers `h2,http/1.1` by default; `http1_only` pins
 //!     h1 (and wins over h2c, preserving the old apply-order); `h2_prior_knowledge` forces
@@ -165,7 +165,7 @@ impl EngineSpec {
     /// THE POOLED-WEBPKI EGRESS POSTURE (system trust + system DNS + boot-env tunnel + pooled reuse): webpki trust, system DNS, no pin, no observation, no
     /// client identity, boot-env proxy tunnel, h2 keep-alive 30s/10s + adaptive window, TCP
     /// keepalive 60s — the values the parity ledger above documents, parameterized only by the
-    /// four inputs `UpstreamClientSettings` snapshots (plus the per-shard idle division the
+    /// four inputs the plane's `ClientSettingsInput` snapshots (plus the per-shard idle division the
     /// caller already computes).
     pub fn pooled_webpki(
         idle_per_host: usize,

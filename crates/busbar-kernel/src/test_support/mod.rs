@@ -1860,9 +1860,6 @@ impl TestApp {
                 }
                 m
             },
-            client_settings: crate::state::UpstreamClientSettings::from_limits(
-                &crate::config::LimitsResolved::default(),
-            ),
             auth,
             rewrite_hooks: Vec::new(),
             tap_hooks: Vec::new(),

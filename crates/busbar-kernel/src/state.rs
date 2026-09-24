@@ -27,42 +27,6 @@ use busbar_kernel::store::LaneRuntime;
 // re-export line, itself repointed here. Nothing outside core names them.
 pub use busbar_kernel::topology::{worker_stripe, worker_stripes};
 
-/// The subset of resolved limits that FEEDS the upstream reqwest client build — every setting
-/// whose change must produce a different client. On a config apply the prior client is reused (for
-/// its warm connection pool) ONLY when this snapshot is UNCHANGED; if any field here changed, the
-/// client is REBUILT so the new setting actually takes effect (a reused client would silently pin
-/// the old timeout / pool sizing / protocol posture until a full process restart). Every OTHER
-/// input to the builder (`connect_timeout`, `tcp_keepalive`, `tcp_nodelay`, the h2 keep-alive
-/// timers, and the `redirect: none` SSRF posture) is a compile-time constant, so this snapshot is
-/// exhaustive over the client-affecting configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UpstreamClientSettings {
-    /// Overall streaming request timeout (`limits.upstream_request_timeout_secs`). Security-relevant:
-    /// a looser timeout is a resource-exhaustion surface, so a change here MUST rebuild.
-    pub upstream_request_timeout_secs: u64,
-    /// Per-host idle keep-alive socket budget (`limits.pool_max_idle_per_host`).
-    pub pool_max_idle_per_host: usize,
-    /// Idle keep-alive lifetime (`limits.pool_idle_timeout_secs`).
-    pub pool_idle_timeout_secs: u64,
-    /// Pin to HTTP/1.1 (`advanced.upstream_http1_only`).
-    pub upstream_http1_only: bool,
-    /// Force cleartext h2 prior-knowledge (`advanced.upstream_h2_prior_knowledge`).
-    pub upstream_h2_prior_knowledge: bool,
-}
-
-impl UpstreamClientSettings {
-    /// Project the client-affecting subset out of the fully-resolved limits.
-    pub fn from_limits(limits: &crate::config::LimitsResolved) -> Self {
-        Self {
-            upstream_request_timeout_secs: limits.upstream_request_timeout_secs,
-            pool_max_idle_per_host: limits.pool_max_idle_per_host,
-            pool_idle_timeout_secs: limits.pool_idle_timeout_secs,
-            upstream_http1_only: limits.upstream_http1_only,
-            upstream_h2_prior_knowledge: limits.upstream_h2_prior_knowledge,
-        }
-    }
-}
-
 /// Re-export the neutral companion-slot key DERIVER: a plane's ALWAYS-PRESENT per-generation runtime
 /// object is carried in [`App::plane_slots`] under `runtime_slot_key(plane_key)` — the neutral
 /// `"<key>:runtime"` convention — DISTINCT from the plane's own decl key, under which the
@@ -95,7 +59,7 @@ pub type ContainerRewriteMap =
 pub type PlaneRewriteMap = std::collections::BTreeMap<&'static str, ContainerRewriteMap>;
 
 /// `Clone` is the config-apply enabler: cloning an `App` shares the live-state `Arc`s (store, auth,
-/// governance, client — the things that must SURVIVE a config change) and deep-copies the
+/// governance — the things that must SURVIVE a config change) and deep-copies the
 /// config-derived collections (lanes, pools, hooks, …). So `apply` builds the next snapshot as
 /// `let mut next = (*current).clone(); /* mutate config-derived fields */` and `AppHandle::swap`s it,
 /// while in-flight requests keep serving on the old snapshot and the SAME breaker/latency state.
@@ -155,10 +119,6 @@ pub struct App {
         &'static str,
         std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
     >,
-    /// The client-affecting resolved-limits snapshot THIS `client` was built from. Carried so the
-    /// next config apply can tell whether reusing `client` (warm pool) is safe: reuse only when this
-    /// is unchanged, else rebuild so a changed timeout / pool sizing / protocol posture takes effect.
-    pub client_settings: UpstreamClientSettings,
     pub auth: Arc<crate::auth::AuthMiddleware>,
     /// GLOBAL rewrite hooks — the `prompt: rw` gates named in `global_hooks`, resolved to their
     /// transports and sorted by ascending `priority` (the transform-chain order). Fired before
