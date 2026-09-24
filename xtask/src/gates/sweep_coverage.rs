@@ -29,7 +29,7 @@
 //! with `VERDICT` one of `CLEAN`, `FINDING`, `DELETABLE`, `UNREADABLE`. Anything else is not a
 //! verdict, and this gate says so rather than counting it.
 //!
-//! # The five rows, and the NO each one can produce
+//! # The seven rows, and the NO each one can produce
 //!
 //! | row | goes red when |
 //! |---|---|
@@ -38,6 +38,11 @@
 //! | `no-phantoms` | a verdict line names a file that is not in the tree |
 //! | `verdicts-legal` | a verdict line carries a word that is not one of the four |
 //! | `disjoint` | two slices both claim the same file — the partition stopped being a partition |
+//! | `reachability-axis` | a tracked `.rs` file carries no verdict in the prior reachability sweep, or the population is empty |
+//! | `compiles-and-tracked` | an untracked `.rs` file is declared by a `mod` or `#[path]` statement — it compiles here and not on a clean checkout, so on a fresh clone no gate runs at all |
+//!
+//! The table is the gate's [`Gate::owed`] set, row for row; a unit test holds the two equal so a
+//! row added to one cannot be missing from the other.
 //!
 //! The `denominator` row deserves its own note. Every glob in `DENOMINATOR_GLOBS` has bitten
 //! somebody in this repository: unquoted `--include=*.rs` is eaten by zsh and dies with no
@@ -845,6 +850,22 @@ mod tests {
             ghost_site("crates/a/src/a2a/stray.rs", &read, &declarers),
             None
         );
+    }
+
+    /// ITEM 234: THE HEADER TABLE NAMES EVERY OWED ROW. It listed five of seven, and one of the two
+    /// it left out is the highest-severity check in the file.
+    #[test]
+    fn the_header_table_names_every_owed_row() {
+        let src = include_str!("sweep_coverage.rs");
+        let header: Vec<&str> = src.lines().take_while(|l| l.starts_with("//!")).collect();
+        for id in SweepCoverageGate.owed() {
+            let short = id.trim_start_matches("sweep-coverage:");
+            let cell = format!("//! | `{short}` |");
+            assert!(
+                header.iter().any(|l| l.starts_with(&cell)),
+                "the module header's row table does not name `{short}`"
+            );
+        }
     }
 
     /// ITEM 225, ON THE REAL TREE: the row's population is the same set a direct `ls-files '*.rs'`
