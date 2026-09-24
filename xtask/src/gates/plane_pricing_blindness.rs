@@ -685,6 +685,30 @@ fn crate_of(rel: &str) -> Option<String> {
     }
 }
 
+/// Does this production line BUILD a meter class — `MeterClassDecl {` — rather than merely name the
+/// type?
+///
+/// THE TYPE NAME IS NOT A DECLARATION (item 217). The row used to be satisfied by the string
+/// `MeterClassDecl` on any production line, and every plane's `meta.rs` names it in a bare `use`
+/// line. So `const METER_CLASSES: &[MeterClassDecl] = &[];` — which compiles, keeps the import
+/// used and declares ZERO classes — passed, and a plane that meters nothing read as a plane that
+/// declares its classes: the exact "gate measuring nothing" this row exists to refuse. A class is
+/// declared when one is CONSTRUCTED, which is the struct literal, spelled with any whitespace
+/// before its brace. Read over blanked code, so a doc line or a string that shows the shape is not
+/// a declaration either.
+fn constructs_meter_class(code: &str) -> bool {
+    code.match_indices(DECLARATION_GRAMMAR).any(|(at, _)| {
+        let before_ok = code[..at]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
+        before_ok
+            && code[at + DECLARATION_GRAMMAR.len()..]
+                .trim_start()
+                .starts_with('{')
+    })
+}
+
 /// Which of [`DECLARING_PLANES`] still declares at least one meter class.
 fn declarations(cx: &Ctx) -> Result<Vec<String>, String> {
     let mut missing = Vec::new();
@@ -692,10 +716,18 @@ fn declarations(cx: &Ctx) -> Result<Vec<String>, String> {
         let root = format!("crates/{plane}/src");
         let found = match cx.walk(&WalkSpec::new([root.clone()]).ext("rs")) {
             Ok(files) => files.iter().any(|f| {
-                !is_test_file(&f.rel_str())
-                    && scan::production_lines(&f.text)
-                        .iter()
-                        .any(|(_, l)| l.contains(DECLARATION_GRAMMAR))
+                if is_test_file(&f.rel_str()) {
+                    return false;
+                }
+                let production: BTreeSet<usize> = scan::production_lines(&f.text)
+                    .into_iter()
+                    .map(|(n, _)| n)
+                    .collect();
+                let mut lex = scan::LexState::default();
+                f.text.lines().enumerate().any(|(idx, raw)| {
+                    let code = scan::blank_code(raw, &mut lex);
+                    production.contains(&(idx + 1)) && constructs_meter_class(&code)
+                })
             }),
             Err(_) => false,
         };
@@ -1186,6 +1218,7 @@ impl Gate for PlanePricingBlindnessGate {
             Overlay::new(),
         ));
         report.push(declaration_floor_bites(self, cx, FIX));
+        report.push(empty_declaration_bites(self, cx, FIX));
 
         // THE SCAN FLOOR: a `crates/` that holds no Rust is refused, never scanned as zero findings.
         report.push(prove_rows_red_at(
@@ -1474,6 +1507,50 @@ fn declaration_floor_bites(gate: &PlanePricingBlindnessGate, cx: &Ctx, fixture: 
             Expect::Red {
                 naming: vec!["busbar-plane-llm".to_string()],
             }
+        } else {
+            Expect::Green
+        },
+    }
+}
+
+/// ITEM 217: NAMING THE TYPE IS NOT DECLARING A CLASS. The fixture plane keeps its `use` of
+/// `MeterClassDecl` and its `METER_CLASSES` const, with the array EMPTIED — it compiles, it keeps
+/// the import used, and it declares nothing. The row must go RED.
+fn empty_declaration_bites(gate: &PlanePricingBlindnessGate, cx: &Ctx, fixture: &str) -> Case {
+    let covers = vec![ROW_DECLARATION.to_string()];
+    let name = "a plane whose meter-class list is EMPTY, with the type still imported, reds the \
+                declaration floor"
+        .to_string();
+    let naming = vec!["busbar-plane-llm".to_string()];
+    let Ok(fcx) = Ctx::at(cx.abs(fixture), cx.scratch().to_path_buf()) else {
+        return Case {
+            name,
+            covers,
+            expected: Expect::Red { naming },
+            got: Expect::Skipped,
+        };
+    };
+    let mut ov = Overlay::new();
+    ov.set(
+        "crates/busbar-plane-llm/src/meta.rs",
+        "use busbar_contract::{ClassDirection, MeterClassDecl, MeterClassId};\n\
+         const METER_CLASSES: &[MeterClassDecl] = &[];\n\
+         pub const OPS: &[u8] = &[];\n",
+    );
+    let verdict = execute(gate, &fcx.with_overlay(ov));
+    let red = verdict
+        .rows
+        .iter()
+        .find(|r| r.id == ROW_DECLARATION)
+        .is_some_and(|r| r.status != Status::Pass && r.detail.contains("busbar-plane-llm"));
+    Case {
+        name,
+        covers,
+        expected: Expect::Red {
+            naming: naming.clone(),
+        },
+        got: if red {
+            Expect::Red { naming }
         } else {
             Expect::Green
         },
