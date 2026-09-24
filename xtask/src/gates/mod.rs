@@ -189,16 +189,15 @@ pub const REPORT_ONLY: &[Posture] = &[
     Posture {
         name: "qa-names",
         why:
-            "RED ON ONE NAMED ROW, AND NOTHING ELSE. This entry used to say the list was empty and \
-              the gate green outright; the gate was red on this tree the whole time, so the \
-              blocking `cargo xtask gate qa-names --posture` step in ci.yml exited 1 on a tree \
-              nobody had touched (item 176). The one red is `qa-names:path-names-a-live-path`, \
-              about xtask/src/audit.rs's `REGISTER_REL = qa/audit-ledger.json`, a register the \
-              tree no longer has -- carried on QA_NAMES_STANDING_REDS with its drain written \
-              there. Every OTHER row of this gate is scored like any gate's: a new dead name, a \
+            "GREEN, AND HELD THERE BY NAME. This entry once said the list was empty and the gate \
+              green outright while the gate was red, so the blocking `cargo xtask gate qa-names \
+              --posture` step in ci.yml exited 1 on a tree nobody had touched (item 176). Its one \
+              red, `qa-names:path-names-a-live-path` on xtask/src/audit.rs's `REGISTER_REL`, is \
+              drained by a written declaration beside the const and QA_NAMES_STANDING_REDS is \
+              empty again. Every row of this gate is scored like any gate's: a new dead name, a \
               kind that names no key, a scan that collapsed or a stale declaration reds `--all` \
-              and `--posture` alike, and the named row going green reds them too until it is \
-              struck. `posture_tests::the_qa_names_posture_holds_on_the_tree` runs the real gate \
+              and `--posture` alike, and a name added to the list that is not red is STALE and \
+              reds them too. `posture_tests::the_qa_names_posture_holds_on_the_tree` runs the real gate \
               and holds this entry to what it says.",
         excuse: Excused::OnlyRows(StandingReds {
             rows: QA_NAMES_STANDING_REDS,
@@ -283,13 +282,11 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
 /// that has gone green is STALE and is scored too, so the list cannot outlive its facts and cannot
 /// quietly become a blanket.
 pub const QA_NAMES_STANDING_REDS: &[&str] = &[
-    // RE-OPENED 2026-09-24 (item 176): the list below was declared drained while the gate was red.
-    // `xtask/src/audit.rs:49` `pub const REGISTER_REL = "qa/audit-ledger.json"` names a register
-    // this tree no longer has (`ls qa/audit*` matches nothing; the audit-register readers were
-    // repointed in 2a0a832ff and this const was not). Drain: the owner of xtask/src/audit.rs
-    // repoints or strikes REGISTER_REL, and strikes this name in the same commit -- the STALE
-    // check reds `--posture` until they do.
-    "qa-names:path-names-a-live-path",
+    // DRAINED 2026-09-24 (item 176, re-opened the same day): `qa-names:path-names-a-live-path`
+    // stood here for `xtask/src/audit.rs`'s `REGISTER_REL = "qa/audit-ledger.json"`. The register
+    // was deleted in 647f2fae9 while `cargo xtask ledger` was kept on purpose, so the const is the
+    // DEFAULT home a fresh register is written to -- not moved, not obsolete -- and it now carries
+    // a `// qa-names:` declaration beside it saying so, which reds the day the file exists again.
     // HISTORY. It was EMPTIED 2026-09-22 as the drain below finished -- but not the whole drain.
     //
     // It held three row ids covering twenty-five dead names in `qa/*.toml`. Each was decided by the

@@ -1445,11 +1445,18 @@ const PLANTED_GONE_FILE: &str = "qa/deleted-by-this-fixture.toml";
 const PLANTED_REASON: &str = "planted by this gate's own self-test, which is a reason of its own";
 
 /// Where the Rust arm's plants live: under the covered Rust root, reached by no `mod`, and present
-/// only in an [`Overlay`]. It is not path-shaped as written (`xtask` is a directory at the repo
-/// root, so it WOULD be — and the file it names is not there, which is the point), so it carries
-/// its own declaration below.
-// qa-names: xtask/src/zzz_qa_names_planted.rs -- xtask/src/gates/qa_names.rs -- the Rust arm's overlay-only plant file; it exists for the length of one verdict and a spelling that resolved would leave a plant behind in the tree
-const PLANTED_RS_FILE: &str = "xtask/src/zzz_qa_names_planted.rs";
+/// only in an [`Overlay`]. ASSEMBLED, for the reason [`PLANTED_UNDER`] gives and one more: spelled
+/// whole it is path-shaped and names a file that is not there, so it needed a declaration -- and
+/// every Rust-arm plant WRITES that file into its overlay, which made the declaration "needless"
+/// under the plant and reddened `declaration-names-a-live-name` beside the row the plant was
+/// aimed at. A plant that reddens a second row is not a proof of the first. The file name alone
+/// carries no `/`, so it is no name, and nothing needs excusing.
+const PLANTED_RS_FILE_NAME: &str = "zzz_qa_names_planted.rs";
+
+/// The overlay-only plant file under [`XTASK_ROOT`], assembled rather than spelled.
+fn planted_rs_file() -> String {
+    format!("{XTASK_ROOT}/{PLANTED_RS_FILE_NAME}")
+}
 
 /// The two dead subjects the Rust arm plants, in halves, for the reason [`PLANTED_UNDER`] gives.
 const PLANTED_RS_ROOT_TAIL: &str = "busbar-selftest-no-such-rust-root/src";
@@ -1472,7 +1479,7 @@ fn planted_rs_glob() -> String {
 /// One overlay carrying one planted file under the covered Rust root.
 fn planted_rs(body: String) -> Overlay {
     let mut ov = Overlay::new();
-    ov.set(PLANTED_RS_FILE, body);
+    ov.set(&planted_rs_file(), body);
     ov
 }
 
@@ -1673,6 +1680,13 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
     // THE SCAN THAT MATCHED NOTHING. Every covered file is still THERE and still walked, and the
     // kind table is still readable — so every other rule passes, vacuously, which is exactly what a
     // classifier whose token rule stopped matching reports.
+    //
+    // THE TOML HALF ONLY. Blanking the Rust files as well also empties the Rust half, which reds
+    // `xtask-const-floor` beside this row -- correctly, and a second case already owns that row.
+    // With the gates' constants left in place the combined floor is judged on the Rust half
+    // alone, which sits above XTASK_NAME_FLOOR and below NAME_FLOOR; the day it clears NAME_FLOOR
+    // on its own this case stops reddening its row and
+    // `each_plant_reddens_its_own_row_and_nothing_that_was_green` says so.
     let empty_scan = covered(cx).ok().and_then(|files| {
         let (_, config) = files.iter().find(|(r, _)| r == CONFIG_REL)?;
         let doc = toml_doc::parse_str(config).ok()?;
@@ -1686,7 +1700,7 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
             minimal.push_str(&format!("{k} = 0\n"));
         }
         let mut ov = Overlay::new();
-        for (rel, _) in &files {
+        for (rel, _) in files.iter().filter(|(r, _)| !is_rust(r)) {
             ov.set(
                 rel,
                 if rel == CONFIG_REL {
@@ -1729,6 +1743,11 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
     // THE RUST SCAN THAT READ NOTHING. Every `qa/*.toml` is untouched, so `name-floor` clears its
     // own floor on the TOML half alone — which is the entire reason the Rust half has a floor of
     // its own, and this case is what says so.
+    //
+    // ONE FILE STAYS, AND IT NAMES NOTHING. `Ctx::walk` refuses a walk that yields zero files, so
+    // removing every file sent `covered()` down the UNIVERSE arm and reddened all ten rows, none of
+    // them the floor this case is about. A reader that still opens a file and finds no constant in
+    // it is the state the floor exists for; a reader with no file at all is `universe-read`'s.
     let rs_empty = cx
         .walk(&WalkSpec::new([XTASK_ROOT]).ext(XTASK_EXT))
         .ok()
@@ -1737,6 +1756,11 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
             for f in &files {
                 ov.remove(&f.rel);
             }
+            ov.set(
+                planted_rs_file(),
+                "//! Planted by qa-names' own self-test. No `mod` reaches this file, and it \
+                 declares no constant.\n",
+            );
             ov
         });
 
