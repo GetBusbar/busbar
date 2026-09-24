@@ -63,7 +63,7 @@ fn a_wall_clock_that_steps_backwards_does_not_reorder_the_audit_records() {
     let chain = deployment.resolve(&who, Some("a2a-team"));
     let record = |now| {
         deployment.calling_at(chain.as_ref(), now).audit_inputs(
-            &a2a_ctx(),
+            &unit_ctx(),
             Outcome::Completed,
             Some(&who),
         )
@@ -110,7 +110,7 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
     let record = || {
         deployment
             .calling_at(chain.as_ref(), ONE_SECOND)
-            .audit_inputs(&a2a_ctx(), Outcome::Completed, Some(&who))
+            .audit_inputs(&unit_ctx(), Outcome::Completed, Some(&who))
     };
 
     let first = record();
@@ -728,7 +728,7 @@ fn every_ending_has_an_audited_spelling() {
 
 /// A unit whose answer arrives as a run of events is refused at decode (item 253).
 ///
-/// The draft's `streaming` flag was read by nothing but its `Debug`: every step that prices the
+/// The draft's run-of-events flag was read by nothing but its `Debug`: every step that prices the
 /// unit reads `response_bytes` as one reply, so a streamed answer would have been metered as its
 /// first event. The step that reads the shape now decides it, and the same draft answered once
 /// still proceeds — the refusal is the flag, not the operation.
@@ -738,14 +738,14 @@ fn a_streamed_answer_is_refused_at_decode_and_a_single_reply_proceeds() {
 
     let deployment = deployment(one_call_at_a_time("team"));
     let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
-    for (streaming, proceeds) in [(false, true), (true, false)] {
+    for (in_events, proceeds) in [(false, true), (true, false)] {
         let mut shaped = draft(ops::OP_MESSAGE_SEND);
-        shaped.streaming = streaming;
+        shaped.in_events = in_events;
         let unit = deployment.calling_draft_at(None, 1_700_000_000, shaped);
         let answered = unit
-            .decode(&busbar_contract::caps::Pass::mint(&seal), &a2a_ctx())
+            .decode(&busbar_contract::caps::Pass::mint(&seal), &unit_ctx())
             .into_result(&seal);
-        assert_eq!(answered.is_ok(), proceeds, "streaming = {streaming}");
+        assert_eq!(answered.is_ok(), proceeds, "in_events = {in_events}");
         if let Err(refusal) = answered {
             assert_eq!(refusal.reason(), ReasonCode::DecodeFailed);
         }
@@ -1093,7 +1093,7 @@ fn draft(op: OpClassId) -> A2aDraft {
         request_bytes: 128,
         response_bytes: 256,
         finish: FinishClass::Complete,
-        streaming: false,
+        in_events: false,
         arrival: ArrivalRecord {
             source: "127.0.0.1:1".to_string(),
             port: 8080,
@@ -1817,10 +1817,10 @@ fn deployment_on_history(
 
 /// The same context, under a named unit key — the fact the audit record is supposed to file a
 /// row under, and the one a fixture varies to find out whether it does.
-fn a2a_ctx_keyed(key: u64) -> UnitCtx {
+fn unit_ctx_keyed(key: u64) -> UnitCtx {
     UnitCtx {
         key: busbar_contract::caps::UnitKey::new(key),
-        ..a2a_ctx()
+        ..unit_ctx()
     }
 }
 
@@ -1834,7 +1834,7 @@ fn accrued_by_route(unit: &A2aUnits<'_, busbar_kernel_budget::InMemoryCells>) ->
     let _ = Units::route(
         unit,
         &busbar_contract::caps::Pass::mint(&seal),
-        &a2a_ctx(),
+        &unit_ctx(),
         &meter,
         &[],
     );
@@ -1966,11 +1966,11 @@ impl Deployment {
     }
 }
 
-fn a2a_ctx() -> UnitCtx {
-    a2a_ctx_from(busbar_contract::caps::OriginKind::Client)
+fn unit_ctx() -> UnitCtx {
+    unit_ctx_from(busbar_contract::caps::OriginKind::Client)
 }
 
-fn a2a_ctx_from(origin: busbar_contract::caps::OriginKind) -> UnitCtx {
+fn unit_ctx_from(origin: busbar_contract::caps::OriginKind) -> UnitCtx {
     UnitCtx {
         key: busbar_contract::caps::UnitKey::new(1),
         origin,
@@ -2007,7 +2007,7 @@ fn ask_the_door_as(
         unit,
         &busbar_contract::caps::Pass::mint(&seal),
         &busbar_contract::caps::Grant::<busbar_contract::caps::Admittance>::mint(&seal),
-        &a2a_ctx_from(origin),
+        &unit_ctx_from(origin),
         who,
         &[],
         &slip,
@@ -2025,7 +2025,7 @@ fn ask_for_scope(
     let decision = Units::approve(
         unit,
         &busbar_contract::caps::Pass::mint(&seal),
-        &a2a_ctx(),
+        &unit_ctx(),
         who,
         &[],
     );
@@ -2424,7 +2424,7 @@ fn the_provenance_stamp_names_the_card_in_force_when_the_unit_arrived() {
     let stamped = |now_secs: u64| {
         deployment
             .calling_at(chain.as_ref(), now_secs)
-            .audit_inputs(&a2a_ctx(), Outcome::Completed, Some(&who))
+            .audit_inputs(&unit_ctx(), Outcome::Completed, Some(&who))
             .usage
             .rate_card_version
     };
@@ -2466,7 +2466,7 @@ fn two_a2a_units_are_filed_under_two_different_keys() {
     let filed_under = |key: u64| {
         deployment
             .calling(chain.as_ref())
-            .audit_inputs(&a2a_ctx_keyed(key), Outcome::Completed, Some(&who))
+            .audit_inputs(&unit_ctx_keyed(key), Outcome::Completed, Some(&who))
             .what
             .unit_key
     };

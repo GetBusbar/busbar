@@ -3,6 +3,9 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
+// The node and its unit under neutral names: this file is about what the composition root does
+// with them, and the plane is the module these tests sit in.
+use super::{LlmNode as Node, LlmUnit as NodeUnit};
 
 use axum::body::Bytes;
 use axum::http::HeaderMap;
@@ -508,7 +511,7 @@ async fn leg_loop_billed(fixture: Fixture) -> Observed {
 
 /// One request, through the real loop, awaited on this task — exactly as the mount drives it.
 async fn drive(rig: &Rig, fixture: Fixture) -> Response {
-    let node = LlmNode::new();
+    let node = Node::new();
     let arrival = WalkArrival {
         host: rig.host(),
         gov: rig.gov(),
@@ -561,7 +564,7 @@ fn one_arrival_reading_spells_both_the_figures_the_loop_asks_for() {
 /// second field is a copy of the first and this ordering does not exist.
 #[test]
 fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
-    let node = LlmNode::new();
+    let node = Node::new();
     let taken: Vec<Arrived> = (0..4).map(|_| node.arrived()).collect();
 
     for pair in taken.windows(2) {
@@ -668,7 +671,7 @@ async fn a_unit_arriving_at_a_window_boundary_bills_in_the_window_it_arrived_in(
         "and one second later is a different bucket, which is what makes this a straddle"
     );
 
-    let node = LlmNode::new();
+    let node = Node::new();
     let arrival = WalkArrival {
         host: rig.host(),
         gov: rig.gov(),
@@ -967,7 +970,7 @@ fn the_cached_price_rides_the_posting_and_is_never_read_back_for_money() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
     let rig = rig(Fixture::BufferedOk).await;
-    let node = LlmNode::new();
+    let node = Node::new();
     let ended = drive_to_end(&rig, &node, Fixture::BufferedOk, rig.gov(), NATIVE_SEATS).await;
     rig.server.shutdown().await;
 
@@ -1027,7 +1030,7 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_provider_origin_unit_posts_no_flat_fee() {
     let rig = rig(Fixture::BufferedOk).await;
-    let node = LlmNode::new();
+    let node = Node::new();
     let (unit, _ended) =
         drive_keeping_the_unit(&rig, &node, Fixture::BufferedOk, rig.gov(), NATIVE_SEATS).await;
     rig.server.shutdown().await;
@@ -1067,7 +1070,7 @@ async fn a_provider_origin_unit_posts_no_flat_fee() {
 /// it. A drive that always used the rig's key could not tell the step's answer from the walk's.
 async fn drive_to_end<'n>(
     rig: &Rig,
-    node: &'n LlmNode,
+    node: &'n Node,
     fixture: Fixture,
     gov: busbar_api::PlaneRequestCtx,
     seats: &'n [&'n (dyn approve::VetoSeat + Sync)],
@@ -1084,11 +1087,11 @@ async fn drive_to_end<'n>(
 /// drive above; the only difference is what is returned.
 async fn drive_keeping_the_unit<'n>(
     rig: &Rig,
-    node: &'n LlmNode,
+    node: &'n Node,
     fixture: Fixture,
     gov: busbar_api::PlaneRequestCtx,
     seats: &'n [&'n (dyn approve::VetoSeat + Sync)],
-) -> (LlmUnit<'n>, Ended) {
+) -> (NodeUnit<'n>, Ended) {
     let arrival = WalkArrival {
         host: rig.host(),
         gov,
@@ -1102,7 +1105,7 @@ async fn drive_keeping_the_unit<'n>(
     let key = UnitKey::new(node.next_key.fetch_add(1, Ordering::Relaxed));
     let principal = authenticate::principal_id(&arrival.gov);
     let meter = Arc::new(AccrualMeter::new());
-    let unit = LlmUnit {
+    let unit = NodeUnit {
         node,
         seats,
         meter: Arc::clone(&meter),
@@ -1463,7 +1466,7 @@ async fn leg_legacy_path(fixture: Fixture, proto: &'static str) -> Observed {
 /// LEG 2 — the same request through the kernel's loop, with the URL's facts in the unit's carry.
 async fn leg_loop_path(fixture: Fixture, proto: &'static str) -> Observed {
     let rig = rig(fixture).await;
-    let node = LlmNode::new();
+    let node = Node::new();
     let facts = path_facts(proto, fixture);
     let arrival = WalkArrival {
         host: rig.host(),
@@ -1609,7 +1612,7 @@ async fn an_empty_url_model_ends_where_the_shipped_path_model_entry_point_ends_i
         };
         let looped = {
             let rig = rig(Fixture::UnknownModel).await;
-            let node = LlmNode::new();
+            let node = Node::new();
             let arrival = WalkArrival {
                 host: rig.host(),
                 gov: rig.gov(),
@@ -1713,7 +1716,7 @@ fn the_switched_table_names_every_dialect_the_plane_names() {
 /// leak per request whatever it was called.
 #[test]
 fn the_nodes_interner_leaks_a_lane_name_once() {
-    let node = LlmNode::new();
+    let node = Node::new();
     let lanes = node.lanes();
     let first = lanes
         .lock()
@@ -1737,7 +1740,7 @@ fn the_nodes_interner_leaks_a_lane_name_once() {
 /// per distinct name and does not grow with how often the name is asked for.
 #[test]
 fn a_lane_name_reaches_the_interner_once_however_often_it_is_resolved() {
-    let node = LlmNode::new();
+    let node = Node::new();
     let mut names = node
         .lane_names
         .lock()
@@ -1863,7 +1866,7 @@ async fn leg_loop_decode(
     body: Bytes,
 ) -> Observed {
     let rig = rig(Fixture::BufferedOk).await;
-    let node = LlmNode::new();
+    let node = Node::new();
     let arrival = WalkArrival {
         host: rig.host(),
         gov: rig.gov(),
@@ -2028,7 +2031,7 @@ async fn admit(rig: &Rig, cred: Credential) -> Result<busbar_api::PlaneRequestCt
 /// that answer — the walk keeps its own context for the money and the record — so this is the
 /// one observation that is about step 2 and about nothing else.
 async fn principal_the_loop_settled_on(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> String {
-    let node = LlmNode::new();
+    let node = Node::new();
     let ended = drive_to_end(rig, &node, Fixture::BufferedOk, gov, NATIVE_SEATS).await;
     let Ended::Settled { end, .. } = ended else {
         panic!("the exit path settles a delivered unit");
@@ -2061,7 +2064,7 @@ async fn leg_legacy_as(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> Observed 
 
 /// LEG 2 — the loop, driven with the same context the door produced.
 async fn leg_loop_as(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> Observed {
-    let node = LlmNode::new();
+    let node = Node::new();
     let arrival = WalkArrival {
         host: rig.host(),
         gov,
@@ -2257,7 +2260,7 @@ impl approve::VetoSeat for StopsNothing {
 /// One request through the real loop with a named seat list, exactly as the mount drives it with
 /// its own.
 async fn leg_loop_seated(rig: &Rig, seats: &[&(dyn approve::VetoSeat + Sync)]) -> Observed {
-    let node = LlmNode::new();
+    let node = Node::new();
     let arrival = WalkArrival {
         host: rig.host(),
         gov: rig.gov(),
@@ -2396,7 +2399,7 @@ async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_cha
 /// A NODE PER REQUEST, exactly as [`drive`] builds one, so the figure is this unit's and not a
 /// running total the order of the tests could change.
 async fn drive_counting(rig: &Rig, fixture: Fixture) -> (Response, Option<u64>) {
-    let node = LlmNode::new();
+    let node = Node::new();
     let arrival = WalkArrival {
         host: rig.host(),
         gov: rig.gov(),
@@ -3193,7 +3196,7 @@ fn a_settled_figure_past_the_record_refuses_and_is_never_pinned() {
 /// slot back.
 #[test]
 fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
-    let node = LlmNode::new();
+    let node = Node::new();
     let book = Arc::new(Mutex::new(
         crate::root::durability::build(
             &crate::root::durability::DurabilityConfig { data_dir: None },
@@ -3792,7 +3795,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
 
     // 2,000 micro-units per search unit and a 3-unit fee, over the serving lane.
     let history = rerank_history_on(RERANK_LANE, 3, Some(2_000_000));
-    let node = LlmNode::new();
+    let node = Node::new();
     let book = crate::root::durability::node_book();
     node.bind_book(Arc::clone(&book.durability));
 
@@ -3816,7 +3819,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     let key_n = UnitKey::new(node.next_key.fetch_add(1, Ordering::Relaxed));
     let principal = authenticate::principal_id(&arrival.gov);
     let meter = Arc::new(AccrualMeter::new());
-    let unit = LlmUnit {
+    let unit = NodeUnit {
         node: &node,
         seats: NATIVE_SEATS,
         meter: Arc::clone(&meter),

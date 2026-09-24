@@ -321,7 +321,7 @@ impl std::fmt::Debug for LlmNode {
 
 impl Default for LlmNode {
     fn default() -> Self {
-        LlmNode::new()
+        Self::new()
     }
 }
 
@@ -331,7 +331,7 @@ impl LlmNode {
     pub fn new() -> Self {
         let lanes = Arc::new(Mutex::new(crate::root::kernel::new_registration()));
         let kernel = crate::root::kernel::new_kernel();
-        LlmNode {
+        Self {
             durability_token: kernel.durability_token(),
             usage_token: kernel.usage_token(),
             book: std::sync::OnceLock::new(),

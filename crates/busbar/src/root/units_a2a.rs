@@ -538,7 +538,7 @@ pub struct A2aDraft {
     pub finish: FinishClass,
     /// Whether the answer arrives as a run of events rather than one reply. Read at decode, which
     /// refuses such a unit: nothing after it can price an answer that is still arriving.
-    pub streaming: bool,
+    pub in_events: bool,
     /// What the transport recorded about the arrival.
     pub arrival: ArrivalRecord,
 }
@@ -584,7 +584,7 @@ impl std::fmt::Debug for A2aDraft {
             .field("request_bytes", &self.request_bytes)
             .field("response_bytes", &self.response_bytes)
             .field("finish", &self.finish)
-            .field("streaming", &self.streaming)
+            .field("in_events", &self.in_events)
             .field("arrival", &self.arrival)
             .finish()
     }
@@ -1287,7 +1287,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         // unit reaching them would be metered and settled as though its first event were its
         // whole cost. The step that knows the shape is the one that decides it.
         match self.draft.op {
-            Some(_) if self.draft.streaming => {
+            Some(_) if self.draft.in_events => {
                 Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed))
             }
             Some(op) => Decision::proceed(token, op),

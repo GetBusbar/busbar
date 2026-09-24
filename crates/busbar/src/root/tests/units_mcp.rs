@@ -470,12 +470,17 @@ fn an_open_unit_is_refused_at_decode_rather_than_read_as_a_one_shot() {
         unix_secs: 1_700_000_000,
         monotonic_nanos: 0,
     };
-    let plane = McpPlane::EMPTY;
+    // The plane with nothing configured, by its `Default`.
+    let plane = Default::default();
 
     let open = r#"{"jsonrpc":"2.0","id":9,"method":"subscriptions/listen","params":{}}"#;
     let frames = one_frame(open);
-    let mut cursor = FrameCursor::new(&frames);
     let ctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
+    let mut cursor = FrameCursor::new(&frames);
+    let read = read_ingress(&plane, &mut cursor, &ctx);
+    assert_eq!(read, Err(ReasonCode::DecodeFailed), "an open unit was read");
+
+    let mut cursor = FrameCursor::new(&frames);
     assert!(
         matches!(
             plane.decode_ingress(&mut cursor, None, &ctx),
@@ -483,10 +488,6 @@ fn an_open_unit_is_refused_at_decode_rather_than_read_as_a_one_shot() {
         ),
         "the plane itself reads this method as an open unit"
     );
-
-    let mut cursor = FrameCursor::new(&frames);
-    let read = read_ingress(&plane, &mut cursor, &ctx);
-    assert_eq!(read, Err(ReasonCode::DecodeFailed), "an open unit was read");
     let refusal = decode(&read, &Pass::mint(&seal))
         .into_result(&seal)
         .expect_err("an open unit is refused at decode");
