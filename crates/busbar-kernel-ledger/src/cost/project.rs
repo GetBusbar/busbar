@@ -29,7 +29,7 @@ use crate::cost::{whole, MoneyError, Tally, STANDARD_TIER_BP};
 /// - overflow: `Err(Overflow)` — a refusal, never a pinned bill (item 28).
 ///
 /// One truncation, at the very end: two lanes each worth half a minor unit make a whole one.
-pub fn derive_spend_minor<'a>(
+pub fn derive_spend_cents<'a>(
     card: &RateCard,
     lanes: impl Iterator<Item = (&'a str, &'a [UsageLine])>,
     fee_requests: u64,
@@ -40,18 +40,7 @@ pub fn derive_spend_minor<'a>(
         .minor_i64()
 }
 
-/// The 1.5.5 spelling of [`derive_spend_minor`] — the same function, kept under the name every
-/// 1.5.5 caller used.
-pub fn derive_spend_cents<'a>(
-    card: &RateCard,
-    lanes: impl Iterator<Item = (&'a str, &'a [UsageLine])>,
-    fee_requests: u64,
-    include_request_fee: bool,
-) -> Result<i64, MoneyError> {
-    derive_spend_minor(card, lanes, fee_requests, include_request_fee)
-}
-
-/// As [`derive_spend_minor`] but in micro-units, for the finer projections.
+/// As [`derive_spend_cents`] but in micro-units, for the finer projections.
 ///
 /// The fee is a minor unit lifted by the one scale ([`crate::cost::MICROS_PER_CENT`] micro-units
 /// each), inside the one function, so a deployment's figures are unchanged to the byte.

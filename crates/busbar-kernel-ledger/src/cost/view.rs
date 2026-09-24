@@ -72,6 +72,12 @@ use crate::cost::history::{History, HistorySeq, HistoryView};
 use crate::cost::posting::{checked_apply_tier, STANDARD_TIER_BP};
 use crate::cost::{NANOS_PER_CENT, NANOS_PER_MICRO};
 
+/// Joins a plane key to its lane: `"<plane>\u{1f}<lane>"` is a lane priced by THAT plane's own card
+/// (#42 "scoped per plane", #47). An unqualified lane is the flat card's — the llm (`pools`) plane's,
+/// the only card config can author today — so a qualified lane resolves to an ABSENT card and reads 0
+/// until its plane's section can carry one. U+001F is not a character a `models:` key is written with.
+pub const PLANE_LANE_SEP: char = '\u{1f}';
+
 /// The scale every [`Money`] figure is held at: six decimal places, i.e. micro-units (#81).
 ///
 /// A PRECISION, not a currency and not a denomination — money in this tree is unitless (#66).
@@ -466,7 +472,8 @@ impl<'a> Tally<'a> {
     ) -> Result<(), MoneyError> {
         let (card_seq, card) = self.resolve(arrived_ms)?;
 
-        let amount = if card.pricing_enabled() {
+        // Another plane's lane is priced by its own card, never this one (#42/#47): absent, so 0.
+        let amount = if card.pricing_enabled() && !lane.contains(PLANE_LANE_SEP) {
             // A present card that names no entry for the lane REFUSES.
             let rates = card
                 .lane_rates(lane)

@@ -985,6 +985,9 @@ pub use busbar_api::UsageLedger;
 // `UsageLedger` above.
 #[cfg(test)]
 pub use busbar_api::ScopeRef;
+/// The lane qualifier a non-llm plane keys its budget rows with, so the view resolves THAT plane's
+/// card (#42/#47) — keying, not pricing: the plane names its own lane, the ledger crate prices it.
+pub use busbar_kernel_ledger::cost::PLANE_LANE_SEP;
 
 // The metering-bucket time base (`METERING_BUCKET_SECS` + the `metering_bucket` floor fn below) is
 // pure arithmetic — moved to the neutral substrate so a plane crate names it without reaching into

@@ -2638,16 +2638,16 @@ fn charge_round(
 /// The plane's whole money obligation: one raw count, on the class it declares
 /// ([`busbar_plane_mcp::meta::CLASS_TOOL_CALLS`]), appended to the caller's budget chain through the
 /// SAME host `meter_ledger` seam the llm plane ledgers its tokens and a rerank its search units
-/// through. The card is never consulted here (#43): a card pricing the class charges it and a
-/// `budget:` cap trips on it; a present card silent about it REFUSES at the door and on the read
-/// (#42); no card reads it as 0. The write itself is unconditional.
+/// through. The card is never consulted here (#43), and the write is unconditional. The view prices
+/// the row with the MCP plane's own card (the lane is plane-qualified, see below); no `tools`
+/// section can carry a card yet, so MCP billing is OFF and the count reads 0 even beside an llm
+/// card — the row is still there for a count cap and for the day that card exists.
 ///
 /// Called only once the upstream has ANSWERED the round (`Ok` from the leg) — the class is declared
 /// `ClassDirection::Response` because a call that never reached a server is not a call this node
 /// made, so a refused, unreachable or failed leg ledgers nothing (the flat fee `charge_round` took at
 /// admission is untouched by this). Keyed exactly as the admission was: `pool` is the namespaced tool
-/// (so pool-scoped buckets see the same predicate), and so is the model, which is the attribution the
-/// metering series already carries for this traffic.
+/// (so pool-scoped buckets see the same predicate), and the lane is that tool qualified by the plane.
 pub(super) fn ledger_tool_call(
     host: &dyn busbar_kernel::plane_host::EngineHost,
     key: Option<&busbar_api::VirtualKey>,
@@ -2666,12 +2666,20 @@ pub(super) fn ledger_tool_call(
             1,
         )]),
     };
+    // The row's lane is qualified by THIS plane's key, so the view prices it with the MCP plane's own
+    // card (#42 "scoped per plane", #47) — which config cannot author yet, so it reads 0 — and never
+    // with the llm plane's flat card, whose presence says nothing about MCP billing.
+    let lane = format!(
+        "{}{}{namespaced}",
+        crate::PLANE_KEY,
+        busbar_kernel::governance::PLANE_LANE_SEP
+    );
     host.meter_ledger(
         &gov,
         &host.cost(),
         key,
         namespaced,
-        namespaced,
+        &lane,
         &usage,
         host.clock_now_secs(),
     );
