@@ -866,10 +866,14 @@ type IntakeSpans = std::collections::BTreeMap<String, Vec<(usize, usize)>>;
 fn scan_file(rel: &str, text: &str, exempt: &IntakeSpans, offenders: &mut Vec<String>) {
     let spans = exempt.get(rel).map(Vec::as_slice).unwrap_or(&[]);
     let mut in_block = false;
+    let mut lex = scan::LexState::default();
     for (i, raw) in text.lines().enumerate() {
         // Comments stripped, string literals intact — a float in prose about the ban is exempt, a
         // float in code is not.
         let code = scan::strip_comment_line(raw, &mut in_block);
+        // The SAME line with every literal's contents blanked too, for the spellings below: a
+        // version string `"1.0"` is not a float, and `1.0` in code is.
+        let blanked = scan::blank_code(raw, &mut lex);
         let line = i + 1;
         if spans
             .iter()
@@ -882,7 +886,98 @@ fn scan_file(rel: &str, text: &str, exempt: &IntakeSpans, offenders: &mut Vec<St
                 offenders.push(finding(rel, line, token));
             }
         }
+        for spelled in float_spellings(&blanked) {
+            offenders.push(finding(rel, line, &spelled));
+        }
     }
+}
+
+/// EVERY OTHER WAY A FLOAT IS SPELLED ON A LINE (item 213). [`FLOAT_TOKENS`] is a case-sensitive
+/// whole-word match on `f64`/`f32`, and a float does not have to be written that way to be on the
+/// line: `(factor * 1_000_000_000.0) as u128` names no float type and IS float arithmetic, and so
+/// is `let mut acc = 0.0;`. Four spellings, each a real Rust float:
+///
+/// * a FLOAT LITERAL — `1.0`, `1_000.5`, `0.25` (a digit, a dot, a digit; a tuple index `x.0.1`
+///   and a range `0..5` are not);
+/// * an EXPONENT LITERAL — `1e9`, `2.5E-3`, which Rust types as a float with no dot at all;
+/// * a SUFFIXED LITERAL — `0f64`, `1_f32`, `2.5f64`, where the word match misses because the digit
+///   before the `f` is part of the same word;
+/// * a float TYPE NAMED INSIDE AN IDENTIFIER — `SignalValue::F64`, `as_f64`, `to_f32`, where one
+///   `_`-separated segment is `f64`/`f32` in either case. The bare `f64`/`f32` is left to
+///   [`FLOAT_TOKENS`], so one token is never reported twice.
+///
+/// Reads a line whose literals and comments [`scan::blank_code`] has already blanked.
+fn float_spellings(blanked: &str) -> Vec<String> {
+    let chars: Vec<char> = blanked.chars().collect();
+    let wordy = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let prev = i.checked_sub(1).map(|p| chars[p]);
+        if !wordy(c) || prev.is_some_and(wordy) {
+            i += 1;
+            continue;
+        }
+        // A token begins here. A number directly after a `.` is a tuple index or a field, never a
+        // literal, so it is read and skipped as one.
+        let start = i;
+        while i < chars.len() && wordy(chars[i]) {
+            i += 1;
+        }
+        if c.is_ascii_digit() {
+            if prev == Some('.') {
+                continue;
+            }
+            let mut dotted = false;
+            if i + 1 < chars.len() && chars[i] == '.' && chars[i + 1].is_ascii_digit() {
+                dotted = true;
+                i += 1;
+                while i < chars.len() && wordy(chars[i]) {
+                    i += 1;
+                }
+            }
+            // `1e-9` / `1.5E+3`: the sign splits the word, so the exponent is read through it.
+            if i + 1 < chars.len()
+                && matches!(chars[i], '+' | '-')
+                && matches!(chars[i - 1], 'e' | 'E')
+                && chars[i + 1].is_ascii_digit()
+            {
+                i += 1;
+                while i < chars.len() && wordy(chars[i]) {
+                    i += 1;
+                }
+            }
+            let lit: String = chars[start..i].iter().collect();
+            let lower = lit.to_ascii_lowercase();
+            let radix =
+                lower.starts_with("0x") || lower.starts_with("0o") || lower.starts_with("0b");
+            let suffixed = lower.ends_with("f64") || lower.ends_with("f32");
+            let exponent = !radix
+                && lower.char_indices().any(|(k, ch)| {
+                    ch == 'e'
+                        && k > 0
+                        && lower[..k]
+                            .chars()
+                            .all(|d| d.is_ascii_digit() || d == '_' || d == '.')
+                });
+            if (!radix && (dotted || exponent)) || (!radix && suffixed) {
+                out.push(lit);
+            }
+            continue;
+        }
+        let ident: String = chars[start..i].iter().collect();
+        if FLOAT_TOKENS.contains(&ident.as_str()) {
+            continue;
+        }
+        if ident
+            .split('_')
+            .any(|seg| FLOAT_TOKENS.contains(&seg.to_ascii_lowercase().as_str()))
+        {
+            out.push(ident);
+        }
+    }
+    out
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1727,6 +1822,21 @@ impl Gate for NoFloatMoneyGate {
             &[&float_ty],
         ));
 
+        // ITEM 213: A FLOAT THAT NEVER SPELLS ITS TYPE IS FLAGGED. A signal variant, a float
+        // literal and an inferred accumulator — the line names neither type word.
+        report.push(plant(
+            cx,
+            self,
+            "a float spelled as a literal and a signal variant, never as the type word, is flagged",
+            &[ROW_NO_FLOAT],
+            &format!("{LEDGER_SRC}/planted_unspelled_float.rs"),
+            Edit::Create(
+                "pub fn drift(v: Signal) -> u128 {\n    match v { Signal::F64(k) => (k * 1_000_000_000.0) as u128, _ => 0 }\n}\n"
+                    .to_string(),
+            ),
+            &["planted_unspelled_float", "1_000_000_000.0"],
+        ));
+
         // A FLOAT IN A NAMED BINARY MONEY FILE IS FLAGGED.
         report.push(plant(
             cx,
@@ -2529,6 +2639,48 @@ mod tests {
                 files.len(),
                 alone.len()
             ),
+        }
+    }
+
+    /// ITEM 213: A FLOAT NOT SPELLED `f64`/`f32` IS STILL A FLOAT. Every line below is float
+    /// arithmetic or a float type, and none of them carries the bare word the old match needed;
+    /// the control lines below them are integers and must stay clean.
+    #[test]
+    fn a_float_spelled_without_the_type_word_is_a_finding() {
+        let src = "pub fn rate(v: SignalValue) -> u128 {\n\
+                   \x20   match v { SignalValue::F64(factor) => (factor * 1_000_000_000.0) as u128, _ => 0 }\n\
+                   }\n\
+                   pub fn acc() -> u64 { let mut a = 0.0; a += 1.5; a as u64 }\n\
+                   pub fn e() -> u64 { 1e9 as u64 }\n\
+                   pub fn e2() -> u64 { 2.5E-3 as u64 }\n\
+                   pub fn sfx() -> u64 { 0f64 as u64 }\n\
+                   pub fn j(v: &Value) -> u64 { v.as_f64().map(|x| x as u64).unwrap_or(1) }\n\
+                   pub fn ints(t: (u64, (u64, u64))) -> u64 { let _r = 0..5; let _h = 0xE5; let _s = 12usize; let _v = \"1.0\"; t.1.0 + 1_000 + 7u64.max(2) }\n";
+        let mut offenders = Vec::new();
+        scan_file("m.rs", src, &IntakeSpans::new(), &mut offenders);
+        let lines: std::collections::BTreeSet<&str> = offenders
+            .iter()
+            .map(|o| o.split(':').nth(1).unwrap_or_default())
+            .collect();
+        assert_eq!(
+            lines,
+            ["2", "4", "5", "6", "7", "8"].into_iter().collect(),
+            "{offenders:#?}"
+        );
+        for spelled in [
+            "`F64`",
+            "`1_000_000_000.0`",
+            "`0.0`",
+            "`1.5`",
+            "`1e9`",
+            "`2.5E-3`",
+            "`0f64`",
+            "`as_f64`",
+        ] {
+            assert!(
+                offenders.iter().any(|o| o.contains(spelled)),
+                "{spelled} was not named: {offenders:#?}"
+            );
         }
     }
 
