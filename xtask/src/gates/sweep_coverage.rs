@@ -161,7 +161,26 @@ pub fn denominator(cx: &Ctx) -> Result<BTreeSet<String>, String> {
 /// separator rows (`---`) are skipped by shape rather than by position, so a slice that adds a
 /// preamble does not silently lose its first file.
 pub fn claims(cx: &Ctx, denom: &BTreeSet<String>) -> Result<Vec<Claim>, String> {
-    let docs = cx.git_lines(&["ls-files", SWEEP_DIR])?;
+    // THE SUBPROCESS CANNOT SEE THE PLANT.
+    //
+    // `git ls-files` shells out and reads the real filesystem, so a slice document planted into
+    // an Overlay is invisible to it. Taking it as the only source made every falsification case
+    // here INERT: the plant wrote a phantom, a prose verdict and a double claim, the gate saw
+    // none of them, and all three cases came back GREEN where RED was owed. A rule whose only
+    // input is a subprocess is falsifiable in CI and unfalsifiable on the bench — which is the
+    // half that gets run while the rule is being written.
+    //
+    // The tracked set is still the claim (committed evidence is the standard the `swept` row
+    // holds everyone to); the overlay is unioned on top so a plant is reachable.
+    let mut docs: Vec<String> = cx.git_lines(&["ls-files", SWEEP_DIR])?;
+    if let Some(ov) = cx.overlay() {
+        for p in ov.paths() {
+            let rel = p.to_string_lossy().to_string();
+            if rel.starts_with(SWEEP_DIR) && rel.ends_with(".md") && !docs.contains(&rel) {
+                docs.push(rel);
+            }
+        }
+    }
     let mut out = Vec::new();
     for doc in docs {
         let doc = doc.trim();
