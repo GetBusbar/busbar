@@ -388,8 +388,16 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     // (h) REGEN-CLEAN's other arm: a ledger with one binding removed is REFUSED. Without this,
     //     a binding added to Appendix B and never re-derived is absent from everything the strict
     //     form reads — unmapped, unproven, and green.
+    //
+    //     PROVEN FROM A REGEN-CLEAN BASE. The row reads the committed artifacts against Appendix B,
+    //     so a committed ledger that has fallen behind the tree leaves it red before any plant, and
+    //     this case would prove nothing. The base is the fresh derivation laid over both artifacts;
+    //     the plant is that base with one binding removed. The control case above still reads the
+    //     committed ledger and stays red until it is regenerated.
+    let base = regen_clean_base(cx);
+    let base_cx = cx.with_overlay(base.clone());
     let mut ov = Overlay::new();
-    if let Ok(text) = cx.read(build::OUT_JSON_REL) {
+    if let Ok(text) = base_cx.read(build::OUT_JSON_REL) {
         if let Ok(mut doc) = json::parse(&text) {
             if let Some(J::Arr(bs)) = doc.get("bindings").cloned() {
                 doc.set("bindings", J::Arr(bs[1..].to_vec()));
@@ -398,11 +406,11 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         }
     }
     r.push(prove_red(
-        cx,
+        &base_cx,
         gate,
         "a committed ledger with one binding removed is not what Appendix B derives",
         &[ROW_REGEN],
-        ov,
+        base.layered(&ov),
         &["is NOT what Appendix B derives"],
     ));
 
@@ -619,6 +627,33 @@ fn binding_verdict_cases<'a>(
     r
 }
 
+/// A FIXTURE OVERLAY ON WHICH REGEN-CLEAN IS GREEN: both committed artifacts replaced by what
+/// Appendix B derives from this tree. The derivation reads the committed ledger as one of its
+/// inputs, so it is re-taken over its own output until it stops moving (twice is the most it has
+/// needed; four is the bound). Empty when the committed ledger is already clean, and empty if the
+/// derivation cannot be made at all — in which case the cases built on it report the tree's own
+/// red, which is the honest answer.
+fn regen_clean_base(cx: &Ctx) -> Overlay {
+    let mut base = Overlay::new();
+    for _ in 0..4 {
+        let here = cx.with_overlay(base.clone());
+        let Ok(inputs) = DesignBindingsGate::inputs(&here) else {
+            break;
+        };
+        let Ok((js, md)) = DesignBindingsGate::regenerate(&here, &inputs) else {
+            break;
+        };
+        let same_js = here.read(build::OUT_JSON_REL).ok().as_deref() == Some(js.as_str());
+        let same_md = here.read(build::OUT_MD_REL).ok().as_deref() == Some(md.as_str());
+        if same_js && same_md {
+            break;
+        }
+        base.set(build::OUT_JSON_REL, js);
+        base.set(build::OUT_MD_REL, md);
+    }
+    base
+}
+
 /// THE TWO REFUSALS THAT ARE NOT ABOUT A CITATION: the instrument could not read its ledger, and
 /// the derivation it compares that ledger against could not be made.
 fn instrument_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
@@ -640,14 +675,19 @@ fn instrument_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     // AND THE DERIVATION ITSELF FAILING IS NOT A CLEAN REGEN. Appendix B is the source the committed
     // ledger is compared against; with it unreadable there is no comparison to pass, and the arm
     // that says so was the one arm of REGEN-CLEAN with no plant.
+    //
+    // Proven from the same regen-clean base as the stale-ledger case, for the same reason: the
+    // row must be green before the plant for the plant's red to be the plant's.
+    let base = regen_clean_base(cx);
+    let base_cx = cx.with_overlay(base.clone());
     let mut ov = Overlay::new();
     ov.remove(build::ARCH_REL);
     r.push(prove_rows_red(
-        cx,
+        &base_cx,
         gate,
         "the derivation from Appendix B failing is refused, never read as a clean regen",
         &[ROW_REGEN],
-        ov,
+        base.layered(&ov),
         &["the derivation from Appendix B FAILED"],
     ));
 
