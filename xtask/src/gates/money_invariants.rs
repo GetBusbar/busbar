@@ -101,15 +101,24 @@ const STORE_TYPE_FLOOR: usize = 18;
 /// The durability seam: the one production file that turns records into journal bodies
 /// (`Entry::new(RecordClass::…, <x>_body(..))`). Its `<x>_body` functions and `body(&self)` impls
 /// are what DEFINE which types are durable journal records.
-const JOURNAL_SEAM: &str = "crates/busbar/src/root/durability.rs";
+/// `847c22f98` split the seam (structure-lint oversized) into `durability/mod.rs` (the seam
+/// itself, the journal writers, the money-book impl) and `durability/replay.rs` (the book-rebuild
+/// replay it split out). Every `<x>_body`/`body(&self)` writer this gate derives the journal
+/// population from stayed in `mod.rs` — the split moved replay code, not writer code — so the seam
+/// this row reads is still the one file.
+const JOURNAL_SEAM: &str = "crates/busbar/src/root/durability/mod.rs";
 
-/// The seam's journal record types, MEASURED 2026-09-24 at 8d9ce9113: `Posting`
-/// (`impl Posting { fn body }`), `HoldOpened` (`impl HoldOpened { fn body }`, the journalled hold),
-/// `AuditRecord` (`audit_body`), `Checkpoint` (`checkpoint_body`), `MigrationMarker`
-/// (`migration_body`). Fewer is a journal writer the derivation stopped seeing. The floor is the
-/// count, not below it: a floor one short lets exactly one writer vanish in silence, which is the
-/// defect it exists to refuse.
-const JOURNAL_ROOT_FLOOR: usize = 5;
+/// The seam's journal record types, RE-MEASURED 2026-09-24 against the tree at commit
+/// `847c22f98^` (the seam's shape before the structure-lint split, so the recount is over the same
+/// content the split only relocated): `Posting` (`impl Posting { fn body }`), `HoldOpened`
+/// (`impl HoldOpened { fn body }`, the journalled hold), `UnitMark` (`impl UnitMark { fn body }`),
+/// `ClaimRecord` (`impl ClaimRecord { fn body }`), `AuditRecord` (`audit_body`), `Checkpoint`
+/// (`checkpoint_body`), `MigrationMarker` (`migration_body`) — SEVEN, not the five this constant
+/// used to name; `UnitMark` and `ClaimRecord` were already writers at the cited commit and the old
+/// count had simply never counted them. Fewer is a journal writer the derivation stopped seeing.
+/// The floor is the count, not below it: a floor one short lets exactly one writer vanish in
+/// silence, which is the defect it exists to refuse.
+const JOURNAL_ROOT_FLOOR: usize = 7;
 
 /// The record files BUSBAR-1.6.0 Part 0 holds this gate to by name. The population is derived; this
 /// is the check that the derivation still REACHES them — the defect item 9 names is exactly this
