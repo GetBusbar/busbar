@@ -45,31 +45,65 @@ fn a_directory() -> Arc<Directory> {
     })
 }
 
-/// The cache digests with the node's own hex SHA-256, which is what makes one credential one row
-/// wherever in the tree it is named. Asserted against the published function rather than against
-/// a literal, because the property is that the two are the same function and not that either is
-/// a particular string.
+/// NO SECOND CREDENTIAL CACHE (item 249): the bindings hand the chain none, so a verdict the
+/// operator's flush was meant to kill is never served from a cache the flush cannot reach.
+///
+/// The root used to build its own cache here, a port of the kernel's, while the admin flush
+/// endpoint reaches only the kernel's. Driven through the chain with a CACHEABLE module that
+/// identifies a credential and is then told the credential is revoked: with a cache held here the
+/// second run answered the first verdict out of it; with none, the module is asked again and its
+/// refusal stands.
 #[test]
-fn the_cache_digests_with_the_nodes_own_hex_sha256() {
-    let bindings = AuthBindings::without_directory();
-    let cache = bindings.cache().expect("a cache is always bound");
-    cache.put(
-        "provider",
-        "credential-a",
-        &AuthOutcome::Pass,
-        0,
-        cache.generation(),
-    );
+fn a_revoked_credential_is_never_answered_from_a_cache_no_flush_reaches() {
+    use std::sync::atomic::{AtomicBool, Ordering};
 
-    // The row is reachable under the same credential, which it can only be if the digest the
-    // insert used and the digest the read uses are one function.
-    assert!(cache.get("provider", "credential-a", 0).is_some());
-    assert!(cache.get("provider", "credential-b", 0).is_none());
-    assert_eq!(
-        busbar_api::sha256_hex(b"credential-a").len(),
-        64,
-        "the bound digest is the 32-byte SHA-256 rendered as lower-case hex"
-    );
+    struct Revocable(Arc<AtomicBool>);
+    impl busbar_kernel_identity::module::AuthModule for Revocable {
+        fn name(&self) -> &'static str {
+            "revocable"
+        }
+        fn authenticate(&self, candidate: Option<&str>) -> AuthOutcome {
+            match candidate {
+                Some(_) if self.0.load(Ordering::SeqCst) => AuthOutcome::Reject,
+                Some(id) => {
+                    AuthOutcome::Identify(busbar_kernel_identity::principal::Principal::from_id(id))
+                }
+                None => AuthOutcome::Pass,
+            }
+        }
+        fn cacheable(&self) -> bool {
+            true
+        }
+    }
+
+    for bindings in [
+        AuthBindings::without_directory(),
+        AuthBindings::new(a_directory() as Arc<dyn VirtualKeyDirectory>),
+    ] {
+        assert!(
+            bindings.cache().is_none(),
+            "the bindings hold a credential cache the admin flush cannot reach"
+        );
+        let revoked = Arc::new(AtomicBool::new(false));
+        let chain = busbar_kernel_identity::AuthChain::new(
+            vec![busbar_kernel_identity::chain::ChainEntry {
+                provider: "revocable".to_string(),
+                module: Box::new(Revocable(Arc::clone(&revoked))),
+            }],
+            false,
+        );
+        let first = chain.run_chain_cached(Some("vk_live"), bindings.cache(), None, 10, None);
+        assert!(matches!(
+            first,
+            busbar_kernel_identity::chain::ChainVerdict::Identified { .. }
+        ));
+        revoked.store(true, Ordering::SeqCst);
+        let second = chain.run_chain_cached(Some("vk_live"), bindings.cache(), None, 11, None);
+        assert!(
+            matches!(second, busbar_kernel_identity::chain::ChainVerdict::Denied),
+            "the revoked credential was answered out of a cache: {second:?}"
+        );
+    }
 }
 
 /// The verifier the root binds resolves through the directory and hands back the unit's own
@@ -107,13 +141,13 @@ fn the_revocation_view_reads_the_same_directory() {
     assert!(!revocations.is_revoked("vk_1"));
 }
 
-/// An unbound node binds a cache and no authority, which is a posture rather than a gap: the
-/// chain's own answer with no verifier is to deny, and the gate that never runs would have had
-/// nothing to refuse that the denial had not already refused.
+/// An unbound node binds no authority, which is a posture rather than a gap: the chain's own answer
+/// with no verifier is to deny, and the gate that never runs would have had nothing to refuse that
+/// the denial had not already refused.
 #[test]
-fn an_unbound_node_binds_a_cache_and_no_authority() {
+fn an_unbound_node_binds_no_authority() {
     let bindings = AuthBindings::without_directory();
-    assert!(bindings.cache().is_some());
+    assert!(bindings.cache().is_none());
     assert!(bindings.keys().is_none());
     assert!(bindings.revocations().is_none());
 }

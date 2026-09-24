@@ -582,13 +582,10 @@ pub struct ProductionUnits {
     pub breaker: crate::root::adapters::BreakerAdapter,
     /// The authentication chain, resolved from configuration at boot.
     pub auth: Auth,
-    /// The three seams the authenticate step is handed beside the request: the credential cache, the
-    /// signed-key verifier and the revocation view.
-    ///
-    /// One per node rather than one per plane, for the reason the cache's own documentation gives
-    /// about a flush: two caches would be two answers to "has this credential been seen", and an
-    /// operator who flushed one would leave the other serving a verdict the flush was meant to have
-    /// killed.
+    /// The seams the authenticate step is handed beside the request: the signed-key verifier and the
+    /// revocation view — and NO credential cache. The node's one flushable cache is the kernel's; a
+    /// second one here would be a second answer to "has this credential been seen" that an
+    /// operator's flush could not reach (item 249).
     pub auth_bindings: auth_bindings::AuthBindings,
     /// The trust unit. Stateless: it is handed the pool view and the kind facts per call.
     pub trust: Trust,

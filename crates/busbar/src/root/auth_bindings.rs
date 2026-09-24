@@ -36,8 +36,17 @@
 //! [`AuthBindings::without_directory`] is a real posture and not a placeholder: a node that resolves
 //! no busbar-minted keys has no verifier to bind, and the chain's own answer for that is already the
 //! right one — the signed-key arm denies, because a signed key cannot be verified without a verifier.
-//! The cache is still built, because a cache is not an authority: it holds what a module already
-//! decided, for less time than the module suggested, and never holds a rejection at all.
+//!
+//! ## Why no credential cache is bound here
+//!
+//! The node has one credential cache an operator can flush: the kernel's, on the app, which the
+//! admin cache-flush endpoint reaches. A second cache built here would be a second answer to "has
+//! this credential been seen" that no flush reaches — an operator who revoked a credential and
+//! flushed would leave this one serving the verdict the flush was meant to kill, for up to the
+//! module's cache lifetime. So the bindings hand the chain NO cache: every module is consulted on
+//! every unit, which is what the one chain installed here (the operator token, which declares
+//! itself uncacheable) already required, and what any later cacheable module gets until the chain
+//! is handed the node's one flushable cache.
 
 use busbar_kernel_identity::cache::CredentialCache;
 use busbar_kernel_identity::chain::{KeyVerifier, ResolvedKey, RevocationView};
@@ -124,26 +133,23 @@ impl RevocationView for DirectoryArm {
 
 /// Everything the authenticate step is handed beside the request itself.
 ///
-/// Built once, at boot, and borrowed by every unit of every plane that authenticates. One per node
-/// rather than one per plane: two caches would be two answers to "has this credential been seen",
-/// and a flush an operator performed on one would leave the other serving a verdict the flush was
-/// meant to have killed.
+/// Built at boot and borrowed by every unit that authenticates. It carries NO credential cache:
+/// the node's one cache is the kernel's, which the admin flush reaches, and a second one here would
+/// keep serving a verdict that flush was meant to kill (see the module doc).
 pub struct AuthBindings {
-    cache: CredentialCache,
     directory: Option<DirectoryArm>,
 }
 
 impl AuthBindings {
-    /// Bind the cache and a virtual-key directory.
+    /// Bind a virtual-key directory.
     #[must_use]
     pub fn new(directory: Arc<dyn VirtualKeyDirectory>) -> Self {
         AuthBindings {
-            cache: credential_cache(),
             directory: Some(DirectoryArm(directory)),
         }
     }
 
-    /// Bind the cache alone — the posture of a node that resolves no busbar-minted keys.
+    /// Bind nothing — the posture of a node that resolves no busbar-minted keys.
     ///
     /// Not a degraded build and not a placeholder. With no verifier the signed-key arm denies, which
     /// is the fail-closed answer the chain already documents for exactly this case; with no
@@ -151,16 +157,14 @@ impl AuthBindings {
     /// everything had not already decided.
     #[must_use]
     pub fn without_directory() -> Self {
-        AuthBindings {
-            cache: credential_cache(),
-            directory: None,
-        }
+        AuthBindings { directory: None }
     }
 
-    /// The credential cache, as the unit takes it.
+    /// The credential cache, as the unit takes it: none. The node's one flushable cache is the
+    /// kernel's, and a cache held here would be one the admin flush cannot reach.
     #[must_use]
     pub fn cache(&self) -> Option<&CredentialCache> {
-        Some(&self.cache)
+        None
     }
 
     /// The signed-key verifier, when a directory was bound.
@@ -179,22 +183,9 @@ impl AuthBindings {
 impl std::fmt::Debug for AuthBindings {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AuthBindings")
-            .field("cached", &self.cache.len())
             .field("directory", &self.directory.is_some())
             .finish()
     }
-}
-
-/// The cache, over the node's own credential digest.
-///
-/// The digest is the kernel's hex SHA-256 — the same function every other component in this tree
-/// digests a credential with — reached through the published `busbar-api` surface rather than
-/// re-implemented here, because two spellings of one digest is how two components come to disagree
-/// about what one credential is. The unit ships the identical algorithm as `cache::Sha256Digest`
-/// behind its `sha256` feature, and its own parity test pins the two equal; the feature is off in
-/// this binary's manifest today, and turning it on is a manifest change rather than a change here.
-fn credential_cache() -> CredentialCache {
-    CredentialCache::new(busbar_api::sha256_hex as fn(&[u8]) -> String)
 }
 
 /// The virtual-key directory a node whose keys are busbar's own has: the governance state.
@@ -247,9 +238,9 @@ pub const ADMIN_TOKENS_MODULE: &str = "admin-tokens";
 ///
 /// The digest is recomputed here through the published `busbar-api` surface rather than reached for
 /// through the module crate the previous release links, because that crate is not a dependency of
-/// this binary and making it one would be a manifest change for one hash. It is the SAME function —
-/// the same one the credential cache digests with, a few lines up — so there is no second spelling
-/// of the digest in this file, only one function named twice.
+/// this binary and making it one would be a manifest change for one hash. It is the kernel's hex
+/// SHA-256 — the same function every other component in this tree digests a credential with — so
+/// there is no second spelling of the digest here.
 pub struct AdminTokens {
     state: Arc<busbar_kernel::governance::GovState>,
 }
