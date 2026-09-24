@@ -1428,6 +1428,38 @@ fn vocabulary_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<
         ],
     ));
 
+    // ITEMS 191/192: A SEALED TRAIT WHOSE DECLARATION MOVED. Only the traits that ARE sealed are
+    // renamed, so the unsealed one is still judged and the row is not vacuous: the rule used to
+    // drop the vanished ones from the denominator and pass on what was left.
+    let mut ov = on(base);
+    if let Ok(cfg) = ConstructionGate::cfg(cx) {
+        for (_k, spec) in cfg.doc.children("rules.sealed-unit-traits.traits") {
+            let (Some(rel), Some(name)) = (spec.str_of("file"), spec.str_of("trait")) else {
+                continue;
+            };
+            let sealed = format!("pub trait {name}: sealed::Sealed");
+            if let Ok(basetext) = cx.read(rel) {
+                if basetext.contains(&sealed) {
+                    ov.set(
+                        rel,
+                        basetext.replace(
+                            &sealed,
+                            &format!("pub trait {name}PlantedMovedAway: sealed::Sealed"),
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    r.push(prove_red(
+        cx,
+        gate,
+        "a configured unit trait whose declaration moved is not judged, and that is not a pass",
+        &["sealed-unit-traits"],
+        ov,
+        &["NOT FOUND"],
+    ));
+
     let mut ov = on(base);
     ov.set(
         "crates/busbar-kernel/src/zz_planted_hold.rs",

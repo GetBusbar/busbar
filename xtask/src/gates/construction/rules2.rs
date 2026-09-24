@@ -721,12 +721,15 @@ pub fn sealed_unit_traits(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let c = cfg.rule("sealed-unit-traits")?;
     let max_unsealed = need_int(c, "max_unsealed", "sealed-unit-traits")?;
     let seal_word = Regex::new(r"[Ss]eal")?;
-    let (mut offenders, mut checked) = (Vec::new(), Vec::new());
+    let (mut offenders, mut checked, mut missing) = (Vec::new(), Vec::new(), Vec::new());
     for (_key, spec) in cfg.doc.children("rules.sealed-unit-traits.traits") {
         let rel = need_str(spec, "file", "sealed-unit-traits.traits")?;
         let trait_name = need_str(spec, "trait", "sealed-unit-traits.traits")?;
         let crate_name = need_str(spec, "crate", "sealed-unit-traits.traits")?;
         let Some(lines) = tree.files.get(rel) else {
+            missing.push(format!(
+                "{crate_name}::{trait_name} (file {rel} is not in the tree)"
+            ));
             continue;
         };
         let joined: String = lines
@@ -739,6 +742,9 @@ pub fn sealed_unit_traits(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
             rx::escape(trait_name)
         ))?;
         let Some(m) = rx_trait.search(joined.as_bytes()) else {
+            missing.push(format!(
+                "{crate_name}::{trait_name} (no `trait {trait_name}` declaration in {rel})"
+            ));
             continue;
         };
         checked.push(trait_name.to_string());
@@ -750,18 +756,32 @@ pub fn sealed_unit_traits(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
         }
     }
     let current = offenders.len() as i64;
-    let detail = if checked.is_empty() {
+    let unresolved = if missing.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "; configured trait(s) NOT FOUND, so they were not judged at all: {} — a trait this \
+             rule cannot find is a trait it cannot judge. Point the entry's `file` at the trait's \
+             real home, or strike the entry in the same commit that deletes the trait",
+            missing.join(", ")
+        )
+    };
+    let detail = if checked.is_empty() && missing.is_empty() {
         "vacuous: none of the configured unit traits exist in this tree yet".to_string()
     } else {
         format!(
-            "{current} of {} configured unit trait(s) unsealed (ceiling {max_unsealed}): {}",
-            checked.len(),
+            "{current} of {} configured unit trait(s) unsealed (ceiling {max_unsealed}): {}{unresolved}",
+            checked.len() + missing.len(),
             join_or_none(&offenders)
         )
     };
+    // ITEMS 191/192: A MISSING TRAIT IS A FAILURE, the fix `no-default-bodies` above already
+    // carries. This dropped a configured trait whose file moved or whose header no longer matched
+    // — not counted, not named — and passed on the shrunken set: moving `Breaker`'s file made the
+    // one sealed trait vanish from the denominator and the row stayed green.
     Ok(vec![plain(
         "sealed-unit-traits",
-        current <= max_unsealed,
+        current <= max_unsealed && missing.is_empty(),
         "a unit's kernel-facing trait is sealed on a private supertrait",
         detail,
         current,

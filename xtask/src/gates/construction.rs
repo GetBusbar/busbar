@@ -861,6 +861,52 @@ mod tests {
         );
     }
 
+    /// ITEMS 191/192: A CONFIGURED UNIT TRAIT THAT NO LONGER RESOLVES IS A FAILURE. Renaming
+    /// `Breaker`'s declaration (the one sealed trait of the three) used to drop it from the
+    /// denominator: `1 of 2 unsealed (ceiling 1)` and PASS. Moving `Audit`'s file did the same.
+    #[test]
+    fn sealed_unit_traits_refuses_a_configured_trait_that_no_longer_resolves() {
+        let cx = Ctx::workspace().expect("workspace");
+        let cfg = ConstructionGate::cfg(&cx).expect("ceilings");
+        let load = |cx: &Ctx| {
+            Tree::load(
+                cx,
+                &cfg.scan_roots().expect("scan roots"),
+                &cfg.test_path_fragments().expect("fragments"),
+            )
+            .expect("tree")
+        };
+        let clean = rules2::sealed_unit_traits(&load(&cx), &cfg).expect("the rule runs");
+        assert_eq!(clean[0].status, Status::Pass, "{}", clean[0].detail);
+
+        let breaker = "crates/busbar-kernel-breaker/src/lib.rs";
+        let text = cx.read(breaker).expect("the breaker's home");
+        assert!(
+            text.contains("pub trait Breaker: sealed::Sealed"),
+            "the control needs the sealed trait on disk"
+        );
+        let mut moved = crate::ctx::Overlay::new();
+        moved.set(
+            breaker,
+            text.replace("pub trait Breaker:", "pub trait BreakerMovedAway:"),
+        );
+        let rows = rules2::sealed_unit_traits(&load(&cx.with_overlay(moved)), &cfg)
+            .expect("the rule runs");
+        assert_eq!(rows[0].status, Status::Fail, "{}", rows[0].detail);
+        assert!(rows[0].detail.contains("NOT FOUND"), "{}", rows[0].detail);
+
+        let mut gone = crate::ctx::Overlay::new();
+        gone.remove("crates/busbar-kernel-audit/src/record.rs");
+        let rows =
+            rules2::sealed_unit_traits(&load(&cx.with_overlay(gone)), &cfg).expect("the rule runs");
+        assert_eq!(rows[0].status, Status::Fail, "{}", rows[0].detail);
+        assert!(
+            rows[0].detail.contains("not in the tree"),
+            "{}",
+            rows[0].detail
+        );
+    }
+
     /// ITEM 89 (the `forbid-unsafe` arm the self-test caught): the attribute counts only as the
     /// crate-level inner attribute in the crate root. A test file asserting the attribute's TEXT
     /// (`assert!(lib.contains("#![forbid(unsafe_code)]"))`) and a module-level `#![forbid]` are
