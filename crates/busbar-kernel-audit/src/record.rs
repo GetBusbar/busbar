@@ -13,9 +13,17 @@
 //!
 //! ## Six groups, because they answer six different questions
 //!
-//! WHO, WHAT, WHEN, OUTCOME, AMOUNT, CONTROLS, and the link to the record before. They are grouped
+//! WHO, WHAT, WHEN, OUTCOME, USAGE, CONTROLS, and the link to the record before. They are grouped
 //! rather than flattened because the groups are what a reader actually asks for: an incident asks
-//! who and what, a billing dispute asks amount, and a compliance review asks controls.
+//! who and what, a billing dispute asks usage, and a compliance review asks controls.
+//!
+//! ## A price is never in here either
+//!
+//! The record carries COUNTS and the provenance a read-time price needs — the tier, the fee count,
+//! the rate card version — and never a priced figure (#43, #71, #77(3)). Money is a view on the
+//! ledger and the rate card, computed when it is read through the one function
+//! (`busbar_kernel_ledger::cost::Tally`); a figure sealed here would be a second copy of that
+//! answer, frozen at seal time, that no correction to the card could ever reach.
 //!
 //! ## Content is never in here
 //!
@@ -120,34 +128,35 @@ pub struct OutcomeFacts {
 /// unchanged in meaning.
 pub use busbar_contract::caps::{QuantitySource, UsageLine};
 
-/// WHAT IT COST.
+/// WHAT WAS USED: the counts, and the provenance a read-time price is computed from.
+///
+/// No priced figure. The tier, the fee count and the rate card version are the INPUTS the one
+/// function (`Tally::row`) takes alongside the counts; what they come to is computed when it is
+/// read, never stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Amount {
+pub struct Usage {
     /// The quantities, with their sources.
     pub lines: Vec<UsageLine>,
-    /// What it came to before the tier was applied, in nano-units.
-    pub pre_tier: i128,
-    /// And after — the figure the money moved by.
-    pub priced: i128,
-    /// The tier applied, in basis points.
+    /// The tier in force, in basis points — an input to the read-time price, not a price.
     pub tier_bp: u32,
     /// How many request fees were charged.
     pub fee_count: u32,
     /// Which currency the nano-units are of.
     pub currency: String,
-    /// Which rate card version priced it.
+    /// Which rate card version was in force — the card a read-time price is taken at.
     pub rate_card_version: u64,
     /// Which chain of buckets it was drawn against.
     pub bucket_chain_ref: String,
 }
 
-/// One hook that ran, and what it cost.
+/// One hook that ran.
+///
+/// Which hook, and nothing priced: what a hook changed is in the counts it changed, and those are
+/// the usage lines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HookApplied {
     /// Which hook.
     pub hook: String,
-    /// How much it changed the priced amount by, in nano-units.
-    pub priced_delta: i128,
 }
 
 /// THE CONTROLS that were in force.
@@ -165,7 +174,7 @@ pub struct Controls {
     pub lease_epoch: u64,
     /// Which policy generation.
     pub policy_epoch: u64,
-    /// Every hook that ran, and what it cost.
+    /// Every hook that ran.
     pub hooks_applied: Vec<HookApplied>,
     /// Whether this unit was answered from a replay rather than performed.
     pub replayed: bool,
@@ -189,8 +198,8 @@ pub struct AuditRecord {
     pub origin_kind: &'static str,
     /// HOW IT WENT.
     pub outcome: OutcomeFacts,
-    /// WHAT IT COST.
-    pub amount: Amount,
+    /// WHAT WAS USED.
+    pub usage: Usage,
     /// THE CONTROLS.
     pub controls: Controls,
     /// The digest of the correlation label, never the label itself.
@@ -242,8 +251,8 @@ pub struct AuditInputs {
     pub origin: Origin,
     /// HOW IT WENT.
     pub outcome: OutcomeFacts,
-    /// WHAT IT COST.
-    pub amount: Amount,
+    /// WHAT WAS USED.
+    pub usage: Usage,
     /// THE CONTROLS.
     pub controls: Controls,
     /// The correlation label, which is HASHED on the way in and never stored.
@@ -446,7 +455,7 @@ impl AuditChain {
     ///
     /// ONE RECIPE, and this walks it. The field order, the framing and the exact spelling of every
     /// value live in [`crate::recipe::digest_fields`], which is also what the range read publishes
-    /// and what `docs/audit-chain-digest-v1.md` describes. Before, the order lived here and the
+    /// and what `docs/audit-chain-digest-v2.md` describes. Before, the order lived here and the
     /// document described it from the outside — two copies of one contract, and the one thing a
     /// published digest recipe cannot survive is two spellings of itself: a drift between them
     /// would make every third-party verification fail while looking, to the third party, exactly
@@ -591,7 +600,7 @@ impl Audit for AuditChain {
             mono: inputs.mono,
             origin_kind: inputs.origin.kind().as_str(),
             outcome: inputs.outcome,
-            amount: inputs.amount,
+            usage: inputs.usage,
             controls: inputs.controls,
             // The label is hashed here and dropped. There is no path from this function that keeps
             // it, which is what "content never enters the chain" has to mean to be worth saying.

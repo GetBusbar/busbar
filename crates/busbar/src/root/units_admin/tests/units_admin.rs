@@ -3002,7 +3002,7 @@ fn a_sealed_chain() -> SealedChain {
         Audit as AuditStep, KernelSeal, Origin, OriginKind, Outcome as UnitOutcome, Pass, UnitKey,
     };
     use busbar_kernel_audit::{
-        Amount, Audit as _, AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject,
+        Audit as _, AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage,
         What,
     };
 
@@ -3036,10 +3036,8 @@ fn a_sealed_chain() -> SealedChain {
                     emission_delta: 0,
                     stale_policy: false,
                 },
-                amount: Amount {
+                usage: Usage {
                     lines: Vec::new(),
-                    pre_tier: 600,
-                    priced: 540,
                     tier_bp: 9_000,
                     fee_count: 1,
                     currency: "USD".into(),

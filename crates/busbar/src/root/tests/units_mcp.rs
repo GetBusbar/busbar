@@ -1220,7 +1220,7 @@ fn the_settlement_and_the_record_read_one_fee_decision() {
             no_card(),
         );
         assert_eq!(
-            record.amount.fee_count,
+            record.usage.fee_count,
             fee_count(&evidence(&unit).fee).0,
             "the row and the posting agree about the fee"
         );
@@ -1273,7 +1273,7 @@ fn the_record_names_the_caller_the_class_and_the_resource() {
     );
     assert_eq!(record.wall, 1_700_000_000);
     assert_eq!(record.mono, 7, "the unit's own reading, not the wall clock");
-    assert_eq!(record.amount.fee_count, 1);
+    assert_eq!(record.usage.fee_count, 1);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1789,7 +1789,7 @@ fn the_provenance_stamp_names_the_card_in_force_when_the_unit_arrived() {
                 arrived_ms,
             },
         )
-        .amount
+        .usage
         .rate_card_version
     };
 
@@ -1925,7 +1925,7 @@ fn the_posting_and_the_record_name_one_rate_card_entry() {
         "the posting names the entry in force when the unit arrived, not the head of the history"
     );
     assert_eq!(
-        record.amount.rate_card_version, settled.posting.rate_card_version,
+        record.usage.rate_card_version, settled.posting.rate_card_version,
         "and the row names the same one — two readers, one resolution"
     );
 }

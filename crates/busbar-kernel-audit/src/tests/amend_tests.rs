@@ -409,7 +409,7 @@ fn an_amendment_names_the_audit_record_it_amends() {
     // so a reader can go from one to the other without the two chains sharing a buffer.
     use crate::amend::amends;
     use crate::record::{
-        Amount, Audit, AuditChain, AuditInputs, Controls, FinishClass, OutcomeFacts, What,
+        Audit, AuditChain, AuditInputs, Controls, FinishClass, OutcomeFacts, Usage, What,
     };
     use busbar_contract::caps::{Origin, OriginKind, Outcome, UnitKey};
 
@@ -436,10 +436,8 @@ fn an_amendment_names_the_audit_record_it_amends() {
                 emission_delta: 0,
                 stale_policy: false,
             },
-            amount: Amount {
+            usage: Usage {
                 lines: Vec::new(),
-                pre_tier: 100,
-                priced: 100,
                 tier_bp: 10_000,
                 fee_count: 0,
                 currency: "USD".into(),

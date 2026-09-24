@@ -1172,10 +1172,8 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
                 emission_delta: 0,
                 stale_policy: false,
             },
-            amount: busbar_kernel_audit::Amount {
+            usage: busbar_kernel_audit::Usage {
                 lines: Vec::new(),
-                pre_tier: 0,
-                priced: 0,
                 tier_bp: 0,
                 fee_count,
                 currency: String::new(),

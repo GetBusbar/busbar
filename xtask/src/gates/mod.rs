@@ -207,16 +207,17 @@ pub const REPORT_ONLY: &[Posture] = &[
     },
     Posture {
         name: "money-invariants",
-        why: "RED ON ONE NAMED ROW, AND IT IS THE TRUE FINDING. Item 9 pointed this gate at the \
-              record production actually journals — busbar-kernel-audit/src/record.rs — and \
+        why: "GREEN, AND EVERY ROW IS SCORED. Item 9 pointed this gate at the record production \
+              actually journals — busbar-kernel-audit/src/record.rs — and \
               `money-invariants:no-stored-price` went red on three stored priced figures there: \
               `AuditRecord.amount`, `Amount.priced` and `HookApplied.priced_delta` (#77(3): price \
-              is never stored). DRAIN: Phase 2 money work takes the priced figures off the \
-              journalled audit record; the currency field in the SIGNED audit digest is item 34, \
-              owner-owed. Every OTHER row of this gate is scored like any gate's, so a \
-              plugin-keyed money field or a seal outside core reds `--all` and `--posture` alike, \
-              and once `:no-stored-price` goes green the name here is STALE and reds them too \
-              until it is struck from MONEY_INVARIANTS_STANDING_REDS. \
+              is never stored). DRAINED in Phase 2 (W2.12): the record carries `usage: Usage` — \
+              counts plus the tier, fee count and card version a read-time price takes — and the \
+              digest recipe became `busbar.audit.digest.v2`, published beside v1, so \
+              MONEY_INVARIANTS_STANDING_REDS is empty. The currency field in the SIGNED audit \
+              digest is item 34, owner-owed. A stored price, a plugin-keyed money field or a seal \
+              outside core reds `--all` and `--posture` alike, and a name added to the list that \
+              is not red is STALE and reds them too. \
               `posture_tests::the_money_invariants_posture_holds_on_the_tree` runs the real gate \
               and holds this entry to what it says.",
         excuse: Excused::OnlyRows(StandingReds {
@@ -444,12 +445,11 @@ pub const QA_NAMES_STANDING_REDS: &[&str] = &[
 /// [`QA_NAMES_STANDING_REDS`]: a red this list does not name is scored, and a name on this list that
 /// has gone green is STALE and is scored too.
 pub const MONEY_INVARIANTS_STANDING_REDS: &[&str] = &[
-    // Item 9 (2026-09-24): the gate now reads the journalled audit record and is red on three
-    // stored priced figures in crates/busbar-kernel-audit/src/record.rs — `AuditRecord.amount`,
-    // `Amount.priced`, `HookApplied.priced_delta`. Drained by Phase 2 (money); the currency field
-    // in the signed audit digest is item 34, owner-owed. Strike this line in the commit that
-    // turns the row green.
-    "money-invariants:no-stored-price",
+    // DRAINED 2026-09-24 (W2.12, Phase 2): `money-invariants:no-stored-price` stood here for three
+    // stored priced figures on the journalled audit record (item 9) — `AuditRecord.amount`,
+    // `Amount.priced`, `HookApplied.priced_delta`. The record now carries `usage: Usage` (counts
+    // and the inputs a read-time price takes, never a price) under the digest recipe
+    // `busbar.audit.digest.v2`, published beside v1. Struck in the commit that turned it green.
 ];
 
 /// THE CONFORMANCE-SYNC GATE'S STANDING REDS, BY NAME. Same contract as
@@ -3945,8 +3945,8 @@ mod posture_tests {
     }
 
     /// ITEM 9 (posture): the money-invariants posture holds on the tree — the exact check ci.yml's
-    /// blocking `cargo xtask gate money-invariants --posture` step makes — AND the gate is red, so
-    /// the standing row is a real red and not an excuse over a green gate.
+    /// blocking `cargo xtask gate money-invariants --posture` step makes — and the standing list
+    /// names exactly the rows that are red (none, since W2.12 drained `no-stored-price`).
     #[test]
     fn the_money_invariants_posture_holds_on_the_tree() {
         let cx = Ctx::workspace().expect("the workspace opens");

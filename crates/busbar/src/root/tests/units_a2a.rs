@@ -2354,7 +2354,7 @@ fn the_provenance_stamp_names_the_card_in_force_when_the_unit_arrived() {
         deployment
             .calling_at(chain.as_ref(), now_secs)
             .audit_inputs(&a2a_ctx(), Outcome::Completed, Some(&who))
-            .amount
+            .usage
             .rate_card_version
     };
 

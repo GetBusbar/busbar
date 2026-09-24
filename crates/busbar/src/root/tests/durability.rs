@@ -194,7 +194,7 @@ fn posting() -> Posting {
 fn audit_inputs(unit: u64) -> busbar_kernel_audit::AuditInputs {
     use busbar_contract::caps::{KernelSeal, Origin, OriginKind, Outcome, UnitKey};
     use busbar_kernel_audit::{
-        Amount, AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, What,
+        AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage, What,
     };
     AuditInputs {
         subject: Subject::PrincipalId(format!("pseudonym-{unit}")),
@@ -217,10 +217,8 @@ fn audit_inputs(unit: u64) -> busbar_kernel_audit::AuditInputs {
             emission_delta: 0,
             stale_policy: false,
         },
-        amount: Amount {
+        usage: Usage {
             lines: Vec::new(),
-            pre_tier: 600,
-            priced: 540,
             tier_bp: 9_000,
             fee_count: 1,
             currency: "USD".into(),

@@ -8,7 +8,7 @@
 //! If only busbar can verify busbar's chain then the chain is a CLAIM, not evidence. An auditor who
 //! has to run our binary to check our records has checked nothing they could not have checked by
 //! asking us. So the exact field order, the exact framing and the exact spelling of every value are
-//! a versioned public contract, written down at `docs/audit-chain-digest-v1.md`, and reproduced by
+//! a versioned public contract, written down at `docs/audit-chain-digest-v2.md`, and reproduced by
 //! a verifier that has never seen this repository.
 //!
 //! This module is what makes that promise checkable instead of aspirational. It is the ONE place
@@ -34,7 +34,14 @@
 
 /// The recipe's version name. Goes in every published body so a verifier never has to guess which
 /// rules to apply, and so a future recipe can exist beside this one instead of replacing it.
-pub const DIGEST_RECIPE: &str = "busbar.audit.digest.v1";
+///
+/// `v2` is `v1` less the three priced figures (`pre_tier`, `priced`, `hooks[].priced_delta`) —
+/// the record stores counts, and price is read-time (#43, #71). `v1` is not rewritten: its page,
+/// `docs/audit-chain-digest-v1.md`, stays published beside this one, so a v1 body anybody pulled
+/// still verifies by the rules it was sealed under. No v1 record is retained by a node (the journal
+/// keeps a projection, not the record), and no released build sealed one: the fixed record is
+/// 1.6.0-new.
+pub const DIGEST_RECIPE: &str = "busbar.audit.digest.v2";
 
 /// One value as the digest consumes it.
 ///
@@ -83,7 +90,7 @@ impl DigestField {
 /// EVERY FIELD THAT GOES INTO ONE RECORD'S DIGEST, IN ORDER.
 ///
 /// This is the recipe. `digest_of` hashes exactly this, the range read publishes exactly this, and
-/// the document at `docs/audit-chain-digest-v1.md` describes exactly this.
+/// the document at `docs/audit-chain-digest-v2.md` describes exactly this.
 ///
 /// The repeated groups — the usage lines, the hooks that ran, the child units — are each preceded
 /// by their COUNT, which is what stops two different groupings from digesting identically. Their
@@ -155,9 +162,9 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
     ));
     f.push(DigestField::num(
         "lines_count",
-        record.amount.lines.len() as u64,
+        record.usage.lines.len() as u64,
     ));
-    for line in &record.amount.lines {
+    for line in &record.usage.lines {
         f.push(DigestField::text("lines[].class", line.class.as_str()));
         f.push(DigestField::num("lines[].quantity", line.quantity));
         f.push(DigestField::text(
@@ -169,33 +176,19 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
             u64::from(line.estimated),
         ));
     }
-    f.push(DigestField::text(
-        "pre_tier",
-        record.amount.pre_tier.to_string(),
-    ));
-    f.push(DigestField::text(
-        "priced",
-        record.amount.priced.to_string(),
-    ));
-    f.push(DigestField::num(
-        "tier_bp",
-        u64::from(record.amount.tier_bp),
-    ));
+    f.push(DigestField::num("tier_bp", u64::from(record.usage.tier_bp)));
     f.push(DigestField::num(
         "fee_count",
-        u64::from(record.amount.fee_count),
+        u64::from(record.usage.fee_count),
     ));
-    f.push(DigestField::text(
-        "currency",
-        record.amount.currency.clone(),
-    ));
+    f.push(DigestField::text("currency", record.usage.currency.clone()));
     f.push(DigestField::num(
         "rate_card_version",
-        record.amount.rate_card_version,
+        record.usage.rate_card_version,
     ));
     f.push(DigestField::text(
         "bucket_chain_ref",
-        record.amount.bucket_chain_ref.clone(),
+        record.usage.bucket_chain_ref.clone(),
     ));
     f.push(DigestField::text(
         "hold_ref",
@@ -224,10 +217,6 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
     ));
     for hook in &record.controls.hooks_applied {
         f.push(DigestField::text("hooks[].hook", hook.hook.clone()));
-        f.push(DigestField::text(
-            "hooks[].priced_delta",
-            hook.priced_delta.to_string(),
-        ));
     }
     f.push(DigestField::num(
         "replayed",

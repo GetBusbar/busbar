@@ -98,8 +98,8 @@ pub use legacy::{
 };
 pub use recipe::{digest_fields, digest_over, DigestField, DigestValue, DIGEST_RECIPE};
 pub use record::{
-    Amount, Audit, AuditBreak, AuditBreakKind, AuditChain, AuditInputs, AuditRecord, Controls,
-    FinishClass, HookApplied, OpClassId, OutcomeFacts, QuantitySource, Subject, UsageLine, What,
+    Audit, AuditBreak, AuditBreakKind, AuditChain, AuditInputs, AuditRecord, Controls, FinishClass,
+    HookApplied, OpClassId, OutcomeFacts, QuantitySource, Subject, Usage, UsageLine, What,
 };
 pub use sign::{
     AuditKeySet, AuditSigningKey, AuditVerifyingKey, KeyError, SIGNATURE_ALGORITHM,

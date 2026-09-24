@@ -19,8 +19,8 @@ use crate::expose;
 use crate::heads::HeadHistory;
 use crate::recipe::{digest_fields, digest_over, DigestValue};
 use crate::record::{
-    Amount, Audit, AuditChain, AuditInputs, AuditRecord, Controls, FinishClass, HookApplied,
-    OpClassId, OutcomeFacts, QuantitySource, Subject, UsageLine, What,
+    Audit, AuditChain, AuditInputs, AuditRecord, Controls, FinishClass, HookApplied, OpClassId,
+    OutcomeFacts, QuantitySource, Subject, Usage, UsageLine, What,
 };
 use crate::sign::{AuditKeySet, AuditSigningKey, AuditVerifyingKey, KeyError};
 
@@ -65,7 +65,7 @@ fn inputs(unit: u64) -> AuditInputs {
             emission_delta: -7,
             stale_policy: true,
         },
-        amount: Amount {
+        usage: Usage {
             lines: vec![
                 UsageLine {
                     class: MeterClassId::new("tokens_out"),
@@ -83,8 +83,6 @@ fn inputs(unit: u64) -> AuditInputs {
                     estimated: true,
                 },
             ],
-            pre_tier: 600,
-            priced: 540,
             tier_bp: 9_000,
             fee_count: 1,
             currency: "USD".into(),
@@ -100,7 +98,6 @@ fn inputs(unit: u64) -> AuditInputs {
             policy_epoch: 7,
             hooks_applied: vec![HookApplied {
                 hook: "compress".into(),
-                priced_delta: -10,
             }],
             replayed: true,
             children: vec![UnitKey::new(unit + 1000), UnitKey::new(unit + 1001)],
@@ -123,7 +120,7 @@ pub(super) fn rich_inputs(unit: u64) -> AuditInputs {
 /// tell "zero of these" from "this build did not send that member".
 fn empty_group_inputs() -> AuditInputs {
     let mut i = inputs(9);
-    i.amount.lines.clear();
+    i.usage.lines.clear();
     i.controls.hooks_applied.clear();
     i.controls.children.clear();
     i.what.destination = None;
@@ -145,7 +142,7 @@ fn empty_group_inputs() -> AuditInputs {
 
 /// THE PUBLISHED RECIPE AND THE SEALED DIGEST ARE ONE COMPUTATION.
 ///
-/// This is the test the whole publication rests on. `docs/audit-chain-digest-v1.md` describes the
+/// This is the test the whole publication rests on. `docs/audit-chain-digest-v2.md` describes the
 /// field list in [`crate::recipe::digest_fields`]; if hashing that list did not reproduce what
 /// [`AuditChain::digest_of`] seals, then the document would describe something the node does not
 /// do, and every third-party verification would fail while looking — to the third party — exactly
@@ -239,13 +236,13 @@ fn altering_any_field_breaks_the_signature_including_the_cosmetic_ones() {
         ("the wall clock", |r| r.wall += 1),
         ("where it came from", |r| r.origin_kind = "internal"),
         ("a usage line's estimated flag", |r| {
-            r.amount.lines[0].estimated = !r.amount.lines[0].estimated
+            r.usage.lines[0].estimated = !r.usage.lines[0].estimated
         }),
-        ("the tier's basis points", |r| r.amount.tier_bp += 1),
+        ("the tier's basis points", |r| r.usage.tier_bp += 1),
         ("the currency's spelling", |r| {
-            r.amount.currency = "usd".into()
+            r.usage.currency = "usd".into()
         }),
-        ("the rate card version", |r| r.amount.rate_card_version += 1),
+        ("the rate card version", |r| r.usage.rate_card_version += 1),
         ("whether a hook failed", |r| {
             r.outcome.hook_failed = !r.outcome.hook_failed
         }),
@@ -258,11 +255,9 @@ fn altering_any_field_breaks_the_signature_including_the_cosmetic_ones() {
         ("a child unit's number", |r| {
             r.controls.children[1] = UnitKey::new(1)
         }),
-        ("the order of two usage lines", |r| {
-            r.amount.lines.swap(0, 1)
-        }),
-        ("a hook's priced delta", |r| {
-            r.controls.hooks_applied[0].priced_delta += 1
+        ("the order of two usage lines", |r| r.usage.lines.swap(0, 1)),
+        ("a hook's name", |r| {
+            r.controls.hooks_applied[0].hook = "compres".into()
         }),
         ("the correlation hash", |r| {
             r.correlation_hash = Some("0".repeat(64))
@@ -272,7 +267,7 @@ fn altering_any_field_breaks_the_signature_including_the_cosmetic_ones() {
         ("the link to the predecessor", |r| {
             r.prev_hash = "0".repeat(64)
         }),
-        ("the amount it priced to", |r| r.amount.priced += 1),
+        ("the fee count", |r| r.usage.fee_count += 1),
         ("the destination", |r| {
             r.what.destination = Some("upstream-b".into())
         }),
@@ -687,8 +682,8 @@ fn the_signature_costs_the_same_whatever_the_record_holds() {
     let small = time_one(Box::new(inputs));
     let large = time_one(Box::new(|i| {
         let mut wide = inputs(i);
-        let line = wide.amount.lines[0].clone();
-        wide.amount.lines = std::iter::repeat_n(line, 200).collect();
+        let line = wide.usage.lines[0].clone();
+        wide.usage.lines = std::iter::repeat_n(line, 200).collect();
         wide.controls.children = (0..200).map(UnitKey::new).collect();
         wide
     }));
@@ -712,7 +707,7 @@ fn the_head_read_answers_with_the_tip_and_the_recipe_it_was_sealed_under() {
     let last = last.expect("three records were sealed");
     let body = expose::head_body(&chain);
     assert!(
-        body.contains("\"recipe\":\"busbar.audit.digest.v1\""),
+        body.contains("\"recipe\":\"busbar.audit.digest.v2\""),
         "{body}"
     );
     assert!(
@@ -804,13 +799,35 @@ fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
 
     let parsed: serde_json::Value =
         serde_json::from_str(&expose::range_body(&chain, &records, 1, 2)).expect("JSON");
-    assert_eq!(parsed["records"][0]["priced"].as_str(), Some("540"));
-    assert_eq!(parsed["records"][0]["pre_tier"].as_str(), Some("600"));
     assert_eq!(parsed["records"][0]["emission_delta"].as_str(), Some("-7"));
+    // NO PRICED FIGURE IS PUBLISHED, because none is sealed (#43, #71, #77(3)): the record carries
+    // counts and the inputs a read-time price is computed from, and the body is the recipe rendered
+    // as data. `busbar.audit.digest.v1` carried `pre_tier`, `priced` and `hooks[].priced_delta`;
+    // v2 carries none of them, and a build that published one would be sealing a stored price.
+    let record = parsed["records"][0]
+        .as_object()
+        .expect("a published record is an object");
+    for stored_price in ["pre_tier", "priced", "amount"] {
+        assert!(
+            !record.contains_key(stored_price),
+            "the published record carries a stored price `{stored_price}`: {record:?}"
+        );
+    }
     assert_eq!(
-        parsed["records"][0]["hooks"][0]["priced_delta"].as_str(),
-        Some("-10")
+        parsed["records"][0]["hooks"][0]
+            .as_object()
+            .expect("a hook is an object")
+            .keys()
+            .collect::<Vec<_>>(),
+        vec!["hook"],
+        "a hook that ran is named, never priced"
     );
+    assert_eq!(parsed["recipe"].as_str(), Some("busbar.audit.digest.v2"));
+    // The inputs a read-time price takes ARE published: the counts, the tier, the fee count and the
+    // card version.
+    assert_eq!(parsed["records"][0]["tier_bp"].as_u64(), Some(9_000));
+    assert_eq!(parsed["records"][0]["fee_count"].as_u64(), Some(1));
+    assert_eq!(parsed["records"][0]["rate_card_version"].as_u64(), Some(3));
     // And the fields the digest takes as numbers stay numbers, because the distinction is what the
     // framing turns on.
     assert!(parsed["records"][0]["seq"].is_u64());
@@ -860,13 +877,11 @@ fn worked_example_inputs() -> AuditInputs {
     i.what.op_class = OpClassId::new("chat.completion");
     i.wall = 1_700_000_000;
     i.mono = 42;
-    i.amount.currency = "USD".into();
-    i.amount.bucket_chain_ref = "chain:free>paid".into();
-    i.amount.pre_tier = 600;
-    i.amount.priced = 540;
-    i.amount.tier_bp = 9_000;
-    i.amount.fee_count = 1;
-    i.amount.rate_card_version = 3;
+    i.usage.currency = "USD".into();
+    i.usage.bucket_chain_ref = "chain:free>paid".into();
+    i.usage.tier_bp = 9_000;
+    i.usage.fee_count = 1;
+    i.usage.rate_card_version = 3;
     i
 }
 
@@ -884,7 +899,7 @@ fn spec_json_block(doc: &str, nth: usize) -> serde_json::Value {
 
 /// THE PUBLISHED SPEC CANNOT DRIFT FROM THE CODE.
 ///
-/// `docs/audit-chain-digest-v1.md` quotes three bodies and a digest as literal values. A document
+/// `docs/audit-chain-digest-v2.md` quotes three bodies and a digest as literal values. A document
 /// that described something the node does not do would make every third-party verification fail
 /// while looking, to the third party, exactly like a tampered chain — so the worked example is
 /// asserted against this build rather than transcribed once and trusted.
@@ -895,7 +910,7 @@ fn spec_json_block(doc: &str, nth: usize) -> serde_json::Value {
 fn the_worked_example_in_the_published_spec_is_what_this_build_answers_with() {
     let doc = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../docs/audit-chain-digest-v1.md"),
+            .join("../../docs/audit-chain-digest-v2.md"),
     )
     .expect("the published spec is in the tree");
 
@@ -936,7 +951,7 @@ fn the_worked_example_in_the_published_spec_is_what_this_build_answers_with() {
     assert!(doc.contains(&signer().public_key_hex()));
     assert!(doc.contains(signer().key_id()));
     assert!(
-        doc.contains(&format!("preimage is {} bytes", 490)),
+        doc.contains(&format!("preimage is {} bytes", 468)),
         "the spec quotes a preimage length this build does not produce"
     );
     assert_eq!(
@@ -960,5 +975,5 @@ fn the_worked_examples_preimage_is_the_length_the_spec_quotes() {
             }
         })
         .sum();
-    assert_eq!(framed, 490);
+    assert_eq!(framed, 468);
 }

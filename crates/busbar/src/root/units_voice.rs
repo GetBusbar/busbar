@@ -1940,10 +1940,8 @@ impl VoiceUnit<'_> {
                 emission_delta: 0,
                 stale_policy: false,
             },
-            amount: busbar_kernel_audit::record::Amount {
+            usage: busbar_kernel_audit::record::Usage {
                 lines: self.usage.lines(),
-                pre_tier: 0,
-                priced: 0,
                 tier_bp: busbar_kernel_budget::STANDARD_TIER_BP,
                 fee_count,
                 currency: String::new(),

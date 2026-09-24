@@ -9,8 +9,8 @@ use busbar_contract::caps::{
 };
 
 use crate::record::{
-    Amount, Audit, AuditBreakKind, AuditChain, AuditInputs, Controls, FinishClass, HookApplied,
-    OpClassId, OutcomeFacts, QuantitySource, Subject, UsageLine, What,
+    Audit, AuditBreakKind, AuditChain, AuditInputs, Controls, FinishClass, HookApplied, OpClassId,
+    OutcomeFacts, QuantitySource, Subject, Usage, UsageLine, What,
 };
 
 fn token() -> Pass<AuditStep> {
@@ -43,7 +43,7 @@ fn inputs(unit: u64) -> AuditInputs {
             emission_delta: 0,
             stale_policy: false,
         },
-        amount: Amount {
+        usage: Usage {
             lines: vec![UsageLine {
                 class: busbar_contract::caps::MeterClassId::new("tokens_out"),
                 quantity: 120,
@@ -53,8 +53,6 @@ fn inputs(unit: u64) -> AuditInputs {
                 },
                 estimated: false,
             }],
-            pre_tier: 600,
-            priced: 540,
             tier_bp: 9_000,
             fee_count: 1,
             currency: "USD".into(),
@@ -70,7 +68,6 @@ fn inputs(unit: u64) -> AuditInputs {
             policy_epoch: 7,
             hooks_applied: vec![HookApplied {
                 hook: "compress".into(),
-                priced_delta: -10,
             }],
             replayed: false,
             children: vec![UnitKey::new(unit + 1000)],
@@ -79,29 +76,77 @@ fn inputs(unit: u64) -> AuditInputs {
     }
 }
 
-/// THE SEALED DIGEST IS A FROZEN VALUE, not whatever today's encoder happens to produce.
-///
-/// Every record a deployment has already written is verified by recomputing this digest, so a
-/// change that moves it makes every persisted chain report itself TAMPERED at the next boot. The
-/// hex below was produced by an earlier build; it is a value to preserve, never one to re-capture
-/// from a failing run. The inputs deliberately use the enum arms that carry payloads, because those
-/// are the ones whose encoding is easiest to move by accident.
-///
-/// Moved exactly once, before any release wrote a chain: the record's position entered the digest,
-/// so a chain cut at its tail reports the cut instead of linking perfectly. That is the only
-/// change this value has ever absorbed, and the next one needs a migration, not a re-capture.
-#[test]
-fn the_sealed_digest_of_a_fully_populated_record_is_the_frozen_hex() {
+/// The fully-populated record both frozen digests below are taken over: the enum arms that carry
+/// payloads, because those are the ones whose encoding is easiest to move by accident.
+fn frozen_record() -> crate::record::AuditRecord {
     let mut chain = AuditChain::new();
     let mut with_payloads = inputs(1);
     with_payloads.outcome.unit_end = Outcome::Refused(StepName::Admit, ReasonCode::OverBudget);
     with_payloads.outcome.step = Some(StepName::Admit);
     with_payloads.outcome.finish = FinishClass::Error;
-    let record = chain.seal(with_payloads, &token());
+    chain.seal(with_payloads, &token())
+}
+
+/// THE SEALED DIGEST IS A FROZEN VALUE, not whatever today's encoder happens to produce.
+///
+/// Every record a deployment has already written is verified by recomputing this digest, so a
+/// change that moves it makes every persisted chain report itself TAMPERED at the next boot. The
+/// hex below is a value to preserve, never one to re-capture from a failing run.
+///
+/// History, and the rule it set. Moved once, before any release wrote a chain, when the record's
+/// position entered the digest. Moved a second time — and NOT re-captured — when the recipe became
+/// `busbar.audit.digest.v2` (#43, #71, #77(3): the record stores counts, never a price). That move
+/// is a NEW RECIPE beside the old one, which is the migration this test's earlier wording demanded:
+/// the v1 value is still pinned, byte for byte, by
+/// [`the_v1_frozen_digest_is_reproduced_by_v1_rules_from_a_v2_record`], and this value is the v2
+/// recipe's own, armed the day it was published. The next move needs a v3 beside these two.
+#[test]
+fn the_sealed_digest_of_a_fully_populated_record_is_the_frozen_hex() {
     assert_eq!(
-        record.hash, "0161f86736b3ed067dcdbaa80259c52ceb25946076879a8968e3f84570626358",
+        frozen_record().hash,
+        "ea279d25a42d6345875b06b44fa7bb558f0d05655f985d376cd37fe2e0422293",
         "the sealed digest moved: every persisted chain would now report itself tampered"
     );
+}
+
+/// THE V1 FROZEN DIGEST SURVIVES THE V2 RECIPE, and it is reproduced here from a v2 record.
+///
+/// `busbar.audit.digest.v1` is `v2` plus three priced fields at three fixed places: `pre_tier` and
+/// `priced` (text) after the usage lines and before `tier_bp`, and `hooks[].priced_delta` (text)
+/// after each `hooks[].hook`. Putting the figures the v1 record carried (600, 540, -10) back at
+/// those places and framing the list must give the v1 value this crate froze before v2 existed.
+/// That says two things at once: a v1 record is still verifiable by the v1 rules its page
+/// publishes, and v2 differs from v1 by exactly those three fields and nothing else — a v2 that
+/// had also reordered, renamed or dropped a field would not reproduce the v1 bytes.
+#[test]
+fn the_v1_frozen_digest_is_reproduced_by_v1_rules_from_a_v2_record() {
+    use crate::recipe::{digest_fields, digest_over, DigestField, DigestValue};
+    let text = |name: &'static str, v: &str| DigestField {
+        name,
+        value: DigestValue::Text(v.to_string()),
+    };
+    let record = frozen_record();
+    let mut v1 = Vec::new();
+    for field in digest_fields(&record) {
+        match field.name {
+            "tier_bp" => {
+                v1.push(text("pre_tier", "600"));
+                v1.push(text("priced", "540"));
+                v1.push(field);
+            }
+            "hooks[].hook" => {
+                v1.push(field);
+                v1.push(text("hooks[].priced_delta", "-10"));
+            }
+            _ => v1.push(field),
+        }
+    }
+    assert_eq!(
+        digest_over(&v1),
+        "0161f86736b3ed067dcdbaa80259c52ceb25946076879a8968e3f84570626358",
+        "the v1 digest is no longer reproducible: a v1 record would stop verifying"
+    );
+    assert_ne!(digest_over(&v1), record.hash, "v2 is its own recipe");
 }
 
 #[test]
@@ -152,19 +197,17 @@ fn editing_any_recorded_fact_is_caught() {
 
     // Every one of these is a fact somebody would have a reason to change.
     let edits: Vec<(&str, Edit)> = vec![
-        ("the priced amount", |r| r.amount.priced += 1),
-        ("the pre-tier amount", |r| r.amount.pre_tier += 1),
-        ("the tier", |r| r.amount.tier_bp += 1),
-        ("the fee count", |r| r.amount.fee_count += 1),
-        ("a quantity", |r| r.amount.lines[0].quantity += 1),
+        ("the tier", |r| r.usage.tier_bp += 1),
+        ("the fee count", |r| r.usage.fee_count += 1),
+        ("a quantity", |r| r.usage.lines[0].quantity += 1),
         ("a quantity's source", |r| {
-            r.amount.lines[0].source = QuantitySource::KernelBytes { divisor: 4 }
+            r.usage.lines[0].source = QuantitySource::KernelBytes { divisor: 4 }
         }),
-        ("the estimated mark", |r| r.amount.lines[0].estimated = true),
-        ("the currency", |r| r.amount.currency = "EUR".into()),
-        ("the card version", |r| r.amount.rate_card_version += 1),
+        ("the estimated mark", |r| r.usage.lines[0].estimated = true),
+        ("the currency", |r| r.usage.currency = "EUR".into()),
+        ("the card version", |r| r.usage.rate_card_version += 1),
         ("the bucket chain", |r| {
-            r.amount.bucket_chain_ref = "chain:other".into()
+            r.usage.bucket_chain_ref = "chain:other".into()
         }),
         ("the subject", |r| {
             r.subject = Subject::PrincipalId("somebody-else".into())
@@ -189,8 +232,8 @@ fn editing_any_recorded_fact_is_caught() {
         }),
         ("the lease epoch", |r| r.controls.lease_epoch += 1),
         ("the policy epoch", |r| r.controls.policy_epoch += 1),
-        ("a hook's priced delta", |r| {
-            r.controls.hooks_applied[0].priced_delta -= 1
+        ("a hook's name", |r| {
+            r.controls.hooks_applied[0].hook = "decompress".into()
         }),
         ("the replay mark", |r| r.controls.replayed = true),
         ("the wall clock", |r| r.wall += 1),
@@ -242,7 +285,7 @@ fn a_plane_contributes_exactly_two_identifiers() {
     // Same shape, different two ids.
     assert_eq!(record.what.op_class.as_str(), "tool.call");
     assert_eq!(record.outcome.finish, FinishClass::TurnComplete);
-    assert_eq!(record.amount.currency, "USD");
+    assert_eq!(record.usage.currency, "USD");
     assert!(record.controls.hold_ref.is_some());
 }
 

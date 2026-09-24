@@ -43,8 +43,8 @@ use crate::legacy::{
     OUTCOME_APPLIED, OUTCOME_REJECTED,
 };
 use crate::record::{
-    Amount, Audit, AuditChain, AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts,
-    QuantitySource, Subject, UsageLine, What,
+    Audit, AuditChain, AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, QuantitySource,
+    Subject, Usage, UsageLine, What,
 };
 
 /// An admin entry at a position, with no hash on it yet. Carries [`AUDIT_SCHEME_PIPE`] — every
@@ -220,7 +220,7 @@ fn record_inputs(op_class: &str, destination: &str) -> AuditInputs {
             emission_delta: 0,
             stale_policy: false,
         },
-        amount: Amount {
+        usage: Usage {
             lines: vec![UsageLine {
                 class: busbar_contract::caps::MeterClassId::new("tokens_out"),
                 quantity: 120,
@@ -230,8 +230,6 @@ fn record_inputs(op_class: &str, destination: &str) -> AuditInputs {
                 },
                 estimated: false,
             }],
-            pre_tier: 600,
-            priced: 540,
             tier_bp: 9_000,
             fee_count: 1,
             currency: "USD".into(),
