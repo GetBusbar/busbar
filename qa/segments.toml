@@ -257,9 +257,22 @@ tier   = "live-mock"
 # optimized build — an unoptimized vtable hop is dominated by missing inlining that has nothing to
 # do with the ABI cost being measured, and would flake this gate on debug noise.
 #
-# WHY THIS TIER. Compiling criterion for the bench targets is minutes of build the per-push suite
-# should not be paying; that is the qa cadence, not the per-push one.
-run    = "cargo bench --workspace --no-run && cargo test --release -p busbar-plugin --lib -- --ignored --test-threads=1 the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate"
+# EXECUTING MODE (item 10/169, landed 9bb473f04): `cargo bench --workspace --no-run` above only
+# compiled the criterion bench targets; it asserted nothing about their output. The hot-path perf and
+# alloc gates now have an EXECUTING twin per gate (`xtask/tests/hot_path_gates.rs`,
+# `the_hot_path_{perf,alloc}_gate_executes_its_bench_and_judges_the_real_output`) that RUNS
+# `cargo bench -p busbar-kernel --bench plane_host_vtable_{perf,alloc}` and judges the real numbers
+# against the committed budget — the step this segment was named for and did not do until now.
+# `--ignored` (same reason as the vtable-hop test above: each builds busbar-kernel's bench profile
+# and runs criterion, the qa cadence not the per-push one); `--test-threads=1` so the two criterion
+# runs do not contend for the CPU the wall-clock budget is measured against.
+#
+# WHY THIS TIER. Compiling criterion for the bench targets, and now actually running two criterion
+# benches to judgment, is minutes of build+run the per-push suite should not be paying; that is the
+# qa cadence. Measured cost: ~4 minutes cold build (criterion + release profile) + ~160s combined run
+# time for the three `--ignored` legs, comfortably inside qa-gate.yml's `slow` job's existing 180-
+# minute timeout (.github/workflows/qa-gate.yml, owned by another slot) — no timeout raise needed.
+run    = "cargo bench --workspace --no-run && cargo test --release -p busbar-plugin --lib -- --ignored --test-threads=1 the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate && cargo test -p xtask --test hot_path_gates -- --ignored --test-threads=1"
 
 [[segment]]
 id     = "core-data-plane"
