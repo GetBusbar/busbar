@@ -1388,7 +1388,10 @@ fn validate_ok_on_a_good_decisions_config() {
         "decisions:\n  models:\n    jev:\n      provider: mock\n",
     );
     let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
-    assert_eq!(code, 0, "a good decisions config validates: stdout={stdout} stderr={stderr}");
+    assert_eq!(
+        code, 0,
+        "a good decisions config validates: stdout={stdout} stderr={stderr}"
+    );
     assert!(stdout.contains("ok: config valid"), "got {stdout}");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1404,13 +1407,22 @@ fn validate_refuses_a_decisions_model_naming_an_undefined_provider() {
         "decisions:\n  models:\n    jev:\n      provider: ghost\n",
     );
     let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
-    assert_eq!(code, 1, "an undefined provider reference fails validate: {stderr}");
+    assert_eq!(
+        code, 1,
+        "an undefined provider reference fails validate: {stderr}"
+    );
     assert!(
         stderr.contains("decisions.models.jev.provider"),
         "the refusal names the key path: {stderr}"
     );
-    assert!(stderr.contains("ghost"), "the refusal names the bad value: {stderr}");
-    assert!(stderr.contains("mock"), "the refusal names the valid choices: {stderr}");
+    assert!(
+        stderr.contains("ghost"),
+        "the refusal names the bad value: {stderr}"
+    );
+    assert!(
+        stderr.contains("mock"),
+        "the refusal names the valid choices: {stderr}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1425,12 +1437,18 @@ fn validate_refuses_a_decisions_hook_naming_an_undefined_hook() {
         "decisions:\n  models:\n    jev:\n      provider: mock\n  hooks: [ghost-hook]\n",
     );
     let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
-    assert_eq!(code, 1, "an undefined hook reference fails validate: {stderr}");
+    assert_eq!(
+        code, 1,
+        "an undefined hook reference fails validate: {stderr}"
+    );
     assert!(
         stderr.contains("decisions.hooks"),
         "the refusal names the key path: {stderr}"
     );
-    assert!(stderr.contains("ghost-hook"), "the refusal names the bad value: {stderr}");
+    assert!(
+        stderr.contains("ghost-hook"),
+        "the refusal names the bad value: {stderr}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1454,7 +1472,13 @@ fn validate_refuses_a_decisions_model_whose_provider_speaks_a_non_jev_dialect() 
         stderr.contains("decisions.models.jev.provider"),
         "the refusal names the key path: {stderr}"
     );
-    assert!(stderr.contains("anthropic"), "the refusal names the resolved dialect: {stderr}");
-    assert!(stderr.contains("jev"), "the refusal names the dialect the plane speaks: {stderr}");
+    assert!(
+        stderr.contains("anthropic"),
+        "the refusal names the resolved dialect: {stderr}"
+    );
+    assert!(
+        stderr.contains("jev"),
+        "the refusal names the dialect the plane speaks: {stderr}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

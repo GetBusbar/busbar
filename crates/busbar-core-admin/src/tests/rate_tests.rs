@@ -363,14 +363,12 @@ fn the_sweep_drops_only_windows_older_than_the_current_one() {
 #[test]
 fn for_verb_agrees_with_the_kernel_path_classifier_for_every_legacy_mutating_verb() {
     for row in crate::verb::LEGACY_VERBS {
-        if row.scope == crate::verb::VerbScope::ReadOnly && row.verb != KernelVerb::PostPluginsInspect
+        if row.scope == crate::verb::VerbScope::ReadOnly
+            && row.verb != KernelVerb::PostPluginsInspect
         {
             continue;
         }
-        let rel = row
-            .path
-            .strip_prefix("/api/v1/admin")
-            .unwrap_or(row.path);
+        let rel = row.path.strip_prefix("/api/v1/admin").unwrap_or(row.path);
         let admin_class = MutationClass::for_verb(row.verb, CONFIG_CLASS_RULES);
         let kernel_class = busbar_kernel::ratelimit::classify_mutation(rel);
         assert_eq!(

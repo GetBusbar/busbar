@@ -451,7 +451,11 @@ impl RouterDispatch {
 /// — those requests never carry the extension either, and the handlers' `Option<Extension<_>>`
 /// param already accounts for "not present" as `None`.
 #[cfg(feature = "root-admin")]
-async fn call(inner: axum::Router, request: &AdminRequest, claims: &ClaimJournalCell) -> AdminAnswer {
+async fn call(
+    inner: axum::Router,
+    request: &AdminRequest,
+    claims: &ClaimJournalCell,
+) -> AdminAnswer {
     use tower::ServiceExt;
 
     let mut builder = axum::http::Request::builder()
@@ -624,8 +628,11 @@ pub fn mount(
     // every call after, and it is filled exactly once, below, the instant the answer is known — long
     // before the router this dispatch drives can see a real request.
     let claims: ClaimJournalCell = Arc::new(std::sync::OnceLock::new());
-    let dispatch: Arc<dyn AdminDispatch> =
-        Arc::new(RouterDispatch::new(inner.clone(), &runtime, Arc::clone(&claims)));
+    let dispatch: Arc<dyn AdminDispatch> = Arc::new(RouterDispatch::new(
+        inner.clone(),
+        &runtime,
+        Arc::clone(&claims),
+    ));
     let node = Arc::new(AdminNode::new(kernel, build_units(dispatch)));
     let _ = claims.set(
         node.units

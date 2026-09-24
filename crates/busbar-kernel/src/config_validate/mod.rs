@@ -344,12 +344,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             }
         }
     }
-    validate_providers_with(
-        &known_protocols,
-        cfg,
-        unset_env_vars,
-        &mut errors,
-    );
+    validate_providers_with(&known_protocols, cfg, unset_env_vars, &mut errors);
 
     // Rule 2 & 3: Validate each pool's members
     for (pool_name, pool_cfg) in &cfg.pools {
