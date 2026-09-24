@@ -19,11 +19,9 @@
 
 use crate::ir::codec::OpenAiRealtimeCodec;
 use crate::runtime::carrier::Carrier;
-use crate::runtime::metering::{HostMeteringPort, MockMeteringHost};
 use crate::runtime::{GovernedCalls, ReplyRefusal, VoiceRuntime};
-use crate::topology::{open_admitted_session, SessionBudget};
+use crate::topology::open_admitted_session;
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
-use busbar_kernel::plane_host::MeteringHost;
 use std::sync::{Arc, Mutex};
 
 /// The deadline the plane declares for a tool call the node does not serve, in milliseconds. Read
@@ -92,20 +90,10 @@ impl GovernedCalls for TableStandIn {
 }
 
 fn runtime() -> VoiceRuntime {
-    let host = Arc::new(MockMeteringHost::default()) as Arc<dyn MeteringHost>;
     VoiceRuntime::new(
         Arc::new(DurableHandleEngine::new()),
-        Arc::new(HostMeteringPort::new(host)),
         Arc::new(crate::runtime::tools::EchoToolExecutor),
     )
-}
-
-fn budget() -> SessionBudget {
-    SessionBudget {
-        estimate_nanos: 1_000,
-        fee_nanos: 0,
-        cap_nanos: None,
-    }
 }
 
 /// **A served open takes the binding it is handed, and the sweep on that session reaches the table.**
@@ -124,19 +112,18 @@ fn a_served_open_carries_its_binding_into_the_session_it_opens() {
     };
     table.enter(4_242, "call_x", 0);
 
-    let (core, _handle, _guard) = open_admitted_session(
+    let (core, _handle) = open_admitted_session(
         &rt,
         OpenAiRealtimeCodec,
         "acct-1",
         "call-9",
         None,
         Carrier::sideband(),
-        budget(),
         None,
         1,
         Some(governed),
     )
-    .expect("an uncapped budget opens");
+    .expect("the session opens");
 
     assert_eq!(
         core.governed_session(),
@@ -164,14 +151,13 @@ fn a_served_open_carries_its_binding_into_the_session_it_opens() {
 fn an_unanswered_call_is_swept_at_the_declared_deadline_and_not_before() {
     let rt = runtime();
     let table = Arc::new(TableStandIn::default());
-    let (core, _handle, _guard) = open_admitted_session(
+    let (core, _handle) = open_admitted_session(
         &rt,
         OpenAiRealtimeCodec,
         "acct-1",
         "call-9",
         None,
         Carrier::sideband(),
-        budget(),
         None,
         1,
         Some(crate::runtime::GovernedSession {
@@ -179,7 +165,7 @@ fn an_unanswered_call_is_swept_at_the_declared_deadline_and_not_before() {
             calls: Arc::clone(&table) as Arc<dyn GovernedCalls>,
         }),
     )
-    .expect("an uncapped budget opens");
+    .expect("the session opens");
 
     table.enter(7, "call_late", 0);
     assert_eq!(
@@ -205,19 +191,18 @@ fn an_unanswered_call_is_swept_at_the_declared_deadline_and_not_before() {
 #[test]
 fn a_node_with_no_table_composed_serves_what_it_served_before() {
     let rt = runtime();
-    let (core, _handle, _guard) = open_admitted_session(
+    let (core, _handle) = open_admitted_session(
         &rt,
         OpenAiRealtimeCodec,
         "acct-1",
         "call-9",
         None,
         Carrier::sideband(),
-        budget(),
         None,
         1,
         None,
     )
-    .expect("an uncapped budget opens");
+    .expect("the session opens");
     assert_eq!(core.governed_session(), None);
     assert_eq!(core.sweep_expired(u64::MAX), 0, "and it sweeps nothing");
 }

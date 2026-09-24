@@ -101,9 +101,13 @@
 //!    cell, and hands back the message stream/sink pair the pump consumes.
 //! 2. [`SessionPump`] — `busbar_voice::runtime::{SessionCore, VoiceSession, UplinkForwarder,
 //!    Outbound}`, the per-frame loop over a byte duplex.
-//! 3. [`SessionLease`] — `busbar_voice::runtime::{SessionMeter, SessionLease, TurnVerdict,
-//!    LeaseCloseGuard}`: the plane reports each turn's raw counts to a kernel session meter, which
-//!    prices them against the session's budget and answers only whether the carrier may stay open.
+//! 3. [`SessionLease`] — NOTHING in `busbar_voice` implements it any more. A SERVED session is
+//!    metered by the kernel's session account (`busbar_kernel::plane_host::session_meter`, OWNER
+//!    RULING Q21b): each turn's raw counts per class are ledgered through the one metering path and
+//!    the kernel's budget view answers whether the carrier may stay open. The D2 lease this seam once
+//!    named is deleted. The seam stays the kernel-driven path's own reserve/settle hook; on this path
+//!    a turn's counts also reach the door's cells ([`Units::meter`] below), which is what refuses the
+//!    next frame of a session whose chain is dry.
 //! 4. [`Carrier`] — `busbar_voice::topology::telephony` and `busbar_voice::runtime::carrier`, the
 //!    inbound telephony leg.
 //!
@@ -321,9 +325,8 @@ pub trait SessionPump: Send + Sync {
 
 /// **Seam 3 — the metering lease.** Reserve at open, settle per turn, close once.
 ///
-/// Satisfied by `busbar_voice::runtime::{SessionMeter, SessionLease, TurnVerdict, LeaseCloseGuard}`
-/// — the plane holds the lease and reports counts; the pricing is the kernel meter's.
-/// This is not a second ledger: the reservation it drives IS the unit's hold, the settlements it
+/// No `busbar_voice` type implements it (the D2 lease is deleted, Q21b; a served session is metered
+/// by the kernel's session account). This is not a second ledger: the reservation it drives IS the unit's hold, the settlements it
 /// takes are what the usage and cost units folded, and the close is the exit path. The seam exists
 /// because the object that has to be told those three things lives on the far side of the async
 /// boundary.
@@ -919,6 +922,22 @@ pub struct TurnUsage {
     pub audio_ms_in: u64,
     /// Tool calls the upstream opened during the turn.
     pub tool_calls: u64,
+}
+
+/// The plane key the `streams` card is filed under — the voice plane's registry key, which is what
+/// qualifies a voice row's lane so the view prices it with that card and never with the llm plane's
+/// flat one. A literal here because this file compiles without the voice crate; a test holds it to
+/// `busbar_voice::PLANE_KEY` wherever that crate is built in.
+pub(crate) const VOICE_CARD_PLANE: &str = "voice";
+
+/// The ledger lane a turn of `dialect` is counted under: the voice plane's key, the separator, and the
+/// dialect's name.
+fn voice_lane(dialect: Dialect) -> String {
+    format!(
+        "{VOICE_CARD_PLANE}{}{}",
+        busbar_kernel_ledger::cost::PLANE_LANE_SEP,
+        dialect.name()
+    )
 }
 
 /// The declared class this key names, as the PLANE spells it, or `None` if the plane no longer
@@ -1682,6 +1701,25 @@ impl Units for VoiceUnit<'_> {
         _destinations: &[busbar_contract::caps::VerifiedDestination],
     ) -> Decision<Meter> {
         let lines = self.usage.lines();
+        // THE TURN'S COUNTS REACH THE DOOR'S CELLS (item 460) — the one path the door's caps read. The
+        // door charged this turn at admission and, until this call, ledgered nothing, so every cap on
+        // its chain read the conversation as free. Keyed exactly as the admission was (the session's
+        // chain, the dialect's pool, the pinned arrival epoch), under the plane-qualified lane the
+        // view prices with the `streams` card (#47), each class as the plane declares it (#71).
+        if let (false, Some(chain)) = (self.shape.is_handshake(), self.chain) {
+            let units: BTreeMap<String, u64> = lines
+                .iter()
+                .map(|line| (line.class.as_str().to_string(), line.quantity))
+                .collect();
+            let door = self.node.door.lock().unwrap_or_else(|e| e.into_inner());
+            door.record_usage(
+                chain,
+                self.dialect.name(),
+                &voice_lane(self.dialect),
+                &units,
+                self.epoch,
+            );
+        }
         // The turn's exact figure settles against the session's reservation. An exhausted lease is
         // reported and acted on — the session hard-closes — rather than swallowed: audio already
         // streamed cannot be refunded, so the only enforcement point is the next frame.

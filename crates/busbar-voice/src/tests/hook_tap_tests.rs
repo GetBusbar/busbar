@@ -22,7 +22,7 @@
 
 use crate::ir::config::SessionConfig;
 use crate::mount::{open_governed, GovernedOpen, Ingress, ProviderEndpoint};
-use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
+use crate::runtime::{EchoToolExecutor, VoiceRuntime};
 use crate::testkit::fixture_host::{FixtureHost, RewriteScript};
 use crate::testkit::loopback_http::{MockResponse, MockServer, MockServerState};
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
@@ -54,7 +54,6 @@ fn rewrite(raw_transform_reply: serde_json::Value) -> RewriteScript {
 fn runtime() -> VoiceRuntime {
     VoiceRuntime::new(
         Arc::new(DurableHandleEngine::new()),
-        Arc::new(LocalMeteringPort),
         Arc::new(EchoToolExecutor),
     )
 }

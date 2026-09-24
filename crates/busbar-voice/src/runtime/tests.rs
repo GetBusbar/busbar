@@ -2,78 +2,96 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! T2 RUNTIME TESTS (behind `runtime`): pump lifecycle, tool-call correlation under interleaving,
-//! SessionScope reattach + foreign-owner refusal, and the D2 HARD-CLOSE-ON-EXHAUSTION path. The
-//! WS/transport is mocked with in-memory `futures` channel pairs; the metering lease is a session on
-//! the kernel's `HostMeteringPort` over a mock host lease that prices one nano per reported unit.
+//! SessionScope reattach + foreign-owner refusal, and the session's METERING — each closed turn's raw
+//! counts per class handed to the kernel's session account (Q21b), and the HARD CLOSE the kernel's
+//! budget view answers when a turn dries the caller's chain. The WS/transport is mocked with in-memory
+//! `futures` channel pairs; the host is the fixture host, whose budget view a test sets or caps by
+//! count (what a count is WORTH is proven over the real engine in the composition root's tests).
 
 use crate::ir::codec::{OpenAiRealtimeCodec, WireEvent};
 use crate::ir::usage::IrDuplexUsage;
 use crate::runtime::carrier::Carrier;
-use crate::runtime::metering::{
-    HostMeteringPort, LocalMeteringPort, MockMeteringHost, SessionBudget, SessionLease,
-    SessionMeter, TurnVerdict,
-};
+use crate::runtime::metering::{SessionMetering, TurnMeter, TurnVerdict};
 use crate::runtime::scope::SessionHandle;
 use crate::runtime::session::{SessionCore, VoiceSession};
+use crate::testkit::fixture_host::FixtureHost;
 use busbar_kernel::ingress::byte_duplex::serve_messages;
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use busbar_kernel::plane::handle_engine::{HandleDenied, ScopedMutateError};
-use busbar_kernel::plane_host::MeteringHost;
 use bytes::Bytes;
 use futures::channel::mpsc::{unbounded, UnboundedReceiver};
 use futures::StreamExt;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 // ── fixtures ──────────────────────────────────────────────────────────────────────────────────────
 
-/// Open a session on the kernel's host meter over `host` with the given money terms (nanodollars).
-fn lease_on(
-    host: Arc<dyn MeteringHost>,
-    estimate_nanos: u64,
-    fee_nanos: u64,
-    cap_nanos: Option<u64>,
-) -> Option<SessionLease> {
-    let meter = Arc::new(HostMeteringPort::new(host)) as Arc<dyn SessionMeter>;
-    SessionLease::open(
-        &meter,
-        &SessionBudget {
-            estimate_nanos,
-            fee_nanos,
-            cap_nanos,
-        },
+/// The presenting key every metered cell opens its session for.
+fn caller() -> busbar_api::VirtualKey {
+    busbar_api::VirtualKey {
+        id: "vk-voice".to_string(),
+        name: "voice".to_string(),
+        ..Default::default()
+    }
+}
+
+/// The lane an unmodelled OpenAI Realtime session's counts are ledgered under: the voice plane's key,
+/// the separator, and the provider label (the dialect carries its model server-side).
+const LANE: &str = "voice\u{1f}openai_realtime";
+
+/// A governed fixture host whose budget view is ONE bucket capped at `cap` counts (`None`: uncapped).
+fn governed_host(cap: Option<i64>) -> Arc<FixtureHost> {
+    let host = FixtureHost::new().governed();
+    Arc::new(match cap {
+        Some(cap) => host.with_count_cap(cap),
+        None => host,
+    })
+}
+
+/// Open the presenting key's kernel account over `host`.
+fn metering(host: &Arc<FixtureHost>) -> SessionMetering {
+    TurnMeter::new(
+        Arc::clone(host) as Arc<dyn busbar_kernel::plane_host::EngineHost>,
+        caller(),
+        "voice-server",
+        crate::OPENAI_REALTIME,
     )
+    .open("")
+    .expect("a chain with room opens")
+    .expect("a governed host opens an account")
 }
 
-/// One turn of `n` reported output units (the mock host prices each at one nano).
-fn units(n: u64) -> busbar_substrate_values::billing::Usage {
-    let mut usage = busbar_substrate_values::billing::Usage::default();
-    usage.usage_units.insert("output_tokens".into(), n);
-    usage
-}
-
-/// A downlink-facing core with a real downlink sink, a metering lease over `cap` nanodollars, the echo
-/// tool executor, and the PRODUCTION money hop (a host lease + host pricing over [`MockMeteringHost`],
-/// which prices every reserved unit at 1 nano). Returns the core plus the downlink receiver the client
-/// would read.
-fn core_with_downlink(
-    cap: Option<u64>,
+/// A downlink-facing core with a real downlink sink, the echo tool executor, and the session's
+/// metering over `host` (`None`: an ungoverned session). Returns the core plus the downlink receiver
+/// the client would read.
+fn core_on(
+    host: Option<&Arc<FixtureHost>>,
 ) -> (
     Arc<SessionCore<OpenAiRealtimeCodec>>,
     UnboundedReceiver<Vec<u8>>,
 ) {
     let (dtx, drx) = unbounded::<Vec<u8>>();
-    let carrier = Carrier::with_downlink(dtx);
-    let host = Arc::new(MockMeteringHost::default()) as Arc<dyn MeteringHost>;
-    let lease = lease_on(host, 1_000, 0, cap).expect("lease opens for a non-refuse-all cap");
     let core = Arc::new(SessionCore::new(
         OpenAiRealtimeCodec,
-        lease,
-        None,
+        host.map(metering),
         Arc::new(crate::runtime::tools::EchoToolExecutor),
-        carrier,
+        Carrier::with_downlink(dtx),
         None,
     ));
     (core, drx)
+}
+
+/// A downlink-facing core metered over a count-capped host (`None`: ungoverned).
+fn core_with_downlink(
+    cap: Option<i64>,
+) -> (
+    Arc<SessionCore<OpenAiRealtimeCodec>>,
+    UnboundedReceiver<Vec<u8>>,
+) {
+    match cap {
+        Some(cap) => core_on(Some(&governed_host(Some(cap)))),
+        None => core_on(None),
+    }
 }
 
 fn wire(json: serde_json::Value) -> WireEvent {
@@ -94,14 +112,42 @@ fn audio_delta(b64: &str) -> WireEvent {
     wire(serde_json::json!({ "type": "response.output_audio.delta", "delta": b64 }))
 }
 
-// ── metering: pricing + lease semantics ─────────────────────────────────────────────────────────
+/// `ms` milliseconds of PCM16 uplink audio (24 kHz mono, 48 bytes a millisecond) as the client sends it.
+fn uplink_audio(ms: usize) -> WireEvent {
+    let pcm = Bytes::from(vec![0u8; ms * 48]);
+    wire(serde_json::json!({
+        "type": "input_audio_buffer.append",
+        "audio": busbar_substrate_values::media::base64_encode(&pcm),
+    }))
+}
+
+/// The upstream opening one tool call.
+fn call_opened(call_id: &str) -> WireEvent {
+    wire(serde_json::json!({"type":"response.output_item.added",
+        "item":{"type":"function_call","call_id":call_id,"name":"lookup"}}))
+}
+
+/// The rows `host` holds for the caller, as `(class, count)` under [`LANE`].
+fn rows(host: &FixtureHost) -> BTreeMap<String, u64> {
+    host.ledger_rows(&caller().id)
+        .into_iter()
+        .map(|((lane, class), n)| {
+            assert_eq!(lane, LANE, "every count is ledgered under the voice lane");
+            (class, n)
+        })
+        .collect()
+}
+
+fn row_set(pairs: &[(&str, u64)]) -> BTreeMap<String, u64> {
+    pairs.iter().map(|(c, n)| ((*c).to_string(), *n)).collect()
+}
+
+// ── metering: the plane's counts, the kernel's verdict ──────────────────────────────────────────
 
 #[test]
 fn usage_folds_five_classes_onto_the_four_reserved_keys() {
-    // The 5→4 map: (audio_in+text_in)-cached→input, audio_out+text_out→output, cached→cache_read. No
-    // new unit/label/constant — only the existing reserved keys, and only non-zero classes are keyed.
-    // `cached` is a SUBSET of the input classes in both dialects, so it is netted out of the input
-    // lane and billed once, on the cache-read lane.
+    // The codec's own 5→4 fold (no longer the voice billing path, which ledgers the plane's classes —
+    // see `a_served_turn_ledgers_the_planes_counts_per_class`), kept honest while it exists.
     let u = IrDuplexUsage {
         audio_in: 20,
         audio_out: 3,
@@ -112,225 +158,187 @@ fn usage_folds_five_classes_onto_the_four_reserved_keys() {
     let usage = u.to_billing_usage();
     assert_eq!(
         usage.usage_units.get(busbar_api::UNIT_INPUT).copied(),
-        Some(20 + 5 - 11),
-        "audio_in + text_in fold onto `input`, less the cached subset"
+        Some(20 + 5 - 11)
     );
     assert_eq!(
         usage.usage_units.get(busbar_api::UNIT_OUTPUT).copied(),
-        Some(3 + 7),
-        "audio_out + text_out fold onto `output`"
+        Some(3 + 7)
     );
     assert_eq!(
         usage.usage_units.get(busbar_api::UNIT_CACHE_READ).copied(),
-        Some(11),
-        "cached folds onto `cache_read`"
+        Some(11)
     );
-    assert_eq!(
-        usage.usage_units.len(),
-        3,
-        "only the three touched reserved keys"
-    );
-    // The billed lanes never exceed the turn the provider reported.
-    assert_eq!(
-        usage.usage_units.values().sum::<u64>(),
-        20 + 5 + 3 + 7,
-        "the four classes bill once each, never the cached subset twice"
-    );
-    // A fully-cached turn bills nothing on the input lane (and keys no zero component).
-    let all_cached = IrDuplexUsage {
-        audio_in: 40,
-        cached: 40,
-        ..IrDuplexUsage::default()
-    }
-    .to_billing_usage();
-    assert_eq!(all_cached.usage_units.get(busbar_api::UNIT_INPUT), None);
-    assert_eq!(
-        all_cached
-            .usage_units
-            .get(busbar_api::UNIT_CACHE_READ)
-            .copied(),
-        Some(40)
-    );
-    // An over-reported cache figure FLOORS the input lane at zero — it never wraps to a huge charge.
-    let over = IrDuplexUsage {
-        audio_in: 10,
-        cached: 999,
-        ..IrDuplexUsage::default()
-    }
-    .to_billing_usage();
-    assert_eq!(over.usage_units.get(busbar_api::UNIT_INPUT), None);
-    // An empty turn keys nothing (no zero components ever price).
     assert!(IrDuplexUsage::default()
         .to_billing_usage()
         .usage_units
         .is_empty());
 }
 
-#[test]
-fn host_prices_usage_then_settles_the_priced_increment() {
-    // The kernel's price → settle path: the mock host prices every reserved unit at 1 nano, so a turn
-    // of (audio_out 3, text_out 4) folds to output=7 and prices to 7 nanos, settled against the lease.
-    let host = Arc::new(MockMeteringHost::default());
-    let lease = lease_on(Arc::clone(&host) as Arc<dyn MeteringHost>, 0, 0, Some(100))
-        .expect("uncapped-enough opens");
-    let u = IrDuplexUsage {
-        audio_out: 3,
-        text_out: 4,
-        ..IrDuplexUsage::default()
-    };
-    let usage = u.to_billing_usage();
-    assert_eq!(lease.report_turn("gpt-realtime", &usage), TurnVerdict::Live);
-    assert_eq!(lease.settled(), 7, "output 3+4 priced at 1 nano each = 7");
-    // An UNPRICED model fails closed — never meters as free, and settles nothing.
-    assert_eq!(
-        lease.report_turn(MockMeteringHost::UNPRICED_MODEL, &usage),
-        TurnVerdict::MustClose,
-        "an unpriced model closes the carrier"
-    );
-    assert_eq!(lease.settled(), 7);
-}
-
-#[test]
-fn local_meter_prices_nothing_and_refuse_all_denies() {
-    // The pre-host meter has pricing OFF: a reported turn settles nothing, so it never dries a cap —
-    // the zero-priced lease it replaces behaved exactly so.
-    let local = Arc::new(LocalMeteringPort) as Arc<dyn SessionMeter>;
-    let capped = SessionBudget {
-        estimate_nanos: 100,
-        fee_nanos: 10,
-        cap_nanos: Some(50),
-    };
-    let lease = SessionLease::open(&local, &capped).unwrap();
-    for _ in 0..3 {
-        assert_eq!(lease.report_turn("m", &units(20)), TurnVerdict::Live);
-    }
-    assert_eq!(lease.settled(), 0);
-    // A refuse-all cap denies the open outright (fail closed).
-    let spent = SessionBudget {
-        cap_nanos: Some(0),
-        ..capped
-    };
-    assert!(SessionLease::open(&local, &spent).is_none());
-}
-
-// ── THE HOST-LEASE PORT (the REAL D2 money hop) — the kernel's `HostMeteringPort` over a mock host ──
-
-#[test]
-fn host_lease_reserves_settles_and_hard_closes_at_the_real_cap() {
-    let host = Arc::new(MockMeteringHost::default());
-
-    // Reserve estimate 100 + flat fee 10, TRUE cap 50 (the flat fee is folded into `reserved`, NOT the
-    // cap — exhaustion is judged against the cap only, so the fee is never double-counted on settle).
-    let lease = lease_on(
-        Arc::clone(&host) as Arc<dyn MeteringHost>,
-        100,
-        10,
-        Some(50),
-    )
-    .expect("a real cap opens the lease");
-    // The flat fee folded into `reserved` ONCE (estimate 100 + fee 10), never into the cap.
-    assert_eq!(
-        host.reserved_of(1),
-        Some(110),
-        "reserve = estimate + flat fee, charged once"
-    );
-    assert_eq!(
-        lease.report_turn("m", &units(20)),
-        TurnVerdict::Live,
-        "20 < 50 → live"
-    );
-    assert_eq!(
-        lease.report_turn("m", &units(20)),
-        TurnVerdict::Live,
-        "40 < 50 → live"
-    );
-    assert_eq!(lease.settled(), 40, "settled tap reads through the host");
-    assert_eq!(
-        lease.report_turn("m", &units(20)),
-        TurnVerdict::MustClose,
-        "60 ≥ cap 50 → exhausted (hard close)"
-    );
-    assert_eq!(lease.settled(), 60, "exact accrual, no drift");
-    // Dropping the handle closes the lease host-side (no registry leak).
-    drop(lease);
-    assert!(
-        host.closed_ids().contains(&1),
-        "the dropped lease closed its session host-side"
-    );
-}
-
-#[test]
-fn host_port_refuse_all_fails_the_session_closed() {
-    let host = Arc::new(MockMeteringHost::default()) as Arc<dyn MeteringHost>;
-    // A refuse-all cap denies the reserve — the session never opens (fail closed).
-    assert!(
-        lease_on(Arc::clone(&host), 0, 0, Some(0)).is_none(),
-        "refuse-all → no lease"
-    );
-    // An uncapped lease never exhausts.
-    let unc = lease_on(host, 0, 0, None).expect("uncapped opens");
-    assert_eq!(
-        unc.report_turn("m", &units(u64::MAX)),
-        TurnVerdict::Live,
-        "uncapped never dry"
-    );
-}
-
-#[test]
-fn host_lease_unknown_or_closed_settle_fails_closed() {
-    let host = Arc::new(MockMeteringHost::default());
-    let lease = lease_on(Arc::clone(&host) as Arc<dyn MeteringHost>, 0, 0, Some(100)).unwrap();
-    // Forget the lease host-side out from under the handle: the next turn names no open lease and the
-    // kernel maps the host's `None` to a close, so the plane hard-closes fail-closed (not silently).
-    host.clear_leases();
-    assert_eq!(
-        lease.report_turn("m", &units(1)),
-        TurnVerdict::MustClose,
-        "unknown lease → must close"
-    );
-    assert_eq!(lease.settled(), 0, "an unknown lease reads 0 settled");
-}
-
-// ── THE D2 HARD-CLOSE-ON-EXHAUSTION PATH (the marquee guarantee) ─────────────────────────────────
-
+/// Q21b EXIT TEST — a served voice session writes the streaming plane's count rows. One turn: a
+/// second of uplink audio, one tool call opened, a usage report naming all five token classes. The
+/// ledger holds exactly the plane's seven classes, under the voice lane, at the counts the turn
+/// carried — never a price, and never the llm plane's reserved token keys.
 #[tokio::test]
-async fn settle_past_cap_hard_closes_the_carrier() {
-    // Cap of 5 nanodollars; each usage frame settles 3.
+async fn a_served_turn_ledgers_the_planes_counts_per_class() {
+    let host = governed_host(None);
+    let (core, _drx) = core_on(Some(&host));
+    let _ = core.on_client_frame(uplink_audio(1_000));
+    let _ = core.on_server_frame(call_opened("call_1")).await;
+    let done = wire(serde_json::json!({
+        "type": "response.done",
+        "response": { "usage": {
+            "input_token_details": { "audio_tokens": 10, "text_tokens": 3, "cached_tokens": 1 },
+            "output_token_details": { "audio_tokens": 20, "text_tokens": 4 },
+        }},
+    }));
+    let plan = core.on_server_frame(done).await;
+    assert!(!plan.close, "an uncapped chain never closes the carrier");
+    assert_eq!(
+        rows(&host),
+        row_set(&[
+            ("audio_seconds_in", 1),
+            ("audio_tokens_in", 10),
+            ("audio_tokens_out", 20),
+            ("cached_tokens", 1),
+            ("text_tokens_in", 3),
+            ("text_tokens_out", 4),
+            ("tool_calls", 1),
+        ]),
+    );
+    // The turn's counters closed with it: the next report carries only what the next turn did.
+    let _ = core.on_server_frame(usage_frame(2)).await;
+    assert_eq!(rows(&host)["audio_tokens_out"], 22);
+    assert_eq!(rows(&host)["audio_seconds_in"], 1);
+    assert_eq!(rows(&host)["tool_calls"], 1);
+}
+
+/// A turn that ends on an upstream error, or with the session, was served all the same: the audio
+/// the caller spoke and the tool calls the upstream opened reach the ledger either way.
+#[tokio::test]
+async fn an_errored_or_abandoned_turn_still_ledgers_what_it_served() {
+    let host = governed_host(None);
+    let (core, _drx) = core_on(Some(&host));
+    let _ = core.on_client_frame(uplink_audio(1_500));
+    let _ = core.on_server_frame(call_opened("call_1")).await;
+    let error = wire(serde_json::json!({
+        "type": "error",
+        "error": { "type": "server_error", "code": "boom", "message": "upstream failed" },
+    }));
+    let _ = core.on_server_frame(error).await;
+    assert_eq!(
+        rows(&host),
+        row_set(&[("audio_seconds_in", 2), ("tool_calls", 1)]),
+        "an error-ended turn ledgers its own counts (1.5 s rounds up to 2)"
+    );
+    let _ = core.on_client_frame(uplink_audio(400));
+    core.settle_open_turn();
+    assert_eq!(
+        rows(&host)["audio_seconds_in"],
+        3,
+        "the teardown settles the open turn"
+    );
+    core.settle_open_turn();
+    assert_eq!(rows(&host)["audio_seconds_in"], 3, "and settles it once");
+}
+
+/// THE HARD CLOSE (the marquee guarantee), now the kernel's count-based check: the turn that dries
+/// the caller's chain is delivered and ledgered, and the verdict cancels the in-flight response and
+/// closes the carrier. Replaces `settle_past_cap_hard_closes_the_carrier` (the D2 lease).
+#[tokio::test]
+async fn a_turn_that_dries_the_chain_hard_closes_the_carrier() {
+    // A chain of 5 counts; each usage frame ledgers 3.
     let (core, mut drx) = core_with_downlink(Some(5));
 
-    // Frame 1: 3 audio-out tokens → settle 3, under cap → still live, no close.
     let plan = core.on_server_frame(usage_frame(3)).await;
-    assert!(!plan.close, "under cap: no hard close");
+    assert!(!plan.close, "3 of 5: no hard close");
     assert!(!core.carrier().is_closed());
-    assert_eq!(core.settled_nanos(), 3);
 
-    // Frame 2: another 3 → settled 6 >= cap 5 → EXHAUSTED → hard close.
     let plan = core.on_server_frame(usage_frame(3)).await;
-    assert!(plan.close, "over cap: the frame plan demands a hard close");
+    assert!(plan.close, "6 of 5: the frame plan demands a hard close");
     assert!(
         plan.upstream
             .iter()
             .any(|w| String::from_utf8_lossy(&w.0).contains("response.cancel")),
-        "exhaustion cancels the in-flight response upstream"
+        "a dry chain cancels the in-flight response upstream"
     );
     assert!(core.carrier().is_closed(), "the carrier hard-closed");
-    assert_eq!(core.settled_nanos(), 6);
 
-    // After the hard close, nothing more is processed and no downlink reaches the client.
     let plan = core.on_server_frame(audio_delta("AAAA")).await;
     assert!(plan.downlink.is_empty(), "closed carrier processes nothing");
     assert!(
         !core.carrier().send_downlink(vec![1, 2, 3]),
         "the carrier drops downlink after hard close"
     );
-    // Drain: the client never received a post-close audio frame.
     drx.close();
-    let mut leaked_post_close = false;
-    while let Some(_f) = drx.next().await {
-        // Any frames here are pre-close (there were none of audio before exhaustion in this test).
-        leaked_post_close = true;
+    assert!(
+        drx.next().await.is_none(),
+        "no downlink audio leaked to the client"
+    );
+}
+
+/// The chain a turn meets is the LIVE one: spend the key takes elsewhere between two turns counts,
+/// which the lease's once-read cap never saw.
+#[tokio::test]
+async fn a_chain_dried_elsewhere_closes_the_session_at_its_next_turn() {
+    let host = governed_host(None);
+    let (core, _drx) = core_on(Some(&host));
+    assert!(!core.on_server_frame(usage_frame(1)).await.close);
+    host.set_budget_chain(vec![busbar_api::BudgetBucketState {
+        bucket_id: "group:g@day".to_string(),
+        budget_group: Some("g".to_string()),
+        pool: None,
+        spend_micros_at_current_rate: 10_000,
+        remaining_micros: Some(0),
+        window_start: 0,
+        budget_period: "day".to_string(),
+    }]);
+    assert!(core.on_server_frame(usage_frame(1)).await.close);
+}
+
+/// Q21b EXIT TEST (the budget gate) — a key whose chain is already dry is refused at the open; one
+/// with room, or with nothing capped, opens; an ungoverned host opens no account at all.
+#[test]
+fn a_dry_chain_refuses_the_open() {
+    let open = |host: Arc<FixtureHost>| {
+        TurnMeter::new(host, caller(), "voice-server", crate::OPENAI_REALTIME)
+            .open("gpt-realtime")
+            .map(|m| m.is_some())
+    };
+    assert!(
+        open(governed_host(Some(0))).is_err(),
+        "a spent chain refuses"
+    );
+    assert_eq!(open(governed_host(Some(1))), Ok(true), "room opens");
+    assert_eq!(open(governed_host(None)), Ok(true), "uncapped opens");
+    assert_eq!(
+        open(Arc::new(FixtureHost::new())),
+        Ok(false),
+        "an ungoverned host opens no account"
+    );
+    // A pool-scoped bucket for another pool does not govern this one.
+    let other_pool =
+        FixtureHost::new()
+            .governed()
+            .with_budget_chain(vec![busbar_api::BudgetBucketState {
+                bucket_id: "group:g@day#llm".to_string(),
+                budget_group: Some("g".to_string()),
+                pool: Some("llm".to_string()),
+                spend_micros_at_current_rate: 1,
+                remaining_micros: Some(0),
+                window_start: 0,
+                budget_period: "day".to_string(),
+            }]);
+    assert_eq!(open(Arc::new(other_pool)), Ok(true));
+}
+
+/// A turn on an ungoverned session ledgers nothing and is never closed on budget.
+#[tokio::test]
+async fn an_ungoverned_session_is_never_closed_on_budget() {
+    let (core, _drx) = core_with_downlink(None);
+    for _ in 0..3 {
+        assert!(!core.on_server_frame(usage_frame(u64::MAX / 4)).await.close);
     }
-    assert!(!leaked_post_close, "no downlink audio leaked to the client");
+    let _ = TurnVerdict::Live;
 }
 
 // ── pump lifecycle: frames both ways, close ends cleanly ────────────────────────────────────────
@@ -643,12 +651,9 @@ impl crate::runtime::GovernedCalls for TableFake {
 /// A core bound to `table` as session 7, serving only the tool `local`.
 fn governed_core(table: Arc<TableFake>) -> Arc<SessionCore<OpenAiRealtimeCodec>> {
     let (dtx, _drx) = unbounded::<Vec<u8>>();
-    let host = Arc::new(MockMeteringHost::default()) as Arc<dyn MeteringHost>;
-    let lease = lease_on(host, 1_000, 0, None).expect("lease opens");
     Arc::new(
         SessionCore::new(
             OpenAiRealtimeCodec,
-            lease,
             None,
             Arc::new(ServesOnly("local")),
             Carrier::with_downlink(dtx),
@@ -900,18 +905,13 @@ fn an_idle_voice_session_is_abandoned_terminal_then_evicted() {
 #[tokio::test]
 async fn serving_a_session_to_its_teardown_settles_and_evicts_its_row() {
     let rt = VoiceRuntimeFixture::runtime();
-    let (core, handle, _guard) = crate::topology::begin_session(
+    let (core, handle) = crate::topology::begin_session(
         &rt,
         OpenAiRealtimeCodec,
         "acct-1",
         "call-served",
         None,
         Carrier::sideband(),
-        crate::topology::SessionBudget {
-            estimate_nanos: 1_000,
-            fee_nanos: 0,
-            cap_nanos: None,
-        },
         None,
         1,
     )
@@ -934,18 +934,13 @@ async fn serving_a_session_to_its_teardown_settles_and_evicts_its_row() {
 async fn a_session_past_its_wall_clock_ceiling_is_hard_closed() {
     let mut rt = VoiceRuntimeFixture::runtime();
     rt.session_max_secs = 1;
-    let (core, _handle, _guard) = crate::topology::begin_session(
+    let (core, _handle) = crate::topology::begin_session(
         &rt,
         OpenAiRealtimeCodec,
         "acct-1",
         "call-long",
         None,
         Carrier::sideband(),
-        crate::topology::SessionBudget {
-            estimate_nanos: 1_000,
-            fee_nanos: 0,
-            cap_nanos: None,
-        },
         None,
         1,
     )
@@ -966,14 +961,12 @@ async fn a_session_past_its_wall_clock_ceiling_is_hard_closed() {
     );
 }
 
-/// The runtime these three cells open sessions on: the production money hop over the mock host.
+/// The runtime these three cells open sessions on.
 struct VoiceRuntimeFixture;
 impl VoiceRuntimeFixture {
     fn runtime() -> crate::runtime::VoiceRuntime {
-        let host = Arc::new(MockMeteringHost::default()) as Arc<dyn MeteringHost>;
         crate::runtime::VoiceRuntime::new(
             Arc::new(DurableHandleEngine::new()),
-            Arc::new(HostMeteringPort::new(host)),
             Arc::new(crate::runtime::tools::EchoToolExecutor),
         )
     }

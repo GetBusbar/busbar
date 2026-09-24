@@ -328,8 +328,7 @@ impl Plane for StreamingPlane {
                     twilio::TwilioEvent::Media { payload, .. } => {
                         // Priced from the raw carrier payload, before the transform below widens
                         // it: what the caller spoke is µ-law on this dialect's wire.
-                        let ms = AudioFormat::G711Ulaw.bytes_to_ms(payload.len() as u64);
-                        state.turn.audio_ms_in = state.turn.audio_ms_in.saturating_add(ms);
+                        state.turn.admit_audio(AudioFormat::G711Ulaw, payload.len());
                         let pcm = ulaw::decode_frame(&payload);
                         IrClientEvent::AudioFrame(IrAudioFrame {
                             dir: UpDown::Up,
@@ -372,8 +371,7 @@ impl Plane for StreamingPlane {
         if client_dialect != Dialect::TwilioMediaStreams {
             if let IrClientEvent::AudioFrame(f) = &client_event {
                 // See the module doc comment: the uplink format is assumed PCM16 for this estimate.
-                let ms = AudioFormat::Pcm16.bytes_to_ms(f.media.len() as u64);
-                state.turn.audio_ms_in = state.turn.audio_ms_in.saturating_add(ms);
+                state.turn.admit_audio(AudioFormat::Pcm16, f.media.len());
             }
         }
 
@@ -1217,7 +1215,7 @@ fn progress_from_server_event<'u>(
             // arguments — a call dispatched with no arguments is a different call, which is what the
             // old open-mints-empty path did. Announcing opens nothing on its own; the name is
             // remembered so `CallClose` (which carries none) can name the executor call.
-            state.turn.tool_calls = state.turn.tool_calls.saturating_add(1);
+            state.turn.open_tool_call();
             state.codec.remember_call_name(&call_id, &name);
             Ok(Progress::Discard {
                 reason: DiscardCode::Unsupported,

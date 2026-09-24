@@ -9,9 +9,9 @@
 //! * [`telephony`] — a THIN WS PROXY: `g711_ulaw` end-to-end so 8 kHz passes straight through (no
 //!   resample), with barge-in truncate driven from the codec's playback marks.
 //!
-//! Both are assembled from a [`crate::runtime::VoiceRuntime`] via [`begin_session`], which opens the D2
-//! metering lease (fail-closed on a refused budget) and the durable [`SessionHandle`] before a frame
-//! flows.
+//! Both are assembled from a [`crate::runtime::VoiceRuntime`] via [`begin_session`], which opens the
+//! presenting key's kernel account (fail-closed on a chain already dry) and the durable
+//! [`SessionHandle`] before a frame flows.
 
 pub mod minter_https;
 pub mod telephony;
@@ -31,7 +31,7 @@ use crate::ir::config::SessionConfig;
 use crate::runtime::carrier::Carrier;
 use crate::runtime::scope::SessionHandle;
 use crate::runtime::session::SessionCore;
-use crate::runtime::{LeaseCloseGuard, VoiceRuntime};
+use crate::runtime::VoiceRuntime;
 use busbar_kernel::egress::duplex_ws::{self, DialError};
 use busbar_kernel::net_guard::GuardPolicy;
 use busbar_kernel::plane::handle_engine::HandleEngineError;
@@ -182,18 +182,13 @@ pub async fn dial_provider(
     }
 }
 
-/// THE SESSION BUDGET handed to the session meter at open (`plane4-duplex-session.md` §2.5) — a
-/// KERNEL type the plane passes through and never reads: the kernel derives it for a presenting key
-/// ([`SessionBudget::for_principal`]) and prices against it (#43).
-pub use crate::runtime::SessionBudget;
-
 /// Why a session failed to start before any frame flowed.
 #[derive(Debug)]
 pub enum StartError {
     /// The OPEN-PASS gauntlet gate ([`run_gauntlet_session`]) REFUSED the session's destination BEFORE
-    /// any lease/durable open — zero bytes, zero charge. The verify-strictly-before-charge invariant.
+    /// any account/durable open — zero bytes, zero charge. The verify-strictly-before-charge invariant.
     DestinationRefused,
-    /// The D2 metering lease REFUSED the reserve (a refuse-all / zero budget) — fail closed, never open.
+    /// The kernel's budget view reads the presenting key's chain already dry — fail closed, never open.
     BudgetRefused,
     /// The durable [`SessionHandle`] could not be opened (the engine rejected the genesis).
     Durable(HandleEngineError),
@@ -219,7 +214,7 @@ impl std::error::Error for StartError {}
 /// THE VOICE PLANE's [`GauntletPlane`] for a SESSION open — its contribution to the shared open-pass
 /// gauntlet gate. `verify_destination` (stage 2, the ONE shared pre-admission check) refuses a session
 /// whose upstream `destination` (model) is on the plane's denial set, so the refusal lands BEFORE the
-/// lease/durable open (zero bytes, zero charge). `drive` (the one-shot stages 4+5) is UNREACHABLE on the
+/// account/durable open (zero bytes, zero charge). `drive` (the one-shot stages 4+5) is UNREACHABLE on the
 /// session path — [`run_gauntlet_session`] only runs the gate, never `drive` — so it fails closed with a
 /// neutral 500 if a future refactor ever mis-routed a session opener through the one-shot path.
 pub(crate) struct SessionGauntlet {
@@ -262,14 +257,10 @@ impl GauntletPlane for SessionGauntlet {
     }
 }
 
-/// BEGIN a governed session, common to both topologies: open the D2 metering lease (fail-closed on a
-/// refused budget), open the durable [`SessionHandle`] at genesis, and assemble the [`SessionCore`]
-/// with the plane's locked config, chosen `codec`, and `carrier`. The caller then serves the returned
-/// core over the neutral pump.
-///
-/// Returns a BY-VALUE [`LeaseCloseGuard`] alongside the core: the topology's `run()` frame owns it so
-/// the D2 lease is closed deterministically on any run() exit (incl. panic), independent of a parked
-/// per-frame handler pinning `Arc<SessionCore>` (the hard-close-race leak the session-drop audit found).
+/// BEGIN a governed session, common to both topologies: open the presenting key's kernel account
+/// (fail-closed on a chain already dry), open the durable [`SessionHandle`] at genesis, and assemble
+/// the [`SessionCore`] with the plane's locked config, chosen `codec`, and `carrier`. The caller then
+/// serves the returned core over the neutral pump.
 #[allow(clippy::too_many_arguments)]
 pub fn begin_session<C>(
     rt: &VoiceRuntime,
@@ -278,18 +269,17 @@ pub fn begin_session<C>(
     call_id: impl Into<String>,
     locked_config: Option<SessionConfig>,
     carrier: Carrier,
-    budget: SessionBudget,
     meter: Option<crate::runtime::metering::TurnMeter>,
     now: u64,
-) -> Result<(Arc<SessionCore<C>>, SessionHandle, LeaseCloseGuard), StartError>
+) -> Result<(Arc<SessionCore<C>>, SessionHandle), StartError>
 where
     C: DuplexReader + DuplexWriter + Send + Sync + 'static,
 {
     // OPEN-PASS ADMISSION FIRST (verify STRICTLY before any charge): run the shared gauntlet gate at the
-    // TOP through `run_gauntlet_session`. On refuse NOTHING is opened — no lease, no durable genesis, no
-    // socket — so a refused session costs ZERO bytes and ZERO charge. The session's own charge
-    // (`open_lease`, the cost_reserve leg) fires only AFTER the gate clears, matching the LLM plane's
-    // real verify-before-admission-door order.
+    // TOP through `run_gauntlet_session`. On refuse NOTHING is opened — no account, no durable genesis,
+    // no socket — so a refused session costs ZERO bytes and ZERO charge. The session's budget check
+    // (the kernel account's open) fires only AFTER the gate clears, matching the LLM plane's real
+    // verify-before-admission-door order.
     let destination = locked_config
         .as_ref()
         .and_then(|c| c.model.clone())
@@ -319,7 +309,6 @@ where
         call_id,
         locked_config,
         carrier,
-        budget,
         meter,
         now,
         // NO BINDING FROM HERE. This entry point is the one a caller drives directly — a topology
@@ -333,8 +322,8 @@ where
 
 /// THE POST-ADMIT OPEN of a governed session — the reserve/bind/open half of [`begin_session`],
 /// called ONLY after the open-pass gauntlet has already admitted the destination (verify strictly
-/// before any charge). Opens the D2 metering lease (fail-closed on a refused budget), opens the
-/// durable [`SessionHandle`] at genesis, and assembles the [`SessionCore`]. NO gauntlet runs here: the
+/// before any charge). Opens the presenting key's kernel account (fail-closed on a chain already dry),
+/// opens the durable [`SessionHandle`] at genesis, and assembles the [`SessionCore`]. NO gauntlet runs here: the
 /// caller (`begin_session`, or the inbound WS-accept `accept_gauntlet` path) is responsible for having
 /// run it first. A refused budget or a failed durable open returns before ANY durable row is committed
 /// — so an aborted open, like a refused gauntlet, leaves no orphaned live session row.
@@ -353,11 +342,10 @@ pub(crate) fn open_admitted_session<C>(
     call_id: impl Into<String>,
     locked_config: Option<SessionConfig>,
     carrier: Carrier,
-    budget: SessionBudget,
     meter: Option<crate::runtime::metering::TurnMeter>,
     now: u64,
     governed: Option<crate::runtime::GovernedSession>,
-) -> Result<(Arc<SessionCore<C>>, SessionHandle, LeaseCloseGuard), StartError>
+) -> Result<(Arc<SessionCore<C>>, SessionHandle), StartError>
 where
     C: DuplexReader + DuplexWriter + Send + Sync + 'static,
 {
@@ -367,8 +355,16 @@ where
     let owner = owner.into();
     let call_id = call_id.into();
 
-    // The marquee guarantee's charge — no lease ⇒ no session (fail closed). Reserved AFTER admission.
-    let lease = rt.open_lease(&budget).ok_or(StartError::BudgetRefused)?;
+    // The kernel's budget gate, AFTER admission: a caller whose chain is already dry never opens a
+    // session (fail closed). The account it opens is what each turn's counts are reported to.
+    let model = locked_config
+        .as_ref()
+        .and_then(|c| c.model.clone())
+        .unwrap_or_default();
+    let metering = match meter {
+        Some(meter) => meter.open(&model).map_err(|_| StartError::BudgetRefused)?,
+        None => None,
+    };
 
     let handle = rt.bind_session(owner.clone(), call_id.clone());
     handle.open(now).map_err(StartError::Durable)?;
@@ -388,13 +384,9 @@ where
         &owner,
     );
 
-    // Mint the by-value close guard from the lease BEFORE it moves into the core, so the topology owns a
-    // handle that closes the reserve independent of the core's (possibly pinned) refcount.
-    let guard = lease.close_guard();
     let core = SessionCore::new(
         codec,
-        lease,
-        meter,
+        metering,
         Arc::clone(&rt.tools),
         carrier,
         locked_config,
@@ -408,5 +400,5 @@ where
         Some(g) => core.with_governed(g),
         None => core,
     });
-    Ok((core, handle, guard))
+    Ok((core, handle))
 }

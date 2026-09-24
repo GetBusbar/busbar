@@ -1186,16 +1186,8 @@ fn the_served_composition_has_no_ungoverned_session_left_in_it() {
         "the leg was planned, so the wait is entered"
     );
 
-    let meter: std::sync::Arc<dyn busbar_voice::runtime::SessionMeter> =
-        std::sync::Arc::new(busbar_voice::runtime::LocalMeteringPort);
-    let lease = busbar_voice::runtime::SessionLease::open(
-        &meter,
-        &busbar_voice::runtime::SessionBudget::default(),
-    )
-    .expect("an uncapped lease always opens");
     let core = SessionCore::new(
         busbar_voice::ir::codec::OpenAiRealtimeCodec,
-        lease,
         None,
         std::sync::Arc::new(busbar_voice::runtime::EchoToolExecutor),
         Carrier::sideband(),
@@ -2571,6 +2563,401 @@ fn every_runtime_item_the_seam_docs_cite_is_exported_by_the_runtime() {
         assert!(
             exported.contains(&name),
             "the docs cite `{name}` and the runtime does not export it"
+        );
+    }
+}
+
+// ── ITEM 460 — a turn's counts reach the door's cells ───────────────────────────────────────────────
+
+/// The door charged every turn at admission and ledgered nothing, so the conversation read as free to
+/// every cap on its chain. A turn's counts now land on the door's cells — each class as the plane
+/// declares it, under the voice lane — and a budget the `streams` card prices them against refuses the
+/// session's next frame at the door.
+#[test]
+fn a_turns_counts_reach_the_door_cells_and_a_spent_budget_refuses_the_next_frame() {
+    use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
+    let groups = std::collections::BTreeMap::from([(
+        "g".to_string(),
+        busbar_kernel::config::GroupCfg {
+            limits: vec![LimitCfg {
+                metric: LimitMetric::Budget,
+                amount: 3,
+                per: Some(LimitWindow::Day),
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+            }],
+            ..Default::default()
+        },
+    )]);
+    let lane = voice_lane(Dialect::OpenaiRealtime);
+    // One minor unit (10 000 micro-units) an emitted audio token, on the voice plane's own card.
+    let card = std::collections::BTreeMap::from([(
+        lane.clone(),
+        busbar_kernel::config::RateEntryCfg {
+            units: std::collections::BTreeMap::from([(
+                meta::CLASS_AUDIO_TOKENS_OUT.as_str().to_string(),
+                serde_yaml::from_str("10000").expect("a unit rate"),
+            )]),
+            ..Default::default()
+        },
+    )]);
+    let cost = busbar_kernel::cost::CostModel::resolve_parts(Some(&card), 0, &groups);
+    let mut node = node_governed_by(
+        serviceable(),
+        crate::root::policy::group_table(&groups, &std::collections::BTreeMap::new()),
+    );
+    node.pricer = Pricer::from_card(cost.card().clone());
+    let principal = PrincipalId::new("acct:voice");
+    let chain = node
+        .chain_for(&principal, Some("g"))
+        .expect("the configured group resolves");
+    let kernel = Kernel::new();
+
+    let turn = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+        .charging_through(&chain)
+        .reporting(TurnUsage {
+            audio_tokens_out: 3,
+            audio_ms_in: 900,
+            tool_calls: 1,
+            ..TurnUsage::default()
+        });
+    let Ended::Settled { end, .. } = run(&kernel, &turn) else {
+        panic!("the exit path settles it");
+    };
+    assert_eq!(end.outcome(), Outcome::Completed);
+
+    let cell = node
+        .door
+        .lock()
+        .expect("door")
+        .cells()
+        .snapshot("acct:voice")
+        .expect("the turn's counts reached the caller's own cell");
+    let counted: std::collections::BTreeMap<String, u64> = cell
+        .model_views()
+        .filter(|(model, _)| *model == lane)
+        .flat_map(|(_, units)| units.iter().map(|(c, n)| (c.clone(), *n)))
+        .collect();
+    assert_eq!(
+        counted,
+        std::collections::BTreeMap::from([
+            ("audio_seconds_in".to_string(), 1),
+            ("audio_tokens_out".to_string(), 3),
+            ("tool_calls".to_string(), 1),
+        ]),
+        "each class as the plane declares it, under the voice lane"
+    );
+
+    let next = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(&chain);
+    let Ended::Settled { end, .. } = run(&kernel, &next) else {
+        panic!("the exit path settles it");
+    };
+    assert_eq!(
+        end.outcome(),
+        Outcome::Refused(
+            busbar_contract::caps::StepName::Admit,
+            ReasonCode::OverBudget
+        ),
+        "3 emitted tokens at one minor unit each spent the 3-unit budget: the door refuses"
+    );
+}
+
+#[cfg(feature = "plane-voice")]
+#[test]
+fn the_voice_lane_is_qualified_by_the_key_the_streams_card_is_filed_under() {
+    assert_eq!(VOICE_CARD_PLANE, busbar_voice::PLANE_KEY);
+}
+
+// ── OWNER RULING Q21b — a served voice session on the plane's units, priced at read ─────────────────
+
+/// THE EXIT TESTS, over the real engine: the served path (`busbar_voice`'s turn meter → the kernel's
+/// session account → the governance ledger) and the read-time view (Tally, over the `streams` card).
+#[cfg(feature = "plane-voice")]
+mod plane_units {
+    use busbar_voice::ir::usage::IrDuplexUsage;
+    use busbar_voice::runtime::{SessionMetering, TurnMeter, TurnVerdict};
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    const MODEL: &str = "gpt-realtime";
+
+    /// The voice lane a `gpt-realtime` session's counts are ledgered under.
+    fn lane() -> String {
+        format!("voice{}{MODEL}", busbar_kernel_ledger::cost::PLANE_LANE_SEP)
+    }
+
+    /// The node's card map exactly as boot composes it: the config text, core lifting
+    /// `streams.rate_card` off the section, and `resolve` composing it beside the flat llm card.
+    fn composed(yaml: &str) -> Option<BTreeMap<String, busbar_kernel::config::RateEntryCfg>> {
+        let _reg = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
+            &busbar_voice::PLANE_DECL,
+        ]);
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(&format!(
+            "providers: {{}}\nmodels: {{}}\npools: {{}}\n{yaml}"
+        ))
+        .expect("the config parses");
+        busbar_kernel::config::resolve(&deploy, &Default::default())
+            .expect("the config resolves")
+            .rate_card
+    }
+
+    /// A flat llm card naming the SAME model at 99 minor units a token — which must price none of a
+    /// voice session — and the `streams` card pricing each of the plane's classes at one minor unit
+    /// (10 000 micro-units) a count.
+    const PRICED: &str =
+        "rate_card:\n  gpt-realtime: { input_utok: 990000, output_utok: 990000 }\n\
+        streams:\n  rate_card:\n    gpt-realtime:\n      units: { audio_tokens_in: 10000, \
+        audio_tokens_out: 10000, text_tokens_in: 10000, text_tokens_out: 10000, \
+        cached_tokens: 10000, audio_seconds_in: 10000, tool_calls: 10000 }\n";
+
+    struct Rig {
+        app: Arc<busbar_kernel::state::App>,
+        store: Arc<busbar_kernel::governance::MemoryStore>,
+        key: busbar_api::VirtualKey,
+    }
+
+    /// A governed engine over `card`, with one key in group `g` capped at `budget` minor units a day.
+    fn rig(
+        card: Option<BTreeMap<String, busbar_kernel::config::RateEntryCfg>>,
+        budget: Option<u64>,
+    ) -> Rig {
+        use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
+        let limits = budget
+            .map(|amount| {
+                vec![LimitCfg {
+                    metric: LimitMetric::Budget,
+                    amount,
+                    per: Some(LimitWindow::Day),
+                    scope: None,
+                    on_exhaust: None,
+                    downgrade_to: None,
+                }]
+            })
+            .unwrap_or_default();
+        let groups = BTreeMap::from([(
+            "g".to_string(),
+            busbar_kernel::config::GroupCfg {
+                limits,
+                ..Default::default()
+            },
+        )]);
+        let store = Arc::new(busbar_kernel::governance::MemoryStore::new());
+        let gov = Arc::new(
+            busbar_kernel::governance::GovState::new_with_signer(
+                Arc::clone(&store) as Arc<dyn busbar_api::Store>,
+                None,
+                None,
+            )
+            .expect("governance"),
+        );
+        let (key, _) = gov
+            .create_key(
+                busbar_kernel::governance::NewKeySpec {
+                    name: "voice-caller".to_string(),
+                    group: Some("g".to_string()),
+                    ..Default::default()
+                },
+                0,
+            )
+            .expect("mint the caller");
+        let cost = busbar_kernel::cost::CostModel::resolve_parts(card.as_ref(), 0, &groups);
+        gov.hydrate_budgets(&cost, 0).expect("hydrate");
+        let app = busbar_kernel::test_support::TestApp::new()
+            .governance(gov)
+            .cost(cost)
+            .build();
+        Rig { app, store, key }
+    }
+
+    impl Rig {
+        /// Open the caller's session the way the served door does.
+        fn open(&self) -> Result<Option<SessionMetering>, busbar_voice::runtime::BudgetRefused> {
+            TurnMeter::new(
+                busbar_kernel::plane_host::engine_host(&self.app),
+                self.key.clone(),
+                "voice-server",
+                busbar_voice::OPENAI_REALTIME,
+            )
+            .open(MODEL)
+        }
+
+        fn gov(&self) -> &busbar_kernel::governance::GovState {
+            self.app.governance.as_deref().expect("governed")
+        }
+
+        /// The caller's own bucket's spend as the view reads it now, in minor units.
+        fn spend(&self) -> Result<i64, String> {
+            self.gov()
+                .derived_bucket_usage(
+                    &self.app.cost,
+                    &self.key.id,
+                    "total",
+                    true,
+                    busbar_kernel::store::now(),
+                )
+                .map(|u| u.spend_cents)
+                .map_err(|e| e.to_string())
+        }
+
+        /// The caller's own ledger row for the voice lane, as it is persisted.
+        fn row(&self) -> BTreeMap<String, u64> {
+            use busbar_api::Store as _;
+            self.gov().flush_budgets();
+            self.store
+                .get_usage(&self.key.id, 0)
+                .expect("the caller's bucket reads")
+                .models
+                .into_iter()
+                .filter(|m| m.model == lane())
+                .flat_map(|m| m.usage_units)
+                .collect()
+        }
+    }
+
+    /// The fixed session script the retired D2 lease oracle pinned, as the served runtime reports it:
+    /// four turns, the second with a second of uplink audio and one tool call.
+    fn script(session: &SessionMetering) -> Vec<TurnVerdict> {
+        use busbar_plane_streaming::session::TurnCounters;
+        let quiet = TurnCounters::default();
+        let mut spoke = TurnCounters::default();
+        spoke.admit_audio(busbar_voice::ir::media::AudioFormat::Pcm16, 48_000);
+        spoke.open_tool_call();
+        [
+            (
+                IrDuplexUsage {
+                    audio_out: 3,
+                    text_out: 4,
+                    ..Default::default()
+                },
+                quiet,
+            ),
+            (
+                IrDuplexUsage {
+                    audio_out: 2,
+                    text_in: 3,
+                    ..Default::default()
+                },
+                spoke,
+            ),
+            (
+                IrDuplexUsage {
+                    audio_out: 5,
+                    ..Default::default()
+                },
+                quiet,
+            ),
+            (
+                IrDuplexUsage {
+                    audio_out: 1,
+                    ..Default::default()
+                },
+                quiet,
+            ),
+        ]
+        .iter()
+        .map(|(usage, counters)| session.report_turn(Some(usage), *counters))
+        .collect()
+    }
+
+    /// EXIT TESTS 1 + 2 — a served session writes the plane's count rows, and the `streams` card
+    /// prices them at read. The flat llm card that names the same model prices none of it.
+    #[test]
+    fn a_served_session_writes_the_planes_rows_and_the_streams_card_prices_them_at_read() {
+        let rig = rig(composed(PRICED), None);
+        let session = rig.open().expect("room").expect("governed");
+        let verdicts = script(&session);
+        assert!(verdicts.iter().all(|v| *v == TurnVerdict::Live));
+        assert_eq!(
+            rig.row(),
+            BTreeMap::from([
+                ("audio_seconds_in".to_string(), 1),
+                ("audio_tokens_out".to_string(), 11),
+                ("text_tokens_in".to_string(), 3),
+                ("text_tokens_out".to_string(), 4),
+                ("tool_calls".to_string(), 1),
+            ]),
+            "the ledger holds the plane's counts per class, under the voice lane — no price"
+        );
+        assert_eq!(
+            rig.spend(),
+            Ok(20),
+            "20 counts at one minor unit each, priced at read by the streams card (the flat card's \
+             99 a token would read 1 782 on the 18 tokens it could name)"
+        );
+    }
+
+    /// EXIT TEST 3 — a PRESENT streams card silent about the session's lane refuses: the turn is
+    /// delivered and ledgered, the kernel then cannot price the chain and closes the session, the
+    /// next open is refused, and the usage read fails rather than answering 0 (#42).
+    #[test]
+    fn a_streams_card_silent_about_the_lane_refuses() {
+        let silent =
+            "streams:\n  rate_card:\n    other-model:\n      units: { audio_tokens_out: 10000 }\n";
+        let rig = rig(composed(silent), None);
+        let session = rig.open().expect("nothing ledgered yet").expect("governed");
+        assert_eq!(
+            session.report_turn(
+                Some(&IrDuplexUsage {
+                    audio_out: 3,
+                    ..Default::default()
+                }),
+                Default::default()
+            ),
+            TurnVerdict::MustClose,
+            "the view cannot price what was ledgered: the session closes"
+        );
+        assert_eq!(
+            rig.row().get("audio_tokens_out"),
+            Some(&3),
+            "still ledgered"
+        );
+        assert!(rig.open().is_err(), "the next session is refused");
+        assert!(
+            rig.spend().is_err(),
+            "the usage read refuses rather than answering 0"
+        );
+    }
+
+    /// EXIT TEST 4 — NO streams card is billing off for the plane: the counts are still ledgered and
+    /// the view reads them as 0, even beside a flat llm card naming the same model.
+    #[test]
+    fn no_streams_card_reads_zero() {
+        let flat_only = "rate_card:\n  gpt-realtime: { input_utok: 990000, output_utok: 990000 }\n";
+        let rig = rig(composed(flat_only), Some(1));
+        let session = rig.open().expect("room").expect("governed");
+        let verdicts = script(&session);
+        assert!(
+            verdicts.iter().all(|v| *v == TurnVerdict::Live),
+            "a session the view reads as free never dries a 1-unit budget"
+        );
+        assert_eq!(
+            rig.row().get("audio_tokens_out"),
+            Some(&11),
+            "the counts are ledgered"
+        );
+        assert_eq!(rig.spend(), Ok(0), "no streams card: the counts read 0");
+    }
+
+    /// EXIT TEST 5 — the kernel's budget gate governs: the turn that dries the caller's chain closes
+    /// the session, and the exhausted key's next session is refused at the open.
+    #[test]
+    fn the_budget_gate_refuses_an_exhausted_key() {
+        let rig = rig(composed(PRICED), Some(15));
+        let session = rig.open().expect("room").expect("governed");
+        assert_eq!(
+            script(&session),
+            vec![
+                TurnVerdict::Live,
+                TurnVerdict::Live,
+                TurnVerdict::MustClose,
+                TurnVerdict::MustClose
+            ],
+            "7, 14, then 19 of 15 minor units: the third turn dries the chain, and it stays dry"
+        );
+        assert!(
+            matches!(rig.open(), Err(busbar_voice::runtime::BudgetRefused)),
+            "the exhausted key is refused at the open"
         );
     }
 }

@@ -21,7 +21,7 @@ use crate::mount::{
     compose_provider, composed_provider_base_url, open_governed, provider_composed, GovernedOpen,
     Ingress, ProviderEndpoint,
 };
-use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
+use crate::runtime::{EchoToolExecutor, VoiceRuntime};
 use crate::testkit::fixture_host::FixtureHost;
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use std::sync::{Arc, Mutex};
@@ -89,7 +89,6 @@ impl busbar_api::SecretResolve for OneSecretResolver {
 fn runtime() -> VoiceRuntime {
     VoiceRuntime::new(
         Arc::new(DurableHandleEngine::new()),
-        Arc::new(LocalMeteringPort),
         Arc::new(EchoToolExecutor),
     )
 }

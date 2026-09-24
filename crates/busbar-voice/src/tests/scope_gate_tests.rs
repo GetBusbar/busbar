@@ -17,7 +17,7 @@
 //! scope kind was vocabulary nothing consulted.
 
 use crate::mount::{open_governed, session_scope_allowed, GovernedOpen, Ingress};
-use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
+use crate::runtime::{EchoToolExecutor, VoiceRuntime};
 use crate::testkit::fixture_host::FixtureHost;
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use std::sync::Arc;
@@ -46,7 +46,6 @@ fn session_scope(value: &str) -> busbar_api::ScopeRef {
 fn runtime() -> VoiceRuntime {
     VoiceRuntime::new(
         Arc::new(DurableHandleEngine::new()),
-        Arc::new(LocalMeteringPort),
         Arc::new(EchoToolExecutor),
     )
 }

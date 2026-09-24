@@ -1652,3 +1652,104 @@ fn a_barge_in_bills_what_the_interrupted_turn_served() {
     );
     assert_eq!(metered(&locators, "tool_calls"), Some(1));
 }
+
+/// ONE READING OF A TURN (item 138: "one pipeline, or a proof they agree"). A host that drives the
+/// session itself — the voice runtime, which serves every live session in production — ledgers
+/// [`crate::session::class_counts`]; the unit loop ledgers what `meter` emits. Over the same turn
+/// (one second of uplink audio, one tool call opened, a usage report naming all five token classes)
+/// the two are the same set of `(class, count)` pairs.
+#[test]
+fn class_counts_are_the_lines_meter_emits_for_the_same_turn() {
+    let plane = openai_plane();
+    let arena = LeakPlaneAlloc;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let dest = destination("api.openai.com", LaneId::new("realtime"));
+    let mut state = open_client_session(&plane, &c);
+
+    let opening = client_wire(&session_update_fixture());
+    let frames = [frame(&opening)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::Open(first) = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("the turn opens")
+    else {
+        panic!("the first client event opens a turn");
+    };
+    let turn = crate::tests::harness::unit(first.op, first.body_ir, first.facts);
+    let append = serde_json::to_vec(&json!({
+        "type": "input_audio_buffer.append",
+        "audio": base64_of(&vec![0u8; 48_000]),
+    }))
+    .unwrap();
+    let frames = [frame(&append)];
+    let mut cursor = FrameCursor::new(&frames);
+    plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("audio decodes");
+    plane
+        .encode_ingress_frame(&turn, &frames[0], &dest, Some(&mut state), &c)
+        .expect("audio relays");
+    let opened = serde_json::to_vec(&json!({
+        "type": "response.output_item.added",
+        "item": { "type": "function_call", "call_id": "call_1", "name": "lookup" },
+    }))
+    .unwrap();
+    let frames = [frame(&opened)];
+    let mut cursor = FrameCursor::new(&frames);
+    plane
+        .decode_response(&mut cursor, &dest, Some(&mut state), &c)
+        .expect("a tool-call open decodes");
+    let done = serde_json::to_vec(&json!({
+        "type": "response.done",
+        "response": {
+            "usage": {
+                "input_token_details": { "audio_tokens": 10, "text_tokens": 3, "cached_tokens": 1 },
+                "output_token_details": { "audio_tokens": 20, "text_tokens": 4 },
+            }
+        }
+    }))
+    .unwrap();
+    let frames = [frame(&done)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Progress::Terminal { r, .. } = plane
+        .decode_response(&mut cursor, &dest, Some(&mut state), &c)
+        .expect("the usage report decodes")
+    else {
+        panic!("a usage report ends the turn");
+    };
+    let mut emitted: Vec<(String, u64)> = plane
+        .meter(&turn, &r, &c)
+        .lines
+        .as_slice()
+        .iter()
+        .filter_map(|l| {
+            Some((
+                l.class.as_str().to_string(),
+                l.quantity.filter(|n| *n != 0)?,
+            ))
+        })
+        .collect();
+    emitted.sort();
+
+    let usage = busbar_voice_codec::ir::IrDuplexUsage {
+        audio_in: 10,
+        audio_out: 20,
+        text_in: 3,
+        text_out: 4,
+        cached: 1,
+    };
+    let mut counters = crate::session::TurnCounters::default();
+    counters.admit_audio(busbar_voice_codec::ir::AudioFormat::Pcm16, 48_000);
+    counters.open_tool_call();
+    let mut counted: Vec<(String, u64)> = crate::session::class_counts(Some(&usage), counters)
+        .into_iter()
+        .map(|(class, n)| (class.as_str().to_string(), n))
+        .collect();
+    counted.sort();
+
+    assert_eq!(counted, emitted, "one reading of one turn");
+    assert_eq!(counted.len(), 7, "every declared class carried a count");
+}

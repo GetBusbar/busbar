@@ -17,14 +17,16 @@
 //!   `gate_decide` / `tap_attached` / `transform_over` legs run exactly as they do over a configured
 //!   deployment;
 //! * the per-key usage LEDGER the metering seams land on (`meter_ledger` / `meter_series`), readable
-//!   through [`FixtureHost::ledger_usage`] once the host is [`governed`](FixtureHost::governed);
-//! * the live-carrier SESSIONS its `session_meter` opened, counted by [`FixtureHost::leases_opened`] /
-//!   [`FixtureHost::leases_open`].
+//!   through [`FixtureHost::ledger_usage`] and, per `(lane, class)`, [`FixtureHost::ledger_rows`] once
+//!   the host is [`governed`](FixtureHost::governed);
+//! * the key's BUDGET VIEW (`budget_state`): a chain a test sets outright
+//!   ([`FixtureHost::with_budget_chain`] / [`FixtureHost::set_budget_chain`]), or a count cap
+//!   ([`FixtureHost::with_count_cap`]) whose remaining is the cap less every count ledgered — so the
+//!   kernel's session account, which reads this view after each turn, can be driven dry.
 //!
 //! The fixture implements ONLY the plane-facing seam: it names no cost or price type (#43 — a plane is
-//! pricing-blind, and so is the host its tests stand in). The money side of a session — the lease, the
-//! card, the hard-close arithmetic — is the kernel's own session meter, which this host hands out and
-//! merely counts; [`FixtureHost::unit_rate`] picks the kernel's per-count posture instead of no card.
+//! pricing-blind, and so is the host its tests stand in). What a count is WORTH is the kernel's
+//! read-time view, proven over the real engine in the composition root's tests.
 //!
 //! Everything else on the seam answers the neutral "nothing configured" value (no pools, no secrets,
 //! no identity chain, no completion pipeline). It is a test double: a leg the fixture does not model
@@ -36,9 +38,7 @@ use busbar_kernel::breaker::{CanonicalSignal, Disposition};
 use busbar_kernel::hooks::{RequestedSignals, ResolvedPolicy, TapEntry};
 use busbar_kernel::plane::approvals::Sealer;
 use busbar_kernel::plane::calllog::CallInput;
-use busbar_kernel::plane_host::session_meter::{
-    HostMeteringPort, MeterId, SessionBudget, SessionMeter, TurnVerdict,
-};
+use busbar_kernel::plane_host::session_meter::{LocalMeteringPort, SessionMeter};
 use busbar_kernel::plane_host::{
     AdmissionHost, AdmitHandle, AudienceBinding, BreakerHost, BudgetHost, ClockHost,
     CompletionHost, DispatchScope, EngineHost, GateOutcome, GovAdmit, GovHandle, HookConfigHost,
@@ -49,7 +49,7 @@ use busbar_kernel::store::{BreakerState, HealthState, LaneRuntime, Unavailable};
 use busbar_kernel::trust::validate::{Lapsed, Standing};
 use busbar_kernel::trust::TrustState;
 use busbar_plugin::hot::{AdmissionId, Signal};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -81,48 +81,6 @@ struct Cell {
 /// cooldown step, so a `Retry-After` read off the fixture is a plausible whole-second floor.
 const OPEN_COOLDOWN_SECS: u64 = 15;
 
-/// The session meter this host hands its plane: the KERNEL's own meter (its lease, its card, its
-/// hard-close), wrapped only to COUNT the sessions it opened and which are still open — the read-back
-/// a plane's lease-lifecycle test asserts. It decides nothing itself.
-struct CountedMeter {
-    kernel: HostMeteringPort,
-    opened: AtomicU64,
-    open: Mutex<BTreeSet<u64>>,
-}
-
-impl CountedMeter {
-    fn new(one_unit_per_count: bool) -> Self {
-        CountedMeter {
-            kernel: busbar_kernel::plane_host::testkit::stock_session_meter(one_unit_per_count),
-            opened: AtomicU64::new(0),
-            open: Mutex::new(BTreeSet::new()),
-        }
-    }
-
-    fn open_ids(&self) -> std::sync::MutexGuard<'_, BTreeSet<u64>> {
-        self.open.lock().unwrap_or_else(|e| e.into_inner())
-    }
-}
-
-impl SessionMeter for CountedMeter {
-    fn open(&self, budget: &SessionBudget) -> Option<MeterId> {
-        let id = self.kernel.open(budget)?;
-        self.opened.fetch_add(1, Ordering::SeqCst);
-        self.open_ids().insert(id.0);
-        Some(id)
-    }
-    fn report_turn(&self, id: MeterId, model: &str, counts: &Usage) -> TurnVerdict {
-        self.kernel.report_turn(id, model, counts)
-    }
-    fn settled(&self, id: MeterId) -> u64 {
-        self.kernel.settled(id)
-    }
-    fn close(&self, id: MeterId) {
-        self.open_ids().remove(&id.0);
-        self.kernel.close(id);
-    }
-}
-
 /// One admin-audit row [`JournalHost::audit_record`] landed on the fixture — the read-back a plane's
 /// exit-path/mutation test asserts against (action literal, resource, outcome, principal), the fixture
 /// twin of the engine's in-process admin audit ring.
@@ -144,6 +102,10 @@ struct Inner {
     audit: Vec<FixtureAuditEntry>,
     /// The budget chain `budget_state` answers for every key — empty (uncapped) unless a test sets one.
     budget: Vec<busbar_api::BudgetBucketState>,
+    /// A count cap `budget_state` answers as one bucket, remaining the cap less the key's counts.
+    count_cap: Option<i64>,
+    /// Every count `meter_ledger` landed, per key, per `(lane, class)`.
+    rows: BTreeMap<String, BTreeMap<(String, String), u64>>,
 }
 
 /// The in-memory engine host a plane's tests drive through the neutral seam. Build one with
@@ -154,8 +116,6 @@ pub struct FixtureHost {
     inner: Mutex<Inner>,
     governed: bool,
     next_request_id: AtomicU64,
-    /// The kernel session meter `session_meter` hands out, counted (see [`CountedMeter`]).
-    sessions: Arc<CountedMeter>,
     /// The lane store `lane_store` hands out: the kernel's OWN `LaneRuntime` implementor with no
     /// lanes configured, so this double never re-implements (and never drifts from) that trait.
     lanes: HealthState,
@@ -177,24 +137,29 @@ impl FixtureHost {
             inner: Mutex::new(Inner::default()),
             governed: false,
             next_request_id: AtomicU64::new(1),
-            sessions: Arc::new(CountedMeter::new(false)),
             lanes: HealthState::new(Vec::new()),
             signals: RequestedSignals::default(),
         }
     }
 
-    /// Answer `chain` as every key's budget chain, so the kernel derives a session cap from it.
+    /// Answer `chain` as every key's budget chain.
     #[must_use]
     pub fn with_budget_chain(self, chain: Vec<busbar_api::BudgetBucketState>) -> Self {
-        self.lock().budget = chain;
+        self.set_budget_chain(chain);
         self
     }
 
-    /// Meter sessions under the kernel's one-unit-per-count posture instead of no card, so a session
-    /// can reach its cap. The kernel prices; this host only chooses which stock posture it runs.
+    /// Replace the budget chain every key reads, mid-test — the view a live session's next turn meets.
+    pub fn set_budget_chain(&self, chain: Vec<busbar_api::BudgetBucketState>) {
+        self.lock().budget = chain;
+    }
+
+    /// Answer every key's budget view as ONE bucket capped at `cap` counts: its remaining is the cap
+    /// less every count the key has ledgered. A stand-in for a card that makes each count worth one
+    /// unit, without this host naming a card.
     #[must_use]
-    pub fn unit_rate(mut self) -> Self {
-        self.sessions = Arc::new(CountedMeter::new(true));
+    pub fn with_count_cap(self, cap: i64) -> Self {
+        self.lock().count_cap = Some(cap);
         self
     }
 
@@ -255,26 +220,10 @@ impl FixtureHost {
         self.lock().ledger.get(key_id).copied()
     }
 
-    /// How many metered sessions were opened over this host's lifetime.
+    /// Every count `key_id` has ledgered, per `(lane, class)` — the rows a plane's metering wrote.
     #[must_use]
-    pub fn leases_opened(&self) -> u64 {
-        self.sessions.opened.load(Ordering::SeqCst)
-    }
-
-    /// How many metered sessions are open right now (opened and not yet closed).
-    #[must_use]
-    pub fn leases_open(&self) -> usize {
-        self.sessions.open_ids().len()
-    }
-
-    /// What the kernel's meter reads back as settled across every OPEN session — its audit tap,
-    /// summed. The fixture computes none of it.
-    #[must_use]
-    pub fn open_settled_total(&self) -> u128 {
-        let ids: Vec<u64> = self.sessions.open_ids().iter().copied().collect();
-        ids.into_iter()
-            .map(|id| u128::from(self.sessions.settled(MeterId(id))))
-            .sum()
+    pub fn ledger_rows(&self, key_id: &str) -> BTreeMap<(String, String), u64> {
+        self.lock().rows.get(key_id).cloned().unwrap_or_default()
     }
 
     /// Every admin-audit row [`JournalHost::audit_record`] has landed on this host, in emission order —
@@ -553,10 +502,24 @@ impl BudgetHost for FixtureHost {
     fn budget_state(
         &self,
         _pin: &MeterPin,
-        _key: &VirtualKey,
+        key: &VirtualKey,
         _now: u64,
     ) -> Vec<busbar_api::BudgetBucketState> {
-        self.lock().budget.clone()
+        let inner = self.lock();
+        let Some(cap) = inner.count_cap else {
+            return inner.budget.clone();
+        };
+        let counted = inner.ledger.get(&key.id).map_or(0, |u| u.tokens);
+        let counted = i64::try_from(counted).unwrap_or(i64::MAX);
+        vec![busbar_api::BudgetBucketState {
+            bucket_id: key.id.clone(),
+            budget_group: None,
+            pool: None,
+            spend_micros_at_current_rate: counted,
+            remaining_micros: Some(cap.saturating_sub(counted).max(0)),
+            window_start: 0,
+            budget_period: "day".to_string(),
+        }]
     }
     fn governance(&self) -> Option<GovHandle> {
         self.governed.then(|| GovHandle(Arc::new(())))
@@ -565,15 +528,16 @@ impl BudgetHost for FixtureHost {
     fn cost_model_unpriced(&self, _model: &str) -> bool {
         false
     }
+    // The retired lease's name, still required by the trait (see its kernel doc).
     fn session_meter(&self) -> Arc<dyn SessionMeter> {
-        Arc::clone(&self.sessions) as Arc<dyn SessionMeter>
+        Arc::new(LocalMeteringPort)
     }
     fn meter_ledger(
         &self,
         _pin: &MeterPin,
         key: &VirtualKey,
         _pool: &str,
-        _model: &str,
+        lane: &str,
         usage: &Usage,
         _now: u64,
     ) {
@@ -584,6 +548,11 @@ impl BudgetHost for FixtureHost {
         let mut inner = self.lock();
         let entry = inner.ledger.entry(key.id.clone()).or_default();
         entry.tokens = entry.tokens.saturating_add(tokens);
+        let rows = inner.rows.entry(key.id.clone()).or_default();
+        for (class, n) in &usage.usage_units {
+            let row = rows.entry((lane.to_string(), class.clone())).or_default();
+            *row = row.saturating_add(*n);
+        }
     }
     fn meter_series(
         &self,

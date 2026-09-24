@@ -11,7 +11,7 @@
 //! `open_governed`'s `finish` and nothing in the voice tree emits this family — the assertion fails.
 
 use crate::mount::{open_governed, GovernedOpen, Ingress};
-use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
+use crate::runtime::{EchoToolExecutor, VoiceRuntime};
 use crate::testkit::{fixture_host::FixtureHost, metrics_capture};
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use std::sync::Arc;
@@ -25,7 +25,6 @@ async fn a_voice_session_open_increments_the_plane_labelled_counter() {
     let host = FixtureHost::new().into_host();
     let rt = VoiceRuntime::new(
         Arc::new(DurableHandleEngine::new()),
-        Arc::new(LocalMeteringPort),
         Arc::new(EchoToolExecutor),
     );
 

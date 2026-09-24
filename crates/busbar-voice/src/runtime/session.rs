@@ -4,8 +4,9 @@
 //! THE LIVE DUPLEX SESSION RUNTIME — the pump body, behind the `runtime` feature.
 //!
 //! Binds the neutral byte-duplex pump (`busbar_kernel::ingress::byte_duplex::serve_messages`), the
-//! codec's `DuplexReader`/`DuplexWriter` pair, the durable `SessionScope`, and the D2 metering lease
-//! into one governed carrier. The runtime is GENERIC over the codec traits (HARD RULE 3) so it does
+//! codec's `DuplexReader`/`DuplexWriter` pair, the durable `SessionScope`, and the kernel session
+//! account (each closed turn's per-class counts, ledgered and budget-checked kernel-side) into one
+//! governed carrier. The runtime is GENERIC over the codec traits (HARD RULE 3) so it does
 //! not depend on WHICH dialect codec is present — the Gemini codec drops in unchanged.
 //!
 //! CONCURRENCY POSTURE. The neutral pump `tokio::spawn`s one `handle` per inbound frame, so the
@@ -19,11 +20,14 @@ use crate::ir::codec::{DecodeState, DuplexReader, DuplexWriter, WireEvent};
 use crate::ir::config::SessionConfig;
 use crate::ir::control::IrDuplexControl;
 use crate::ir::event::{IrClientEvent, IrServerEvent};
+use crate::ir::media::AudioFormat;
 use crate::ir::tool::{CallRef, IrDuplexTool};
+use crate::ir::usage::IrDuplexUsage;
 use crate::runtime::carrier::Carrier;
-use crate::runtime::metering::{SessionLease, TurnMeter, TurnVerdict};
+use crate::runtime::metering::{SessionMetering, TurnVerdict};
 use crate::runtime::tools::ToolExecutor;
 use busbar_plane_streaming::governed::GovernedSession;
+use busbar_plane_streaming::session::TurnCounters;
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -32,14 +36,14 @@ use busbar_kernel::ingress::byte_duplex::{CallRef as WireCallRef, DuplexHandle, 
 
 /// THE FRAME PLAN one decoded inbound frame produces — what to write UPSTREAM (client→server events:
 /// tool results, barge-in cancel/truncate, `response.create`), what to relay DOWNLINK to the client,
-/// and whether the metering lease tripped a HARD CLOSE this frame.
+/// and whether the kernel's budget verdict tripped a HARD CLOSE this frame.
 #[derive(Debug, Default)]
 pub struct Outbound {
     /// Client→server wire frames to write up the served socket (via the handler's `out`).
     pub upstream: Vec<WireEvent>,
     /// Server→client wire frames to relay to the client (via the [`Carrier`] downlink).
     pub downlink: Vec<WireEvent>,
-    /// The metering lease reported exhausted / refused this frame — the carrier must hard-close.
+    /// The kernel read the caller's budget dry after this frame's turn — the carrier must hard-close.
     pub close: bool,
     /// This frame carried a tool reply the node's table refused — nothing on this session was waiting
     /// on the identifier it named.
@@ -74,34 +78,35 @@ struct PendingCall {
 }
 
 /// The mutable per-session state guarded by one lock: the codec's decode state (seq, `CallRef` map,
-/// barge-in playback position) and the in-flight tool-call table.
+/// barge-in playback position), the in-flight tool-call table, and the open turn's own counters (the
+/// uplink audio admitted and the tool calls opened since the last turn closed — the two quantities no
+/// usage report carries).
 #[derive(Debug, Default)]
 struct Inner {
     decode: DecodeState,
     calls: HashMap<CallRef, PendingCall>,
+    turn: TurnCounters,
 }
 
 /// THE GOVERNED SESSION CORE — the synchronous heart shared across the concurrent frame handlers. It
 /// owns the codec, the locked config (the plane's tools + instructions the browser cannot override),
-/// the metering lease (the kernel prices each turn's counts behind it), the tool executor, the metered
-/// model id, and the carrier. Generic over the codec `C` (HARD RULE 3); the lease and tool executor
-/// are dependency-inverted ports.
+/// the session's metering (each closed turn's counts go to the kernel account), the tool executor,
+/// the metered model id, and the carrier. Generic over the codec `C` (HARD RULE 3); the tool executor
+/// is a dependency-inverted port.
 pub struct SessionCore<C> {
     codec: C,
     inner: Mutex<Inner>,
     /// The locked GA `session` config — the authoritative copy the plane holds server-side and
     /// re-applies; a client `session.update` is a HINT reconciled against this, never trusted blind.
     locked_config: Option<SessionConfig>,
-    lease: SessionLease,
-    /// The presenting-key attribution each turn's usage is landed on through the CORE Meter seam
-    /// (`host.meter_ledger` + `host.meter_series`). `None` on an ungoverned deployment. Voice keeps
-    /// NO meter of its own — this IS the metering step, the same one every plane traverses.
-    meter: Option<TurnMeter>,
+    /// The session's metering: each closed turn's raw counts per class go to the kernel account,
+    /// which ledgers them through the one metering path and answers whether the carrier stays open.
+    /// `None` on an ungoverned deployment — nothing to attribute, nothing to close on.
+    metering: Option<SessionMetering>,
     tools: Arc<dyn ToolExecutor>,
-    /// The upstream MODEL id this session meters under (from the locked `session` config; empty when
-    /// the dialect carries it server-side and none was locked). Reported with each turn's counts so the
-    /// kernel prices the turn against that model's rate-card lane.
-    model: String,
+    /// The format uplink audio is counted in: the locked config's input format, else PCM16 — the
+    /// assumption the streaming plane states for its own `audio_seconds_in` estimate.
+    audio_in: AudioFormat,
     carrier: Carrier,
     /// The node's open-call table, when a composition root bound one. `None` is an ungoverned
     /// deployment: every call is served in-process and a client-authored result is carried upstream
@@ -119,30 +124,27 @@ impl<C> SessionCore<C>
 where
     C: DuplexReader + DuplexWriter + Send + Sync + 'static,
 {
-    /// Assemble a session core. `lease` is the OPEN D2 metering lease (already reserved at session
-    /// start); `locked_config` is the plane's authoritative tools+instructions.
+    /// Assemble a session core. `metering` is the session's OPEN kernel account (opened, and its
+    /// budget checked, at session start); `locked_config` is the plane's authoritative
+    /// tools+instructions.
     pub fn new(
         codec: C,
-        lease: SessionLease,
-        meter: Option<TurnMeter>,
+        metering: Option<SessionMetering>,
         tools: Arc<dyn ToolExecutor>,
         carrier: Carrier,
         locked_config: Option<SessionConfig>,
     ) -> Self {
-        // The pricing model rides the locked config (the plane's authoritative `session` shape); a
-        // dialect that carries the model server-side and locked none prices under the empty lane.
-        let model = locked_config
+        let audio_in = locked_config
             .as_ref()
-            .and_then(|c| c.model.clone())
-            .unwrap_or_default();
+            .and_then(|c| c.input_audio_format)
+            .unwrap_or(AudioFormat::Pcm16);
         SessionCore {
             codec,
             inner: Mutex::new(Inner::default()),
             locked_config,
-            lease,
-            meter,
+            metering,
             tools,
-            model,
+            audio_in,
             carrier,
             governed: None,
             opened: std::time::Instant::now(),
@@ -232,30 +234,14 @@ where
             let inner = &mut *g;
             let events = self.codec.read_down(frame, &mut inner.decode);
             for ev in events {
+                // A turn that ends on an upstream error consumed the audio and ran the tool calls a
+                // reported one would have: it closes with the plane's own counts, and is still relayed.
+                if matches!(ev, IrServerEvent::Error { .. }) {
+                    self.settle_turn(inner, None, &mut out);
+                }
                 match ev {
-                    // ── metering: the marquee guarantee ──────────────────────────────────────────
-                    IrServerEvent::Usage(u) => {
-                        // Fold the turn's five token classes onto the neutral reserved-key `Usage` (the
-                        // 5→4 map) and REPORT the raw counts to the kernel meter, which prices and
-                        // settles them and answers whether the carrier stays open. An unpriced model
-                        // fails CLOSED kernel-side — the turn cannot meter as free (#43, #71).
-                        let usage = u.to_billing_usage();
-                        // METER THE TURN through the CORE seam — land this turn's usage on the ONE
-                        // ledger, attributed to the presenting key (the voice twin of the LLM plane's
-                        // `ledger_and_meter`). Voice keeps no meter of its own; THIS is the Meter step.
-                        if let Some(meter) = &self.meter {
-                            meter.record_turn(&self.model, &usage);
-                        }
-                        if self.lease.report_turn(&self.model, &usage) == TurnVerdict::MustClose {
-                            // Budget dry (or the lease refused / faulted / unpriced): cancel the in-flight
-                            // response upstream and demand a hard close.
-                            out.push_up(self.codec.write_up(
-                                IrClientEvent::Control(IrDuplexControl::ResponseCancel),
-                                &mut inner.decode,
-                            ));
-                            out.close = true;
-                        }
-                    }
+                    // ── metering: the turn closes on its usage report ────────────────────────────
+                    IrServerEvent::Usage(u) => self.settle_turn(inner, Some(&u), &mut out),
                     // ── barge-in: cancel + truncate at the audio the user actually heard (`plane4-duplex-session.md` §2.3) ────
                     IrServerEvent::SpeechStarted { item_id, .. } => {
                         let heard_ms = inner.decode.flush_playback();
@@ -285,6 +271,8 @@ where
                         let call_ref = t.call_ref();
                         match t {
                             IrDuplexTool::CallOpen { call_id, name, .. } => {
+                                // A tool call the upstream opened is a count the turn carries.
+                                inner.turn.open_tool_call();
                                 let e = inner.calls.entry(call_ref).or_default();
                                 e.call_id = call_id;
                                 e.name = name;
@@ -446,13 +434,47 @@ where
                     }
                 }
                 // Everything else forwards verbatim (audio uplink, commits, item ops, tool results the
-                // plane itself authored are not re-authored here).
+                // plane itself authored are not re-authored here). Uplink audio is the turn's
+                // `audio_seconds_in`, counted as it is carried.
                 ev => {
+                    if let IrClientEvent::AudioFrame(f) = &ev {
+                        let fmt = self.audio_in;
+                        g.turn.admit_audio(fmt, f.media.len());
+                    }
                     out.push_up(self.codec.write_up(ev, &mut g.decode));
                 }
             }
         }
         out
+    }
+
+    /// CLOSE THE OPEN TURN: hand its counts to the kernel account and, when the kernel reads the
+    /// caller's budget dry, cancel the in-flight response upstream and demand a hard close. The turn
+    /// that dried it was delivered and is ledgered; what the verdict decides is everything after it.
+    fn settle_turn(&self, inner: &mut Inner, usage: Option<&IrDuplexUsage>, out: &mut Outbound) {
+        let counters = std::mem::take(&mut inner.turn);
+        let Some(metering) = &self.metering else {
+            return;
+        };
+        if metering.report_turn(usage, counters) == TurnVerdict::MustClose {
+            out.push_up(self.codec.write_up(
+                IrClientEvent::Control(IrDuplexControl::ResponseCancel),
+                &mut inner.decode,
+            ));
+            out.close = true;
+        }
+    }
+
+    /// **The session is over.** A turn still open when the carrier ends — the caller hung up, a
+    /// barge-in was never answered, the ceiling cut it — was served all the same: its counts go to
+    /// the ledger with the session rather than with nobody.
+    pub fn settle_open_turn(&self) {
+        let mut g = self.inner.lock().expect("session inner poisoned");
+        if g.turn.is_empty() {
+            return;
+        }
+        let mut out = Outbound::default();
+        self.settle_turn(&mut g, None, &mut out);
     }
 }
 
@@ -519,7 +541,8 @@ pub async fn serve_to_teardown<C, F, N>(
     F: std::future::Future<Output = ()>,
     N: FnOnce() -> u64,
 {
-    serve_with_sweep(core, pump).await;
+    serve_with_sweep(Arc::clone(&core), pump).await;
+    core.settle_open_turn();
     handle.finish(now());
 }
 
@@ -627,17 +650,6 @@ where
         for up in plan.upstream {
             // Funnel to the single upstream writer shared with the downlink-facing plane.
             let _ = self.upstream.unbounded_send(up.0.to_vec());
-        }
-    }
-}
-
-/// The settled-figure AUDIT TAP, test scope only: production reads no money figure back (#43).
-#[cfg(test)]
-mod audit_tap {
-    impl<C> super::SessionCore<C> {
-        /// What the kernel meter has settled on this session so far — the figure the tests assert.
-        pub(crate) fn settled_nanos(&self) -> u64 {
-            self.lease.settled()
         }
     }
 }
