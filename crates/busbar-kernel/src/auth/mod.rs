@@ -1841,15 +1841,15 @@ pub use busbar_api::IdentityRefusal;
 ///   a group-carrying principal is re-keyed through `role_bindings` via
 ///   [`crate::governance::synthesize_principal_key`]. A DISABLED vkey never reaches here as
 ///   `Identified` (the keys arm denies it), so it can never be re-admitted through synth.
-/// - FAIL-CLOSED for a GROUP principal (asserted roles) that earned NO enforcement key WHEN its
-///   module HAS a `role_bindings` table (governance is configured for it): its roles were supposed
-///   to define its data-plane access and defined none (an unbound role, or an explicit
-///   `allowed_pools: []`). Admitting it `key: None` would hand it UNRESTRICTED pool access — the
-///   regression `test_role_bound_principal_governed_like_a_virtual_key` pins. With NO bindings
-///   table for the module (`bindings.is_none()`), a role principal is admitted UNGOVERNED
-///   (`key: None`), exactly as the old static/inert path did
-///   (`test_chain_accepts_all_carriers_and_native_401`); a plain vkey (`resolved: Some`) or a
-///   ROLELESS principal never trips the guard.
+/// - FAIL-CLOSED for ANY identified principal that earned NO enforcement key — whatever roles it
+///   carries and whether or not its module has a `role_bindings` table. `key: None` downstream means
+///   no pool ACL, no budget, and spend booked to the `anonymous` actor rather than to the principal
+///   that spent it, so an identified caller admitted without a key is both an authorization
+///   fail-open and a mis-attributed book. The guard is the one condition — no key, refuse — and
+///   nothing narrows it: 1.5.5 (and this function until 1.6.0 item 144) also required the principal
+///   to carry roles AND its module to have a bindings table, which admitted a ROLELESS principal, or
+///   any principal under an unbound module, ungoverned. `Open` (the explicit `chain: []` posture)
+///   is the only anonymous admission. Pinned by `auth::tests::a_principal_without_a_governance_key_is_refused`.
 pub fn resolve_data_plane_identity(
     app: &crate::state::App,
     verdict: ChainVerdict,
@@ -1865,12 +1865,12 @@ pub fn resolve_data_plane_identity(
             let bindings = app.role_bindings.get(&module);
             let gov_key = resolved
                 .or_else(|| crate::governance::synthesize_principal_key(&principal, bindings));
-            if gov_key.is_none() && !principal.roles.is_empty() && bindings.is_some() {
+            let Some(key) = gov_key else {
                 return Err(IdentityRefusal::NoGrant);
-            }
+            };
             Ok((
                 AuthPrincipal(Some(principal)),
-                crate::governance::GovCtx { key: gov_key },
+                crate::governance::GovCtx { key: Some(key) },
             ))
         }
     }
