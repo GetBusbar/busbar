@@ -262,12 +262,18 @@ pub fn encode_mark(stream_sid: &str, name: &str) -> Vec<u8> {
     serde_json::to_vec(&out).unwrap_or_default()
 }
 
-// ── standard base64 (RFC 4648), self-contained so this module pulls no new dependency ──────────────
+// ── standard base64 (RFC 4648), a LOCAL copy of the workspace's one decoder contract ─────────────
 //
-// Written independently for this crate; `busbar_voice_codec::topology::twilio` (runtime-gated, not in this
-// crate's dependency closure) happens to carry the identical standard algorithm for the identical
-// reason it states for itself: pulling in a dependency for one well-known, easily-verified transform
-// is not worth the closure weight.
+// The workspace's one base64 implementation is `busbar_substrate_values::media`; every other reader
+// (`busbar_voice_codec::topology::twilio` and `ir::codec` among them) imports it and carries no
+// algorithm of its own. It is in this crate's closure (through `busbar-voice-codec`), but a plane
+// names no substrate crate (`tests/purity.rs`, `the_plane_names_no_kernel_side_crate`), so this copy
+// stands in for it. It is NOT a second algorithm: its decode contract must match that one byte for
+// byte, because the byte count it returns is billed — `crate::plane` derives a call's audio duration
+// from it. The contract, all of it:
+// whitespace is ignored; `=` padding is TERMINAL (only whitespace or more `=` may follow it — data
+// resuming after padding, `QQ==QQ==`, is malformed, never one longer payload); a lone trailing
+// sextet, or any byte outside the alphabet, refuses the payload. `tests::twilio` pins each clause.
 
 const B64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -317,10 +323,22 @@ fn base64_sextet(c: u8) -> Option<u32> {
 }
 
 fn base64_decode(s: &str) -> Option<Vec<u8>> {
-    let sextets: Vec<u8> = s
-        .bytes()
-        .filter(|&b| b != b'=' && !b.is_ascii_whitespace())
-        .collect();
+    let mut sextets: Vec<u8> = Vec::with_capacity(s.len());
+    // Padding is TERMINAL: once `=` is seen, encoded data resuming is a malformed payload, refused.
+    let mut padded = false;
+    for b in s.bytes() {
+        if b.is_ascii_whitespace() {
+            continue;
+        }
+        if b == b'=' {
+            padded = true;
+            continue;
+        }
+        if padded {
+            return None;
+        }
+        sextets.push(b);
+    }
     let mut out = Vec::with_capacity(sextets.len() / 4 * 3);
     for chunk in sextets.chunks(4) {
         if chunk.len() < 2 {
