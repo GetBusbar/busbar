@@ -438,6 +438,26 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         &["planted_unreadable_request_path"],
     ));
 
+    // ITEM 190: THE TERMINAL RENAMED AWAY. Every call of the configured name vanishes with it, so
+    // "zero extra sites" used to pass; the floor refuses a terminal that no longer resolves.
+    let mut ov = on(base);
+    let home = "crates/busbar-kernel/src/ingress/mod.rs";
+    if let Ok(basetext) = cx.read(home) {
+        ov.set(
+            home,
+            basetext.replace("finish_inner", "finish_inner_renamed_away"),
+        );
+    }
+    r.push(prove_red(
+        cx,
+        gate,
+        "the request terminal renamed away is a terminal that no longer resolves, not one with no \
+         extra callers",
+        &["single-terminal"],
+        ov,
+        &["does not resolve"],
+    ));
+
     let planes = ConstructionGate::cfg(cx)
         .and_then(|c| c.plane_crates())
         .unwrap_or_default();

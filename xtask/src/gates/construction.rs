@@ -822,6 +822,45 @@ mod tests {
         );
     }
 
+    /// ITEM 190: A TERMINAL RENAMED AWAY IS NOT A CLEAN TERMINAL. Renaming `finish_inner` in its
+    /// one home leaves zero call sites of the configured name; the rule used to count that as zero
+    /// extra sites and PASS while printing `allowed callers seen: []`.
+    #[test]
+    fn single_terminal_refuses_a_terminal_that_no_longer_resolves() {
+        let cx = Ctx::workspace().expect("workspace");
+        let cfg = ConstructionGate::cfg(&cx).expect("ceilings");
+        let home = "crates/busbar-kernel/src/ingress/mod.rs";
+        let text = cx.read(home).expect("the terminal's home");
+        assert!(
+            text.contains("fn finish_inner("),
+            "the control needs the terminal on disk"
+        );
+        let load = |cx: &Ctx| {
+            Tree::load(
+                cx,
+                &cfg.scan_roots().expect("scan roots"),
+                &cfg.test_path_fragments().expect("fragments"),
+            )
+            .expect("tree")
+        };
+        let clean = rules::single_terminal(&load(&cx), &cfg).expect("the rule runs");
+        assert_eq!(clean[0].status, Status::Pass, "{}", clean[0].detail);
+
+        let mut ov = crate::ctx::Overlay::new();
+        ov.set(
+            home,
+            text.replace("finish_inner", "finish_inner_renamed_away"),
+        );
+        let pcx = cx.with_overlay(ov);
+        let rows = rules::single_terminal(&load(&pcx), &cfg).expect("the rule runs");
+        assert_eq!(rows[0].status, Status::Fail, "{}", rows[0].detail);
+        assert!(
+            rows[0].detail.contains("does not resolve"),
+            "{}",
+            rows[0].detail
+        );
+    }
+
     /// ITEM 89 (the `forbid-unsafe` arm the self-test caught): the attribute counts only as the
     /// crate-level inner attribute in the crate root. A test file asserting the attribute's TEXT
     /// (`assert!(lib.contains("#![forbid(unsafe_code)]"))`) and a module-level `#![forbid]` are

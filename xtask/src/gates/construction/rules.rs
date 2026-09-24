@@ -572,21 +572,53 @@ pub fn single_terminal(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let current = extra.len() as i64;
     let mut sorted_allowed = allowed.clone();
     sorted_allowed.sort();
+    let seen = sorted_unique(&seen_allowed);
+    // ITEM 190: THE FLOOR FOR "I FOUND NONE". A terminal renamed away is called from nowhere, so
+    // zero extra sites was a pass forever while this same detail printed `allowed callers seen: []`.
+    // The rule is a statement about a function that exists and the doors that call it; a
+    // configured terminal with no production definition, or a configured door that never calls
+    // it, is the configuration having lost its subject — refused, and named.
+    let mut refusals = Vec::new();
+    if tree.find_fn_by_name(term).is_empty() {
+        refusals.push(format!(
+            "no production `fn {term}` found -- the configured terminal does not resolve, so zero \
+             calls of it proves nothing"
+        ));
+    }
+    let unseen: Vec<String> = sorted_allowed
+        .iter()
+        .filter(|a| !seen.contains(a))
+        .cloned()
+        .collect();
+    if !unseen.is_empty() {
+        refusals.push(format!(
+            "allowed caller(s) never seen calling `{term}`: {}",
+            unseen.join(", ")
+        ));
+    }
     let detail = format!(
         "{current} call(s) of `{term}` outside the allowed callers {} (ceiling {ceiling}): {}; \
-         allowed callers seen: {}",
+         allowed callers seen: {}{}",
         py_list(&sorted_allowed),
         join_or_none(&extra),
-        py_list(&sorted_unique(&seen_allowed))
+        py_list(&seen),
+        if refusals.is_empty() {
+            String::new()
+        } else {
+            format!("; REFUSED: {}", refusals.join("; "))
+        }
     );
+    let pass = current <= ceiling && refusals.is_empty();
+    let mut offenders = extra;
+    offenders.extend(refusals);
     Ok(vec![plain(
         "single-terminal",
-        current <= ceiling,
+        pass,
         format!("`{term}` is called only from its allowed doors"),
         detail,
         current,
         ceiling,
-        extra,
+        offenders,
     )])
 }
 
