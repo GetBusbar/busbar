@@ -108,6 +108,7 @@ pub const LEDGER: &str = "qa/kind-isolation.toml";
 const MIN_SCANNED: usize = 600;
 
 mod instances;
+mod vendors;
 
 /// LAW 0/1: the plugin-INSTANCE vocabularies a NEUTRAL crate may name ZERO times — ALL SEVEN plugin
 /// kinds (DECISIONS #3), read off `truths::PLUGIN_KINDS` rather than restated here.
@@ -255,8 +256,8 @@ fn vocabulary(crates: &[CrateInfo]) -> BTreeMap<&'static str, Vec<Needle>> {
     }
     // DIALECT IS NOT A KIND (DECISIONS #4), so the matrix measures no `dialect` column. The
     // vendor-name confinement — a plane may name its own dialects' vendor names, nothing else may —
-    // lives in `plane-purity`'s scanner (the one place the vendor names are written down), and is not
-    // duplicated here as a kind column.
+    // is `plane-purity`'s vocabulary and scanner, handed by [`vendors`] the neutral crates that
+    // gate's listed roots do not reach. Not a column: a ceiling of zero with no ledger row.
 
     let names: Vec<Vec<String>> = crates
         .iter()
@@ -532,7 +533,7 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
         let mut p = Plan::default();
         for (kind, words) in &vocab {
             // `dialect` is not a kind (DECISIONS #4) and no longer a column; the vendor-name
-            // confinement is `plane-purity`'s. Every column here comes from the census.
+            // confinement is [`vendors`]'. Every column here comes from the census.
             for n in needles_for(words, c) {
                 let parts = needle_segments(&n.word);
                 if parts.is_empty() {
@@ -1273,9 +1274,24 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
     let inst = instances::measure(crates, &files, &ivocab);
     let inst_total: usize = inst.values().map(|c| c.count).sum();
 
+    // LAW 1 OVER THE NEUTRAL CENSUS (item 203) — a vendor name in a neutral crate plane-purity does
+    // not list. Ceiling 0 in both twins; see [`vendors`].
+    let vendor = match vendors::offenders(cx, crates, &files) {
+        Ok(v) => v,
+        Err(e) => {
+            return Row::fail(
+                ROW_MATRIX,
+                "the kind × crate scan could not run",
+                format!(
+                    "{e} — the vendor-name scan did not run, and an unrun scan is not a clean one."
+                ),
+            )
+        }
+    };
+
     // THE SHIP TWIN OWES ZERO EVERYWHERE, and owes it without consulting the ledger.
     if ship {
-        if total == 0 && inst_total == 0 && ivocab.unattributed.is_empty() {
+        if total == 0 && inst_total == 0 && ivocab.unattributed.is_empty() && vendor.is_empty() {
             return Row::pass(
                 ROW_MATRIX,
                 "no crate names another kind's vocabulary anywhere",
@@ -1291,6 +1307,7 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
         let mut law0 = law0_offenders(&matrix, crates, None);
         law0.extend(instances::law0(&inst, None));
         law0.extend(ivocab.unattributed.iter().cloned());
+        law0.extend(vendor.iter().cloned());
         return Row::fail(
             ROW_MATRIX,
             "a crate still names another kind's vocabulary",
@@ -1313,6 +1330,8 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
     offenders.extend(minted_rows(cx));
     offenders.extend(instances::offenders(&inst, &ivocab, reg));
     offenders.extend(instances::law0(&inst, Some(LAW0_ENFORCED_NEUTRAL_CRATES)));
+    // Law 1 is armed at 0 on the everyday gate too: no ledger row exists that could raise it.
+    offenders.extend(vendor.iter().cloned());
     let kind_of: BTreeMap<&str, &'static str> = crates
         .iter()
         .filter_map(|c| c.kind.map(|k| (c.name.as_str(), k)))
@@ -1483,6 +1502,11 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
             instances::render(&inst, &ivocab)
         );
         println!(
+            "\nLAW 1 — VENDOR NAMES IN THE NEUTRAL CRATES PLANE-PURITY DOES NOT LIST ({}):\n{}",
+            vendor.len(),
+            vendor.join("\n")
+        );
+        println!(
             "\nTHE LISTED CLASSES (cite, why, the line that deletes it):\n{}",
             render_classes(&listed)
         );
@@ -1555,7 +1579,24 @@ fn the_accept_loop_that_named_its_plane() -> String {
 }
 
 /// A one-file plant under `dir`, without disturbing anything else in the tree.
-fn plant(rel: &str, body: &str) -> crate::ctx::Overlay {
+///
+/// A PLANT UNDER A DIRECTORY NO MANIFEST GOVERNS IS REFUSED, LOUDLY (item 175). Every rule of this
+/// row keys on the crate census: `measure` attributes a file to the crate whose directory holds a
+/// `Cargo.toml`, and `continue`s past one it cannot attribute. Four cases once planted under
+/// `crates/busbar-plane-admin/` after that crate had folded away — the file was scanned, owned by
+/// nothing, and every assertion it carried was dead. So a path under `crates/<dir>/` is only
+/// plantable when `crates/<dir>/Cargo.toml` is on the tree, or IS the file being planted (a case
+/// that lands a new crate plants its manifest first). A fixture that cannot move the row is a bug
+/// in the battery, and a panic is how the battery says so.
+fn plant(cx: &Ctx, rel: &str, body: &str) -> crate::ctx::Overlay {
+    if let Some(dir) = owning_dir(rel) {
+        let manifest = format!("{dir}/Cargo.toml");
+        assert!(
+            rel == manifest || cx.exists(&manifest),
+            "{rel}: planted under `{dir}`, which holds no Cargo.toml — no crate of the census owns \
+             it, so the plant is scanned and attributed to nothing and the case proves nothing"
+        );
+    }
     let mut ov = crate::ctx::Overlay::new();
     ov.set(rel, body.to_string());
     ov
@@ -1581,7 +1622,7 @@ fn ledger_with(cx: &Ctx, from: &str, to: &str) -> Result<crate::ctx::Overlay, St
             from.replace('\n', " / ")
         ));
     }
-    Ok(plant(LEDGER, &text.replacen(from, to, 1)))
+    Ok(plant(cx, LEDGER, &text.replacen(from, to, 1)))
 }
 
 /// [`prove_rows_red`](crate::gates::prove_rows_red) over a one-substitution plant into the real
@@ -1693,6 +1734,7 @@ pub fn selftest<'a>(
             "at the ship ceiling of zero, a plane named inside a transport is a NEW cell",
             &[ROW_MATRIX],
             plant(
+                cx,
                 "crates/busbar-transport-tcp/src/leak.rs",
                 "//! The llm plane's frames arrive here first.\n",
             ),
@@ -1736,6 +1778,7 @@ pub fn selftest<'a>(
         "a `[[cell]]` row this branch minted is a 0 -> N raise, not a first measurement",
         &[ROW_MATRIX],
         plant(
+            cx,
             LEDGER,
             &format!(
                 "{}\n\n[[cell]]\n{}\n",
@@ -1757,6 +1800,7 @@ pub fn selftest<'a>(
         "the accept loop that named its plane (`root/voice_serve.rs`, keep-streams-3 dd96a04f3)",
         &[ROW_MATRIX],
         plant(
+            cx,
             "crates/busbar/src/root/voice_serve.rs",
             &the_accept_loop_that_named_its_plane(),
         ),
@@ -1798,6 +1842,7 @@ pub fn selftest<'a>(
         "a plane named inside a transport (`busbar-transport-tcp` says `llm`)",
         &[ROW_MATRIX],
         plant(
+            cx,
             "crates/busbar-transport-tcp/src/leak.rs",
             "//! The llm plane's frames arrive here first.\n",
         ),
@@ -1812,6 +1857,7 @@ pub fn selftest<'a>(
         "a plane named inside a transport's own tests — tests are not excluded",
         &[ROW_MATRIX],
         plant(
+            cx,
             "crates/busbar-transport-tcp/src/tests/leak.rs",
             "#[test]\nfn mcp_frames_round_trip() {}\n",
         ),
@@ -1825,6 +1871,7 @@ pub fn selftest<'a>(
         "a transport named inside a plane (`busbar-plane-mcp` says `grpc`)",
         &[ROW_MATRIX],
         plant(
+            cx,
             "crates/busbar-plane-mcp/src/leak.rs",
             "//! The grpc wire delivers these.\n",
         ),
@@ -1838,6 +1885,7 @@ pub fn selftest<'a>(
         "a store named inside the kernel (`busbar-kernel` says `busbar_store_memory`)",
         &[ROW_MATRIX],
         plant(
+            cx,
             "crates/busbar-kernel/src/leak.rs",
             "use busbar_store_memory::MemoryStore;\n",
         ),
@@ -1852,6 +1900,7 @@ pub fn selftest<'a>(
         "a plane named in nothing but a comment inside the kernel",
         &[ROW_MATRIX],
         plant(
+            cx,
             "crates/busbar-kernel/src/leak.rs",
             "// mcp, a2a and llm all come through here.\n",
         ),
@@ -1866,6 +1915,7 @@ pub fn selftest<'a>(
         "the two scanners disagreeing on a spelling, on a cell that does not record it",
         &[ROW_MATRIX],
         plant(
+            cx,
             "crates/busbar-kernel/src/leak.rs",
             "// gRPC status codes are not the kernel's business.\n",
         ),
@@ -1916,6 +1966,7 @@ pub fn selftest<'a>(
         "a plane named in a transport's own README -- a crate ships its prose too",
         &[ROW_MATRIX],
         plant(
+            cx,
             "crates/busbar-transport-tcp/README.md",
             "# busbar-transport-tcp\n\nUsed by the llm plane over this wire.\n",
         ),
@@ -1930,6 +1981,7 @@ pub fn selftest<'a>(
         "a plane routing table in a `.json` fixture under the crate is the crate's text",
         &[ROW_MATRIX],
         plant(
+            cx,
             "crates/busbar-transport-tcp/src/fixtures/leak.json",
             "{\"planes\": [\"busbar-plane-llm\", \"busbar-plane-mcp\"]}\n",
         ),
@@ -1944,6 +1996,7 @@ pub fn selftest<'a>(
         "the same table in `.yaml` -- the scan set is not an extension list",
         &[ROW_MATRIX],
         plant(
+            cx,
             "crates/busbar-transport-tcp/src/fixtures/leak.yaml",
             "plane: busbar-plane-voice\n",
         ),
@@ -1958,6 +2011,7 @@ pub fn selftest<'a>(
         "generated Rust in a `.inc` file -- compiled code the old scan set never opened",
         &[ROW_MATRIX],
         plant(
+            cx,
             "crates/busbar-transport-tcp/src/gen/names.inc",
             "pub const GEN: &str = \"busbar-plane-voice\";\n",
         ),
@@ -1972,6 +2026,7 @@ pub fn selftest<'a>(
         "a file with no extension under a crate is scanned -- the default is text, not skip",
         &[ROW_MATRIX],
         plant(
+            cx,
             "crates/busbar-transport-tcp/src/NOTES",
             "the a2a plane and the mcp plane both arrive here\n",
         ),
@@ -1988,7 +2043,7 @@ pub fn selftest<'a>(
         {
             let rel = "crates/busbar-transport-tcp/Cargo.toml";
             let text = cx.read(rel).unwrap_or_default();
-            plant(
+            plant(cx,
                 rel,
                 &text.replacen(
                     "[package]\n",
@@ -2010,6 +2065,7 @@ pub fn selftest<'a>(
         "an escape-encoded plane name in a transport -- the compiler reads `\\x6dcp` as `mcp`",
         &[ROW_MATRIX],
         plant(
+            cx,
             "crates/busbar-transport-tcp/src/leak.rs",
             "pub const HX: &str = \"\\x6dcp\";\n",
         ),
@@ -2022,6 +2078,7 @@ pub fn selftest<'a>(
         "the `\\u{…}` spelling of the same name is the same name",
         &[ROW_MATRIX],
         plant(
+            cx,
             "crates/busbar-transport-tcp/src/leak.rs",
             "pub const UN: &str = \"\\u{6c}\\u{6c}m\";\n",
         ),
@@ -2035,6 +2092,7 @@ pub fn selftest<'a>(
         "a plane name split across a `concat!` of two literals is one name",
         &[ROW_MATRIX],
         plant(
+            cx,
             "crates/busbar-transport-tcp/src/leak.rs",
             "pub const CS: &str = concat!(\"m\", \"cp\");\n",
         ),
@@ -2049,35 +2107,96 @@ pub fn selftest<'a>(
         "a Cyrillic homoglyph inside a plane name is refused as a confusable, at a ceiling of zero",
         &[ROW_MATRIX],
         plant(
+            cx,
             "crates/busbar-transport-tcp/src/leak.rs",
             "pub const UC: &str = \"v\u{43e}ice\";\n",
         ),
         &["confusable", "busbar-transport-tcp"],
     ));
 
-    // -- THE DIALECT VOCABULARY — MOVED, AND THE MOVE IS WHAT IS ASSERTED ---------------------
+    // -- THE VENDOR NAME IN A NEUTRAL CRATE — THE RED TEAM'S PLANT, RED AGAIN (item 203) --------
     //
-    // A red team once put `const VD = "anthropic";` and `fn openai_shim()` into
-    // `busbar-store-memory` with every gate green, and this case planted exactly that and asserted a
-    // `dialect` column went RED. DECISIONS #4 then struck `dialect` as a kind: there is no dialect
-    // column in this matrix any more (see [`vocabulary`]), and the vendor-name confinement is
-    // `plane-purity`'s scanner, the one place the vendor names are written down. The case could not
-    // go red here by construction — it scored PROOF IMPOSSIBLE behind the matrix's standing debt,
-    // and GREEN against the debt-free subject (item 89).
-    //
-    // So what this row owes about that plant is the ABSENCE: the matrix must not grow a second,
-    // unowned copy of plane-purity's vendor rule. A dialect column coming back here without the
-    // owner's ruling is the regression, and this is the case that says so.
-    report.push(prove_rows_green(
+    // A red team put `const VD = "anthropic";` and `fn openai_shim()` into `busbar-store-memory`
+    // with every gate green. This case used to assert a `dialect` COLUMN went red; DECISIONS #4
+    // struck that column, and the case was turned into a GREEN absence on the word that the
+    // vendor rule was `plane-purity`'s — whose listed roots do not include `crates/store-memory`,
+    // so the plant was green on every gate in the tree. The vendor rule now reaches every neutral
+    // crate of the census through [`vendors`], and the incident's own bytes are RED on this row,
+    // named by crate, file and the dialect it names.
+    report.push(prove_rows_red(
         cx,
         gate,
-        "a vendor name in a neutral crate is plane-purity's to judge, not a matrix column (DECISIONS #4)",
+        "a vendor name in a neutral plugin crate (`busbar-store-memory` says `anthropic`) is Law 1 RED",
         &[ROW_MATRIX],
         plant(
+            cx,
             // THE DIRECTORY, NOT THE PACKAGE NAME: `busbar-store-memory` lives at
             // `crates/store-memory`, or the plant lands under no crate at all.
             "crates/store-memory/src/vendor.rs",
             "pub const VD: &str = \"anthropic\";\npub fn openai_shim() {}\n",
+        ),
+        &[
+            "vendor-name",
+            "busbar-store-memory",
+            "crates/store-memory/src/vendor.rs:1",
+        ],
+    ));
+
+    // THE COMPOSITION ROOT IS NEUTRAL TOO, and `plane-purity` does not list it either.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a vendor name in the composition root's own source is Law 1 RED",
+        &[ROW_MATRIX],
+        plant(
+            cx,
+            "crates/busbar/src/root/planted_vendor.rs",
+            "pub fn pick() -> &'static str { \"bedrock\" }\n",
+        ),
+        &["vendor-name", "busbar\t", "planted_vendor.rs:1"],
+    ));
+
+    // A TEST IS NOT EXCLUDED. A neutral crate's fixture naming a vendor is that crate naming one.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a vendor name in a neutral plugin crate's own tests is Law 1 RED, in test scope",
+        &[ROW_MATRIX],
+        plant(
+            cx,
+            "crates/store-memory/src/tests/planted_vendor.rs",
+            "#[test]\nfn t() { let _ = \"gemini\"; }\n",
+        ),
+        &["vendor-name", "busbar-store-memory", "\ttest\t"],
+    ));
+
+    // THE SCANNER'S ONE CARVE-OUT IS NOT AN OFF SWITCH HERE. With the pragma the vendor line is
+    // exempt from the vocabulary rules, and no row outside plane-purity's roots checks its claim —
+    // so the pragma itself is the finding.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a frozen-wire pragma in a neutral crate plane-purity does not list is refused, not honoured",
+        &[ROW_MATRIX],
+        plant(
+            cx,
+            "crates/store-memory/src/vendor.rs",
+            "pub const VD: &str = \"anthropic\"; // plane-purity: frozen-wire frozen since 1.5.5 key: vd\n",
+        ),
+        &["vendor-frozen-wire", "busbar-store-memory", "vendor.rs:1"],
+    ));
+
+    // A PLANE NAMING ITS OWN DIALECT IS LAW 5, NOT A LEAK — the population stops at the neutral
+    // family, and the same bytes in a plane crate move nothing on this row.
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a plane naming a dialect is not a vendor-name finding (a plane may name its own)",
+        &[ROW_MATRIX],
+        plant(
+            cx,
+            "crates/busbar-plane-llm/src/planted_vendor.rs",
+            "pub const VD: &str = \"anthropic\";\n",
         ),
     ));
 
@@ -2274,7 +2393,7 @@ mod tests {
         let cx = Ctx::workspace().expect("the workspace opens");
         let rel = "crates/store-memory/src/vendor.rs";
         let body = "pub const PLANTED: &str = \"planted\";\n";
-        let cx = cx.with_overlay(plant(rel, body));
+        let cx = cx.with_overlay(plant(&cx, rel, body));
 
         // THE WALKER, and the ignore filter it ends in.
         let listed = cx.list(&WalkSpec::new(["crates"])).expect("the walk lists");
@@ -2304,6 +2423,62 @@ mod tests {
             "{rel}: scanned under `{dir}`, which no crate of the census owns — every hit in it \
              would be counted against no cell at all"
         );
+    }
+
+    /// ITEM 203's EXIT TEST, at unit speed: the red team's own bytes in `busbar-store-memory` add a
+    /// `vendor-name` finding to this row that the unplanted tree does not carry. They added
+    /// nothing while the vendor rule's only population was `plane-purity`'s listed roots.
+    #[test]
+    fn the_red_team_vendor_plant_in_a_neutral_plugin_crate_moves_the_row() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let reg = super::super::load_registry(&cx).expect("the ledger reads");
+        let crates = super::super::census(&cx).expect("the census reads");
+        let rel = "crates/store-memory/src/vendor.rs";
+        let base = rule_matrix(&cx, &crates, &reg, false);
+        assert!(
+            !base.detail.contains(rel),
+            "the unplanted tree already names {rel}"
+        );
+        let planted = cx.with_overlay(plant(
+            &cx,
+            rel,
+            "pub const VD: &str = \"anthropic\";\npub fn openai_shim() {}\n",
+        ));
+        let crates = super::super::census(&planted).expect("the census reads");
+        let row = rule_matrix(&planted, &crates, &reg, false);
+        let finding = format!("vendor-name\tbusbar-store-memory\t{rel}:1");
+        assert!(
+            row.detail.contains(&finding),
+            "the red team's vendor plant moved nothing on {ROW_MATRIX}: {}",
+            row.detail.chars().take(400).collect::<String>()
+        );
+    }
+
+    /// ITEM 175's EXIT TEST. The four plants that went under `crates/busbar-plane-admin/` after the
+    /// crate folded away were scanned and owned by nothing; the helper every case plants through
+    /// now refuses such a path before a case can be built on it.
+    #[test]
+    #[should_panic(expected = "holds no Cargo.toml")]
+    fn a_plant_under_a_directory_no_manifest_governs_is_refused() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let _ = plant(
+            &cx,
+            "crates/busbar-plane-admin/src/leak.rs",
+            "//! The grpc wire delivers these.\n",
+        );
+    }
+
+    /// The same helper still plants a NEW crate's manifest, and a file of a crate that has one.
+    #[test]
+    fn a_plant_under_a_governed_directory_or_of_a_new_manifest_is_accepted() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let _ = plant(&cx, "crates/store-memory/src/vendor.rs", "pub fn f() {}\n");
+        let _ = plant(
+            &cx,
+            "crates/busbar-store-zanzibar/Cargo.toml",
+            "[package]\n",
+        );
+        let _ = plant(&cx, LEDGER, "");
     }
 
     #[test]

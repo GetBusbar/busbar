@@ -652,7 +652,7 @@ pub fn selftest<'a>(
                     "at the ship ceiling of zero, core writing the `{k}` instance `{name}` is RED"
                 ),
                 &[ROW_MATRIX],
-                super::plant(&rel, &body),
+                super::plant(cx, &rel, &body),
                 &[
                     "law0-neutral-instance",
                     &format!("{CORE_NAME} \u{d7} {k}"),
@@ -665,7 +665,7 @@ pub fn selftest<'a>(
                 gate,
                 format!("core writing the `{k}` instance `{name}` is an unlisted instance cell"),
                 &[ROW_MATRIX],
-                super::plant(&rel, &body),
+                super::plant(cx, &rel, &body),
                 &[
                     "unlisted-instance",
                     &format!("{CORE_NAME} \u{d7} {k} = 1"),
@@ -686,6 +686,7 @@ pub fn selftest<'a>(
             "the kernel naming one more export instance is a RAISED instance cell",
             &[ROW_MATRIX],
             super::plant(
+                cx,
                 "crates/busbar-kernel/src/planted_export_instance.rs",
                 &format!("pub const ALSO: &str = \"{name}\";\n"),
             ),
@@ -696,6 +697,7 @@ pub fn selftest<'a>(
     // A NEW PLUGIN CRATE TEACHES THE AXIS ITS NAME ON THE COMMIT THAT LANDS IT — item 3's lesson,
     // proven: nothing in this module lists `zanzibar`, and core naming it is RED all the same.
     let mut ov = super::plant(
+        cx,
         "crates/busbar-store-zanzibar/Cargo.toml",
         "[package]\nname = \"busbar-store-zanzibar\"\nversion = \"0.0.0\"\n",
     );
@@ -724,6 +726,7 @@ pub fn selftest<'a>(
         "a plugin module-name constant no rule can attribute to a kind is refused",
         &[ROW_MATRIX],
         super::plant(
+            cx,
             "crates/busbar-kernel/src/planted_frob.rs",
             "pub const FROB_MODULE: &str = \"frobnicate\";\n",
         ),
@@ -738,6 +741,7 @@ pub fn selftest<'a>(
         "a plugin instance writing its own name is not a finding",
         &[ROW_MATRIX],
         super::plant(
+            cx,
             "crates/store-memory/src/planted_self.rs",
             "pub const ME: &str = \"memory\";\n",
         ),
@@ -790,6 +794,7 @@ pub fn selftest<'a>(
         "an [[instance]] row over a cell that measures zero is a dead allowance",
         &[ROW_MATRIX],
         super::plant(
+            cx,
             super::LEDGER,
             &format!(
                 "{}\n\n[[instance]]\ncrate = \"busbar-timing\"\nkind = \"store\"\ncount = \"1\"\n",
@@ -804,6 +809,7 @@ pub fn selftest<'a>(
         "an [[instance]] row for a kind that is not an instance axis is refused at load",
         &[super::super::ROW_REGISTRY],
         super::plant(
+            cx,
             super::LEDGER,
             &format!(
                 "{}\n\n[[instance]]\ncrate = \"busbar-kernel\"\nkind = \"plane\"\ncount = \"1\"\n",
