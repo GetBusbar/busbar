@@ -79,36 +79,54 @@ PYEOF
     || { say FAIL "the committed register is RED"; sed 's/^/      /' "$tmp/green.log"; }
 
   # (a) a claim that is neither pinned nor excused
-  plant "$tmp/a.json" 'c = claim("README:1054"); c["cell"] = []'
+  plant "$tmp/a.json" 'c = claim("README:1055"); c["cell"] = []'
   run_case "a 'cell' claim naming no cell is caught" "$tmp/a.json" "names no cell"
 
   # (b) a claim dropped without a stated reason
-  plant "$tmp/b.json" 'c = claim("README:1066"); c.pop("reason")'
+  plant "$tmp/b.json" 'c = claim("README:1067"); c.pop("reason")'
   run_case "a 'prose' claim with no reason is caught" "$tmp/b.json" "dropped without saying why"
 
   # (c) a hole in the claim run -- the last CHANGELOG claim deleted
-  plant "$tmp/c.json" 'd["claims"] = [c for c in d["claims"] if c["id"] != "CHANGELOG:1115"]'
-  run_case "a dropped claim leaves a hole in the run" "$tmp/c.json" "CHANGELOG:1115"
+  plant "$tmp/c.json" 'd["claims"] = [c for c in d["claims"] if c["id"] != "CHANGELOG:1116"]'
+  run_case "a dropped claim leaves a hole in the run" "$tmp/c.json" "CHANGELOG:1116"
 
   # (d) the hand-written summary drifting from the claims it summarises
   plant "$tmp/d.json" 'd["counts"]["cell"] = d["counts"]["cell"] + 1'
   run_case "a drifted counts block is caught" "$tmp/d.json" "counts.cell says"
 
   # (e) a cited cell that names nothing in cells.json
-  plant "$tmp/e.json" 'claim("README:1057")["cell"] = ["documented|readme|no-such-cell-selftest"]'
+  plant "$tmp/e.json" 'claim("README:1058")["cell"] = ["documented|readme|no-such-cell-selftest"]'
   run_case "a cited cell absent from cells.json is caught" "$tmp/e.json" "is in no cell of"
 
   # (f) a cited cell that EXISTS but the pinned golden never recorded -- a pin whose comparison
-  #     has never once run. The mysql store cell is exactly that shape in this tree.
-  plant "$tmp/f.json" 'claim("README:1057")["cell"] = ["plugins.store-persist|store-mysql"]'
-  run_case "a cited cell the golden never recorded is caught" "$tmp/f.json" "never recorded"
+  #     has never once run. The cell is DERIVED here (the first cells.json id with no PASS row in
+  #     the golden ledger), not named: a hard-coded one (store-mysql) went stale the day the golden
+  #     recorded it, and this case then went RED for the fixture's reason, not the checker's.
+  local unrec
+  unrec="$("$PY" - <<'PYEOF'
+import json
+cells = [c["id"] for c in json.load(open("testing/shadow-oracle/cells.json", encoding="utf-8"))["cells"]]
+rec = set()
+for line in open("testing/shadow-oracle/golden/1.5.5/ledger.tsv", encoding="utf-8", errors="replace"):
+    p = line.rstrip("\n").split("\t")
+    if len(p) >= 2 and p[1] == "PASS":
+        rec.add(p[0])
+print(next((c for c in cells if c not in rec), ""))
+PYEOF
+)"
+  if [ -z "$unrec" ]; then
+    say FAIL "no cells.json id lacks a PASS row in the golden, so the never-recorded rule has no subject to prove itself on"
+  else
+    plant "$tmp/f.json" "claim(\"README:1058\")[\"cell\"] = [\"$unrec\"]"
+    run_case "a cited cell the golden never recorded is caught ($unrec)" "$tmp/f.json" "never recorded"
+  fi
 
   # (g) a CONTRADICTED row demoted to ordinary prose -- a known documentation defect deleted
-  plant "$tmp/g.json" 'c = claim("README:1061"); c["status"] = "prose"; c.pop("contradicted"); c.pop("cell"); c["reason"] = "selftest"'
-  run_case "a CONTRADICTED row demoted to prose is caught" "$tmp/g.json" "README:1061"
+  plant "$tmp/g.json" 'c = claim("README:1062"); c["status"] = "prose"; c.pop("contradicted"); c.pop("cell"); c["reason"] = "selftest"'
+  run_case "a CONTRADICTED row demoted to prose is caught" "$tmp/g.json" "README:1062"
 
   # (h) a CONTRADICTED row that stops saying what the code actually does
-  plant "$tmp/h.json" 'claim("CHANGELOG:1099").pop("code_wins")'
+  plant "$tmp/h.json" 'claim("CHANGELOG:1100").pop("code_wins")'
   run_case "a CONTRADICTED row with no code_wins is caught" "$tmp/h.json" "no \`code_wins\`"
 
   # (i) an unreadable register is RED, never vacuously green

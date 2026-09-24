@@ -65,9 +65,9 @@ _VERSION_TAG = re.compile(r"^\s*[0-9]+\.[0-9]+\.[0-9]+:\s*")
 # The two runs the binding names, as (prefix, first, last). These are line addresses into
 # docs/design/inventory/1.5.5-ops-observability.md's two cross-check sections, so the span is part
 # of the claim: a register that silently narrows its own range has stopped covering the document.
-RUNS = (("README", 1047, 1073), ("CHANGELOG", 1087, 1115))
+RUNS = (("README", 1048, 1074), ("CHANGELOG", 1088, 1116))
 # The rows the design pins as code-wins. Named here so that demoting one to prose is RED.
-CONTRADICTED = ("README:1061", "CHANGELOG:1099")
+CONTRADICTED = ("README:1062", "CHANGELOG:1100")
 
 _ID = re.compile(r"^(README|CHANGELOG):([0-9]+)$")
 
