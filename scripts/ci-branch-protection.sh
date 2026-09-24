@@ -63,15 +63,18 @@
 # exists to avoid) — it is an explicit, reviewed list of contexts this
 # script actively retires.
 #
-# "ship-ready" (and, as of this writing, "construction gate (...)" too) EXIST as job names in
-# `ci.yml` — but only on `predev` and `integration/1.6.0-dev-green`. `dev`, `qa` and `main` have not
-# been promoted since those jobs were added, so their copies of `ci.yml` do not carry either job and
-# neither context can report on those branches today (compare `git show origin/dev:.github/
-# workflows/ci.yml` against the working tree's — the jobs are simply absent). Until a `dev`→`qa`→
-# `main` promotion lands the current `ci.yml`, PRs targeting qa/main are blocked on a context that
-# cannot report, exactly as this note originally warned about for a job that did not exist at all.
-# Whoever runs that promotion is what fixes this; this script's REQUIRED_CONTEXTS list already names
-# the right job names and does not need to change when it happens.
+# A REQUIRED CONTEXT MUST BE ABLE TO REPORT, OR WRITING IT IS A WEDGE (item 488).
+# "ship-ready" and "construction gate (...)" exist as job names in `ci.yml` on `predev`, but not on
+# `dev`, `qa` or `main`. promote.sh reads the TARGET branch's required contexts and resolves each
+# against the check-runs of the SOURCE sha, refusing on any that never reported ("a missing context
+# is a refusal too"). So writing a context onto qa that dev's workflows cannot produce makes
+# `promote.sh dev --to qa` impossible, and the promotion that would land the job is the very thing
+# it blocks. Every write path therefore PREFLIGHTS first: each context in REQUIRED_CONTEXTS_JSON must
+# be a job `name:` (or, for a job with no name, its id) in `.github/workflows/*.yml` at
+# `origin/<feeder>` — the branch whose shas are checked when the protected branch is advanced
+# (qa is fed by dev, main by qa; CI_PROTECTION_FEEDERS overrides). A context that cannot report
+# is REFUSED before any PUT, naming the context and the ref; nothing is written for that branch.
+# Fetch the feeder first (`git fetch origin dev qa`) — an absent ref is a refusal too.
 #
 # WHY strict=false
 # -----------------
@@ -108,6 +111,10 @@ set -euo pipefail
 
 REPO="${CI_PROTECTION_REPO:-GetBusbar/busbar}"
 BRANCHES="${CI_PROTECTION_BRANCHES:-qa main}"
+# protected=feeder pairs: whose shas get checked when the protected branch is advanced.
+FEEDERS="${CI_PROTECTION_FEEDERS:-qa=dev main=qa}"
+# The git checkout whose origin/* refs the preflight reads (the one this script lives in).
+PROTECTION_GIT_DIR="${CI_PROTECTION_GIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 
 # These four strings are GitHub Actions job `name:` values, matched verbatim
 # by the status-checks API. See the block comment above for provenance /
@@ -133,6 +140,85 @@ REQUIRED_CONTEXTS_JSON='[
 RETIRED_CONTEXTS_JSON='[
   "gate-mutants"
 ]'
+
+feeder_of() {
+  local branch="$1" pair
+  for pair in $FEEDERS; do
+    if [ "${pair%%=*}" = "$branch" ]; then printf '%s' "${pair#*=}"; return 0; fi
+  done
+  printf '%s' "$branch"
+}
+
+# missing_contexts <required-json>  (stdin: the concatenated workflow YAML at one ref)
+# Prints every required context that no job in that text can report as, one per line. A job
+# reports as its `name:` (4-space indent under `jobs:`) or, when it has none, as its id.
+missing_contexts() {
+  python3 -c "
+import json, re, sys
+required = json.loads(sys.argv[1])
+names = set()
+for doc in sys.stdin.read().split('\x00'):
+    in_jobs, job, job_named = False, None, False
+    def close():
+        if job is not None and not job_named:
+            names.add(job)
+    for line in doc.splitlines():
+        if re.match(r'^jobs:\s*$', line):
+            in_jobs = True; continue
+        if in_jobs and re.match(r'^\S', line):
+            close(); in_jobs, job = False, None; continue
+        if not in_jobs:
+            continue
+        m = re.match(r'^  ([A-Za-z0-9_-]+):\s*$', line)
+        if m:
+            close(); job, job_named = m.group(1), False; continue
+        m = re.match(r'^    name:\s*(.+?)\s*$', line)
+        if m and job is not None:
+            v = m.group(1)
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in '\'\"':
+                v = v[1:-1]
+            names.add(v); job_named = True
+    close()
+for c in required:
+    if c not in names:
+        print(c)
+" "$1"
+}
+
+# workflows_at <ref> — every workflow file at <ref>, NUL-separated, on stdout. Fails if the ref
+# does not resolve or carries no workflow file.
+workflows_at() {
+  local ref="$1" f n=0
+  git -C "$PROTECTION_GIT_DIR" rev-parse --verify -q "$ref^{commit}" >/dev/null || return 1
+  for f in $(git -C "$PROTECTION_GIT_DIR" ls-tree --name-only "$ref" .github/workflows/ 2>/dev/null); do
+    case "$f" in *.yml|*.yaml) ;; *) continue ;; esac
+    git -C "$PROTECTION_GIT_DIR" show "$ref:$f" || return 1
+    printf '\0'; n=$((n + 1))
+  done
+  [ "$n" -gt 0 ]
+}
+
+# preflight_branch <branch> — refuse (return 1) unless every required context can report on the
+# shas that advance <branch>. See "A REQUIRED CONTEXT MUST BE ABLE TO REPORT" above.
+preflight_branch() {
+  local branch="$1" feeder ref missing
+  feeder="$(feeder_of "$branch")"; ref="refs/remotes/origin/$feeder"
+  # Piped, never captured: the NUL file separators do not survive a $(...).
+  if ! missing="$(set -o pipefail; workflows_at "$ref" | missing_contexts "$REQUIRED_CONTEXTS_JSON")"; then
+    echo "REFUSED ${branch}: cannot read .github/workflows at origin/${feeder} (fetch it first) — the"
+    echo "  required contexts cannot be shown to report, so none are written"
+    return 1
+  fi
+  if [ -n "$missing" ]; then
+    echo "REFUSED ${branch}: required context(s) that no job at origin/${feeder} can report:"
+    printf '%s\n' "$missing" | sed 's/^/    /'
+    echo "  promote.sh resolves ${branch}'s required contexts against origin/${feeder}'s shas and refuses"
+    echo "  on any that never reported, so writing these would wedge the promotion that lands them."
+    return 1
+  fi
+  echo "preflight ${branch}: all required contexts are job names at origin/${feeder}"
+  return 0
+}
 
 # Fetch the CURRENT protection object for a branch. On a branch that has no
 # protection configured yet, GitHub's API returns 404; we treat that as "the
@@ -291,14 +377,23 @@ cmd_show() {
 }
 
 cmd_dry_run() {
+  local rc=0
   for branch in $BRANCHES; do
     echo "# ${REPO} : ${branch}"
+    preflight_branch "$branch" || rc=1
     fetch_current_protection "$branch" | build_body
     echo
   done
+  return "$rc"
 }
 
 cmd_apply() {
+  local branch
+  # Preflight EVERY branch before writing ANY, so a refusal never leaves one branch re-protected
+  # and the other not.
+  for branch in $BRANCHES; do
+    preflight_branch "$branch" || { echo "nothing applied." >&2; return 1; }
+  done
   for branch in $BRANCHES; do
     local body
     body=$(fetch_current_protection "$branch" | build_body)
@@ -467,6 +562,34 @@ print('ok' if 'gate-mutants' not in contexts else 'FAIL')
   fi
   echo "selftest (h) a branch still requiring a retired context is reported NOT COMPLIANT, by name: ${h_result}"
   [ "$h_result" = "ok" ] || failures=$((failures + 1))
+
+  # (i) item 488 — a required context the feeder's workflows cannot report is REFUSED before any
+  # PUT; the same preflight over workflows that do carry all four jobs passes. Built in a scratch
+  # git repo so the refs are real and nothing touches the network.
+  local st_repo i_result="FAIL" j_result="FAIL" k_result="FAIL"
+  st_repo="$(mktemp -d)"
+  (
+    set -e
+    cd "$st_repo"; git init -q; git config user.email selftest@example.invalid; git config user.name selftest
+    git config core.hooksPath /dev/null   # a host's global commit hooks must not decide a fixture
+    mkdir -p .github/workflows
+    printf 'on: push\njobs:\n  umbrella:\n    name: ci umbrella\n    runs-on: x\n  lint:\n    name: "structure lint"\n    runs-on: x\n  construction-gate:\n    name: construction gate (how the tree is built vs ARCHITECTURE.md — BLOCKING, on its posture)\n    runs-on: x\n' > .github/workflows/ci.yml
+    git add -A; git commit -q --no-verify -m stale; git update-ref refs/remotes/origin/dev HEAD
+    printf '  ship-ready:\n    runs-on: x\n' >> .github/workflows/ci.yml
+    git commit -q --no-verify -am fresh; git update-ref refs/remotes/origin/qa HEAD
+  ) >/dev/null 2>&1 || true
+  local i_out i_rc=0
+  i_out="$(FEEDERS="qa=dev main=qa" PROTECTION_GIT_DIR="$st_repo" preflight_branch qa 2>&1)" || i_rc=$?
+  if [ "$i_rc" -ne 0 ] && printf '%s' "$i_out" | grep -q '^    ship-ready$' && ! printf '%s' "$i_out" | grep -q '^    ci umbrella$'; then i_result="ok"; fi
+  echo "selftest (i) a required context the feeder cannot report (ship-ready at origin/dev) is REFUSED, by name: ${i_result}"
+  [ "$i_result" = "ok" ] || failures=$((failures + 1))
+  if FEEDERS="qa=dev main=qa" PROTECTION_GIT_DIR="$st_repo" preflight_branch main >/dev/null 2>&1; then j_result="ok"; fi
+  echo "selftest (j) all four contexts reportable at the feeder (ship-ready by job id) passes preflight: ${j_result}"
+  [ "$j_result" = "ok" ] || failures=$((failures + 1))
+  if ! FEEDERS="qa=nosuchbranch" PROTECTION_GIT_DIR="$st_repo" preflight_branch qa >/dev/null 2>&1; then k_result="ok"; fi
+  echo "selftest (k) an unreadable feeder ref is REFUSED, not waved through: ${k_result}"
+  [ "$k_result" = "ok" ] || failures=$((failures + 1))
+  rm -rf "$st_repo"
 
   if [ "$failures" -eq 0 ]; then
     echo "selftest: ALL OK"
