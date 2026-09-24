@@ -35,6 +35,24 @@ pub(crate) fn record_resp_usage(
         // when nothing token-bills. Routed through the host `meter_series` seam over the sink's opaque
         // `GovHandle` — byte-identical to the pre-flip `sink.gov.record_metering(...)`.
         if let Some(lane) = lane {
+            // ITEM 134: a COUNTED non-token unit (a rerank's search units) is ledgered VERBATIM as
+            // its open class (#71) against the key's budget chain, in the fee's window — where the
+            // card prices it; a present card silent about it refuses (#42); an absent card reads 0.
+            // The metering row below is untouched: the request counts with no token split.
+            if let Some(busbar_substrate_values::billing::Billing::Counted { class, count }) =
+                &usage
+            {
+                let usage_units = std::collections::BTreeMap::from([(class.clone(), *count)]);
+                host.meter_ledger(
+                    &sink.gov,
+                    &sink.cost,
+                    &sink.key,
+                    &sink.pool,
+                    &lane.model,
+                    &busbar_substrate_values::billing::Usage { usage_units },
+                    sink.charged_at,
+                );
+            }
             host.meter_series(
                 &sink.gov,
                 &sink.key.id,
@@ -217,3 +235,7 @@ pub(crate) fn effective_reasoning(
 pub(crate) fn attempt_cap(ms: u64, remaining_secs: u64) -> std::time::Duration {
     std::time::Duration::from_millis(ms.min(remaining_secs.saturating_mul(1000).max(1)))
 }
+
+#[cfg(test)]
+#[path = "tests/rerank_search_units_tests.rs"]
+mod rerank_search_units_tests;

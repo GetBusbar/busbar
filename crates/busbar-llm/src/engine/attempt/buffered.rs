@@ -66,9 +66,13 @@ fn token_usage_of(
     use busbar_substrate_values::billing::Billing;
     match usage {
         Some(Billing::Tokens(t)) => Some(t.clone()),
+        // A COUNTED unit (a rerank's search units, item 134) is not a token figure either, and is
+        // NOT dropped: `record_resp_usage`, reading the same `usage` right after the report, ledgers
+        // it as its open class, where the card prices it.
         Some(Billing::Duration { .. })
         | Some(Billing::Characters { .. })
         | Some(Billing::Images { .. })
+        | Some(Billing::Counted { .. })
         | Some(Billing::Flat)
         | None => None,
     }

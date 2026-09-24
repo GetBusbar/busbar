@@ -80,6 +80,11 @@ pub enum Billing {
     },
     /// Flat / no meter (an operation with no usage-based cost, e.g. content moderation).
     Flat,
+    /// A COUNTED non-token unit the provider billed (item 134): a rerank's search units. The
+    /// `class` is the plane's DATA — the meter-class string it declares and an operator prices under
+    /// `rate_card.<model>.units` (#77(1)/(4)); this crate names no class. Ledgered verbatim as that
+    /// open class (#71); a present card silent about it refuses (#42), an absent card reads 0.
+    Counted { class: String, count: u64 },
 }
 
 /// The exact decimal every measured quantity is carried in (DECISION #81).
