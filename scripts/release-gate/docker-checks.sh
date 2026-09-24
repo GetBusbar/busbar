@@ -134,13 +134,14 @@ fi
 # property the design guarantees and therefore one worth checking, because if it is false something
 # outside the design moved the tag.
 if [ -n "${STAGED_RECORD:-}" ]; then
-  staged_digest="$(printf '%s' "$STAGED_RECORD" | jq -r '.digest // empty' 2>/dev/null || true)"
+  # lib.sh's staged_image_digest — the lookup gate.sh --selftest drives — not a hand-rolled copy.
+  staged_digest="$(staged_image_digest || true)"
   if [ -z "$staged_digest" ]; then
-    record "docker:staged-digest" FAIL "the staged record carries no image digest" \
+    record "docker:staged-digest" FAIL "the staged record carries no image digest (or one that is not sha256:<64 hex>)" \
       "a record without a digest cannot say which bytes were verified, and the promote's strongest check is a no-op against it. Fix: re-run 'Release stage' on the qa sha this release was promoted from."
   elif [ -z "$hub_ver" ]; then
     record "docker:staged-digest" FAIL "cannot compare against the staged digest — :${V} did not resolve" "see docker:hub-version."
-  elif [ "$hub_ver" = "$staged_digest" ]; then
+  elif digest_matches "$hub_ver" "$staged_digest"; then
     record "docker:staged-digest" PASS "${DOCKERHUB_IMAGE}:${V} is exactly the digest qa staged" "$staged_digest"
   else
     record "docker:staged-digest" FAIL "${DOCKERHUB_IMAGE}:${V} is NOT the image qa verified" \
@@ -213,13 +214,13 @@ fi
 # The compat image is a first-class release artifact on its own digest, so it gets the same external
 # anchor rather than only the four-names-agree treatment above.
 if [ -n "${STAGED_RECORD:-}" ]; then
-  staged_compat="$(printf '%s' "$STAGED_RECORD" | jq -r '.compat_digest // empty' 2>/dev/null || true)"
+  staged_compat="$(staged_compat_digest || true)"
   if [ -z "$staged_compat" ]; then
-    record "docker:staged-armv8-digest" FAIL "the staged record carries no armv8.0 compat digest" \
+    record "docker:staged-armv8-digest" FAIL "the staged record carries no armv8.0 compat digest (or one that is not sha256:<64 hex>)" \
       "the compat arm64 image is promoted by the same run as the default one; a record without it means the promote had nothing to verify the compat name against. Fix: re-run 'Release stage' on the qa sha this release was promoted from."
   elif [ -z "$v8_pin" ]; then
     record "docker:staged-armv8-digest" FAIL "cannot compare against the staged compat digest — :${V}-armv8.0 did not resolve" "see docker:hub-armv8-pin."
-  elif [ "$v8_pin" = "$staged_compat" ]; then
+  elif digest_matches "$v8_pin" "$staged_compat"; then
     record "docker:staged-armv8-digest" PASS "${DOCKERHUB_IMAGE}:${V}-armv8.0 is exactly the compat digest qa staged" "$staged_compat"
   else
     record "docker:staged-armv8-digest" FAIL "${DOCKERHUB_IMAGE}:${V}-armv8.0 is NOT the compat image qa verified" \

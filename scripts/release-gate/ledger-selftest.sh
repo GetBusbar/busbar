@@ -207,6 +207,39 @@ else
   nope "an unattributed ledger passed the gate (rc=$GATE_RC)"
 fi
 
+# The shape the finding measured: a ledger MERGED from two dispatches. Every id this release owes
+# is present and PASS, plus one row about another version. Filtering the foreign row away and
+# judging the rest is not a refusal; the ledger is refused, by name, as WRONG RELEASE.
+{ all_pass; printf 'a:three\tPASS\tok\t\t9.9.8\tcafe123\n'; } > "$tmp/fake/ledgers/leg.tsv"
+run_gate
+if [ "$GATE_RC" -ne 0 ] && printf '%s' "$out" | grep -q 'WRONG RELEASE'; then
+  ok "a full ledger for this release with one row about another is refused as WRONG RELEASE"
+else
+  nope "a ledger merged from two releases was not refused as WRONG RELEASE (rc=$GATE_RC): $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+fi
+
+# ── THE OWED LIST HAS A RUNTIME FLOOR ───────────────────────────────────────────────────────────
+# GATE_EXPECTED_FLOOR had no reader: gate.sh's floor was read only by its own --selftest, so a
+# contract that lost platforms owed fewer ids and the gate went GREEN over what was left. Here the
+# staged contract owes five ids, every one PASSes, and the floor is NOT lowered to five — so the
+# gate must refuse the short list rather than print GREEN.
+all_pass > "$tmp/fake/ledgers/leg.tsv"
+LEDGER_DIR="$tmp/fake/ledgers" RUNNER_TEMP="$tmp/fake" GITHUB_STEP_SUMMARY=/dev/null \
+  "$tmp/fake/scripts/release-gate/gate.sh" 9.9.9 >"$GATE_OUT" 2>&1
+GATE_RC=$?; out="$(cat "$GATE_OUT")"
+if [ "$GATE_RC" -ne 0 ] && printf '%s' "$out" | grep -q 'SHORT OWED LIST'; then
+  ok "a contract owing five ids is refused at the default floor, even with every row PASS"
+else
+  nope "a five-id contract passed the gate at the default floor (rc=$GATE_RC): $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+fi
+# And the floor is a floor, not a formality: a value that is not a positive integer is RED.
+for badfloor in 0 abc -1; do
+  LEDGER_DIR="$tmp/fake/ledgers" RUNNER_TEMP="$tmp/fake" GITHUB_STEP_SUMMARY=/dev/null \
+    GATE_EXPECTED_FLOOR="$badfloor" "$tmp/fake/scripts/release-gate/gate.sh" 9.9.9 >"$GATE_OUT" 2>&1
+  if [ "$?" -eq 0 ]; then nope "GATE_EXPECTED_FLOOR='${badfloor}' switched the floor off and the gate went GREEN"; fi
+done
+ok "a floor of 0, a non-number or a negative is RED, never 'no floor'"
+
 # ONE VERSION, TWO STAGINGS. A version re-cut from a different commit is two releases wearing one
 # name, which is the whole reason the promote consumes a record rather than a version. Rows that
 # agree on the name and disagree on the sha have not told us which release they are about.

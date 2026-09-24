@@ -97,7 +97,7 @@ selftest() {
     ok "sha256_file distinguishes two archives that differ by one line"
   fi
   local looked_up
-  looked_up="$(STAGED_RECORD="$sdir/staged.json" staged_asset_sha256 busbar-x86_64-unknown-linux-gnu.tar.gz || true)"
+  looked_up="$(STAGED_RECORD="$(cat "$sdir/staged.json")" staged_asset_sha256 busbar-x86_64-unknown-linux-gnu.tar.gz || true)"
   if [ "$looked_up" = "$staged_hash" ]; then
     ok "the staged record's digest for a named asset is read back out of it"
   else
@@ -117,15 +117,15 @@ selftest() {
   # `[ "$got" = "$want" ]` is TRUE when both sides are empty, and both sides are empty in every
   # way this lookup can fail: no STAGED_RECORD on the runner, a record whose assets lost this name,
   # a jq that is not installed. A bare string compare would have called all of those a match.
-  if [ -n "$(STAGED_RECORD="$sdir/staged.json" staged_asset_sha256 busbar-aarch64-apple-darwin.tar.gz || true)" ]; then
+  if [ -n "$(STAGED_RECORD="$(cat "$sdir/staged.json")" staged_asset_sha256 busbar-aarch64-apple-darwin.tar.gz || true)" ]; then
     nope "staged_asset_sha256 answered for an asset the record does not name"
   else
     ok "an asset the staged record does not name has no digest, rather than a blank one"
   fi
-  if [ -n "$(STAGED_RECORD="$sdir/nonexistent.json" staged_asset_sha256 busbar-x86_64-unknown-linux-gnu.tar.gz || true)" ]; then
-    nope "staged_asset_sha256 answered from a record file that does not exist"
+  if [ -n "$(STAGED_RECORD="$sdir/staged.json" staged_asset_sha256 busbar-x86_64-unknown-linux-gnu.tar.gz || true)" ]; then
+    nope "staged_asset_sha256 answered when STAGED_RECORD held a PATH — the record travels as JSON content, and a path is not a record"
   else
-    ok "a missing staged record yields no digest at all"
+    ok "a STAGED_RECORD that is not a JSON record (a path, here) yields no digest at all"
   fi
   if digest_matches "" ""; then
     nope "two EMPTY digests compared equal — every way the lookup can fail would read as 'the bytes match'"
@@ -139,7 +139,7 @@ selftest() {
   fi
   printf '{"assets":[{"name":"a.tar.gz","sha256":"%s"},{"name":"a.tar.gz","sha256":"%s"}]}\n' \
     "$staged_hash" "$other_hash" > "$sdir/dup.json"
-  if [ -n "$(STAGED_RECORD="$sdir/dup.json" staged_asset_sha256 a.tar.gz || true)" ]; then
+  if [ -n "$(STAGED_RECORD="$(cat "$sdir/dup.json")" staged_asset_sha256 a.tar.gz || true)" ]; then
     nope "a record naming one asset twice with two digests still produced AN answer — first-row-wins, in another file"
   else
     ok "a record that names one asset twice with different digests has no answer for it"
@@ -161,17 +161,17 @@ selftest() {
   else
     nope "the comparison no longer sees two identical digests as equal"
   fi
-  if digest_matches "$rebuilt_img" "$(STAGED_RECORD="$sdir/img.json" staged_image_digest)"; then
+  if digest_matches "$rebuilt_img" "$(STAGED_RECORD="$(cat "$sdir/img.json")" staged_image_digest)"; then
     nope "a rebuilt image that every registry name agrees on matched the STAGED record — a promote that recompiled would ship green on all four docker rows"
   else
     ok "an image every registry name agrees on is still not the staged image"
   fi
-  if digest_matches "$staged_img" "$(STAGED_RECORD="$sdir/img.json" staged_image_digest)"; then
+  if digest_matches "$staged_img" "$(STAGED_RECORD="$(cat "$sdir/img.json")" staged_image_digest)"; then
     ok "and the genuinely staged image matches its recorded digest"
   else
     nope "the staged image did not match its own recorded digest — the fix broke the pass path"
   fi
-  if [ "$(STAGED_RECORD="$sdir/img.json" staged_compat_digest)" = "$rebuilt_img" ]; then
+  if [ "$(STAGED_RECORD="$(cat "$sdir/img.json")" staged_compat_digest)" = "$rebuilt_img" ]; then
     ok "the armv8.0-compat image is anchored on its OWN recorded digest, not the default manifest's"
   else
     nope "staged_compat_digest did not return .compat_digest"
@@ -182,7 +182,7 @@ selftest() {
   local bogus
   for bogus in "" "latest" "1.5.4" "sha256:abc" "deadbeef"; do
     printf '{"digest":"%s"}\n' "$bogus" > "$sdir/bogus.json"
-    if [ -n "$(STAGED_RECORD="$sdir/bogus.json" staged_image_digest || true)" ]; then
+    if [ -n "$(STAGED_RECORD="$(cat "$sdir/bogus.json")" staged_image_digest || true)" ]; then
       nope "a staged record whose digest is '${bogus}' was accepted as an anchor"
     fi
   done
@@ -221,6 +221,51 @@ selftest() {
     nope "version_re_after rejected a genuine busbar:1.5.2 — the left anchor was wrongly added"
   fi
 
+  # ── CASE 5d: the staged-record helpers above are the ones a release RUNS, on the form it passes ──
+  #
+  # Every case in 5b/5c drove lib.sh's lookups — and no check called them. docker-checks.sh and
+  # platform-checks.sh hand-rolled the same lookup with `printf '%s' "$STAGED_RECORD" | jq`, i.e.
+  # treating STAGED_RECORD as JSON CONTENT (which is what fleet-autoscaler.yml's resolve job emits),
+  # while lib.sh required a PATH. So this selftest proved code no release executed, and record()'s
+  # qa-sha column — read through the path convention — was blank on every real row.
+  local chk
+  for chk in docker-checks.sh platform-checks.sh channel-checks.sh fleet-checks.sh; do
+    if grep -nE '\$\{?STAGED_RECORD(:-)?\}?"? *\|' "scripts/release-gate/$chk" >/dev/null 2>&1 \
+       || grep -nE 'jq[^|]*\$\{?STAGED_RECORD' "scripts/release-gate/$chk" >/dev/null 2>&1; then
+      nope "scripts/release-gate/$chk parses STAGED_RECORD itself instead of calling lib.sh's staged_* lookups — the selftest above would not be testing the code that runs"
+    fi
+  done
+  if grep -q 'staged_asset_sha256 ' scripts/release-gate/platform-checks.sh \
+     && grep -q 'staged_image_digest' scripts/release-gate/docker-checks.sh \
+     && grep -q 'staged_compat_digest' scripts/release-gate/docker-checks.sh; then
+    ok "platform-checks and docker-checks read the staged record through the lookups this selftest drives"
+  else
+    nope "a check that owes a staged-record row no longer calls lib.sh's lookup for it"
+  fi
+  local stamped="$tmp/stamped.tsv" rec_json
+  rec_json="$(jq -c --arg d "$staged_img" '{version:"9.9.9", qa_sha:"abc1234", digest:$d, assets:[]}' <<<'null')"
+  ( unset STAGED_SHA STAGED_IMAGE_DIGEST
+    LEDGER="$stamped" STAGED_RECORD="$rec_json" VERSION=9.9.9
+    record "a:one" PASS "written by the real record()" "" >/dev/null 2>&1 )
+  if [ "$(awk -F'\t' 'NR==1{print $6}' "$stamped" 2>/dev/null)" = "abc1234" ]; then
+    ok "record() stamps the qa sha out of STAGED_RECORD as the workflow passes it (JSON content)"
+  else
+    nope "record() left the qa-sha column '$(awk -F'\t' 'NR==1{print $6}' "$stamped" 2>/dev/null)' with STAGED_RECORD as JSON content — TWO STAGINGS can never fire"
+  fi
+  if [ "$(unset STAGED_IMAGE_DIGEST; STAGED_RECORD="$rec_json" staged_image_digest || true)" = "$staged_img" ]; then
+    ok "staged_image_digest reads the record in the form the workflow hands every leg"
+  else
+    nope "staged_image_digest could not read a JSON-content STAGED_RECORD"
+  fi
+
+  # ── The ledger-resolution selftest rides along, so one entry point proves the whole gate ─────
+  echo
+  if bash scripts/release-gate/ledger-selftest.sh; then
+    ok "ledger-selftest.sh (verdict resolution, WRONG RELEASE, the owed-list floor) is green"
+  else
+    nope "ledger-selftest.sh is RED — see its [FAILED] lines above"
+  fi
+
   # CASE 7 (the container boot rows) is not here, for the same reason as CASE 5:
   # `start_container` and `is_running` are defined in 4a6fef385, which is not landing.
 
@@ -229,8 +274,17 @@ selftest() {
   echo "release-gate selftest: FAILED"; return 1
 }
 
-# The floor the selftest measures the real contract against. Named separately from the runtime
-# default below so raising one cannot silently un-check the other.
+# THE FLOOR ON HOW MANY IDS THE CONTRACT OWES. Read at RUNTIME, below, after expected-ids.sh has
+# answered, and measured by --selftest's CASE 3 against the real contract so it cannot drift above
+# reality. It used to be read ONLY by the selftest: the runtime check its comment promised did not
+# exist, and `GATE_EXPECTED_FLOOR` (the name ledger-selftest.sh sets) had no reader at all. So a
+# contract that quietly lost platforms — five of six targets flipped to `published: false`, or a jq
+# path that drifted — made expected-ids.sh exit 0 with 36 ids instead of 66, every asset:/binfmt:/
+# pubkey:/plugin: row for the lost platforms simply stopped being owed, nothing read "did not run",
+# and the gate printed GREEN over a release it had checked a fraction of.
+#
+# GATE_EXPECTED_FLOOR overrides it for a harness that stages its own small contract (ledger-selftest.sh
+# stages five ids). It must be a positive integer; anything else is RED, never "no floor".
 GATE_EXPECTED_FLOOR_DEFAULT=50
 
 if [ "${1:-}" = "--selftest" ]; then selftest; exit $?; fi
@@ -268,59 +322,51 @@ fi
 # errors out instead of taking the vacuous-run branch — i.e. the guard against a vacuous green was
 # itself silently broken by a vacuous input. Found by running TEST 1 below rather than by reading.
 
-# ── EVERY ROW MUST NAME THE VERSION IT IS ABOUT ────────────────────────────────────────────────
+# ── EVERY ROW MUST NAME THE VERSION IT IS ABOUT — REFUSED FIRST, ON THE WHOLE LEDGER ──────────────
+#
 # The ledgers are downloaded artifacts merged by name pattern, and nothing in that path binds a row
 # to the release under test. A leg that resolved a different version (release-fleet's `resolve`
 # falls back to "the current latest release" when none is supplied), a re-run whose inputs changed
 # between legs, or a stale ledger sitting in $RUNNER_TEMP from an earlier local run all contribute
 # rows that read exactly like evidence for THIS release. So the version travels IN the row (lib.sh's
-# fifth column) and only rows naming this version count. A row naming anything else — or nothing at
-# all, which is what a row written by a check that never learned its version looks like — is named
-# and is RED: it is a check that verified some other release, and counting it here would let a
-# green verdict for 1.5.4 stand in for 1.6.0.
-MINE="${RUNNER_TEMP:-/tmp}/release-gate-mine.tsv"
-awk -F'\t' -v v="$VERSION" 'NF && $5 == v' "$ALL" > "$MINE"
-foreign_ids="$(awk -F'\t' -v v="$VERSION" \
-  'NF && $5 != v {printf "%s(%s) ", $1, ($5 == "" ? "<no version>" : $5)}' "$ALL")"
-if [ -n "$foreign_ids" ]; then
-  echo "::error title=release gate::RED — these ledger rows are about a DIFFERENT release than ${VERSION:-<unknown>}, and are NOT counted as evidence for it: ${foreign_ids}. Fix: find the leg that ran against another version (a stale workflow input, a resolve fallback to 'latest', or a ledger file left over from an earlier run in the same temp dir) and re-run it against ${VERSION:-this version}."
-fi
-ALL="$MINE"
-rows="$(awk 'NF{n++} END{print n+0}' "$ALL")"
-
-# ── THE VACUOUS-GREEN GUARD, FIRST, BEFORE ANY OTHER VERDICT ────────────────────────────────────
-if [ "$rows" -eq 0 ]; then
-  echo "::error title=release gate::VACUOUS RUN: ZERO checks reported a result. Nothing about ${VERSION:-this release} was verified. This is RED by construction — a gate that passes because it did nothing is worse than no gate. Fix: look at the matrix legs above; the ledger artifacts were empty or were never uploaded."
-  {
-    echo "## Release gate: RED — vacuous run"
-    echo
-    echo "**Zero checks reported a result for this version.** Nothing was verified. Ledger dir: \`${LEDGER_DIR}\`.${foreign_ids:+ Rows WERE present, but every one of them named a different release: \`${foreign_ids}\`.}"
-  } >> "$SUMMARY"
-  exit 1
-fi
-
-# ── THE ROWS MUST BE ABOUT THE RELEASE ON THE COMMAND LINE ─────────────────────────────────────
+# fifth column), and a ledger carrying ANY row that names another version — or none, which is what
+# a row written by a check that never learned its version looks like — is REFUSED, by name, here.
 #
-# Second, immediately after the vacuous-green guard and before a single verdict is read, because a
-# ledger about another release is not a weaker answer than no ledger — it is a CONFIDENT one. A
-# full set of green rows from the previous version reports "Every one of the 72 contracted checks
-# for <this version> ran and passed", which is true about the count and false about the subject,
-# and there is no later check that can notice.
+# FIRST, BEFORE THE VACUOUS GUARD, AND AGAINST THE UNFILTERED LEDGER. A ledger about another release
+# is not a weaker answer than no ledger — it is a CONFIDENT one — so it gets its own verdict rather
+# than being filtered away and reported as "zero checks ran". The previous shape filtered the ledger
+# down to this version's rows, reassigned ALL to the filtered file, and only then asked
+# ledger_foreign_rows for rows about another version — an empty set by construction, so this
+# refusal could never fire and ledger-selftest.sh's two WRONG RELEASE cases were red.
 #
 # It gets here honestly: LEDGER is appended to and never truncated, download-artifact merges every
 # ledger it is handed into one directory, and the fan-out can be dispatched at a second version on
-# the same runner. Each row now stamps the version and the qa sha it was produced against, so this
-# is a comparison and not an inference.
+# the same runner.
 foreign="$(ledger_foreign_rows "$ALL" "${VERSION:-}")"
 if [ -n "$foreign" ]; then
-  echo "::error title=release gate::WRONG RELEASE: this gate was asked about '${VERSION:-<unknown>}' but the ledger carries rows about something else: ${foreign}. A row that names another version — or names none — cannot be counted toward this one, and a full set of stale green rows reads exactly like a verified release. RED by construction. Fix: the ledger is APPENDED to and never truncated, so a re-run on a persisted RUNNER_TEMP, a merged download-artifact directory, or a second dispatch on the same runner leaves the previous release's rows in place. Start from an empty LEDGER_DIR."
+  echo "::error title=release gate::WRONG RELEASE: this gate was asked about '${VERSION:-<unknown>}' but the ledger carries rows about something else: ${foreign}. A row that names another version — or names none — cannot be counted toward this one, and a full set of stale green rows reads exactly like a verified release. RED by construction. Fix: the ledger is APPENDED to and never truncated, so a re-run on a persisted RUNNER_TEMP, a merged download-artifact directory, or a second dispatch on the same runner leaves the previous release's rows in place; a leg that ran against another version (a stale workflow input, a resolve fallback to 'latest') does the same. Start from an empty LEDGER_DIR and re-run that leg against ${VERSION:-this version}."
   {
     echo "## Release gate: RED — the ledger is about a different release"
     echo
     echo "Asked about \`${VERSION:-<unknown>}\`; these rows name something else: \`${foreign}\`"
   } >> "$SUMMARY"
+  echo
+  echo "RELEASE GATE: RED (WRONG RELEASE). ${VERSION:-this release} is NOT verified."
   exit 1
 fi
+rows="$(awk 'NF{n++} END{print n+0}' "$ALL")"
+
+# ── THE VACUOUS-GREEN GUARD, BEFORE ANY VERDICT IS READ ─────────────────────────────────────────
+if [ "$rows" -eq 0 ]; then
+  echo "::error title=release gate::VACUOUS RUN: ZERO checks reported a result. Nothing about ${VERSION:-this release} was verified. This is RED by construction — a gate that passes because it did nothing is worse than no gate. Fix: look at the matrix legs above; the ledger artifacts were empty or were never uploaded."
+  {
+    echo "## Release gate: RED — vacuous run"
+    echo
+    echo "**Zero checks reported a result for this version.** Nothing was verified. Ledger dir: \`${LEDGER_DIR}\`."
+  } >> "$SUMMARY"
+  exit 1
+fi
+
 shas="$(ledger_sha_disagreements "$ALL")"
 if [ -n "$shas" ]; then
   echo "::error title=release gate::TWO STAGINGS, ONE NAME: the ledger's rows were produced against more than one qa sha (${shas}). One version staged twice from two commits is two releases wearing one name — which is why the promote consumes a staged record and not a version. RED. Fix: verify every leg ran against the same staged record, and start from an empty LEDGER_DIR."
@@ -332,6 +378,22 @@ fi
 EXPECTED="${RUNNER_TEMP:-/tmp}/release-gate-expected.tsv"
 if ! scripts/release-gate/expected-ids.sh --describe > "$EXPECTED"; then
   echo "::error title=release gate::could not derive the expected check list from ${CONTRACT}. Every 'did not run' verdict below would be vacuous, so this is RED rather than a pass. Fix: validate ${CONTRACT} parses as JSON and carries a non-empty .targets[]."
+  exit 1
+fi
+
+# ── THE OWED LIST MUST NOT HAVE SHRUNK ──────────────────────────────────────────────────────────
+# expected-ids.sh exiting 0 proves the contract PARSED, not that it still owes a release's worth of
+# checks. Every id that vanished from the owed side is an id that can never read "did not run".
+floor="${GATE_EXPECTED_FLOOR:-$GATE_EXPECTED_FLOOR_DEFAULT}"
+case "$floor" in
+  ''|*[!0-9]*|0)
+    echo "::error title=release gate::GATE_EXPECTED_FLOOR='${floor}' is not a positive integer, so there would be no floor on how many checks this release owes. RED rather than unfloored. Fix: unset it (the default is ${GATE_EXPECTED_FLOOR_DEFAULT}) or set a positive count."
+    exit 1 ;;
+esac
+owed_n="$(awk -F'\t' 'NF && $1 != "" {n++} END{print n+0}' "$EXPECTED")"
+if [ "$owed_n" -lt "$floor" ]; then
+  echo "::error title=release gate::SHORT OWED LIST: the contract yields only ${owed_n} expected ids for ${VERSION:-this release}, below the floor of ${floor}. A contract that lost targets (a 'published' flag flipped, a jq path that drifted) un-owes every per-target check for the lost platforms, and nothing would then read 'did not run'. RED. Fix: validate ${CONTRACT} — every shipped target must be 'published': true — and run scripts/release-gate/expected-ids.sh --describe to see what it owes."
+  { echo; echo "### RED — the contract owes only ${owed_n} checks (floor ${floor})."; } >> "$SUMMARY"
   exit 1
 fi
 
@@ -403,18 +465,9 @@ printf 'reported: %s   pass: %s   fail: %s   skip: %s   did not run: %s\n' \
   echo '```'
   cat "$report"
   echo '```'
-  [ -z "$foreign_ids" ] || {
-    echo
-    echo "> **Rows about a different release, not counted:** \`${foreign_ids}\`"
-  }
 } >> "$SUMMARY"
 
 rc=0
-if [ -n "$foreign_ids" ]; then
-  # Re-stated here so it lands in the verdict block with everything else that makes the run red; the
-  # ::error:: above fires before the vacuous guard so it is visible even on a run with no usable rows.
-  rc=1
-fi
 if [ -n "$fail_ids" ]; then
   echo "::error title=release gate::RED — these checks FAILED for ${VERSION}: ${fail_ids}. Every check ran; none was masked by an earlier failure. Each failure has its own ::error:: above with expected vs observed and the fix."
   rc=1

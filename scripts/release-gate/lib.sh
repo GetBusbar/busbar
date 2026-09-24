@@ -80,11 +80,12 @@ gate_version() {
 }
 
 # staged_qa_sha -> the commit the record was staged from, or the empty string.
+# STAGED_RECORD is the record's JSON CONTENT (see staged_record_json below). This read it as a PATH,
+# so on every real run — where the workflow hands over `jq -c .` content — the `-f` test was false and
+# every ledger row's sixth column was blank, which left gate.sh's TWO STAGINGS guard nothing to see.
 staged_qa_sha() {
   if [ -n "${STAGED_SHA:-}" ]; then printf '%s' "$STAGED_SHA"; return 0; fi
-  local rec; rec="$(printf '%s' "${STAGED_RECORD:-}")"
-  [ -n "$rec" ] && [ -f "$rec" ] || return 0
-  jq -r '.qa_sha // empty' "$rec" 2>/dev/null
+  staged_record_json | jq -r '.qa_sha // empty' 2>/dev/null || true
 }
 
 # record <id> <PASS|FAIL|SKIP> <title> <detail>
@@ -132,7 +133,11 @@ record() {
 # Reading a recorded digest and comparing it to an observed one. WHETHER a row is owed at all is
 # decided elsewhere — expected-ids.sh emits the staged-comparison ids only when a record was
 # supplied, and the checks guard on the same condition — so nothing here changes what is owed. These
-# are the arithmetic, extracted so gate.sh --selftest can drive THE code rather than a copy of it.
+# are the arithmetic, extracted so gate.sh --selftest can drive THE code rather than a copy of it —
+# and docker-checks.sh / platform-checks.sh CALL them, so the code the selftest drives is the code a
+# release runs. (They used to hand-roll the same lookup with `printf '%s' "$STAGED_RECORD" | jq`,
+# treating STAGED_RECORD as JSON content while these functions required a PATH; the selftest drove
+# functions no release executed.)
 #
 # Every lookup collapses "we could not look it up" into one answer: nothing on stdout and a non-zero
 # status. No record path, no such file, unparseable JSON, no entry for this name, an entry whose
@@ -161,19 +166,24 @@ print(h.hexdigest())' "$f"
   fi
 }
 
-# staged_record_path -> the path to the staged record, or the empty string.
-# The caller passes it in; there is no default guess. A gate that fell back to "some staged.json
-# somewhere on the runner" would bind the release to whatever file happened to be lying around,
-# which is a worse answer than none.
-staged_record_path() { printf '%s' "${STAGED_RECORD:-}"; }
+# staged_record_json -> the staged record's JSON on stdout; non-zero when there is none or it is not
+# a JSON object.
+# STAGED_RECORD carries the record's CONTENT — fleet-autoscaler.yml's `resolve` job emits
+# `jq -c . staged/staged.json` as a job output and every leg receives it in the environment. It is
+# never a path: there is no default guess, because a gate that fell back to "some staged.json
+# somewhere on the runner" would bind the release to whatever file happened to be lying around.
+staged_record_json() {
+  local rec="${STAGED_RECORD:-}"
+  [ -n "$rec" ] || return 1
+  printf '%s' "$rec" | jq -e 'type == "object"' >/dev/null 2>&1 || return 1
+  printf '%s' "$rec"
+}
 
 # staged_asset_sha256 <asset-name> -> the sha256 the staged record binds to that asset name.
 staged_asset_sha256() {
   local name="$1" rec want
-  rec="$(staged_record_path)"
-  [ -n "$rec" ] || return 1
-  [ -f "$rec" ] || return 1
-  want="$(jq -r --arg n "$name" '(.assets // [])[] | select(.name == $n) | .sha256 // empty' "$rec" 2>/dev/null)" || return 1
+  rec="$(staged_record_json)" || return 1
+  want="$(printf '%s' "$rec" | jq -r --arg n "$name" '(.assets // [])[] | select(.name == $n) | .sha256 // empty' 2>/dev/null)" || return 1
   # jq prints every match; a record naming one asset twice with two digests does not have AN answer
   # for it, and picking the first would be the ledger's own first-row-wins defect in another file.
   case "$(printf '%s' "$want" | awk 'NF{n++} END{print n+0}')" in
@@ -230,9 +240,8 @@ _digest_from() {  # _digest_from <value> -> normalised sha256:<hex>, or non-zero
 # resolved for itself.
 staged_image_digest() {
   if [ -n "${STAGED_IMAGE_DIGEST:-}" ]; then _digest_from "$STAGED_IMAGE_DIGEST"; return $?; fi
-  local rec; rec="$(staged_record_path)"
-  [ -n "$rec" ] && [ -f "$rec" ] || return 1
-  _digest_from "$(jq -r '.digest // empty' "$rec" 2>/dev/null)"
+  local rec; rec="$(staged_record_json)" || return 1
+  _digest_from "$(printf '%s' "$rec" | jq -r '.digest // empty' 2>/dev/null)"
 }
 
 # The armv8.0-compat arm64 image is a first-class release artifact on its own digest, so it gets its
@@ -240,9 +249,8 @@ staged_image_digest() {
 # default image, which boots everywhere EXCEPT the boards the name exists for.
 staged_compat_digest() {
   if [ -n "${STAGED_COMPAT_DIGEST:-}" ]; then _digest_from "$STAGED_COMPAT_DIGEST"; return $?; fi
-  local rec; rec="$(staged_record_path)"
-  [ -n "$rec" ] && [ -f "$rec" ] || return 1
-  _digest_from "$(jq -r '.compat_digest // empty' "$rec" 2>/dev/null)"
+  local rec; rec="$(staged_record_json)" || return 1
+  _digest_from "$(printf '%s' "$rec" | jq -r '.compat_digest // empty' 2>/dev/null)"
 }
 
 # ── Retries ─────────────────────────────────────────────────────────────────────────────────────
