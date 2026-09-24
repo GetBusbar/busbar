@@ -500,9 +500,16 @@ fn census(cx: &Ctx) -> Result<(Vec<Leak>, std::collections::BTreeSet<String>), S
     Ok((leaks, scanned))
 }
 
-/// The baseline as `(noun, file)` keys, plus the 1-based ordinal of every `[[leak]]` row that
-/// lacks a `noun` or a `file` (such a row names nothing and is refused by `:dead-path`).
-fn baseline_keys(cx: &Ctx) -> (Vec<(String, String)>, Vec<usize>) {
+/// One baseline `[[leak]]` row: its `(noun, file)` key and the `count` it recorded. A row with no
+/// integer `count` records ZERO — it authorises no references at all, so any live count in that
+/// file is growth. It is never read as "unbounded".
+type BaselineRow = ((String, String), usize);
+
+/// The baseline rows, plus the 1-based ordinal of every `[[leak]]` row that lacks a `noun` or a
+/// `file` (such a row names nothing and is refused by `:dead-path`). The count is READ (item 198):
+/// the ledger records one per row and nothing compared it, so a baselined file was an unbounded
+/// growth zone.
+fn baseline_keys(cx: &Ctx) -> (Vec<BaselineRow>, Vec<usize>) {
     let Ok(text) = cx.read(BASELINE) else {
         return (Vec::new(), Vec::new());
     };
@@ -512,8 +519,12 @@ fn baseline_keys(cx: &Ctx) -> (Vec<(String, String)>, Vec<usize>) {
     let mut keys = Vec::new();
     let mut malformed = Vec::new();
     for (i, t) in doc.array_of_tables("leak").into_iter().enumerate() {
+        let count = t
+            .int_of("count")
+            .and_then(|c| usize::try_from(c).ok())
+            .unwrap_or(0);
         match (t.str_of("noun"), t.str_of("file")) {
-            (Some(noun), Some(file)) => keys.push((noun.to_string(), file.to_string())),
+            (Some(noun), Some(file)) => keys.push(((noun.to_string(), file.to_string()), count)),
             _ => malformed.push(i + 1),
         }
     }
@@ -522,6 +533,27 @@ fn baseline_keys(cx: &Ctx) -> (Vec<(String, String)>, Vec<usize>) {
 
 fn leak_key(l: &Leak) -> (String, String) {
     (l.noun.to_string(), l.file.clone())
+}
+
+/// The live leaks the baseline does not cover: a `(noun, file)` pair it does not name, OR a pair it
+/// names whose live count EXCEEDS the recorded count (item 198). The ledger is a burndown: a count
+/// may fall without an edit, but a baselined file may not quietly take on more coupling.
+fn undocumented_leaks(leaks: &[Leak], baseline: &[BaselineRow]) -> Vec<String> {
+    let mut out: Vec<String> = leaks
+        .iter()
+        .filter_map(|l| {
+            let key = leak_key(l);
+            match baseline.iter().find(|(k, _)| *k == key) {
+                None => Some(format!("{}@{}", l.noun, l.file)),
+                Some((_, recorded)) if l.count > *recorded => {
+                    Some(format!("{}@{} grew {recorded}→{}", l.noun, l.file, l.count))
+                }
+                Some(_) => None,
+            }
+        })
+        .collect();
+    out.sort();
+    out
 }
 
 /// The baseline TOML for the current census — mechanical category/wave, one `[[leak]]` per pair.
@@ -650,12 +682,7 @@ impl Gate for InstanceNounNeutralityGate {
         }
 
         // Undocumented: a live leak the baseline does not name. This is what bites a NEW coupling.
-        let mut undocumented: Vec<String> = leaks
-            .iter()
-            .filter(|l| !baseline.contains(&leak_key(l)))
-            .map(|l| format!("{}@{}", l.noun, l.file))
-            .collect();
-        undocumented.sort();
+        let undocumented = undocumented_leaks(&leaks, &baseline);
         rows.push(if undocumented.is_empty() {
             Row::pass(
                 ROW_UNDOCUMENTED,
@@ -665,7 +692,7 @@ impl Gate for InstanceNounNeutralityGate {
         } else {
             Row::fail(
                 ROW_UNDOCUMENTED,
-                "a live instance-noun leak is NOT in the baseline",
+                "a live instance-noun leak is NOT in the baseline, or outgrew its baselined count",
                 format!(
                     "{} undocumented leak(s): {} — a NEW cross-family coupling landed. Neutralize \
                      it, or (if it is genuine debt) record it in {BASELINE} with its owning wave.",
@@ -680,6 +707,7 @@ impl Gate for InstanceNounNeutralityGate {
             leaks.iter().map(leak_key).collect();
         let mut stale: Vec<String> = baseline
             .iter()
+            .map(|(k, _)| k)
             .filter(|k| !live.contains(*k))
             .map(|(n, f)| format!("{n}@{f}"))
             .collect();
@@ -708,6 +736,7 @@ impl Gate for InstanceNounNeutralityGate {
         // can only read as a zero; refuse it by path rather than let it sit in the ledger.
         let mut dead: Vec<String> = baseline
             .iter()
+            .map(|(k, _)| k)
             .filter(|(_, f)| !scanned.contains(f))
             .map(|(n, f)| format!("{n}@{f}"))
             .collect();
@@ -966,5 +995,44 @@ fn dead_path_transition(
                 "no GREEN->RED transition on {ROW_DEAD_PATH}: clean={clean:?} planted={planted:?}"
             )],
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn leak(file: &str, count: usize) -> Leak {
+        Leak {
+            noun: "a2a",
+            kind: "plane",
+            file: file.to_string(),
+            count,
+            category: "c",
+            wave: "w",
+        }
+    }
+
+    /// ITEM 198: the burndown ledger's `count` is compared. Forty more references in a baselined
+    /// file used to leave `:undocumented` byte-identical because only `(noun, file)` was a key.
+    #[test]
+    fn a_baselined_file_that_grew_its_leak_count_is_undocumented() {
+        let baseline: Vec<BaselineRow> = vec![
+            (("a2a".to_string(), "crates/x/src/lib.rs".to_string()), 1),
+            (("a2a".to_string(), "crates/y/src/lib.rs".to_string()), 5),
+        ];
+        let leaks = vec![
+            leak("crates/x/src/lib.rs", 41),
+            leak("crates/y/src/lib.rs", 3),
+            leak("crates/z/src/lib.rs", 1),
+        ];
+        assert_eq!(
+            undocumented_leaks(&leaks, &baseline),
+            vec![
+                "a2a@crates/x/src/lib.rs grew 1→41".to_string(),
+                "a2a@crates/z/src/lib.rs".to_string(),
+            ],
+            "growth past the recorded count must be named; a shrink must not"
+        );
     }
 }
