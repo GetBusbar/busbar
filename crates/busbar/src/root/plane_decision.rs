@@ -178,6 +178,8 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         // buys is that a SECOND claimant of `decisions` is now a boot refusal by construction, which
         // is the whole reason the guard exists. Voice's `streams` claim is the precedent.
         owned_config_sections: &[CONFIG_SECTION],
+        // The class the plane crate declares (`busbar_plane_decision::meta`), by its own symbol.
+        billable_classes: &[busbar_plane_decision::meta::CLASS_DECISION.as_str()],
         // The providers/models/pools merge is the LLM plane's seam; a decision provider is resolved
         // from this plane's own section, not from the `providers:` catalog merge.
         resolve_provider: None,

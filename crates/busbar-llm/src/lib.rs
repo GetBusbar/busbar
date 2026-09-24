@@ -277,6 +277,16 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         default_section: None,
         // config-seam stage 1: the registry starts EMPTY — nothing has moved out of core yet.
         owned_config_sections: &[],
+        // THE CLASSES THIS PLANE LEDGERS (#71): the four reserved token tiers every dialect reports,
+        // and a rerank's billed search units (the one open class a codec counts). A present card
+        // must configure all five (Q29/Q35).
+        billable_classes: &[
+            busbar_api::UNIT_INPUT,
+            busbar_api::UNIT_OUTPUT,
+            busbar_api::UNIT_CACHE_READ,
+            busbar_api::UNIT_CACHE_WRITE,
+            busbar_llm_codec::ir::rerank::SEARCH_UNITS_CLASS,
+        ],
         // 1.6.0 pools stage-B: the providers/models/pools LOGIC seam. `providers`/`pools` stay
         // CORE-OWNED-CONCRETE (never listed in `owned_config_sections` — see that field's doc), but
         // the per-provider catalog/deployment MERGE logic now lives here; core calls it at the exact

@@ -904,7 +904,7 @@ models:
   {LANE}:
     provider: {PROVIDER}
 rate_card:
-  {LANE}: {{ input_utok: {INPUT_UTOK}, output_utok: {OUTPUT_UTOK} }}
+  {LANE}: {{ input_utok: {INPUT_UTOK}, output_utok: {OUTPUT_UTOK}, units: {{ search_units: 0 }} }}
 pools:
   oracle-unused:
     members:

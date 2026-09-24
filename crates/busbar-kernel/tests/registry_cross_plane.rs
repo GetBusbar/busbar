@@ -90,6 +90,7 @@ static WIDGET_PLANE: PlaneDecl = PlaneDecl {
     retain_verify_gates: None,
     default_section: None,
     owned_config_sections: &[],
+    billable_classes: &[],
     resolve_provider: None,
 };
 
@@ -218,6 +219,7 @@ fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
         retain_verify_gates: None,
         default_section: None,
         owned_config_sections: &[],
+        billable_classes: &[],
         resolve_provider: None,
     };
 
@@ -693,6 +695,7 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         retain_verify_gates: None,
         default_section: None,
         owned_config_sections: &[],
+        billable_classes: &[],
         resolve_provider: None,
     };
     let unit = ();
@@ -746,6 +749,7 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         retain_verify_gates: None,
         default_section: None,
         owned_config_sections: &[],
+        billable_classes: &[],
         resolve_provider: None,
     };
     let dispatch = build_dispatch(&[&MOUNTS_NOTHING], &slots)
@@ -802,6 +806,7 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         retain_verify_gates: None,
         default_section: None,
         owned_config_sections: &[],
+        billable_classes: &[],
         resolve_provider: None,
     };
     let ctx = busbar_kernel::plane::registry::BootCtx::stub();
@@ -850,6 +855,7 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         retain_verify_gates: None,
         default_section: None,
         owned_config_sections: &[],
+        billable_classes: &[],
         resolve_provider: None,
     };
     busbar_kernel::boot::run_start_hooks(&[&STARTS_CLEAN, &WIDGET_PLANE], &ctx)
@@ -896,6 +902,7 @@ fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
         retain_verify_gates: None,
         default_section: None,
         owned_config_sections: &[],
+        billable_classes: &[],
         resolve_provider: None,
     };
     let ctx = busbar_kernel::plane::registry::BootCtx::stub();

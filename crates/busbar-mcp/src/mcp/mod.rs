@@ -187,6 +187,11 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         default_section: Some(mcp_default_section),
         // config-seam stage 1: the registry starts EMPTY — nothing has moved out of core yet.
         owned_config_sections: &[],
+        // The classes the plane crate declares (`busbar_plane_mcp::meta`), by its own symbols.
+        billable_classes: &[
+            busbar_plane_mcp::meta::CLASS_TOOL_CALLS.as_str(),
+            busbar_plane_mcp::meta::CLASS_BYTES.as_str(),
+        ],
         resolve_provider: None,
     };
 

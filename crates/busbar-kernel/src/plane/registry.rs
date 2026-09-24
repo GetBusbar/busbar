@@ -365,13 +365,12 @@ pub fn merged_boot_plane_decls(
     // order IS the canonical order; under the test / test-support surface the built-in rows supply
     // it. Either way core names no plane token here — the order leaves with the decls.
     let canonical = canonical_key_order(installed, builtins);
-    let rank = |key: &str| {
+    decls.sort_by_key(|d| {
         canonical
             .iter()
-            .position(|k| *k == key)
+            .position(|k| *k == d.key)
             .unwrap_or(canonical.len())
-    };
-    decls.sort_by_key(|d| rank(d.key));
+    });
     // REGISTER EACH PLANE'S SCOPE KINDS with the neutral `busbar_api` scope-kind wire registry, so a
     // `VirtualKey` grant of a plane's kind (`mcp_server`, …) serializes to its `allowed_{kind}s` wire
     // field instead of failing the write. The kind strings are DATA off each `PlaneDecl.scope_kinds`
@@ -1178,6 +1177,14 @@ pub struct PlaneDecl {
     /// boot where two planes claim the same section OR a plane claims a section core still owns
     /// concretely — the invariant that makes the later section moves safe.
     pub owned_config_sections: &'static [&'static str],
+
+    /// THE BILLABLE UNIT CLASSES THIS PLANE LEDGERS — the class strings its raw counts are keyed by
+    /// (#71) and a rate card configures (a reserved `<class>_utok` tier, or `units: { <class>: .. }`).
+    /// When this plane's section carries a `rate_card`, boot and `--validate` REFUSE the config unless
+    /// the card configures every class listed here (an explicit 0 counts), naming each one missing
+    /// (owner ruling Q29/Q35). Identical for every plane, compiled-in or registered from outside core:
+    /// the kernel reads the list and never names a class. `&[]` for a plane that bills nothing.
+    pub billable_classes: &'static [&'static str],
 
     /// MERGE ONE PROVIDER'S CATALOG DEFINITION (`providers.yaml`, [`crate::config::providers::ProviderDef`])
     /// WITH ITS OPERATOR DEPLOYMENT (`config.yaml`'s `providers:` entry,

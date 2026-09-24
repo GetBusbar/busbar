@@ -301,6 +301,16 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         // `CORE_OWNED_CONCRETE_SECTIONS` (providers/models/pools/rate_card/limits), so the dup-claim
         // guard admits this claim; a second claimant of `streams` is refused by construction.
         owned_config_sections: &["streams"],
+        // The classes the plane crate declares (`busbar_plane_streaming::meta`), by its own symbols.
+        billable_classes: &[
+            busbar_plane_streaming::meta::CLASS_AUDIO_TOKENS_IN.as_str(),
+            busbar_plane_streaming::meta::CLASS_AUDIO_TOKENS_OUT.as_str(),
+            busbar_plane_streaming::meta::CLASS_TEXT_TOKENS_IN.as_str(),
+            busbar_plane_streaming::meta::CLASS_TEXT_TOKENS_OUT.as_str(),
+            busbar_plane_streaming::meta::CLASS_CACHED_TOKENS.as_str(),
+            busbar_plane_streaming::meta::CLASS_AUDIO_SECONDS_IN.as_str(),
+            busbar_plane_streaming::meta::CLASS_TOOL_CALLS.as_str(),
+        ],
         resolve_provider: None,
     };
 

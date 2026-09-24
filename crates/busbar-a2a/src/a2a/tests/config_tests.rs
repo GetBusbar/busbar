@@ -68,6 +68,7 @@ static LLM_POOLS_STANDIN: busbar_kernel::plane::registry::PlaneDecl =
         retain_verify_gates: None,
         default_section: None,
         owned_config_sections: &[],
+        billable_classes: &[],
         resolve_provider: None,
     };
 

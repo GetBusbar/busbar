@@ -430,14 +430,12 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             // fields to >= 1 with max >= base.)
             if breaker.base_cooldown_secs == 0 {
                 errors.push(format!(
-                    "pool '{}' breaker base_cooldown_secs must be >= 1 (got 0); a zero cooldown re-admits a tripped backend immediately, defeating the breaker's back-off",
-                    pool_name
+                    "pool '{pool_name}' breaker base_cooldown_secs must be >= 1 (got 0); a zero cooldown re-admits a tripped backend immediately, defeating the breaker's back-off"
                 ));
             }
             if breaker.max_cooldown_secs == 0 {
                 errors.push(format!(
-                    "pool '{}' breaker max_cooldown_secs must be >= 1 (got 0); a zero cooldown re-admits a tripped backend immediately, defeating the breaker's back-off",
-                    pool_name
+                    "pool '{pool_name}' breaker max_cooldown_secs must be >= 1 (got 0); a zero cooldown re-admits a tripped backend immediately, defeating the breaker's back-off"
                 ));
             }
             // The escalating cooldown clamps at max_cooldown_secs, so a max below the base would
@@ -479,8 +477,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                         // always true so the lane trips on every evaluation.
                         if trip.consecutive_n == 0 {
                             errors.push(format!(
-                                "pool '{}' breaker trip.consecutive_n must be >= 1 for consecutive mode (got 0)",
-                                pool_name
+                                "pool '{pool_name}' breaker trip.consecutive_n must be >= 1 for consecutive mode (got 0)"
                             ));
                         }
                     }
@@ -499,8 +496,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         if let Some(failover) = &pool_cfg.failover {
             if failover.timeout_secs == 0 {
                 errors.push(format!(
-                    "pool '{}' failover.timeout_secs must be >= 1; a 0 budget rejects the primary attempt before it runs (every request 503s)",
-                    pool_name
+                    "pool '{pool_name}' failover.timeout_secs must be >= 1; a 0 budget rejects the primary attempt before it runs (every request 503s)"
                 ));
             } else if failover.timeout_secs > crate::config::MAX_FAILOVER_DEADLINE_SECS {
                 // Upper bound: an operator-controlled `timeout_secs` feeds `RequestCtx::new`, which
@@ -531,8 +527,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                 for excluded in exclusions {
                     if !member_targets.contains(excluded.as_str()) {
                         errors.push(format!(
-                            "pool '{}' failover.exclusions references '{}', which is not a member of the pool; an exclusion must name one of the pool's members (otherwise it silently benches nothing)",
-                            pool_name, excluded
+                            "pool '{pool_name}' failover.exclusions references '{excluded}', which is not a member of the pool; an exclusion must name one of the pool's members (otherwise it silently benches nothing)"
                         ));
                     }
                 }
@@ -552,8 +547,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         if let Some(crate::config::OnExhaustedCfg::FallbackPool(target)) = &pool_cfg.on_exhausted {
             if !cfg.pools.contains_key(target) {
                 errors.push(format!(
-                    "pool '{}' on_exhausted references unknown fallback pool '{}'",
-                    pool_name, target
+                    "pool '{pool_name}' on_exhausted references unknown fallback pool '{target}'"
                 ));
             } else if target == pool_name {
                 // Self-referential fallback (pool A -> fallback A): the runtime loop guard
@@ -565,8 +559,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                 // no diagnostic. (This is the length-1 case the general cycle walk below would
                 // also catch, called out explicitly for a precise diagnostic.)
                 errors.push(format!(
-                    "pool '{}' on_exhausted references itself as its fallback pool ('{}'); a self-referential fallback never engages (the runtime loop guard terminates it on re-entry) so it 503s exactly as having no fallback would. Point it at a different pool or remove on_exhausted",
-                    pool_name, target
+                    "pool '{pool_name}' on_exhausted references itself as its fallback pool ('{target}'); a self-referential fallback never engages (the runtime loop guard terminates it on re-entry) so it 503s exactly as having no fallback would. Point it at a different pool or remove on_exhausted"
                 ));
             }
         }
@@ -587,13 +580,11 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             let budget_ms = resolved_timeout_secs.saturating_mul(1000);
             if *max_ms == 0 {
                 errors.push(format!(
-                    "pool '{}' on_exhausted.queue.max_ms must be > 0; a 0 wait never queues (it is just `reject` with extra machinery)",
-                    pool_name
+                    "pool '{pool_name}' on_exhausted.queue.max_ms must be > 0; a 0 wait never queues (it is just `reject` with extra machinery)"
                 ));
             } else if *max_ms > budget_ms {
                 errors.push(format!(
-                    "pool '{}' on_exhausted.queue.max_ms ({} ms) exceeds the resolved failover budget ({} s = {} ms); a queue longer than the whole failover budget is clamped to it at runtime and never reaches its ceiling. Lower max_ms to <= {} ms or raise failover.timeout_secs",
-                    pool_name, max_ms, resolved_timeout_secs, budget_ms, budget_ms
+                    "pool '{pool_name}' on_exhausted.queue.max_ms ({max_ms} ms) exceeds the resolved failover budget ({resolved_timeout_secs} s = {budget_ms} ms); a queue longer than the whole failover budget is clamped to it at runtime and never reaches its ceiling. Lower max_ms to <= {budget_ms} ms or raise failover.timeout_secs"
                 ));
             }
         }
@@ -614,14 +605,12 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                 // catch.
                 if header_name.is_empty() {
                     errors.push(format!(
-                        "pool '{}' affinity.header_name must not be empty (an empty HTTP header field-name silently disables session affinity)",
-                        pool_name
+                        "pool '{pool_name}' affinity.header_name must not be empty (an empty HTTP header field-name silently disables session affinity)"
                     ));
                 }
                 if !header_name.is_ascii() {
                     errors.push(format!(
-                        "pool '{}' affinity.header_name '{}' must be ASCII (an HTTP header field-name cannot contain non-ASCII bytes)",
-                        pool_name, header_name
+                        "pool '{pool_name}' affinity.header_name '{header_name}' must be ASCII (an HTTP header field-name cannot contain non-ASCII bytes)"
                     ));
                 }
                 if header_name.len() > MAX_AFFINITY_HEADER_NAME_LEN {
@@ -1619,8 +1608,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                 .map(|m| {
                     format!(
                         "    {:width$} {{ input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }}\n",
-                        format!("{m}:"),
-                        width = width
+                        format!("{m}:")
                     )
                 })
                 .collect();
@@ -1645,11 +1633,37 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
             }
         }
 
-        // COMPLETENESS ACROSS PLANES is PER PLANE (#42 "scoped per plane", #47): each plane's card
-        // is its own billing switch, so the flat `rate_card:` says nothing about a `tools:`
-        // or `agents:` registration. A plane with no card of its own reads 0 (billing off for that
-        // plane); a plane with one prices its classes or REFUSES a hit the card is silent about —
-        // at run time, in the one function, because a plane's lanes are the ones it serves.
+        // EVERY DECLARED CLASS IS CONFIGURED (owner ruling Q29/Q35, generic): a plane whose section
+        // carries a card (#42 "scoped per plane", #47 — the flat card is the fallback plane's) must
+        // configure every billable class the plane declares, on any entry; an explicit 0 counts, and
+        // a reserved tier omitted in YAML is 0 by the 1.5.5 grammar. The kernel asks the plane and
+        // names each class missing. A per-lane gap stays the run-time #42 refusal.
+        for d in crate::plane::registry::plane_decls() {
+            let own = if d.fallback { "" } else { d.key };
+            let on: Vec<_> = card
+                .iter()
+                .filter(|(k, _)| split_plane_lane(k).0 == own)
+                .collect();
+            let entry = on.iter().any(|(k, _)| !split_plane_lane(k).1.is_empty());
+            let unset = |c: &&str| {
+                !(entry && busbar_api::RESERVED_UNITS.contains(c)
+                    || on.iter().any(|(_, r)| r.units.contains_key(*c)))
+            };
+            let missing: Vec<&str> = d.billable_classes.iter().copied().filter(unset).collect();
+            let present = if d.fallback {
+                flat_card
+            } else {
+                !on.is_empty()
+            };
+            if present && !missing.is_empty() {
+                errors.push(format!(
+                    "{}.rate_card does not configure billable unit(s) {} declared by this plane; \
+                     add them (0 to make them free)",
+                    d.config_section,
+                    missing.join(", ")
+                ));
+            }
+        }
     }
 
     if cfg.per_request_fee < 0 {
@@ -2092,14 +2106,12 @@ fn validate_providers_with(
         if let Some(health) = &provider_cfg.health {
             if health.interval_secs == Some(0) {
                 errors.push(format!(
-                    "provider '{}' health.interval_secs must be >= 1 (got 0)",
-                    provider_name
+                    "provider '{provider_name}' health.interval_secs must be >= 1 (got 0)"
                 ));
             }
             if health.timeout_secs == Some(0) {
                 errors.push(format!(
-                    "provider '{}' health.timeout_secs must be >= 1 (got 0)",
-                    provider_name
+                    "provider '{provider_name}' health.timeout_secs must be >= 1 (got 0)"
                 ));
             }
             // Item 147 sweep: the per-lane override reaches the same probe deadline
@@ -2121,8 +2133,7 @@ fn validate_providers_with(
         for (code, mapped_class) in &provider_cfg.error_map {
             if crate::config::status_class_from_str(mapped_class).is_none() {
                 errors.push(format!(
-                    "provider '{}' error_map code '{}': invalid StatusClass '{}', must be one of: rate_limit, overloaded, server_error, timeout, network, auth, billing, client_error, context_length",
-                    provider_name, code, mapped_class
+                    "provider '{provider_name}' error_map code '{code}': invalid StatusClass '{mapped_class}', must be one of: rate_limit, overloaded, server_error, timeout, network, auth, billing, client_error, context_length"
                 ));
             }
         }
@@ -2174,13 +2185,11 @@ fn validate_providers_with(
                 // An http:// scheme that failed the check ⇒ the host is public (or unparseable):
                 // plaintext to a public host would leak the key.
                 format!(
-                    "provider '{}' base_url must use https for a public host (got '{}'); plaintext http is permitted only for a private/loopback local-model upstream",
-                    provider_name, base_url
+                    "provider '{provider_name}' base_url must use https for a public host (got '{base_url}'); plaintext http is permitted only for a private/loopback local-model upstream"
                 )
             } else {
                 format!(
-                    "provider '{}' base_url must use http or https (got '{}')",
-                    provider_name, base_url
+                    "provider '{provider_name}' base_url must use http or https (got '{base_url}')"
                 )
             });
         } else if let Some(host) = ssrf_blocked_host(
@@ -2198,8 +2207,7 @@ fn validate_providers_with(
             // nuclear `security.allow_all_metadata`) carve exceptions (then `ssrf_blocked_host`
             // returns None).
             errors.push(format!(
-                "provider '{}' base_url '{}' targets a blocked cloud-metadata host '{}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts to unblock it for all providers, or set security.allow_all_metadata: true to disable the guard entirely — and security.blocked_metadata_hosts extends the denylist)",
-                provider_name, base_url, host
+                "provider '{provider_name}' base_url '{base_url}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts to unblock it for all providers, or set security.allow_all_metadata: true to disable the guard entirely — and security.blocked_metadata_hosts extends the denylist)"
             ));
         }
 
@@ -2219,8 +2227,7 @@ fn validate_providers_with(
         if let Some(path) = &provider_cfg.path {
             if !path.starts_with('/') {
                 errors.push(format!(
-                    "provider '{}' path '{}' must begin with '/': a path override is appended to base_url verbatim, so a path that does not start with '/' fuses into the host (e.g. base_url + '{}') and can redirect signed traffic to an attacker-controlled host",
-                    provider_name, path, path
+                    "provider '{provider_name}' path '{path}' must begin with '/': a path override is appended to base_url verbatim, so a path that does not start with '/' fuses into the host (e.g. base_url + '{path}') and can redirect signed traffic to an attacker-controlled host"
                 ));
             } else if scheme_ok {
                 let composed = format!("{}{}", provider_cfg.base_url, path);
@@ -2231,8 +2238,7 @@ fn validate_providers_with(
                     &cfg.blocked_metadata_hosts,
                 ) {
                     errors.push(format!(
-                        "provider '{}' base_url+path '{}' targets a blocked cloud-metadata host '{}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts, or set security.allow_all_metadata: true)",
-                        provider_name, composed, host
+                        "provider '{provider_name}' base_url+path '{composed}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts, or set security.allow_all_metadata: true)"
                     ));
                 }
             }
@@ -2243,8 +2249,7 @@ fn validate_providers_with(
         if let Some(path_base) = &provider_cfg.path_base {
             if !path_base.starts_with('/') {
                 errors.push(format!(
-                    "provider '{}' path_base '{}' must begin with '/': it is appended to base_url verbatim, so a value that does not start with '/' fuses into the host and can redirect signed traffic to an attacker-controlled host",
-                    provider_name, path_base
+                    "provider '{provider_name}' path_base '{path_base}' must begin with '/': it is appended to base_url verbatim, so a value that does not start with '/' fuses into the host and can redirect signed traffic to an attacker-controlled host"
                 ));
             } else if scheme_ok {
                 let composed = format!("{}{}", provider_cfg.base_url, path_base);
@@ -2255,8 +2260,7 @@ fn validate_providers_with(
                     &cfg.blocked_metadata_hosts,
                 ) {
                     errors.push(format!(
-                        "provider '{}' base_url+path_base '{}' targets a blocked cloud-metadata host '{}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts, or set security.allow_all_metadata: true)",
-                        provider_name, composed, host
+                        "provider '{provider_name}' base_url+path_base '{composed}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts, or set security.allow_all_metadata: true)"
                     ));
                 }
             }
@@ -2286,8 +2290,7 @@ fn validate_providers_with(
                 .is_empty()
             {
                 errors.push(format!(
-                    "provider '{}' uses auth: oauth-client-credentials but has no `token_url` (the OAuth token endpoint the client credentials are POSTed to)",
-                    provider_name
+                    "provider '{provider_name}' uses auth: oauth-client-credentials but has no `token_url` (the OAuth token endpoint the client credentials are POSTed to)"
                 ));
             } else if let Some(tu) = &provider_cfg.token_url {
                 // token_url carries the client secret in the POST body, so it gets the SAME two guards
@@ -2306,13 +2309,11 @@ fn validate_providers_with(
                 if !tu_scheme_ok {
                     errors.push(if scheme_is(tu, "http") {
                         format!(
-                            "provider '{}' token_url must use https for a public host (got '{}'); it carries the client secret, so plaintext http is permitted only for a private/loopback token endpoint",
-                            provider_name, tu
+                            "provider '{provider_name}' token_url must use https for a public host (got '{tu}'); it carries the client secret, so plaintext http is permitted only for a private/loopback token endpoint"
                         )
                     } else {
                         format!(
-                            "provider '{}' token_url must use http or https (got '{}')",
-                            provider_name, tu
+                            "provider '{provider_name}' token_url must use http or https (got '{tu}')"
                         )
                     });
                 } else if let Some(host) = ssrf_blocked_host(
@@ -2322,8 +2323,7 @@ fn validate_providers_with(
                     &cfg.blocked_metadata_hosts,
                 ) {
                     errors.push(format!(
-                        "provider '{}' token_url '{}' targets a blocked cloud-metadata host '{}' (the client secret is POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)",
-                        provider_name, tu, host
+                        "provider '{provider_name}' token_url '{tu}' targets a blocked cloud-metadata host '{host}' (the client secret is POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)"
                     ));
                 }
             }
@@ -2335,8 +2335,7 @@ fn validate_providers_with(
                 .is_empty()
             {
                 errors.push(format!(
-                    "provider '{}' uses auth: oauth-client-credentials but has no `scope`",
-                    provider_name
+                    "provider '{provider_name}' uses auth: oauth-client-credentials but has no `scope`"
                 ));
             }
             // Dry-run credential-format check (parity with jwt-bearer below): the `client_id:client_secret`
