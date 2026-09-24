@@ -312,7 +312,18 @@ run    = "cargo test -p busbar --test qa_a2a"
 
 [[segment]]
 id     = "smart-router"
-status = "reserved"   # -> active in 1.5.6 (smart-router)
+status = "reserved"   # STALE REASON CORRECTED (item 97): the old comment read "-> active in 1.5.6",
+# a SHIPPED release — but 1.5.6 never shipped this. There is no `crates/busbar/tests/qa_smart_router.rs`
+# on the tip (verified: `find crates/busbar/tests -iname 'qa_smart_router*'` is empty) and none existed
+# at the 1.6.0 phase-start sha (fd3455e53) either — the same empty result there. "smart-router" today
+# names only an example hook (`examples/smart-router/`) and a kind-isolation overlay path, never a QA
+# test target. The reservation is DEAD, not merely stale-dated: activating it would hard-fail
+# `scripts/qa-segments.sh`'s own missing-test-target honesty check (line ~236) the moment it ran. It
+# stays `reserved` (INERT, excluded from the green claim) rather than struck from this file because
+# `scripts/qa-segments.sh:454` hardcodes `smart-router` in its own selftest's reserved-slot roster —
+# that script is owned by a different 1.6.0 slot, so removing the id here is a cross-slot edit this
+# slot does not make (see the P1A-seg report, item 97, DEPENDENCIES). Queued for the owner of
+# scripts/qa-segments.sh to drop the id from that roster and delete this block in one paired edit.
 tier   = "fast"
 run    = "cargo test -p busbar --test qa_smart_router"
 
@@ -513,23 +524,28 @@ tier   = "fast"
 # REFUSED) runs FIRST.
 run    = "cargo xtask gate teller-steps --selftest && cargo xtask gate teller-steps && cargo xtask teller-steps --root-legs-gating && cargo xtask teller-steps --root-legs"
 
-# ── RESERVED, and RED on the tip: named here rather than wired, because a segment armed on a gate
-# that cannot pass is a red that teaches people to ignore the manifest. Each names exactly what has
-# to become true, and arming is the documented status flip with no other edit.
-
 [[segment]]
 id     = "plane-config-noun"
-status = "reserved"   # -> active when the gate's own self-test passes (see below)
+status = "active"   # ARMED (item 87d/97): the stated blocker ("-> active when the gate's own
+# self-test passes") is satisfied — measured, not assumed. `bash scripts/plane-config-noun-gate.sh
+# --selftest` is ALL GREEN on the tip (and was already green at the 1.6.0 phase-start sha fd3455e53,
+# so the old "RED on the tip" comment was stale before this phase even began): `section_nouns` DOES
+# resolve all four section nouns today — `pools tools agents streams` — the old comment's claim that
+# the `agents` noun's declaring crate "carries no matching config_section: literal" no longer holds.
 tier   = "fast"
-# THE FOUR-NOUN CONFIG-PARSE DEBT METER (scripts/plane-config-noun-gate.sh). Its `--check` is
-# report-only by design (GREP_GATE_REPORT_ONLY=1: prints the debt, exits 0) and would therefore be
-# harmless to run — but its `--selftest` is RED on the tip, and a gate whose self-test fails has no
-# verdict worth wiring. The failing case is the LAST one: `section_nouns` resolves the four config
-# section nouns from each plane crate's `pub const PLANE_DECL` and finds only THREE (pools, tools,
-# streams). The `agents` noun's declaring crate carries no matching `config_section:` literal, so the
-# meter would scan for three nouns while calling itself a four-noun gate — the self-test is doing
-# exactly its job by refusing. Arming: make the fourth noun resolve (or teach section_nouns where it
-# lives), confirm `--selftest` green, flip status to "active".
+# THE FOUR-NOUN CONFIG-PARSE DEBT METER (scripts/plane-config-noun-gate.sh). This segment runs
+# report-only BY DESIGN (GREP_GATE_REPORT_ONLY=1: prints the per-noun debt table, exits 0 regardless
+# of count) — the same non-blocking posture as the `plane-grep` segment above, measuring debt toward a
+# future hard gate rather than enforcing it today. It is `active` (no longer an inert manifest slot)
+# because it now EXECUTES and REPORTS on every umbrella run, exactly as `plane-grep` does.
+#
+# TODAY'S MEASURED BASELINE (arming a ceiling for the first time, not relaxing one — §9.4): `--check`
+# reports FOUR-NOUN CONFIG-PARSE DEBT = 17 distinct parse-target lines across 8 files under
+# crates/busbar-kernel/src (pools 5, tools 3, agents 2, streams 7; the busiest files are config/mod.rs
+# (6) and config/prepass.rs (3)). This is the pre-Stage-A floor this meter measures from, not a value
+# this segment enforces — GREP_GATE_REPORT_ONLY stays 1 until Stage A evicts the four config sections
+# onto the seam and drives the count to 0, at which point (per the script's own header) arming the
+# hard gate is the documented one-flag flip (GREP_GATE_REPORT_ONLY=0), no ceiling number to edit here.
 run    = "scripts/plane-config-noun-gate.sh --selftest && GREP_GATE_REPORT_ONLY=1 scripts/plane-config-noun-gate.sh --check"
 
 [[segment]]
