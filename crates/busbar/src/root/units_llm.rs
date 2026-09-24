@@ -878,9 +878,12 @@ fn usage_record(
 /// projection reprices a row's token counts and adds the same configured fee at read time, so a node
 /// that posted only the tokens was out by the fee on every billable request.
 ///
-/// A figure too large for the record narrows at the ceiling rather than wrapping, exactly as the
-/// terminal's own settlement narrows it: a wrap would charge nearly nothing for the most expensive
-/// unit the node has ever run.
+/// **SETTLEMENT PRICES FAIL-CLOSED** (#42, 789d55a78): the lookup is
+/// [`busbar_kernel_ledger::cost::price_fail_closed`], never the read posture that flags an unpriced
+/// line and prices it at nothing. A present card silent about the lane or about a class the unit
+/// hit is a REFUSAL here. The posting — the counts and the instant — is returned either way: the
+/// counts are what the unit did (#43, #71), and a refusal to price them is not a reason to lose
+/// them or to call them zero.
 fn priced_posting(
     history: &crate::root::kernel::PinnedHistory,
     arrived: Arrived,
@@ -888,7 +891,7 @@ fn priced_posting(
     report: &LateReport,
 ) -> (
     busbar_kernel_ledger::cost::Posting,
-    Option<busbar_kernel_ledger::cost::Priced>,
+    Result<busbar_kernel_ledger::cost::Priced, busbar_kernel_ledger::cost::Unpriceable>,
 ) {
     // A POSTING IS QUANTITIES AND AN INSTANT, and both are stated here: the plane's report supplies
     // the classes and their counts, and the unit's PINNED arrival supplies the instant in both its
@@ -906,34 +909,31 @@ fn priced_posting(
     // THE LOOKUP, at the snapshot pinned at the door and the instant the unit arrived at. The
     // history resolves which entry was in force then; a later apply is not in this view at all, so
     // there is no arm here that could read one.
-    let priced = busbar_kernel_ledger::cost::price(&history.view(), &posting).ok();
+    let priced = busbar_kernel_ledger::cost::price_fail_closed(&history.view(), &posting);
     // THE CACHE IS WRITTEN AND IS NEVER READ BACK. It rides the posting so a reader has a figure to
     // compare a re-derivation against and so a totals read need not re-price a day of postings on
     // every request — but the figure this function RETURNS is the lookup's, taken off `priced`
     // directly. There is no arm below that consults `posting.cached`, which is the invariant stated
     // as code rather than as a comment: corrupt the cache and this expression answers exactly what
     // the quantities and the history say.
-    posting.cached = priced.as_ref().map(|p| p.as_cache(history.seq()));
+    posting.cached = priced.as_ref().ok().map(|p| p.as_cache(history.seq()));
     (posting, priced)
 }
 
-/// The narrowed figure the books take, spelled out of [`priced_posting`]'s lookup.
+/// The figure the books take, spelled out of [`priced_posting`]'s lookup — or the refusal.
 ///
-/// A figure too large for the record narrows at the ceiling rather than wrapping, exactly as the
-/// terminal's own settlement narrows it: a wrap would charge nearly nothing for the most expensive
-/// unit the node has ever run. A report nothing can price — a hole in the history — is nothing
-/// rather than a zero the caller cannot tell from a free request, and the caller posts no row for
-/// it.
+/// Every way this cannot state a figure is an `Err`, never a number: a hole in the history, a lane
+/// or a hit class a present card is silent about (#42), and a figure the record cannot hold, which
+/// REFUSES rather than pinning at the ceiling (item 28) — a pinned figure is a bill nobody posted.
 fn priced_amount(
     history: &crate::root::kernel::PinnedHistory,
     arrived: Arrived,
     token: &busbar_contract::caps::Grant<busbar_contract::caps::Consumption>,
     report: &LateReport,
-) -> u64 {
+) -> Result<u64, busbar_kernel_ledger::cost::Unpriceable> {
     let (_posting, priced) = priced_posting(history, arrived, token, report);
-    priced
-        .map(|p| u64::try_from(p.priced_nanos).unwrap_or(u64::MAX))
-        .unwrap_or(0)
+    u64::try_from(priced?.priced_nanos)
+        .map_err(|_| busbar_kernel_ledger::cost::Unpriceable::Overflow)
 }
 
 /// **THE LATE ACCRUAL'S ARM.** What this unit spent, posted once the body that reports it has
@@ -1014,13 +1014,29 @@ impl LateAccrual {
         // the books grow one.
         //
         // A ZERO IS NOT A ROW, and posting one would say the node had settled something. A unit that
-        // reached a lane and priced at nothing — no tokens, no fee, or a lane the card does not name —
-        // is already fully described by the settlement the exit made.
+        // reached a lane and priced at nothing — no tokens and no fee on a card that prices both at
+        // zero — is already fully described by the settlement the exit made.
         //
-        // A figure too large for the record settles at the ceiling rather than wrapping, exactly as
-        // the terminal's own settlement narrows it: there is no amount above the ceiling to post, and
-        // a wrap would post nearly nothing for the most expensive unit the node has ever run.
-        let amount = priced_amount(&history, arrived, &usage_token, &report);
+        // A REFUSAL IS NOT A ZERO AND NOT A PARTIAL (#42, item 28). A present card silent about the
+        // lane or a hit class, a hole in the history, or a figure the record cannot hold states no
+        // amount, so this book is handed none — never the priced part with the unpriced part at
+        // nothing. The COUNTS are not lost: they are the governance ledger's row, which the walk's
+        // tap wrote unconditionally (#43) and whose read refuses the same class; they are named
+        // here too, so the refusal says what went unpriced.
+        let amount = match priced_amount(&history, arrived, &usage_token, &report) {
+            Ok(amount) => amount,
+            Err(refusal) => {
+                tracing::warn!(
+                    principal = principal.as_str(),
+                    lane = %report.lane,
+                    counts = ?report.usage.usage_units,
+                    fee_count = report.fee_count,
+                    ?refusal,
+                    "late accrual refused at settlement: the card cannot price these counts"
+                );
+                return;
+            }
+        };
         if amount == 0 {
             return;
         }

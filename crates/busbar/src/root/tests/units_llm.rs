@@ -798,11 +798,13 @@ fn a_unit_prices_at_the_entry_in_force_when_it_arrived_and_not_at_the_head() {
     let late = priced_amount(&history, Arrived::at(5_000, 2), &token, &report_of(1_000));
 
     assert_eq!(
-        early, 1_000_000,
+        early,
+        Ok(1_000_000),
         "a unit that arrived before the appended entry was re-priced at it"
     );
     assert_eq!(
-        late, 100_000_000,
+        late,
+        Ok(100_000_000),
         "a unit that arrived after the appended entry was priced at the entry it superseded"
     );
 }
@@ -861,12 +863,12 @@ fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
     let at = Arrived::at(9_000, 1);
     assert_eq!(
         priced_amount(&admitted, at, &token, &report_of(1_000)),
-        1_000_000,
+        Ok(1_000_000),
         "the pinned snapshot saw an entry appended after the unit was admitted"
     );
     assert_eq!(
         priced_amount(&next, at, &token, &report_of(1_000)),
-        100_000_000,
+        Ok(100_000_000),
         "the next admission did not see the appended entry"
     );
 }
@@ -891,12 +893,12 @@ fn a_pin_below_the_head_reads_the_history_as_it_stood_at_that_seq() {
     let at = Arrived::at(9_000, 1);
     assert_eq!(
         priced_amount(&earlier, at, &token, &report_of(1_000)),
-        1_000_000,
+        Ok(1_000_000),
         "a snapshot at seq 0 resolved an entry that was appended after it"
     );
     assert_eq!(
         priced_amount(&head, at, &token, &report_of(1_000)),
-        100_000_000,
+        Ok(100_000_000),
         "the head snapshot did not resolve the entry appended onto it"
     );
 }
@@ -2873,15 +2875,31 @@ fn invoice_micros(
         .expect("the invoice's card prices every lane the fixture serves")
 }
 
-/// The reconciliation: the second book's posting (nano-units) projected through the ONE
-/// micro-projection must equal the invoice's figure. `Err` names the cell and both figures.
-fn books_agree(label: &str, second_book_nanos: u64, invoice: i64) -> Result<(), String> {
-    let projected = busbar_kernel_ledger::cost::micros_of(u128::from(second_book_nanos));
-    if projected == invoice {
+/// The second book's figure (nano-units) through the CHECKED micro-projection — the one money type,
+/// which refuses a figure it cannot hold rather than pinning it at the ceiling (item 28).
+fn second_book_micros(
+    second_book: Result<u64, busbar_kernel_ledger::cost::Unpriceable>,
+) -> Result<i64, String> {
+    let nanos = second_book.map_err(|refusal| format!("the second book refused: {refusal:?}"))?;
+    busbar_kernel_ledger::cost::Money::of_nanos(u128::from(nanos))
+        .and_then(busbar_kernel_ledger::cost::Money::micros_i64)
+        .map_err(|refusal| format!("{nanos} nano-units do not project: {refusal:?}"))
+}
+
+/// The reconciliation: the second book's posting (nano-units) projected through the ONE checked
+/// micro-projection must equal the invoice's figure. A second book that REFUSED where the invoice
+/// served a figure disagrees with it. `Err` names the cell and both figures.
+fn books_agree(
+    label: &str,
+    second_book: Result<u64, busbar_kernel_ledger::cost::Unpriceable>,
+    invoice: i64,
+) -> Result<(), String> {
+    let projected = second_book_micros(second_book.clone());
+    if projected == Ok(invoice) {
         Ok(())
     } else {
         Err(format!(
-            "{label}: the kernel-loop book posted {second_book_nanos} nano-units ({projected} micro) \
+            "{label}: the kernel-loop book posted {second_book:?} nano-units ({projected:?} micro) \
              but the invoice (/admin/usage over the governance ledger) serves {invoice} micro"
         ))
     }
@@ -2985,14 +3003,14 @@ fn the_second_book_agrees_with_the_invoice_cell_by_cell_and_a_divergence_is_red(
 
     // A NON-VACUITY FLOOR: the billed cells are not all zero, so agreement is not 0 == 0.
     assert_eq!(
-        invoice_micros(&billed, 10_000, &split_report(11, 7, 1)),
+        Ok(invoice_micros(&billed, 10_000, &split_report(11, 7, 1))),
         // 11 x 50 + 7 x 100 + the 3-unit fee at the one scale.
-        busbar_kernel_ledger::cost::micros_of(u128::from(priced_amount(
+        second_book_micros(priced_amount(
             &billed,
             Arrived::at(10_000, 1),
             &token,
             &split_report(11, 7, 1)
-        ))),
+        )),
     );
     assert_ne!(invoice_micros(&billed, 10_000, &split_report(11, 7, 1)), 0);
 
@@ -3024,6 +3042,132 @@ fn the_second_book_agrees_with_the_invoice_cell_by_cell_and_a_divergence_is_red(
         )
         .is_err(),
         "a second book that dropped the fee was NOT caught disagreeing with the invoice"
+    );
+}
+
+/// A PRESENT card (#42) that prices `"lane"`'s input and output and is SILENT about cache reads.
+fn cache_silent_history() -> crate::root::kernel::PinnedHistory {
+    use busbar_kernel_ledger::cost::{History, HistorySeq, LaneClass, RateCard};
+    let card = RateCard::from_micro_rates(
+        [
+            (LaneClass::new("lane", busbar_api::UNIT_INPUT), 3.0),
+            (LaneClass::new("lane", busbar_api::UNIT_OUTPUT), 16.0),
+        ],
+        0,
+    );
+    crate::root::kernel::PinnedHistory::for_test(
+        std::sync::Arc::new(History::opening(card, 0)),
+        HistorySeq(0),
+    )
+}
+
+/// **AN UNPRICED CLASS ON A PRESENT CARD KEEPS ITS COUNTS ROW, AND THE READ REFUSES** (#42, #43).
+///
+/// The unit read 1,000 input, 250 output and 10,000,000 cache-read tokens; the card in force names
+/// input and output for the lane and says nothing about cache reads. Before, settlement priced
+/// through the READ posture, which flags the silent class and prices it at nothing, so the second
+/// book took 7,000,000 nano-units — the input and output alone — for a unit whose largest line
+/// was never priced: a RATECARD fault (a class the card should have refused) booked as a figure.
+///
+/// Now settlement prices fail-closed and REFUSES; the posting still carries every count, whole,
+/// and the served read over the same counts refuses the same class. Nothing is zeroed, nothing is
+/// dropped, and no partial figure reaches a book.
+#[test]
+fn an_unpriced_class_on_a_present_card_keeps_its_counts_row_and_the_read_refuses() {
+    let kernel = busbar_kernel::teller::Kernel::new();
+    let token = kernel.usage_token();
+    let history = cache_silent_history();
+    let mut report = split_report(1_000, 250, 1);
+    report
+        .usage
+        .usage_units
+        .insert(busbar_api::UNIT_CACHE_READ.to_string(), 10_000_000);
+    let at = Arrived::at(4_000, 7);
+
+    // THE ROW: the counts, whole — not zeroed, not dropped, not trimmed to the priced classes.
+    let (posting, priced) = priced_posting(&history, at, &token, &report);
+    let counts: std::collections::BTreeMap<&str, u64> = posting
+        .quantities
+        .iter()
+        .map(|q| (q.class.as_str(), q.amount))
+        .collect();
+    assert_eq!(
+        counts,
+        std::collections::BTreeMap::from([
+            (busbar_api::UNIT_INPUT, 1_000),
+            (busbar_api::UNIT_OUTPUT, 250),
+            (busbar_api::UNIT_CACHE_READ, 10_000_000),
+        ]),
+        "the posting lost or zeroed a count the unit reported"
+    );
+    assert_eq!(posting.fee_count, 1, "the billable count rides the row");
+
+    // SETTLEMENT REFUSES the class, and leaves no figure cached as though it had priced it.
+    assert!(
+        matches!(
+            priced,
+            Err(busbar_kernel_ledger::cost::Unpriceable::ClassUnpriced { ref class, .. })
+                if class == busbar_api::UNIT_CACHE_READ
+        ),
+        "settlement priced a class the present card is silent about: {priced:?}"
+    );
+    assert!(posting.cached.is_none(), "a refused lookup cached a figure");
+    assert!(
+        matches!(
+            priced_amount(&history, at, &token, &report),
+            Err(busbar_kernel_ledger::cost::Unpriceable::ClassUnpriced { .. })
+        ),
+        "the second book was handed a figure — a partial is a silent zero for the unpriced class"
+    );
+
+    // THE READ over the same counts row — the served /admin/usage derivation — refuses too.
+    use busbar_core_admin::v1::service::read_path_money as invoice;
+    let view = history.view();
+    let (_, card) = view.card_at(at.ms()).expect("the card is in force");
+    let row = busbar_kernel::admin::v1::contract::UsageBreakdown {
+        tokens_input: 1_000,
+        tokens_output: 250,
+        tokens_cache_read: 10_000_000,
+        tokens_cache_creation: 0,
+        requests: 1,
+        spend_micros: 0,
+    };
+    let cost =
+        busbar_kernel::cost::CostModel::resolve_parts(None, 0, &std::collections::BTreeMap::new());
+    assert!(
+        invoice::derive_spend_micros_row_at_card(&view, at.ms(), card, &cost, "lane", &row)
+            .is_err(),
+        "the read priced a class the present card is silent about"
+    );
+}
+
+/// **A FIGURE THE RECORD CANNOT HOLD REFUSES; IT IS NEVER PINNED AT THE CEILING** (item 28).
+///
+/// 10^17 output tokens at 1,000 micro-units each is 10^23 nano-units: inside the one function's
+/// arithmetic, past a `u64`. The narrowing used to answer `u64::MAX` — a bill nobody posted.
+#[test]
+fn a_settled_figure_past_the_record_refuses_and_is_never_pinned() {
+    let kernel = busbar_kernel::teller::Kernel::new();
+    let token = kernel.usage_token();
+    let history = history_of(&[(0, 1_000.0)]);
+    let (_, priced) = priced_posting(
+        &history,
+        Arrived::at(4_000, 7),
+        &token,
+        &report_of(100_000_000_000_000_000),
+    );
+    assert!(
+        priced.is_ok_and(|p| p.priced_nanos > u128::from(u64::MAX)),
+        "the fixture must price past the record, or this pins nothing"
+    );
+    assert_eq!(
+        priced_amount(
+            &history,
+            Arrived::at(4_000, 7),
+            &token,
+            &report_of(100_000_000_000_000_000)
+        ),
+        Err(busbar_kernel_ledger::cost::Unpriceable::Overflow),
     );
 }
 
