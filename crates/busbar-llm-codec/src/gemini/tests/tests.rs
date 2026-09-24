@@ -4838,6 +4838,12 @@ fn finish_reason_malformed_function_call_in_response_is_error() {
 /// The STREAMING reader (read_response_events) routes finishReason through the SAME
 /// `map_gemini_finish_reason`, so a MALFORMED_FUNCTION_CALL terminal chunk must surface
 /// stop_reason=Error on the MessageDelta — guarding the stream call site, not just the unit fn.
+///
+/// OWNER RULING Q31: a failed generation ENDS AS AN ERROR. The terminal chunk also pushes an
+/// `IrStreamEvent::Error` (the shape Cohere's generic `ERROR` already has), ahead of the
+/// MessageDelta/MessageStop — so the translator's `terminal_error()` is set (the breaker records a
+/// fault, a cross-protocol client gets an error frame), and the MessageDelta still carries the
+/// streamed usage the charge is read from (#62).
 #[test]
 fn finish_reason_malformed_function_call_stream_is_error() {
     let chunks = vec![serde_json::json!({
@@ -4857,6 +4863,64 @@ fn finish_reason_malformed_function_call_stream_is_error() {
         Some(Some(crate::ir::IrStopReason::Error)),
         "streamed MALFORMED_FUNCTION_CALL must terminate stop_reason=Error; got {events:?}"
     );
+    let err_at = events
+        .iter()
+        .position(|e| matches!(e, IrStreamEvent::Error(_)))
+        .unwrap_or_else(|| {
+            panic!("streamed MALFORMED_FUNCTION_CALL must push an Error event; got {events:?}")
+        });
+    let IrStreamEvent::Error(err) = &events[err_at] else {
+        unreachable!()
+    };
+    assert_eq!(
+        err.class,
+        busbar_substrate_values::breaker::StatusClass::ServerError,
+        "a failed generation is a transient server fault"
+    );
+    assert_eq!(
+        err.provider_signal.as_deref(),
+        Some(GEMINI_FINISH_MALFORMED_FUNCTION_CALL)
+    );
+    let delta_at = events
+        .iter()
+        .position(|e| matches!(e, IrStreamEvent::MessageDelta { .. }))
+        .expect("the MessageDelta still rides along");
+    assert!(
+        err_at < delta_at,
+        "the Error precedes the terminal MessageDelta"
+    );
+    assert!(
+        matches!(events.last(), Some(IrStreamEvent::MessageStop)),
+        "the stream stays properly terminated; got {events:?}"
+    );
+    let usage = events.iter().find_map(|e| match e {
+        IrStreamEvent::MessageDelta { usage, .. } => Some(usage.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        usage.map(|u| (u.input_tokens, u.output_tokens)),
+        Some((1, 1)),
+        "the streamed usage still rides the MessageDelta (the charge, #62)"
+    );
+}
+
+/// The Error event is scoped to the failed-generation reason: a SAFETY stop is a correctly-served
+/// refusal and a MAX_TOKENS stop a truncation, neither a lane fault.
+#[test]
+fn finish_reason_non_error_stops_push_no_error_event() {
+    for reason in ["STOP", "MAX_TOKENS", "SAFETY", "OTHER"] {
+        let events = collect_stream(&[serde_json::json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [{"text": "x"}]},
+                "finishReason": reason
+            }],
+            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
+        })]);
+        assert!(
+            !events.iter().any(|e| matches!(e, IrStreamEvent::Error(_))),
+            "{reason} must not push an Error event; got {events:?}"
+        );
+    }
 }
 
 // ---- context-length override is status-gated ----

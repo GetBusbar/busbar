@@ -1328,6 +1328,26 @@ impl ProtocolReader for GeminiReader {
                     }
                 };
 
+                // A FAILED GENERATION ENDS AS AN ERROR (owner ruling Q31). `MALFORMED_FUNCTION_CALL`
+                // maps to `IrStopReason::Error`, and no cross-protocol writer has a native error
+                // token for that reason, so on its own the terminal MessageDelta renders as a SUCCESS
+                // terminator (`stop` / `end_turn`), `terminal_error()` stays None and the breaker
+                // records no fault. Push the Error event as well — the shape Cohere's generic `ERROR`
+                // already has — so the failure reaches the breaker and a cross-protocol client gets a
+                // real error frame. The MessageDelta/MessageStop below still ride along: the stream
+                // stays properly terminated and its usage is still folded and charged (#62 — the
+                // charge is keyed off usage, never off this event).
+                if stop_reason == crate::ir::IrStopReason::Error {
+                    out.push(IrStreamEvent::Error(IrError {
+                        // Gemini gives no code or message beside the finish token, so classify it
+                        // as a TRANSIENT server fault: the lane recovers via cooldown rather than
+                        // being permanently penalized.
+                        class: busbar_substrate_values::breaker::StatusClass::ServerError,
+                        provider_signal: Some(finish_reason_val.to_string()),
+                        retry_after: None,
+                    }));
+                }
+
                 out.push(IrStreamEvent::MessageDelta {
                     stop_reason: Some(stop_reason),
                     // Gemini has no stop_sequence analog in its stream.
