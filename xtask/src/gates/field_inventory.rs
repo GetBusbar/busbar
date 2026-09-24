@@ -33,7 +33,7 @@
 //! | `:schema-identity` | `dialect` agrees with the filename, and no dialect appears twice |
 //! | `:no-duplicate-fields` | a direction lists no field twice |
 //! | `:registration` | the registered dialect set and the schema set are EQUAL, both ways |
-//! | `:both-directions` | every dialect enumerates BOTH directions; an empty one reports full |
+//! | `:both-directions` | every (dialect, direction) pair lists at least its armed field floor |
 //! | `:audited-fields` | the eleven fields the audit found BY HAND are all in the enumeration |
 //! | `:artifact-drift` | the committed `qa/field-inventory.json` IS the fresh derivation |
 //!
@@ -98,6 +98,33 @@ const REQUIRED_SCHEMA_KEYS: [&str; 6] = [
     "retrieved",
     "request",
     "response",
+];
+
+/// THE FLOOR EVERY (dialect, direction) PAIR IS HELD TO, armed 2026-09-23 at the count each vendored
+/// schema lists that day (item 168).
+///
+/// `:both-directions` used to ask "is the pair non-empty?" — and the loader had ALREADY refused
+/// every empty list (`request`/`response` are required keys, and `[]` is falsy), so the row's FAIL
+/// arm was unreachable on every input and its RED coverage was borrowed from `:provenance`. The
+/// question worth asking is the one the loader cannot: did a direction LOSE fields? Trimming
+/// gemini's twenty response fields to one passed every row, `--write` relayed the one into the
+/// committed inventory, and the coverage test that reads it stopped demanding the other nineteen.
+///
+/// A floor falls only in a reviewed diff that removes a field on purpose; a schema that GAINS
+/// fields clears it without an edit.
+const PAIR_FLOORS: [(&str, &str, usize); 12] = [
+    ("anthropic", "request", 50),
+    ("anthropic", "response", 26),
+    ("openai", "request", 48),
+    ("openai", "response", 31),
+    ("responses", "request", 48),
+    ("responses", "response", 39),
+    ("gemini", "request", 39),
+    ("gemini", "response", 20),
+    ("bedrock", "request", 39),
+    ("bedrock", "response", 19),
+    ("cohere", "request", 28),
+    ("cohere", "response", 25),
 ];
 
 /// The fields the 1.6.0 IR-losslessness audit found BY HAND. If the enumeration cannot even see a
@@ -475,24 +502,50 @@ fn row_registration() -> Row {
     )
 }
 
-fn row_both_directions(empty: &[String]) -> Row {
-    if empty.is_empty() {
+fn row_both_directions(short: &[String]) -> Row {
+    if short.is_empty() {
         row_ok(
             ROW_BOTH_DIRECTIONS,
             "every dialect enumerates both of its directions",
-            "no dialect/direction pair came back empty".to_string(),
+            "every dialect/direction pair is at or above its armed field floor".to_string(),
         )
     } else {
         Row::fail(
             ROW_BOTH_DIRECTIONS,
-            "a dialect enumerates one of its directions as nothing",
+            "a dialect enumerates one of its directions below its floor",
             format!(
                 "{} enumerates no fields — an enumeration of nothing reports full coverage of a \
-                 surface nobody listed",
-                empty.join(", ")
+                 surface nobody listed; a SHORTER enumeration reports full coverage of the fields \
+                 it dropped",
+                short.join(", ")
             ),
         )
     }
+}
+
+/// Every (dialect, direction) pair whose field count is below its armed [`PAIR_FLOORS`] entry, or
+/// that has no entry at all — an unfloored pair is a pair nothing holds, which is the defect.
+fn short_pairs(fields: &[Field]) -> Vec<String> {
+    let mut short = Vec::new();
+    for dialect in DIALECTS {
+        for direction in DIRECTIONS {
+            let got = fields
+                .iter()
+                .filter(|f| f.dialect == dialect && f.direction == direction)
+                .count();
+            match PAIR_FLOORS
+                .iter()
+                .find(|(d, dir, _)| *d == dialect && *dir == direction)
+            {
+                Some((_, _, floor)) if got >= *floor => {}
+                Some((_, _, floor)) => short.push(format!(
+                    "{dialect}/{direction} ({got} field(s), floor {floor})"
+                )),
+                None => short.push(format!("{dialect}/{direction} (no floor is armed)")),
+            }
+        }
+    }
+    short
 }
 
 fn row_audited(missing: &[String]) -> Row {
@@ -580,17 +633,7 @@ impl Gate for FieldInventoryGate {
 
         let fields = derive(&schemas);
 
-        let mut empty: Vec<String> = Vec::new();
-        for dialect in DIALECTS {
-            for direction in DIRECTIONS {
-                if !fields
-                    .iter()
-                    .any(|f| f.dialect == dialect && f.direction == direction)
-                {
-                    empty.push(format!("{dialect}/{direction}"));
-                }
-            }
-        }
+        let short = short_pairs(&fields);
 
         let have: BTreeSet<&str> = fields.iter().map(|f| f.id.as_str()).collect();
         let missing: Vec<String> = AUDITED
@@ -632,7 +675,7 @@ impl Gate for FieldInventoryGate {
             row_schema_identity(),
             row_no_duplicate_fields(),
             row_registration(),
-            row_both_directions(&empty),
+            row_both_directions(&short),
             row_audited(&missing),
             artifact,
         ])
@@ -683,13 +726,28 @@ impl Gate for FieldInventoryGate {
                 cx,
                 self,
                 format!("a schema whose '{key}' list is EMPTY is refused"),
-                &[ROW_PROVENANCE, ROW_BOTH_DIRECTIONS],
+                &[ROW_PROVENANCE],
                 mutate(cx, "openai", &|doc| {
                     doc[key] = serde_json::Value::Array(Vec::new());
                 }),
                 &[&format!("missing required key '{key}'")],
             ));
         }
+
+        // ── A DIRECTION THAT LOST FIELDS (item 168). The loader cannot see this: the list is
+        //    non-empty, so provenance passes. `:both-directions` is the row that holds the count,
+        //    and this is its own RED — not one borrowed from the loader's refusal.
+        report.push(prove_red(
+            cx,
+            self,
+            "a direction trimmed below its floor is a named finding",
+            &[ROW_BOTH_DIRECTIONS],
+            mutate(cx, "gemini", &|doc| {
+                let first = doc["response"][0].clone();
+                doc["response"] = serde_json::Value::Array(vec![first]);
+            }),
+            &["gemini/response (1 field(s), floor 20)"],
+        ));
 
         report.push(prove_red(
             cx,
@@ -911,4 +969,45 @@ fn translate(run: &LegacyRun) -> Result<Vec<Row>, String> {
         )),
     }
     Ok(rows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ledger::Status;
+
+    fn cx() -> Ctx {
+        Ctx::workspace().expect("workspace context")
+    }
+
+    fn status_of(v: &Verdict, id: &str) -> Status {
+        v.rows
+            .iter()
+            .find(|r| r.id == id)
+            .unwrap_or_else(|| panic!("{id} was not emitted"))
+            .status
+            .clone()
+    }
+
+    /// ITEM 168: `:both-directions` CAN GO RED ON AN INPUT THE LOADER ACCEPTS. Gemini's response
+    /// list trimmed to one field is non-empty, so provenance passes; the row that holds the count
+    /// has to be the one that refuses it.
+    #[test]
+    fn a_direction_trimmed_below_its_floor_reds_both_directions_and_nothing_else_refuses_it() {
+        let cx = cx();
+        let trimmed = cx.with_overlay(mutate(&cx, "gemini", &|doc| {
+            let first = doc["response"][0].clone();
+            doc["response"] = serde_json::Value::Array(vec![first]);
+        }));
+        let v = FieldInventoryGate.run(&trimmed);
+        assert_eq!(status_of(&v, ROW_PROVENANCE), Status::Pass);
+        assert_eq!(status_of(&v, ROW_BOTH_DIRECTIONS), Status::Fail);
+    }
+
+    /// And the floors are true of the tree: the real schemas clear every one.
+    #[test]
+    fn the_real_schemas_clear_every_pair_floor() {
+        let v = FieldInventoryGate.run(&cx());
+        assert_eq!(status_of(&v, ROW_BOTH_DIRECTIONS), Status::Pass);
+    }
 }
