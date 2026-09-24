@@ -10002,6 +10002,12 @@ async fn test_admin_v1_overlay_reset_named_map_refuses_a_dangling_reference() {
 /// Build an overlay-backed app wired to on-disk config files (the `write_reset_fixture` truth), spin
 /// up an HTTP server, and return everything the `/config/settings` tests need. The app starts on base
 /// config (no root overlay), so a `PUT /config/settings` is the first root mutation.
+///
+/// The returned guard holds `LIMITS_TEST_LOCK` for the caller's whole test: an ACCEPTED settings
+/// apply installs the resolved operational limits into a PROCESS-GLOBAL slot, and
+/// `test_admin_v1_config_settings_persist_failure_does_not_install_limits` brackets that slot with a
+/// before/after read — a sibling's accepted apply landing inside the bracket reads as the rejected
+/// apply leaking its limits.
 async fn settings_test_app(
     tag: &str,
 ) -> (
@@ -10009,7 +10015,9 @@ async fn settings_test_app(
     std::path::PathBuf,   // overlay path
     std::net::SocketAddr, // server addr
     tokio::task::JoinHandle<()>,
+    tokio::sync::MutexGuard<'static, ()>, // the process-wide limits slot, held for the test
 ) {
+    let limits_lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
     busbar_kernel::metrics::init();
     // A per-test tag keeps parallel `/config/settings` tests on DISTINCT temp dirs (the fixture dir
     // is keyed on pid + coarse timestamp, which collides for same-second parallel starts).
@@ -10030,7 +10038,7 @@ async fn settings_test_app(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    (dir, overlay, addr, handle)
+    (dir, overlay, addr, handle, limits_lock)
 }
 
 /// ROUND-TRIP + RESTART SURVIVAL: a `PUT /config/settings` with LIVE-swappable sections (rate_card +
@@ -10039,7 +10047,7 @@ async fn settings_test_app(
 /// `POST /config/reload` (the restart-equivalent disk re-read). Audited + version-logged.
 #[tokio::test]
 async fn test_admin_v1_config_settings_round_trip_survives_reload() {
-    let (dir, overlay, addr, handle) = settings_test_app("roundtrip").await;
+    let (dir, overlay, addr, handle, _limits_lock) = settings_test_app("roundtrip").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
@@ -10052,13 +10060,17 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
         .unwrap();
     let v_before = before["config_version"].as_u64().unwrap();
 
-    // PUT live-swappable sections only.
+    // PUT live-swappable sections only. The card configures EVERY billable class the pools plane
+    // declares: `search_units` has no reserved tier, so it is
+    // named under `units:` — 0 makes it free — or the whole PUT is refused 400.
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
         .body(
             serde_json::json!({
                 "per_request_fee": 7,
-                "rate_card": { "m0": { "input_utok": 1.5, "output_utok": 2.0 } },
+                "rate_card": { "m0": {
+                    "input_utok": 1.5, "output_utok": 2.0, "units": { "search_units": 0 }
+                } },
                 "limits": { "tls_handshake_timeout_secs": 30 }
             })
             .to_string(),
@@ -10231,7 +10243,7 @@ async fn test_admin_v1_config_settings_survives_a_real_boot_reload_at_default_ov
 /// live-swappable field in the SAME request is not flagged. The note explains the split.
 #[tokio::test]
 async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
-    let (dir, overlay, addr, handle) = settings_test_app("proclevel").await;
+    let (dir, overlay, addr, handle, _limits_lock) = settings_test_app("proclevel").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
@@ -10290,7 +10302,7 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
 /// wrongly also mark the genuinely-live `request_body_max_bytes` as restart-scoped).
 #[tokio::test]
 async fn test_admin_v1_config_settings_boot_scoped_limits_flagged_reload_to_apply() {
-    let (dir, _overlay, addr, handle) = settings_test_app("bootscopedlimits").await;
+    let (dir, _overlay, addr, handle, _limits_lock) = settings_test_app("bootscopedlimits").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
@@ -10335,7 +10347,8 @@ async fn test_admin_v1_config_settings_boot_scoped_limits_flagged_reload_to_appl
 /// `UpstreamClients` test above).
 #[tokio::test]
 async fn test_admin_v1_config_settings_max_inbound_concurrent_flagged_reload_to_apply() {
-    let (dir, _overlay, addr, handle) = settings_test_app("maxinboundconcurrent").await;
+    let (dir, _overlay, addr, handle, _limits_lock) =
+        settings_test_app("maxinboundconcurrent").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
@@ -10374,7 +10387,7 @@ async fn test_admin_v1_config_settings_max_inbound_concurrent_flagged_reload_to_
 /// must be flagged reload-to-apply (dotted, same reasoning as `limits.*`).
 #[tokio::test]
 async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_to_apply() {
-    let (dir, _overlay, addr, handle) = settings_test_app("bootscopedobs").await;
+    let (dir, _overlay, addr, handle, _limits_lock) = settings_test_app("bootscopedobs").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
@@ -10433,7 +10446,7 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
 /// un-PUT-able.
 #[tokio::test]
 async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejects() {
-    let (dir, overlay, addr, handle) = settings_test_app("storesecret").await;
+    let (dir, overlay, addr, handle, _limits_lock) = settings_test_app("storesecret").await;
     let client = reqwest::Client::new();
     let var = format!("BUSBAR_TEST_STORE_SECRET_MISSING_{}", std::process::id());
     std::env::remove_var(&var);
@@ -10475,22 +10488,32 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
 /// override (partial-merge semantics, like a group PATCH).
 #[tokio::test]
 async fn test_admin_v1_config_settings_partial_update_preserves_prior() {
-    let (dir, _overlay, addr, handle) = settings_test_app("partial").await;
+    let (dir, _overlay, addr, handle, _limits_lock) = settings_test_app("partial").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
-    admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
+    // Both PUTs must APPLY — an unchecked refusal of the first one made the preservation assertion
+    // below fail for a reason it never named. The card configures every billable class the pools
+    // plane declares: `search_units` under `units:`, 0 = free.
+    let first = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
-        .body(serde_json::json!({ "rate_card": { "m0": { "input_utok": 9.0 } } }).to_string())
+        .body(
+            serde_json::json!({ "rate_card": { "m0": {
+                "input_utok": 9.0, "units": { "search_units": 0 }
+            } } })
+            .to_string(),
+        )
         .send()
         .await
         .unwrap();
-    admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
+    assert_eq!(first.status().as_u16(), 200, "{:?}", first.text().await);
+    let second = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
         .body(serde_json::json!({ "per_request_fee": 5 }).to_string())
         .send()
         .await
         .unwrap();
+    assert_eq!(second.status().as_u16(), 200, "{:?}", second.text().await);
     let body: serde_json::Value =
         admin(client.get(format!("http://{addr}/api/v1/admin/config/settings")))
             .send()
@@ -10536,7 +10559,7 @@ async fn test_admin_v1_config_settings_reset_reverts_to_base() {
     // only the readers was not enough: the writer has to be inside the same critical section, or it
     // simply writes while a reader is mid-window.
     let _audit_guard = OVERLAY_ROOT_AUDIT.lock().await;
-    let (dir, overlay, addr, handle) = settings_test_app("reset").await;
+    let (dir, overlay, addr, handle, _limits_lock) = settings_test_app("reset").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
@@ -10612,7 +10635,7 @@ async fn test_admin_v1_config_settings_reset_reverts_to_base() {
 #[tokio::test]
 async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
     let _audit_guard = OVERLAY_ROOT_AUDIT.lock().await;
-    let (dir, overlay, addr, handle) = settings_test_app("reset-corrupt").await;
+    let (dir, overlay, addr, handle, _limits_lock) = settings_test_app("reset-corrupt").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
@@ -10690,7 +10713,7 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
     // as good at landing an `applied` row inside a reader's window as an unguarded reader is at
     // seeing one -- which is exactly what it did, as `seq: 4, outcome: "applied"`.
     let _audit_guard = OVERLAY_ROOT_AUDIT.lock().await;
-    let (dir, overlay, addr, handle) = settings_test_app("reset-too-new").await;
+    let (dir, overlay, addr, handle, _limits_lock) = settings_test_app("reset-too-new").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
@@ -10970,7 +10993,7 @@ fn test_get_config_settings_warns_when_overlay_is_unreadable() {
 /// ETAG / If-Match: a stale `If-Match` on the PUT is a 409 version_conflict that changes nothing.
 #[tokio::test]
 async fn test_admin_v1_config_settings_stale_if_match_conflicts() {
-    let (dir, _overlay, addr, handle) = settings_test_app("ifmatch").await;
+    let (dir, _overlay, addr, handle, _limits_lock) = settings_test_app("ifmatch").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
@@ -11004,7 +11027,7 @@ async fn test_admin_v1_config_settings_stale_if_match_conflicts() {
 /// no-op. An invalid config after merge would likewise 400 and change nothing.
 #[tokio::test]
 async fn test_admin_v1_config_settings_unknown_field_400() {
-    let (dir, _overlay, addr, handle) = settings_test_app("badfield").await;
+    let (dir, _overlay, addr, handle, _limits_lock) = settings_test_app("badfield").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
@@ -11118,7 +11141,7 @@ async fn test_admin_v1_config_settings_put_refuses_when_persistence_is_explicitl
 /// exactly as an implicit persist does today.
 #[tokio::test]
 async fn test_admin_v1_config_settings_put_with_persist_true_still_persists_when_overlay_exists() {
-    let (dir, overlay, addr, handle) = settings_test_app("persist-true").await;
+    let (dir, overlay, addr, handle, _limits_lock) = settings_test_app("persist-true").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
@@ -15233,7 +15256,7 @@ async fn test_admin_v1_hook_reads_project_settings_keys_never_values() {
 /// credential (keys, budgets, the hash-chained audit log) entirely out of band of busbar.
 #[tokio::test]
 async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
-    let (dir, _overlay, addr, handle) = settings_test_app("secretbag").await;
+    let (dir, _overlay, addr, handle, _limits_lock) = settings_test_app("secretbag").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
