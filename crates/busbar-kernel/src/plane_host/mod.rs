@@ -1482,6 +1482,7 @@ pub fn transform_over_over(
             extra: Default::default(),
         };
         let req = build_invoke_rewrite_request(&facts, ingress, request_id);
+        crate::audit::amend::hook_read(hook.name(), None, ingress, false);
         let outcome = rt.block_on(hook.transform(&req, *timeout));
         drop(req); // end the immutable borrow of `facts` before the next iteration reuses `arguments`
         match outcome {

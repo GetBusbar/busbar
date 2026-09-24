@@ -87,7 +87,8 @@ pub mod sign;
 
 pub use amend::{
     amends, content_access, correction, Access, Adjust, AmendBody, AmendChain, AmendClass,
-    Amendment, Reader,
+    AmendJournal, Amendment, ClassCounts, CorrectionError, CorrectionRefused, CountCorrection,
+    Reader, AMENDMENTS_RETAINED,
 };
 pub use heads::{HeadHistory, SignedHead, HEAD_SAMPLE_SECONDS};
 pub use legacy::{

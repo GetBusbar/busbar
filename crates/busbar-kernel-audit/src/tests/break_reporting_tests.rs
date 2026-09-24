@@ -29,6 +29,7 @@ use crate::legacy::{AuditEntry, AuditInput, AUDIT_SCHEME_PIPE, OUTCOME_APPLIED};
 use crate::record::{
     Audit, AuditBreak, AuditBreakKind, AuditChain, AuditRecord, OpClassId, Subject,
 };
+use busbar_contract::count::Count;
 
 // ── THE AMENDMENT CHAIN'S TWO HALVES ─────────────────────────────────────────────────────────────
 
@@ -62,12 +63,19 @@ fn three_amendments() -> (AmendChain, Vec<Amendment>) {
         correction(
             &b.hash,
             Subject::PrincipalId("alice".into()),
-            100,
-            90,
+            "lane",
+            1,
+            [(
+                "input_tokens".to_string(),
+                Count::from_integer(100).unwrap(),
+            )]
+            .into(),
+            [("input_tokens".to_string(), Count::from_integer(90).unwrap())].into(),
             "carol",
             "overbilled",
             30,
-        ),
+        )
+        .unwrap(),
         &t,
     );
     (chain, vec![a, b, c])

@@ -22,6 +22,15 @@
 //! what it was, what it is, who authorised it, and — because a correction that nobody can question is
 //! a correction nobody should trust — the reason.
 //!
+//! **What an adjustment carries is COUNTS, never money** (owner ruling Q9, #71, #43): money is a
+//! read-time view on the ledger × the rate card, so the figure a correction changes is the unit's
+//! raw count per billable class, and the amendment names the CARD EPOCH — the instant whose card
+//! those counts price at (#79). The corrected money is then what the one function
+//! (the ledger's `cost::Tally`) derives from the corrected counts at that card; a money
+//! figure sealed here would be a second copy of that answer that no later card correction could
+//! reach. A correction that would take any count below zero is REFUSED ([`CorrectionRefused`]):
+//! a negative measurement is not a thing a meter reports.
+//!
 //! ## Why these are amendments rather than fields on the audit record
 //!
 //! Both happen at a different time from the unit they concern, and often more than once. Folding
@@ -29,6 +38,15 @@
 //! exists to prevent — or waiting to write it until nothing further could happen, which is never.
 
 use crate::record::{subject_tag, subject_value, OpClassId, Subject};
+use busbar_contract::{
+    authz::Scope,
+    caps::{Audit, Pass},
+    count::Count,
+};
+use std::collections::{BTreeMap, VecDeque};
+
+/// A unit's counts, keyed by the billable class string the plane declared (#71).
+pub type ClassCounts = BTreeMap<String, Count>;
 
 /// Which class of amendment this is.
 ///
@@ -94,17 +112,22 @@ pub struct Access {
     pub wall: u64,
 }
 
-/// One correction to a figure that was already recorded.
+/// One correction to counts that were already recorded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Adjust {
     /// Which entry is being corrected, by its digest.
     pub amends_hash: String,
-    /// Whose figure it is.
+    /// Whose counts they are.
     pub subject: Subject,
-    /// What it was, in nano-units.
-    pub was: i128,
-    /// What it is now.
-    pub now: i128,
+    /// The lane the counts were recorded on — the key a card entry is written against.
+    pub lane: String,
+    /// THE CARD EPOCH: the instant, in milliseconds, whose card the counts price at (#79). A
+    /// correction changes a count, never the card it prices against, so this is carried unchanged.
+    pub card_epoch_ms: u64,
+    /// The counts as recorded, per billable class.
+    pub was: ClassCounts,
+    /// The counts as corrected, per billable class. Never below zero.
+    pub now: ClassCounts,
     /// Who authorised the correction.
     pub authorised_by: String,
     /// Why. A correction nobody can question is a correction nobody should trust, so this is not
@@ -115,22 +138,46 @@ pub struct Adjust {
 }
 
 impl Adjust {
-    /// How much the figure moved by.
+    /// How far one class's count moved, in micro-units (scale 6). A class absent on one side is
+    /// zero on that side.
     ///
-    /// SATURATING, not refusing: a correction that moves a figure DOWN is the commonest one there
+    /// SATURATING, not refusing: a correction that moves a count DOWN is the commonest one there
     /// is — a duplicate charge on a retried request is exactly `was` greater than `now` — so "was
-    /// exceeds now" is a normal amendment and not a rule to enforce. What is not normal is a pair
-    /// far enough apart to overrun the signed range, which takes a figure no meter could report,
-    /// and the plain subtraction answers that by panicking in a debug build and silently wrapping in
-    /// a release one. A wrapped delta is the worst of the three: it reads as a correction in the
-    /// OPPOSITE direction. Saturating pins it at the extreme instead, where it is visibly not a real
-    /// figure, and the amendment still carries `was` and `now` themselves, so nothing is lost —
-    /// this is a convenience over two fields the chain digests separately, never the source of
-    /// either.
-    pub fn delta(&self) -> i128 {
-        self.now.saturating_sub(self.was)
+    /// exceeds now" is a normal amendment. What is not normal is a pair far enough apart to overrun
+    /// the signed range, and a wrapped delta would read as a correction in the OPPOSITE direction;
+    /// saturating pins it at the extreme instead. This is a convenience over two fields the chain
+    /// digests separately, never the source of either.
+    pub fn delta(&self, class: &str) -> i128 {
+        let side = |c: &ClassCounts| c.get(class).map_or(0, |n| n.micros());
+        side(&self.now).saturating_sub(side(&self.was))
     }
 }
+
+/// Why a correction was refused before it reached the chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CorrectionRefused {
+    /// The correction would take this class's count below zero.
+    NegativeCount {
+        /// The class.
+        class: String,
+    },
+    /// No reason was given.
+    NoReason,
+}
+
+impl std::fmt::Display for CorrectionRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CorrectionRefused::NegativeCount { class } => write!(
+                f,
+                "a correction may not take the {class:?} count below zero"
+            ),
+            CorrectionRefused::NoReason => f.write_str("a correction must say why"),
+        }
+    }
+}
+
+impl std::error::Error for CorrectionRefused {}
 
 /// What the amendment is about.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -224,11 +271,7 @@ impl AmendChain {
     ///
     /// The token is the audit unit's, for the same reason sealing an audit record needs one: an
     /// amendment is evidence, and evidence anybody could add is evidence nobody can rely on.
-    pub fn append(
-        &mut self,
-        body: AmendBody,
-        _token: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
-    ) -> Amendment {
+    pub fn append(&mut self, body: AmendBody, _token: &Pass<Audit>) -> Amendment {
         let mut amendment = Amendment {
             seq: self.next_seq,
             body,
@@ -276,8 +319,15 @@ impl AmendChain {
                 d.text(&a.amends_hash);
                 d.text(subject_tag(&a.subject));
                 d.text(&subject_value(&a.subject));
-                d.text(&a.was.to_string());
-                d.text(&a.now.to_string());
+                d.text(&a.lane);
+                d.num(a.card_epoch_ms);
+                for side in [&a.was, &a.now] {
+                    d.num(side.len() as u64);
+                    for (class, count) in side {
+                        d.text(class);
+                        d.text(&count.to_decimal_string());
+                    }
+                }
                 d.text(&a.authorised_by);
                 d.text(&a.reason);
                 d.num(a.wall);
@@ -382,24 +432,271 @@ pub fn content_access(
 
 /// Named so that the type checker, rather than a reviewer, notices an amendment written against no
 /// prior entry: an adjustment must name what it amends.
+///
+/// # Errors
+///
+/// [`CorrectionRefused::NegativeCount`] for a corrected count below zero, and
+/// [`CorrectionRefused::NoReason`] for a blank reason.
+#[allow(clippy::too_many_arguments)]
 pub fn correction(
     amends: &str,
     subject: Subject,
-    was: i128,
-    now: i128,
+    lane: impl Into<String>,
+    card_epoch_ms: u64,
+    was: ClassCounts,
+    now: ClassCounts,
     authorised_by: impl Into<String>,
     reason: impl Into<String>,
     wall: u64,
-) -> AmendBody {
-    AmendBody::Adjust(Adjust {
+) -> Result<AmendBody, CorrectionRefused> {
+    if let Some((class, _)) = now.iter().find(|(_, n)| n.is_negative()) {
+        return Err(CorrectionRefused::NegativeCount {
+            class: class.clone(),
+        });
+    }
+    let reason = reason.into();
+    if reason.trim().is_empty() {
+        return Err(CorrectionRefused::NoReason);
+    }
+    Ok(AmendBody::Adjust(Adjust {
         amends_hash: amends.to_string(),
         subject,
+        lane: lane.into(),
+        card_epoch_ms,
         was,
         now,
         authorised_by: authorised_by.into(),
-        reason: reason.into(),
+        reason,
         wall,
-    })
+    }))
+}
+
+/// How many amendments a journal keeps in memory. Bounds RAM, not history: accesses are written at
+/// request rate, so an unbounded in-memory run is a leak. Corrections are never released — they are
+/// operator-rate, and [`AmendJournal::counts_now`] reads them.
+pub const AMENDMENTS_RETAINED: usize = 1000;
+
+/// A chain together with the amendments it sealed: the one node-wide journal a hook read, an export
+/// read and a correction are all appended to, in the order they happened.
+#[derive(Debug, Default)]
+pub struct AmendJournal {
+    chain: AmendChain,
+    recent: VecDeque<Amendment>,
+    released: u64,
+    corrections: Vec<Amendment>,
+}
+
+impl AmendJournal {
+    /// An empty journal.
+    pub fn new() -> Self {
+        AmendJournal::default()
+    }
+
+    /// Seal one amendment onto the chain and keep it.
+    pub fn append(&mut self, body: AmendBody, token: &Pass<Audit>) -> Amendment {
+        let amendment = self.chain.append(body, token);
+        if amendment.class() == AmendClass::Adjust {
+            self.corrections.push(amendment.clone());
+        }
+        if self.recent.len() == AMENDMENTS_RETAINED {
+            self.recent.pop_front();
+            self.released = self.released.saturating_add(1);
+        }
+        self.recent.push_back(amendment.clone());
+        amendment
+    }
+
+    /// The amendments still held, oldest first.
+    pub fn recent(&self) -> impl Iterator<Item = &Amendment> {
+        self.recent.iter()
+    }
+
+    /// Every correction ever appended, oldest first.
+    pub fn corrections(&self) -> &[Amendment] {
+        &self.corrections
+    }
+
+    /// How many older amendments have left the in-memory window.
+    pub fn released(&self) -> u64 {
+        self.released
+    }
+
+    /// The chain's head.
+    pub fn head(&self) -> &str {
+        self.chain.head()
+    }
+
+    /// The counts an entry stands at NOW: its most recent correction's `now`, or `recorded` when
+    /// nothing has corrected it. The recorded counts are never rewritten — this is the read.
+    pub fn counts_now(&self, amends_hash: &str, recorded: &ClassCounts) -> ClassCounts {
+        self.corrections
+            .iter()
+            .rev()
+            .find_map(|a| match &a.body {
+                AmendBody::Adjust(adj) if adj.amends_hash == amends_hash => Some(adj.now.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| recorded.clone())
+    }
+
+    /// Verify what is held: from the genesis while nothing has been released, and always to the
+    /// chain's own head. Once the window has moved, the run is checked from its first held link.
+    pub fn verify(&self) -> Result<(), crate::record::AuditBreak> {
+        let run: Vec<Amendment> = self.recent.iter().cloned().collect();
+        if self.released == 0 {
+            return self.chain.verify_to_head(&run);
+        }
+        for (i, pair) in run.windows(2).enumerate() {
+            if let Some(kind) = crate::record::link_break(
+                &pair[1].prev_hash,
+                pair[1].seq,
+                &pair[0].hash,
+                pair[0].seq.saturating_add(1),
+            ) {
+                return Err(crate::record::AuditBreak {
+                    at_index: i + 2,
+                    kind,
+                });
+            }
+        }
+        for (i, a) in run.iter().enumerate() {
+            if AmendChain::digest_of(a) != a.hash {
+                return Err(crate::record::AuditBreak {
+                    at_index: i + 1,
+                    kind: crate::record::AuditBreakKind::DigestMismatch,
+                });
+            }
+        }
+        let last = run.last().map(|a| (a.hash.as_str(), a.seq));
+        if last.is_some_and(|(h, s)| {
+            h != self.chain.head() || s.saturating_add(1) != self.chain.next_seq()
+        }) {
+            return Err(crate::record::AuditBreak {
+                at_index: run.len(),
+                kind: crate::record::AuditBreakKind::LinkMismatch,
+            });
+        }
+        Ok(())
+    }
+}
+
+// ── THE NODE'S ONE JOURNAL ───────────────────────────────────────────────────────────────────────
+//
+// A hook and an export sink are resolved per config generation, but what they read is the node's
+// to account for, so the node keeps ONE journal for the life of the process. Every writer below
+// takes the audit step's token: the kernel mints it, and only the kernel can.
+
+static NODE: std::sync::OnceLock<std::sync::Mutex<AmendJournal>> = std::sync::OnceLock::new();
+
+fn node() -> std::sync::MutexGuard<'static, AmendJournal> {
+    NODE.get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+}
+
+fn subject_of(principal: Option<&str>) -> Subject {
+    principal.map_or(Subject::Arrival, |p| Subject::PrincipalId(p.to_string()))
+}
+
+/// Record on the node journal that `reader` `name` was handed `fields` of a unit's content at
+/// `wall` (unix seconds, the caller's clock — this unit reads none). `op_class` is the caller's
+/// label for the operation — data, never branched on.
+pub fn record_read(
+    token: &Pass<Audit>,
+    reader: Reader,
+    name: &str,
+    principal: Option<&str>,
+    op_class: &str,
+    fields: Vec<String>,
+    wall: u64,
+) -> Amendment {
+    let body = content_access(
+        reader,
+        name,
+        subject_of(principal),
+        OpClassId::new(op_class),
+        fields,
+        wall,
+    );
+    node().append(body, token)
+}
+
+/// One correction to a recorded unit's counts, as the admin verb states it.
+#[derive(Debug, Clone)]
+pub struct CountCorrection<'a> {
+    /// The digest of the entry whose counts are corrected.
+    pub amends: &'a str,
+    /// Whose counts they are.
+    pub principal: Option<&'a str>,
+    /// The lane the counts were recorded on.
+    pub lane: &'a str,
+    /// The card epoch the counts price at (#79), carried unchanged.
+    pub card_epoch_ms: u64,
+    /// The counts per class as the correction says they should be.
+    pub now: ClassCounts,
+    /// Who authorised it.
+    pub authorised_by: &'a str,
+    /// Why.
+    pub reason: &'a str,
+}
+
+/// Why a correction did not land.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CorrectionError {
+    /// Only the full (root) admin scope may correct a recorded count.
+    NotRoot,
+    /// The correction itself was refused (a count below zero, no reason).
+    Refused(CorrectionRefused),
+}
+
+/// THE CORRECTION VERB'S JOURNAL HALF: amend a recorded unit's counts on the node journal.
+/// Root-only, audited (the adjustment is sealed with who and why), and refusing a count below
+/// zero. `recorded` is what the entry carries; what it was BEFORE this correction is read through
+/// any earlier correction, so a second correction names the first one's result as its `was`.
+///
+/// # Errors
+///
+/// [`CorrectionError::NotRoot`] below the full scope; [`CorrectionError::Refused`] for a refused
+/// correction. Nothing is sealed on either.
+pub fn correct_counts(
+    token: &Pass<Audit>,
+    scope: Scope,
+    recorded: &ClassCounts,
+    c: CountCorrection<'_>,
+    wall: u64,
+) -> Result<Amendment, CorrectionError> {
+    if scope != Scope::Full {
+        return Err(CorrectionError::NotRoot);
+    }
+    let mut journal = node();
+    let body = correction(
+        c.amends,
+        subject_of(c.principal),
+        c.lane,
+        c.card_epoch_ms,
+        journal.counts_now(c.amends, recorded),
+        c.now,
+        c.authorised_by,
+        c.reason,
+        wall,
+    )
+    .map_err(CorrectionError::Refused)?;
+    Ok(journal.append(body, token))
+}
+
+/// The counts an entry stands at now on the node journal: its latest correction, or `recorded`.
+pub fn counts_now(amends: &str, recorded: &ClassCounts) -> ClassCounts {
+    node().counts_now(amends, recorded)
+}
+
+/// The amendments the node journal holds, oldest first.
+pub fn node_recent() -> Vec<Amendment> {
+    node().recent().cloned().collect()
+}
+
+/// Every correction the node journal has sealed, oldest first.
+pub fn node_corrections() -> Vec<Amendment> {
+    node().corrections().to_vec()
 }
 
 /// The digest of an audit record, so an amendment can name the entry it amends without the caller

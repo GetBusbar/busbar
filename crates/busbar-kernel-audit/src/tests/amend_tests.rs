@@ -3,9 +3,15 @@
 
 //! The two amendment classes.
 
-use busbar_contract::caps::{Audit as AuditStep, KernelSeal, Pass};
+use busbar_contract::{
+    caps::{Audit as AuditStep, KernelSeal, Pass},
+    count::Count,
+};
 
-use crate::amend::{content_access, correction, AmendBody, AmendChain, AmendClass, Reader};
+use crate::amend::{
+    content_access, correction, AmendBody, AmendChain, AmendClass, AmendJournal, ClassCounts,
+    CorrectionRefused, Reader, AMENDMENTS_RETAINED,
+};
 use crate::record::{AuditBreakKind, OpClassId, Subject};
 
 fn token() -> Pass<AuditStep> {
@@ -46,16 +52,43 @@ fn an_access() -> AmendBody {
     )
 }
 
+/// Whole-unit counts per class.
+fn counts(pairs: &[(&str, i128)]) -> ClassCounts {
+    pairs
+        .iter()
+        .map(|(class, n)| ((*class).to_string(), Count::from_integer(*n).unwrap()))
+        .collect()
+}
+
+/// A correction of one count: `was`, then `now`, of the one class `input_tokens`.
+fn one_count(amends: &str, subject: Subject, was: i128, now: i128) -> AmendBody {
+    correction(
+        amends,
+        subject,
+        "gpt-4o",
+        1_700_000_000_000,
+        counts(&[("input_tokens", was)]),
+        counts(&[("input_tokens", now)]),
+        "operator",
+        "why",
+        1,
+    )
+    .unwrap()
+}
+
 fn a_correction() -> AmendBody {
     correction(
         "the-entry-being-amended",
         Subject::PrincipalId("pseudonym-1".into()),
-        1_000,
-        800,
+        "gpt-4o",
+        1_700_000_000_000,
+        counts(&[("input_tokens", 1_000), ("output_tokens", 200)]),
+        counts(&[("input_tokens", 800), ("output_tokens", 200)]),
         "operator",
         "duplicate charge on a retried request",
         1_700_000_100,
     )
+    .unwrap()
 }
 
 #[test]
@@ -134,7 +167,8 @@ fn a_correction_names_what_it_amends_and_why() {
     match &amendment.body {
         AmendBody::Adjust(a) => {
             assert_eq!(a.amends_hash, "the-entry-being-amended");
-            assert_eq!(a.delta(), -200);
+            assert_eq!(a.delta("input_tokens"), -200_000_000);
+            assert_eq!(a.delta("output_tokens"), 0);
             assert!(
                 !a.reason.is_empty(),
                 "a correction nobody can question is not one to trust"
@@ -153,8 +187,17 @@ fn the_original_figure_survives_the_correction() {
     let amendment = chain.append(a_correction(), &token());
     match &amendment.body {
         AmendBody::Adjust(a) => {
-            assert_eq!(a.was, 1_000);
-            assert_eq!(a.now, 800);
+            assert_eq!(
+                a.was,
+                counts(&[("input_tokens", 1_000), ("output_tokens", 200)])
+            );
+            assert_eq!(
+                a.now,
+                counts(&[("input_tokens", 800), ("output_tokens", 200)])
+            );
+            // Counts and the card epoch they price at — never a money figure (owner ruling Q9).
+            assert_eq!(a.lane, "gpt-4o");
+            assert_eq!(a.card_epoch_ms, 1_700_000_000_000);
         }
         other => panic!("expected a correction, got {other:?}"),
     }
@@ -186,7 +229,10 @@ fn editing_an_amendment_is_caught() {
     assert!(AmendChain::verify(&run).is_ok());
 
     match &mut run[1].body {
-        AmendBody::Adjust(a) => a.now += 1,
+        AmendBody::Adjust(a) => {
+            a.now
+                .insert("input_tokens".into(), Count::from_integer(801).unwrap());
+        }
         other => panic!("expected a correction, got {other:?}"),
     }
     let brk = AmendChain::verify(&run).unwrap_err();
@@ -210,36 +256,110 @@ fn removing_an_amendment_from_the_middle_is_caught() {
 /// A DELTA THAT WOULD OVERRUN THE SIGNED RANGE PINS AT THE EXTREME, rather than panicking in a
 /// debug build or wrapping — into a correction in the opposite direction — in a release one.
 ///
-/// The two figures themselves are what the chain digests and what a reader answers questions from;
-/// this is a convenience over them, so saturating costs nothing and wrapping would mislead.
+/// The two count maps themselves are what the chain digests and what a reader answers questions
+/// from; this is a convenience over them, so saturating costs nothing and wrapping would mislead.
+/// `now` may not go below zero, so the overrun that remains is `was` at the negative extreme.
 #[test]
 fn a_delta_too_large_for_the_range_saturates_instead_of_wrapping() {
+    let mut was = ClassCounts::new();
+    was.insert("c".into(), Count::from_micros(i128::MIN));
+    let mut now = ClassCounts::new();
+    now.insert("c".into(), Count::from_micros(i128::MAX));
     let far_apart = correction(
         "e",
         Subject::Aggregate,
-        i128::MIN,
-        i128::MAX,
+        "lane",
+        1,
+        was,
+        now,
         "operator",
         "a pair no meter could report",
         1,
-    );
+    )
+    .unwrap();
     match &far_apart {
-        AmendBody::Adjust(a) => assert_eq!(a.delta(), i128::MAX),
+        AmendBody::Adjust(a) => assert_eq!(a.delta("c"), i128::MAX),
         other => panic!("expected a correction, got {other:?}"),
     }
-    // And the other way round, which is the one that would have read as an INCREASE.
-    match &correction(
+}
+
+/// A CORRECTION THAT WOULD TAKE A COUNT BELOW ZERO IS REFUSED, before it reaches any chain: a
+/// negative measurement is not a thing a meter reports, and a negative count prices as a credit
+/// nobody authorised the card to give.
+#[test]
+fn a_correction_below_zero_is_refused() {
+    let refused = correction(
         "e",
         Subject::Aggregate,
-        i128::MAX,
-        i128::MIN,
-        "operator",
-        "the same pair, reversed",
+        "lane",
         1,
-    ) {
-        AmendBody::Adjust(a) => assert_eq!(a.delta(), i128::MIN),
-        other => panic!("expected a correction, got {other:?}"),
+        counts(&[("input_tokens", 10)]),
+        counts(&[("input_tokens", -1)]),
+        "operator",
+        "over-corrected",
+        1,
+    );
+    assert_eq!(
+        refused,
+        Err(CorrectionRefused::NegativeCount {
+            class: "input_tokens".into()
+        })
+    );
+}
+
+/// The reason is not optional, and a blank one is no reason.
+#[test]
+fn a_correction_with_no_reason_is_refused() {
+    let refused = correction(
+        "e",
+        Subject::Aggregate,
+        "lane",
+        1,
+        counts(&[("input_tokens", 10)]),
+        counts(&[("input_tokens", 9)]),
+        "operator",
+        "  ",
+        1,
+    );
+    assert_eq!(refused, Err(CorrectionRefused::NoReason));
+}
+
+/// THE JOURNAL READS AN ENTRY'S COUNTS THROUGH ITS LATEST CORRECTION, and leaves an uncorrected
+/// entry at what was recorded.
+#[test]
+fn a_journal_answers_the_counts_an_entry_stands_at_now() {
+    let mut journal = AmendJournal::new();
+    let recorded = counts(&[("input_tokens", 1_000)]);
+    assert_eq!(journal.counts_now("x", &recorded), recorded);
+    journal.append(one_count("x", Subject::Aggregate, 1_000, 800), &token());
+    journal.append(one_count("x", Subject::Aggregate, 800, 700), &token());
+    journal.append(one_count("y", Subject::Aggregate, 5, 1), &token());
+    assert_eq!(
+        journal.counts_now("x", &recorded),
+        counts(&[("input_tokens", 700)])
+    );
+    assert_eq!(journal.corrections().len(), 3);
+    assert!(journal.verify().is_ok());
+}
+
+/// THE IN-MEMORY WINDOW IS BOUNDED; CORRECTIONS ARE NOT. Accesses arrive at request rate, so the
+/// journal releases the oldest held amendment past [`AMENDMENTS_RETAINED`] — and still verifies the
+/// window it holds to the chain's head — while every correction stays readable.
+#[test]
+fn a_journal_bounds_what_it_holds_but_never_drops_a_correction() {
+    let mut journal = AmendJournal::new();
+    journal.append(one_count("x", Subject::Aggregate, 10, 9), &token());
+    for _ in 0..AMENDMENTS_RETAINED {
+        journal.append(an_access(), &token());
     }
+    assert_eq!(journal.recent().count(), AMENDMENTS_RETAINED);
+    assert_eq!(journal.released(), 1);
+    assert_eq!(journal.corrections().len(), 1);
+    assert_eq!(
+        journal.counts_now("x", &counts(&[("input_tokens", 10)])),
+        counts(&[("input_tokens", 9)])
+    );
+    assert!(journal.verify().is_ok());
 }
 
 /// A correction DOWNWARD is the commonest one there is, so `was` exceeding `now` is an ordinary
@@ -248,8 +368,8 @@ fn a_delta_too_large_for_the_range_saturates_instead_of_wrapping() {
 fn a_correction_downward_is_an_ordinary_amendment() {
     match &a_correction() {
         AmendBody::Adjust(a) => {
-            assert!(a.was > a.now);
-            assert_eq!(a.delta(), -200);
+            assert!(a.was["input_tokens"] > a.now["input_tokens"]);
+            assert_eq!(a.delta("input_tokens"), -200_000_000);
         }
         other => panic!("expected a correction, got {other:?}"),
     }
@@ -355,21 +475,10 @@ fn a_principal_pseudonym_that_reads_as_a_node_does_not_digest_as_one() {
     let mut one = AmendChain::new();
     let mut other = AmendChain::new();
     let as_principal = one.append(
-        correction(
-            "e",
-            Subject::PrincipalId("7".into()),
-            10,
-            5,
-            "operator",
-            "why",
-            1,
-        ),
+        one_count("e", Subject::PrincipalId("7".into()), 10, 5),
         &token(),
     );
-    let as_node = other.append(
-        correction("e", Subject::Node(7), 10, 5, "operator", "why", 1),
-        &token(),
-    );
+    let as_node = other.append(one_count("e", Subject::Node(7), 10, 5), &token());
     assert_ne!(as_principal.hash, as_node.hash);
 }
 
@@ -390,7 +499,15 @@ fn the_sealed_digest_of_an_amendment_is_the_frozen_hex() {
          the encoding; do not re-capture this constant."
     );
     assert_eq!(
-        adjust.hash, "56addfe3f65d8c5fa750b61cbec3fc0fb987c6510238246757660b4638d0a2bc",
+        // RE-DERIVED, NOT RE-CAPTURED (item 404, owner ruling Q9): the adjustment's shape changed from
+        // one money figure to counts per class plus the card epoch, and at that change NO adjustment
+        // had ever been sealed in production (the item's own measurement: zero construction sites),
+        // so no stored correction carries the previous encoding. The value is computed independently
+        // of this crate, by hashing the length-prefixed framing of the fixture by hand
+        // (/Users/matthew/Developer/tmp/busbar-run/P2-404-digest.py, which also reproduces the
+        // access constant above and the retired adjustment constant 56addfe3…0a2bc byte for byte).
+        adjust.hash,
+        "2efa76937dfebe0452c23ac8dee4a1293c9fcb2b6488dfd9ed9ae183cb9ea940",
         "the amendment digest MOVED. Every stored correction now reports itself tampered. Restore \
          the encoding; do not re-capture this constant."
     );
@@ -455,12 +572,15 @@ fn an_amendment_names_the_audit_record_it_amends() {
         correction(
             &amends(&record),
             Subject::PrincipalId("p".into()),
-            100,
-            0,
+            "lane",
+            1,
+            counts(&[("input_tokens", 100)]),
+            counts(&[("input_tokens", 0)]),
             "operator",
             "refunded in full",
             2,
-        ),
+        )
+        .unwrap(),
         &token(),
     );
     match &amendment.body {
