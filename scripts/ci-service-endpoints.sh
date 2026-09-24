@@ -26,14 +26,56 @@
 # `postgres://busbar:busbar@:5432/busbar_test`, which fails deep inside a test with a connection
 # error that names neither this step nor the missing container. So every argument must resolve, and
 # a container without an address on its network is a hard failure with the container id in it.
+#
+# NON-EMPTY IS NOT THE SAME AS ONE ADDRESS (item 492). The inspect template ranges over EVERY network
+# the container is on; with no separator, a container on two networks yielded two IPs glued together
+# ("172.18.0.2172.19.0.3") -- non-empty, so it passed, and the garbage URL failed deep inside a test
+# exactly as the paragraph above says must not happen. Each address is now its own line, and
+# pick_addr accepts exactly ONE well-formed IPv4 address; zero, several or a malformed one is a hard
+# failure that dumps the container's networks.
+#
+#   ./scripts/ci-service-endpoints.sh --selftest   # pick_addr over fixtures; no docker, no GITHUB_ENV
 set -euo pipefail
+
+addr_of() { # $1 = container id. One address per line, one line per network.
+  docker inspect -f '{{range $n, $c := .NetworkSettings.Networks}}{{$c.IPAddress}}{{"\n"}}{{end}}' "$1" 2>/dev/null
+}
+
+# pick_addr (stdin: addr_of's lines) -> the one address, or non-zero with the reason on stderr.
+pick_addr() {
+  local addrs n
+  addrs="$(grep -v '^[[:space:]]*$' || true)"
+  n="$(printf '%s' "$addrs" | grep -c . || true)"
+  if [ "$n" -ne 1 ]; then
+    echo "expected exactly one address on the job network, found $n${addrs:+: $(printf '%s' "$addrs" | tr '\n' ' ')}" >&2
+    return 1
+  fi
+  if ! printf '%s' "$addrs" | grep -qE '^([0-9]{1,3}[.]){3}[0-9]{1,3}$'; then
+    echo "not an IPv4 address: '$addrs'" >&2
+    return 1
+  fi
+  printf '%s' "$addrs"
+}
+
+selftest() {
+  local fail=0 got
+  got="$(printf '172.18.0.2\n' | pick_addr 2>/dev/null)" && [ "$got" = "172.18.0.2" ] \
+    && echo "ok: one network -> its address" || { fail=1; echo "FAIL: one network not resolved (got '$got')"; }
+  if got="$(printf '172.18.0.2\n172.19.0.3\n' | pick_addr 2>/dev/null)"; then
+    fail=1; echo "FAIL: two networks accepted as '$got'"
+  else echo "ok: two networks -> refused, not concatenated"; fi
+  if printf '\n' | pick_addr >/dev/null 2>&1; then fail=1; echo "FAIL: no address accepted"
+  else echo "ok: no address -> refused"; fi
+  if printf '172.18.0.2172.19.0.3\n' | pick_addr >/dev/null 2>&1; then fail=1; echo "FAIL: glued addresses accepted"
+  else echo "ok: a malformed (glued) address -> refused"; fi
+  if [ "$fail" = 0 ]; then echo "ci-service-endpoints selftest: PASS"; else echo "ci-service-endpoints selftest: FAIL"; fi
+  return "$fail"
+}
+
+if [ "${1:-}" = "--selftest" ]; then selftest; exit $?; fi
 
 [ -n "${GITHUB_ENV:-}" ] || { echo "ci-service-endpoints.sh: no GITHUB_ENV; this is a CI-only step" >&2; exit 2; }
 [ $# -gt 0 ] || { echo "ci-service-endpoints.sh: name=<container-id> arguments required" >&2; exit 2; }
-
-addr_of() { # $1 = container id
-  docker inspect -f '{{range $n, $c := .NetworkSettings.Networks}}{{$c.IPAddress}}{{end}}' "$1" 2>/dev/null
-}
 
 for arg in "$@"; do
   name="${arg%%=*}"
@@ -42,9 +84,8 @@ for arg in "$@"; do
     echo "::error::service '$name' has no container id — is it declared under services: in this job?" >&2
     exit 1
   }
-  ip="$(addr_of "$cid")"
-  [ -n "$ip" ] || {
-    echo "::error::service '$name' (container $cid) has no address on its job network" >&2
+  ip="$(addr_of "$cid" | pick_addr)" || {
+    echo "::error::service '$name' (container $cid) has no single address on its job network" >&2
     docker inspect "$cid" --format '{{json .NetworkSettings.Networks}}' >&2 || true
     exit 1
   }
