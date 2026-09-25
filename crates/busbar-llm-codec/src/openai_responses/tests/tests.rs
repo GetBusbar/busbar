@@ -6598,8 +6598,10 @@ fn text_format_json_schema_flat_round_trips() {
 
 /// Hosted tools: a Responses request whose `tools` array mixes a HOSTED tool
 /// (`web_search`, `file_search`) with a CUSTOM function tool must round-trip the hosted specs
-/// VERBATIM — never mangled into empty `{"type":"function","name":""}` tools — while the function
+/// — never mangled into empty `{"type":"function","name":""}` tools — while the function
 /// tool keeps its flat Responses shape. Same-protocol Responses -> Responses passthrough.
+/// IR-11: `web_search` is a kind the IR models neutrally, so it rides `hosted_tools` (and is
+/// written back from there); `file_search` has no neutral form and stays the raw verbatim object.
 #[test]
 fn test_hosted_tools_pass_through_intact() {
     let json = serde_json::json!({
@@ -6618,43 +6620,55 @@ fn test_hosted_tools_pass_through_intact() {
     });
 
     let ir = ResponsesReader.read_request(&json).expect("reads");
-    // The reader kept three tools: two hosted (raw spec preserved) and one function tool.
-    assert_eq!(ir.tools.len(), 3);
+    // The reader kept two tools — the raw file_search and the function tool — and the web search
+    // in the neutral hosted slot (IR-11).
+    assert_eq!(ir.tools.len(), 2);
     assert!(
         ir.tools[0].hosted.is_some(),
-        "web_search must be a hosted passthrough"
-    );
-    assert!(
-        ir.tools[1].hosted.is_some(),
         "file_search must be a hosted passthrough"
     );
     assert!(
-        ir.tools[2].hosted.is_none(),
+        ir.tools[1].hosted.is_none(),
         "the function tool must NOT be hosted"
     );
-    assert_eq!(ir.tools[2].name, "get_weather");
+    assert_eq!(ir.tools[1].name, "get_weather");
+    assert_eq!(
+        ir.hosted_tools,
+        vec![crate::ir::IrHostedTool::WebSearch(crate::ir::IrWebSearch {
+            search_context_size: Some(crate::ir::IrVerbosity::Medium),
+            ..Default::default()
+        })],
+        "web_search rides the neutral hosted slot"
+    );
 
     let writer = ResponsesWriter;
     let out = writer.write_request(&ir);
     let tools = out["tools"].as_array().expect("tools array");
     assert_eq!(tools.len(), 3);
+    let by_type = |t: &str| {
+        tools
+            .iter()
+            .find(|x| x["type"] == t)
+            .unwrap_or_else(|| panic!("no {t} tool: {out}"))
+    };
 
-    // (a) The hosted tools are re-emitted VERBATIM: type intact, sibling fields intact, and NOT
+    // (a) The hosted tools are re-emitted with their type and sibling fields intact, and NOT
     // rewritten to a function tool.
-    assert_eq!(tools[0]["type"], "web_search");
-    assert_eq!(tools[0]["search_context_size"], "medium");
+    let web_search = by_type("web_search");
+    assert_eq!(web_search["search_context_size"], "medium");
     assert!(
-        tools[0].get("name").is_none() && tools[0].get("parameters").is_none(),
-        "a hosted tool must NOT gain function-tool fields: {}",
-        tools[0]
+        web_search.get("name").is_none() && web_search.get("parameters").is_none(),
+        "a hosted tool must NOT gain function-tool fields: {web_search}"
     );
-    assert_eq!(tools[1]["type"], "file_search");
-    assert_eq!(tools[1]["vector_store_ids"], serde_json::json!(["vs_123"]));
+    assert_eq!(
+        by_type("file_search")["vector_store_ids"],
+        serde_json::json!(["vs_123"])
+    );
 
     // (b) The function tool keeps the FLAT Responses shape.
-    assert_eq!(tools[2]["type"], "function");
-    assert_eq!(tools[2]["name"], "get_weather");
-    assert!(tools[2].get("parameters").is_some());
+    let function = by_type("function");
+    assert_eq!(function["name"], "get_weather");
+    assert!(function.get("parameters").is_some());
     // No hosted tool leaked an empty function name (the pre-fix mangling tell).
     for t in tools {
         if t["type"] == "function" {
@@ -6678,7 +6692,9 @@ fn test_hosted_tools_dropped_cross_protocol() {
         "model": "gpt-4o",
         "input": "search the web",
         "tools": [
-            {"type": "web_search", "search_context_size": "medium"},
+            // A raw hosted tool (IR-11 models no neutral file search; a `web_search` now crosses
+            // in `hosted_tools` instead).
+            {"type": "file_search", "vector_store_ids": ["vs_123"]},
             {
                 "type": "function",
                 "name": "get_weather",
@@ -6689,7 +6705,7 @@ fn test_hosted_tools_dropped_cross_protocol() {
     });
     let ir = ResponsesReader.read_request(&json).expect("reads");
     assert_eq!(ir.tools.len(), 2, "reader keeps hosted + function tool");
-    assert!(ir.tools[0].hosted.is_some(), "web_search is hosted");
+    assert!(ir.tools[0].hosted.is_some(), "file_search is hosted");
 
     // Cross-protocol egress prep (Responses ingress -> a non-Responses backend). The engine calls this
     // ONLY on the cross-protocol seam; dropping every hosted tool here is the "keep same-proto, drop

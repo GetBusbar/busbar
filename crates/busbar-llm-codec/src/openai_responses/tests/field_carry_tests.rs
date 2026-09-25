@@ -361,27 +361,45 @@ fn responses_request_content_parts_survive_roundtrip() {
     );
 }
 
-/// responses/request/content[].type=input_image.detail — no IR slot and no cross-protocol analog, so
-/// carried as a DOCUMENTED DROP+WARN (never silently, never waived). The image itself still survives.
+/// responses/request/content[].type=input_image.detail — IR-08: the detail rides the IR
+/// `Image.detail` slot (Chat and Cohere carry the same three words), and an unknown word is dropped
+/// with a warn naming the field. The image itself survives either way.
 #[test]
-fn responses_request_input_image_detail_dropped_with_warn() {
+fn responses_request_input_image_detail_carried() {
     let body = serde_json::json!({
         "input": [{ "type": "input_image", "image_url": "data:image/png;base64,QUJD", "detail": "high" }]
     });
-    let (ir, cap) = with_warns(|| read_req(&body));
-
-    // The image survives (the detail hint is what drops).
+    let ir = read_req(&body);
     assert!(
         ir.messages
             .iter()
             .flat_map(|m| &m.content)
-            .any(|b| matches!(b, crate::ir::IrBlock::Image { .. })),
-        "the image block must survive even as detail drops: {:?}",
+            .any(|b| matches!(
+                b,
+                crate::ir::IrBlock::Image {
+                    detail: Some(crate::ir::IrImageDetail::High),
+                    ..
+                }
+            )),
+        "the image block must carry detail high: {:?}",
+        ir.messages
+    );
+
+    let unknown = serde_json::json!({
+        "input": [{ "type": "input_image", "image_url": "data:image/png;base64,QUJD", "detail": "original" }]
+    });
+    let (ir, cap) = with_warns(|| read_req(&unknown));
+    assert!(
+        ir.messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .any(|b| matches!(b, crate::ir::IrBlock::Image { detail: None, .. })),
+        "the image survives an unknown detail word: {:?}",
         ir.messages
     );
     assert!(
         cap.contains("detail"),
-        "dropping input_image.detail must warn, naming the field: {:?}",
+        "dropping an unknown input_image.detail must warn, naming the field: {:?}",
         cap.messages()
     );
 }

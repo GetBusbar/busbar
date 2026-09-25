@@ -158,9 +158,13 @@ impl ProtocolReader for ResponsesReader {
         // restores the 1.5.5 `message_count` semantics (the raw `input` array length) onto
         // `IrFacts::shape()`.
         let mut system_turns_folded: usize = 0;
+        // IR-14: which roles the folded system entries were written in (`system` / `developer`), and
+        // whether a role-less top-level `instructions` string was folded beside them.
+        let (mut saw_system, mut saw_developer, mut saw_instructions) = (false, false, false);
 
         if let Some(instructions) = obj.get("instructions").and_then(|v| v.as_str()) {
             if !instructions.is_empty() {
+                saw_instructions = true;
                 system_blocks.push(crate::ir::IrBlock::Text {
                     text: instructions.to_string(),
                     cache_control: None,
@@ -380,6 +384,8 @@ impl ProtocolReader for ResponsesReader {
                                     );
                                 }
                                 system_turns_folded += 1;
+                                saw_system |= role_str == "system";
+                                saw_developer |= role_str == "developer";
                                 push_system_content(&mut system_blocks, item.get("content"));
                                 continue;
                             }
@@ -437,6 +443,11 @@ impl ProtocolReader for ResponsesReader {
                                 );
                             }
                             if !text.is_empty() || signature.is_some() {
+                                // IR-18: an `encrypted_content` on this dialect is an OpenAI-minted
+                                // blob. IR-17: `content[]` vs `summary[]` says full vs summary.
+                                let signature_origin = signature
+                                    .as_ref()
+                                    .map(|_| crate::ir::IrSignatureOrigin::OpenAi);
                                 messages.push(crate::ir::IrMessage {
                                     role: crate::ir::IrRole::Assistant,
                                     content: vec![crate::ir::IrBlock::Thinking {
@@ -444,8 +455,8 @@ impl ProtocolReader for ResponsesReader {
                                         signature,
                                         redacted: false,
                                         cache_control: None,
-                                        kind: None,
-                                        signature_origin: None,
+                                        kind: super::slots::reasoning_kind(item),
+                                        signature_origin,
                                     }],
                                 });
                             }
@@ -492,6 +503,8 @@ impl ProtocolReader for ResponsesReader {
                                 );
                             }
                             system_turns_folded += 1;
+                            saw_system |= role_str == "system";
+                            saw_developer |= role_str == "developer";
                             push_system_content(&mut system_blocks, content_val);
                             continue;
                         }
@@ -523,6 +536,7 @@ impl ProtocolReader for ResponsesReader {
         }
 
         let mut tools: Vec<crate::ir::IrTool> = Vec::new();
+        let mut hosted_tools: Vec<crate::ir::IrHostedTool> = Vec::new();
         if let Some(tools_val) = obj.get("tools") {
             // A PRESENT `tools` that is not an array is a malformed request — reject it (mirroring the
             // `input` type-check) rather than coercing to empty, which would forward a tool-less
@@ -549,6 +563,13 @@ impl ProtocolReader for ResponsesReader {
                     None => tool_val.get("name").is_some(),
                 };
                 if !is_function {
+                    // IR-11: a hosted tool whose KIND (and every member) the IR models neutrally
+                    // crosses the seam in `hosted_tools`; any other stays the raw same-protocol
+                    // object below.
+                    if let Some(hosted) = super::slots::read_hosted_tool(tool_val) {
+                        hosted_tools.push(hosted);
+                        continue;
+                    }
                     tools.push(crate::ir::IrTool {
                         name: String::new(),
                         description: None,
@@ -606,7 +627,8 @@ impl ProtocolReader for ResponsesReader {
         // `tool_choice`: promote to the IR union so a forced/targeted directive survives the
         // cross-protocol seam instead of degrading to `auto`. "tool_choice" is added to the modeled
         // keys below so it does not also linger in `extra`.
-        let tool_choice = read_responses_tool_choice(obj.get("tool_choice"));
+        // IR-10 (RSP-15): the `allowed_tools` form yields the subset beside an Auto/Required choice.
+        let (tool_choice, allowed_tools) = read_responses_tool_choice(obj.get("tool_choice"));
 
         // response_format: the Responses API carries structured-output config under `text.format`
         // (NOT a top-level `response_format` as Chat Completions does). Read `text.format` and
@@ -668,8 +690,7 @@ impl ProtocolReader for ResponsesReader {
             .get("reasoning")
             .and_then(|r| r.get("effort"))
             .and_then(|v| v.as_str())
-            .and_then(read_responses_reasoning_effort)
-            .map(crate::ir::IrReasoningAsk::Effort);
+            .and_then(read_responses_reasoning_effort);
 
         // `/v1/responses` models a top-level `parallel_tool_calls` boolean, identically to Chat
         // Completions. Previously hardcoded `None`, which — unlike
@@ -734,17 +755,27 @@ impl ProtocolReader for ResponsesReader {
             seed: None,
             n: None,
             response_format,
-            extra,
-            metadata: None,
-            service_tier: None,
-            store: None,
-            safety_identifier: None,
-            prompt_cache_key: None,
-            verbosity: None,
-            allowed_tools: None,
-            hosted_tools: Vec::new(),
-            system_role: None,
+            // IR-03..07: the typed slots carry these across the seam; the raw members also stay in
+            // `extra` (see `responses_modeled_keys`) so a same-protocol write is verbatim.
+            metadata: super::slots::read_metadata(obj.get("metadata")),
+            service_tier: obj
+                .get("service_tier")
+                .and_then(|v| v.as_str())
+                .and_then(crate::ir::IrServiceTier::parse),
+            store: obj.get("store").and_then(|v| v.as_bool()),
+            safety_identifier: super::slots::read_string(obj, "safety_identifier"),
+            prompt_cache_key: super::slots::read_string(obj, "prompt_cache_key"),
+            verbosity: obj
+                .get("text")
+                .and_then(|t| t.get("verbosity"))
+                .and_then(|v| v.as_str())
+                .and_then(crate::ir::IrVerbosity::parse),
+            allowed_tools,
+            hosted_tools,
+            system_role: super::slots::system_role(saw_system, saw_developer, saw_instructions),
+            // IR-19: Responses has no output-modality ask.
             output_modalities: None,
+            extra,
         })
     }
 
@@ -1298,10 +1329,11 @@ impl ProtocolReader for ResponsesReader {
                                     && state.open_tools.len() < MAX_OPEN_TOOLS
                                 {
                                     state.open_tools.insert(text_key);
+                                    // IR-02: the block IS the refusal, as the buffered read says.
                                     out.push(IrStreamEvent::BlockStart {
                                         index: idx,
                                         block: crate::ir::IrBlockMeta::Text,
-                                        refusal: false,
+                                        refusal: true,
                                     });
                                     out.push(IrStreamEvent::BlockDelta {
                                         index: idx,
@@ -1601,11 +1633,13 @@ impl ProtocolReader for ResponsesReader {
                                         block_item.get("refusal").and_then(|t| t.as_str())
                                     {
                                         saw_refusal = true;
+                                        // IR-02: flagged, so a Chat / Responses client gets it
+                                        // back in its refusal slot.
                                         content.push(crate::ir::IrBlock::Text {
                                             text: text.to_string(),
                                             cache_control: None,
                                             citations: Vec::new(),
-                                            refusal: false,
+                                            refusal: true,
                                         });
                                     }
                                 }
@@ -1674,13 +1708,18 @@ impl ProtocolReader for ResponsesReader {
                         // Skip a wholly-empty reasoning item (no text and no encrypted_content)
                         // rather than emitting a blank Thinking block.
                         if !text.is_empty() || signature.is_some() {
+                            // IR-18: this dialect's `encrypted_content` is OpenAI-minted. IR-17:
+                            // `content[]` vs `summary[]` says full vs summary.
+                            let signature_origin = signature
+                                .as_ref()
+                                .map(|_| crate::ir::IrSignatureOrigin::OpenAi);
                             content.push(crate::ir::IrBlock::Thinking {
                                 text: text.into_owned(),
                                 signature,
                                 redacted: false,
                                 cache_control: None,
-                                kind: None,
-                                signature_origin: None,
+                                kind: super::slots::reasoning_kind(item),
+                                signature_origin,
                             });
                         }
                     }

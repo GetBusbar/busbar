@@ -42,6 +42,20 @@ impl ProtocolWriter for ResponsesWriter {
         if req.n.is_some() {
             dropped.push("n");
         }
+        // IR-11: a hosted kind with no Responses tool (URL fetch).
+        for tool in &req.hosted_tools {
+            if matches!(tool, crate::ir::IrHostedTool::WebFetch(_)) {
+                dropped.push(tool.kind_str());
+            }
+        }
+        // IR-19: Responses has no output-modality ask; a text-only ask loses nothing.
+        if req
+            .output_modalities
+            .as_ref()
+            .is_some_and(|m| m.iter().any(|m| *m != crate::ir::IrModality::Text))
+        {
+            dropped.push("modalities");
+        }
         dropped
     }
 
@@ -70,6 +84,7 @@ impl ProtocolWriter for ResponsesWriter {
 
     fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value {
         let mut out = serde_json::Map::new();
+        let mut input_arr: Vec<serde_json::Value> = Vec::new();
 
         if !req.system.is_empty() {
             let instructions: String = req
@@ -81,12 +96,21 @@ impl ProtocolWriter for ResponsesWriter {
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
+            // IR-14: a system prompt the caller wrote in the `developer` role goes back as a leading
+            // `developer` input item; any other (a `system` role, or unknown) keeps the role-less
+            // top-level `instructions` member.
             if !instructions.is_empty() {
-                out.insert("instructions".to_string(), serde_json::json!(instructions));
+                if req.system_role == Some(crate::ir::IrSystemRole::Developer) {
+                    input_arr.push(serde_json::json!({
+                        "role": crate::ir::IrSystemRole::Developer.as_str(),
+                        "content": instructions
+                    }));
+                } else {
+                    out.insert("instructions".to_string(), serde_json::json!(instructions));
+                }
             }
         }
 
-        let mut input_arr: Vec<serde_json::Value> = Vec::new();
         for msg in &req.messages {
             match msg.role {
                 crate::ir::IrRole::User | crate::ir::IrRole::Assistant => {
@@ -108,6 +132,17 @@ impl ProtocolWriter for ResponsesWriter {
                     let mut reasoning_items: Vec<serde_json::Value> = Vec::new();
                     for block in &msg.content {
                         match block {
+                            // IR-02: an assistant refusal goes back as the Responses `refusal` part.
+                            crate::ir::IrBlock::Text {
+                                text,
+                                refusal: true,
+                                ..
+                            } if msg.role == crate::ir::IrRole::Assistant => {
+                                content_arr.push(serde_json::json!({
+                                    "type": "refusal",
+                                    "refusal": text
+                                }));
+                            }
                             crate::ir::IrBlock::Text {
                                 text, citations, ..
                             } => {
@@ -139,8 +174,8 @@ impl ProtocolWriter for ResponsesWriter {
                                 }
                                 content_arr.push(serde_json::Value::Object(part));
                             }
-                            crate::ir::IrBlock::Image { source, .. } => {
-                                content_arr.extend(input_image_part(source));
+                            crate::ir::IrBlock::Image { source, detail, .. } => {
+                                content_arr.extend(input_image_part(source, *detail));
                             }
                             // The Responses input surface has ONE attachment part, `input_file`, and
                             // no audio or video part — so a document projects natively (this is the
@@ -203,10 +238,25 @@ impl ProtocolWriter for ResponsesWriter {
                                 text,
                                 signature,
                                 redacted,
+                                kind,
+                                signature_origin,
                                 ..
                             } if !*redacted && msg.role == crate::ir::IrRole::Assistant => {
-                                let emit_sig = signature.as_deref();
-                                // A wholly-empty reasoning block (no text, no signature) emits no item.
+                                // RSP-13 (IR-18): only an OpenAI-minted blob (or one of unknown
+                                // origin) is sent as `encrypted_content`; a foreign vendor's
+                                // signature is a blob this backend cannot decrypt.
+                                let emit_sig = signature
+                                    .as_deref()
+                                    .filter(|_| super::slots::own_signature(*signature_origin));
+                                if signature.is_some() && emit_sig.is_none() {
+                                    tracing::warn!(
+                                        origin = ?signature_origin,
+                                        "dropping a foreign reasoning signature on Responses egress: \
+                                         `encrypted_content` accepts only an OpenAI-minted blob"
+                                    );
+                                }
+                                // A wholly-empty reasoning block (no text, no signature it may
+                                // send) emits no item — never a fabricated `rs_` item around nothing.
                                 if !text.is_empty() || emit_sig.is_some() {
                                     let mut item = serde_json::Map::new();
                                     item.insert(
@@ -217,16 +267,8 @@ impl ProtocolWriter for ResponsesWriter {
                                         "id".to_string(),
                                         serde_json::json!(synthesize_item_id(ITEM_ID_PREFIX_RS)),
                                     );
-                                    item.insert(
-                                        "summary".to_string(),
-                                        serde_json::Value::Array(Vec::new()),
-                                    );
-                                    item.insert(
-                                        "content".to_string(),
-                                        serde_json::json!([
-                                            { "type": CONTENT_TYPE_REASONING_TEXT, "text": text }
-                                        ]),
-                                    );
+                                    // IR-17: a summary goes back into `summary[]`.
+                                    super::slots::insert_reasoning_text(&mut item, text, *kind);
                                     if let Some(sig) = emit_sig {
                                         item.insert(
                                             "encrypted_content".to_string(),
@@ -247,8 +289,11 @@ impl ProtocolWriter for ResponsesWriter {
                                      reasoning, which only an Assistant-role message can carry"
                                 );
                             }
-                            // A REDACTED reasoning block (opaque encrypted bytes, no plaintext
-                            // analog on Responses) is dropped rather than leaked as `reasoning_text`.
+                            // A REDACTED reasoning block (Anthropic `redacted_thinking`, Bedrock
+                            // `redactedContent`: that vendor's opaque bytes, whatever its
+                            // `signature_origin`) has no Responses form — `encrypted_content` takes
+                            // only an OpenAI blob (RSP-13) — so it is dropped rather than leaked as
+                            // `reasoning_text` or sent as a foreign `encrypted_content`.
                             crate::ir::IrBlock::Thinking { .. } => {}
                         }
                     }
@@ -300,7 +345,15 @@ impl ProtocolWriter for ResponsesWriter {
             out.insert("input".to_string(), serde_json::Value::Array(input_arr));
         }
 
-        if !req.tools.is_empty() {
+        // IR-11: the neutral hosted tools in the Responses spelling (a kind with no Responses tool
+        // is dropped with a warn and reported by `dropped_egress_controls`).
+        let hosted_arr: Vec<serde_json::Value> = req
+            .hosted_tools
+            .iter()
+            .filter_map(super::slots::write_hosted_tool)
+            .collect();
+        let has_tools = !req.tools.is_empty() || !hosted_arr.is_empty();
+        if has_tools {
             let mut tools_arr: Vec<serde_json::Value> = Vec::new();
             for tool in &req.tools {
                 // HOSTED-TOOL PASSTHROUGH. A hosted/built-in Responses tool
@@ -338,6 +391,7 @@ impl ProtocolWriter for ResponsesWriter {
 
                 tools_arr.push(serde_json::Value::Object(tool_obj));
             }
+            tools_arr.extend(hosted_arr);
             out.insert("tools".to_string(), serde_json::Value::Array(tools_arr));
         }
 
@@ -346,8 +400,22 @@ impl ProtocolWriter for ResponsesWriter {
         // `/v1/responses` rejects it tool-less identically to Chat Completions — the reachable case
         // is a cross-protocol request whose hosted tools `prepare_for_egress` stripped
         // (`ir/variant.rs`) while the tool_choice directive survived.
-        if let Some(tc) = &req.tool_choice {
-            if req.tools.is_empty() {
+        // IR-10 (RSP-15): a restricted subset is the `allowed_tools` form, its mode taken from the
+        // Auto/Required directive beside it.
+        if let Some(names) = &req.allowed_tools {
+            if !has_tools {
+                tracing::warn!(
+                    "dropping allowed_tools tool_choice on Responses egress: tool_choice is only \
+                     allowed when tools are specified"
+                );
+            } else {
+                out.insert(
+                    "tool_choice".to_string(),
+                    super::slots::write_allowed_tools(names, req.tool_choice.as_ref()),
+                );
+            }
+        } else if let Some(tc) = &req.tool_choice {
+            if !has_tools {
                 tracing::warn!(
                     "dropping tool_choice on Responses egress: tool_choice is only allowed when \
                      tools are specified (likely because the hosted tools that carried it were \
@@ -362,7 +430,7 @@ impl ProtocolWriter for ResponsesWriter {
         // this can only fire on a request that actually carried the flag, so it never fires as
         // per-request noise on the common tool-less case.
         if let Some(parallel) = req.parallel_tool_calls {
-            if req.tools.is_empty() {
+            if !has_tools {
                 tracing::warn!(
                     "dropping parallel_tool_calls on Responses egress: it has no accompanying \
                      tools (likely because the hosted tools that carried it were stripped on the \
@@ -414,6 +482,37 @@ impl ProtocolWriter for ResponsesWriter {
         // RSP-06: the end-user id rides the Responses `user` member, as it does on Chat.
         if let Some(user) = &req.user {
             out.insert("user".to_string(), serde_json::json!(user));
+        }
+
+        // IR-03..06: the members Chat and Responses share, same names on both. Written from the
+        // typed slots; a same-protocol request's verbatim members in `extra` (overlaid below) win.
+        if let Some(metadata) = &req.metadata {
+            out.insert(
+                "metadata".to_string(),
+                super::slots::write_metadata(metadata),
+            );
+        }
+        if let Some(tier) = req.service_tier {
+            out.insert("service_tier".to_string(), serde_json::json!(tier.as_str()));
+        }
+        if let Some(store) = req.store {
+            out.insert("store".to_string(), serde_json::json!(store));
+        }
+        if let Some(id) = &req.safety_identifier {
+            out.insert("safety_identifier".to_string(), serde_json::json!(id));
+        }
+        if let Some(key) = &req.prompt_cache_key {
+            out.insert("prompt_cache_key".to_string(), serde_json::json!(key));
+        }
+        if req
+            .output_modalities
+            .as_ref()
+            .is_some_and(|m| m.iter().any(|m| *m != crate::ir::IrModality::Text))
+        {
+            tracing::warn!(
+                "responses writer: /v1/responses models no output-modality ask; dropping the \
+                 non-text modalities (lossy-by-target)"
+            );
         }
 
         // SAMPLING: the Responses create API does NOT model `frequency_penalty`,
@@ -492,6 +591,19 @@ impl ProtocolWriter for ResponsesWriter {
             // The extra-forwarding loop below SKIPS `text` when `response_format` is Some (see its
             // guard), so the bare extra `text` cannot clobber this merged object back to format-less.
         }
+        // IR-07: verbosity rides `text.verbosity` beside any `format` (a verbatim `extra` `text`
+        // that already names it keeps the caller's value).
+        if let Some(verbosity) = req.verbosity {
+            if let Some(text_obj) = out
+                .entry("text".to_string())
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+                .as_object_mut()
+            {
+                text_obj
+                    .entry("verbosity".to_string())
+                    .or_insert_with(|| serde_json::json!(verbosity.as_str()));
+            }
+        }
 
         // `stream` is a modeled key (excluded from `extra`), so it must be emitted explicitly or it
         // is silently dropped — a `stream: true` request would otherwise be answered non-streaming,
@@ -502,7 +614,19 @@ impl ProtocolWriter for ResponsesWriter {
         // (Anthropic/Gemini source) is bucketized through the effort table. Emitted from the typed
         // field only when `extra` does not carry a verbatim native `reasoning` object (the extra
         // overlay below would forward the original, and must win: it can carry `summary` too).
-        if let Some(ask) = req.reasoning {
+        //
+        // `Off` (IR-09) is matched FIRST: projected through the table it would read as the smallest
+        // ENABLE ask. `effort: "none"` is accepted only by the newest OpenAI reasoning models and no
+        // lane capability says this lane has one, so the ask is omitted (with a warn). A
+        // Responses-origin `"none"` still rides `extra` verbatim on a same-protocol write.
+        if req.reasoning == Some(crate::ir::IrReasoningAsk::Off) {
+            if !req.extra.contains_key("reasoning") {
+                tracing::warn!(
+                    "omitting reasoning OFF on Responses egress: reasoning.effort \"none\" is not \
+                     accepted by every OpenAI reasoning model and this lane does not declare it"
+                );
+            }
+        } else if let Some(ask) = req.reasoning {
             if !req.extra.contains_key("reasoning") {
                 let table = req
                     .reasoning_budgets
@@ -651,7 +775,7 @@ impl ProtocolWriter for ResponsesWriter {
             IrStreamEvent::BlockStart {
                 index,
                 block,
-                refusal: _,
+                refusal,
             } => match block {
                 crate::ir::IrBlockMeta::Text => {
                     // A native /v1/responses stream brackets a text part inside a `message` output
@@ -674,6 +798,21 @@ impl ProtocolWriter for ResponsesWriter {
                         return Vec::new();
                     }
                     let item_id = self.item_id_for(ITEM_ID_PREFIX_MSG, *index);
+                    // IR-02: a refusal block opens a `refusal` part instead of an `output_text`
+                    // part; its deltas and closing frames follow suit (`is_refusal`).
+                    if *refusal {
+                        self.mark_refusal(*index);
+                    }
+                    let part = if *refusal {
+                        serde_json::json!({ "type": "refusal", "refusal": "" })
+                    } else {
+                        serde_json::json!({
+                            "type": CONTENT_TYPE_OUTPUT_TEXT,
+                            "text": "",
+                            "annotations": [],
+                            "logprobs": []
+                        })
+                    };
                     vec![
                         (
                             EVT_OUTPUT_ITEM_ADDED.to_string(),
@@ -705,12 +844,7 @@ impl ProtocolWriter for ResponsesWriter {
                                 // `content_part.done`. Shape matches the closing part exactly
                                 // (`type`/`text`/`annotations`/`logprobs` — the spec requires all
                                 // four on an `output_text` part, so the empty part carries `[]`).
-                                "part": {
-                                    "type": CONTENT_TYPE_OUTPUT_TEXT,
-                                    "text": "",
-                                    "annotations": [],
-                                    "logprobs": []
-                                }
+                                "part": part
                             }),
                         ),
                     ]
@@ -798,6 +932,22 @@ impl ProtocolWriter for ResponsesWriter {
             },
 
             IrStreamEvent::BlockDelta { index, delta } => match delta {
+                // IR-02: text of a refusal block streams as `refusal.delta`.
+                crate::ir::IrDelta::TextDelta(text)
+                    if !text.is_empty() && self.is_refusal(*index) =>
+                {
+                    self.append_text(*index, text);
+                    vec![(
+                        EVT_REFUSAL_DELTA.to_string(),
+                        serde_json::json!({
+                            "type": EVT_REFUSAL_DELTA,
+                            "output_index": index,
+                            "item_id": self.item_id_for(ITEM_ID_PREFIX_MSG, *index),
+                            "content_index": 0,
+                            "delta": text
+                        }),
+                    )]
+                }
                 crate::ir::IrDelta::TextDelta(text) if !text.is_empty() => {
                     // Native `output_text.delta` carries `item_id` (the enclosing message item) and
                     // `content_index` (the index of the text part within that item). The IR delta
@@ -995,6 +1145,55 @@ impl ProtocolWriter for ResponsesWriter {
                             "item": item,
                         }),
                     )]
+                } else if self.is_refusal(*index) && self.take_text_open(*index) {
+                    // IR-02: close a refusal item — `refusal.done` (the assembled refusal) →
+                    // `content_part.done` (the `refusal` part) → `output_item.done`. A refusal part
+                    // carries no annotations or logprobs, so any buffered for it are discarded.
+                    self.take_refusal(*index);
+                    let item_id = self.item_id_for(ITEM_ID_PREFIX_MSG, *index);
+                    let text = self.take_text_accum(*index);
+                    let _ = self.take_citation_accum(*index);
+                    let _ = self.take_logprob_accum(*index);
+                    let part = serde_json::json!({ "type": "refusal", "refusal": text });
+                    let item = serde_json::json!({
+                        "type": ITEM_TYPE_MESSAGE,
+                        "id": item_id,
+                        "role": "assistant",
+                        "status": STATUS_COMPLETED,
+                        "content": [part.clone()]
+                    });
+                    self.record_output_item(*index, item.clone());
+                    vec![
+                        (
+                            EVT_REFUSAL_DONE.to_string(),
+                            serde_json::json!({
+                                "type": EVT_REFUSAL_DONE,
+                                "output_index": index,
+                                "item_id": item_id,
+                                "content_index": 0,
+                                "refusal": text,
+                            }),
+                        ),
+                        (
+                            EVT_CONTENT_PART_DONE.to_string(),
+                            serde_json::json!({
+                                "type": EVT_CONTENT_PART_DONE,
+                                "output_index": index,
+                                "item_id": item_id,
+                                "content_index": 0,
+                                "part": part,
+                            }),
+                        ),
+                        (
+                            EVT_OUTPUT_ITEM_DONE.to_string(),
+                            serde_json::json!({
+                                "type": EVT_OUTPUT_ITEM_DONE,
+                                "output_index": index,
+                                "item_id": item_id,
+                                "item": item,
+                            }),
+                        ),
+                    ]
                 } else if self.take_text_open(*index) {
                     // Close the message item opened by the Text BlockStart. A native stream closes a
                     // text part in THREE ordered frames before the item's `output_item.done`:
@@ -1350,6 +1549,24 @@ impl ProtocolWriter for ResponsesWriter {
         let mut pending_logprobs: Option<&[crate::ir::IrTokenLogprob]> = Some(&resp.logprobs);
         for block in &resp.content {
             match block {
+                // IR-02: a refusal is a message item whose one part is the `refusal` part, exactly
+                // what the stream's refusal item finalizes to.
+                crate::ir::IrBlock::Text {
+                    text,
+                    refusal: true,
+                    ..
+                } => {
+                    if text.is_empty() {
+                        continue;
+                    }
+                    output_arr.push(serde_json::json!({
+                        "type": ITEM_TYPE_MESSAGE,
+                        "id": synthesize_item_id(ITEM_ID_PREFIX_MSG),
+                        "role": "assistant",
+                        "status": STATUS_COMPLETED,
+                        "content": [{ "type": "refusal", "refusal": text }]
+                    }));
+                }
                 crate::ir::IrBlock::Text {
                     text, citations, ..
                 } => {
@@ -1593,10 +1810,28 @@ impl ProtocolWriter for ResponsesWriter {
 /// One IR image → the Responses `input_image` part, or `None` when the source has no Responses
 /// form. Shared by message content and `function_call_output` content (RSP-10), so an image reaches
 /// both the same way.
-fn input_image_part(source: &crate::ir::IrImageSource) -> Option<serde_json::Value> {
+///
+/// IR-08: the image's `detail` is written beside the source when the IR carries one.
+fn input_image_part(
+    source: &crate::ir::IrImageSource,
+    detail: Option<crate::ir::IrImageDetail>,
+) -> Option<serde_json::Value> {
+    let mut part = input_image_source_part(source)?;
+    if let (Some(detail), Some(obj)) = (detail, part.as_object_mut()) {
+        obj.insert("detail".to_string(), serde_json::json!(detail.as_str()));
+    }
+    Some(part)
+}
+
+/// The source half of [`input_image_part`].
+fn input_image_source_part(source: &crate::ir::IrImageSource) -> Option<serde_json::Value> {
+    // SHR-03: an OpenAI Files id — this dialect's own `input_image.file_id` or a Chat `file_id`,
+    // one namespace — re-emits as the native `input_image.file_id` form (a data URI would corrupt
+    // it).
+    if let Some(id) = super::super::openai_annotations::openai_file_id(source) {
+        return Some(serde_json::json!({ "type": "input_image", "file_id": id }));
+    }
     match source {
-        // A Responses-produced vendor reference is a `file_id` — re-emit the native
-        // `input_image.file_id` form (a data URI would corrupt it).
         crate::ir::IrImageSource::Vendor { vendor, value } if *vendor == VENDOR_NAME => value
             .get("file_id")
             .and_then(|i| i.as_str())
@@ -1644,6 +1879,14 @@ fn input_file_part(
         }
         crate::ir::IrImageSource::Url(url) => {
             part.insert("file_url".to_string(), serde_json::json!(url));
+        }
+        // SHR-03: an OpenAI Files id (this dialect's own `input_file.file_id` or a Chat
+        // `file.file_id` — one namespace) re-emits as `input_file.file_id`.
+        crate::ir::IrImageSource::Vendor { .. }
+            if super::super::openai_annotations::openai_file_id(source).is_some() =>
+        {
+            let id = super::super::openai_annotations::openai_file_id(source)?;
+            part.insert("file_id".to_string(), serde_json::json!(id));
         }
         // This protocol's OWN uploads handle round-trips verbatim; a FOREIGN handle (a Bedrock
         // s3Location, an Anthropic Files-API id) is unresolvable here.
@@ -1695,7 +1938,9 @@ fn function_call_output_value(content: &[crate::ir::IrBlock]) -> serde_json::Val
     let mut parts: Vec<serde_json::Value> = Vec::new();
     for block in content {
         match block {
-            crate::ir::IrBlock::Image { source, .. } => parts.extend(input_image_part(source)),
+            crate::ir::IrBlock::Image { source, detail, .. } => {
+                parts.extend(input_image_part(source, *detail))
+            }
             crate::ir::IrBlock::Media {
                 kind, source, name, ..
             } => parts.extend(input_file_part(*kind, source, name.as_deref())),

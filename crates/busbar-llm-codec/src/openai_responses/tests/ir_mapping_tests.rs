@@ -513,12 +513,14 @@ fn rsp12_top_level_error_event_is_a_stream_error() {
 /// RSP-14: `reasoning.effort: "xhigh"` is carried as the IR's top effort rung, not dropped.
 #[test]
 fn rsp14_xhigh_effort_is_carried_as_high() {
+    // IR-09: `xhigh` is the IR's own `XHigh` rung now; a Chat lane (no declared `xhigh`) still
+    // receives the nearest word every model accepts.
     let body = serde_json::json!({"model": "gpt", "input": "hi", "reasoning": {"effort": "xhigh"}});
     let ir = ResponsesReader.read_request(&body).expect("read");
     assert_eq!(
         ir.reasoning,
         Some(crate::ir::IrReasoningAsk::Effort(
-            crate::ir::IrReasoningEffort::High
+            crate::ir::IrReasoningEffort::XHigh
         ))
     );
     let chat = xreq("responses", "openai", &body);
