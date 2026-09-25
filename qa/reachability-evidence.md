@@ -106,20 +106,32 @@ here.
 
 ## 4. Superseded pre-unification unit modules — not the unit path
 
-`root/units_mcp.rs`, `root/units_a2a.rs` and `root/units_voice.rs` predate the unification. The rider
-in §1 serves their planes; the modules are no longer what the unit-path rows ask about, and a green
-row names each one beside the live path while it is on disk:
+`root/units_voice.rs` predates the unification. The rider in §1 serves its plane; the module is no
+longer what the unit-path rows ask about, and a green row names it beside the live path while it is
+on disk:
 
-- `crates/busbar/src/root/units_a2a.rs` — `A2aUnits` is built at its own constructor (:879) and in a
-  test (`root/tests/units_a2a.rs:1936`), nowhere else. The three 2026-09-22 money faults
-  (denomination, `rate_card_version: 0`, `UnitKey::new(0)`) were in this module; K2c ports-checks them
-  against the served path before deleting it.
-- `crates/busbar/src/root/units_mcp.rs` — declares no `impl … Units for` at all; its live part is the
-  boot `seal` its `ROOT_UNIT` points at. K2c.
 - `crates/busbar/src/root/units_voice.rs` — `VoiceUnit` is built at its own constructor (:1172) and in
   52 test sites, nowhere else. The governed-call table beside it is LIVE and defective (R4; K2f).
 - `crates/busbar/src/root/units_llm.rs` is still LIVE: `LlmUnit` is built from `fn main()` through its
   `ROOT_UNIT`'s ingress tables. K2h.
+
+Its two siblings are gone (K2c DEAD-UNITS), each after the port-check this document asks for
+("fixes are ported before deletion", recorded in full in f26156c5c: no fix was missing from the
+served path):
+
+- `root/units_mcp.rs` declared no `impl … Units for` at all; its one live part, the boot `seal`
+  over four of the plane's own constants, is now `crates/busbar-plane-mcp/tests/declarations_agree.rs`
+  (035b6ebd8).
+- `root/units_a2a.rs` held the three 2026-09-22 money faults (denomination, `rate_card_version: 0`,
+  `UnitKey::new(0)`); `A2aUnits` was built only at its own constructor and in its tests, and its
+  `seal` checked a table nothing read.
+
+Their coverage was re-pointed, not retired: the mcp and a2a root legs of
+`qa/capability-equality.json` and `qa/teller-steps.json` are the served rider, proven by
+`root/tests/gauntlet_kernel.rs`'s `served_rider_*` tests, which run each plane's own served-leg
+witnesses (`testkit::SERVED`) through the kernel-loop runner `gauntlet_install::install()` registers
+and require the plane's `drive` to have run inside the loop; the money witness
+(`crates/busbar/tests/plane_meter_seam_reachability.rs`) asks the same served leg (R6).
 
 ---
 
