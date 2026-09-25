@@ -132,10 +132,18 @@ impl ProtocolWriter for AnthropicWriter {
     fn dropped_egress_controls(&self, req: &crate::ir::IrRequest) -> Vec<&'static str> {
         // Mirrors the `write_request` warns: Anthropic's Messages API has no native OpenAI-family
         // sampling controls `frequency_penalty`/`presence_penalty`/`seed`/`n`, so a cross-protocol
-        // request carrying any of them has that control dropped on egress. `response_format` is NOT
-        // listed: it is no longer dropped — `write_request` TRANSLATES it to Anthropic tool-forcing
-        // (see the RESPONSE_FORMAT_TOOL_NAME injection), so the structured-output directive is honored.
+        // request carrying any of them has that control dropped on egress. A SCHEMA-carrying
+        // `response_format` is NOT listed: `write_request` projects it onto native
+        // `output_config.format`. A schema-LESS JSON mode (`json_object`) has no Anthropic form, so
+        // it IS listed — the seam records the drop rather than it vanishing.
         let mut dropped = Vec::new();
+        if req
+            .response_format
+            .as_ref()
+            .is_some_and(|rf| rf.json && rf.schema.is_none())
+        {
+            dropped.push("response_format");
+        }
         if req.frequency_penalty.is_some() {
             dropped.push("frequency_penalty");
         }
@@ -194,9 +202,9 @@ impl ProtocolWriter for AnthropicWriter {
             "messages".to_string(),
             serde_json::Value::Array(messages_array),
         );
-        super::super::ir_encode::warn_dropped_tool_strict(&req.tools, "anthropic");
-        if !req.tools.is_empty() {
-            let tools_array: Vec<_> = req.tools.iter().map(write_tool).collect();
+        // `strict` is carried natively (Anthropic GA per-tool `strict`), so no drop warn here.
+        let tools_array: Vec<_> = req.tools.iter().filter_map(write_tool).collect();
+        if !tools_array.is_empty() {
             out.insert("tools".to_string(), serde_json::Value::Array(tools_array));
         }
         // Emit `tool_choice` in Anthropic's native object shape when present so a forced /
@@ -209,7 +217,7 @@ impl ProtocolWriter for AnthropicWriter {
             // `{tools:[{type:"web_search"}], tool_choice:"required"}` can arrive here with
             // `tools == []` and `tool_choice` still set. Drop with a warn rather than a guaranteed
             // 400 — this is the SAME guard the parallelism carry just below already applies.
-            if req.tools.is_empty() {
+            if !out.contains_key("tools") {
                 tracing::warn!(
                     "dropping tool_choice on Anthropic egress: Anthropic rejects a tool_choice with \
                      no tools array (likely because the hosted tools that carried it were stripped \
@@ -234,112 +242,127 @@ impl ProtocolWriter for AnthropicWriter {
             // a tool_choice object, so synthesize the neutral `auto` carrier — only when tools are
             // actually present (the flag is meaningless without them, and Anthropic rejects a
             // tool_choice on a tool-less request).
-            if !req.tools.is_empty() {
+            if out.contains_key("tools") {
                 out.insert(
                     "tool_choice".to_string(),
                     serde_json::json!({"type": "auto", "disable_parallel_tool_use": !parallel}),
                 );
             }
         }
-        // response_format → Anthropic TOOL-FORCING. Anthropic's Messages API has NO native
-        // `response_format` field, so a structured-output / JSON-schema directive that crossed a
-        // protocol boundary (e.g. an OpenAI/Responses caller routed to a Claude backend) is
-        // translated to the idiomatic Anthropic mechanism: synthesize ONE tool whose `input_schema`
-        // IS the requested JSON schema and pin `tool_choice` to it, so the model MUST answer as that
-        // tool's input. The response reader recognizes `RESPONSE_FORMAT_TOOL_NAME` and maps the
-        // forced `tool_use` back to a plain assistant text block, so the caller sees structured
-        // content and never the synthetic tool. Placed BEFORE the thinking decision below so the
-        // forced `tool_choice` is subject to the same thinking-incompatibility downgrade as any other
-        // forced choice (Anthropic 400s on a forced/targeted tool_choice alongside extended thinking).
+        // `output_config` — Anthropic's home for BOTH native structured outputs (`format`) and the
+        // reasoning effort word (`effort`). Built up below, emitted once.
+        let mut output_config = serde_json::Map::new();
+        // response_format → NATIVE structured outputs (`output_config.format`, GA on every current
+        // Claude model). This replaced a synthetic forced tool (`busbar_response_format` +
+        // `tool_choice:{type:"tool"}`), which OVERWROTE the caller's own `tool_choice` and
+        // `disable_parallel_tool_use`, was downgraded to `auto` (schema lost) whenever thinking was
+        // on, and is a 400 outright on models that reject forced tool use (Opus 5.5, Fable 5.1) —
+        // ANT-07. The native slot constrains the ANSWER, leaves tool selection to the caller, and
+        // works alongside thinking; the response is ordinary text, so there is nothing to map back
+        // on either the buffered or the streamed path (ANT-08).
         //
-        // DELIBERATE DIVERGENCE from the 1.5.5 golden: 1.5.5 DROPPED `response_format` here (the model
-        // got no schema and returned free-form prose — the owner-reported bug). Emitting the tool +
-        // tool_choice changes the upstream request bytes ON PURPOSE. Only reachable cross-protocol:
-        // same-protocol Anthropic relays the raw upstream body and never enters this writer.
-        if let Some(rf) = &req.response_format {
-            if rf.json {
-                let mut tool = serde_json::Map::new();
-                tool.insert(
-                    "name".to_string(),
-                    serde_json::json!(RESPONSE_FORMAT_TOOL_NAME),
-                );
-                tool.insert(
-                    "description".to_string(),
-                    serde_json::json!(rf.description.clone().unwrap_or_else(|| {
-                        "Respond by calling this tool with a JSON object that conforms to the \
-                         required schema."
-                            .to_string()
-                    })),
-                );
-                // Anthropic requires `input_schema` to be a JSON-Schema OBJECT. Use the caller's
-                // schema when present; a schema-less `json_object` request (free-form JSON) falls
-                // back to a permissive object schema so the tool definition stays valid.
-                let schema = rf
-                    .schema
-                    .clone()
-                    .unwrap_or_else(|| serde_json::json!({"type": "object"}));
-                tool.insert("input_schema".to_string(), schema);
-                // Append to any tools the request already carried (create the array otherwise).
-                match out.get_mut("tools").and_then(|v| v.as_array_mut()) {
-                    Some(arr) => arr.push(serde_json::Value::Object(tool)),
-                    None => {
-                        out.insert(
-                            "tools".to_string(),
-                            serde_json::Value::Array(vec![serde_json::Value::Object(tool)]),
-                        );
+        // Only a SCHEMA-carrying directive has a native form: Anthropic has no schema-less JSON
+        // mode (`json_object`), so that one is dropped with a warn and reported through
+        // `dropped_egress_controls` (NOT-REPRESENTABLE — no invented schema).
+        if let Some(rf) = req.response_format.as_ref().filter(|rf| rf.json) {
+            match &rf.schema {
+                Some(schema) => {
+                    let mut schema = schema.clone();
+                    close_object_schemas(&mut schema);
+                    // The schema description (OpenAI `json_schema.description`) has no sibling slot
+                    // in `output_config.format`; JSON Schema's own `description` keyword carries it
+                    // when the schema does not already describe itself.
+                    if let (Some(desc), Some(obj)) = (&rf.description, schema.as_object_mut()) {
+                        obj.entry("description")
+                            .or_insert_with(|| serde_json::json!(desc));
                     }
+                    output_config.insert(
+                        "format".to_string(),
+                        serde_json::json!({ "type": OUTPUT_FORMAT_JSON_SCHEMA, "schema": schema }),
+                    );
                 }
-                out.insert(
-                    "tool_choice".to_string(),
-                    serde_json::json!({"type": "tool", "name": RESPONSE_FORMAT_TOOL_NAME}),
-                );
+                None => {
+                    tracing::warn!(
+                        parameter = "response_format",
+                        "dropping schema-less JSON mode on Anthropic egress: structured outputs \
+                         require a JSON schema and the Messages API has no schema-less JSON mode \
+                         (lossy-by-target)"
+                    );
+                }
             }
         }
         if let Some(max_tokens) = req.max_tokens {
             out.insert("max_tokens".to_string(), serde_json::json!(max_tokens));
         }
-        // The reasoning carry: project the IR ask into Anthropic's `thinking` param. The budget is
-        // clamped to leave >=1024 tokens of answer under max_tokens (Anthropic requires
-        // budget_tokens < max_tokens and spends thinking FROM it) and floored at the API's 1024
-        // minimum; when max_tokens is too small to fit any thinking, the ask is dropped with a
-        // warn rather than shipped to a certain 400. Anthropic also rejects temperature/top_k
-        // modifications alongside thinking, so when the ask IS emitted those knobs are omitted
-        // (warned) below instead of shipped to a 400.
+        // The reasoning carry: project the IR ask into Anthropic's `thinking` param.
+        //
+        // A WORD-form ask (OpenAI `reasoning_effort`, Responses `reasoning.effort`, Anthropic
+        // `output_config.effort`) and a "model decides" ask (Gemini `thinkingBudget:-1`, Anthropic
+        // adaptive) project onto ADAPTIVE thinking plus `output_config.effort` — the only thinking
+        // on-mode Opus 4.7+/5.x, Sonnet 5 and Fable accept; `budget_tokens` 400s there (ANT-10). A
+        // NUMERIC ask (Anthropic/Gemini budget) keeps its exact number as `budget_tokens`, clamped
+        // to leave >=1024 tokens of answer under max_tokens (Anthropic requires budget_tokens <
+        // max_tokens and spends thinking FROM it) and floored at the API's 1024 minimum; when
+        // max_tokens is too small to fit any thinking, that ask is dropped with a warn rather than
+        // shipped to a certain 400. Anthropic also rejects temperature/top_p/top_k modifications
+        // alongside thinking, so when the ask IS emitted those knobs are omitted (warned) below.
         let mut thinking_emitted = false;
-        if let Some(ask) = req.reasoning {
-            let table = req
-                .reasoning_budgets
-                .unwrap_or(crate::ir::REASONING_BUDGET_DEFAULTS);
-            if matches!(ask, crate::ir::IrReasoningAsk::Dynamic) {
-                tracing::warn!(
-                    "gemini dynamic thinking (-1) has no Anthropic analog; projecting as the \
-                     'medium' effort budget"
-                );
-            }
-            let want = ask.to_budget(table);
-            let cap = req.max_tokens.map(|mt| mt.saturating_sub(1024));
-            let budget = cap.map_or(want, |c| want.min(c));
-            if budget >= 1024 {
-                if budget != want {
-                    tracing::warn!(
-                        requested_budget = want,
-                        clamped_budget = budget,
-                        max_tokens = ?req.max_tokens,
-                        "thinking budget clamped to fit under max_tokens"
-                    );
-                }
+        match req.reasoning {
+            Some(crate::ir::IrReasoningAsk::Effort(effort)) => {
                 out.insert(
                     "thinking".to_string(),
-                    serde_json::json!({"type": "enabled", "budget_tokens": budget}),
+                    serde_json::json!({ "type": THINKING_TYPE_ADAPTIVE }),
+                );
+                output_config.insert(
+                    "effort".to_string(),
+                    serde_json::json!(anthropic_effort_word(effort)),
                 );
                 thinking_emitted = true;
-            } else {
-                tracing::warn!(
-                    max_tokens = ?req.max_tokens,
-                    "dropping reasoning ask on Anthropic egress: max_tokens leaves no room for \
-                     the 1024-token thinking minimum"
-                );
             }
+            Some(crate::ir::IrReasoningAsk::Dynamic) => {
+                // "The model decides" IS adaptive thinking; no effort word is invented for it.
+                out.insert(
+                    "thinking".to_string(),
+                    serde_json::json!({ "type": THINKING_TYPE_ADAPTIVE }),
+                );
+                thinking_emitted = true;
+            }
+            Some(ask @ crate::ir::IrReasoningAsk::Budget(_)) => {
+                let table = req
+                    .reasoning_budgets
+                    .unwrap_or(crate::ir::REASONING_BUDGET_DEFAULTS);
+                let want = ask.to_budget(table);
+                let cap = req.max_tokens.map(|mt| mt.saturating_sub(1024));
+                let budget = cap.map_or(want, |c| want.min(c));
+                if budget >= 1024 {
+                    if budget != want {
+                        tracing::warn!(
+                            requested_budget = want,
+                            clamped_budget = budget,
+                            max_tokens = ?req.max_tokens,
+                            "thinking budget clamped to fit under max_tokens"
+                        );
+                    }
+                    out.insert(
+                        "thinking".to_string(),
+                        serde_json::json!({"type": "enabled", "budget_tokens": budget}),
+                    );
+                    thinking_emitted = true;
+                } else {
+                    tracing::warn!(
+                        max_tokens = ?req.max_tokens,
+                        "dropping reasoning ask on Anthropic egress: max_tokens leaves no room for \
+                         the 1024-token thinking minimum"
+                    );
+                }
+            }
+            None => {}
+        }
+        if !output_config.is_empty() {
+            out.insert(
+                "output_config".to_string(),
+                serde_json::Value::Object(output_config),
+            );
         }
         if thinking_emitted {
             // Anthropic rejects a FORCED/TARGETED tool_choice (`{type:"any"}` / `{type:"tool"}`)
@@ -422,8 +445,7 @@ impl ProtocolWriter for AnthropicWriter {
             out.insert("stop_sequences".to_string(), serde_json::json!(req.stop));
         }
         out.insert("stream".to_string(), serde_json::json!(req.stream));
-        // (response_format is handled ABOVE via tool-forcing — see the RESPONSE_FORMAT_TOOL_NAME
-        // injection near the tool_choice handling — not dropped here.)
+        // (response_format is handled ABOVE via native `output_config.format`.)
         // SAMPLING CONTROLS with no Anthropic Messages analog: `frequency_penalty`,
         // `presence_penalty`, `seed`, `n`. Anthropic models none of them, so a cross-protocol request
         // (e.g. an OpenAI/Responses caller) carrying any is dropped here. The drop is intentional (the
@@ -883,8 +905,32 @@ impl ProtocolWriter for AnthropicWriter {
 
         // content blocks, in their RESPONSE shape (the response block schemas require members a
         // request block does not carry — see `write_response_block`).
-        let content_array: Vec<serde_json::Value> =
-            resp.content.iter().map(write_response_block).collect();
+        //
+        // An assistant RESPONSE block on the Anthropic wire is never an `image` or a `document`
+        // (those are request-side content types) and has no JSON block; a foreign backend's image
+        // or attachment output (Bedrock `image`) was written as an `image`/`document`/empty-text
+        // block no Anthropic SDK can decode (ANT-15). Omit image/attachment output with a warn —
+        // exactly what the streamed path does for `IrBlockMeta::Image` — and carry a JSON block as
+        // the text of its JSON, which is its content.
+        let content_array: Vec<serde_json::Value> = resp
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                crate::ir::IrBlock::Image { .. } | crate::ir::IrBlock::Media { .. } => {
+                    tracing::warn!(
+                        "dropping image/attachment output block on Anthropic response egress: an \
+                         Anthropic assistant message has no image or document response block"
+                    );
+                    None
+                }
+                crate::ir::IrBlock::Json(v) => Some(serde_json::json!({
+                    "type": "text",
+                    "text": serde_json::to_string(v).unwrap_or_default(),
+                    "citations": null,
+                })),
+                other => Some(write_response_block(other)),
+            })
+            .collect();
         obj.insert(
             "content".to_string(),
             serde_json::Value::Array(content_array),

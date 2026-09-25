@@ -322,18 +322,52 @@ impl ProtocolReader for AnthropicReader {
             .and_then(|m| m.get("user_id"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        // The request-level `thinking` param (the ASK, not the response content blocks):
-        // {type:"enabled", budget_tokens:N} promotes into the IR reasoning ask so it can carry to
-        // Gemini's thinkingBudget or OpenAI's reasoning_effort. Any other form ({type:"disabled"},
-        // malformed) stays in `extra` untouched: same-protocol fidelity, and foreign targets treat
-        // an absent ask as off anyway.
-        let reasoning = obj
+        // The request-level `thinking` param (the ASK, not the response content blocks), plus the
+        // effort word Anthropic carries in `output_config.effort`:
+        //   * `{type:"enabled", budget_tokens:N}` → `Budget(N)` (a straight number to Gemini's
+        //     thinkingBudget, bucketed to a word for OpenAI's reasoning_effort);
+        //   * `{type:"adaptive"}` → `Effort(<output_config.effort>)` when an effort word is given,
+        //     else `Dynamic` — "the model decides", Gemini's `thinkingBudget:-1` (ANT-09);
+        //   * no `thinking` but an `output_config.effort` word → `Effort(word)`: the caller asked for
+        //     that reasoning depth, and the adaptive-by-default models honour it;
+        //   * `{type:"disabled"}` (or malformed) → no ask. The IR has no explicit OFF (IR-09), and a
+        //     foreign target treats an absent ask as its default.
+        // Everything stays in `extra` too except a promoted budget-form `thinking` (removed below),
+        // so a same-protocol hop through the IR still re-emits the caller's exact objects.
+        let thinking_type = obj
             .get("thinking")
-            .filter(|t| t.get("type").and_then(|v| v.as_str()) == Some("enabled"))
-            .and_then(|t| t.get("budget_tokens"))
-            .and_then(|v| v.as_u64())
-            .and_then(|v| u32::try_from(v).ok())
-            .map(crate::ir::IrReasoningAsk::Budget);
+            .and_then(|t| t.get("type"))
+            .and_then(|v| v.as_str());
+        let effort = obj
+            .get("output_config")
+            .and_then(|c| c.get("effort"))
+            .and_then(|v| v.as_str())
+            .and_then(read_anthropic_effort_word);
+        let reasoning = match thinking_type {
+            Some("enabled") => obj
+                .get("thinking")
+                .and_then(|t| t.get("budget_tokens"))
+                .and_then(|v| v.as_u64())
+                .and_then(|v| u32::try_from(v).ok())
+                .map(crate::ir::IrReasoningAsk::Budget),
+            Some(THINKING_TYPE_ADAPTIVE) => Some(
+                effort
+                    .map(crate::ir::IrReasoningAsk::Effort)
+                    .unwrap_or(crate::ir::IrReasoningAsk::Dynamic),
+            ),
+            None => effort.map(crate::ir::IrReasoningAsk::Effort),
+            Some(_) => None,
+        };
+        let reasoning_is_budget = matches!(reasoning, Some(crate::ir::IrReasoningAsk::Budget(_)));
+        // Native structured outputs: `output_config.format` (GA) or the deprecated top-level
+        // `output_format` of the same shape. Both used to ride `extra` and die at the seam, so an
+        // Anthropic caller's JSON schema never reached a foreign backend (ANT-06).
+        let output_format_legacy = obj.get("output_format");
+        let response_format = obj
+            .get("output_config")
+            .and_then(|c| c.get("format"))
+            .or(output_format_legacy)
+            .and_then(read_anthropic_output_format);
         let stream = obj.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
         // Collect unmodeled top-level keys into `extra`. The set of modeled keys is a static,
@@ -367,8 +401,13 @@ impl ProtocolReader for AnthropicReader {
         }
         // A PROMOTED thinking ask must not also ride extra (the writer re-emits it from the typed
         // field; a duplicate from extra would double-emit on a translated same-protocol hop).
-        if reasoning.is_some() {
+        if reasoning_is_budget {
             extra.remove("thinking");
+        }
+        // The deprecated spelling is promoted to the typed field and re-emitted by the writer in its
+        // GA spelling; leaving it in `extra` too would put BOTH spellings on a same-protocol hop.
+        if response_format.is_some() && output_format_legacy.is_some() {
+            extra.remove("output_format");
         }
 
         // (No ingress sentinel scrub needed anymore: a client cannot forge a redacted-reasoning block.
@@ -398,7 +437,7 @@ impl ProtocolReader for AnthropicReader {
             presence_penalty: None,
             seed: None,
             n: None,
-            response_format: None,
+            response_format,
             extra,
         })
     }
@@ -622,8 +661,38 @@ impl ProtocolReader for AnthropicReader {
         &self,
         event_type: &str,
         data: &serde_json::Value,
-        _state: &mut crate::ir::StreamDecodeState,
+        state: &mut crate::ir::StreamDecodeState,
     ) -> Vec<IrStreamEvent> {
+        // SUPPRESSED BLOCKS (ANT-14). A content block whose type the IR does not model on a stream
+        // (`server_tool_use`, `web_search_tool_result`, `mcp_tool_use`, a future type) produces no
+        // `BlockStart` — but its `input_json_delta`s and its `content_block_stop` still arrived at
+        // the same index and were translated, so a foreign client received tool-argument deltas and
+        // a block stop for a block it was never shown opening. Remember every index whose start was
+        // suppressed and drop everything that arrives at it. The index set lives in the per-stream
+        // decode state (`open_tools`, which no other part of this reader uses): the Anthropic
+        // reader's only per-stream memory, reset with the stream.
+        if event_type == EVT_CONTENT_BLOCK_START {
+            let block_type = data
+                .get("content_block")
+                .and_then(|b| b.get("type"))
+                .and_then(|t| t.as_str());
+            if let (Some(index), Some(t)) = (read_clamped_block_index(data), block_type) {
+                if !is_streamed_anthropic_block_type(t) {
+                    state.open_tools.insert(index);
+                    return vec![];
+                }
+            }
+        }
+        if event_type == EVT_CONTENT_BLOCK_DELTA || event_type == EVT_CONTENT_BLOCK_STOP {
+            if let Some(index) = read_clamped_block_index(data) {
+                if state.open_tools.contains(&index) {
+                    if event_type == EVT_CONTENT_BLOCK_STOP {
+                        state.open_tools.remove(&index);
+                    }
+                    return vec![];
+                }
+            }
+        }
         // A streamed `redacted_thinking` block carries its full opaque encrypted `data` INLINE on the
         // `content_block_start` event (Anthropic sends NO deltas for redacted blocks), so the 1:1
         // single-event reader dropped it entirely (`_ => return None`). Emit the pair the IR models
@@ -698,36 +767,13 @@ impl ProtocolReader for AnthropicReader {
         }
 
         // Parse stop_reason (optional)
-        let mut stop_reason = obj
+        // (No response_format map-back: structured outputs are requested natively — see the
+        // writer's `output_config.format` — so the answer arrives as ordinary text, identically on
+        // the buffered and streamed paths. A `tool_use` block is always a real tool call.)
+        let stop_reason = obj
             .get("stop_reason")
             .and_then(|r| r.as_str())
             .map(read_anthropic_stop_reason);
-
-        // response_format tool-forcing MAP-BACK. When busbar translated a cross-protocol
-        // `response_format` directive into Anthropic tool-forcing (see the Anthropic WRITER's
-        // RESPONSE_FORMAT_TOOL_NAME injection), the model answers with a single `tool_use` block whose
-        // name is that sentinel and whose `input` is the schema-conforming JSON. The caller asked for
-        // structured OUTPUT, not a tool CALL, so project that block back to a plain assistant TEXT
-        // block carrying the JSON, and normalize a `tool_use` stop_reason to `end_turn` (a structured
-        // answer is a completed turn, not a tool-call handoff). Only fires on the sentinel name, so a
-        // genuine Anthropic tool_use is never disturbed. Buffered (non-streaming) path only.
-        let mut mapped_forced_tool = false;
-        for block in &mut content {
-            if let crate::ir::IrBlock::ToolUse { name, input, .. } = block {
-                if name == RESPONSE_FORMAT_TOOL_NAME {
-                    let text = serde_json::to_string(input).unwrap_or_default();
-                    *block = crate::ir::IrBlock::Text {
-                        text,
-                        cache_control: None,
-                        citations: Vec::new(),
-                    };
-                    mapped_forced_tool = true;
-                }
-            }
-        }
-        if mapped_forced_tool && stop_reason == Some(crate::ir::IrStopReason::ToolUse) {
-            stop_reason = Some(crate::ir::IrStopReason::EndTurn);
-        }
 
         // Parse usage. `usage` is OPTIONAL on read here: do NOT `ok_or?` it. A native Anthropic
         // non-streaming `Message` always carries `usage`, but an Anthropic-compatible backend that

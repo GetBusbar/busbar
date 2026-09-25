@@ -9,17 +9,19 @@ fn stop_reason_egress_never_leaks_foreign_tokens() {
     assert_eq!(write_anthropic_stop_reason(S::ToolUse), "tool_use"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(write_anthropic_stop_reason(S::PauseTurn), "pause_turn"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(write_anthropic_stop_reason(S::Refusal), "refusal"); // golden wire-contract literal (kept bare on purpose)
-                                                                    // `safety` has no Anthropic member, and `error`/`other` are off-enum → all degrade to
-                                                                    // end_turn rather than leak an off-spec value a strict Anthropic SDK rejects.
-    assert_eq!(write_anthropic_stop_reason(S::Safety), "end_turn"); // golden wire-contract literal (kept bare on purpose)
+                                                                    // `safety` has no Anthropic member: a content-filter stop is the provider declining,
+                                                                    // which Anthropic names `refusal` (ANT-12). `error`/`other` are off-enum → end_turn
+                                                                    // rather than leak an off-spec value a strict Anthropic SDK rejects.
+    assert_eq!(write_anthropic_stop_reason(S::Safety), "refusal"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(write_anthropic_stop_reason(S::Error), "end_turn"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(write_anthropic_stop_reason(S::Other), "end_turn"); // golden wire-contract literal (kept bare on purpose)
-                                                                   // The reader maps an unknown native token (e.g. the non-enum `model_context_window_exceeded`)
-                                                                   // to `Other`, which then degrades on egress — it is never carried verbatim.
+                                                                   // `model_context_window_exceeded` is a length cut-off, read as `MaxTokens` (ANT-11); an
+                                                                   // unknown native token maps to `Other`, which then degrades on egress — never verbatim.
     assert_eq!(
         read_anthropic_stop_reason("model_context_window_exceeded"),
-        S::Other
+        S::MaxTokens
     );
+    assert_eq!(read_anthropic_stop_reason("some_future_reason"), S::Other);
 }
 
 fn header_value(headers: &[(HeaderName, HeaderValue)], name: &str) -> Option<String> {
@@ -2951,9 +2953,9 @@ fn test_anthropic_tool_choice_tool_without_name_is_none() {
     );
 }
 
-// ---- IR `safety` stop_reason is not a native Anthropic stop_reason -> map to end_turn ----
+// ---- IR `safety` stop_reason is not a native Anthropic stop_reason -> map to `refusal` (ANT-12) ----
 #[test]
-fn test_anthropic_safety_stop_reason_maps_to_end_turn() {
+fn test_anthropic_safety_stop_reason_maps_to_refusal() {
     let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
         role: crate::ir::IrRole::Assistant,
@@ -2977,8 +2979,8 @@ fn test_anthropic_safety_stop_reason_maps_to_end_turn() {
     let out = anthropic_writer().write_response(&resp);
     assert_eq!(
         out["stop_reason"],
-        serde_json::json!("end_turn"), // golden wire-contract literal (kept bare on purpose)
-        "IR `safety` must collapse to the native `end_turn` on Anthropic egress; got {out}"
+        serde_json::json!("refusal"), // golden wire-contract literal (kept bare on purpose)
+        "IR `safety` must project to the native `refusal` on Anthropic egress; got {out}"
     );
     // A native reason still passes through verbatim.
     let resp2 = crate::ir::IrResponse {
@@ -2989,12 +2991,12 @@ fn test_anthropic_safety_stop_reason_maps_to_end_turn() {
     assert_eq!(out2["stop_reason"], serde_json::json!("max_tokens")); // golden wire-contract literal (kept bare on purpose)
 }
 
-// ---- Streaming egress: the SAME `safety` -> `end_turn` collapse must hold on the streaming
+// ---- Streaming egress: the SAME `safety` -> `refusal` projection must hold on the streaming
 // path (`write_response_event` / `MessageDelta`), not just the non-stream `write_response`.
 // A non-native IR `safety` reason must never leak into the wire
 // `message_delta.delta.stop_reason`. ----
 #[test]
-fn test_anthropic_streaming_safety_stop_reason_maps_to_end_turn() {
+fn test_anthropic_streaming_safety_stop_reason_maps_to_refusal() {
     let ev = IrStreamEvent::MessageDelta {
         stop_reason: Some(crate::ir::IrStopReason::Safety),
         stop_sequence: None,
@@ -3012,8 +3014,8 @@ fn test_anthropic_streaming_safety_stop_reason_maps_to_end_turn() {
     assert_eq!(event, "message_delta"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(
         data["delta"]["stop_reason"],
-        serde_json::json!("end_turn"), // golden wire-contract literal (kept bare on purpose)
-        "IR `safety` must collapse to native `end_turn` on the STREAMING Anthropic egress \
+        serde_json::json!("refusal"), // golden wire-contract literal (kept bare on purpose)
+        "IR `safety` must project to native `refusal` on the STREAMING Anthropic egress \
              (not leak `safety`); got {data}"
     );
 
@@ -3173,15 +3175,15 @@ fn write_request_downgrades_forced_tool_choice_to_auto_when_thinking_emitted() {
     );
 }
 
-/// response_format → TOOL-FORCING (owner-reported bug fix). A cross-protocol IR carrying a
-/// `response_format` (structured-output / JSON-schema) directive reaching the Anthropic writer must
-/// be TRANSLATED to Anthropic tool-forcing — Anthropic's Messages API has no native
-/// `response_format`, so busbar synthesizes a tool whose `input_schema` IS the requested schema and
-/// pins `tool_choice` to it. Asserts (a) no bare `response_format` key leaks (would 400 the
-/// upstream), (b) a synthetic tool named `busbar_response_format` carries the schema, and (c)
-/// `tool_choice` forces that tool. DELIBERATE divergence from the 1.5.5 golden (which dropped it).
+/// response_format → NATIVE structured outputs (ANT-07). A cross-protocol IR carrying a
+/// schema-bearing `response_format` reaching the Anthropic writer is projected onto Anthropic's
+/// `output_config.format` (json_schema) — never a synthetic forced tool, which overwrote the caller's
+/// `tool_choice` and 400s on models that reject forced tool use. Asserts (a) no bare
+/// `response_format` key leaks, (b) no synthetic tool and no forced `tool_choice` are invented, and
+/// (c) the schema rides `output_config.format` with every object closed (`additionalProperties:
+/// false`, which Anthropic requires).
 #[test]
-fn write_request_translates_response_format_to_anthropic_tool_forcing() {
+fn write_request_projects_response_format_to_native_output_config() {
     let schema = serde_json::json!({
         "type": "object",
         "properties": {"answer": {"type": "string"}},
@@ -3213,37 +3215,33 @@ fn write_request_translates_response_format_to_anthropic_tool_forcing() {
         !out.as_object().unwrap().contains_key("response_format"),
         "Anthropic egress must NOT emit a bare `response_format` (no native field); got {out}"
     );
-    // (b) the synthetic tool carries the requested schema under `input_schema`.
-    let tools = out["tools"].as_array().expect("tools array emitted");
-    let forced = tools
-        .iter()
-        .find(|t| t["name"] == serde_json::json!("busbar_response_format"))
-        .unwrap_or_else(|| panic!("synthetic response_format tool must be present; got {out}"));
+    assert!(
+        out.get("tools").is_none() && out.get("tool_choice").is_none(),
+        "no synthetic tool and no forced tool_choice may be invented for response_format; got {out}"
+    );
     assert_eq!(
-        forced.pointer("/input_schema/properties/answer/type"),
+        out.pointer("/output_config/format/type"),
+        Some(&serde_json::json!("json_schema")),
+        "response_format must ride native output_config.format; got {out}"
+    );
+    assert_eq!(
+        out.pointer("/output_config/format/schema/properties/answer/type"),
         Some(&serde_json::json!("string")),
-        "the synthetic tool's input_schema must be the requested JSON schema; got {out}"
-    );
-    // (c) tool_choice forces exactly that tool.
-    assert_eq!(
-        out.pointer("/tool_choice/type"),
-        Some(&serde_json::json!("tool")),
-        "tool_choice must be a forced (type:tool) choice; got {out}"
+        "the requested schema must be the output_config.format schema; got {out}"
     );
     assert_eq!(
-        out.pointer("/tool_choice/name"),
-        Some(&serde_json::json!("busbar_response_format")),
-        "tool_choice must pin the synthetic response_format tool; got {out}"
+        out.pointer("/output_config/format/schema/additionalProperties"),
+        Some(&serde_json::json!(false)),
+        "every object schema must be closed for Anthropic structured outputs; got {out}"
     );
 }
 
-/// response_format tool-forcing MAP-BACK. The Anthropic response reader must project a forced
-/// `tool_use` block named `busbar_response_format` back to a plain assistant TEXT block carrying the
-/// tool input as JSON (the structured output the caller expects), and normalize the `tool_use`
-/// stop_reason to `end_turn`. A genuine (non-sentinel) tool_use must be left untouched.
+/// With native structured outputs there is no synthetic tool to map back (ANT-08): a response
+/// `tool_use` block is ALWAYS a real tool call, whatever its name, so the buffered reader and the
+/// streamed reader agree on it (the stream path never had the map-back, which is how a streaming
+/// JSON-mode client used to see a tool call).
 #[test]
-fn read_response_maps_forced_response_format_tool_use_back_to_text() {
-    // Forced sentinel tool_use → structured text + end_turn.
+fn read_response_never_rewrites_a_tool_use_block() {
     let body = serde_json::json!({
         "role": "assistant",
         "content": [{
@@ -3258,50 +3256,19 @@ fn read_response_maps_forced_response_format_tool_use_back_to_text() {
     let resp = AnthropicReader
         .read_response(&body)
         .expect("valid response");
-    assert_eq!(resp.content.len(), 1, "one content block");
-    match &resp.content[0] {
-        crate::ir::IrBlock::Text { text, .. } => {
-            let v: serde_json::Value = serde_json::from_str(text).expect("text is JSON");
-            assert_eq!(v.pointer("/answer"), Some(&serde_json::json!("42")));
-        }
-        other => panic!("forced tool_use must map back to a Text block; got {other:?}"),
-    }
-    assert_eq!(
-        resp.stop_reason,
-        Some(crate::ir::IrStopReason::EndTurn),
-        "a forced-response-format tool_use stop_reason must normalize to end_turn"
-    );
-
-    // Regression proof: a genuine, non-sentinel tool_use is NOT rewritten.
-    let native = serde_json::json!({
-        "role": "assistant",
-        "content": [{
-            "type": "tool_use",
-            "id": "toolu_2",
-            "name": "get_weather",
-            "input": {"city": "SF"}
-        }],
-        "stop_reason": "tool_use",
-        "usage": {"input_tokens": 3, "output_tokens": 5}
-    });
-    let resp = AnthropicReader
-        .read_response(&native)
-        .expect("valid response");
     assert!(
-        matches!(&resp.content[0], crate::ir::IrBlock::ToolUse { name, .. } if name == "get_weather"),
-        "a native tool_use must be left as a ToolUse block"
+        matches!(&resp.content[0], crate::ir::IrBlock::ToolUse { name, .. } if name == "busbar_response_format"),
+        "a tool_use block must stay a ToolUse block on the buffered path"
     );
     assert_eq!(resp.stop_reason, Some(crate::ir::IrStopReason::ToolUse));
 }
 
-/// LOW (json-tool-result drop observability + no-leak): a Bedrock `tool_result_json` sentinel
-/// block (JSON_BLOCK_SENTINEL) nested in a ToolResult reaching the Anthropic egress must (a) NOT
-/// leak a corrupt base64 image source (`media_type:"tool_result_json"`) onto the wire and (b) emit
-/// a `warn!` so the structured-payload loss is observable (drop-with-warn convention).
+/// A Bedrock structured-JSON tool result (`IrBlock::Json`) nested in a ToolResult reaching the
+/// Anthropic egress must (a) NOT leak a corrupt base64 image source (`media_type:"tool_result_json"`)
+/// onto the wire and (b) carry its CONTENT as a text block holding the serialized JSON — it used to
+/// be dropped, leaving the model a tool result with the answer removed (ANT-16).
 #[test]
-fn write_request_warns_and_drops_json_tool_result_block() {
-    use tracing_subscriber::layer::SubscriberExt as _;
-
+fn write_request_carries_json_tool_result_block_as_text() {
     let req = crate::ir::IrRequest {
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::User,
@@ -3323,20 +3290,20 @@ fn write_request_warns_and_drops_json_tool_result_block() {
         ..Default::default()
     };
 
-    let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
-    let out =
-        tracing::subscriber::with_default(subscriber, || anthropic_writer().write_request(&req));
+    let out = anthropic_writer().write_request(&req);
 
     let wire = serde_json::to_string(&out).unwrap();
     assert!(
         !wire.contains("tool_result_json"),
         "a json-tool-result sentinel must NOT leak onto the Anthropic wire; got {wire}"
     );
-    let msgs = cap.messages();
-    assert!(
-        msgs.iter().any(|m| m.contains("json tool-result")),
-        "a json-tool-result drop warning must fire on Anthropic egress; got {msgs:?}"
+    assert_eq!(
+        out.pointer("/messages/0/content/0/content"),
+        Some(&serde_json::json!([
+            {"type": "text", "text": "ok"},
+            {"type": "text", "text": "{\"answer\":42}"}
+        ])),
+        "the JSON tool result must ride as a text block of its JSON; got {out}"
     );
 }
 
@@ -3938,7 +3905,7 @@ fn cache_control_on_tool_definition_round_trips() {
         ir.cache_control.is_some(),
         "cache_control on a tool definition must be captured in IrTool"
     );
-    let out = write_tool(&ir);
+    let out = write_tool(&ir).expect("a function tool always projects");
     assert_eq!(
         out.pointer("/cache_control/type").and_then(|t| t.as_str()),
         Some("ephemeral"), // golden wire-contract literal (kept bare on purpose)
