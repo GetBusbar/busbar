@@ -306,26 +306,26 @@ impl crate::PluginRegistry {
     /// [`Self::validate_export`], and the streams the sink DECLARED (K9b) — asked of the same
     /// load, so the host resolves the instance's projection against what the module carries while
     /// it validates the configuration, as it does a built-in module's. `None` when `module` is not
-    /// a `kind: export` row; an empty stream list when the sink will not open here (its open
+    /// a `kind: export` row; no streams and no problems when the sink will not open here (its open
     /// refuses the boot naming the instance).
     pub fn probe_export(
         &self,
         module: &str,
         instance: &str,
         settings: &serde_json::Value,
-    ) -> Option<(Vec<ExportStream>, Vec<String>)> {
+    ) -> Option<(Option<Vec<ExportStream>>, Vec<String>)> {
         let p = self
             .resolve(module)
             .filter(|p| p.manifest.kind == abi_kind::EXPORT)?;
         let cfg = settings.to_string();
         let Ok(sink) = load_export_image(p.image(), &cfg, &p.manifest.name, &p.manifest.kind)
         else {
-            return Some((Vec::new(), Vec::new()));
+            return Some((None, Vec::new()));
         };
         let problems = sink
             .validate(instance, settings)
             .unwrap_or_else(|e| vec![format!("export.{instance}: {e}")]);
-        Some((sink.streams, problems))
+        Some((Some(sink.streams), problems))
     }
 }
 

@@ -2302,6 +2302,8 @@ fn a_wrong_shaped_store_block_is_never_taken_and_discarded() {
 /// pre-migration document meant.
 #[test]
 fn migrate_export_adds_the_explicit_streams_projection() {
+    // `request-log-file` is a row of the export axis (K9b), as a linked build's is.
+    crate::test_support::export_axis::install_export_axis();
     let raw = "\
 export:
   metrics:

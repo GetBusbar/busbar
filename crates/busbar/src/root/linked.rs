@@ -75,6 +75,57 @@ pub struct Linked {
     pub compose: &'static [fn(&busbar_kernel::config::RootCfg) -> Option<Compose>],
     /// The stdio serve mode (see [`StdioServe`]).
     pub stdio_serve: &'static [StdioServe],
+    /// The export axis: each linked export sink's statement and boundary (see [`LinkedExport`]).
+    pub exports: &'static [LinkedExport],
+}
+
+/// A linked EXPORT sink's entry (K9b): `(name, alias, declares, boundary)` — what its signed tarball
+/// states (the manifest `declares` section as JSON) and the boundary the one cold load runs over.
+pub type LinkedExport = (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static busbar_plugin_loader::ColdEntry,
+);
+
+/// The newest export payload schema this binary speaks — what a linked sink states.
+fn export_abi() -> u32 {
+    let supported = busbar_plugin_loader::supported_abi("export");
+    supported.iter().copied().max().unwrap_or_default()
+}
+
+/// The registry rows the linked export sinks state: first-party manifests of `kind: export` at this
+/// binary's payload schema, exactly what a release-signed tarball of each carries but `sha256` and
+/// `signature`, which describe a file a linked row does not have.
+pub fn linked_exports(
+    exports: &[LinkedExport],
+) -> Result<Vec<busbar_plugin_loader::LinkedPlugin>, String> {
+    let row = |&(name, alias, declares, entry): &LinkedExport| {
+        let declares = serde_json::from_str(declares)
+            .map_err(|e| format!("linked export '{name}': its declares section: {e}"))?;
+        let manifest = busbar_plugin_loader::sign::Manifest {
+            name: name.into(),
+            alias: alias.into(),
+            kind: "export".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            publisher: busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into(),
+            abi_version: export_abi(),
+            sha256: String::new(),
+            signature: String::new(),
+            description: String::new(),
+            homepage: String::new(),
+            license: String::new(),
+            needs: Default::default(),
+            settings_schema: None,
+            schema_derived: false,
+            host: None,
+            declares,
+        };
+        Ok(busbar_plugin_loader::LinkedPlugin::boundary(
+            manifest, entry,
+        ))
+    };
+    exports.iter().map(row).collect()
 }
 
 /// What the composition root wires for one of its own unit modules — the kernel-loop half of a plane
@@ -453,7 +504,31 @@ pub fn dropped_planes(
 /// block, `enabled: false`, or no readable file: `None`, and the directory is not read. A scan the
 /// loader refuses is `None` here too — the plugins preflight reads the same directory under the same
 /// policy later in boot and refuses it there with every problem named.
-pub fn dropped_from_config() -> Option<&'static busbar_plugin_loader::PluginRegistry> {
+///
+/// The build's LINKED export sinks ([`Linked::exports`], K9b) are registered into the same registry
+/// ahead of the directory's rows, through the one admission (`PluginRegistry::link`) — so the export
+/// axis holds both doors' rows, and a build that links a sink has an axis with no `plugins:` block.
+pub fn dropped_from_config(
+    linked: &Linked,
+) -> Option<&'static busbar_plugin_loader::PluginRegistry> {
+    let rows = linked_exports(linked.exports).unwrap_or_else(|refusal| {
+        eprintln!("busbar: {refusal}");
+        std::process::exit(2);
+    });
+    let scanned = scan_configured();
+    if scanned.is_none() && rows.is_empty() {
+        return None;
+    }
+    let registry = scanned.unwrap_or_else(busbar_plugin_loader::PluginRegistry::empty);
+    let registry = registry.link(rows).unwrap_or_else(|refusal| {
+        eprintln!("busbar: {refusal}");
+        std::process::exit(2);
+    });
+    Some(Box::leak(Box::new(registry)))
+}
+
+/// The configured `plugins.dir`'s admitted rows (see [`dropped_from_config`]).
+fn scan_configured() -> Option<busbar_plugin_loader::PluginRegistry> {
     let path =
         crate::root::cli::resolve_config_path(crate::root::cli::config_path_flag().as_deref());
     let raw = std::fs::read_to_string(path).ok()?;
@@ -473,10 +548,7 @@ pub fn dropped_from_config() -> Option<&'static busbar_plugin_loader::PluginRegi
     policy.first_party_high_water = busbar_plugin_loader::HighWaterMarks::load(data_dir.as_deref())
         .0
         .marks();
-    let registry =
-        busbar_plugin_loader::scan_and_validate(std::path::Path::new(&plugins.dir), &policy)
-            .ok()?;
-    Some(Box::leak(Box::new(registry)))
+    busbar_plugin_loader::scan_and_validate(std::path::Path::new(&plugins.dir), &policy).ok()
 }
 
 /// THE PLANES DROPPED INTO `dropped` (see [`dropped_from_config`]): every `kind: plane` plugin it
@@ -530,9 +602,6 @@ pub const HOST_SERIES: &[&str] = &[
     busbar_kernel::metrics::PLANE_REQUESTS_TOTAL,
     busbar_kernel::metrics::PLANE_REQUEST_DURATION_SECONDS,
     busbar_kernel::metrics::WEBHOOK_LOGS_DROPPED_TOTAL,
-    busbar_kernel::metrics::FILE_LOGS_DROPPED_TOTAL,
-    busbar_kernel::metrics::FILE_LOGS_ROTATED_TOTAL,
-    busbar_kernel::metrics::FILE_LOGS_ROTATE_FAILED_TOTAL,
     busbar_kernel::metrics::ADMISSION_DENIED_TOTAL,
     busbar_kernel::metrics::METERING_PENDING_COALESCED_TOTAL,
     busbar_kernel::metrics::PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL,
@@ -568,12 +637,10 @@ pub fn host_series(name: &str) -> bool {
 /// refused: every instance naming it would reach the built-in, and the plugin would sit on the axis
 /// unreachable, silently.
 pub fn shadowed_export(registry: &busbar_plugin_loader::PluginRegistry) -> Result<(), String> {
-    let built_in = busbar_kernel::config::EXPORT_MODULES;
+    let built_in = busbar_kernel::export::built_in;
     let rows = registry.linked().iter().chain(registry.loadable());
     let shadows = |p: &&busbar_plugin_loader::LoadablePlugin| {
-        p.manifest.kind == "export"
-            && (built_in.contains(&p.manifest.name.as_str())
-                || built_in.contains(&p.manifest.alias.as_str()))
+        p.manifest.kind == "export" && (built_in(&p.manifest.name) || built_in(&p.manifest.alias))
     };
     match rows.into_iter().find(shadows) {
         Some(p) => Err(format!(
@@ -793,3 +860,7 @@ pub fn seal(units: &[&RootUnit]) {
 #[cfg(test)]
 #[path = "tests/linked.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/linked_exports.rs"]
+mod export_tests;

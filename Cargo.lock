@@ -339,6 +339,7 @@ dependencies = [
  "busbar-contract",
  "busbar-core-admin",
  "busbar-core-connsec",
+ "busbar-export-file",
  "busbar-kernel",
  "busbar-kernel-audit",
  "busbar-kernel-breaker",
@@ -534,6 +535,16 @@ version = "1.5.0"
 dependencies = [
  "busbar-plugin-sdk",
  "serde_json",
+]
+
+[[package]]
+name = "busbar-export-file"
+version = "1.5.0"
+dependencies = [
+ "busbar-plugin-sdk",
+ "serde",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]

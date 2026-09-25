@@ -2468,84 +2468,6 @@ pub const WEBHOOK_DELIVERY_TRANSPORT_ERROR: Diagnostic = Diagnostic {
     retired: false,
 };
 
-pub const FILE_LOG_APPEND_FAILED: Diagnostic = Diagnostic {
-    code: 7073,
-    class: Class::Plane,
-    slug: "file-log-append-failed",
-    title: "Request-log file append failed (log dropped)",
-    severity: Severity::Actionable,
-    summary:
-        "Writing a line to the request-log file failed, so that log line was dropped. Telemetry \
-              writes are fire-and-forget and never block serving, but a persistent failure means \
-              request logs are being lost — usually a disk-full or permission problem.",
-    action:
-        "Check the log file's path for free space and write permission. Serving is unaffected; \
-             only request-log durability is.",
-    since: "1.6.0",
-    retired: false,
-};
-
-pub const FILE_LOG_OPEN_FAILED: Diagnostic = Diagnostic {
-    code: 7074,
-    class: Class::Plane,
-    slug: "file-log-open-failed",
-    title: "Request-log file open failed (log dropped)",
-    severity: Severity::Actionable,
-    summary: "The request-log file could not be opened for append, so that log line was dropped. A \
-              persistent failure means request logs are being lost — usually a missing directory, a \
-              permission problem, or a full disk.",
-    action: "Ensure the log file's directory exists and is writable, and that the disk is not full. \
-             Serving is unaffected; only request-log durability is.",
-    since: "1.6.0",
-    retired: false,
-};
-
-pub const FILE_LOG_RETENTION_FAILED: Diagnostic = Diagnostic {
-    code: 7075,
-    class: Class::Plane,
-    slug: "file-log-retention-failed",
-    title: "Request-log archive retention cleanup failed",
-    severity: Severity::Actionable,
-    summary: "During rotation, deleting the oldest request-log archive failed, so the archive series \
-              may grow past its retention limit and consume more disk than intended. No log data is \
-              lost by this failure itself.",
-    action: "Check the log directory's permissions and free space so retention cleanup can remove \
-             the oldest archive on the next rotation.",
-    since: "1.6.0",
-    retired: false,
-};
-
-pub const FILE_LOG_SHIFT_FAILED: Diagnostic = Diagnostic {
-    code: 7076,
-    class: Class::Plane,
-    slug: "file-log-shift-failed",
-    title: "Request-log archive shift failed during rotation",
-    severity: Severity::Actionable,
-    summary:
-        "Renaming an archived request-log file to its next slot during rotation failed, so the \
-              older archive was left in place rather than lost. Rotation degrades but no recorded \
-              data is discarded.",
-    action: "Check the log directory's permissions and that no external process holds the archive \
-             files, so the shift can complete on the next rotation.",
-    since: "1.6.0",
-    retired: false,
-};
-
-pub const FILE_LOG_ROTATE_RENAME_FAILED: Diagnostic = Diagnostic {
-    code: 7077,
-    class: Class::Plane,
-    slug: "file-log-rotate-rename-failed",
-    title: "Request-log rotation rename failed (file grows past cap)",
-    severity: Severity::Actionable,
-    summary: "Renaming the current request-log file to its first archive slot failed, so busbar keeps \
-              APPENDING to the current file rather than truncating it — no recorded data is lost, but \
-              the file will grow past its `rotate_mb` cap until this is resolved.",
-    action: "Check the log directory's permissions and free space so the rotation rename can \
-             succeed. No data is lost in the meantime; the file simply exceeds its size cap.",
-    since: "1.6.0",
-    retired: false,
-};
-
 pub const IR_CLAMP_N_TO_1: Diagnostic = Diagnostic {
     code: 7078,
     class: Class::Plane,
@@ -3784,11 +3706,6 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &WEBHOOK_EXPORTER_DISABLED,
     &WEBHOOK_DELIVERY_NON_2XX,
     &WEBHOOK_DELIVERY_TRANSPORT_ERROR,
-    &FILE_LOG_APPEND_FAILED,
-    &FILE_LOG_OPEN_FAILED,
-    &FILE_LOG_RETENTION_FAILED,
-    &FILE_LOG_SHIFT_FAILED,
-    &FILE_LOG_ROTATE_RENAME_FAILED,
     &IR_CLAMP_N_TO_1,
     &IR_DROP_REASONING,
     &IR_DROP_PROMPT_CACHE,

@@ -128,6 +128,82 @@ fn config_overlay_rejected_is_registered() {
     );
 }
 
+/// The codes the in-tree first-party export sinks DECLARE in their manifests (`crates/*/declares.json`,
+/// K9a S3). The composition root registers them into the running catalogue beside [`REGISTRY`]
+/// (`install_diagnostics`), so the operator's page documents them beside it: the page is the
+/// catalogue an operator's `BUSBAR-NNNN` lands in, whichever object raises the code.
+fn declared_in_tree() -> Vec<&'static Diagnostic> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut dirs: Vec<_> = std::fs::read_dir(&root)
+        .expect("read crates/")
+        .filter_map(|e| Some(e.ok()?.path().join("declares.json")))
+        .filter(|p| p.is_file())
+        .collect();
+    dirs.sort();
+    let leak = |v: &serde_json::Value| -> &'static str {
+        Box::leak(
+            v.as_str()
+                .expect("a string field")
+                .to_string()
+                .into_boxed_str(),
+        )
+    };
+    let mut out = Vec::new();
+    for path in dirs {
+        let text = std::fs::read_to_string(&path).expect("read declares.json");
+        let decl: serde_json::Value = serde_json::from_str(&text).expect("declares.json parses");
+        for d in decl["diagnostics"].as_array().into_iter().flatten() {
+            let code = d["code"].as_u64().expect("a code") as u16;
+            let severity = [
+                Severity::BenignRecurring,
+                Severity::Actionable,
+                Severity::Fatal,
+            ]
+            .into_iter()
+            .find(|s| s.as_str() == d["severity"])
+            .expect("a severity token");
+            let class = Class::ALL
+                .into_iter()
+                .find(|c| c.ordinal() == code / 1000)
+                .expect("a class");
+            out.push(&*Box::leak(Box::new(Diagnostic {
+                code,
+                class,
+                slug: leak(&d["slug"]),
+                title: leak(&d["title"]),
+                severity,
+                summary: leak(&d["summary"]),
+                action: leak(&d["action"]),
+                since: leak(&d["since"]),
+                retired: false,
+            })));
+        }
+    }
+    out
+}
+
+/// The documented catalogue: [`REGISTRY`] and every in-tree declared code.
+fn documented() -> Vec<&'static Diagnostic> {
+    REGISTRY.iter().copied().chain(declared_in_tree()).collect()
+}
+
+/// A declared code never collides with a registry one (the root refuses that at boot; the page
+/// would document two meanings for one banner).
+#[test]
+fn declared_codes_do_not_collide_with_the_registry() {
+    for d in declared_in_tree() {
+        assert!(
+            by_code_in(REGISTRY, d.code).is_none(),
+            "{} collides",
+            d.code
+        );
+    }
+}
+
+fn by_code_in(catalog: &[&'static Diagnostic], code: u16) -> Option<&'static Diagnostic> {
+    catalog.iter().copied().find(|d| d.code == code)
+}
+
 // ── DOCS-IN-SYNC ────────────────────────────────────────────────────────────────────────────
 //
 // The committed docs/diagnostics.{md,json} MUST equal a fresh render of REGISTRY. Regenerate
@@ -136,7 +212,7 @@ fn config_overlay_rejected_is_registered() {
 
 #[test]
 fn committed_markdown_matches_registry() {
-    let fresh = render_markdown();
+    let fresh = render_markdown_for(&documented());
     if std::env::var("UPDATE_DIAGNOSTICS").is_ok_and(|v| v == "1") {
         std::fs::write(COMMITTED_DIAGNOSTICS_MD, &fresh)
             .unwrap_or_else(|e| panic!("write {COMMITTED_DIAGNOSTICS_MD}: {e}"));
@@ -154,7 +230,7 @@ fn committed_markdown_matches_registry() {
 
 #[test]
 fn committed_json_matches_registry() {
-    let fresh = render_json();
+    let fresh = render_json_for(&documented());
     if std::env::var("UPDATE_DIAGNOSTICS").is_ok_and(|v| v == "1") {
         std::fs::write(COMMITTED_DIAGNOSTICS_JSON, &fresh)
             .unwrap_or_else(|e| panic!("write {COMMITTED_DIAGNOSTICS_JSON}: {e}"));

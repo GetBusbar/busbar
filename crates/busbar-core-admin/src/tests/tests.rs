@@ -10203,6 +10203,8 @@ async fn test_admin_v1_overlay_reset_requires_full_scope() {
 /// not, while the docs listed the four-value set as COMPLETE.
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_named_map_section_reverts_to_base() {
+    // `request-log-file` is a row of the export axis (K9b), as a linked build's is.
+    busbar_kernel::test_support::export_axis::install_export_axis();
     let (dir, overlay, addr, handle) = named_map_app("resetnamedmap", false).await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| {
@@ -14147,6 +14149,8 @@ async fn named_map_app_opts(
 /// `/export` omits them entirely — the one-view-per-pattern contract.
 #[tokio::test]
 async fn test_admin_v1_named_maps_list_get_and_put_round_trip() {
+    // `request-log-file` is a row of the export axis (K9b), as a linked build's is.
+    busbar_kernel::test_support::export_axis::install_export_axis();
     let (dir, overlay, addr, handle) = named_map_app("roundtrip", false).await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| {
@@ -14651,6 +14655,8 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
 /// silent because removing genuinely does take effect live.
 #[tokio::test]
 async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
+    // `request-log-file` is a row of the export axis (K9b), as a linked build's is.
+    busbar_kernel::test_support::export_axis::install_export_axis();
     // `base_export: false` ⇒ booted with NO exporter, so `/metrics` was never mounted.
     let (dir, _overlay, addr, handle) = named_map_app_opts("bootfrozen", false, false).await;
     let client = reqwest::Client::new();
@@ -14920,6 +14926,8 @@ async fn test_admin_v1_identity_provider_rejects_an_unknown_module() {
 /// dangling case.
 #[tokio::test]
 async fn test_admin_v1_identity_provider_delete_rejects_a_dangling_reference() {
+    // `request-log-file` is a row of the export axis (K9b), as a linked build's is.
+    busbar_kernel::test_support::export_axis::install_export_axis();
     let (dir, _overlay, addr, handle) = named_map_app("dangling", true).await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| {
@@ -15412,6 +15420,8 @@ async fn named_map_error_surface_answers_its_declared_taxonomy() {
 /// every subsequent read — two paths disagreeing about the one frozen 1.5.3 grammar.
 #[tokio::test]
 async fn test_admin_v1_named_map_put_rejects_what_the_file_parser_rejects() {
+    // `request-log-file` is a row of the export axis (K9b), as a linked build's is.
+    busbar_kernel::test_support::export_axis::install_export_axis();
     let (dir, overlay, addr, handle) = named_map_app("typedparse", false).await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| {

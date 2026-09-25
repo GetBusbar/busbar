@@ -17,9 +17,9 @@
 //!   registered; absent ⇒ no recorder, `/metrics` unmounted, every emit site a true no-op.
 //! - [`webhook`] — PUSH per-request. The `request-log-webhook` + `generic-webhook` sinks POST the
 //!   built request-log line behind the relocated SSRF guard + bounded `AdmissionGate` delivery.
-//! - [`file`] — PUSH per-request. The `request-log-file` sink appends the line as JSONL.
+//!
+//! Every other module — `request-log-file` among them — is a row of the EXPORT AXIS ([`plugin`]).
 
-pub(crate) mod file;
 pub mod plugin;
 pub(crate) mod projection;
 pub mod prometheus;
@@ -67,7 +67,12 @@ pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
 /// `webhook::CLIENT`) — nothing here touches the LLM egress pool.
 pub fn configure(cfg: &ExportCfg) {
     webhook::configure(cfg);
-    file::configure(cfg);
+}
+
+/// Whether the kernel serves `module` itself — a module an export-axis row may not spell, since
+/// every instance naming it would reach the built-in.
+pub fn built_in(module: &str) -> bool {
+    projection::module_streams(module).is_some()
 }
 
 /// The raw per-request facts the `logs` stream is built FROM — everything core knows at
@@ -142,7 +147,6 @@ pub(crate) fn test_logs_projection() -> projection::Projection {
 /// [`PayloadCache`]).
 pub(crate) fn deliver_request_log(facts: &RequestLogFacts<'_>) {
     let mut cache = PayloadCache::new(facts);
-    file::deliver(&mut cache);
     webhook::deliver_logs(&mut cache);
     plugin::deliver_logs(&mut cache);
 }

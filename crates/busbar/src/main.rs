@@ -214,7 +214,7 @@ fn register_protocols() {
 fn register_planes() {
     // The configured `plugins.dir`, scanned once: its planes join the plane axis here and its export
     // modules the export axis just below — the same entries a linked plugin registers through.
-    let dropped = root::linked::dropped_from_config();
+    let dropped = root::linked::dropped_from_config(&LINKED);
     root::linked::register_planes(&LINKED, root::linked::dropped_planes_of(dropped));
     root::linked::register_exports(dropped);
 
@@ -870,8 +870,8 @@ async fn run(data_workers: usize) {
          re-learned from live traffic"
     );
 
-    // Configure the built-in request-log EXPORTERS (every named `request-log-webhook` /
-    // `request-log-file` instance) from the resolved `export:` block (the webhook
+    // Configure the built-in request-log EXPORTERS (every named `request-log-webhook` instance; a
+    // `request-log-file` instance is an export-axis sink, opened above) from the resolved `export:` block (the webhook
     // exporter owns its delivery client). No-op when no request-log sink is configured (the default). The
     // recorder-installing `prometheus` exporter is wired separately (`metrics::configure` above +
     // the `/metrics` plugin route in `build_app_from_config`).

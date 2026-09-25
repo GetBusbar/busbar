@@ -320,6 +320,11 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         // `decisions:` — the decision plane's grammar (its `models:` map and hook references);
         // a plane's config section is config grammar exactly as the other planes' sections are.
         "crates/busbar-plane-decision/src/config.rs".to_string(),
+        // `FileSettings` — an `export.<name>.module: request-log-file` instance's `settings:` —
+        // moved VERBATIM out of `busbar-kernel/src/config/mod.rs` into the sink that reads it
+        // (K9b: the file sink is the `busbar-export-file` export plugin). A tracked SOURCE
+        // relocation exactly like `ModelCfg` above, so the snapshot does not move by a byte.
+        "crates/busbar-export-file/src/config.rs".to_string(),
     ]);
     Ok(out)
 }

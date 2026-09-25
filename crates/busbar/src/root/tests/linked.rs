@@ -44,6 +44,7 @@ fn linked(planes: &'static [PlaneDecl], hot_planes: &'static [&'static HotPlaneD
         on_host: &[],
         compose: &[],
         stdio_serve: &[],
+        exports: &[],
     }
 }
 
@@ -660,7 +661,7 @@ fn an_export_row_spelling_a_built_in_module_is_refused() {
     };
     for (tag, name, alias) in [
         ("name", "prometheus", "k9-prom"),
-        ("alias", "k9-file", "request-log-file"),
+        ("alias", "k9-traces", "otlp"),
     ] {
         assert_eq!(
             shadowed_export(&registry_of(tag, name, alias)),

@@ -2232,6 +2232,9 @@ pub fn scratch_dir(name: &str) -> std::path::PathBuf {
 
 pub mod warn_capture;
 
+/// The export axis a test binary's configurations resolve against (K9b).
+pub mod export_axis;
+
 /// The REAL `kind: store` plugin, loaded over the REAL C ABI: how a durability claim is judged.
 pub mod plugin_store;
 

@@ -1794,8 +1794,6 @@ pub struct ExportCfg {
     pub prometheus: Option<PrometheusSettings>,
     /// Every configured `request-log-webhook` instance, in config order. Empty ⇒ no webhook sink.
     pub request_log_webhooks: Vec<WebhookSettings>,
-    /// Every configured `request-log-file` instance, in config order. Empty ⇒ no file sink.
-    pub request_log_files: Vec<FileSettings>,
     /// The `otlp` instance's settings, if one is configured. `None` ⇒ no tracer/span export.
     pub otlp: Option<OtlpSettings>,
     /// Every instance whose `module:` names an export module registered on the EXPORT AXIS
@@ -1830,7 +1828,6 @@ impl ExportCfg {
                 .iter()
                 .map(|s| &s.projection)
                 .chain(self.request_log_webhooks.iter().map(|s| &s.projection))
-                .chain(self.request_log_files.iter().map(|s| &s.projection))
                 .chain(self.otlp.iter().map(|s| &s.projection))
                 .chain(self.plugins.iter().map(|s| &s.projection)),
         )
@@ -1921,24 +1918,6 @@ pub struct WebhookSettings {
     pub(crate) projection: crate::export::projection::Projection,
 }
 
-/// `settings:` of an `export.<name>.module: request-log-file` instance.
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct FileSettings {
-    /// The JSONL file path each request-log line is appended to — REQUIRED.
-    pub path: String,
-    /// Optional size (MiB) at which the file is rotated (best-effort; absent ⇒ never rotate).
-    #[serde(default)]
-    pub rotate_mb: Option<u64>,
-    /// THIS INSTANCE'S RESOLVED PROJECTION — the streams + fields this sink is granted, from its
-    /// `streams:` / `fields:` keys (see `crate::export::projection`). NOT an operator key: it is
-    /// `#[serde(skip)]` so the `settings:` bag stays exactly what the operator wrote, and it is
-    /// filled in by [`resolve_export`]. It rides here so the delivery path can build this sink's
-    /// payload TO ITS PROJECTION without a second lookup keyed on instance name.
-    #[serde(skip)]
-    pub(crate) projection: crate::export::projection::Projection,
-}
-
 /// `settings:` of an `export.<name>.module: otlp` instance — the new home of the DELETED
 /// `observability.otlp_url`. The tracer/log-init machinery in `crate::observability` is
 /// unchanged; only the config surface that drives it moved.
@@ -1988,16 +1967,25 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
     let mut otlp_owner: Option<&str> = None;
 
     for (name, def) in defs {
+        let settings = serde_json::Value::Object(def.settings.clone());
+        let module = def.module.trim();
+        // A module the kernel does not serve is asked of the export axis: the streams its sink
+        // declares (so the projection is resolved against them now, as a built-in's is) and its
+        // own verdict on the settings.
+        let built_in = crate::export::projection::module_streams(module);
+        let axis = built_in
+            .is_none()
+            .then(|| crate::export::plugin::probe(name, module, &settings))
+            .flatten();
         let projection = crate::export::projection::resolve_projection(
             name,
-            def.module.trim(),
-            crate::export::projection::module_streams(def.module.trim()),
+            module,
+            built_in.or(axis.as_ref().and_then(|(streams, _)| streams.as_deref())),
             def.streams.as_deref(),
             def.fields.as_deref(),
             def.durable,
             errors,
         );
-        let settings = serde_json::Value::Object(def.settings.clone());
         // Parse the opaque bag into this module's typed settings struct. One helper so every module
         // produces the identical `export.<name>.settings: …` error prefix.
         macro_rules! typed {
@@ -2035,11 +2023,6 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
                     out.request_log_webhooks.push(v);
                 }
             }
-            EXPORT_MODULE_REQUEST_LOG_FILE => {
-                if let Some(v) = typed!(FileSettings) {
-                    out.request_log_files.push(v);
-                }
-            }
             EXPORT_MODULE_OTLP => {
                 if let Some(owner) = otlp_owner {
                     errors.push(format!(
@@ -2053,7 +2036,8 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
                 out.otlp = typed!(OtlpSettings);
             }
             // THE EXPORT AXIS: a module some compiled-in or dropped-in export plugin registered.
-            other if crate::export::plugin::registered(name, other, &settings, errors) => {
+            _ if axis.is_some() => {
+                errors.extend(axis.into_iter().flat_map(|(_, problems)| problems));
                 out.plugins.push(PluginExportSettings {
                     name: name.clone(),
                     def: def.clone(),

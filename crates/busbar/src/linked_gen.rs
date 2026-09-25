@@ -36,6 +36,7 @@ pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("on-host", "on_host", "on_host"),
     ("compose", "compose", "compose"),
     ("stdio-serve", "stdio_serve", "stdio_serve"),
+    ("exports", "exports", "EXPORT"),
 ];
 
 /// The root-bound seams: an axis a crate DRIVES rather than fills, emitted as a cfg the root binds

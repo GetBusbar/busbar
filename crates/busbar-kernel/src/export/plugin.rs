@@ -30,8 +30,8 @@ use busbar_plugin_loader::{DynExport, EndpointRequest, EndpointResponse, ExportS
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
 
-/// How many deliveries ONE plugin sink may have in flight — the same floor the built-in file sink
-/// holds ([`super::file`]): past it a line is shed and counted on the gate, never queued.
+/// How many deliveries ONE plugin sink may have in flight: past it a line is shed — counted on the
+/// gate and on the sink's declared shed counter — never queued.
 const MAX_INFLIGHT_PLUGIN_DELIVERIES: usize = 64;
 
 /// The export axis: the registry the composition root installed, once, before the configuration
@@ -44,15 +44,17 @@ pub fn install(registry: &'static PluginRegistry) {
     let _ = AXIS.set(registry);
 }
 
-/// Whether `module` names a `kind: export` row on the axis (what `resolve_export` asks of a module
-/// that is not a built-in) — and, when it does, the sink's own VALIDATION of the instance's
-/// `settings` (K9a S2) joins `errs` verbatim, so a plugin sink's settings errors surface at the
-/// same moment and in the same words a built-in module's do.
-pub(crate) fn registered(name: &str, module: &str, cfg: &Value, errs: &mut Vec<String>) -> bool {
-    let found = AXIS
-        .get()
-        .and_then(|a| a.validate_export(module, name, cfg));
-    found.map(|problems| errs.extend(problems)).is_some()
+/// What the axis says of `module` for instance `name` (what `resolve_export` asks of a module that
+/// is not a built-in): `None` when no `kind: export` row names it; else the streams its sink
+/// declares (unknown when it will not open here) — the projection is resolved against them at configuration time, as a built-in's is —
+/// and the sink's own VALIDATION of the instance's `settings` (K9a S2), reported verbatim, so a
+/// plugin sink's settings errors surface at the same moment and in the same words a built-in's do.
+pub(crate) fn probe(
+    name: &str,
+    module: &str,
+    cfg: &Value,
+) -> Option<(Option<Vec<ExportStream>>, Vec<String>)> {
+    AXIS.get()?.probe_export(module, name, cfg)
 }
 
 /// One opened plugin sink.
@@ -103,7 +105,8 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
             module: module.to_string(),
             sink: Arc::new(sink),
             projection,
-            gate: AdmissionGate::new(MAX_INFLIGHT_PLUGIN_DELIVERIES, "export-plugin"),
+            // The gate is named for the module, as each built-in sink's gate always was.
+            gate: AdmissionGate::new(MAX_INFLIGHT_PLUGIN_DELIVERIES, leak(module)),
         });
     }
     if !errors.is_empty() {
@@ -119,12 +122,19 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
 pub(crate) fn deliver_logs(cache: &mut PayloadCache<'_>) {
     let subscribed = |s: &&PluginSink| s.projection.wants_stream(ExportStream::Logs);
     for s in sinks().filter(subscribed) {
-        if let Some(permit) = s.gate.try_enter() {
-            let payload = cache.get(s.projection);
-            crate::audit::amend::export_read(&s.module, cache.facts.ingress_protocol, &payload);
-            s.sink.deliver_detached(ExportStream::Logs, payload, permit);
-        }
+        let Some(permit) = s.gate.try_enter() else {
+            s.sink.shed();
+            continue;
+        };
+        let payload = cache.get(s.projection);
+        crate::audit::amend::export_read(&s.module, cache.facts.ingress_protocol, &payload);
+        s.sink.deliver_detached(ExportStream::Logs, payload, permit);
     }
+}
+
+/// A module name as the `'static` gate label (boot-time, once per configured instance).
+fn leak(module: &str) -> &'static str {
+    Box::leak(module.to_string().into_boxed_str())
 }
 
 /// Ask every opened sink for its `status`, folded by the loader into this process's recorder —
