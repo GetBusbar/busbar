@@ -256,6 +256,10 @@ const EVT_OUTPUT_TEXT_DELTA: &str = "response.output_text.delta";
 // The closing bracket of the `output_text.delta` run: a native stream emits `output_text.done`
 // (carrying the COMPLETE assembled text) after the last delta and before `content_part.done`.
 const EVT_OUTPUT_TEXT_DONE: &str = "response.output_text.done";
+// A citation attached to the `output_text` part mid-stream: `{output_index, content_index,
+// annotation_index, annotation:{type:"url_citation", url, title, start_index, end_index}}`. It
+// arrives after the part's text deltas and before `output_text.done`, while the text block is open.
+const EVT_OUTPUT_TEXT_ANNOTATION_ADDED: &str = "response.output_text.annotation.added";
 const EVT_FUNCTION_CALL_ARGS_DELTA: &str = "response.function_call_arguments.delta";
 const EVT_REASONING_TEXT_DELTA: &str = "response.reasoning_text.delta";
 // The closing bracket of the `reasoning_text.delta` run (mirrors `output_text.done` for a text
@@ -1993,3 +1997,8 @@ mod field_carry_tests;
 #[cfg(test)]
 #[path = "tests/float_usage_tests.rs"]
 mod float_usage_tests;
+
+// Item 305: streamed `output_text.annotation.added` citations equal the buffered read.
+#[cfg(test)]
+#[path = "tests/annotation_stream_tests.rs"]
+mod annotation_stream_tests;

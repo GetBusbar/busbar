@@ -958,6 +958,36 @@ impl ProtocolReader for ResponsesReader {
                 }
             }
 
+            // STREAMED CITATIONS. A native Responses stream delivers each `url_citation` on the
+            // `output_text` part as its own `output_text.annotation.added` frame, after the part's
+            // text deltas and before its `output_text.done`. Read the single `annotation` through the
+            // same `read_url_annotations` the buffered `read_response` uses for the part's
+            // `annotations` array, and carry it as an `IrDelta::CitationsDelta` on the open text
+            // block at this `output_index`, so the streamed citations equal the buffered ones and
+            // reach every egress whose writer carries a citation. Only an OPEN text block takes the
+            // delta: an annotation for an index that is not an open text block (a tool index, a
+            // closed or never-opened part) has no block to attach to and is dropped rather than
+            // emitted as an orphan delta.
+            EVT_OUTPUT_TEXT_ANNOTATION_ADDED => {
+                let idx = data
+                    .get("output_index")
+                    .and_then(|i| i.as_u64())
+                    .map_or(0, |v| (v as usize).min(MAX_OUTPUT_INDEX));
+                if state.open_tools.contains(&(idx + TEXT_INDEX_KEY_OFFSET)) {
+                    if let Some(annotation) = data.get("annotation") {
+                        let citations = super::super::openai_annotations::read_url_annotations(
+                            &serde_json::Value::Array(vec![annotation.clone()]),
+                        );
+                        if !citations.is_empty() {
+                            out.push(IrStreamEvent::BlockDelta {
+                                index: idx,
+                                delta: crate::ir::IrDelta::CitationsDelta(citations),
+                            });
+                        }
+                    }
+                }
+            }
+
             EVT_FUNCTION_CALL_ARGS_DELTA => {
                 let delta = data
                     .get("delta")
