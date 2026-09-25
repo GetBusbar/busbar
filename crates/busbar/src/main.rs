@@ -284,9 +284,9 @@ fn main() {
     // THE COMPOSITION ROOT'S OWN SEAL is NOT here, and it is the one boot step that is not: it
     // composes the transports a switched-over plane would serve through, and the http one carries
     // the operator's `limits.request_body_max_bytes`, so it cannot run before the configuration it
-    // is built from has been read. It runs in `run()`, off the resolved limits (a root unit's
-    // `on_config`), still before any listener is bound. Every axis above is installed by then, which
-    // is the ordering the seal needed from this slot in the first place.
+    // is built from has been read. It runs in `run()`, off the resolved limits, still before any
+    // listener is bound. Every axis above is installed by then, which is the ordering the seal
+    // needed from this slot in the first place.
     // THE ROOT-BOUND SEAMS the linked entries drive, each bound once here beside the plane axis and
     // only when some entry drives it: the hostless-egress driver and the egress-trust host (the
     // "both ends" binding of the outbound hop — a plane holds only `&dyn HostlessEgress` and never
@@ -774,16 +774,18 @@ async fn run(data_workers: usize) {
     // reading taken here instead would be the boot's rates forever: the usage projection would
     // reprice on an apply and this node's ledger would not, and the identity that says the two are
     // one money would hold only until the operator changed a fee.
-    // THE ROOT UNITS' CONFIGURATION STEP, in the first slot where the values they compose exist: the
+    // THE COMPOSITION ROOT'S OWN SEAL, in the first slot where the values it composes exist: the
     // limits are resolved (and the overlay merged onto them) one screen up, and no listener is bound
-    // for another few hundred lines. This is where the composition root's own seal runs — the
-    // transports it composes are built from THESE limits, the same `request_body_max_bytes` the line
-    // above hands the served door, so a switched-over plane's transport and the door in front of it
-    // cannot disagree about which bodies exist — and where the card repricer is installed, BEFORE
-    // the first app build below, so the boot's own rate resolution is the history's OPENING ENTRY and
+    // for another few hundred lines. The transports it composes are built from THESE limits, the
+    // same `request_body_max_bytes` the line above hands the served door, so a plane's transport and
+    // the door in front of it cannot disagree about which bodies exist. Every build runs it, whatever
+    // planes it links; a composition that does not seal exits 2 here, and success writes nothing.
+    root::registry::seal_or_exit(root::policy::client_settings(&cfg.limits));
+    // THE ROOT UNITS' CONFIGURATION STEP, in the same slot: the card repricer is installed BEFORE the
+    // first app build below, so the boot's own rate resolution is the history's OPENING ENTRY and
     // nothing has to read the configuration twice. From there each resolution APPENDS an entry dated
-    // at the moment it landed and none is ever rewritten. A build without those units runs neither
-    // and is what it was, which is what the neutrality cells read.
+    // at the moment it landed and none is ever rewritten. A build without those units runs none and
+    // is what it was, which is what the neutrality cells read.
     for step in ROOT_UNITS.iter().filter_map(|u| u.on_config) {
         step(&cfg.limits);
     }

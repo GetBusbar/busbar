@@ -666,3 +666,31 @@ fn every_planes_claims_name_a_registered_transport() {
         );
     }
 }
+
+/// THE SEAL IS ON THE BOOT PATH, NEUTRALLY. `run()` seals the composition off the resolved limits
+/// before the root units' configuration step, in every build: the call is not behind a feature and
+/// is not a root unit's, so a build that links no plane's root unit still refuses a composition
+/// that does not seal, rather than booting past a check only one plane's unit ran.
+#[test]
+fn the_boot_path_seals_the_composition_in_every_build() {
+    let main = include_str!("../../main.rs");
+    let run = &main[main.find("async fn run(").expect("the boot's run()")..];
+    let call = "root::registry::seal_or_exit(root::policy::client_settings(&cfg.limits));";
+    let sealed = run.find(call).expect("run() seals the composition");
+    let units = run
+        .find("ROOT_UNITS.iter().filter_map(|u| u.on_config)")
+        .expect("the root units' configuration step");
+    assert!(
+        sealed < units,
+        "the seal answers before any root unit composes"
+    );
+    let line_before = run[..sealed]
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty() && !l.trim_start().starts_with("//"))
+        .unwrap_or_default();
+    assert!(
+        !line_before.trim_start().starts_with("#[cfg"),
+        "the seal is not behind a feature: {line_before}"
+    );
+}

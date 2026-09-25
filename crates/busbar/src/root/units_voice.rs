@@ -2132,84 +2132,19 @@ pub const fn handshake_scope() -> &'static str {
 // THE ROOT UNIT — the switch-over's mount, addressed through the composition root's generated table
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
-/// THE VOICE PLANE'S ROOT UNIT: once the deployment's limits are resolved the root is sealed and this
-/// plane mounted onto it ([`mount_root`], then its governed-call table composed). It opens no book and
-/// so has no book step: the listeners' TLS material is resolved by the path that serves them, once.
+/// THE VOICE PLANE'S ROOT UNIT: once the deployment's limits are resolved its governed-call table is
+/// composed ([`compose_voice_governed_calls`]) — the node this root serves the plane's units on, and
+/// the one seam the half of the plane that owns sockets reaches it through. The composition root's
+/// seal is not this unit's: it runs on the boot path for every build. It opens no book and so has no
+/// book step: the listeners' TLS material is resolved by the path that serves them, once.
 pub const ROOT_UNIT: crate::root::linked::RootUnit = crate::root::linked::RootUnit {
     seal: None,
     path_ingress: &[],
     body_ingress: &[],
-    on_config: Some(|limits| {
-        let _ = mount_root(limits);
-    }),
+    on_config: Some(|_| compose_voice_governed_calls()),
     opens_book: false,
     on_book: None,
 };
-
-/// SEAL THE COMPOSITION ROOT AND MOUNT THE VOICE PLANE ONTO IT — the switch-over, behind
-/// `root-voice`, which the shipped binary carries.
-///
-/// The root is built before any plane is switched onto it, and this is where one is. Sealing is the
-/// whole mount: seven transports composed bottom-up, five planes registered over them, every claim
-/// checked against every other claim and against the transports that exist, and the walk order
-/// answered once. A composition that does not seal is a node that must not bind a listener, so the
-/// answer is a refusal on the standard error stream and a non-zero exit — not a warning, and not a
-/// log line, because a node that refused to boot has no boot to log.
-///
-/// Nothing is emitted on the success path. That is the point: a deployment cannot tell from its logs
-/// which way this binary was built, so the boot-line set, the series list and the route list are the
-/// same either way, and the neutrality cells compare like with like.
-///
-/// ## Why the deployment's limits are an argument
-///
-/// The transports the seal composes are the ones a switched-over plane serves through, and the
-/// http one carries the operator's `limits.request_body_max_bytes` as its accumulation ceiling —
-/// the SAME number the served door builds its inbound body limit from. A seal that took the
-/// transport crate's `Default` would compose a node whose door and whose transport disagree about
-/// which bodies exist on every deployment that set the knob. So this takes the resolved limits, and
-/// takes them from the one place they are resolved, which is why it is called from `run()` (after
-/// the config loads) rather than beside the axis registrations in `main()`: the axes are installed
-/// before any reader because `--validate` reads them, and this reads configuration instead. It
-/// still answers before any listener is bound, which is the property the refusal is for.
-fn mount_root(
-    limits: &busbar_kernel::config::limits::LimitsResolved,
-) -> crate::root::registry::BootRegistry {
-    let sealed = match crate::root::registry::seal(crate::root::policy::client_settings(limits)) {
-        Ok(sealed) => {
-            // A BOOT REFUSAL for the same reason the seal's own `Err` arm is one, and it was a
-            // `debug_assert!`: a seal that reported success without the plane this function exists
-            // to mount is a composition that did not do what it says, and the shipped build was the
-            // one that never looked. Serving on it would bind a listener for a plane no registry can
-            // resolve — every streaming session refused at the first frame, from a node that booted
-            // clean.
-            if sealed
-                .registry
-                .resolve(
-                    busbar_kernel::registry::PluginKind::Plane,
-                    <busbar_plane_streaming::StreamingPlane as busbar_contract::plane::PlaneMeta>::KEY,
-                )
-                .is_none()
-            {
-                eprintln!(
-                    "busbar: the composition root did not seal: it reported success without the \
-                     voice plane, so the seal is not the composition it claims to be"
-                );
-                std::process::exit(2);
-            }
-            sealed
-        }
-        Err(refusal) => {
-            eprintln!("busbar: the composition root did not seal: {refusal}");
-            std::process::exit(2);
-        }
-    };
-    // THE OTHER HALF OF THE MOUNT: the node this root serves the plane's units on, and the one seam
-    // the half of the plane that owns sockets reaches it through. Without this the seal composed a
-    // node nothing on a socket could name — a client-served tool call's wait was entered where the
-    // leg was planned, and no frame arriving on any session could wake it and no tick could sweep it.
-    compose_voice_governed_calls();
-    sealed
-}
 
 /// COMPOSE THE VOICE NODE'S OPEN-CALL TABLE onto the served door — the composition root's one write
 /// of the governed-call port, and the moment a served voice session becomes a governed one.
