@@ -137,11 +137,17 @@ mod attempt_timeout_precedence_tests;
 #[path = "tests/auth_dispatch_tests.rs"]
 mod auth_dispatch_tests;
 #[cfg(test)]
+#[path = "tests/auth_native_envelope_tests.rs"]
+mod auth_native_envelope_tests;
+#[cfg(test)]
 #[path = "tests/auth_style_tests.rs"]
 mod auth_style_tests;
 #[cfg(test)]
 #[path = "tests/client_header_forwarding_tests.rs"]
 mod client_header_forwarding_tests;
+#[cfg(test)]
+#[path = "tests/dialect_registry_facts_tests.rs"]
+mod dialect_registry_facts_tests;
 #[cfg(test)]
 #[path = "tests/egress_differential_tests.rs"]
 mod egress_differential_tests;

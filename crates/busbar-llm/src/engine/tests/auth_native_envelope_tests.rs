@@ -8,28 +8,25 @@
 //! Core's auth path is dialect-blind: it resolves a path to an ingress, asks the registry which
 //! dialect that ingress speaks, and hands the registered writer the bad-credential status, `kind`
 //! and copy. WHICH dialect a path resolves to and WHAT that dialect's native bad-key answer looks
-//! like are this plane's facts, so they are pinned here, in the plane's own test target — the one
-//! binary with a single `busbar_kernel` and this plane's real dialect registrations.
+//! like are this plane's facts, so they are pinned here, in the plane's own unit-test binary, which
+//! reaches the engine's fixture through the crate's `crate::test_support` doorway and this plane's
+//! real dialect registrations through `crate::testkit::install_test_seams`.
 //!
 //! The sync `unauthorized_response` tests core ran against its private fn now drive the SAME
 //! function through the real router and `auth_middleware` (a wrong credential in token mode), which
 //! is the only way the auth-failure envelope reaches a client.
 
+use crate::test_support::engine_kit::EngineTestKit as _;
 use busbar_kernel::auth::AuthMiddleware;
-use busbar_kernel::proto::vendor_auth_failure_message;
+use busbar_substrate_values::proto::vendor_auth_failure_message;
 use reqwest::header::HeaderMap;
 use reqwest::StatusCode;
 
-/// This plane's registrations, installed into the kernel's process registries the way
-/// `busbar_llm::testkit::install_test_seams` does. That module is `cfg(any(test, feature =
-/// "test-support"))`, and an integration target links the library without either, so the four
-/// registrations a residual-arm auth failure reads are made here from the crate's public items:
-/// the protocol declarations, the plane declaration, and the path / body ingress tables.
+/// This plane's registrations, installed into the kernel's process registries through the plane's
+/// own test-kit install: the protocol declarations, the plane declaration, and the path / body
+/// ingress tables a residual-arm auth failure reads.
 fn install_llm_registrations() {
-    busbar_kernel::proto::register_test_protocols(busbar_llm::DECLS);
-    busbar_kernel::plane::registry::register_test_plane(&LLM_PLANE);
-    busbar_kernel::ingress::arrival::set_test_path_ingress(|| busbar_llm::PATH_INGRESS);
-    busbar_kernel::ingress::arrival::set_test_body_ingress(|| busbar_llm::BODY_INGRESS);
+    crate::testkit::install_test_seams();
 }
 
 /// Helper: an `AuthCfg` whose data-plane chain names the given modules (bare entries).
@@ -77,17 +74,17 @@ fn decode_body(resp: AuthFailure) -> serde_json::Value {
 /// arm, and a wrong credential. Auth rejects before routing, so no upstream call is made; `TestApp`
 /// still needs a lane/pool.
 async fn unauthorized_response(path: &str) -> AuthFailure {
-    use busbar_kernel::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
+    use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
     use std::sync::Arc;
 
-    busbar_kernel::metrics::init();
+    crate::test_support::engine_kit::CORE_ENGINE_KIT.metrics_init();
     let server = MockServer::new(Arc::new(MockServerState::new())).await;
     let auth_cfg = chain_cfg(&["test-groups-module"]);
     let app = TestApp::new()
         .lane(
             LaneSpec::new(
                 "test-model",
-                busbar_kernel::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .api_key("busbar-upstream-key"),
@@ -95,7 +92,7 @@ async fn unauthorized_response(path: &str) -> AuthFailure {
         .pool("pa", &[(0, 1)])
         .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
         .build();
-    let router = busbar_kernel::test_support::build_router(app);
+    let router = crate::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -485,11 +482,11 @@ fn test_every_router_ingress_path_maps_to_non_fallback_proto() {
 #[tokio::test]
 async fn test_cohere_and_responses_ingress_token_mode_native_401() {
     install_llm_registrations();
-    use busbar_kernel::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
+    use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_kernel::metrics::init();
+    crate::test_support::engine_kit::CORE_ENGINE_KIT.metrics_init();
 
     // No upstream call is made — auth rejects before routing — but TestApp needs a lane/pool.
     let state = Arc::new(MockServerState::new());
@@ -500,7 +497,7 @@ async fn test_cohere_and_responses_ingress_token_mode_native_401() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                busbar_kernel::proto::PROTO_OPENAI,
+                crate::proto_codec::PROTO_OPENAI,
                 &server.base_url(),
             )
             .api_key("busbar-upstream-key"),
@@ -509,7 +506,7 @@ async fn test_cohere_and_responses_ingress_token_mode_native_401() {
         .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
         .build();
 
-    let router = busbar_kernel::test_support::build_router(app);
+    let router = crate::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -585,11 +582,11 @@ async fn test_cohere_and_responses_ingress_token_mode_native_401() {
 #[tokio::test]
 async fn test_bedrock_ingress_wrong_token_is_403_native_envelope() {
     install_llm_registrations();
-    use busbar_kernel::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
+    use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_kernel::metrics::init();
+    crate::test_support::engine_kit::CORE_ENGINE_KIT.metrics_init();
 
     // Auth rejects before routing, so no upstream call is made; TestApp still needs a lane/pool.
     let state = Arc::new(MockServerState::new());
@@ -600,7 +597,7 @@ async fn test_bedrock_ingress_wrong_token_is_403_native_envelope() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                busbar_kernel::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .api_key("busbar-upstream-key"),
@@ -609,7 +606,7 @@ async fn test_bedrock_ingress_wrong_token_is_403_native_envelope() {
         .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
         .build();
 
-    let router = busbar_kernel::test_support::build_router(app);
+    let router = crate::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -671,11 +668,11 @@ async fn test_bedrock_ingress_wrong_token_is_403_native_envelope() {
 #[tokio::test]
 async fn test_gemini_ingress_wrong_token_is_native_bad_key_envelope() {
     install_llm_registrations();
-    use busbar_kernel::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
+    use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_kernel::metrics::init();
+    crate::test_support::engine_kit::CORE_ENGINE_KIT.metrics_init();
 
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
@@ -685,7 +682,7 @@ async fn test_gemini_ingress_wrong_token_is_native_bad_key_envelope() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                busbar_kernel::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .api_key("busbar-upstream-key"),
@@ -694,7 +691,7 @@ async fn test_gemini_ingress_wrong_token_is_native_bad_key_envelope() {
         .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
         .build();
 
-    let router = busbar_kernel::test_support::build_router(app);
+    let router = crate::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -752,11 +749,11 @@ async fn test_gemini_ingress_wrong_token_is_native_bad_key_envelope() {
 #[tokio::test]
 async fn test_admin_prefix_is_boundary_safe() {
     install_llm_registrations();
-    use busbar_kernel::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
+    use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_kernel::metrics::init();
+    crate::test_support::engine_kit::CORE_ENGINE_KIT.metrics_init();
 
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
@@ -766,7 +763,7 @@ async fn test_admin_prefix_is_boundary_safe() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                busbar_kernel::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .api_key("busbar-upstream-key"),
@@ -775,7 +772,7 @@ async fn test_admin_prefix_is_boundary_safe() {
         .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
         .build();
 
-    let router = busbar_kernel::test_support::build_router(app);
+    let router = crate::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -821,11 +818,3 @@ async fn test_admin_prefix_is_boundary_safe() {
     handle.abort();
     server.shutdown().await;
 }
-
-/// The llm plane's registry row, assembled kernel-side from its contract declaration
-/// and its behaviour table.
-static LLM_PLANE: busbar_kernel::plane::registry::PlaneDecl =
-    busbar_kernel::plane::registry::PlaneDecl::assemble(
-        busbar_llm::PLANE_DECLARATION,
-        busbar_llm::PLANE_HOOKS,
-    );

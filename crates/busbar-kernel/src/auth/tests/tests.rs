@@ -135,7 +135,7 @@ fn admin_scope_bindings_are_module_scoped() {
 }
 
 // `assert_uuid_v4_shaped` moved with its callers (the synthetic request-id shape of one dialect's
-// auth failure) to `crates/busbar-llm/tests/auth_native_envelope.rs`; its sibling
+// auth failure) to `crates/busbar-llm/src/engine/tests/auth_native_envelope_tests.rs`; its sibling
 // `test_synth_amzn_request_id_is_uuid_v4` already lives in busbar-llm beside that codec.
 
 #[test]
@@ -629,8 +629,8 @@ fn test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_ap
     );
 }
 
-// THE VENDOR-SHAPED AUTH-FAILURE TESTS live in the LLM plane, in `crates/busbar-llm/tests/
-// auth_native_envelope.rs`. They pin what each LLM dialect's registered
+// THE VENDOR-SHAPED AUTH-FAILURE TESTS live in the LLM plane, in `crates/busbar-llm/src/engine/
+// tests/auth_native_envelope_tests.rs`. They pin what each LLM dialect's registered
 // writer answers a bad credential with (the residual dialect a path resolves to, the per-dialect
 // envelope / status / headers / copy, the router-ingress coverage) — the plane's behaviour reached
 // through core's neutral resolver — so they run in the plane's own test target, the one binary
@@ -672,8 +672,8 @@ fn test_unauthorized_body_carries_no_busbar_vocabulary() {
     // — a deterministic proxy tell that also discloses the per-virtual-key enable/disable model.
     // Sweep the ingress path shapes (incl. the admin-looking and unknown-path fallbacks) through
     // `unauthorized_response` itself and assert no leaked token appears anywhere in the JSON. The
-    // plane's twin in `crates/busbar-llm/tests/auth_native_envelope.rs` sweeps the same data-plane
-    // paths through the live stack, including the one path shape named after its dialect.
+    // plane's twin, busbar-llm `engine/tests/auth_native_envelope_tests.rs`, sweeps the same
+    // data-plane paths through the live stack, including the one path shape named after its dialect.
     const FORBIDDEN: &[&str] = &[
         "virtual key",
         "client token",
