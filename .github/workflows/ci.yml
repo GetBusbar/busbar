@@ -2138,28 +2138,29 @@ jobs:
           # ends. `scope: package` runs the clippy step over `tests:` (the root package, defaults off)
           # instead of `--workspace`, because `--no-default-features` over the workspace is a
           # different build of every other crate, not this one. Clippy's `--all-targets` still
-          # compiles and lints every target of the package; the test step runs the binary's own
-          # suite (`--bin busbar`), the one that reads the build's linked roster. The integration
-          # suites under crates/busbar/tests boot all-plane fixtures and are the `check` job's.
+          # compiles and lints every target of the package; the test step runs every test target of
+          # the package (`--tests`): the binary's own suite and the integration suites under
+          # crates/busbar/tests, all of which read the build's linked roster, so a cell that needs a
+          # plane, a provider codec or the admin surface is gated on what the build links.
           - name: single plane llm
             features: busbar/proto-llm
-            tests: -p busbar --bin busbar --no-default-features
+            tests: -p busbar --tests --no-default-features
             scope: package
           - name: single plane mcp
             features: busbar/plane-mcp
-            tests: -p busbar --bin busbar --no-default-features
+            tests: -p busbar --tests --no-default-features
             scope: package
           - name: single plane a2a
             features: busbar/plane-a2a
-            tests: -p busbar --bin busbar --no-default-features
+            tests: -p busbar --tests --no-default-features
             scope: package
           - name: single plane voice
             features: busbar/plane-voice
-            tests: -p busbar --bin busbar --no-default-features
+            tests: -p busbar --tests --no-default-features
             scope: package
           - name: single plane decision
             features: busbar/plane-decision
-            tests: -p busbar --bin busbar --no-default-features
+            tests: -p busbar --tests --no-default-features
             scope: package
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

@@ -107,22 +107,31 @@ both ends:
 
 | row | features | clippy and tests |
 | --- | --- | --- |
-| `single plane llm` | `busbar/proto-llm` | `-p busbar --bin busbar --no-default-features` |
-| `single plane mcp` | `busbar/plane-mcp` | `-p busbar --bin busbar --no-default-features` |
-| `single plane a2a` | `busbar/plane-a2a` | `-p busbar --bin busbar --no-default-features` |
-| `single plane voice` | `busbar/plane-voice` | `-p busbar --bin busbar --no-default-features` |
-| `single plane decision` | `busbar/plane-decision` | `-p busbar --bin busbar --no-default-features` |
+| `single plane llm` | `busbar/proto-llm` | `-p busbar --tests --no-default-features` |
+| `single plane mcp` | `busbar/plane-mcp` | `-p busbar --tests --no-default-features` |
+| `single plane a2a` | `busbar/plane-a2a` | `-p busbar --tests --no-default-features` |
+| `single plane voice` | `busbar/plane-voice` | `-p busbar --tests --no-default-features` |
+| `single plane decision` | `busbar/plane-decision` | `-p busbar --tests --no-default-features` |
 
 A row with `scope: package` runs its clippy step over its `tests:` selectors (plus `--all-targets`)
 instead of `--workspace`: `--no-default-features` over the workspace would be a different build of
 every other crate. No row adds `root-admin`; no plane needs it — every one of the five, and the
 no-default and default builds, builds and passes the binary's suite without it.
 
-The test step is the binary's own suite. Two integration suites under `crates/busbar/tests` assume
-every plane is linked — measured on an mcp-only build, 303 pass and 2 fail: `cli_validate.rs`
-configures a provider on a wire codec the build does not carry, and `plane_isomorphism.rs` reads its
-allowlist rows for unlinked planes as stale — so the integration suites stay the `check` job's until
-they read the linked roster; clippy still compiles and lints them in every single-plane row.
+The test step runs every test target of the root package (`--tests`): the binary's own suite and the
+integration suites under `crates/busbar/tests`. Until K3 two of those suites assumed every plane was
+linked. Measured on an mcp-only build, 303 passed and 2 failed: `cli_validate.rs` configured a
+provider on a wire codec the build does not carry, and `plane_isomorphism.rs` read its allowlist rows
+for unlinked planes as stale. Both now read the linked roster:
+
+- the publish-as collision configures only the plane that owns `tools:`;
+- staleness is judged only for linked planes, and exactly when every plane is linked (`linked_every_plane`);
+- cells that need a provider codec or the root admin surface are gated on the linked `body-ingress`
+  axis or `root-admin`.
+
+Measured with `cargo test -p busbar --no-default-features --features <plane> --tests`, every row
+passes with 0 failures (llm 323, mcp 304, a2a 294, voice 299, decision 309), and clippy
+`--all-targets -D warnings` is clean on each.
 
 ## The cost
 
