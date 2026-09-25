@@ -88,7 +88,7 @@ fn usage_units_pack_decode_round_trips() {
 
     let key = b"vk_1";
     let model = b"cmd-r";
-    let provider = b"cohere";
+    let provider = b"prov-a";
     let guard = Usage::with_units(
         UsageComponent::Queries,
         1,

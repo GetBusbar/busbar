@@ -133,6 +133,7 @@ impl ExportStream {
             ExportStream::Logs => "logs",
             ExportStream::Traces => "traces",
             ExportStream::Costs => "costs",
+            // plane-purity: frozen-wire ExportDefCfg `streams:` token (frozen since 1.5.5)
             ExportStream::Decisions => "decisions",
             ExportStream::Events => "events",
             ExportStream::Identity => "identity",
