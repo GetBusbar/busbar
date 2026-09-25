@@ -293,7 +293,7 @@ fn no_abort_the_shipped_kernel_can_raise_carries_a_money_reason() {
     }
 }
 
-/// THE CENSUS FLOOR, armed at today's measured number: ninety-eight `Refusal::new(` constructions in
+/// THE CENSUS FLOOR, armed at today's measured number: ninety-four `Refusal::new(` constructions in
 /// production source. The scan this file used to run matched fifty-seven of them (item 258); a floor
 /// under the census is what stops a scanner regression from quietly shrinking the population every
 /// "nothing refuses with" claim below is asserted over.
@@ -304,11 +304,15 @@ fn no_abort_the_shipped_kernel_can_raise_carries_a_money_reason() {
 /// `posture::check_set_dual_control_required` — the removed `approve` / `set_dual_control` verbs'
 /// own checks, zero production callers — taking their three `RefusalStep::Approve` sites
 /// (`SelfApproval`, `PayloadMismatch`, `InsufficientApprovers`) with them. None is a money reason and
-/// none was served. The population is ninety-eight since; the floor is re-armed there. A population
-/// that falls because code was DELETED re-arms this floor in the same commit as the deletion, naming
-/// the sites; a population that falls with no deletion is the scanner regression this floor exists
-/// to catch.
-const MIN_REFUSAL_SITES: usize = 98;
+/// none was served. The population was ninety-eight since. K2c (DEAD-UNITS) then deleted
+/// `root/units_mcp.rs` — the pre-unification mcp unit bindings no chain from `fn main()` reaches; the
+/// plane is served through the kernel-loop rider and meters inside its own `drive` — taking its four
+/// sites with it: two `HandoffMismatch` (arrival), one `DecodeFailed` and the one carried `*reason`
+/// (decode; pinned below until then). None is a money reason and none was served. The population is
+/// ninety-four since; the floor is re-armed there. A population that falls because code was DELETED
+/// re-arms this floor in the same commit as the deletion, naming the sites; a population that falls
+/// with no deletion is the scanner regression this floor exists to catch.
+const MIN_REFUSAL_SITES: usize = 94;
 
 /// THE SITES WHOSE REASON IS CARRIED, NOT WRITTEN — pinned, file by file, at today's measurement.
 ///
@@ -334,7 +338,6 @@ const COMPUTED_REFUSAL_SITES: &[(&str, &str)] = &[
         "busbar/src/root/units_admin/mod.rs",
         "verbs_reason(refusal.reason)",
     ),
-    ("busbar/src/root/units_mcp.rs", "*reason"),
     ("busbar/src/root/units_voice.rs", "reason"),
     ("busbar/src/root/units_voice.rs", "refusal.reason()"),
 ];

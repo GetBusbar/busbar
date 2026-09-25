@@ -83,8 +83,6 @@ pub mod units_a2a;
 pub mod units_admin;
 #[cfg(feature = "root-llm")]
 pub mod units_llm;
-#[cfg(feature = "root-mcp")]
-pub mod units_mcp;
 #[cfg(feature = "root-voice")]
 pub mod units_voice;
 

@@ -186,10 +186,10 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 [features]
 # Pure forwards: every `#[cfg(feature = ...)]` site lives in busbar-core, so the binary's features
 # are one-line re-exports of the core feature with the same name. Every protocol entry below is the
-# SAME default set the monolithic crate had; `root-admin`, `root-mcp`, `root-a2a`, `root-voice` and
-# `root-llm` are the additions, and all five are paths rather than surfaces — the operations, their
-# bytes and their features are unchanged.
-default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "plane-decision", "root-admin", "root-mcp", "root-a2a", "root-voice", "root-llm"]
+# SAME default set the monolithic crate had; `root-admin`, `root-a2a`, `root-voice` and `root-llm`
+# are the additions, and all four are paths rather than surfaces — the operations, their bytes and
+# their features are unchanged.
+default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "plane-decision", "root-admin", "root-a2a", "root-voice", "root-llm"]
 # A protocol crate: the dependency edge plus its registration line in main.rs. Dropping the
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
@@ -294,16 +294,6 @@ root-llm = ["proto-llm", "busbar-llm?/teller-waist"]
 # neutrality cells answering the same on both legs. The leg stays switchable — off, it costs one
 # unbuilt module and nothing else.
 root-a2a = []
-# THE MCP PLANE'S KERNEL BINDINGS, DEFAULT ON. Not a second MCP switch: `plane-mcp` above still
-# decides whether this binary speaks the protocol at all. This one decides whether the MCP plane's
-# bindings to the fourteen units are compiled and sealed at boot, which is the step BEFORE any byte
-# is served through them. Default-off was the ordering, not the destination: the bindings were built
-# and checked against the real unit traits while the serving path stayed untouched, the rigs answered
-# identically both ways, and the whole 890-cell owed golden came back at 0 diverging with it on. So
-# it ships on, and a plane whose own declarations disagree now refuses to boot instead of being found
-# out by a customer. The leg stays switchable — off, it costs one unbuilt module and nothing else,
-# because `main.rs` names the seal inside a `cfg` and the serving path is not the thing it touches.
-root-mcp = []
 # THE ROOT-DRIVEN ADMIN SURFACE (composition-root step C1 / switch-over S1). DEFAULT ON: it was held
 # off until the oracle's admin family was green on it, and it is. The switch is what makes an admin
 # request travel through the kernel's loop instead of reaching its handler directly; the 234 owed
@@ -370,9 +360,16 @@ busbar-plane-decision = "crate::root::plane_decision"
 # The root's own unit modules (the kernel-loop halves of planes that still live in the root), each
 # compiled under its cargo feature and exporting a `ROOT_UNIT` (`root::linked::RootUnit`). Order is
 # the order their boot steps run in: seals, then the configuration step, then the book step.
+# THE SERVED-LEG WITNESSES the root's rider tests run: cargo feature -> the plane crate whose
+# `testkit::SERVED` table they drive through the kernel-loop runner `gauntlet_install::install()`
+# registers for that plane's key. Test builds only (`build.rs` emits `$OUT_DIR/served_witness.rs`, which
+# `root/tests/gauntlet_kernel.rs` includes); each crate is linked with `test-support` by the dev-deps.
+[package.metadata.busbar.served-witness]
+plane-mcp = "busbar-mcp"
+plane-a2a = "busbar-a2a"
+
 [package.metadata.busbar.root-units]
 plane-decision = "plane_decision"
-root-mcp = "units_mcp"
 root-a2a = "units_a2a"
 root-voice = "units_voice"
 root-llm = "units_llm"
@@ -384,6 +381,9 @@ root-llm = "units_llm"
 async-trait = { workspace = true }
 # The root's own llm tests install the plane's seams.
 busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
+# The served planes' test kits: `testkit::SERVED` (their served-leg witnesses) is `test-support` only.
+busbar-mcp = { path = "../busbar-mcp", features = ["test-support"] }
+busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
 # The bin's own unit tests (src/tests/tests.rs, the ~14 boot/CLI helpers) build App fixtures
 # through the kernel's test_support, exposed to dependents only behind this feature.
 busbar-kernel = { path = "../busbar-kernel", features = ["test-support"] }
