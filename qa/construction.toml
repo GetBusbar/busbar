@@ -212,15 +212,15 @@ busbar-voice = ["busbar-voice-codec"]
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 5652
-to      = 7414
-because = "Owner-locked consequence, not a discretionary raise: contract = SHAPES (DECISIONS #83) and the plugin path links shapes only (#84), so the plugin-facing api contracts move into busbar-contract and the ceiling re-arms at the MEASURED value after the merge, in its own commit. Measured by cargo xtask loc busbar-contract: 6834 before, 7414 after. The +580 is the auth/hooks/secret/operation move out of busbar-api (+470, module-path-only; busbar-api shrinks by the same code) and the opaque transport-configuration handle #40(b)/#36 specify (+110). Later merges into the contract re-arm again at their own measure."
+from    = 7414
+to      = 7418
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value after each owner-locked #83/#84 merge commit into busbar-contract, each in its own commit. This is the re-arm for f42d27d56, the #83 api->contract move of sha256_hex (ARCHITECT P68-0 residue (b)): the credential digest joins constant_time_eq in busbar_contract::redacted and busbar-api keeps only a re-export. Measured by cargo xtask loc busbar-contract: 7414 before, 7418 after; the +4 is the function and its sha2 import, nothing else. The 5652 -> 7414 declaration this replaces had landed at the base and expired."
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 5652
-to      = 7414
-because = "Owner-locked consequence, not a discretionary raise: contract = SHAPES (DECISIONS #83) and the plugin path links shapes only (#84), so the plugin-facing api contracts move into busbar-contract and the ceiling re-arms at the MEASURED value after the merge, in its own commit. Measured by cargo xtask loc busbar-contract: 6834 before, 7414 after. The +580 is the auth/hooks/secret/operation move out of busbar-api (+470, module-path-only; busbar-api shrinks by the same code) and the opaque transport-configuration handle #40(b)/#36 specify (+110). Later merges into the contract re-arm again at their own measure."
+from    = 7414
+to      = 7418
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value after each owner-locked #83/#84 merge commit into busbar-contract, each in its own commit. This is the re-arm for f42d27d56, the #83 api->contract move of sha256_hex (ARCHITECT P68-0 residue (b)): the credential digest joins constant_time_eq in busbar_contract::redacted and busbar-api keeps only a re-export. Measured by cargo xtask loc busbar-contract: 7414 before, 7418 after; the +4 is the function and its sha2 import, nothing else. The 5652 -> 7414 declaration this replaces had landed at the base and expired."
 
 # ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
 #
@@ -299,7 +299,10 @@ because = "Owner-locked consequence, not a discretionary raise: contract = SHAPE
 # `hooks`, `secret`, `operation`) moved in and the opaque transport-configuration handle landed. The
 # attribution is in the declared raise above. Still owed, each with its own re-arm: the durable-write
 # primitive, `secret-ref`, `substrate-values`' `ir/*`, and `media`/`billing`/`wire`/`lossless`.
-contract_caps = 7414
+# RE-ARMED 7414 -> 7418, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# f42d27d56 moved `sha256_hex` api -> contract under #83 (ARCHITECT P68-0 residue (b)). The +4 is
+# that function; the declared raise above carries the before/after measure.
+contract_caps = 7418
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -851,7 +854,8 @@ contract_crate = "busbar-contract"
 # is now the PAIR's, not this row's alone.
 # RE-ARMED 5652 -> 7414 with its pair, at the measurement after the plugin-contract merge. The
 # reason is the one over `[gate.surface_ceilings].contract_caps`, and both rows hold one number.
-caps_contract_ceiling = 7414
+# RE-ARMED 7414 -> 7418 with its pair (OWNER RULING Q68(3); the `sha256_hex` #83 move, f42d27d56).
+caps_contract_ceiling = 7418
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
