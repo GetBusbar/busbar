@@ -3552,6 +3552,15 @@ jobs:
     # download step below fails and names the missing artifact — a red with a reason, not a skip.
     if: ${{ !cancelled() }}
     steps:
+      # A SKIPPED ORACLE IS NOT A MISSING ARTIFACT. When `shadow-oracle` never ran (its `preflight`
+      # or `build-release` did not pass), the download below can only report "Artifact not found",
+      # which sends the reader after an upload that was never attempted. Say the real cause, and
+      # stay red: no recording was judged, so no spec verdict exists for this commit.
+      - name: The shadow oracle ran on this commit
+        if: ${{ needs.shadow-oracle.result == 'skipped' }}
+        run: |
+          echo "::error::shadow-oracle was SKIPPED on this commit (its needs, preflight and build-release, did not both pass), so it recorded nothing and there is no candidate recording to judge. Fix the upstream red; this job judges the recording the oracle makes."
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Download the candidate recording (made by shadow-oracle on this commit)
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
