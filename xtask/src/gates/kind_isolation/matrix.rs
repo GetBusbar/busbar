@@ -2365,10 +2365,9 @@ pub fn selftest<'a>(
     // A `[[cell]]` ROW WHOSE CRATE IS NOT THERE. `busbar-auth-static-plugin` carries live cells;
     // every one of them measures nothing the moment the crate stops being one.
     //
-    // RE-TARGETED (SHA-KI): the subject was `busbar-auth-admin-tokens × api`, and that row went
-    // dead on the real tree when the crate's last `busbar-api` name moved to the contract
-    // (dee18b57f) — so its red became standing debt the debt-free base subtracts, and the case
-    // came back green. `busbar-auth-static-plugin × plugin-tooling` is a live row (the SDK edge
+    // RE-TARGETED: the subject was `busbar-auth-admin-tokens × api`, and that row went dead on the
+    // real tree when the crate's last `busbar-api` name moved to the contract — so its red became
+    // standing debt the debt-free base subtracts, and the case came back green. `busbar-auth-static-plugin × plugin-tooling` is a live row (the SDK edge
     // stays until F6), and removing the crate's manifest kills it exactly as it did the old one.
     let mut ov = crate::ctx::Overlay::new();
     ov.remove("crates/auth-static-plugin/Cargo.toml");
