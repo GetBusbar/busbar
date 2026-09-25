@@ -258,21 +258,26 @@ fn gem09_thinking_level_is_the_effort_ask() {
     assert_eq!(out["reasoning_effort"], json!("high"), "{out}");
 }
 
-/// GEM-10: a hosted tool (`googleSearch`) is read as a hosted IR tool, not silently lost in the
-/// reader; the cross-protocol seam then drops it by name (the neutral kind is IR-11).
+/// GEM-10: a hosted tool (`googleSearch`) is not silently lost in the reader: it is read into the
+/// typed hosted-tool slot (IR-11; the full wiring is in `ir_slot_wiring_tests`), never projected as
+/// a malformed function tool onto a foreign backend.
 #[test]
 fn gem10_hosted_tool_is_read_as_hosted() {
     let body = json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}],
         "tools": [{"googleSearch": {}}, {"functionDeclarations": [{"name": "g", "parameters": {"type": "object"}}]}]});
     let ir = GeminiReader.read_request(&body).expect("read");
-    assert!(
-        ir.tools
-            .iter()
-            .any(|t| t.hosted == Some(json!({"googleSearch": {}}))),
+    assert_eq!(
+        ir.hosted_tools,
+        vec![crate::ir::IrHostedTool::WebSearch(Default::default())],
         "{:?}",
         ir.tools
     );
-    // The function tool beside it still reaches a foreign backend; the hosted one does not.
+    assert!(
+        ir.tools.iter().all(|t| t.hosted.is_none()),
+        "{:?}",
+        ir.tools
+    );
+    // The function tool beside it still reaches a foreign backend as the one function tool.
     let out = xreq("gemini", "openai", &body);
     assert_eq!(out["tools"].as_array().map(Vec::len), Some(1), "{out}");
 }

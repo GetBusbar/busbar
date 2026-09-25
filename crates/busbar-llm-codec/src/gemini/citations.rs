@@ -97,10 +97,8 @@ pub(super) fn gemini_char_offset_to_byte(text: &str, char_idx: i64) -> i64 {
 /// no citation metadata.
 ///
 /// `anchor_text` is the response text these offsets index into (needed for the byte->char
-/// conversion). NON-STREAM PATH ONLY: the streaming reader (`read_response_events`) has no
-/// accumulated full-response text to convert against (`GeminiStreamState` carries only an index, not
-/// text) — adding one for an offset correction would put a full-text accumulator on a hot streaming
-/// path, so the streaming arm is left with byte offsets and a comment stating why.
+/// conversion): the candidate's full text on the buffered path, the answer text streamed so far
+/// (`StreamDecodeState::streamed_text`) on the stream (GEM-16). `None` leaves the wire bytes.
 pub(super) fn read_gemini_citations(
     candidate: &serde_json::Value,
     anchor_text: Option<&str>,
@@ -127,8 +125,8 @@ pub(super) fn read_gemini_citations(
                     raw_start.map(|b| idx.char_offset(b)),
                     raw_end.map(|b| idx.char_offset(b)),
                 ),
-                // Streaming path: no accumulated text to convert against. Leave as the raw wire
-                // value (bytes) rather than silently mislabeling it as characters.
+                // No anchor text to convert against: leave the raw wire value (bytes) rather
+                // than silently mislabel it as characters.
                 None => (raw_start, raw_end),
             };
             crate::ir::IrCitation {
@@ -220,8 +218,8 @@ pub(super) fn read_gemini_grounding_citations(
         )
     };
     // `segment.startIndex`/`endIndex` are BYTE offsets into the candidate's full text, the same
-    // convention `citationSources[]` uses — convert with the same helper, and on the streaming path
-    // (no anchor text) leave the wire value rather than mislabel bytes as characters.
+    // convention `citationSources[]` uses — convert with the same helper, and with no anchor text
+    // leave the wire value rather than mislabel bytes as characters.
     // One pass over the anchor text for the whole grounding block, not one per offset converted.
     let char_index = anchor_text.map(GeminiCharIndex::build);
     let convert = |b: Option<i64>| match char_index.as_ref() {
@@ -310,7 +308,7 @@ pub(super) fn read_gemini_grounding_citations(
 
 /// Attach a Gemini candidate's `citationMetadata.citationSources[]` onto the RIGHT Text block(s) of
 /// `content`, with indices re-expressed RELATIVE TO THAT BLOCK'S OWN TEXT — the non-stream (buffered)
-/// response path only, mirroring [`read_gemini_citations`]'s own NON-STREAM-PATH-ONLY scoping.
+/// response path only (the stream reader converts against its streamed text instead).
 ///
 /// Google's `citationSources[].startIndex`/`endIndex` are byte offsets into the candidate's FULL
 /// output text — the concatenation of every text part in order, NOT any single part. A candidate

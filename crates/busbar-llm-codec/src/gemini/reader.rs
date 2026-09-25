@@ -403,12 +403,19 @@ impl ProtocolReader for GeminiReader {
                                 // redacted reasoning block via this path regardless of the signature
                                 // it sends (redacted-ness is a typed flag, not a signature string).
                                 .map(String::from);
+                            // A Gemini thought part is a SUMMARY of the model's reasoning
+                            // (IR-17). Its signature's origin (IR-18) is left UNKNOWN here: a
+                            // history turn holds whatever the client was handed, and a Gemini
+                            // client of a foreign backend was handed that backend's blob (the
+                            // response writer relays it), which it echoes back. Stamping it Gemini
+                            // would make the foreign backend's writer drop its own signature on the
+                            // next turn. A Gemini BACKEND's response is stamped (`read_response`).
                             msg_content.push(crate::ir::IrBlock::Thinking {
                                 text,
                                 signature,
                                 redacted: false,
                                 cache_control: None,
-                                kind: None,
+                                kind: Some(crate::ir::IrThinkingKind::Summary),
                                 signature_origin: None,
                             });
                         }
@@ -548,6 +555,7 @@ impl ProtocolReader for GeminiReader {
 
         // Handle tools array (functionDeclarations)
         let mut tools: Vec<crate::ir::IrTool> = Vec::new();
+        let mut hosted_tools: Vec<crate::ir::IrHostedTool> = Vec::new();
         if let Some(tools_arr) = obj.get("tools").and_then(|t| t.as_array()) {
             for tool_val in tools_arr {
                 // Gemini has functionDeclarations inside tools
@@ -587,7 +595,11 @@ impl ProtocolReader for GeminiReader {
                         });
                     }
                 }
-                tools.extend(read_gemini_hosted_tools(tool_val));
+                // `googleSearch` / `codeExecution` / `urlContext` cross the seam as typed hosted
+                // tools (GEM-10, IR-11); an unknown kind stays a raw hosted tool.
+                let (typed, raw) = read_gemini_hosted_tools(tool_val);
+                hosted_tools.extend(typed);
+                tools.extend(raw);
             }
         }
 
@@ -677,8 +689,11 @@ impl ProtocolReader for GeminiReader {
         let reasoning = match thinking_config.and_then(|tc| tc.get("thinkingBudget")) {
             Some(budget) => budget.as_i64().and_then(|n| match n {
                 -1 => Some(crate::ir::IrReasoningAsk::Dynamic),
+                // 0 = thinking explicitly switched off (IR-09): a foreign reasoning-by-default
+                // backend must be told, not left to think.
+                0 => Some(crate::ir::IrReasoningAsk::Off),
                 n if n > 0 => u32::try_from(n).ok().map(crate::ir::IrReasoningAsk::Budget),
-                _ => None, // 0 = thinking off; absent ask carries "off" faithfully
+                _ => None,
             }),
             // Gemini 3's word-form knob, `thinkingLevel`, is the effort ask (GEM-09). The API
             // takes one of the two, so a budget, when present, is the ask.
@@ -694,6 +709,8 @@ impl ProtocolReader for GeminiReader {
         // `modeled_keys`, like `generationConfig`), so a same-protocol Gemini→Gemini passthrough stays
         // byte-identical; the writer overlays a fresh `functionCallingConfig` from this typed field.
         let tool_choice = read_gemini_tool_choice(obj.get("toolConfig"));
+        // The function-name SUBSET the directive restricts to (IR-10).
+        let allowed_tools = read_gemini_allowed_tools(obj.get("toolConfig"));
 
         // Collect unmodeled top-level keys into extra (excluding modeled ones). `model` is in the
         // set so the loop below does NOT re-insert it: it is preserved in `extra` exactly once via
@@ -765,16 +782,19 @@ impl ProtocolReader for GeminiReader {
             n,
             response_format,
             extra,
-            metadata: None,
+            // Gemini `labels` (IR-03); the raw copy also stays in `extra` for same-protocol
+            // byte identity.
+            metadata: read_gemini_labels(obj.get("labels")),
             service_tier: None,
             store: None,
             safety_identifier: None,
             prompt_cache_key: None,
             verbosity: None,
-            allowed_tools: None,
-            hosted_tools: Vec::new(),
+            allowed_tools,
+            hosted_tools,
             system_role: None,
-            output_modalities: None,
+            // `generationConfig.responseModalities` (IR-19); the raw copy rides `extra` too.
+            output_modalities: read_gemini_response_modalities(obj.get("generationConfig")),
         })
     }
 
@@ -1032,6 +1052,9 @@ impl ProtocolReader for GeminiReader {
                                             refusal: false,
                                         });
                                     }
+                                    // The answer text so far: a streamed citation's byte offsets
+                                    // index into it (GEM-16).
+                                    state.streamed_text.push_str(text);
                                     out.push(IrStreamEvent::BlockDelta {
                                         index: ti,
                                         delta: crate::ir::IrDelta::TextDelta(text.to_string()),
@@ -1187,17 +1210,17 @@ impl ProtocolReader for GeminiReader {
             // yet) and emit the citations delta against it BEFORE the finishReason path closes the
             // block below. Without this arm a streamed Gemini citation was silently dropped.
             //
-            // `anchor_text: None` — DELIBERATELY left as raw byte offsets: a
-            // citation's indices address the FULL response text, which `GeminiStreamState` does not
-            // accumulate (it carries `text_index`, an index, not text). Adding a full-text
-            // accumulator to this hot streaming path for an offset correction would fail the
-            // layering test; the non-stream path (which HAS the full text) does convert.
+            // A citation's `startIndex`/`endIndex` are UTF-8 BYTE offsets into the FULL answer
+            // text, and the IR's are CHARACTERS (GEM-16): convert against the answer text streamed so
+            // far (`state.streamed_text`, every text delta above appends to it), exactly as the
+            // buffered path converts against the candidate's full text. Gemini sends the metadata
+            // after the text it cites, so the anchor holds that text; an offset past it clamps.
             // The list Gemini restates here is CUMULATIVE — every chunk that carries
             // `citationMetadata` repeats every source seen so far — so emit only the tail past the
             // watermark. Carrying the whole list each time made a client assembling the stream see
             // the first citation once per chunk. A shorter-than-watermark list (an upstream that
             // resets rather than accumulates) yields an empty tail and no delta, never a panic.
-            let all_citations = read_gemini_citations(candidate, None);
+            let all_citations = read_gemini_citations(candidate, Some(&state.streamed_text));
             let citations: Vec<crate::ir::IrCitation> = all_citations
                 .get(state.citations_emitted..)
                 .unwrap_or_default()
@@ -1488,13 +1511,18 @@ impl ProtocolReader for GeminiReader {
                         .get("thoughtSignature")
                         .and_then(|s| s.as_str())
                         .map(String::from);
+                    // A Gemini thought part is a SUMMARY of the model's reasoning (IR-17), and its
+                    // signature was minted by Gemini (IR-18).
+                    let signature_origin = signature
+                        .as_ref()
+                        .map(|_| crate::ir::IrSignatureOrigin::Gemini);
                     content.push(crate::ir::IrBlock::Thinking {
                         text,
                         signature,
                         redacted: false,
                         cache_control: None,
-                        kind: None,
-                        signature_origin: None,
+                        kind: Some(crate::ir::IrThinkingKind::Summary),
+                        signature_origin,
                     });
                 }
                 // Text part → IrBlock::Text

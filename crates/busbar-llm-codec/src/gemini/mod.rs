@@ -30,12 +30,14 @@ mod framer;
 pub mod handler;
 mod reader;
 mod schema;
+mod slots;
 mod usage;
 mod writer;
 
 use citations::*;
 pub use framer::GeminiJsonArrayFramer;
 use schema::*;
+use slots::*;
 use usage::*;
 
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
@@ -855,37 +857,6 @@ fn read_gemini_thinking_level(level: &str) -> Option<crate::ir::IrReasoningAsk> 
     Some(crate::ir::IrReasoningAsk::Effort(effort))
 }
 
-/// The tool entries Gemini carries beside `functionDeclarations` in `tools[]` — `googleSearch`,
-/// `codeExecution`, `urlContext`, … — each read as a HOSTED IR tool carrying its raw
-/// `{<key>: <config>}` object (IR audit GEM-10). They used to vanish in the reader without a trace;
-/// parked as `hosted`, the cross-protocol seam's hosted-tool drop names them. The neutral
-/// hosted-tool kind a foreign dialect could project them onto is IR-11.
-fn read_gemini_hosted_tools(tool_val: &serde_json::Value) -> Vec<crate::ir::IrTool> {
-    let Some(obj) = tool_val.as_object() else {
-        return Vec::new();
-    };
-    obj.iter()
-        .filter(|(k, _)| k.as_str() != "functionDeclarations")
-        .map(|(k, v)| {
-            tracing::warn!(
-                hosted_tool = %k,
-                "gemini hosted tool read as a hosted IR tool: no neutral hosted-tool kind exists \
-                 to project it onto a foreign dialect, so a cross-protocol hop drops it"
-            );
-            let mut raw = serde_json::Map::new();
-            raw.insert(k.clone(), v.clone());
-            crate::ir::IrTool {
-                name: String::new(),
-                description: None,
-                input_schema: serde_json::Value::Null,
-                cache_control: None,
-                hosted: Some(serde_json::Value::Object(raw)),
-                strict: None,
-            }
-        })
-        .collect()
-}
-
 /// Normalize a Gemini OpenAPI-subset `Schema` (`parameters`, `responseSchema`) into JSON Schema for
 /// the IR (IR audit GEM-11). Gemini's native enum spells types in upper case (`OBJECT`, `STRING`, …)
 /// and marks optional-null with `nullable: true`; every foreign target validates JSON Schema, where
@@ -1131,21 +1102,14 @@ fn read_gemini_tool_choice(
         "NONE" => Some(crate::ir::IrToolChoice::None),
         "ANY" => {
             // `allowedFunctionNames` is a LIST in Gemini, but the IR's `Tool` variant models a
-            // SINGLE targeted tool. The IR cannot express "call one of this SUBSET". A single name
-            // maps cleanly to `Tool{name}`. With N>1 names, fabricating `Tool{name: first}` would
-            // INVENT a stricter constraint (force exactly one specific tool) the request never made;
-            // instead degrade to `Required` (call SOME tool) — a true superset of the allow-list —
-            // and warn that the subset restriction is lost on this (cross-protocol) hop.
+            // SINGLE targeted tool. A single name maps cleanly to `Tool{name}`. With N>1 names,
+            // fabricating `Tool{name: first}` would INVENT a stricter constraint (force exactly one
+            // specific tool) the request never made; the directive is `Required` (call SOME tool)
+            // and the subset itself rides the IR's `allowed_tools` slot (IR-10,
+            // `read_gemini_allowed_tools`).
             let names = fcc.get("allowedFunctionNames").and_then(|a| a.as_array());
             match names {
-                Some(arr) if arr.len() > 1 => {
-                    tracing::warn!(
-                        allowed_count = arr.len(),
-                        "gemini allowedFunctionNames subset restriction is not representable in the \
-                         IR; relaxing to Required (call some tool)"
-                    );
-                    Some(crate::ir::IrToolChoice::Required)
-                }
+                Some(arr) if arr.len() > 1 => Some(crate::ir::IrToolChoice::Required),
                 _ => match names.and_then(|a| a.first()).and_then(|n| n.as_str()) {
                     Some(name) => Some(crate::ir::IrToolChoice::Tool {
                         name: name.to_string(),
@@ -1569,3 +1533,7 @@ mod float_usage_tests;
 #[cfg(test)]
 #[path = "tests/ir_mapping_tests.rs"]
 mod ir_mapping_tests;
+
+#[cfg(test)]
+#[path = "tests/ir_slot_wiring_tests.rs"]
+mod ir_slot_wiring_tests;

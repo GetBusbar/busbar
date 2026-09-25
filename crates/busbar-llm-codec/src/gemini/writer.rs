@@ -1,6 +1,12 @@
 use super::*;
 
 impl ProtocolWriter for GeminiWriter {
+    /// The Q57 request slots Gemini has no form for (IR-04..07); `write_request` drops each with a
+    /// warn and the seam audits it from here.
+    fn dropped_egress_controls(&self, req: &crate::ir::IrRequest) -> Vec<&'static str> {
+        gemini_unsupported_slots(req)
+    }
+
     fn probe_request(&self) -> serde_json::Value {
         // The ping IR is built by the plugin (ir_encode::ping_request); this dialect serializes it
         // through its own write_request, so the probe body matches a real request on this wire.
@@ -73,6 +79,18 @@ impl ProtocolWriter for GeminiWriter {
     }
 
     fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value {
+        // The model-blind write: `""` is "model unknown".
+        self.write_request_for_model(req, "")
+    }
+
+    /// The production write: the lane model is known, so a reasoning-OFF ask is written only where
+    /// that model accepts it (IR-09, [`gemini_model_accepts_thinking_off`]). `model` is empty from
+    /// the model-blind [`ProtocolWriter::write_request`]; nothing else here depends on it.
+    fn write_request_for_model(
+        &self,
+        req: &crate::ir::IrRequest,
+        model: &str,
+    ) -> serde_json::Value {
         let mut out = serde_json::Map::new();
 
         // systemInstruction.parts[] from IrRequest.system
@@ -282,15 +300,10 @@ impl ProtocolWriter for GeminiWriter {
                         fr_obj.insert("response".to_string(), response_val);
                         // An image / document the tool returned rides Gemini's multimodal
                         // `functionResponse.parts` (GEM-06) instead of vanishing.
-                        let media_parts: Vec<serde_json::Value> = content
-                            .iter()
-                            .filter_map(write_gemini_media_part)
-                            .collect();
+                        let media_parts: Vec<serde_json::Value> =
+                            content.iter().filter_map(write_gemini_media_part).collect();
                         if !media_parts.is_empty() {
-                            fr_obj.insert(
-                                "parts".to_string(),
-                                serde_json::Value::Array(media_parts),
-                            );
+                            fr_obj.insert("parts".to_string(), serde_json::Value::Array(media_parts));
                         }
                         parts_arr.push(serde_json::json!({
                             "functionResponse": serde_json::Value::Object(fr_obj)
@@ -357,16 +370,30 @@ impl ProtocolWriter for GeminiWriter {
                     // drop it (its `text` is not plaintext reasoning).
                     crate::ir::IrBlock::Thinking { redacted: true, .. } => {}
                     crate::ir::IrBlock::Thinking {
-                        text, signature, ..
+                        text,
+                        signature,
+                        signature_origin,
+                        ..
                     } => {
                         // Thinking → Gemini `{text, thought:true, thoughtSignature?}`. Gemini
                         // DOES carry reasoning parts; round-trip the text and the opaque resumable
-                        // `thoughtSignature`. `thoughtSignature` is emitted only when present.
+                        // `thoughtSignature`. `thoughtSignature` is emitted only when present AND
+                        // minted by Gemini (IR-18, GEM-19): an Anthropic / Bedrock / Responses blob
+                        // is not a Gemini signature, and Gemini rejects or misreads it. An unknown
+                        // origin (`None`) keeps the pre-slot behaviour and is emitted.
                         let mut part = serde_json::Map::new();
                         part.insert("text".to_string(), serde_json::json!(text));
                         part.insert("thought".to_string(), serde_json::json!(true));
-                        if let Some(sig) = signature {
-                            part.insert("thoughtSignature".to_string(), serde_json::json!(sig));
+                        match (signature, signature_origin) {
+                            (Some(sig), None | Some(crate::ir::IrSignatureOrigin::Gemini)) => {
+                                part.insert("thoughtSignature".to_string(), serde_json::json!(sig));
+                            }
+                            (Some(_), Some(origin)) => tracing::warn!(
+                                ?origin,
+                                "dropping a foreign reasoning signature on Gemini egress: only a \
+                                 Gemini-minted thoughtSignature is valid there"
+                            ),
+                            (None, _) => {}
                         }
                         parts_arr.push(serde_json::Value::Object(part));
                     }
@@ -399,9 +426,22 @@ impl ProtocolWriter for GeminiWriter {
 
         // tools → tools[0].functionDeclarations[]
         super::super::ir_encode::warn_dropped_tool_strict(&req.tools, "gemini");
-        if !req.tools.is_empty() {
-            let func_decls: Vec<_> = req
-                .tools
+        // A tool SUBSET (IR-10) with a "may call" directive (`Auto` or none) has no Gemini form —
+        // `allowedFunctionNames` is only valid with mode ANY — so it is expressed by omission: only
+        // the listed tools are declared. A "must call" subset (`Required`) is written natively as
+        // ANY + `allowedFunctionNames` below and keeps every declaration.
+        let omit_to_subset = match (&req.allowed_tools, &req.tool_choice) {
+            (Some(names), None | Some(crate::ir::IrToolChoice::Auto)) => Some(names),
+            _ => None,
+        };
+        let func_tools: Vec<&crate::ir::IrTool> = req
+            .tools
+            .iter()
+            .filter(|tool| omit_to_subset.is_none_or(|names| names.contains(&tool.name)))
+            .collect();
+        let hosted_entries = write_gemini_hosted_tools(&req.hosted_tools);
+        if !func_tools.is_empty() || !hosted_entries.is_empty() {
+            let func_decls: Vec<_> = func_tools
                 .iter()
                 .map(|tool| {
                     let mut obj = serde_json::Map::new();
@@ -425,10 +465,13 @@ impl ProtocolWriter for GeminiWriter {
                     serde_json::Value::Object(obj)
                 })
                 .collect();
-            out.insert(
-                "tools".to_string(),
-                serde_json::json!([{"functionDeclarations": func_decls}]),
-            );
+            // Hosted tools (IR-11, GEM-10) are their own `tools[]` entries after the functions.
+            let mut tool_entries = Vec::with_capacity(1 + hosted_entries.len());
+            if !func_decls.is_empty() {
+                tool_entries.push(serde_json::json!({"functionDeclarations": func_decls}));
+            }
+            tool_entries.extend(hosted_entries);
+            out.insert("tools".to_string(), serde_json::Value::Array(tool_entries));
         }
 
         // ToolConfig{functionCallingConfig{mode, allowedFunctionNames}}.
@@ -451,17 +494,21 @@ impl ProtocolWriter for GeminiWriter {
             // reachable case is a cross-protocol request whose hosted tools `prepare_for_egress`
             // stripped (`ir/variant.rs`) while the tool_choice directive survived. Drop with a warn
             // rather than emitting a directive over an empty tool set.
-            if req.tools.is_empty() {
+            if func_tools.is_empty() {
                 tracing::warn!(
                     "dropping tool_choice on Gemini egress: a functionCallingConfig with no \
                      accompanying tools is meaningless (likely because the hosted tools that \
                      carried it were stripped on the cross-protocol seam)"
                 );
             } else {
-                tool_config.insert(
-                    "functionCallingConfig".to_string(),
-                    write_gemini_tool_choice(tc),
-                );
+                let fcc = match (tc, &req.allowed_tools) {
+                    // "Must call one of these" is Gemini's native ANY + allowedFunctionNames (IR-10).
+                    (crate::ir::IrToolChoice::Required, Some(names)) => {
+                        serde_json::json!({"mode": "ANY", "allowedFunctionNames": names})
+                    }
+                    _ => write_gemini_tool_choice(tc),
+                };
+                tool_config.insert("functionCallingConfig".to_string(), fcc);
             }
         }
         if !tool_config.is_empty() {
@@ -567,9 +614,26 @@ impl ProtocolWriter for GeminiWriter {
             let table = req
                 .reasoning_budgets
                 .unwrap_or(crate::ir::REASONING_BUDGET_DEFAULTS);
-            let budget: i64 = match ask {
-                crate::ir::IrReasoningAsk::Dynamic => -1,
-                other => i64::from(other.to_budget(table)),
+            let budget: Option<i64> = match ask {
+                crate::ir::IrReasoningAsk::Dynamic => Some(-1),
+                // Reasoning switched OFF (IR-09), matched BEFORE the table projection (which would
+                // read it as the smallest ENABLE ask): Gemini's budget 0, written only for a model
+                // that accepts it. Elsewhere (a model that cannot stop thinking, or a model this
+                // writer does not know) the ask is omitted with a warn, so the request never 400s
+                // and the model runs at its default.
+                crate::ir::IrReasoningAsk::Off => {
+                    if gemini_model_accepts_thinking_off(model) {
+                        Some(0)
+                    } else {
+                        tracing::warn!(
+                            model,
+                            "dropping a reasoning-off ask on Gemini egress: thinkingBudget 0 is \
+                             accepted only by the gemini-2.5-flash family"
+                        );
+                        None
+                    }
+                }
+                other => Some(i64::from(other.to_budget(table))),
             };
             // Only SYNTHESIZE a thinkingConfig when the request did not already carry a native
             // Gemini one (i.e. this is a CROSS-protocol ask — `extra` is cleared at the seam, so
@@ -578,11 +642,14 @@ impl ProtocolWriter for GeminiWriter {
             // On the synthesized (cross-protocol) path, `includeThoughts: true` is REQUIRED or
             // Gemini spends the budget thinking but returns NO thought parts — the carry would come
             // back empty. We always want the thoughts back to translate them to the caller.
-            if !gen_config.contains_key("thinkingConfig") {
-                gen_config.insert(
-                    "thinkingConfig".to_string(),
-                    serde_json::json!({"thinkingBudget": budget, "includeThoughts": true}),
-                );
+            // Off asks for no thoughts, so there are none to include.
+            if let (Some(budget), false) = (budget, gen_config.contains_key("thinkingConfig")) {
+                let thinking_config = if matches!(ask, crate::ir::IrReasoningAsk::Off) {
+                    serde_json::json!({"thinkingBudget": budget})
+                } else {
+                    serde_json::json!({"thinkingBudget": budget, "includeThoughts": true})
+                };
+                gen_config.insert("thinkingConfig".to_string(), thinking_config);
             }
         }
         if let Some(presence_penalty) = req.presence_penalty {
@@ -604,6 +671,16 @@ impl ProtocolWriter for GeminiWriter {
         if let Some(rf) = &req.response_format {
             write_gemini_response_format(&mut gen_config, rf);
         }
+        // Requested output modalities (IR-19), synthesized only when the request did not carry a
+        // native `responseModalities` (the thinkingConfig rule above: same-protocol stays verbatim).
+        if let Some(modalities) = &req.output_modalities {
+            if !gen_config.contains_key("responseModalities") {
+                gen_config.insert(
+                    "responseModalities".to_string(),
+                    write_gemini_response_modalities(modalities),
+                );
+            }
+        }
         if !gen_config.is_empty() {
             out.insert(
                 "generationConfig".to_string(),
@@ -622,6 +699,20 @@ impl ProtocolWriter for GeminiWriter {
         // On same-protocol passthrough `proxy::strip_router_shim_keys` removes any router-injected
         // `stream` before the upstream call. (An earlier version of this comment wrongly claimed the
         // reader excludes `stream` via `modeled_keys`; it does not — the accurate behavior is here.)
+
+        // Caller metadata → `labels` (IR-03). A raw `labels` the reader kept in `extra` overrides it
+        // below, so a same-protocol body stays verbatim.
+        if let Some(metadata) = &req.metadata {
+            out.insert("labels".to_string(), write_gemini_labels(metadata));
+        }
+        // The Q57 slots with no Gemini form (IR-04..07): drop with a warn; the seam audits them
+        // through `dropped_egress_controls`.
+        for control in gemini_unsupported_slots(req) {
+            tracing::warn!(
+                control,
+                "dropping a request control on Gemini egress: generateContent has no form for it"
+            );
+        }
 
         // Merge extra fields (may override, but that's expected behavior). `generationConfig` AND
         // `toolConfig` are SKIPPED here: their raw `extra` copies were already folded into the
