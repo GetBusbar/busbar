@@ -31,10 +31,11 @@
     "",
     "THE ROOT COLUMN (`root_legs` + every cell's `root`). The `test` above is the LEGACY path: the",
     "capability proven where the plane crate serves it. Every plane now also runs through the",
-    "composition root, behind root-llm / root-mcp / root-a2a / root-voice / root-admin, and a",
+    "composition root -- root-llm / root-voice / root-admin behind their features, root-mcp /",
+    "root-a2a on the kernel-loop rider every linked one-shot plane is served through -- and a",
     "capability that holds on the legacy path and is unwitnessed over the loop is a second, silent",
     "half of the same question. So each cell carries a SECOND verdict, over its plane's root leg:",
-    "  proven          -- with `test`: a `<crates/busbar/src/root/units_*.rs>::<test fn>` cell that",
+    "  proven          -- with `test`: a `<the leg's own file under crates/busbar/src/root/>::<test fn>` cell that",
     "                     drives the capability through the leg. The gate verifies the file is the",
     "                     leg's own file and the fn is in it.",
     "  none            -- with `reason`: the leg does not witness this capability yet, and the reason",
@@ -44,9 +45,9 @@
     "`root_legs` declares the five legs and, per leg, the ledger columns it answers to. root-admin",
     "answers to ZERO columns on purpose (admin is not one of the doctrine's protocol planes); its",
     "root leg is judged by qa/teller-steps.json's admin row instead.",
-    "The root column's evidence is verified for EXISTENCE by the gate under the five features, and",
+    "The root column's evidence is verified for EXISTENCE by the gate on every build, and",
     "RUN by `scripts/capability-equality-summary.py --root-legs`, which builds the binary crate with",
-    "all five legs on and executes every named root cell -- so `proven` on this column means the",
+    "every leg's feature on and executes every named root cell -- so `proven` on this column means the",
     "instrument was watched over the loop, not only that it is on disk."
   ],
   "capabilities": {
@@ -82,20 +83,20 @@
       "note": "the LLM plane over the loop: LlmNode::answer driving the kernel's ten steps, compared against the shipped entry point on six fixtures"
     },
     "root-mcp": {
-      "file": "crates/busbar/src/root/tests/units_mcp.rs",
+      "file": "crates/busbar/src/root/tests/gauntlet_kernel.rs",
       "columns": [
         "mcp-client",
         "mcp-server"
       ],
-      "note": "the MCP plane's bindings to the fourteen units, compiled and sealed at boot; the serving path is still the plugin's, which is why several cells on this leg are honestly \"none\""
+      "note": "the MCP plane's SERVED root leg: `tools/call` driven through the kernel-loop rider `gauntlet_install::install()` registers for the plane's key (DECISIONS #28), each root cell running the plane's own served witness (`busbar_mcp::testkit::SERVED`) and requiring its `drive` to have run inside the loop"
     },
     "root-a2a": {
-      "file": "crates/busbar/src/root/tests/units_a2a.rs",
+      "file": "crates/busbar/src/root/tests/gauntlet_kernel.rs",
       "columns": [
         "a2a-client",
         "a2a-server"
       ],
-      "note": "the A2A plane's scope entries, its record-leg binding and its destination guard, assembled at boot; the serving path is still the plugin's"
+      "note": "the A2A plane's SERVED root leg: the inbound call driven through the real router and the kernel-loop rider `gauntlet_install::install()` registers for the plane's key (DECISIONS #28), each root cell running the plane's own served witness (`busbar_a2a::testkit::SERVED`) and requiring its `drive` to have run inside the loop"
     },
     "root-voice": {
       "file": "crates/busbar/src/root/tests/units_voice.rs",
@@ -131,7 +132,7 @@
       "root": {
         "state": "none",
         "leg": "root-mcp",
-        "reason": "the root-mcp leg compiles and seals the MCP plane's bindings to the fourteen units; no cell on it dials an upstream, so nothing records into or is refused by the breaker cell over the loop"
+        "reason": "the served rider carries the breaker inside the plane's `drive`, but no served-leg witness takes an upstream down through the rider, so nothing records into the cell over the loop yet; the plane's own battery (`test`) proves the trip on the inline path"
       }
     },
     {
@@ -152,7 +153,7 @@
       "root": {
         "state": "none",
         "leg": "root-a2a",
-        "reason": "the root-a2a leg assembles the plane's scope entries and its record-leg binding; no cell on it dials a fronted agent, so the breaker cell is neither recorded into nor consulted over the loop"
+        "reason": "the served rider carries the breaker inside the plane's `drive`, but no served-leg witness takes a fronted agent down through the rider, so the cell is neither recorded into nor consulted over the loop yet; the plane's own battery (`test`) proves the trip"
       }
     },
     {
@@ -184,7 +185,7 @@
       "root": {
         "state": "none",
         "leg": "root-mcp",
-        "reason": "the root-mcp leg compiles and seals the MCP plane's bindings to the fourteen units; no cell on it dials an upstream, so nothing records into or is refused by the breaker cell over the loop"
+        "reason": "no served-leg witness trips an upstream and then calls it again through the rider, so the fast-fail refusal is not watched over the loop; the plane's own battery (`test`) watches it on the inline path, inside the same `drive`"
       }
     },
     {
@@ -205,7 +206,7 @@
       "root": {
         "state": "none",
         "leg": "root-a2a",
-        "reason": "the root-a2a leg assembles the plane's scope entries and its record-leg binding; no cell on it dials a fronted agent, so the breaker cell is neither recorded into nor consulted over the loop"
+        "reason": "no served-leg witness trips a fronted agent and then relays to it again through the rider, so the fast-fail refusal is not watched over the loop; the plane's own battery (`test`) watches it inside the same `drive`"
       }
     },
     {
@@ -237,7 +238,7 @@
       "root": {
         "state": "none",
         "leg": "root-mcp",
-        "reason": "the root-mcp leg compiles and seals the MCP plane's bindings to the fourteen units; no cell on it dials an upstream, so nothing records into or is refused by the breaker cell over the loop"
+        "reason": "no served-leg witness registers a pool with a second member, so the rider never carries a reroute; `failover::walk` runs inside the plane's `drive` and the plane's own battery (`test`) proves it there"
       }
     },
     {
@@ -258,7 +259,7 @@
       "root": {
         "state": "none",
         "leg": "root-a2a",
-        "reason": "the root-a2a leg assembles the plane's scope entries and its record-leg binding; no cell on it dials a fronted agent, so the breaker cell is neither recorded into nor consulted over the loop"
+        "reason": "no served-leg witness registers an agent pool with a second member, so the rider never carries a reroute; `failover::walk` runs inside the plane's `drive` and the plane's own battery (`test`) proves it there"
       }
     },
     {
@@ -291,7 +292,7 @@
       "root": {
         "state": "none",
         "leg": "root-mcp",
-        "reason": "no root-mcp cell installs an observe or transform hook; the leg's cells judge the plane's declarations and its unit bindings, never a payload a hook rewrote"
+        "reason": "no served-leg witness installs an observe or transform hook, so the rider carries no payload a hook rewrote; the tap runs inside the plane's `drive` and the plane's own battery (`test`) proves it on the tool-call arguments"
       }
     },
     {
@@ -303,7 +304,7 @@
       "root": {
         "state": "none",
         "leg": "root-mcp",
-        "reason": "no root-mcp cell installs an observe or transform hook; the leg's cells judge the plane's declarations and its unit bindings, never a payload a hook rewrote"
+        "reason": "no served-leg witness installs an observe or transform hook, so the rider on the front door carries no payload a hook rewrote; the tap runs inside the plane's `drive` and the plane's own battery (`test`) proves it on the tool-call arguments"
       }
     },
     {
@@ -315,7 +316,7 @@
       "root": {
         "state": "none",
         "leg": "root-a2a",
-        "reason": "no root-a2a cell installs an observe or transform hook; the leg's cells judge the plan, the guard and the scope tables rather than a payload a hook touched"
+        "reason": "no served-leg witness installs an observe or transform hook, so the rider carries no submission a hook rewrote; the tap runs inside the plane's `drive` and the plane's own battery (`test`) proves it before the hop"
       }
     },
     {
@@ -327,7 +328,7 @@
       "root": {
         "state": "none",
         "leg": "root-a2a",
-        "reason": "no root-a2a cell installs an observe or transform hook; the leg's cells judge the plan, the guard and the scope tables rather than a payload a hook touched"
+        "reason": "no served-leg witness installs an observe or transform hook, so the rider on the front door carries no submission a hook rewrote; the tap runs inside the plane's `drive` and the plane's own battery (`test`) proves it before the hop"
       }
     },
     {
@@ -350,7 +351,7 @@
       "root": {
         "state": "none",
         "leg": "root-mcp",
-        "reason": "the refusals a root-mcp cell drives are the scope unit's, at approve; hooks::gate::decide is reached by no cell on this leg"
+        "reason": "no served-leg witness attaches a gating hook to a registration, so hooks::gate::decide is reached by no unit the rider carries; the gate runs inside the plane's `drive` and the plane's own battery (`test`) proves the refusal"
       }
     },
     {
@@ -361,7 +362,7 @@
       "root": {
         "state": "none",
         "leg": "root-mcp",
-        "reason": "the refusals a root-mcp cell drives are the scope unit's, at approve; hooks::gate::decide is reached by no cell on this leg"
+        "reason": "no served-leg witness attaches a gating hook to a registration, so hooks::gate::decide is reached by no unit the rider on the front door carries; the gate runs inside the plane's `drive` and the plane's own battery (`test`) proves the refusal"
       }
     },
     {
@@ -382,7 +383,7 @@
       "root": {
         "state": "none",
         "leg": "root-a2a",
-        "reason": "the refusals the root-a2a cells drive are the scope unit's and the destination guard's; hooks::gate::decide is reached by no cell on this leg"
+        "reason": "no served-leg witness attaches an agents.hooks gate, so hooks::gate::decide is reached by no unit the rider carries; the gate runs inside the plane's `drive` and the plane's own battery (`test`) proves the refusal"
       }
     },
     {
@@ -406,7 +407,7 @@
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/tests/units_mcp.rs::only_a_served_call_leaves_an_administrative_entry"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_chains_what_it_audits"
       }
     },
     {
@@ -417,7 +418,7 @@
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/tests/units_mcp.rs::only_a_served_call_leaves_an_administrative_entry"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_chains_what_it_audits"
       }
     },
     {
@@ -429,7 +430,7 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/units_a2a.rs::every_ending_has_an_audited_spelling"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_chains_what_it_audits"
       }
     },
     {
@@ -441,7 +442,7 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/units_a2a.rs::the_audit_action_is_the_word_the_rig_reads"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_chains_what_it_audits"
       }
     },
     {
@@ -464,7 +465,7 @@
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/tests/units_mcp.rs::a_call_is_estimated_flat_plus_its_document"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_charges_the_presenting_key"
       }
     },
     {
@@ -475,7 +476,7 @@
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/tests/units_mcp.rs::a_call_is_estimated_flat_plus_its_document"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_charges_the_presenting_key"
       }
     },
     {
@@ -486,7 +487,7 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/units_a2a.rs::only_a_hop_to_an_agent_carries_the_fee"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_charges_the_presenting_key"
       }
     },
     {
@@ -497,7 +498,7 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/units_a2a.rs::only_a_hop_to_an_agent_carries_the_fee"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_charges_the_presenting_key"
       }
     },
     {
@@ -519,7 +520,7 @@
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/tests/units_mcp.rs::every_planned_kind_classifies"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_classifies_the_upstream_answer"
       }
     },
     {
@@ -540,7 +541,7 @@
       "root": {
         "state": "none",
         "leg": "root-a2a",
-        "reason": "the four endings this leg pins are the audit unit's spellings, not breaker::classify's Disposition; no cell on this leg puts an upstream answer through Stage 1 and Stage 2"
+        "reason": "no served-leg witness puts a backend answer the caller caused through the rider and reads the member's breaker cell after it; Stage 1 and Stage 2 run inside the plane's `drive` and the plane's own battery (`test`) proves the classification"
       }
     },
     {
@@ -574,7 +575,7 @@
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/tests/units_mcp.rs::a_completed_call_is_counted_once"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_counts_the_upstream_attempt"
       }
     },
     {
@@ -585,7 +586,7 @@
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/tests/units_mcp.rs::a_completed_call_is_counted_once"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_counts_the_upstream_attempt"
       }
     },
     {
@@ -597,7 +598,7 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/units_a2a.rs::a_record_leg_is_not_priced_on_a_lane"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_counts_the_upstream_attempt"
       }
     },
     {
@@ -608,7 +609,7 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/units_a2a.rs::a_record_leg_is_not_priced_on_a_lane"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_counts_the_upstream_attempt"
       }
     },
     {
@@ -629,7 +630,7 @@
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/tests/units_mcp.rs::a_record_leg_is_judged_against_the_planes_own_declaration"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_an_unpinned_peer"
       }
     },
     {
@@ -640,7 +641,7 @@
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/tests/units_mcp.rs::a_record_leg_is_judged_against_the_planes_own_declaration"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_an_unpinned_peer"
       }
     },
     {
@@ -651,7 +652,7 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/units_a2a.rs::every_origin_has_a_trust_side_spelling"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_an_unpinned_peer"
       }
     },
     {
@@ -662,7 +663,7 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/units_a2a.rs::the_origin_gate_over_this_planes_kinds"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_an_unpinned_peer"
       }
     },
     {
@@ -683,7 +684,7 @@
       "root": {
         "state": "none",
         "leg": "root-mcp",
-        "reason": "the root-mcp cells judge registration and lane permission for a hop; the SSRF judgement over a derived destination is core net_guard's and no cell on this leg puts an address in front of it"
+        "reason": "no served-leg witness hands the rider a registration whose derived destination the SSRF guard refuses; the guard runs inside the plane's `drive` at the dial and the plane's own battery (`test`) proves the refusal"
       }
     },
     {
@@ -704,7 +705,7 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/units_a2a.rs::a_metadata_endpoint_is_refused_even_when_private_addressing_is_allowed"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_dials_only_the_judged_address"
       }
     },
     {
@@ -716,7 +717,7 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/units_a2a.rs::a_private_address_needs_the_operators_word"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_dials_only_the_judged_address"
       }
     },
     {
@@ -738,7 +739,7 @@
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/tests/units_mcp.rs::the_narrowing_follows_the_transport"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_presents_only_the_planned_credential"
       }
     },
     {
@@ -759,7 +760,7 @@
       "root": {
         "state": "none",
         "leg": "root-a2a",
-        "reason": "no root-a2a cell plans or injects an outbound credential; the leg's authenticate binding reads the caller's own credential and the relay's egress plan is untouched by it"
+        "reason": "no served-leg witness configures an outbound credential for a fronted agent and reads what the hop carried through the rider; the egress plan runs inside the plane's `drive` and the plane's own battery (`test`) proves the lease"
       }
     },
     {
@@ -770,7 +771,7 @@
       "root": {
         "state": "none",
         "leg": "root-a2a",
-        "reason": "no root-a2a cell plans or injects an outbound credential; the leg's authenticate binding reads the caller's own credential and the relay's egress plan is untouched by it"
+        "reason": "no served-leg witness configures an outbound credential for a fronted agent and reads what the hop carried through the rider on the front door; the egress plan runs inside the plane's `drive` and the plane's own battery (`test`) proves the lease"
       }
     },
     {
@@ -792,7 +793,7 @@
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/tests/units_mcp.rs::a_read_only_grant_lists_and_does_not_call"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_serves_only_the_callers_catalogue"
       }
     },
     {
@@ -803,7 +804,7 @@
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/tests/units_mcp.rs::a_call_names_the_tool_as_well_as_the_server"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_serves_only_the_callers_catalogue"
       }
     },
     {
@@ -814,7 +815,7 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/units_a2a.rs::a_read_only_grant_does_not_reach_a_send"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_serves_only_the_callers_catalogue"
       }
     },
     {
@@ -825,7 +826,7 @@
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/units_a2a.rs::every_operation_class_is_declared"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_serves_only_the_callers_catalogue"
       }
     },
     {

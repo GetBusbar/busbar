@@ -356,13 +356,16 @@ fn installed_plane_decls_are_behaviourally_isomorphic_or_declared() {
 fn compiled_legs() -> BTreeSet<&'static str> {
     #[allow(unused_mut)]
     let mut legs: BTreeSet<&'static str> = BTreeSet::new();
-    #[cfg(feature = "root-a2a")]
+    // The mcp and a2a legs are the kernel-loop rider those planes are SERVED through, registered by
+    // `gauntlet_install::install()` for each linked one-shot plane — so what gates them is the
+    // feature that links the plane, not a `root-*` feature of their own.
+    #[cfg(feature = "plane-a2a")]
     legs.insert("root-a2a");
     #[cfg(feature = "root-admin")]
     legs.insert("root-admin");
     #[cfg(feature = "root-llm")]
     legs.insert("root-llm");
-    #[cfg(feature = "root-mcp")]
+    #[cfg(feature = "plane-mcp")]
     legs.insert("root-mcp");
     #[cfg(feature = "root-voice")]
     legs.insert("root-voice");
@@ -378,7 +381,7 @@ fn compiled_legs() -> BTreeSet<&'static str> {
 ///
 /// This used to be cfg-gated on all five `root-*` features at once, which meant it ran in exactly one
 /// build configuration and in no other — not the default build, and not `--features
-/// root-a2a,root-voice,root-llm` either. The join it performs is over DATA (the installed decls and
+/// root-voice,root-llm` either. The join it performs is over DATA (the installed decls and
 /// the ledger), so it is answerable on every build and is asked on every build. What the features
 /// decide is which legs are COMPILED, and that is asserted separately below: a plane installed into
 /// this build whose answering leg this build also carries must be driven through the loop by a leg

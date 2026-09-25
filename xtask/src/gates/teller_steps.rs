@@ -638,12 +638,12 @@ pub fn check_root_column(cx: &Ctx, m: &Matrix) -> RootProblems {
 // The shipped-leg bar, and the render
 // -------------------------------------------------------------------------------------------
 
-/// The `root-*` features the binary SHIPS, read out of the manifest's own `default` line.
+/// The features the binary SHIPS, read out of the manifest's own `default` line.
 ///
 /// A deliberate one-line parse rather than a TOML load, and kept that way: the subject of the rule
 /// is what a human wrote on that line, and a general parser that normalises the document answers a
 /// different question.
-pub fn default_root_legs(text: &str) -> Result<BTreeSet<String>, String> {
+pub fn default_features(text: &str) -> Result<BTreeSet<String>, String> {
     let mut in_features = false;
     for line in text.lines() {
         let stripped = line.trim();
@@ -668,12 +668,28 @@ pub fn default_root_legs(text: &str) -> Result<BTreeSet<String>, String> {
         return Ok(rest[open + 1..close]
             .split(',')
             .map(|f| f.trim().trim_matches('"').to_string())
-            .filter(|f| f.starts_with("root-"))
+            .filter(|f| !f.is_empty())
             .collect());
     }
     Err(format!(
         "{MANIFEST_REL}: no `default` line under [features]"
     ))
+}
+
+/// The root legs the binary SHIPS: every leg whose feature is on the manifest's `default` line. A
+/// leg's feature is its `feature` member when it names one — the mcp and a2a legs are the kernel-loop
+/// rider those planes are served through, gated by the feature that links the plane (`plane-mcp`,
+/// `plane-a2a`) — and otherwise the leg's own name (`root-llm`, `root-voice`, `root-admin`).
+pub fn shipped_legs(m: &Matrix, default: &BTreeSet<String>) -> BTreeSet<String> {
+    let legs = m.root_legs();
+    legs.as_object()
+        .map(|o| {
+            o.keys()
+                .filter(|leg| default.contains(&legs.get(leg).str_or("feature", leg)))
+                .map(|leg| leg.to_string())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The gating plane×step cells on a SHIPPED leg that nothing drives over the loop. A default leg
@@ -806,8 +822,10 @@ pub fn root_line(m: &Matrix) -> String {
 // The runner arms — `cargo xtask teller-steps [...]`
 // -------------------------------------------------------------------------------------------
 
-/// The five root legs the `--root-legs` arm compiles the binary crate with.
-const ROOT_FEATURES: &str = "root-admin,root-mcp,root-a2a,root-voice,root-llm";
+/// The features that compile the five root legs, which the `--root-legs` arm builds the binary crate
+/// with: each `root-*` leg's own feature, and for the mcp and a2a legs (the kernel-loop rider those
+/// planes are served through) the feature that links the plane.
+const ROOT_FEATURES: &str = "root-admin,plane-mcp,plane-a2a,root-voice,root-llm";
 
 const ARM_USAGE: &str = "\
 usage:
@@ -893,8 +911,8 @@ fn run_root_legs_gating(cx: &Ctx) -> i32 {
             return 1;
         }
     };
-    let shipped = match cx.read(MANIFEST_REL).and_then(|t| default_root_legs(&t)) {
-        Ok(s) => s,
+    let shipped = match cx.read(MANIFEST_REL).and_then(|t| default_features(&t)) {
+        Ok(d) => shipped_legs(&m, &d),
         Err(e) => {
             eprintln!("ROOT-GATING: cannot read the bar's two inputs: {e}");
             return 1;

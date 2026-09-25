@@ -3626,13 +3626,14 @@ jobs:
   #   2. --check     every GATING plane x step cell in qa/teller-steps.json names a real scenario and
   #      not "none". This reads the JSON.
   #   3. --root-legs the part that reads nothing and PROVES something: it builds the binary crate with
-  #      all five root legs on (root-admin,root-mcp,root-a2a,root-voice,root-llm) and EXECUTES every
-  #      named root-leg cell. A matrix can only be verified against cells that run; verified against
-  #      itself it is a spreadsheet.
+  #      all five root legs on (root-admin,plane-mcp,plane-a2a,root-voice,root-llm -- the mcp and a2a
+  #      legs are the kernel-loop rider those planes are served through, gated by the feature that
+  #      links the plane) and EXECUTES every named root-leg cell. A matrix can only be verified
+  #      against cells that run; verified against itself it is a spreadsheet.
   # All three were run by scripts/verify-1.6.0-done.sh alone — the release-time DONE claim — so a cell
   # that stopped executing would have stayed invisible until a release was being cut. Wired here so it
   # reddens on the push that stops a cell executing, not at release time.
-  #   4. --root-legs-gating  the shipped-leg bar: a `root-*` feature in the manifest's own `default`
+  #   4. --root-legs-gating  the shipped-leg bar: a leg's feature in the manifest's own `default`
   #      line is the SHIPPED path for its plane, so a GATING step that no cell drives over that leg
   #      is a half-answer, not a queue entry. It is a different question from --root-legs (which
   #      asks whether the cells the matrix names still execute) and it was WIRED NOWHERE: the arm
