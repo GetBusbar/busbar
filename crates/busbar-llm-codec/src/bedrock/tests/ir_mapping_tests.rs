@@ -377,8 +377,9 @@ fn bed10_context_window_and_malformed_stop_reasons_map() {
     body["stopReason"] = json!("model_context_window_exceeded");
     let o = xresp("bedrock", "openai", &body);
     assert_eq!(o["choices"][0]["finish_reason"], "length", "{o}");
+    // Since IR-16 (ContextWindowExceeded) landed, Anthropic has the native word for it (ANT-11).
     let a = xresp("bedrock", "anthropic", &body);
-    assert_eq!(a["stop_reason"], "max_tokens", "{a}");
+    assert_eq!(a["stop_reason"], "model_context_window_exceeded", "{a}");
     for token in ["malformed_model_output", "malformed_tool_use"] {
         body["stopReason"] = json!(token);
         let ir = BedrockReader.read_response(&body).expect("read");

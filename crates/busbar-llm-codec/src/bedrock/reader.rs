@@ -1167,10 +1167,16 @@ impl ProtocolReader for BedrockReader {
                 // ordering. A bedrock->bedrock round-trip is unaffected: the `MessageStop` IR event
                 // maps to no wire frame (`BedrockWriter` returns `None`), and the combined delta is
                 // re-split into the native `messageStop` + `metadata` frame pair by `StreamTranslate`.
-                state.pending_stop_reason = data
-                    .get("stopReason")
-                    .and_then(|s| s.as_str())
-                    .map(stop_reason_map);
+                let stop_reason = data.get("stopReason").and_then(|s| s.as_str());
+                state.pending_stop_reason = stop_reason.map(stop_reason_map);
+                // IR-16 (BED-10) and BED-11: the refinement and the matched stop string ride this
+                // frame too, and are buffered with the reason for the combined delta.
+                state.pending_stop_detail = stop_reason.and_then(stop_detail_map);
+                state.pending_stop_sequence = data
+                    .get("additionalModelResponseFields")
+                    .and_then(|f| f.get("stop_sequence"))
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
             }
 
             Some(ET_METADATA) => {
@@ -1250,9 +1256,9 @@ impl ProtocolReader for BedrockReader {
 
                 out.push(IrStreamEvent::MessageDelta {
                     stop_reason: state.pending_stop_reason.take(),
-                    stop_sequence: None,
+                    stop_sequence: state.pending_stop_sequence.take(),
                     usage,
-                    stop_detail: None,
+                    stop_detail: state.pending_stop_detail.take(),
                 });
                 out.push(IrStreamEvent::MessageStop);
             }

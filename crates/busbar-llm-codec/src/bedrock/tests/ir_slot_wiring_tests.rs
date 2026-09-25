@@ -116,6 +116,43 @@ fn bed10_context_window_detail_rides_the_message_stop_frame() {
     assert_eq!(payload["stopReason"], "model_context_window_exceeded");
 }
 
+/// BED-10 / IR-16 and BED-11 (stream reader): the `messageStop` frame's context-window stop and
+/// matched stop string are buffered with the stop reason and carried on the ONE combined
+/// `MessageDelta` the `metadata` frame completes (buffered == stream).
+#[test]
+fn bed10_bed11_stream_stop_detail_and_stop_sequence_are_carried() {
+    let mut state = crate::ir::StreamDecodeState::default();
+    let reader = BedrockReader;
+    for frame in [
+        json!({"type": "messageStart", "role": "assistant"}),
+        json!({"type": "messageStop", "stopReason": "model_context_window_exceeded",
+            "additionalModelResponseFields": {"stop_sequence": "END"}}),
+    ] {
+        reader.read_response_events("", &frame, &mut state);
+    }
+    let evs = reader.read_response_events(
+        "",
+        &json!({"type": "metadata", "usage": {"inputTokens": 3, "outputTokens": 2}}),
+        &mut state,
+    );
+    match &evs[0] {
+        crate::ir::IrStreamEvent::MessageDelta {
+            stop_reason,
+            stop_sequence,
+            stop_detail,
+            ..
+        } => {
+            assert_eq!(*stop_reason, Some(crate::ir::IrStopReason::MaxTokens));
+            assert_eq!(stop_sequence.as_deref(), Some("END"));
+            assert_eq!(
+                *stop_detail,
+                Some(crate::ir::IrStopDetail::ContextWindowExceeded)
+            );
+        }
+        other => panic!("expected the combined MessageDelta, got {other:?}"),
+    }
+}
+
 /// IR-12: a Converse document's `citations.enabled` and `context` are read into the Media slot and
 /// written back on a cross-protocol write (the verbatim stash is gone there), so the switch and the
 /// context are not lost when the IR — not the raw block — is the carrier.

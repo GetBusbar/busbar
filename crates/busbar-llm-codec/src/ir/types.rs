@@ -1384,6 +1384,15 @@ pub struct StreamDecodeState {
     /// reader stashes the `messageStop` stop_reason here and pairs it with the usage when `metadata`
     /// arrives. Used by the Bedrock reader only; other protocols leave it `None`.
     pub pending_stop_reason: Option<IrStopReason>,
+    /// The matched stop string buffered across the same two Bedrock frames as
+    /// [`Self::pending_stop_reason`] (BED-11): Anthropic-on-Bedrock echoes it on the `messageStop`
+    /// frame (`additionalModelResponseFields.stop_sequence`), and the combined `MessageDelta` is
+    /// only emitted when `metadata` arrives. Bedrock reader only; other readers leave it `None`.
+    pub pending_stop_sequence: Option<String>,
+    /// The [`IrStopDetail`] buffered across the same two Bedrock frames (IR-16, BED-10): the
+    /// `messageStop` frame's `model_context_window_exceeded` is `MaxTokens` plus
+    /// `ContextWindowExceeded`, carried to the combined delta. Bedrock reader only.
+    pub pending_stop_detail: Option<IrStopDetail>,
     /// Maps each opened tool-call wire index (the OpenAI reader's `oai_idx` / the Cohere reader's
     /// `frame_idx`) to the IR block index its `BlockStart` was emitted with, giving O(log n)
     /// lookup/insert instead of a linear scan over `open_tools`. Every key inserted here is also
