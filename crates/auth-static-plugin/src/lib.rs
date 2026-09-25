@@ -24,7 +24,9 @@
 //! `LICENSE-OK`); a real plugin would verify a signature/expiry. A present-but-invalid `licenseKey`
 //! is a load error — the plugin, not the gateway, decides its own licensing policy.
 
-use busbar_api::{constant_time_eq, sha256_hex, AuthModule, AuthOutcome, Principal};
+use busbar_api::sha256_hex;
+use busbar_contract::auth::{AuthModule, AuthVerdict, Principal};
+use busbar_contract::redacted::constant_time_eq;
 use serde::Deserialize;
 
 /// The plugin's opaque config: the one accepted token and the identity it grants.
@@ -87,14 +89,14 @@ impl AuthModule for StaticModule {
         "static-auth"
     }
 
-    fn authenticate(&self, candidate: Option<&str>) -> AuthOutcome {
+    fn authenticate(&self, candidate: Option<&str>) -> AuthVerdict {
         match candidate {
             Some(cred) if constant_time_eq(&sha256_hex(cred.as_bytes()), &self.token_hash) => {
                 let mut p = Principal::from_id(self.id.clone());
                 p.roles = self.roles.clone();
-                AuthOutcome::Identify(p)
+                AuthVerdict::Identify(p)
             }
-            _ => AuthOutcome::Pass,
+            _ => AuthVerdict::Pass,
         }
     }
 }

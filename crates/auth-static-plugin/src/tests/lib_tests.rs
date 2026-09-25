@@ -72,11 +72,11 @@ fn credential_is_compared_under_a_digest() {
     // length also still just passes. Hashing is invisible to the outcome.
     assert!(matches!(
         m.authenticate(Some("sekret")),
-        AuthOutcome::Identify(_)
+        AuthVerdict::Identify(_)
     ));
-    assert!(matches!(m.authenticate(Some("wrongo")), AuthOutcome::Pass)); // same length (6)
-    assert!(matches!(m.authenticate(Some("x")), AuthOutcome::Pass)); // different length
-    assert!(matches!(m.authenticate(None), AuthOutcome::Pass));
+    assert!(matches!(m.authenticate(Some("wrongo")), AuthVerdict::Pass)); // same length (6)
+    assert!(matches!(m.authenticate(Some("x")), AuthVerdict::Pass)); // different length
+    assert!(matches!(m.authenticate(None), AuthVerdict::Pass));
 }
 
 /// Guards `name()` against returning `""` or any other literal instead of `"static-auth"`: no
@@ -119,11 +119,11 @@ fn open_refuses_when_only_one_of_token_or_id_is_empty() {
 fn a_module_opened_from_config_identifies_its_configured_token() {
     let m = open(r#"{"token":"sekret","id":"alice"}"#).expect("a well-formed config loads");
     match m.authenticate(Some("sekret")) {
-        AuthOutcome::Identify(p) => assert_eq!(p.id, "alice"),
+        AuthVerdict::Identify(p) => assert_eq!(p.id, "alice"),
         other => panic!("the configured token must identify as the configured id, got {other:?}"),
     }
     assert!(
-        matches!(m.authenticate(Some("nope")), AuthOutcome::Pass),
+        matches!(m.authenticate(Some("nope")), AuthVerdict::Pass),
         "a wrong credential defers to the next module in the chain, never rejects"
     );
 }

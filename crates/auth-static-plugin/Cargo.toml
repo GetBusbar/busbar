@@ -27,7 +27,10 @@ license = "Apache-2.0"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+# `sha256_hex` only: it is `sha2` and stays in busbar-api until it moves into the contract (P68-0
+# residue (b)). Every other name (auth types, `constant_time_eq`) comes from busbar-contract (#40).
 busbar-api = { path = "../api" }
+busbar-contract = { path = "../busbar-contract" }
 busbar-plugin-sdk = { path = "../plugin-sdk" }
 serde = { workspace = true }
 serde_json = { workspace = true }
