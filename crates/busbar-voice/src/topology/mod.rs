@@ -266,6 +266,37 @@ pub fn begin_session<C>(
 where
     C: DuplexReader + DuplexWriter + Send + Sync + 'static,
 {
+    let gate: Box<dyn GauntletPlane> = Box::new(SessionGauntlet);
+    begin_session_through(
+        rt,
+        gate,
+        codec,
+        owner,
+        call_id,
+        locked_config,
+        carrier,
+        meter,
+        now,
+    )
+}
+
+/// [`begin_session`] over a given open-pass `gate`: the plane's own [`SessionGauntlet`] in production;
+/// a test hands a refusing gate to witness that the budget is never asked on a refused session.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn begin_session_through<C>(
+    rt: &VoiceRuntime,
+    gate: Box<dyn GauntletPlane>,
+    codec: C,
+    owner: impl Into<String>,
+    call_id: impl Into<String>,
+    locked_config: Option<SessionConfig>,
+    carrier: Carrier,
+    meter: Option<crate::runtime::metering::TurnMeter>,
+    now: u64,
+) -> Result<(Arc<SessionCore<C>>, SessionHandle), StartError>
+where
+    C: DuplexReader + DuplexWriter + Send + Sync + 'static,
+{
     // OPEN-PASS ADMISSION FIRST (verify STRICTLY before any charge): run the shared gauntlet gate at the
     // TOP through `run_gauntlet_session`. On refuse NOTHING is opened — no account, no durable genesis,
     // no socket — so a refused session costs ZERO bytes and ZERO charge. The session's budget check
@@ -283,9 +314,8 @@ where
         charged_at: now,
         started: std::time::Instant::now(),
     };
-    let plane: Box<dyn GauntletPlane> = Box::new(SessionGauntlet);
     // The call-site the D3 witness pins: begin_session ACTUALLY calls run_gauntlet_session here.
-    run_gauntlet_session(gauntlet_req, plane).map_err(|_refusal| StartError::DestinationRefused)?;
+    run_gauntlet_session(gauntlet_req, gate).map_err(|_refusal| StartError::DestinationRefused)?;
 
     // Only past the gate: reserve/bind/open the live carrier. Factored into [`open_admitted_session`]
     // so the inbound WS-accept seam — where the gauntlet has ALREADY run inside `accept_gauntlet`,

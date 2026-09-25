@@ -332,6 +332,54 @@ fn begin_session_asks_the_budget_past_the_gate_and_opens_only_with_room() {
     );
 }
 
+/// A TEST-ONLY open-pass gate that refuses every session. The plane's own [`SessionGauntlet`] keeps no
+/// destination policy (1.5.5 had none), so nothing in production can plant a refusal; this stands in
+/// for whatever may refuse at the gate (a kernel-loop session runner) without resurrecting a policy.
+///
+/// [`SessionGauntlet`]: crate::topology::SessionGauntlet
+struct RefusingGate;
+
+#[async_trait::async_trait]
+impl super::GauntletPlane for RefusingGate {
+    fn verify_destination(&self, _req: &super::GauntletRequest<'_>) -> super::VerifyOutcome {
+        super::VerifyOutcome::Refuse(
+            axum::response::Response::builder()
+                .status(axum::http::StatusCode::FORBIDDEN)
+                .body(axum::body::Body::empty())
+                .expect("static refusal builds"),
+        )
+    }
+
+    async fn drive(self: Box<Self>, _req: super::GauntletRequest<'_>) -> axum::response::Response {
+        unreachable!("the session path only runs the admission gate")
+    }
+}
+
+/// THE D3 ORDERING WITNESS: `begin_session` runs the open-pass gate at the TOP, so a session the gate
+/// refuses is refused BEFORE the kernel account's budget is asked — the caller here has a DRY chain,
+/// and the answer is still the gate's refusal, not the budget's. RED if the budget is asked first.
+#[test]
+fn begin_session_refuses_at_the_gauntlet_before_the_budget_is_asked() {
+    let r = crate::topology::begin_session_through(
+        &runtime(),
+        Box::new(RefusingGate),
+        OpenAiRealtimeCodec,
+        "acct",
+        "call-refused",
+        Some(SessionConfig {
+            model: Some("any-model".into()),
+            ..SessionConfig::default()
+        }),
+        Carrier::sideband(),
+        Some(meter_capped(0)),
+        1,
+    );
+    assert!(
+        matches!(r, Err(crate::topology::StartError::DestinationRefused)),
+        "a gate-refused session is refused at the open-pass gate, before the budget is asked"
+    );
+}
+
 // ── A SESSION HOLDS NOTHING OPEN (the D2 lease-leak witness, retired with the lease) ─────────────────
 
 /// The lease this replaced held a reserve that only a by-value guard could release when a parked
