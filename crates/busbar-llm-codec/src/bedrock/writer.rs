@@ -261,7 +261,13 @@ impl ProtocolWriter for BedrockWriter {
         if !req.system.is_empty() || system_cache_points.is_some() || system_guard_content.is_some()
         {
             let mut text_arr: Vec<serde_json::Value> = Vec::new();
-            for block in &req.system {
+            // System blocks the reader MODELLED out of a stashed `guardContent` (BED-02): the stash
+            // splice below re-emits the verbatim block, so the modelled copy is not written.
+            let guard_modelled = stashed_ir_indices([system_guard_content], None);
+            for (sys_idx, block) in req.system.iter().enumerate() {
+                if guard_modelled.contains(&sys_idx) {
+                    continue;
+                }
                 if let crate::ir::IrBlock::Text {
                     text,
                     cache_control,
@@ -316,41 +322,64 @@ impl ProtocolWriter for BedrockWriter {
             };
 
             let mut content_arr: Vec<serde_json::Value> = Vec::new();
+            // IR blocks the reader MODELLED out of a wire block it ALSO parked verbatim (a
+            // `document` / `video` / `guardContent`), keyed by the reader's IR index `b`.
+            let stashed_here =
+                stashed_ir_indices([message_doc_video, message_guard_content], Some(msg_idx));
             for (block_idx, block) in msg.content.iter().enumerate() {
-                // A `document` / `video` block the READER also parked verbatim under
-                // `DOC_VIDEO_SENTINEL` at this exact (message, block) position. The stash is spliced
-                // back below, so writing the modelled `Media` projection here TOO would emit the
-                // attachment twice. Suppress the modelled emit and let the verbatim raw block win —
-                // that is what keeps a Bedrock->Bedrock round-trip byte-identical (every document
-                // sub-field, `citations`/`context` included, survives) while a CROSS-protocol IR,
-                // whose `extra` the seam cleared, has no stash and so takes the modelled path.
+                // A block the READER also parked verbatim (under `DOC_VIDEO_SENTINEL` or
+                // `GUARD_CONTENT_SENTINEL`) at this exact (message, block) position. The stash is
+                // spliced back below, so writing the modelled projection here TOO would emit it twice.
+                // Suppress the modelled emit and let the verbatim raw block win — that is what keeps
+                // a Bedrock->Bedrock round-trip byte-identical (every sub-field, `citations` /
+                // `context` / guard `qualifiers` included, survives) while a CROSS-protocol IR, whose
+                // `extra` the seam cleared, has no stash and so takes the modelled path.
                 // Matched on `b`, the IR block index the reader recorded, NOT on `i`, which is the
                 // WIRE slot the raw block is spliced back at. The two differ by however many
-                // wire-only blocks (`cachePoint` / `guardContent`) came first in this message, so
-                // comparing the wire index against `block_idx` here missed the match and emitted the
-                // attachment twice — modelled AND spliced. `i` remains the splice position below.
-                let raw_doc_video_stashed =
-                    message_doc_video.iter().flat_map(|v| v.iter()).any(|e| {
-                        e.get("m").and_then(|v| v.as_u64()) == Some(msg_idx as u64)
-                            && e.get("b").and_then(|v| v.as_u64()) == Some(block_idx as u64)
-                    });
+                // wire-only blocks (`cachePoint`) came first in this message, so comparing the wire
+                // index against `block_idx` here missed the match and emitted the attachment twice
+                // — modelled AND spliced. `i` remains the splice position below.
+                if stashed_here.contains(&block_idx) {
+                    continue;
+                }
                 // The prompt-cache boundary carried on this block, if any. Emitted as a
                 // `cachePoint` block IMMEDIATELY AFTER the block below (the position Bedrock expects).
                 // Suppressed when the positional stash owns placement (same-protocol passthrough).
+                // BED-07: Thinking / Image / Media carry a boundary too (an Anthropic breakpoint on a
+                // reasoning block or an attachment), so they project a `cachePoint` like Text does.
                 let block_cache_control = match block {
                     crate::ir::IrBlock::Text { cache_control, .. }
                     | crate::ir::IrBlock::ToolUse { cache_control, .. }
-                    | crate::ir::IrBlock::ToolResult { cache_control, .. } => {
-                        cache_control.as_ref()
-                    }
-                    crate::ir::IrBlock::Thinking { .. }
-                    | crate::ir::IrBlock::Image { .. }
-                    | crate::ir::IrBlock::Media { .. }
-                    | crate::ir::IrBlock::Json(_) => None,
+                    | crate::ir::IrBlock::ToolResult { cache_control, .. }
+                    | crate::ir::IrBlock::Thinking { cache_control, .. }
+                    | crate::ir::IrBlock::Image { cache_control, .. }
+                    | crate::ir::IrBlock::Media { cache_control, .. } => cache_control.as_ref(),
+                    crate::ir::IrBlock::Json(_) => None,
                 };
+                // The block's projection may be NOTHING (an image with no Converse source, an audio
+                // attachment); a cachePoint is only placed after a block that was actually written.
+                let written_before = content_arr.len();
                 match block {
-                    crate::ir::IrBlock::Text { text, .. } => {
-                        content_arr.push(serde_json::json!({ "text": text }));
+                    crate::ir::IrBlock::Text {
+                        text, citations, ..
+                    } => {
+                        // BED-13: a cited (assistant-history) text block is Converse's
+                        // `citationsContent` — the answer text INSIDE it beside its citations, the
+                        // same projection the response writer uses. Uncited text keeps `{text}`.
+                        let cits: Vec<serde_json::Value> = citations
+                            .iter()
+                            .filter_map(super::write_bedrock_citation)
+                            .collect();
+                        if cits.is_empty() {
+                            content_arr.push(serde_json::json!({ "text": text }));
+                        } else {
+                            content_arr.push(serde_json::json!({
+                                "citationsContent": {
+                                    "content": [{ "text": text }],
+                                    "citations": cits
+                                }
+                            }));
+                        }
                     }
                     crate::ir::IrBlock::ToolUse {
                         id, name, input, ..
@@ -456,12 +485,9 @@ impl ProtocolWriter for BedrockWriter {
                     crate::ir::IrBlock::Media {
                         kind, source, name, ..
                     } => {
-                        if !raw_doc_video_stashed {
-                            if let Some(b) =
-                                bedrock_media_content_block(*kind, source, name.as_deref())
-                            {
-                                content_arr.push(b);
-                            }
+                        if let Some(b) = bedrock_media_content_block(*kind, source, name.as_deref())
+                        {
+                            content_arr.push(b);
                         }
                     }
                     crate::ir::IrBlock::Json(_) => {
@@ -470,11 +496,12 @@ impl ProtocolWriter for BedrockWriter {
                     }
                 }
                 // Emit the prompt-cache boundary as a `cachePoint` block right after the block it
-                // applies to. Only Text/ToolUse/ToolResult carry `cache_control` (see
-                // `block_cache_control`); a block whose write produced nothing (e.g. a dropped Image)
-                // still emits no cachePoint here because such kinds carry no `cache_control` field.
+                // applies to; a block whose write produced nothing (e.g. a dropped Image) emits none.
                 // Suppressed when the positional stash owns placement (same-protocol round-trip).
-                if emit_inline_message_cache && block_cache_control.is_some() {
+                if emit_inline_message_cache
+                    && block_cache_control.is_some()
+                    && content_arr.len() > written_before
+                {
                     content_arr.push(bedrock_cache_point());
                 }
             }

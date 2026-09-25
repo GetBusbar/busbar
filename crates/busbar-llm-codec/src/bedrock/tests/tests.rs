@@ -12,7 +12,8 @@ fn stop_reason_reverse_never_leaks_foreign_tokens() {
     // `stopReason` a strict client rejects. (A Bedrock `guardrail_intervened` read folds to
     // `Safety`, which writes back as `content_filtered`.)
     assert_eq!(read_bedrock_stop_reason_guardrail(), S::Safety);
-    assert_eq!(stop_reason_reverse(S::Refusal), "end_turn");
+    // A refusal is a content-policy stop, `content_filtered` (BED-09), not a natural end.
+    assert_eq!(stop_reason_reverse(S::Refusal), "content_filtered");
     assert_eq!(stop_reason_reverse(S::Error), "end_turn");
     assert_eq!(stop_reason_reverse(S::Other), "end_turn");
 }

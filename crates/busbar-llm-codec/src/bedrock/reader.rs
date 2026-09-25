@@ -263,14 +263,20 @@ impl ProtocolReader for BedrockReader {
                     // the stash is present, so the two never double-emit.
                     set_preceding_block_cache_control(&mut system_blocks);
                 } else if let Some(guard_content) = sys_val.get("guardContent") {
-                    // No IR counterpart for an inline Guardrails marker; stash it with its original
-                    // index so the writer re-emits it verbatim at the same position (a same-protocol
-                    // passthrough keeps the guardrail span the caller marked instead of silently
-                    // dropping it). See `GUARD_CONTENT_SENTINEL`.
+                    // The guardrail QUALIFIERS have no IR counterpart; stash the whole block with its
+                    // original index so the writer re-emits it verbatim at the same position (a
+                    // same-protocol passthrough keeps the guardrail span the caller marked). See
+                    // `GUARD_CONTENT_SENTINEL`. `b` is the IR index of the modelled block below, which
+                    // the writer matches to suppress its own emission (see the `document` arm).
+                    let modelled = guard_content_block(guard_content);
                     system_guard_content.push(serde_json::json!({
                         "i": idx,
+                        "b": modelled.as_ref().map(|_| system_blocks.len()),
                         "block": { "guardContent": guard_content.clone() },
                     }));
+                    // BED-02: the guarded span IS prompt content — model it too, so a cross-protocol
+                    // hop (where the stash is cleared) still sends the text the caller wrote.
+                    system_blocks.extend(modelled);
                 }
             }
         }
@@ -397,52 +403,24 @@ impl ProtocolReader for BedrockReader {
                                         // symmetric with the WRITER, which emits an `image` inside a
                                         // toolResult (see `write_request`) — the old reader skipped
                                         // any non-text/json block, silently dropping image tool
-                                        // results and making read/write asymmetric. `document` and
-                                        // `video` have no IR block counterpart (the IR models only
-                                        // Text/Thinking/ToolUse/ToolResult/Image), so they remain
-                                        // unrepresentable and are left undecoded — a documented
-                                        // limitation, not a silent class-wide loss of all binary
-                                        // tool-result content.
+                                        // results and making read/write asymmetric.
                                         if let Some(block) = read_bedrock_image_block(image) {
                                             inner_content.push(block);
                                         }
                                     } else if let Some(document) = inner_val.get("document") {
-                                        // `document`/`video` members of the ToolResultContentBlock
-                                        // union have no IR block counterpart and were silently lost.
-                                        // Best-effort: an AWS DocumentBlock carries text only nested
-                                        // under `source.content[].text` (there is NO flat `.text`);
-                                        // flatten any such text into an IR Text block so a textual
-                                        // document survives. Always warn so the (partial) loss is
-                                        // observable rather than silent.
-                                        tracing::warn!(
-                                            "bedrock tool-result `document` block has no IR \
-                                             counterpart; flattening any nested source text, \
-                                             dropping the rest"
-                                        );
-                                        if let Some(content_arr) = document
-                                            .get("source")
-                                            .and_then(|s| s.get("content"))
-                                            .and_then(|c| c.as_array())
-                                        {
-                                            for piece in content_arr {
-                                                if let Some(t) =
-                                                    piece.get("text").and_then(|t| t.as_str())
-                                                {
-                                                    inner_content.push(crate::ir::IrBlock::Text {
-                                                        text: t.to_string(),
-                                                        cache_control: None,
-                                                        citations: Vec::new(),
-                                                    });
-                                                }
-                                            }
-                                        }
-                                    } else if inner_val.get("video").is_some() {
-                                        // `video` likewise has no IR counterpart and no flat text to
-                                        // salvage — warn instead of dropping silently.
-                                        tracing::warn!(
-                                            "bedrock tool-result `video` block has no IR \
-                                             counterpart; dropping it"
-                                        );
+                                        // BED-05: the ToolResultContentBlock `document` member is the
+                                        // same DocumentBlock as the top-level one, so it models as the
+                                        // same IR `Media` (bytes, s3, or a text source).
+                                        inner_content.push(bedrock_media_block(
+                                            crate::ir::IrMediaKind::Document,
+                                            document,
+                                        ));
+                                    } else if let Some(video) = inner_val.get("video") {
+                                        // BED-05: likewise the `video` member.
+                                        inner_content.push(bedrock_media_block(
+                                            crate::ir::IrMediaKind::Video,
+                                            video,
+                                        ));
                                     }
                                 }
                             }
@@ -486,6 +464,10 @@ impl ProtocolReader for BedrockReader {
                             if let Some(block) = read_bedrock_reasoning_block(reasoning) {
                                 msg_content.push(block);
                             }
+                        } else if let Some(cc) = content_val.get("citationsContent") {
+                            // BED-01: a cited assistant turn carries its answer text INSIDE
+                            // `citationsContent`; without this arm the turn arrived empty.
+                            msg_content.push(read_bedrock_citations_content(cc));
                         } else if let Some(cache_point) = content_val.get("cachePoint") {
                             // No IR counterpart for a prompt-cache marker; stash it with its
                             // (message, block) index so the writer re-emits it verbatim at the same
@@ -503,16 +485,22 @@ impl ProtocolReader for BedrockReader {
                             // the inline emission while the stash is present, so no double-emit.
                             set_preceding_block_cache_control(&mut msg_content);
                         } else if let Some(guard_content) = content_val.get("guardContent") {
-                            // No IR counterpart for an inline Guardrails marker; stash it with its
+                            // The guardrail qualifiers have no IR counterpart; stash the block with its
                             // (message, block) index so the writer re-emits it verbatim at the same
-                            // position on a same-protocol passthrough (the guardrail span the caller
-                            // marked stays present instead of being silently dropped). See
-                            // `GUARD_CONTENT_SENTINEL`.
+                            // position on a same-protocol passthrough. See `GUARD_CONTENT_SENTINEL`.
+                            // `b` = the IR index of the modelled block below (see the `document` arm
+                            // for why the wire and IR indices are recorded separately).
+                            let modelled = guard_content_block(guard_content);
                             message_guard_content.push(serde_json::json!({
                                 "m": msg_idx,
                                 "i": block_idx,
+                                "b": modelled.as_ref().map(|_| msg_content.len()),
                                 "block": { "guardContent": guard_content.clone() },
                             }));
+                            // BED-02: the guarded text/image IS the caller's prompt content; model it
+                            // so a cross-protocol hop still carries it (the writer suppresses this
+                            // modelled block whenever the stash is present — no double emission).
+                            msg_content.extend(modelled);
                         } else if let Some(document) = content_val.get("document") {
                             // A native Converse `document` block (a PDF/CSV/etc. the model reasons
                             // over) has no IR counterpart; stash it verbatim with its (message, block)
@@ -962,6 +950,28 @@ impl ProtocolReader for BedrockReader {
                                 });
                             }
                         }
+                    } else if let Some(citation) =
+                        delta_obj.get("citation").filter(|c| c.is_object())
+                    {
+                        // BED-01: a ConverseStream `citation` delta (one `CitationsDelta` per frame)
+                        // arrives interleaved with the `text` deltas of the block it cites, at the
+                        // same `contentBlockIndex`. Open the text block if the citation came first,
+                        // exactly as the text arm does, so it never becomes an orphan delta.
+                        if state.started && !state.text_block_open {
+                            state.text_block_open = true;
+                            out.push(IrStreamEvent::BlockStart {
+                                index: idx,
+                                block: crate::ir::IrBlockMeta::Text,
+                            });
+                        }
+                        if state.text_block_open {
+                            out.push(IrStreamEvent::BlockDelta {
+                                index: idx,
+                                delta: crate::ir::IrDelta::CitationsDelta(vec![
+                                    read_bedrock_citation(citation),
+                                ]),
+                            });
+                        }
                     } else if let Some(reasoning) = delta_obj
                         .get("reasoningContent")
                         .and_then(|r| r.as_object())
@@ -1341,6 +1351,10 @@ impl ProtocolReader for BedrockReader {
                         cache_control: None,
                         thought_signature: None,
                     });
+                } else if let Some(cc) = block_val.get("citationsContent") {
+                    // BED-01: a cited answer carries its TEXT inside `citationsContent`, beside the
+                    // citations. With no arm here the answer text itself was deleted.
+                    content.push(read_bedrock_citations_content(cc));
                 } else if let Some(reasoning) = block_val.get("reasoningContent") {
                     // A Converse response message can carry a `reasoningContent` (extended-thinking)
                     // block — the model's reasoning output. Mirror the request-side reader: map it
@@ -1417,9 +1431,10 @@ impl ProtocolReader for BedrockReader {
             stop_reason: stop_reason_val,
             usage,
             // Identity capture for same-protocol passthrough fidelity. The AWS Converse response
-            // body is deliberately minimal: it has NO `id`, NO `created`, NO `system_fingerprint`,
-            // and NO stop-sequence echo (`stopReason` is the discriminant, captured above; `usage`
-            // is captured above). The only identity AWS returns is the `x-amzn-RequestId` HTTP
+            // body is deliberately minimal: it has NO `id`, NO `created`, NO `system_fingerprint`
+            // (`stopReason` is the discriminant, captured above; `usage` is captured above; the
+            // matched stop string rides `additionalModelResponseFields`, read below). The only
+            // identity AWS returns is the `x-amzn-RequestId` HTTP
             // header, which is not part of the body this reader sees. So every body-level identity
             // field is `None` here — that is the faithful capture of what Bedrock actually sends,
             // and a bedrock→bedrock passthrough reproduces the native (id-less) body exactly.
@@ -1427,7 +1442,13 @@ impl ProtocolReader for BedrockReader {
             id: None,
             created: None,
             system_fingerprint: None,
-            stop_sequence: None,
+            // BED-11 (buffered half): Anthropic-on-Bedrock echoes the matched stop string under
+            // `additionalModelResponseFields.stop_sequence`.
+            stop_sequence: obj
+                .get("additionalModelResponseFields")
+                .and_then(|f| f.get("stop_sequence"))
+                .and_then(|v| v.as_str())
+                .map(String::from),
 
             request_echo: None,
         })
