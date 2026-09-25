@@ -93,8 +93,13 @@
 # pre-requests and a new `upgrade-body` subcommand for script cells. A body the build names nothing
 # for — every body the 1.5.5 golden is sent — goes byte for byte.
 #
+# 2026-09-24: moved 3519882 -> 3876913 (same branch; e191665 + its exit test) — an exec cell's
+# rewrite of $WORK/config.yaml keeps the upgrade step (every native boot after an exec cell was
+# refused, BUSBAR-9007 x21 in one run), and a boot mutation is applied to the raw baseline, as for the
+# golden (mutating the upgraded one moved NEUT-U-top's `line 157` to `line 175`).
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=3519882
+release_ref=3876913
 crate=busbar-release-oracle
 bin=busbar-oracle
