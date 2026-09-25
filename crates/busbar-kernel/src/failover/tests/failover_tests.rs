@@ -113,10 +113,10 @@ fn two_agent_regions() -> Vec<AgentReg> {
 /// and there is nothing else in the pool. The seam does not hang, does not dispatch, and NAMES the
 /// candidate and the reason.
 #[test]
-fn mcp_a_dead_upstream_fails_fast_and_is_named() {
+fn first_plane_a_dead_upstream_fails_fast_and_is_named() {
     let store = store_with(2);
     let now = 1_000;
-    store.force_open_in("mcp/pool:search", 0, now + 60);
+    store.force_open_in("plane-a/pool:search", 0, now + 60);
 
     let members = vec![ToolServer {
         name: "search-eu",
@@ -125,7 +125,7 @@ fn mcp_a_dead_upstream_fails_fast_and_is_named() {
     }];
     let err = walk(
         &store,
-        "mcp/pool:search",
+        "plane-a/pool:search",
         &members,
         &Attempt {
             tried: &[],
@@ -139,7 +139,7 @@ fn mcp_a_dead_upstream_fails_fast_and_is_named() {
 
     match &err {
         Refusal::NoneAdmissible { pool, tried } => {
-            assert_eq!(pool, "mcp/pool:search");
+            assert_eq!(pool, "plane-a/pool:search");
             assert_eq!(tried.len(), 1, "the one candidate is named: {tried:?}");
             assert_eq!(tried[0].0, "search-eu", "the DEAD upstream is named");
             assert!(
@@ -159,10 +159,10 @@ fn mcp_a_dead_upstream_fails_fast_and_is_named() {
 /// The second example plane, through the identical call. Same seam, same breaker, a different
 /// candidate type and nothing else — which is the claim the whole unit rests on.
 #[test]
-fn a2a_a_dead_upstream_fails_fast_and_is_named() {
+fn second_plane_a_dead_upstream_fails_fast_and_is_named() {
     let store = store_with(2);
     let now = 2_000;
-    store.force_open_in("a2a/pool:planner", 0, now + 30);
+    store.force_open_in("plane-b/pool:planner", 0, now + 30);
 
     let members = vec![AgentReg {
         name: "planner@eu",
@@ -171,7 +171,7 @@ fn a2a_a_dead_upstream_fails_fast_and_is_named() {
     }];
     let err = walk(
         &store,
-        "a2a/pool:planner",
+        "plane-b/pool:planner",
         &members,
         &Attempt {
             tried: &[],
@@ -204,7 +204,7 @@ fn a2a_a_dead_upstream_fails_fast_and_is_named() {
 fn the_seam_and_the_model_plane_share_one_breaker_cell() {
     let store = store_with(2);
     let now = 3_000;
-    const POOL: &str = "mcp/pool:search";
+    const POOL: &str = "plane-a/pool:search";
     store.force_open_in(POOL, 0, now + 45);
 
     // A plane's own queue-dispatch admission calls this exact method, on the cell the seam is about
@@ -256,7 +256,7 @@ fn the_seam_and_the_model_plane_share_one_breaker_cell() {
 fn your_search_server_in_two_regions_one_dies_and_the_agent_never_learns() {
     let store = store_with(2);
     let now = 4_000;
-    const POOL: &str = "mcp/pool:search";
+    const POOL: &str = "plane-a/pool:search";
     store.force_open_in(POOL, 0, now + 60);
 
     let members = two_regions();
@@ -307,7 +307,7 @@ fn your_search_server_in_two_regions_one_dies_and_the_agent_never_learns() {
 fn two_registrations_of_one_agent_reroute_the_same_way() {
     let store = store_with(2);
     let now = 5_000;
-    const POOL: &str = "a2a/pool:planner";
+    const POOL: &str = "plane-b/pool:planner";
     store.force_open_in(POOL, 0, now + 60);
 
     let members = two_agent_regions();
@@ -334,7 +334,7 @@ fn two_registrations_of_one_agent_reroute_the_same_way() {
 fn a_transient_failure_trips_the_primary_and_the_next_request_reroutes() {
     let store = store_with(2);
     let now = busbar_kernel::store::now();
-    const POOL: &str = "mcp/pool:search";
+    const POOL: &str = "plane-a/pool:search";
     let members = two_regions();
     // A cooldown long enough that the trip is still in force on the follow-up request.
     let cfg = BreakerCfg {
@@ -407,7 +407,7 @@ fn a_transient_failure_trips_the_primary_and_the_next_request_reroutes() {
 fn a_non_repeatable_call_is_not_retried_by_default() {
     let store = store_with(2);
     let now = 6_000;
-    const POOL: &str = "mcp/pool:mailer";
+    const POOL: &str = "plane-a/pool:mailer";
     let members = vec![
         ToolServer {
             name: "mailer-eu",
@@ -464,7 +464,7 @@ fn a_non_repeatable_call_is_not_retried_by_default() {
 fn a_declared_repeatable_read_is_retried_after_a_failed_dispatch() {
     let store = store_with(2);
     let now = 7_000;
-    const POOL: &str = "mcp/pool:search";
+    const POOL: &str = "plane-a/pool:search";
     let members = two_regions();
 
     let admitted = walk(
@@ -492,7 +492,7 @@ fn the_first_selection_is_never_a_repeat() {
     let members = two_regions();
     let admitted = walk(
         &store,
-        "mcp/pool:search",
+        "plane-a/pool:search",
         &members,
         &Attempt {
             tried: &[],
@@ -516,7 +516,7 @@ fn the_first_selection_is_never_a_repeat() {
 fn two_different_servers_are_refused_however_the_operator_declared_them() {
     let store = store_with(2);
     let now = 9_000;
-    const POOL: &str = "mcp/pool:search";
+    const POOL: &str = "plane-a/pool:search";
     store.force_open_in(POOL, 0, now + 60);
 
     let members = vec![
@@ -564,7 +564,7 @@ fn two_different_servers_are_refused_however_the_operator_declared_them() {
 fn an_unapproved_candidate_never_matches_not_even_another_unapproved_one() {
     let store = store_with(2);
     let now = 10_000;
-    const POOL: &str = "mcp/pool:search";
+    const POOL: &str = "plane-a/pool:search";
     store.force_open_in(POOL, 0, now + 60);
 
     let members = vec![
@@ -606,7 +606,7 @@ fn an_empty_pool_is_an_operator_error_and_says_so() {
     let members: Vec<ToolServer> = Vec::new();
     let err = walk(
         &store,
-        "mcp/pool:nothing",
+        "plane-a/pool:nothing",
         &members,
         &Attempt {
             tried: &[],
@@ -775,7 +775,7 @@ fn a_third_plane_costs_a_candidate_type_and_nothing_else() {
 #[test]
 fn a_client_fault_never_trips_a_plane_upstream() {
     let store = store_with(2);
-    const POOL: &str = "mcp/pool:search";
+    const POOL: &str = "plane-a/pool:search";
     let members = two_regions();
     let cfg = BreakerCfg::default();
     let signal = crate::breaker::CanonicalSignal {
@@ -801,7 +801,7 @@ fn a_client_fault_never_trips_a_plane_upstream() {
 #[test]
 fn an_auth_failure_hard_downs_the_plane_upstream_everywhere() {
     let store = store_with(2);
-    const POOL: &str = "mcp/pool:search";
+    const POOL: &str = "plane-a/pool:search";
     let members = two_regions();
     let cfg = BreakerCfg::default();
     let signal = crate::breaker::CanonicalSignal {
@@ -819,7 +819,7 @@ fn an_auth_failure_hard_downs_the_plane_upstream_everywhere() {
     ));
     assert!(
         matches!(
-            store.breaker_state_in("mcp/pool:other", 0),
+            store.breaker_state_in("plane-a/pool:other", 0),
             busbar_kernel::store::BreakerState::Open { .. }
         ),
         "a rejected credential is rejected in every pool fronting the same upstream"
