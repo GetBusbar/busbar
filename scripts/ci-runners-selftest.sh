@@ -46,13 +46,18 @@ case_ "B. ci-runners-reconcile.sh does not discard the registration's outcome"
 # COMMENTS ARE STRIPPED FIRST. The reconcile quotes the old line in the comment that explains why
 # it is gone, and a naive grep reads that history as the bug still being present.
 code() { sed -e 's/[[:space:]]*#.*$//' "$1"; }
-if code "$HERE/ci-runners-reconcile.sh" | grep -q 'ci-runners-register\.sh"'; then
+# READ ONCE, GREP THE STRING. Under `pipefail`, `code ... | grep -q` is a race: grep -q exits on
+# its first match, sed takes SIGPIPE writing the rest, and the pipeline's status becomes sed's 141 —
+# a MATCH read as a miss. That flipped the register_agents case red on a correct file, and would
+# flip the sibling-exec case green on a buggy one.
+RECONCILE_CODE="$(code "$HERE/ci-runners-reconcile.sh")"
+if grep -q 'ci-runners-register\.sh"' <<<"$RECONCILE_CODE"; then
   bad "the reconcile still execs a sibling script to register"
 else
   ok "the reconcile does not exec a sibling script to register"
 fi
 # shellcheck disable=SC2016  # `$REACHABLE` is the literal text being searched for, not an expansion
-if code "$HERE/ci-runners-reconcile.sh" | grep -q 'register_agents \$REACHABLE'; then
+if grep -q 'register_agents \$REACHABLE' <<<"$RECONCILE_CODE"; then
   ok "the reconcile calls register_agents"
 else
   bad "the reconcile does not call register_agents"
