@@ -1,0 +1,12 @@
+# The pinned refusal sites whose reason is carried in an expression
+# (money_never_ends_an_admitted_unit.rs): <file under crates/><TAB><expression>. A new one is reviewed
+# and added here; it goes red until somebody has looked at it.
+busbar-core-admin/src/governance.rs	reason
+busbar-core-admin/src/refusal.rs	reason
+busbar-kernel-budget/src/lib.rs	reason
+busbar-kernel-egress/src/trust/unit.rs	refusal.kind.reason()
+busbar-llm/src/unit/verify.rs	refusal.reason()
+busbar/src/root/units_admin/mod.rs	verbs_reason(refusal.reason)
+busbar/src/root/units_admin/mod.rs	verbs_reason(refusal.reason)
+busbar/src/root/units_voice.rs	reason
+busbar/src/root/units_voice.rs	refusal.reason()

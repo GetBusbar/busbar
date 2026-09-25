@@ -33,6 +33,8 @@
 //! Modelled on `crates/busbar/tests/capability_equality.rs` -- the house oracle pattern: one `verify`
 //! fn drives both the real gate and the fixture self-tests, so a self-test proves the REAL gate fires.
 
+mod common;
+
 use busbar_kernel::plane::registry::PlaneDecl;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -76,12 +78,15 @@ const MIN_ASYMMETRIES: usize = 10;
 /// The doctrine map: each INSTALLED plane crate key → the directional ledger column(s) it answers to
 /// in `qa/capability-equality.json`. The bidirectional protocols count in both directions. Pinned
 /// (not derived) for the same reason `capability_equality.rs` pins its axes: it is the owner's ruling.
-const PLANE_LEDGER_COLUMNS: &[(&str, &[&str])] = &[
-    ("llm", &["llm"]),
-    ("mcp", &["mcp-client", "mcp-server"]),
-    ("a2a", &["a2a-client", "a2a-server"]),
-    ("voice", &["voice-client", "voice-server"]),
-];
+fn plane_ledger_columns() -> Vec<(&'static str, &'static [&'static str])> {
+    common::doctrine_rows("installed")
+        .into_iter()
+        .map(|r| {
+            let cols: &'static [&'static str] = Box::leak(r[1..].to_vec().into_boxed_slice());
+            (r[0], cols)
+        })
+        .collect()
+}
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -95,21 +100,13 @@ fn repo_root() -> PathBuf {
 /// so the Some/None this test reasons over is the REAL decl, never a restated copy.
 // Each plane crate is only linked when its feature is on. Under `--no-default-features` no plane
 // is installed, so this yields an empty set and the gate test below is vacuous (returns early).
-// The pushes are cfg-gated, so a plain `vec![]` literal cannot express them; the lint that would
-// prefer one does not apply.
-#[allow(clippy::vec_init_then_push, unused_mut)]
 fn installed_decls() -> Vec<(&'static str, &'static PlaneDecl)> {
-    let mut v: Vec<(&'static str, &'static PlaneDecl)> = Vec::new();
-    #[cfg(feature = "proto-llm")]
-    v.push(("llm", &LLM_PLANE));
-    #[cfg(feature = "plane-mcp")]
-    v.push(("mcp", &MCP_PLANE));
-    #[cfg(feature = "plane-a2a")]
-    v.push(("a2a", &A2A_PLANE));
-    #[cfg(feature = "plane-voice")]
-    v.push(("voice", &VOICE_PLANE));
-    v
+    LINKED_PLANES.iter().map(|d| (d.key, d)).collect()
 }
+
+// The linked plane rows (build.rs: every enabled `[package.metadata.busbar.linked]` row carrying the
+// `plane` axis, assembled from its crate's own `linked` entry exactly as the root assembles it).
+include!(concat!(env!("OUT_DIR"), "/linked_planes.rs"));
 
 /// The Some/None matrix: `field -> (plane -> is_some)`. Computed from the live decls.
 type Matrix = BTreeMap<String, BTreeMap<String, bool>>;
@@ -305,7 +302,7 @@ fn read_json(path: &Path) -> serde_json::Value {
 }
 
 fn columns_map() -> BTreeMap<&'static str, &'static [&'static str]> {
-    PLANE_LEDGER_COLUMNS.iter().copied().collect()
+    plane_ledger_columns().into_iter().collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -354,22 +351,7 @@ fn installed_plane_decls_are_behaviourally_isomorphic_or_declared() {
 /// must be asked per leg, not as a five-way conjunction, because the planes are switched onto the
 /// root one at a time and every partially-switched build is an ordinary build.
 fn compiled_legs() -> BTreeSet<&'static str> {
-    #[allow(unused_mut)]
-    let mut legs: BTreeSet<&'static str> = BTreeSet::new();
-    // The mcp and a2a legs are the kernel-loop rider those planes are SERVED through, registered by
-    // `gauntlet_install::install()` for each linked one-shot plane — so what gates them is the
-    // feature that links the plane, not a `root-*` feature of their own.
-    #[cfg(feature = "plane-a2a")]
-    legs.insert("root-a2a");
-    #[cfg(feature = "root-admin")]
-    legs.insert("root-admin");
-    #[cfg(feature = "root-llm")]
-    legs.insert("root-llm");
-    #[cfg(feature = "plane-mcp")]
-    legs.insert("root-mcp");
-    #[cfg(feature = "root-voice")]
-    legs.insert("root-voice");
-    legs
+    common::compiled_root_legs()
 }
 
 /// THE ROOT LEG, JOINED TO THE SAME LEDGER — on EVERY build.
@@ -477,18 +459,18 @@ fn proven_per_leg_column(ledger: &serde_json::Value) -> BTreeMap<(String, String
 fn selftest_a_column_whose_root_proofs_are_all_gone_counts_zero_under_a_leg_that_proves_others() {
     let ledger = serde_json::json!({
         "cells": [
-            { "capability": "c1", "plane": "mcp-client", "root": { "state": "proven", "leg": "root-mcp" } },
-            { "capability": "c2", "plane": "mcp-client", "root": { "state": "proven", "leg": "root-mcp" } },
-            { "capability": "c1", "plane": "mcp-server", "root": { "state": "none", "leg": "root-mcp" } }
+            { "capability": "c1", "plane": "p-client", "root": { "state": "proven", "leg": "root-p" } },
+            { "capability": "c2", "plane": "p-client", "root": { "state": "proven", "leg": "root-p" } },
+            { "capability": "c1", "plane": "p-server", "root": { "state": "none", "leg": "root-p" } }
         ]
     });
     let tally = proven_per_leg_column(&ledger);
     assert_eq!(
-        tally.get(&("root-mcp".to_string(), "mcp-client".to_string())),
+        tally.get(&("root-p".to_string(), "p-client".to_string())),
         Some(&2)
     );
     assert_eq!(
-        tally.get(&("root-mcp".to_string(), "mcp-server".to_string())),
+        tally.get(&("root-p".to_string(), "p-server".to_string())),
         None,
         "the server column has no root proof, whatever its leg proves on the client column"
     );
@@ -505,12 +487,23 @@ fn the_reflected_hook_set_and_constants_are_the_doctrine() {
         assert!(MIN_HOOK_FIELDS >= 15 && MIN_ASYMMETRIES >= 10);
     }
     // The doctrine's installed-plane axis, verbatim (the same four the composition root installs).
-    let keys: Vec<&str> = PLANE_LEDGER_COLUMNS.iter().map(|(k, _)| *k).collect();
+    let keys: Vec<&str> = plane_ledger_columns().iter().map(|(k, _)| *k).collect();
     assert_eq!(
-        keys,
-        vec!["llm", "mcp", "a2a", "voice"],
-        "the installed-plane axis is the owner's ruling; changing it is a doctrine change"
+        keys.len(),
+        4,
+        "the installed-plane axis is the owner's ruling; changing it is a doctrine change: {keys:?}"
     );
+    // With every plane compiled in, the pinned axis is exactly the planes the root installs from
+    // their own linked entries — two artifacts (the doctrine, the linked table) that must agree.
+    #[cfg(linked_every_plane)]
+    {
+        let pinned: BTreeSet<&str> = keys.iter().copied().collect();
+        let installed: BTreeSet<&str> = installed_decls().iter().map(|(k, _)| *k).collect();
+        assert_eq!(
+            pinned, installed,
+            "the installed-plane axis is the linked planes"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -616,39 +609,3 @@ fn selftest_a_token_reason_is_red() {
     let err = verify(&m, &ledger, &allow, &cols, 15, 1).expect_err("a token reason must be red");
     assert!(err.contains("real"), "got: {err}");
 }
-
-/// The llm plane's registry row, assembled kernel-side from its contract declaration
-/// and its behaviour table.
-#[cfg(feature = "proto-llm")]
-static LLM_PLANE: busbar_kernel::plane::registry::PlaneDecl =
-    busbar_kernel::plane::registry::PlaneDecl::assemble(
-        busbar_llm::PLANE_DECLARATION,
-        busbar_llm::PLANE_HOOKS,
-    );
-
-/// The mcp plane's registry row, assembled kernel-side from its contract declaration
-/// and its behaviour table.
-#[cfg(feature = "plane-mcp")]
-static MCP_PLANE: busbar_kernel::plane::registry::PlaneDecl =
-    busbar_kernel::plane::registry::PlaneDecl::assemble(
-        busbar_mcp::PLANE_DECLARATION,
-        busbar_mcp::PLANE_HOOKS,
-    );
-
-/// The a2a plane's registry row, assembled kernel-side from its contract declaration
-/// and its behaviour table.
-#[cfg(feature = "plane-a2a")]
-static A2A_PLANE: busbar_kernel::plane::registry::PlaneDecl =
-    busbar_kernel::plane::registry::PlaneDecl::assemble(
-        busbar_a2a::PLANE_DECLARATION,
-        busbar_a2a::PLANE_HOOKS,
-    );
-
-/// The voice plane's registry row, assembled kernel-side from its contract declaration
-/// and its behaviour table.
-#[cfg(feature = "plane-voice")]
-static VOICE_PLANE: busbar_kernel::plane::registry::PlaneDecl =
-    busbar_kernel::plane::registry::PlaneDecl::assemble(
-        busbar_voice::PLANE_DECLARATION,
-        busbar_voice::PLANE_HOOKS,
-    );

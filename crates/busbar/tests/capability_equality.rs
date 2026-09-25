@@ -89,15 +89,15 @@ use std::path::{Path, PathBuf};
 
 /// The doctrine's plane list, verbatim: three protocols, and the two bidirectional ones counted in
 /// both directions. A matrix missing a plane is not a smaller matrix, it is a different claim.
-const PLANES: [&str; 7] = [
-    "llm",
-    "mcp-client",
-    "mcp-server",
-    "a2a-client",
-    "a2a-server",
-    "voice-client",
-    "voice-server",
-];
+fn planes() -> &'static [&'static str] {
+    static PLANES: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    PLANES.get_or_init(|| {
+        common::doctrine_rows("plane")
+            .into_iter()
+            .map(|r| r[0])
+            .collect()
+    })
+}
 
 /// M0 TOTALITY CROSS-CHECK — a SEPARATE axis from the pinned directional `PLANES` above.
 ///
@@ -120,16 +120,15 @@ const PLANES: [&str; 7] = [
 /// this check until item 257 — it enumerated the four-entry shell variable and nothing else, so two
 /// workspace plane crates answered to no column and nothing said so. `plane-streaming` is the
 /// streaming plane voice is a dialect of (DECISIONS #18), so it answers to the two voice columns.
-const PLANE_CRATE_LEDGER_COLUMNS: &[(&str, &[&str])] = &[
-    ("llm", &["llm"]),
-    ("mcp", &["mcp-client", "mcp-server"]),
-    ("a2a", &["a2a-client", "a2a-server"]),
-    ("voice", &["voice-client", "voice-server"]),
-    ("plane-llm", &["llm"]),
-    ("plane-mcp", &["mcp-client", "mcp-server"]),
-    ("plane-a2a", &["a2a-client", "a2a-server"]),
-    ("plane-streaming", &["voice-client", "voice-server"]),
-];
+fn plane_crate_ledger_columns() -> Vec<(&'static str, &'static [&'static str])> {
+    common::doctrine_rows("crate")
+        .into_iter()
+        .map(|r| {
+            let cols: &'static [&'static str] = Box::leak(r[1..].to_vec().into_boxed_slice());
+            (r[0], cols)
+        })
+        .collect()
+}
 
 /// THE WORKSPACE PLANE CRATES THAT ANSWER TO NO LEDGER COLUMN YET — pinned EXACTLY, at today's
 /// measurement, so the gap is named rather than invisible and cannot grow or quietly close.
@@ -139,7 +138,12 @@ const PLANE_CRATE_LEDGER_COLUMNS: &[(&str, &[&str])] = &[
 /// leaving it out of the enumeration is the hole item 257 found. So it is listed here, and the
 /// cross-check below is RED if a crate joins the workspace unmapped and unlisted, AND if a listed
 /// crate gains a mapping without leaving this list. The column is the ledger owner's to add.
-const PLANE_CRATES_OWED_A_COLUMN: &[&str] = &["plane-decision"];
+fn plane_crates_owed_a_column() -> Vec<&'static str> {
+    common::doctrine_rows("owed")
+        .into_iter()
+        .map(|r| r[0])
+        .collect()
+}
 
 /// Floor on the capability axis. Set AT today's real number (13), not below it. A floor of 12 was
 /// slack the gate could not afford: deleting one capability row together with its seven cells left
@@ -161,13 +165,15 @@ const MIN_NA_REASON: usize = 60;
 /// THE FIVE ROOT LEGS, verbatim — one per `root-*` feature the composition root carries. Pinned
 /// here for the same reason [`PLANES`] is: a leg that quietly left the list would take its whole
 /// column of root verdicts with it.
-const ROOT_LEGS: [&str; 5] = [
-    "root-a2a",
-    "root-admin",
-    "root-llm",
-    "root-mcp",
-    "root-voice",
-];
+fn root_legs() -> &'static [&'static str] {
+    static LEGS: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    LEGS.get_or_init(|| {
+        common::doctrine_rows("root-leg")
+            .into_iter()
+            .map(|r| r[0])
+            .collect()
+    })
+}
 
 /// Every root leg's file lives here, and evidence for a leg that lived anywhere else would not be
 /// that leg's evidence.
@@ -724,7 +730,7 @@ fn real_doc() -> serde_json::Value {
 
 #[test]
 fn pinned_equality_matrix_is_exact_and_every_proof_exists() {
-    let summary = verify(&real_doc(), &repo_root(), &PLANES, MIN_CAPABILITIES)
+    let summary = verify(&real_doc(), &repo_root(), planes(), MIN_CAPABILITIES)
         .unwrap_or_else(|e| panic!("qa/capability-equality.json: {e}"));
 
     assert!(
@@ -751,7 +757,7 @@ fn pinned_equality_matrix_is_exact_and_every_proof_exists() {
 /// with no argument, and an n/a that disagrees with itself across the two paths.
 #[test]
 fn every_cell_carries_a_root_leg_verdict_and_every_root_proof_exists() {
-    let s = verify_root(&real_doc(), &repo_root(), &ROOT_LEGS, MIN_ROOT_PROVEN)
+    let s = verify_root(&real_doc(), &repo_root(), root_legs(), MIN_ROOT_PROVEN)
         .unwrap_or_else(|e| panic!("qa/capability-equality.json root column: {e}"));
     println!(
         "ROOT-EQUALITY: {} cells proven over the loop, {} still \"none\" -- {}",
@@ -774,22 +780,7 @@ fn every_cell_carries_a_root_leg_verdict_and_every_root_proof_exists() {
 /// per-leg matrix below runs over every leg the ledger declares (data, therefore checkable on every
 /// build), and each leg the build carries gets the extra, feature-dependent questions asked of it.
 fn compiled_legs() -> BTreeSet<&'static str> {
-    #[allow(unused_mut)]
-    let mut legs: BTreeSet<&'static str> = BTreeSet::new();
-    // The mcp and a2a legs are the kernel-loop rider those planes are SERVED through, registered by
-    // `gauntlet_install::install()` for each linked one-shot plane — so what gates them is the
-    // feature that links the plane, not a `root-*` feature of their own.
-    #[cfg(feature = "plane-a2a")]
-    legs.insert("root-a2a");
-    #[cfg(feature = "root-admin")]
-    legs.insert("root-admin");
-    #[cfg(feature = "root-llm")]
-    legs.insert("root-llm");
-    #[cfg(feature = "plane-mcp")]
-    legs.insert("root-mcp");
-    #[cfg(feature = "root-voice")]
-    legs.insert("root-voice");
-    legs
+    common::compiled_root_legs()
 }
 
 /// THE MATRIX, ONCE PER LEG — on EVERY build, and with the extra questions on the legs this build
@@ -805,14 +796,14 @@ fn compiled_legs() -> BTreeSet<&'static str> {
 fn the_root_leg_matrix_runs_once_per_leg() {
     let doc = real_doc();
     let root = repo_root();
-    let s = verify_root(&doc, &root, &ROOT_LEGS, MIN_ROOT_PROVEN)
+    let s = verify_root(&doc, &root, root_legs(), MIN_ROOT_PROVEN)
         .unwrap_or_else(|e| panic!("qa/capability-equality.json root column: {e}"));
 
     // Once per leg: every declared leg is tallied, and the tallies sum to the whole matrix.
     let cells = doc["cells"].as_array().expect("`cells` is an array").len();
     let mut total = 0;
     let compiled = compiled_legs();
-    for leg in ROOT_LEGS {
+    for &leg in root_legs() {
         let (proven, none, na) = s
             .per_leg
             .get(leg)
@@ -863,7 +854,7 @@ fn the_root_leg_matrix_runs_once_per_leg() {
     println!(
         "ROOT-LEG MATRIX: {} of {} legs compiled into this build ({:?})",
         compiled.len(),
-        ROOT_LEGS.len(),
+        root_legs().len(),
         compiled
     );
 }
@@ -872,34 +863,74 @@ fn the_root_leg_matrix_runs_once_per_leg() {
 /// able to quietly narrow what the real gate demands.
 #[test]
 fn the_gates_own_constants_are_the_doctrines() {
+    // Seven directional planes: one single-direction plane and the three bidirectional protocols
+    // counted in both directions (`<p>-client` / `<p>-server`), and nothing else.
+    let planes = planes();
     assert_eq!(
-        PLANES,
-        [
-            "llm",
-            "mcp-client",
-            "mcp-server",
-            "a2a-client",
-            "a2a-server",
-            "voice-client",
-            "voice-server"
-        ],
-        "the plane list is the owner's ruling (LLM == MCP == A2A == VOICE, both directions of the \
-         bidirectional three); changing it is a doctrine change, not a refactor"
+        planes.len(),
+        7,
+        "the plane list is the owner's ruling (the one-direction plane plus both directions of the \
+         bidirectional three); changing it is a doctrine change, not a refactor: {planes:?}"
     );
+    let singles: Vec<&&str> = planes
+        .iter()
+        .filter(|p| !p.ends_with("-client") && !p.ends_with("-server"))
+        .collect();
+    assert_eq!(
+        singles.len(),
+        1,
+        "exactly one one-direction plane: {planes:?}"
+    );
+    for p in planes.iter().filter(|p| p.ends_with("-client")) {
+        let server = format!("{}-server", p.trim_end_matches("-client"));
+        assert!(
+            planes.contains(&server.as_str()),
+            "bidirectional `{p}` without `{server}`: {planes:?}"
+        );
+    }
+    // The pinned list and the ledger's declared planes are two artifacts that must agree.
+    let declared: BTreeSet<String> = real_doc()["planes"]
+        .as_object()
+        .expect("`planes` is an object")
+        .keys()
+        .cloned()
+        .collect();
+    let pinned: BTreeSet<String> = planes.iter().map(|p| p.to_string()).collect();
+    assert_eq!(pinned, declared, "the pinned plane list is the ledger's");
     const {
         assert!(MIN_CAPABILITIES >= 13 && MIN_PROVEN >= 20 && MIN_NA_REASON >= 60);
     }
+    let legs = root_legs();
     assert_eq!(
-        ROOT_LEGS,
-        [
-            "root-a2a",
-            "root-admin",
-            "root-llm",
-            "root-mcp",
-            "root-voice"
-        ],
-        "the five root legs are the composition root's own; changing the list is a doctrine change"
+        legs.len(),
+        5,
+        "the five root legs are the composition root's own; changing the list is a doctrine change: \
+         {legs:?}"
     );
+    assert!(
+        legs.contains(&"root-admin"),
+        "the admin leg is a root leg: {legs:?}"
+    );
+    let declared_legs: BTreeSet<String> = real_doc()["root_legs"]
+        .as_object()
+        .expect("`root_legs` is an object")
+        .keys()
+        .cloned()
+        .collect();
+    let pinned_legs: BTreeSet<String> = legs.iter().map(|l| l.to_string()).collect();
+    assert_eq!(
+        pinned_legs, declared_legs,
+        "the pinned root legs are the ledger's"
+    );
+    // Every leg names the feature that compiles it, and that feature is one this crate declares.
+    let manifest = std::fs::read_to_string(repo_root().join("crates/busbar/Cargo.toml"))
+        .expect("read crates/busbar/Cargo.toml");
+    for row in common::doctrine_rows("root-leg") {
+        assert!(
+            row.len() == 2 && manifest.contains(&format!("\n{} = [", row[1])),
+            "root leg row {row:?} must name a cargo feature crates/busbar/Cargo.toml declares"
+        );
+    }
     const {
         assert!(MIN_ROOT_REASON >= 60 && MIN_ROOT_PROVEN >= 25 && MIN_ZERO_COLUMN_ARGUMENT >= 120);
     }
@@ -997,7 +1028,7 @@ fn every_workspace_plane_crate_maps_to_at_least_one_ledger_column() {
         .keys()
         .cloned()
         .collect();
-    let map: BTreeMap<&str, &[&str]> = PLANE_CRATE_LEDGER_COLUMNS.iter().copied().collect();
+    let map: BTreeMap<&str, &[&str]> = plane_crate_ledger_columns().into_iter().collect();
 
     let crates = workspace_plane_crates(&root);
     for key in &crates {
@@ -1016,7 +1047,7 @@ fn every_workspace_plane_crate_maps_to_at_least_one_ledger_column() {
     );
     let unmapped =
         unmapped_plane_crates(&crates, &map, &ledger_columns).unwrap_or_else(|e| panic!("{e}"));
-    let owed: BTreeSet<String> = PLANE_CRATES_OWED_A_COLUMN
+    let owed: BTreeSet<String> = plane_crates_owed_a_column()
         .iter()
         .map(|s| s.to_string())
         .collect();
@@ -1040,12 +1071,12 @@ fn every_workspace_plane_crate_maps_to_at_least_one_ledger_column() {
 /// mapped one — through the REAL `unmapped_plane_crates`.
 #[test]
 fn selftest_totality_names_an_unmapped_plane_crate_and_refuses_an_undeclared_column() {
-    let columns: BTreeSet<String> = ["llm".to_string()].into_iter().collect();
-    let crates: BTreeSet<String> = ["plane-llm".to_string(), "plane-new".to_string()]
+    let columns: BTreeSet<String> = ["alpha".to_string()].into_iter().collect();
+    let crates: BTreeSet<String> = ["plane-alpha".to_string(), "plane-new".to_string()]
         .into_iter()
         .collect();
     let mut map: BTreeMap<&str, &[&str]> = BTreeMap::new();
-    map.insert("plane-llm", &["llm"]);
+    map.insert("plane-alpha", &["alpha"]);
     assert_eq!(
         unmapped_plane_crates(&crates, &map, &columns),
         Ok(["plane-new".to_string()].into_iter().collect())

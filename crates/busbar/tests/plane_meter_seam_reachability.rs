@@ -63,7 +63,45 @@ use std::path::{Path, PathBuf};
 
 /// Every plane that performs billable work and therefore MUST reach the core Meter seam. Keyed by
 /// the plane's crate directory name under `crates/`.
-const BILLING_PLANE_CRATES: &[&str] = &["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"];
+/// The list is DATA — `tests/fixtures/billing_plane_legs.txt`, one row per billing plane naming how
+/// it is answered — and every row must be a LINKED plane (see
+/// [`every_billing_plane_is_a_linked_plane`]), so the source names no plugin.
+fn billing_plane_crates() -> &'static [&'static str] {
+    static CRATES: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    CRATES.get_or_init(|| billing_rows().iter().map(|r| r[0]).collect())
+}
+
+/// The rows of `tests/fixtures/billing_plane_legs.txt`, whitespace-split and leaked once.
+fn billing_rows() -> &'static [Vec<&'static str>] {
+    static ROWS: std::sync::OnceLock<Vec<Vec<&'static str>>> = std::sync::OnceLock::new();
+    ROWS.get_or_init(|| {
+        common::fixture_lines("billing_plane_legs.txt")
+            .into_iter()
+            .map(|l| {
+                let l: &'static str = Box::leak(l.into_boxed_str());
+                l.split_whitespace().collect()
+            })
+            .collect()
+    })
+}
+
+/// Every billing plane named by the fixture is a plane the composition root LINKS (a
+/// `[package.metadata.busbar.linked]` row carrying the `plane` axis) — so the data cannot drift onto
+/// a crate this binary does not carry, and the gate cannot shrink by a row going stale.
+#[test]
+fn every_billing_plane_is_a_linked_plane() {
+    let linked: Vec<String> = common::linked_plane_crates()
+        .into_iter()
+        .map(|(_, krate)| krate)
+        .collect();
+    assert!(!billing_plane_crates().is_empty(), "no billing plane named");
+    for plane in billing_plane_crates() {
+        assert!(
+            linked.iter().any(|k| k == plane),
+            "billing plane `{plane}` is not a linked plane of this binary: {linked:?}"
+        );
+    }
+}
 
 /// The core Meter-seam call tokens. A production line containing any of these (outside a comment)
 /// counts as reaching the one billing path.
@@ -101,7 +139,7 @@ fn meter_seam_reaches(crate_dir: &Path) -> usize {
 fn every_billing_plane_reaches_the_core_meter_seam_in_production() {
     let root = crates_root();
     let mut offenders: Vec<String> = Vec::new();
-    for plane in BILLING_PLANE_CRATES {
+    for plane in billing_plane_crates() {
         let dir = root.join(plane);
         assert!(
             dir.join("src").is_dir(),
@@ -146,10 +184,17 @@ fn every_billing_plane_reaches_the_core_meter_seam_in_production() {
 /// Admin is deliberately absent: `root-admin` answers to ZERO ledger columns in
 /// `qa/capability-equality.json` (an admin request is unpriced), so it is owed no Meter reach and a
 /// row here would be a claim the ledger contradicts.
-const BILLING_PLANE_ROOT_LEGS: &[(&str, &str)] = &[
-    ("busbar-llm", "units_llm.rs"),
-    ("busbar-voice", "units_voice.rs"),
-];
+fn billing_plane_root_legs() -> &'static [(&'static str, &'static str)] {
+    static LEGS: std::sync::OnceLock<Vec<(&'static str, &'static str)>> =
+        std::sync::OnceLock::new();
+    LEGS.get_or_init(|| {
+        billing_rows()
+            .iter()
+            .filter(|r| r[1] == "root")
+            .map(|r| (r[0], r[2]))
+            .collect()
+    })
+}
 
 /// The ONE usage seam every Teller Meter step folds through, in the three spellings the tree
 /// actually uses: the usage unit's own entry point, the report constructor it returns, and the
@@ -204,7 +249,7 @@ fn every_billing_plane_reaches_the_usage_seam_on_its_teller_meter_step() {
     let leg_dir = root.join("busbar").join("src").join("root");
     let mut offenders: Vec<String> = Vec::new();
 
-    for (plane, leg) in BILLING_PLANE_ROOT_LEGS {
+    for (plane, leg) in billing_plane_root_legs() {
         let leg_path = leg_dir.join(leg);
         assert!(
             leg_path.is_file(),
@@ -324,18 +369,20 @@ impl ServedLeg {
 }
 
 /// Every billing plane the rider serves, with its served ledger step.
-const BILLING_PLANE_SERVED_LEGS: &[ServedLeg] = &[
-    ServedLeg {
-        at: "busbar-mcp/src/mcp/method.rs",
-        name: "ledger_tool_call",
-        class: "CLASS_TOOL_CALLS",
-    },
-    ServedLeg {
-        at: "busbar-a2a/src/a2a/receive.rs",
-        name: "ledger_hop_bytes",
-        class: "CLASS_BYTES",
-    },
-];
+fn billing_plane_served_legs() -> &'static [ServedLeg] {
+    static LEGS: std::sync::OnceLock<Vec<ServedLeg>> = std::sync::OnceLock::new();
+    LEGS.get_or_init(|| {
+        billing_rows()
+            .iter()
+            .filter(|r| r[1] == "served")
+            .map(|r| ServedLeg {
+                at: r[2],
+                name: r[3],
+                class: r[4],
+            })
+            .collect()
+    })
+}
 
 /// The ONE ledger seam a served plane reaches: the host's `meter_ledger`, which appends the plane's
 /// raw counts to the caller's budget chain.
@@ -397,12 +444,12 @@ fn every_billing_plane_the_rider_serves_ledgers_its_declared_class_on_the_served
 
     // Totality: every billing plane answers on exactly one path, so moving a plane between the two
     // tables can never drop it from both.
-    for plane in BILLING_PLANE_CRATES {
-        let on_root = BILLING_PLANE_ROOT_LEGS
+    for plane in billing_plane_crates() {
+        let on_root = billing_plane_root_legs()
             .iter()
             .filter(|(p, _)| p == plane)
             .count();
-        let served = BILLING_PLANE_SERVED_LEGS
+        let served = billing_plane_served_legs()
             .iter()
             .filter(|l| l.plane() == *plane)
             .count();
@@ -430,7 +477,7 @@ fn every_billing_plane_the_rider_serves_ledgers_its_declared_class_on_the_served
         Some(_) => {}
     }
 
-    for leg in BILLING_PLANE_SERVED_LEGS {
+    for leg in billing_plane_served_legs() {
         let dir = root.join(leg.plane());
         let path = dir.join(leg.file());
         assert!(
@@ -612,7 +659,7 @@ mod tests {
 #[test]
 fn selftest_the_hop_lands_on_the_meter_step_and_not_the_neighbouring_step() {
     let root = crates_root();
-    for (plane, _) in BILLING_PLANE_ROOT_LEGS {
+    for (plane, _) in billing_plane_root_legs() {
         let dir = root.join(plane);
         let unit_dir = dir.join("src").join("unit");
         if !unit_dir.is_dir() {

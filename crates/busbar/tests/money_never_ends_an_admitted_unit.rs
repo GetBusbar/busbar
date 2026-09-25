@@ -32,6 +32,8 @@
 //! `busbar-llm/src/unit/meter.rs::a_spend_past_the_reservation_is_carried_out_as_an_overdraft` (a
 //! unit that overspends after admission carries the excess out rather than ending).
 
+mod common;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -327,26 +329,17 @@ const MIN_REFUSAL_SITES: usize = 77;
 /// by [`every_value_a_computed_refusal_could_carry_excludes_the_ceiling_and_the_stale_slice`], which
 /// reads where reason VALUES come from instead. The pin is what makes a new carried site a reviewed
 /// event rather than an invisible one: it goes red here until somebody has looked at it.
-const COMPUTED_REFUSAL_SITES: &[(&str, &str)] = &[
-    ("busbar-core-admin/src/governance.rs", "reason"),
-    ("busbar-core-admin/src/refusal.rs", "reason"),
-    ("busbar-kernel-budget/src/lib.rs", "reason"),
-    (
-        "busbar-kernel-egress/src/trust/unit.rs",
-        "refusal.kind.reason()",
-    ),
-    ("busbar-llm/src/unit/verify.rs", "refusal.reason()"),
-    (
-        "busbar/src/root/units_admin/mod.rs",
-        "verbs_reason(refusal.reason)",
-    ),
-    (
-        "busbar/src/root/units_admin/mod.rs",
-        "verbs_reason(refusal.reason)",
-    ),
-    ("busbar/src/root/units_voice.rs", "reason"),
-    ("busbar/src/root/units_voice.rs", "refusal.reason()"),
-];
+fn computed_refusal_sites() -> Vec<(String, String)> {
+    common::fixture_lines("computed_refusal_sites.txt")
+        .into_iter()
+        .map(|l| {
+            let (file, expr) = l.split_once('\t').unwrap_or_else(|| {
+                panic!("computed_refusal_sites.txt: `{l}` is not <file>TAB<expr>")
+            });
+            (file.trim().to_string(), expr.trim().to_string())
+        })
+        .collect()
+}
 
 /// `OverdraftCeiling` and `StaleSlice` are refusal reasons nothing in the tree ever refuses with.
 ///
@@ -382,7 +375,11 @@ fn overdraft_ceiling_and_stale_slice_are_refusal_reasons_nothing_refuses_with() 
         })
         .collect();
     computed.sort_unstable();
-    let mut pinned = COMPUTED_REFUSAL_SITES.to_vec();
+    let pinned_owned = computed_refusal_sites();
+    let mut pinned: Vec<(&str, &str)> = pinned_owned
+        .iter()
+        .map(|(f, e)| (f.as_str(), e.as_str()))
+        .collect();
     pinned.sort_unstable();
     assert_eq!(
         computed, pinned,

@@ -54,6 +54,8 @@
 //! `plane_isomorphism.rs` / `capability_equality.rs`): ONE detector drives both the REAL scan and a
 //! non-vacuity self-test, so a broken scan that finds nothing fails loudly rather than passing green.
 
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -80,14 +82,29 @@ const SLICE_TRAITS: &[&str] = &[
     "EngineHost",
 ];
 
-/// The four PLANE crate source roots — the "how many planes use this capability" universe. A plane
-/// that appears/disappears is one edit here.
-const PLANE_ROOTS: &[(&str, &str)] = &[
-    ("llm", "crates/busbar-llm/src"),
-    ("mcp", "crates/busbar-mcp/src"),
-    ("a2a", "crates/busbar-a2a/src"),
-    ("voice", "crates/busbar-voice/src"),
-];
+/// The PLANE crate source roots — the "how many planes use this capability" universe: every plane the
+/// composition root LINKS from its own crate (`[package.metadata.busbar.linked]` rows carrying the
+/// `plane` axis), keyed by the crate directory without its `busbar-` prefix. A plane that
+/// appears/disappears is one row in that table.
+fn plane_roots() -> &'static [(&'static str, &'static str)] {
+    static ROOTS: std::sync::OnceLock<Vec<(&'static str, &'static str)>> =
+        std::sync::OnceLock::new();
+    ROOTS.get_or_init(|| {
+        common::linked_plane_crates_own_entry()
+            .into_iter()
+            .map(|(_, krate)| {
+                let plane: &'static str = Box::leak(
+                    krate
+                        .trim_start_matches("busbar-")
+                        .to_string()
+                        .into_boxed_str(),
+                );
+                let rel: &'static str = Box::leak(format!("crates/{krate}/src").into_boxed_str());
+                (plane, rel)
+            })
+            .collect()
+    })
+}
 
 /// THE SINGLE-PLANE ALLOWLIST — `(method, plane, reason)`. Every universal-`EngineHost` method whose
 /// ONLY plane-crate caller is a SINGLE plane must appear here with a written reason, or the gate reds.
@@ -101,65 +118,23 @@ const PLANE_ROOTS: &[(&str, &str)] = &[
 /// The F3/F6 entries are the tracked semantic-coupling DEBT this branch exists to extract; the rest are
 /// genuinely-neutral capabilities that happen to have exactly one consumer today (generic signature, no
 /// foreign-plane vocabulary) — flagged by the mechanical caller-count, cleared by the written reason.
-const SINGLE_PLANE_ALLOWLIST: &[(&str, &str, &str)] = &[
-    ("admission_check", "llm", "Neutral single-consumer capability: the door's check-and-charge without the finishing record, so the Audit step can be the one terminal; generic signature, no foreign-plane vocabulary. Sole current caller is the LLM plane's admit step; admission_door collapses into it when the plane flips onto the step files. Re-review if a second plane consumes it."),
-    ("admission_door", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("any_content_hook", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("approval_redeem", "mcp", "F3/F6 tracked debt: MCP durable trust/audit engine state (drift-quarantine / one-time-approval ledger / ask-state sealer), owner-ruled core-resident today; pending extraction to a narrowed McpTrustHost slice that is NOT a supertrait of EngineHost."),
-    ("ask_state_sealer", "mcp", "F3/F6 tracked debt: MCP durable trust/audit engine state (drift-quarantine / one-time-approval ledger / ask-state sealer), owner-ruled core-resident today; pending extraction to a narrowed McpTrustHost slice that is NOT a supertrait of EngineHost."),
-    ("audit_record", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("budget_state", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("call_log_emit", "mcp", "F3/F6 tracked debt: MCP durable call-log engine (CallInput carries MCP vocabulary server/tool/tool_digest/pin_generation). Owner-ruled core-resident today; pending extraction to a narrowed McpJournalHost slice that is NOT a supertrait of EngineHost."),
-    ("call_log_emit_hostless", "mcp", "F3/F6 tracked debt: MCP durable call-log engine (CallInput carries MCP vocabulary server/tool/tool_digest/pin_generation). Owner-ruled core-resident today; pending extraction to a narrowed McpJournalHost slice that is NOT a supertrait of EngineHost."),
-    ("caller_in_hook_groups", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("cost_close", "voice", "Neutral single-consumer money-lease (MeteringHost reserve/settle): generic nanodollar signature, no voice-transport vocabulary; sole current caller is the voice D2 live-session lease (see F4 oracle)."),
-    ("cost_model_unpriced", "llm", "Neutral single-consumer VERDICT: the Verify step's third guard asks whether a present card leaves a model unpriced and gets a bool back, never a rate (#43); generic signature, no foreign-plane vocabulary. Sole current caller is the LLM plane's verify step. Re-review if a second plane prices by model."),
-    ("cost_reserve", "voice", "Neutral single-consumer money-lease (MeteringHost reserve/settle): generic nanodollar signature, no voice-transport vocabulary; sole current caller is the voice D2 live-session lease (see F4 oracle)."),
-    ("cost_settle", "voice", "Neutral single-consumer money-lease (MeteringHost reserve/settle): generic nanodollar signature, no voice-transport vocabulary; sole current caller is the voice D2 live-session lease (see F4 oracle)."),
-    ("cost_settled", "voice", "Neutral single-consumer money-lease (MeteringHost reserve/settle): generic nanodollar signature, no voice-transport vocabulary; sole current caller is the voice D2 live-session lease (see F4 oracle)."),
-    ("default_probe_interval_secs", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("default_probe_timeout_secs", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("destination_guard", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("finish_admitted", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("finish_rejected", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("global_gates", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("governance", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("hook_read", "llm", "Neutral single-consumer capability: a PROVIDED method delegating to the kernel's one access seam (audit::amend::hook_read) — name, principal, ingress label, identity flag; no foreign-plane vocabulary. Sole plane caller is the LLM plane because only its own hook call sites (decision gate, fallback chain, rewrite pass, global tap) hand a hook the content outside the kernel; the tool, agent and session planes fire hooks through gate_decide/transform_over, which seal inside the kernel. Re-review if a second plane fires a content hook itself."),
-    ("identity_admit", "mcp", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the MCP plane's identity/registry/failover path."),
-    ("identity_audience_binding", "mcp", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the MCP plane's identity/registry/failover path."),
-    ("lane_store", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("meter_ledger", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("meter_series", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("plane_audience_bound", "a2a", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the A2A plane (card signing / pool membership / request-finish)."),
-    ("plane_pool_members", "a2a", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the A2A plane (card signing / pool membership / request-finish)."),
-    ("plane_slot_live", "mcp", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the MCP plane's identity/registry/failover path."),
-    ("pool_gates", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("pool_label", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("pool_members_repeatable", "mcp", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the MCP plane's identity/registry/failover path."),
-    ("pool_policy", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("pool_rewrites", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("price_usage", "voice", "Neutral single-consumer money-lease (MeteringHost reserve/settle): generic nanodollar signature, no voice-transport vocabulary; sole current caller is the voice D2 live-session lease (see F4 oracle)."),
-    ("principal_standing", "mcp", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the MCP plane's identity/registry/failover path."),
-    ("quarantine_settle", "mcp", "F3/F6 tracked debt: MCP durable trust/audit engine state (drift-quarantine / one-time-approval ledger / ask-state sealer), owner-ruled core-resident today; pending extraction to a narrowed McpTrustHost slice that is NOT a supertrait of EngineHost."),
-    ("rate_headroom", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("request_finished", "a2a", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the A2A plane (card signing / pool membership / request-finish)."),
-    ("requested_signals", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("rewrite_hooks", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("run_gauntlet", "mcp", "universal/neutral: the shared gauntlet entry any plane may ride (provided method delegating to the free run_gauntlet). One caller today is incidental, not plane vocabulary."),
-    ("secret_resolver", "a2a", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the A2A plane (card signing / pool membership / request-finish)."),
-    ("subkey_sign", "a2a", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the A2A plane (card signing / pool membership / request-finish)."),
-    ("synthesize_completion", "mcp", "F3 tracked debt: LLM-purposed completion whose sole host caller is MCP's sampling/complete bridge. The documented narrow-to-slice case; already a CompletionHost slice, dropping it as an EngineHost supertrait is the F3 fix."),
-    ("tap_hooks", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("tap_hooks_candidate", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("tap_hooks_response", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("tap_hooks_routing", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("telemetry_breaker_trip", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("telemetry_failover", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("telemetry_translation", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("telemetry_upstream_attempt", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("telemetry_upstream_failure", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("verify_token_test", "llm", "test-only (cfg test/test-support) raw-token verifier for the LLM routing-policy test seam; never linked in a production binary."),
-];
+fn single_plane_allowlist() -> &'static [(&'static str, &'static str, &'static str)] {
+    static ROWS: std::sync::OnceLock<Vec<(&'static str, &'static str, &'static str)>> =
+        std::sync::OnceLock::new();
+    ROWS.get_or_init(|| {
+        common::fixture_lines("single_plane_allowlist.txt")
+            .into_iter()
+            .map(|l| {
+                let l: &'static str = Box::leak(l.into_boxed_str());
+                let mut cols = l.splitn(3, '\t');
+                let (Some(m), Some(p), Some(r)) = (cols.next(), cols.next(), cols.next()) else {
+                    panic!("single_plane_allowlist.txt: `{l}` is not method<TAB>plane<TAB>reason")
+                };
+                (m.trim(), p.trim(), r.trim())
+            })
+            .collect()
+    })
+}
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -401,7 +376,7 @@ fn plane_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// The stripped source of every plane crate, keyed by plane name — read once, scanned for every method.
 fn plane_sources(root: &Path) -> BTreeMap<&'static str, Vec<String>> {
     let mut map = BTreeMap::new();
-    for (plane, rel) in PLANE_ROOTS {
+    for (plane, rel) in plane_roots() {
         let mut files = Vec::new();
         plane_rs_files(&root.join(rel), &mut files);
         let srcs: Vec<String> = files
@@ -450,7 +425,7 @@ fn run_scan() -> Scan {
 
     // Non-vacuity floor on the plane walk: a broken walk (wrong root, silent read error) would make
     // every method look 0-plane and pass the whole gate green. Assert each plane yielded real source.
-    for (_plane, rel) in PLANE_ROOTS {
+    for (_plane, rel) in plane_roots() {
         let mut files = Vec::new();
         plane_rs_files(&root.join(rel), &mut files);
         assert!(
@@ -479,7 +454,10 @@ fn no_unjustified_single_plane_method_on_universal_engine_host() {
         scan.methods.len()
     );
 
-    let allow_names: BTreeSet<&str> = SINGLE_PLANE_ALLOWLIST.iter().map(|(m, _, _)| *m).collect();
+    let allow_names: BTreeSet<&str> = single_plane_allowlist()
+        .iter()
+        .map(|(m, _, _)| *m)
+        .collect();
 
     // (a) No unjustified single-plane method.
     let mut violations: Vec<String> = Vec::new();
@@ -506,7 +484,7 @@ fn no_unjustified_single_plane_method_on_universal_engine_host() {
     //     planes is a GOOD change; its entry is simply dormant, not stale, so it is not flagged.)
     let mut stale: Vec<String> = Vec::new();
     let mut seen: BTreeSet<&str> = BTreeSet::new();
-    for (method, plane, reason) in SINGLE_PLANE_ALLOWLIST {
+    for (method, plane, reason) in single_plane_allowlist() {
         if !seen.insert(method) {
             stale.push(format!("  {method}  — duplicate allowlist entry"));
         }
@@ -580,9 +558,15 @@ fn detector_is_non_vacuous_across_single_multi_and_zero_plane_methods() {
         "detector failed to classify `synthesize_completion` as SINGLE-plane (got callers {synth:?}); \
          a scan that cannot see a single-plane method makes the real witness vacuous"
     );
+    let recorded = single_plane_allowlist()
+        .iter()
+        .find(|(m, _, _)| *m == "synthesize_completion")
+        .map(|(_, p, _)| *p)
+        .expect("`synthesize_completion` is allowlisted");
     assert!(
-        synth.contains("mcp"),
-        "the sole `synthesize_completion` host caller should be the MCP sampling bridge, got {synth:?}"
+        synth.contains(recorded),
+        "the sole `synthesize_completion` host caller should be the sampling bridge the allowlist \
+         records (`{recorded}`), got {synth:?}"
     );
 
     // (3) A KNOWN ≥2-plane method: `clock_now_secs` (mcp + a2a). Proves the detector DISTINGUISHES

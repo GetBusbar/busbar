@@ -1,0 +1,11 @@
+# THE METHOD MATRIX'S AXES (method_coverage.rs), as data.
+# protocol <protocol> <floor on counts.<protocol>_methods in qa/method-inventory.json> — sized well
+# below today's real numbers (38 and 13 rows) and well above zero.
+protocol mcp 30
+protocol a2a 11
+# transport <protocol> <transport>: every transport the specifications define is a column.
+transport mcp streamable-http
+transport mcp stdio
+transport a2a jsonrpc
+transport a2a http+json
+transport a2a grpc

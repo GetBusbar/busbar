@@ -60,15 +60,42 @@
 //!
 //! **Never weaken this gate to make it green.** The MISSING list is the work queue.
 
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// Floors. A gate that discovers nothing passes everything. These are sized well below today's
-/// real numbers (230 cells, 38 MCP rows, 13 A2A rows) so an ordinary addition does not trip them,
-/// and well above zero so a parser that silently reads nothing cannot report success.
+/// real numbers (230 cells; the per-protocol method floors live beside the protocols in
+/// `tests/fixtures/method_coverage_axes.txt`) so an ordinary addition does not trip them, and well
+/// above zero so a parser that silently reads nothing cannot report success.
 const MIN_CELLS: usize = 200;
-const MIN_MCP_METHODS: usize = 30;
-const MIN_A2A_METHODS: usize = 11;
+
+/// The matrix's protocol and transport axes, as DATA (`tests/fixtures/method_coverage_axes.txt`):
+/// `(protocol, method floor)` rows and `(protocol, transport)` rows. The source names no protocol.
+/// `(protocol, method floor)` rows, then `(protocol, transport)` rows.
+type Axes = (Vec<(String, u64)>, Vec<(String, String)>);
+
+fn axes() -> Axes {
+    let mut protocols = Vec::new();
+    let mut transports = Vec::new();
+    for line in common::fixture_lines("method_coverage_axes.txt") {
+        let w: Vec<&str> = line.split_whitespace().collect();
+        match w.as_slice() {
+            ["protocol", p, floor] => protocols.push((
+                p.to_string(),
+                floor.parse().expect("a protocol row's floor is an integer"),
+            )),
+            ["transport", p, t] => transports.push((p.to_string(), t.to_string())),
+            _ => panic!("method_coverage_axes.txt: unreadable row `{line}`"),
+        }
+    }
+    assert!(
+        protocols.len() >= 2,
+        "the matrix covers at least two protocols"
+    );
+    (protocols, transports)
+}
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -282,44 +309,43 @@ fn the_matrix_is_a_matrix_and_not_a_list() {
         cells.len()
     );
 
-    let mcp = cells.iter().filter(|c| c.protocol == "mcp").count();
-    let a2a = cells.iter().filter(|c| c.protocol == "a2a").count();
-    assert!(mcp > 0 && a2a > 0, "both protocols must be in the matrix");
-    assert!(
-        doc["counts"]["mcp_methods"].as_u64().unwrap_or(0) >= MIN_MCP_METHODS as u64,
-        "the MCP method count collapsed; rmcp's model was parsed but yielded almost nothing"
+    let (protocols, transports) = axes();
+    let in_matrix: BTreeSet<&str> = cells.iter().map(|c| c.protocol.as_str()).collect();
+    let pinned: BTreeSet<&str> = protocols.iter().map(|(p, _)| p.as_str()).collect();
+    assert_eq!(
+        in_matrix, pinned,
+        "the matrix's protocols are exactly the pinned ones; every protocol must be in the matrix"
     );
-    assert!(
-        doc["counts"]["a2a_methods"].as_u64().unwrap_or(0) >= MIN_A2A_METHODS as u64,
-        "the A2A method count collapsed; a2a.proto's service block was parsed but yielded almost \
-         nothing"
-    );
+    for (protocol, floor) in &protocols {
+        assert!(
+            doc["counts"][format!("{protocol}_methods")]
+                .as_u64()
+                .unwrap_or(0)
+                >= *floor,
+            "the {protocol} method count collapsed; its specification's model was parsed but \
+             yielded almost nothing"
+        );
+    }
 
-    // Both directions, on both protocols. "Bidirectional in both directions" is the owner's
+    // Both directions, on every protocol. "Bidirectional in both directions" is the owner's
     // phrase and this is what makes it checkable rather than asserted.
-    for protocol in ["mcp", "a2a"] {
+    for (protocol, _) in &protocols {
         for role in ["server", "client"] {
             assert!(
                 cells
                     .iter()
-                    .any(|c| c.protocol == protocol && c.role == role),
+                    .any(|c| &c.protocol == protocol && c.role == role),
                 "{protocol} has no cell with busbar in the {role} role"
             );
         }
     }
 
     // Every transport the specifications define is a column, and a real one.
-    for (protocol, transport) in [
-        ("mcp", "streamable-http"),
-        ("mcp", "stdio"),
-        ("a2a", "jsonrpc"),
-        ("a2a", "http+json"),
-        ("a2a", "grpc"),
-    ] {
+    for (protocol, transport) in &transports {
         assert!(
             cells
                 .iter()
-                .any(|c| c.protocol == protocol && c.transport == transport),
+                .any(|c| &c.protocol == protocol && &c.transport == transport),
             "{protocol} has no {transport} column. Transport is a real third axis (goal D8), not a \
              deployment detail."
         );
@@ -360,8 +386,8 @@ fn every_na_cell_says_why_it_is_na() {
     let na: Vec<&Cell> = cells.iter().filter(|c| c.na_reason.is_some()).collect();
     assert!(
         !na.is_empty(),
-        "no N/A cells at all. Some cells ARE legitimately N/A (A2A push delivery has no JSON-RPC \
-         or gRPC form; the well-known Agent Card is not an rpc; stdio has no session verbs). Zero \
+        "no N/A cells at all. Some cells ARE legitimately N/A (push delivery has no JSON-RPC or \
+         gRPC form; a well-known card document is not an rpc; stdio has no session verbs). Zero \
          of them means the derivation stopped recording the distinction."
     );
     for c in na {
@@ -549,7 +575,7 @@ fn this_gate_cannot_be_steered_or_rewrite_its_own_evidence() {
 /// Run it: `cargo test -p busbar --test method_coverage -- --ignored`
 /// Remove the `#[ignore]` when it passes. Do not remove it any other way.
 #[test]
-#[ignore = "RED BY DESIGN until 1.6.0: cells are still MISSING because crates/busbar-core/src/{mcp,a2a}/ \
+#[ignore = "RED BY DESIGN until 1.6.0: cells are still MISSING because the plane sources \
             are being deleted and rebuilt cell by cell. The current list is pinned in \
             qa/method-coverage.missing and is the release's work queue. Run with --ignored; do not \
             weaken this test to make it green."]
@@ -603,37 +629,37 @@ fn every_cell_is_implemented_or_waived() {
 fn status_parser_refuses_the_three_ways_a_waiver_lies() {
     // A glob would retire a whole transport in one line.
     assert!(
-        parse_status("mcp|*|server|client|tools/call = implemented").is_err(),
+        parse_status("p1|*|server|client|tools/call = implemented").is_err(),
         "a wildcard cell id must be refused"
     );
     // A waiver with no reason is a deletion with extra steps.
     assert!(
-        parse_status("mcp|stdio|server|client|ping = waived 2026-08-12").is_err(),
+        parse_status("p1|stdio|server|client|ping = waived 2026-08-12").is_err(),
         "a waiver with no reason must be refused"
     );
     // A waiver with no date cannot be aged, reviewed or expired.
     assert!(
-        parse_status("mcp|stdio|server|client|ping = waived because reasons").is_err(),
+        parse_status("p1|stdio|server|client|ping = waived because reasons").is_err(),
         "a waiver with no date must be refused"
     );
     // And a made-up state is not a fourth state.
     assert!(
-        parse_status("mcp|stdio|server|client|ping = partially").is_err(),
+        parse_status("p1|stdio|server|client|ping = partially").is_err(),
         "there are three states and `partially` is not one of them"
     );
 
     // The two legitimate claims parse, and they are what silences a cell.
     let ok = parse_status(
         "# a comment\n\
-         mcp|stdio|server|client|ping = implemented\n\
+         p1|stdio|server|client|ping = implemented\n\
          \n\
-         a2a|grpc|client|client|ListTasks = waived 2026-08-12 the gRPC client leg lands in step 15\n",
+         p2|grpc|client|client|ListTasks = waived 2026-08-12 the gRPC client leg lands in step 15\n",
     )
     .expect("well-formed claims parse");
     assert_eq!(ok.len(), 2);
-    assert_eq!(ok["mcp|stdio|server|client|ping"], Claim::Implemented);
+    assert_eq!(ok["p1|stdio|server|client|ping"], Claim::Implemented);
     assert!(matches!(
-        &ok["a2a|grpc|client|client|ListTasks"],
+        &ok["p2|grpc|client|client|ListTasks"],
         Claim::Waived { date, reason } if date == "2026-08-12" && reason.starts_with("the gRPC")
     ));
 
