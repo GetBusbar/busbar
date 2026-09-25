@@ -871,6 +871,62 @@ fn the_built_in_secret_modules_are_linked_rows_of_the_secret_axis() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// K5b (3c) exit test: the built-in ranking strategies are ALIASES of ONE linked `hooks-ranking` row
+/// on the hook axis — each frozen spelling (`least_busy` too, which the package-name rule would
+/// refuse as a name) resolves through the alias table to that `kind: hook` row, and opens as the
+/// strategy it spells. `weighted` stays the inline floor (no row). A frozen spelling is the weakest
+/// claim on the table: a dropped-in plugin aliased `cheapest` keeps answering to it.
+/// RED by planting the door bypass: `linked_rows()` registering no ranking row leaves every
+/// strategy spelling unresolved ("a built-in ranking strategy is a row of the hook axis").
+#[cfg(feature = "hooks-ranking")]
+#[test]
+fn the_built_in_ranking_strategies_are_aliases_of_one_linked_row_of_the_hook_axis() {
+    let preflight = |cfg: &crate::config::PluginsCfg| {
+        crate::plugins_preflight(
+            None,
+            None,
+            &Default::default(),
+            &Default::default(),
+            cfg,
+            &Default::default(),
+        )
+    };
+    let reg = preflight(&Default::default()).expect("the default boot registers its linked rows");
+    for name in crate::config::RESERVED_HOOK_NAMES
+        .iter()
+        .filter(|n| crate::config::parse_strategy(n) != crate::config::PoolPolicy::Weighted)
+    {
+        let row = reg
+            .resolve(name)
+            .expect("a built-in ranking strategy is a row of the hook axis");
+        assert_eq!(
+            (row.manifest.kind.as_str(), row.manifest.name.as_str()),
+            ("hook", "hooks-ranking")
+        );
+        assert!(row.in_process() && row.manifest.alias == "hooks-ranking");
+        assert_eq!(reg.open_ranking(name).expect("the row opens").name(), *name);
+    }
+    assert!(reg.resolve(crate::config::ON_ERROR_WEIGHTED).is_none());
+    assert!(reg.open_ranking("hooks-ranking").is_err());
+
+    let dir = tmp_plugin_dir("linked-ranking");
+    let tarball = unsigned_tarball(plugin_manifest("acme-rank", "cheapest", "acme"), b"lib");
+    std::fs::write(dir.join("acme-rank.tar.gz"), tarball).unwrap();
+    let mut cfg = plugins_cfg(&dir, true);
+    cfg.trust.allow_unsigned = true;
+    let reg = preflight(&cfg).expect("the directory scans");
+    let row = reg.resolve("cheapest").expect("the alias still resolves");
+    assert_eq!(
+        row.manifest.name, "acme-rank",
+        "a row's own alias outranks a frozen spelling"
+    );
+    assert_eq!(
+        reg.resolve("least_busy").unwrap().manifest.name,
+        "hooks-ranking"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// SECURITY: if the CONFIGURED governance store resolves to a plugin that is UNTRUSTED and NOT
 /// opted-in, boot must FAIL with a clear error that NAMES the plugin and carries the exact trust
 /// reason - never silently skip the store the operator asked for. With `allow_unsigned` set, the

@@ -283,29 +283,21 @@ pub fn resolve_policy(cfg: &crate::config::PoolCfg) -> Option<ResolvedPolicy> {
     // 1.2.1's `route: weighted` — so `native_name()` returns `None` here and we take the `?`
     // short-circuit BELOW regardless of the ranking feature.
     let name = cfg.policy.native_name()?;
-    // The non-weighted ranking strategies are the `hooks-ranking` plugin. When it's compiled OUT, a
-    // `policy: cheapest` (etc.) is a config_validate BOOT ERROR, so this arm is unreachable in a
-    // running server; degrade to None (SWRR) as belt-and-suspenders.
-    #[cfg(feature = "hooks-ranking")]
-    {
-        let policy = busbar_hooks_ranking::native_policy(name)?;
-        Some(ResolvedPolicy::Policy {
-            policy,
-            on_error: crate::config::PolicyOnError::default(),
-            on_error_chain: Vec::new(),
-            timeout: policy_timeout(crate::config::DEFAULT_POLICY_TIMEOUT_MS),
-            // Native policies rank on live signals and have no reader for prompt/identity.
-            send_prompt: false,
-            send_user: false,
-            // A native ordering policy never restricts, so on_empty is inert; keep the fail-closed default.
-            on_empty: crate::config::PolicyOnError::Reject,
-        })
-    }
-    #[cfg(not(feature = "hooks-ranking"))]
-    {
-        let _ = name;
-        None
-    }
+    // The non-weighted ranking strategies are aliases of the linked `hooks-ranking` row on the hook
+    // axis. Compiled OUT, no row answers (a config_validate BOOT ERROR, so unreachable in a running
+    // server); degrade to None (SWRR) as belt-and-suspenders.
+    let policy = crate::preflight::builtin_ranking(name)?;
+    Some(ResolvedPolicy::Policy {
+        policy,
+        on_error: crate::config::PolicyOnError::default(),
+        on_error_chain: Vec::new(),
+        timeout: policy_timeout(crate::config::DEFAULT_POLICY_TIMEOUT_MS),
+        // Native policies rank on live signals and have no reader for prompt/identity.
+        send_prompt: false,
+        send_user: false,
+        // A native ordering policy never restricts, so on_empty is inert; keep the fail-closed default.
+        on_empty: crate::config::PolicyOnError::Reject,
+    })
 }
 
 /// The name of the registered `default: true` hook, if any — the base ordering that pools which named
@@ -1423,8 +1415,7 @@ fn resolve_on_error_chain<'a>(
         }
         // A built-in ranking strategy: sync, no I/O, cannot fail — one link, then done. Compiled
         // out, the name falls through to the registry lookup below (and validation errored at boot).
-        #[cfg(feature = "hooks-ranking")]
-        if let Some(policy) = busbar_hooks_ranking::native_policy(current) {
+        if let Some(policy) = crate::preflight::builtin_ranking(current) {
             chain.push(FallbackHook {
                 policy,
                 timeout: policy_timeout(crate::config::DEFAULT_POLICY_TIMEOUT_MS),

@@ -136,7 +136,7 @@ impl LoadablePlugin {
     pub fn in_process(&self) -> bool {
         matches!(
             self.entry,
-            Some(LinkedEntry::Store(_) | LinkedEntry::BuiltinSecret)
+            Some(LinkedEntry::Store(_) | LinkedEntry::BuiltinSecret | LinkedEntry::Ranking { .. })
         )
     }
 
@@ -186,6 +186,9 @@ pub struct LinkedPlugin {
     pub ephemeral: bool,
 }
 
+/// What a [`LinkedEntry::Ranking`] row opens: the routing policy one of its spellings ranks by.
+pub type RankingPolicy = std::sync::Arc<dyn busbar_api::RoutingPolicy>;
+
 /// A linked plugin's boundary.
 #[derive(Clone, Copy)]
 pub enum LinkedEntry {
@@ -200,6 +203,14 @@ pub enum LinkedEntry {
     /// [`busbar_api::resolve_builtin`] resolves, in process. `open_secret` opens it where it would
     /// otherwise run the image load, on the same axis as [`LinkedEntry::Store`].
     BuiltinSecret,
+    /// The BUILT-IN ranking hooks: ONE `kind: hook` row whose frozen config spellings (`least_busy`,
+    /// …) are `aliases` in the axis's alias table — resolved there like any alias, never renamed and
+    /// never put through the package-name rule, which governs the row's own name. `open_ranking`
+    /// hands `open` the spelling a reference used, where it would otherwise run the image load.
+    Ranking {
+        open: fn(&str) -> Option<RankingPolicy>,
+        aliases: &'static [&'static str],
+    },
 }
 
 impl LinkedPlugin {
@@ -233,6 +244,26 @@ impl LinkedPlugin {
             busbar_plugin::cold::SECRET_ABI_VERSION,
         );
         Self::built_in(name, kind, abi, LinkedEntry::BuiltinSecret, false)
+    }
+
+    /// The built-in RANKING row named `name`, at this binary's hook payload schema, answering to
+    /// every one of `aliases` (see [`LinkedEntry::Ranking`]).
+    pub fn ranking(
+        name: &str,
+        aliases: &'static [&'static str],
+        open: fn(&str) -> Option<RankingPolicy>,
+    ) -> Self {
+        let (kind, abi) = (
+            busbar_plugin::cold::kind::HOOK,
+            busbar_plugin::cold::hook::HOOK_ABI_VERSION,
+        );
+        Self::built_in(
+            name,
+            kind,
+            abi,
+            LinkedEntry::Ranking { open, aliases },
+            false,
+        )
     }
 
     /// The row a built-in states: the manifest a first-party tarball of `kind` would carry.
@@ -347,6 +378,15 @@ impl PluginRegistry {
         };
         for row in rows {
             registry.admit(row);
+        }
+        // A built-in's frozen spellings are the WEAKEST claim on the alias table: registered after
+        // every row's own name and alias, so no row that answered to one before loses it.
+        for (i, row) in registry.rows.iter().enumerate() {
+            if let Some(LinkedEntry::Ranking { aliases, .. }) = row.entry {
+                for alias in aliases {
+                    registry.by_alias.entry(alias.to_string()).or_insert(i);
+                }
+            }
         }
         registry
     }
@@ -546,6 +586,23 @@ impl PluginRegistry {
             name,
             projectors,
         )
+    }
+
+    /// Open a BUILT-IN ranking strategy resolved by name or alias: the row must be a `kind: hook`
+    /// [`LinkedEntry::Ranking`] row, opened with the spelling `name_or_alias` used. FAIL-CLOSED: any
+    /// other row, or a spelling the row does not rank by, is an error.
+    pub fn open_ranking(&self, name_or_alias: &str) -> Result<RankingPolicy, String> {
+        let p = self.resolve_kind(name_or_alias, "hook", "rank a pool")?;
+        match p.entry {
+            Some(LinkedEntry::Ranking { open, .. }) => open(name_or_alias),
+            _ => None,
+        }
+        .ok_or_else(|| {
+            format!(
+                "plugin '{}' is not a built-in ranking strategy",
+                p.manifest.name
+            )
+        })
     }
 
     /// Open a SECRET plugin resolved by name or alias: verifies the resolved plugin's `kind` is

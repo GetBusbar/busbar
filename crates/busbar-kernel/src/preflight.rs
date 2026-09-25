@@ -43,7 +43,8 @@ pub fn fleet_data_dir() -> Option<std::path::PathBuf> {
 }
 
 /// The rows this build LINKS onto the cold-kind axis, ahead of the plugins directory's: its
-/// in-process default store, which states itself ephemeral, and its built-in secret modules.
+/// in-process default store, which states itself ephemeral, its built-in secret modules, and (when
+/// compiled in) its ranking hooks — one row, the frozen strategy spellings its aliases.
 /// Registered through `PluginRegistry::link`, the admission a dropped-in plugin's row takes
 /// (DECISIONS #2 rule (1)).
 fn linked_rows() -> Vec<busbar_plugin_loader::LinkedPlugin> {
@@ -55,7 +56,24 @@ fn linked_rows() -> Vec<busbar_plugin_loader::LinkedPlugin> {
         busbar_plugin_loader::LinkedPlugin::store(name, memory, true),
         busbar_plugin_loader::LinkedPlugin::builtin_secret(config::secret::SECRET_MODULE_ENV),
         busbar_plugin_loader::LinkedPlugin::builtin_secret(config::secret::SECRET_MODULE_FILE),
+        #[cfg(feature = "hooks-ranking")]
+        busbar_plugin_loader::LinkedPlugin::ranking(
+            "hooks-ranking",
+            &[
+                config::STRATEGY_CHEAPEST,
+                config::STRATEGY_FASTEST,
+                config::STRATEGY_LEAST_BUSY,
+                config::STRATEGY_USAGE,
+            ],
+            busbar_hooks_ranking::native_policy,
+        ),
     ]
+}
+
+/// The built-in ranking strategy `name` spells on the hook axis — its linked row opened with that
+/// spelling — or `None` when this build links no ranking row answering to it.
+pub(crate) fn builtin_ranking(name: &str) -> Option<busbar_plugin_loader::registry::RankingPolicy> {
+    linked().ok()?.open_ranking(name).ok()
 }
 
 /// The build's own secret module `module` names on the secret axis — a linked `kind: secret` row,

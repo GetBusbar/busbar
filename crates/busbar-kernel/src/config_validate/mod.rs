@@ -808,14 +808,8 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             // A built-in ranking strategy is infallible (sync, no I/O) — it terminates the chain.
             // Compiled out (`--no-default-features`), naming one is a boot error, never a silent
             // degrade (the same compliance-by-compilation stance as the pool strategy rule).
-            if matches!(
-                current,
-                crate::config::STRATEGY_CHEAPEST
-                    | crate::config::STRATEGY_FASTEST
-                    | crate::config::STRATEGY_LEAST_BUSY
-                    | crate::config::STRATEGY_USAGE
-            ) {
-                if cfg!(not(feature = "hooks-ranking")) {
+            if crate::config::is_strategy_name(current) {
+                if crate::preflight::builtin_ranking(current).is_none() {
                     errors.push(format!(
                         "hook '{hook_name}' on_error names the built-in ranking strategy \
                          '{current}' but this binary was built WITHOUT the `hooks-ranking` \
@@ -1049,9 +1043,9 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // plugin. When it's compiled OUT (`--no-default-features`), a pool `policy: <non-weighted>` is a
     // BOOT ERROR — never a silent degrade to weighted. (Inert in the default build; `weighted` always
     // works — it's the engine's inline SWRR floor, not a plugin.)
-    #[cfg(not(feature = "hooks-ranking"))]
     for (pool_name, pool_cfg) in &cfg.pools {
-        if pool_cfg.policy != crate::config::PoolPolicy::Weighted {
+        let name = pool_cfg.policy.native_name();
+        if name.is_some_and(|n| crate::preflight::builtin_ranking(n).is_none()) {
             errors.push(format!(
                 "pool '{pool_name}' names the {:?} ranking strategy but this binary was built \
                  WITHOUT the `hooks-ranking` feature — the built-in ranking strategies are absent. \
