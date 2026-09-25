@@ -12,13 +12,15 @@
 //! ([`ExportRequest`]) distinguish it. Every op rides the ONE `busbar_call` as an op-discriminated
 //! JSON envelope — the variant IS the op-code, so the C symbol set never grows.
 //!
-//! ## Two ops
+//! ## The ops
 //!
 //! - `streams` — asked ONCE at load: which observability streams does THIS instance carry? The
 //!   engine retains the answer and only routes deliveries for streams the plugin declared.
 //! - `deliver` — hand one already-serialized batch for a declared stream to the sink. The payload is
 //!   carried as an opaque [`serde_json::Value`] the engine built; the export ABI adds the envelope,
 //!   never a second copy of the batch semantics.
+//! - `routes` / `http_endpoint` — the sink's HTTP surface (see [`crate::cold::endpoint`]).
+//! - `status` — what the sink has to report when the host renders its exposition (additive).
 
 use crate::cold::endpoint::{EndpointRequest, EndpointResponse, Route};
 use serde::{Deserialize, Serialize};
@@ -516,6 +518,16 @@ pub enum ExportRequest {
         /// The host-built inbound request (bounded headers, no raw `Authorization`).
         request: EndpointRequest,
     },
+    /// `status` — asked by the host when it RENDERS its own exposition (a `/metrics` scrape): what
+    /// does this sink have to report right now? The sink answers the metrics and diagnostics it
+    /// observed since it last reported, and the host validates, bounds and folds them exactly as it
+    /// folds the observability envelope (#85) — so a sink contributes to `/metrics` even between
+    /// deliveries, the way a hook's `HookStatus.metrics` does. Reply: [`ExportResponse::Status`].
+    ///
+    /// ADDITIVE, and why that needs no [`EXPORT_ABI_VERSION`] bump: a sink built before this op
+    /// cannot decode it and answers `STATUS_UNSUPPORTED`, which the host reads as "nothing to
+    /// report" and keeps the sink loaded — the precedent is [`ExportRequest::Routes`].
+    Status,
 }
 
 /// The success payload for an export `call`, matched to the request variant. A module-level FAILURE (a
@@ -541,6 +553,18 @@ pub enum ExportResponse {
     /// `"Http"` to `"Endpoint"`).
     #[serde(rename = "Http")]
     Endpoint(EndpointResponse),
+    /// `status` — what the sink observed since it last reported, in the observability envelope's
+    /// own entry shapes (`busbar_plugin::cold::observe::PluginMetric` /
+    /// `PluginDiagnostic` as JSON values), so the host runs them through the SAME validator and fold
+    /// it runs the envelope's arrays through. Either list may be empty or absent on the wire.
+    Status {
+        /// Metric entries (validated, bounded and folded by the host; never trusted as-is).
+        #[serde(default)]
+        metrics: Vec<serde_json::Value>,
+        /// Diagnostic entries (a code the host's catalogue does not hold is dropped by the host).
+        #[serde(default)]
+        diagnostics: Vec<serde_json::Value>,
+    },
 }
 
 #[cfg(test)]

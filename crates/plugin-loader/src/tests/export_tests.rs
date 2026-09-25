@@ -260,3 +260,96 @@ fn a_bare_response_and_an_enveloped_one_cannot_be_confused() {
     // ...and the enveloped form is not a variant name, so the bare decode refuses that.
     assert!(serde_json::from_slice::<ExportResponse>(&enveloped).is_err());
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE `status` OP — the host's pull at exposition time, folded down the ONE observability path.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// How the fake below answers `status`: `STATUS_OK` with one gauge, or the out-of-band status a
+/// sink built before the op answers with.
+static STATUS_ANSWER: std::sync::Mutex<i32> = std::sync::Mutex::new(STATUS_OK);
+
+/// A fake `busbar_call` that answers `streams`/`routes` like a healthy sink and `status` per
+/// [`STATUS_ANSWER`].
+unsafe extern "C-unwind" fn status_call(
+    _handle: *mut c_void,
+    req: *const u8,
+    req_len: usize,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    let asked: ExportRequest =
+        serde_json::from_slice(std::slice::from_raw_parts(req, req_len)).expect("decode request");
+    let (status, body) = match asked {
+        ExportRequest::Streams => (
+            STATUS_OK,
+            serde_json::to_vec(&ExportResponse::Streams(vec![ExportStream::Logs])).unwrap(),
+        ),
+        ExportRequest::Routes => (
+            STATUS_OK,
+            serde_json::to_vec(&ExportResponse::Routes(Vec::new())).unwrap(),
+        ),
+        ExportRequest::Status => match *STATUS_ANSWER.lock().unwrap_or_else(|p| p.into_inner()) {
+            STATUS_OK => (
+                STATUS_OK,
+                serde_json::to_vec(&ExportResponse::Status {
+                    metrics: vec![serde_json::json!({
+                        "name": "sink_queue_depth", "type": "gauge", "value": 7.0
+                    })],
+                    diagnostics: Vec::new(),
+                })
+                .unwrap(),
+            ),
+            other => (other, b"unknown variant `status`".to_vec()),
+        },
+        _ => (
+            STATUS_OK,
+            serde_json::to_vec(&ExportResponse::Delivered).unwrap(),
+        ),
+    };
+    let boxed: Box<[u8]> = body.into_boxed_slice();
+    let len = boxed.len();
+    *out = Box::into_raw(boxed) as *mut u8;
+    *out_len = len;
+    status
+}
+
+/// A sink that answers `status` has its report FOLDED — through the loader's one observer seam,
+/// under the host-assigned name and the `export` kind — which is how a plugin sink contributes to
+/// the host's `/metrics` exposition between deliveries. A sink that predates the op answers
+/// `STATUS_UNSUPPORTED`: that is "nothing to report", not a fault, and folds nothing.
+#[test]
+fn status_folds_what_the_sink_reports_and_an_older_sink_reports_nothing() {
+    let Some(mut raw) = raw_with_fake_call() else {
+        eprintln!("skip: export example plugin cdylib not built (run under --workspace)");
+        return;
+    };
+    raw.call = status_call;
+    let sink = export_from_raw(raw, "status-witness").expect("load");
+    let _guard = crate::observe::testing::exclusive();
+
+    *STATUS_ANSWER.lock().unwrap_or_else(|p| p.into_inner()) = STATUS_OK;
+    sink.status().expect("a sink that answers status");
+    let folds: Vec<_> = crate::observe::testing::folds()
+        .into_iter()
+        .filter(|(who, ..)| who == "fake-call-export")
+        .collect();
+    assert_eq!(folds.len(), 1, "one report, one fold: {folds:?}");
+    let (_, kind, metrics, diagnostics) = &folds[0];
+    assert_eq!(kind, abi_kind::EXPORT);
+    assert_eq!(metrics[0]["name"], "sink_queue_depth");
+    assert!(diagnostics.is_empty());
+
+    *STATUS_ANSWER.lock().unwrap_or_else(|p| p.into_inner()) = STATUS_UNSUPPORTED;
+    let older = sink.status();
+    *STATUS_ANSWER.lock().unwrap_or_else(|p| p.into_inner()) = STATUS_OK;
+    older.expect("a sink that predates the status op has nothing to report — not a fault");
+    assert_eq!(
+        crate::observe::testing::folds()
+            .into_iter()
+            .filter(|(who, ..)| who == "fake-call-export")
+            .count(),
+        1,
+        "an unsupported status folds nothing"
+    );
+}

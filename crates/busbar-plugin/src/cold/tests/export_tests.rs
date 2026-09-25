@@ -272,3 +272,32 @@ fn http_endpoint_ops_roundtrip_and_tags() {
         "Http"
     );
 }
+
+/// The `status` op's wire is pinned: the request tag a sink matches on, and the response shape the
+/// host folds. A plugin author in any language matches these spellings literally, and an older sink
+/// that cannot decode the op answers `STATUS_UNSUPPORTED` — which is what makes the op additive —
+/// so neither spelling may drift.
+#[test]
+fn status_op_wire_is_pinned() {
+    assert_eq!(
+        serde_json::to_string(&ExportRequest::Status).unwrap(),
+        r#"{"op":"status"}"#
+    );
+    let resp = ExportResponse::Status {
+        metrics: vec![serde_json::json!({"name": "queue_depth", "type": "gauge", "value": 3.0})],
+        diagnostics: vec![],
+    };
+    let j = serde_json::to_string(&resp).unwrap();
+    assert_eq!(
+        j,
+        r#"{"Status":{"metrics":[{"name":"queue_depth","type":"gauge","value":3.0}],"diagnostics":[]}}"#
+    );
+    let back: ExportResponse = serde_json::from_str(&j).unwrap();
+    assert_eq!(serde_json::to_string(&back).unwrap(), j);
+    // Either list may be omitted by the sink: an empty report is a valid answer.
+    let omitted: ExportResponse = serde_json::from_str(r#"{"Status":{}}"#).unwrap();
+    assert!(matches!(
+        omitted,
+        ExportResponse::Status { metrics, diagnostics } if metrics.is_empty() && diagnostics.is_empty()
+    ));
+}

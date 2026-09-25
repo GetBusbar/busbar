@@ -946,6 +946,18 @@ pub fn dispatch_export(handler: &dyn ExportHandler, req: ExportRequest) -> Expor
         ExportRequest::Endpoint { request } => {
             ExportResponse::Endpoint(handler.handle_http(&request))
         }
+        // `status` is the host asking, at the moment it renders its own exposition, what this sink
+        // has to report. The answer is exactly what a delivery's envelope would have carried — the
+        // handler's DRAIN, moved into the result — so the host folds it down the one envelope path
+        // and a sink needs no second method to take part. The trailing drain in
+        // `dispatch_export_enveloped` then finds nothing left, so nothing is reported twice.
+        ExportRequest::Status => {
+            let drained = handler.drain_observations().into_envelope(());
+            ExportResponse::Status {
+                metrics: drained.metrics,
+                diagnostics: drained.diagnostics,
+            }
+        }
     }
 }
 

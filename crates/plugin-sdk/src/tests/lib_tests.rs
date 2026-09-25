@@ -543,6 +543,55 @@ fn dispatch_carries_what_the_handler_observed_on_that_calls_response() {
     assert_eq!(env.diagnostics[0]["code"], "BUSBAR-0001");
 }
 
+/// THE `status` OP ANSWERS THE DRAIN, IN THE RESULT, ONCE. The host asks at scrape time; the sink
+/// hands over what it observed since it last reported, moved into [`ExportResponse::Status`] so the
+/// host folds it down the one envelope path — and the envelope around it is BARE, because the
+/// trailing drain finds nothing left. A second ask with nothing new observed reports nothing.
+#[test]
+fn status_answers_the_drain_in_the_result_and_reports_it_once() {
+    struct Queue {
+        pending: std::sync::atomic::AtomicU64,
+    }
+    impl ExportHandler for Queue {
+        fn streams(&self) -> Vec<ExportStream> {
+            vec![ExportStream::Logs]
+        }
+        fn drain_observations(&self) -> Observations {
+            match self.pending.swap(0, std::sync::atomic::Ordering::Relaxed) {
+                0 => Observations::none(),
+                n => Observations::none().metric(PluginMetric::counter("shed_total", n as f64)),
+            }
+        }
+    }
+    let sink = Queue {
+        pending: std::sync::atomic::AtomicU64::new(2),
+    };
+    let env = dispatch_export_enveloped(&sink, ExportRequest::Status);
+    assert!(
+        env.is_bare(),
+        "the drain rides the result, not the envelope: {env:?}"
+    );
+    match env.result {
+        ExportResponse::Status {
+            metrics,
+            diagnostics,
+        } => {
+            assert_eq!(metrics.len(), 1);
+            assert_eq!(metrics[0]["name"], "shed_total");
+            assert_eq!(metrics[0]["value"], 2.0);
+            assert!(diagnostics.is_empty());
+        }
+        other => panic!("expected Status, got {other:?}"),
+    }
+    match dispatch_export(&sink, ExportRequest::Status) {
+        ExportResponse::Status {
+            metrics,
+            diagnostics,
+        } => assert!(metrics.is_empty() && diagnostics.is_empty()),
+        other => panic!("expected Status, got {other:?}"),
+    }
+}
+
 fn mem_ctor(_cfg: &str) -> Result<BoxedStore, String> {
     Ok(Box::new(MemoryStore::new()))
 }

@@ -81,6 +81,46 @@ impl DynExport {
     }
 }
 
+impl DynExport {
+    /// Ask the sink what it has to report NOW — the host's pull, at the moment it renders its own
+    /// exposition — and fold the answer through the ONE observability path every envelope takes
+    /// ([`crate::observe`]), under this sink's host-assigned name. The host validates, bounds and
+    /// decides exactly as it does for an envelope; nothing here trusts the sink's entries.
+    ///
+    /// ADDITIVE on exactly one arm, like `routes` at load: a sink built before the op cannot decode
+    /// it and says so out of band, which is the sink having nothing to report — `Ok(())`. Every
+    /// OTHER failure is the sink failing to answer and is an `Err` naming it; the caller logs it and
+    /// renders without this sink's contribution rather than failing the scrape.
+    pub fn status(&self) -> Result<(), String> {
+        match self
+            .raw
+            .transport_call_status::<ExportRequest, ExportResponse>(&ExportRequest::Status)
+        {
+            Ok(ExportResponse::Status {
+                metrics,
+                diagnostics,
+            }) => {
+                let report = busbar_plugin::cold::observe::Envelope {
+                    result: (),
+                    metrics,
+                    diagnostics,
+                };
+                crate::observe::fold(&self.raw.path, abi_kind::EXPORT, &report);
+                Ok(())
+            }
+            Ok(other) => Err(format!(
+                "export plugin '{}' returned an unexpected response to status: {other:?}",
+                self.raw.path
+            )),
+            Err(e) if e.is_unsupported() => Ok(()),
+            Err(e) => Err(format!(
+                "export plugin '{}' could not be asked for its status: {}",
+                self.raw.path, e.message
+            )),
+        }
+    }
+}
+
 impl std::fmt::Debug for DynExport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DynExport")
