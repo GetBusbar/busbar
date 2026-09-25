@@ -323,6 +323,60 @@ fn example_plane_loads_identically_compiled_in_and_dropped_in() {
     // Non-empty vocabulary — a decl that lost its name/section-key at the crossing would fail here.
     assert_eq!(dropped.name(), "example");
     assert_eq!(dropped.section_key(), "example");
+
+    // THE FULL DECLARATION, both ways: what the dropped-in artifact states equals what the linked
+    // decl states, field for field — read off the compiled-in decl HERE, independently of the
+    // loader's own tail reader, so a reader that dropped or defaulted a field cannot agree with it.
+    let stated = compiled_in_declaration();
+    assert_eq!(dropped.declaration(), &stated);
+    assert_eq!(
+        crate::link_plane(&COMPILED_IN, "linked")
+            .expect("the linked door admits the same decl")
+            .declaration(),
+        &stated
+    );
+    // Not vacuous: the example states every optional fact and a non-empty list of each kind.
+    assert!(stated.signing_domain.is_some() && stated.signing_kid_prefix.is_some());
+    assert!(!stated.owned_sections.is_empty() && !stated.billable_classes.is_empty());
+    assert!(!stated.fee_units.is_empty() && stated.scope_kinds.len() > 1);
+}
+
+/// The compiled-in `PLANE_DECL`'s declaration tail, decoded straight off the static (NOT through the
+/// loader), for the both-ways comparison above.
+fn compiled_in_declaration() -> crate::HotDeclaration {
+    use busbar_plugin::hot::DeclStr;
+    let text = |d: DeclStr| (!d.ptr.is_null()).then(|| vocab(d.ptr, d.len));
+    let list = |ptr: *const DeclStr, len: usize| -> Vec<String> {
+        // SAFETY: the static's lists point at this build's own `'static` arrays of `len` entries.
+        unsafe { std::slice::from_raw_parts(ptr, len) }
+            .iter()
+            .map(|d| vocab(d.ptr, d.len))
+            .collect()
+    };
+    let d = &COMPILED_IN;
+    crate::HotDeclaration {
+        fallback: d.fallback == 1,
+        subject_noun: vocab(d.subject_noun.ptr, d.subject_noun.len),
+        admin_noun: vocab(d.admin_noun.ptr, d.admin_noun.len),
+        audit_kind: vocab(d.audit_kind.ptr, d.audit_kind.len),
+        signing_domain: text(d.signing_domain),
+        signing_kid_prefix: text(d.signing_kid_prefix),
+        scope_kinds: list(d.scope_kinds_ptr, d.scope_kinds_len),
+        owned_sections: list(d.owned_sections_ptr, d.owned_sections_len),
+        // SAFETY: as `list`.
+        billable_classes: unsafe {
+            std::slice::from_raw_parts(d.billable_classes_ptr, d.billable_classes_len)
+        }
+        .iter()
+        .map(|c| {
+            (
+                vocab(c.class.ptr, c.class.len),
+                vocab(c.family.ptr, c.family.len),
+            )
+        })
+        .collect(),
+        fee_units: list(d.fee_units_ptr, d.fee_units_len),
+    }
 }
 
 /// THE CROSS-ABI RIDER PROOF, loader half. The dropped-in plane is a LIVE plane AND a REAL RIDER:
@@ -576,6 +630,7 @@ fn oversize_plane_vocab_length_is_refused_not_over_read() {
         admin_routes: None,
         openapi: None,
         dispatch: None,
+        ..PlaneDecl::STUB
     };
     let honoured = busbar_plugin::honoured_size(decl.size, core::mem::size_of::<PlaneDecl>());
     let decl_ptr: *const PlaneDecl = &decl;

@@ -11,7 +11,7 @@
 //! x86_64 and aarch64 alike; every field here is a fixed-width scalar or pointer), so ONE golden
 //! covers them. Re-seed intentionally with `BUSBAR_UPDATE_GOLDEN=1 cargo test -p busbar-plugin`.
 
-use busbar_plugin::hot::decl::{BuildCtx, PlaneDecl};
+use busbar_plugin::hot::decl::{BuildCtx, DeclBillableClass, DeclStr, PlaneDecl};
 use busbar_plugin::hot::host::PlaneHostVtable;
 use busbar_plugin::hot::workitem::{EmitHandle, InboundHandle, WorkItem};
 use busbar_plugin::hot::*;
@@ -554,9 +554,27 @@ fn compute_layout() -> String {
             start,
             admin_routes,
             openapi,
-            dispatch
+            dispatch,
+            // The declaration tail (minor 22).
+            fallback,
+            _reserved2,
+            subject_noun,
+            admin_noun,
+            audit_kind,
+            signing_domain,
+            signing_kid_prefix,
+            scope_kinds_ptr,
+            scope_kinds_len,
+            owned_sections_ptr,
+            owned_sections_len,
+            billable_classes_ptr,
+            billable_classes_len,
+            fee_units_ptr,
+            fee_units_len
         ]
     );
+    record!(s, DeclStr, [ptr, len]);
+    record!(s, DeclBillableClass, [class, family]);
 
     s
 }

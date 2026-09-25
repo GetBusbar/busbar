@@ -42,7 +42,8 @@ use busbar_plugin::hot::decl::{
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::pod::{OpaqueState, RawStatus, StatusClass, POD_VERSION};
 use busbar_plugin::hot::{
-    BuildCtx, IngressCarrier, PlaneDecl, PlaneDeclFn, PlaneHostVtable, WorkItem,
+    BuildCtx, DeclBillableClass, DeclStr, IngressCarrier, PlaneDecl, PlaneDeclFn, PlaneHostVtable,
+    WorkItem,
 };
 use busbar_plugin::{check_preamble, AbiPreamble};
 use core::mem::MaybeUninit;
@@ -75,6 +76,8 @@ pub struct DynPlane {
     label: String,
     /// The bitset of [`IngressCarrier`]s the plane declares it provides.
     provided_carriers: u32,
+    /// The rest of the plane's declaration (the decl's minor-22 tail), owned.
+    declaration: HotDeclaration,
     /// The plane name/path, for diagnostics.
     path: String,
     /// The mapped library. `Option` only so `Drop` can TAKE it and unload it on a plugin worker.
@@ -107,9 +110,38 @@ impl std::fmt::Debug for DynPlane {
             .field("section_key", &self.section_key)
             .field("scope", &self.scope)
             .field("provided_carriers", &self.provided_carriers)
+            .field("declaration", &self.declaration)
             .field("path", &self.path)
             .finish()
     }
+}
+
+/// THE REST OF A HOT-LANE PLANE'S DECLARATION — every fact of a registered plane's declaration the
+/// vocabulary fields do not carry, read off the decl's declaration tail into owned values. Nothing
+/// here is defaulted: a decl that does not reach the end of the tail is refused at load, and each
+/// field is what the plane stated (an optional fact the plane left NULL is `None`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HotDeclaration {
+    /// The plane declares itself the fallback catch-all.
+    pub fallback: bool,
+    /// What one registration on this plane is called.
+    pub subject_noun: String,
+    /// The singular hyphenated noun for one registration in its named-definition section.
+    pub admin_noun: String,
+    /// The record resource kind for a registration on this plane.
+    pub audit_kind: String,
+    /// The versioned domain the plane's signing subkey is derived under, if it signs.
+    pub signing_domain: Option<String>,
+    /// The `kid` prefix the plane stamps on its signatures, if it signs.
+    pub signing_kid_prefix: Option<String>,
+    /// The grant kinds that admit traffic on this plane, in declared order.
+    pub scope_kinds: Vec<String>,
+    /// The top-level config sections the plane owns the grammar of.
+    pub owned_sections: Vec<String>,
+    /// The billable classes the plane ledgers, each `(class, family)`.
+    pub billable_classes: Vec<(String, String)>,
+    /// The fee units the plane counts.
+    pub fee_units: Vec<String>,
 }
 
 impl DynPlane {
@@ -142,6 +174,11 @@ impl DynPlane {
     #[must_use]
     pub fn provides(&self, carrier: IngressCarrier) -> bool {
         self.provided_carriers & carrier.bit() != 0
+    }
+    /// The rest of the plane's declaration, exactly as the decl states it.
+    #[must_use]
+    pub fn declaration(&self) -> &HotDeclaration {
+        &self.declaration
     }
 
     // ── Slot readers: pull one `Option<fn>` slot out of the decl through the sized-struct guard.
@@ -582,6 +619,17 @@ fn assemble(
              header — it cannot describe a PlaneDecl"
         ));
     }
+    // And THROUGH the declaration tail: a decl built before the tail existed states no declaration,
+    // and the host installs a plane only with the declaration the plane stated — never one invented
+    // for it — so such a decl is refused, not defaulted.
+    let declared =
+        (core::mem::offset_of!(PlaneDecl, fee_units_len) + core::mem::size_of::<usize>()) as u32;
+    if advertised < declared {
+        return Err(format!(
+            "plane '{display}' decl attests size {advertised}, below the {declared}-byte \
+             declaration — it states no plane declaration; rebuild it against this busbar ABI minor"
+        ));
+    }
     // REFUSED, not clamped — the same answer `PlaneHostVtable::check` gives the host table
     // (`VtableRefusal::SizeOverBuild`). The decl's trailing members are fn-pointer SLOTS this side
     // CALLS, and a size claim past this build's struct is unverifiable: a decl that really ends
@@ -603,6 +651,20 @@ fn assemble(
     let provided_carriers =
         busbar_plugin::read_sized_field!(decl_ptr, honoured_size, PlaneDecl, provided_carriers)
             .unwrap_or(0);
+    let declaration = read_declaration(decl_ptr, honoured_size, &display)?;
+    // `scope` is the plane's primary grant kind: it leads `scope_kinds`, and a plane with no scope
+    // grants none — so the two statements cannot disagree about what admits the plane's traffic.
+    let scope_leads = match declaration.scope_kinds.first() {
+        None => scope.is_empty(),
+        Some(first) => !scope.is_empty() && *first == scope,
+    };
+    if !scope_leads {
+        return Err(format!(
+            "plane '{display}' declares scope {scope:?} but scope kinds {:?}: the scope must lead \
+             the scope kinds, and a plane with no scope declares none",
+            declaration.scope_kinds
+        ));
+    }
 
     Ok(DynPlane {
         decl: decl_ptr,
@@ -612,6 +674,7 @@ fn assemble(
         scope,
         label,
         provided_carriers,
+        declaration,
         path: display,
         _lib: lib,
         _backing: backing,
@@ -687,6 +750,144 @@ fn read_vocab(
     std::str::from_utf8(bytes)
         .map(str::to_string)
         .map_err(|_| format!("plane '{display}' vocabulary is not valid UTF-8"))
+}
+
+/// Cap on the entries of one borrowed declaration list (`scope_kinds`/`owned_sections`/
+/// `billable_classes`/`fee_units`), enforced BEFORE any entry is read: the `*_len` is plugin-attested,
+/// exactly like a vocabulary length (see [`MAX_PLANE_VOCAB_LEN`]). A plane declares a handful of
+/// each; an oversize list is refused as a hard load error rather than walked.
+const MAX_PLANE_DECL_ENTRIES: usize = 1024;
+
+/// One field of the declaration tail, read through the sized guard. [`assemble`] refused every decl
+/// that does not reach the end of the tail, so an absent field is a refusal here too, never a default.
+macro_rules! tail_field {
+    ($decl:expr, $size:expr, $field:ident, $display:expr) => {
+        busbar_plugin::read_sized_field!($decl, $size, PlaneDecl, $field).ok_or_else(|| {
+            format!(
+                "plane '{}' decl does not reach its `{}` declaration field",
+                $display,
+                stringify!($field)
+            )
+        })?
+    };
+}
+
+/// Read the decl's declaration tail into an owned [`HotDeclaration`].
+fn read_declaration(
+    decl: *const PlaneDecl,
+    size: u32,
+    display: &str,
+) -> Result<HotDeclaration, String> {
+    let fallback = match tail_field!(decl, size, fallback, display) {
+        0 => false,
+        1 => true,
+        other => {
+            return Err(format!(
+                "plane '{display}' declares fallback flag {other}; a plane declares 0 or 1"
+            ))
+        }
+    };
+    let text = |d: DeclStr| decl_str(d, display);
+    let stated = |d: DeclStr, what: &str| {
+        text(d)?.ok_or_else(|| format!("plane '{display}' states no {what}"))
+    };
+    let strs = |ptr: *const DeclStr, len: usize, what: &str| -> Result<Vec<String>, String> {
+        decl_list(ptr, len, what, display)?
+            .into_iter()
+            .map(|d| stated(d, what))
+            .collect()
+    };
+    Ok(HotDeclaration {
+        fallback,
+        subject_noun: stated(
+            tail_field!(decl, size, subject_noun, display),
+            "subject noun",
+        )?,
+        admin_noun: stated(tail_field!(decl, size, admin_noun, display), "admin noun")?,
+        audit_kind: stated(tail_field!(decl, size, audit_kind, display), "audit kind")?,
+        signing_domain: text(tail_field!(decl, size, signing_domain, display))?,
+        signing_kid_prefix: text(tail_field!(decl, size, signing_kid_prefix, display))?,
+        scope_kinds: strs(
+            tail_field!(decl, size, scope_kinds_ptr, display),
+            tail_field!(decl, size, scope_kinds_len, display),
+            "scope kind",
+        )?,
+        owned_sections: strs(
+            tail_field!(decl, size, owned_sections_ptr, display),
+            tail_field!(decl, size, owned_sections_len, display),
+            "owned config section",
+        )?,
+        billable_classes: decl_list(
+            tail_field!(decl, size, billable_classes_ptr, display),
+            tail_field!(decl, size, billable_classes_len, display),
+            "billable class",
+            display,
+        )?
+        .into_iter()
+        .map(|c: DeclBillableClass| {
+            Ok((
+                stated(c.class, "billable class")?,
+                stated(c.family, "billable class family")?,
+            ))
+        })
+        .collect::<Result<_, String>>()?,
+        fee_units: strs(
+            tail_field!(decl, size, fee_units_ptr, display),
+            tail_field!(decl, size, fee_units_len, display),
+            "fee unit",
+        )?,
+    })
+}
+
+/// One [`DeclStr`] as an owned string: `None` for a NULL (absent) range, the stated string otherwise.
+/// Capped and UTF-8-checked exactly as a vocabulary range is ([`read_vocab`]).
+fn decl_str(d: DeclStr, display: &str) -> Result<Option<String>, String> {
+    if d.ptr.is_null() {
+        return Ok(None);
+    }
+    if d.len > MAX_PLANE_VOCAB_LEN {
+        return Err(format!(
+            "plane '{display}' declares a {}-byte declaration string, exceeding the \
+             {MAX_PLANE_VOCAB_LEN}-byte cap — refusing to load",
+            d.len
+        ));
+    }
+    // SAFETY: a non-null `DeclStr` addresses a live, immutable range for the life of the image (the
+    // decl's discipline), and its length is now bounded by `MAX_PLANE_VOCAB_LEN`.
+    let bytes = unsafe { std::slice::from_raw_parts(d.ptr, d.len) };
+    std::str::from_utf8(bytes)
+        .map(|s| Some(s.to_string()))
+        .map_err(|_| format!("plane '{display}' declaration string is not valid UTF-8"))
+}
+
+/// Copy one borrowed declaration list out of the image, entry by entry (unaligned reads: the list is
+/// plugin-attested). An empty list may be NULL; a NULL list claiming entries, or one past
+/// [`MAX_PLANE_DECL_ENTRIES`], is refused.
+fn decl_list<T: Copy>(
+    ptr: *const T,
+    len: usize,
+    what: &str,
+    display: &str,
+) -> Result<Vec<T>, String> {
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+    if ptr.is_null() {
+        return Err(format!(
+            "plane '{display}' declares {len} {what} entries behind a null list"
+        ));
+    }
+    if len > MAX_PLANE_DECL_ENTRIES {
+        return Err(format!(
+            "plane '{display}' declares {len} {what} entries, exceeding the \
+             {MAX_PLANE_DECL_ENTRIES}-entry cap — refusing to load"
+        ));
+    }
+    // SAFETY: a non-null list addresses `len` live entries for the life of the image (the decl's
+    // discipline), `len` is bounded, and each entry is copied out without assuming alignment.
+    Ok((0..len)
+        .map(|i| unsafe { core::ptr::read_unaligned(ptr.add(i)) })
+        .collect())
 }
 
 /// Small extension so `read_sized_field!(...).flatten_ptr()` yields the pointer (or null when the

@@ -86,7 +86,13 @@ pub const ABI_MAJOR: u32 = 2;
 /// JSON path); the version-locked planes rebuild in lockstep. That change RESIZED `BuildCtx.host_ctx`
 /// and shifted the fields after it — a MAJOR event, not an append — so it is carried under
 /// [`ABI_MAJOR`] 2, which refuses every major-1 peer (item 410).
-pub const ABI_MINOR: u32 = 21;
+///
+/// 21→22 (1.6.0, item 63): `hot::PlaneDecl` gains the append-only DECLARATION tail (`fallback`, the
+/// nouns, `audit_kind`, the signing domain and `kid` prefix, and borrowed lists of scope kinds, owned
+/// config sections, billable classes and fee units), so a dropped-in plane states every fact a linked
+/// plane's declaration holds. The loader refuses a decl that does not reach the end of that tail: a
+/// plane that cannot state its declaration is not installed with one invented for it.
+pub const ABI_MINOR: u32 = 22;
 
 /// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,
 /// `abi_minor` at 12 — is a permanent contract: it may NEVER be reordered, resized, extended, or

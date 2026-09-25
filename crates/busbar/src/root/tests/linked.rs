@@ -218,7 +218,6 @@ fn a_linked_and_a_dropped_in_plane_install_byte_identical_rows() {
     for fact in [
         format!("key: {:?}", plane.name()),
         format!("config_section: {:?}", plane.section_key()),
-        format!("scope_kinds: [{:?}]", plane.scope()),
     ] {
         assert!(
             linked_arm[1].contains(&fact),
@@ -226,6 +225,84 @@ fn a_linked_and_a_dropped_in_plane_install_byte_identical_rows() {
             linked_arm[1]
         );
     }
+
+    // THE FULL DECLARATION: the installed row states exactly what the plane's decl states, every
+    // field — mapped here independently of the adapter (see `stated`), so an adapter that dropped or
+    // defaulted any one field installs a row that differs.
+    let stated = stated(&LINKED_DECL);
+    assert!(
+        linked_arm[1].contains(&format!("{stated:?}")),
+        "the installed row is not the plane's own declaration:\n  stated: {stated:?}\n  row:    {}",
+        linked_arm[1]
+    );
+    let dropped_row = folded(plane_rows(&linked(&[], &[]), dropped_again()).unwrap());
+    assert!(
+        dropped_row[0].contains(&format!("{stated:?}")),
+        "the dropped-in row is not the plane's own declaration:\n  stated: {stated:?}\n  row:    {}",
+        dropped_row[0]
+    );
+}
+
+/// The example plane dropped in once more, for a second fold in the same test.
+fn dropped_again() -> Vec<DynPlane> {
+    dropped("equal-again").expect("the cdylib was found for the first fold")
+}
+
+/// The `PlaneDeclaration` a decl STATES — every field, mapped here from what the loader's admission
+/// read off the decl (`link_plane`; `busbar-plugin-loader`'s `plane_conformance_tests` hold that read
+/// to the raw `#[repr(C)]` static, field for field) — with no adapter in between. The yardstick the
+/// installed row is held to: an adapter that dropped or defaulted any one field disagrees with it.
+fn stated(d: &'static HotPlaneDecl) -> PlaneDeclaration {
+    let plane: &'static DynPlane = Box::leak(Box::new(
+        busbar_plugin_loader::link_plane(d, "yardstick").expect("the decl is admitted"),
+    ));
+    let h: &'static busbar_plugin_loader::HotDeclaration = plane.declaration();
+    let strs = |v: &'static [String]| -> &'static [&'static str] {
+        v.iter().map(|x| x.as_str()).collect::<Vec<_>>().leak()
+    };
+    PlaneDeclaration {
+        key: plane.name(),
+        fallback: h.fallback,
+        config_section: plane.section_key(),
+        scope_kinds: strs(&h.scope_kinds),
+        subject_noun: h.subject_noun.as_str(),
+        admin_noun: h.admin_noun.as_str(),
+        audit_kind: h.audit_kind.as_str(),
+        card_signing_domain: h.signing_domain.as_deref(),
+        card_kid_prefix: h.signing_kid_prefix.as_deref(),
+        owned_config_sections: strs(&h.owned_sections),
+        billable_classes: h
+            .billable_classes
+            .iter()
+            .map(
+                |(class, family)| busbar_kernel::plane::registry::BillableClass {
+                    class: class.as_str(),
+                    family: family.as_str(),
+                },
+            )
+            .collect::<Vec<_>>()
+            .leak(),
+        fee_units: strs(&h.fee_units),
+    }
+}
+
+/// THE OTHER VALUE OF EACH FLAG: a plane that declares itself the fallback and signs nothing installs
+/// exactly that — the example states the opposite of both, so together the two cover every field in
+/// each of its states.
+#[test]
+fn a_fallback_plane_that_signs_nothing_installs_exactly_that() {
+    let variant: &'static HotPlaneDecl = Box::leak(Box::new(HotPlaneDecl {
+        fallback: 1,
+        signing_domain: busbar_plugin_loader::HotDeclStr::NONE,
+        signing_kid_prefix: busbar_plugin_loader::HotDeclStr::NONE,
+        ..LINKED_DECL
+    }));
+    let table: &'static [&'static HotPlaneDecl] = Box::leak(Box::new([variant]));
+    let rows = plane_rows(&linked(&[], table), Vec::new()).unwrap();
+    assert_eq!(rows.len(), 1);
+    let expected = stated(variant);
+    assert!(expected.fallback && expected.card_signing_domain.is_none());
+    assert_eq!(rows[0].declaration, expected);
 }
 
 /// THE SAME REFUSAL, BOTH DOORS: a plane whose key a linked plane already holds is skipped by the
@@ -256,26 +333,8 @@ fn a_plane_whose_key_is_taken_is_skipped_the_same_way_by_either_door() {
 #[test]
 fn a_plane_that_names_nothing_is_refused_at_the_linked_door_too() {
     let nameless: &'static HotPlaneDecl = Box::leak(Box::new(HotPlaneDecl {
-        abi: LINKED_DECL.abi,
-        size: LINKED_DECL.size,
-        version: LINKED_DECL.version,
-        name_ptr: LINKED_DECL.name_ptr,
         name_len: 0,
-        section_key_ptr: LINKED_DECL.section_key_ptr,
-        section_key_len: LINKED_DECL.section_key_len,
-        scope_ptr: LINKED_DECL.scope_ptr,
-        scope_len: LINKED_DECL.scope_len,
-        label_ptr: LINKED_DECL.label_ptr,
-        label_len: LINKED_DECL.label_len,
-        provided_carriers: LINKED_DECL.provided_carriers,
-        _reserved: 0,
-        config_validate: LINKED_DECL.config_validate,
-        build: LINKED_DECL.build,
-        hydrate: LINKED_DECL.hydrate,
-        start: LINKED_DECL.start,
-        admin_routes: LINKED_DECL.admin_routes,
-        openapi: LINKED_DECL.openapi,
-        dispatch: LINKED_DECL.dispatch,
+        ..LINKED_DECL
     }));
     let table: &'static [&'static HotPlaneDecl] = Box::leak(Box::new([nameless]));
     let refusal = plane_rows(&linked(&[], table), Vec::new())

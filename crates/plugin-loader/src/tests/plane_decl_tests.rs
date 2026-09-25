@@ -119,6 +119,8 @@ extern "C-unwind" fn t_openapi_overclaim(
 }
 
 const NAME: &[u8] = b"memplane";
+/// The one scope kind the in-memory plane grants: its scope, leading the list.
+static SCOPE_KINDS: [DeclStr; 1] = [DeclStr::new("memplane")];
 
 fn decl() -> PlaneDecl {
     PlaneDecl {
@@ -142,6 +144,14 @@ fn decl() -> PlaneDecl {
         admin_routes: Some(t_admin_routes),
         openapi: Some(t_openapi_vacuous),
         dispatch: None,
+        subject_noun: DeclStr::new("memplane"),
+        admin_noun: DeclStr::new("memplane"),
+        audit_kind: DeclStr::new("memplane"),
+        signing_domain: DeclStr::NONE,
+        signing_kid_prefix: DeclStr::NONE,
+        scope_kinds_ptr: SCOPE_KINDS.as_ptr(),
+        scope_kinds_len: SCOPE_KINDS.len(),
+        ..PlaneDecl::STUB
     }
 }
 
@@ -186,6 +196,69 @@ fn a_decl_stamped_with_the_pre_resize_airlock_is_refused() {
             got.as_ref()
                 .is_err_and(|e| e.contains("preamble refused") && e.contains("MajorMismatch")),
             "a 1.{abi_minor} decl predates the BuildCtx resize and must not be admitted: {:?}",
+            got.map(|p| p.honoured_size)
+        );
+    }
+}
+
+// ── Item 63: the declaration tail is stated, never defaulted ─────────────────────────────────
+
+#[test]
+fn the_declaration_tail_reads_back_as_stated() {
+    let _s = serial();
+    let plane = plane_over(&decl()).unwrap();
+    assert_eq!(
+        plane.declaration(),
+        &HotDeclaration {
+            fallback: false,
+            subject_noun: "memplane".into(),
+            admin_noun: "memplane".into(),
+            audit_kind: "memplane".into(),
+            signing_domain: None,
+            signing_kid_prefix: None,
+            scope_kinds: vec!["memplane".into()],
+            owned_sections: Vec::new(),
+            billable_classes: Vec::new(),
+            fee_units: Vec::new(),
+        }
+    );
+    let mut d = decl();
+    d.fallback = 1;
+    assert!(plane_over(&d).unwrap().declaration().fallback);
+}
+
+#[test]
+fn a_decl_that_states_no_declaration_is_refused_not_defaulted() {
+    let _s = serial();
+    // A decl built before the tail existed: it ends at the last fn slot.
+    let mut d = decl();
+    d.size = core::mem::offset_of!(PlaneDecl, fallback) as u32;
+    let got = plane_over(&d);
+    assert!(
+        got.as_ref()
+            .is_err_and(|e| e.contains("states no plane declaration")),
+        "{:?}",
+        got.map(|p| p.honoured_size)
+    );
+    // A tail that leaves a stated noun NULL, a flag that is not 0/1, a scope that does not lead the
+    // scope kinds, and a NULL list claiming entries are each refused.
+    type Plant = fn(&mut PlaneDecl);
+    let cases: [(Plant, &str); 4] = [
+        (|d| d.audit_kind = DeclStr::NONE, "states no audit kind"),
+        (|d| d.fallback = 2, "fallback flag 2"),
+        (|d| d.scope_kinds_len = 0, "must lead the scope kinds"),
+        (
+            |d| d.fee_units_len = 1,
+            "1 fee unit entries behind a null list",
+        ),
+    ];
+    for (plant, refusal) in cases {
+        let mut d = decl();
+        plant(&mut d);
+        let got = plane_over(&d);
+        assert!(
+            got.as_ref().is_err_and(|e| e.contains(refusal)),
+            "expected a refusal naming {refusal:?}, got {:?}",
             got.map(|p| p.honoured_size)
         );
     }

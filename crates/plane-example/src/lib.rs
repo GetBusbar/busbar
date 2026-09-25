@@ -65,7 +65,9 @@
 //! the two decls are byte-identical at the vocabulary/carrier/preamble surface — the plane's both-ways
 //! proof over the ABI.
 
-use busbar_plugin::hot::decl::{BuildCtx, IngressCarrier, OpaqueHandle};
+use busbar_plugin::hot::decl::{
+    BuildCtx, DeclBillableClass, DeclStr, IngressCarrier, OpaqueHandle,
+};
 use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
 use busbar_plugin::hot::pod::{
     AdmissionId, CostLeaseId, CostSettleOut, Decision, Facts, MeterOutcome, OpaqueState, RawStatus,
@@ -83,6 +85,22 @@ const NAME: &[u8] = b"example";
 const SECTION_KEY: &[u8] = b"example";
 const SCOPE: &[u8] = b"example";
 const LABEL: &[u8] = b"Example Plane";
+
+// ── The rest of the plane's declaration (the decl's declaration tail) ────────────────────────────
+// Every value differs from the plane's key on purpose: a host that fell back to the key (or to any
+// default) for a fact the plane states would install a different row, and the both-doors proof
+// (`crates/busbar/src/root/tests/linked.rs`) compares the row against what is stated here.
+/// The grant kinds that admit traffic on this plane; `SCOPE` leads them.
+static SCOPE_KINDS: [DeclStr; 2] = [DeclStr::new("example"), DeclStr::new("example_route")];
+/// The top-level config sections this plane owns the grammar of.
+static OWNED_SECTIONS: [DeclStr; 1] = [DeclStr::new("example_routes")];
+/// The one billable class this plane ledgers: the inbound-byte RAW COUNT its `dispatch` meters.
+static BILLABLE_CLASSES: [DeclBillableClass; 1] = [DeclBillableClass {
+    class: DeclStr::new("inbound_bytes"),
+    family: DeclStr::new("byte"),
+}];
+/// The fee unit this plane counts: once per billable request.
+static FEE_UNITS: [DeclStr; 1] = [DeclStr::new("per_request")];
 
 /// The neutral pool name this plane admits against. A pool is the HOST's routing/limit bucket; the
 /// plane names its own section key so an operator's limits land where they expect. Borrowed by the
@@ -403,6 +421,21 @@ pub static PLANE_DECL: PlaneDecl = PlaneDecl {
     admin_routes: None,
     openapi: None,
     dispatch: Some(dispatch),
+    fallback: 0,
+    _reserved2: 0,
+    subject_noun: DeclStr::new("example route"),
+    admin_noun: DeclStr::new("example-route"),
+    audit_kind: DeclStr::new("example_route"),
+    signing_domain: DeclStr::new("busbar-example-signing-v1"),
+    signing_kid_prefix: DeclStr::new("example-"),
+    scope_kinds_ptr: SCOPE_KINDS.as_ptr(),
+    scope_kinds_len: SCOPE_KINDS.len(),
+    owned_sections_ptr: OWNED_SECTIONS.as_ptr(),
+    owned_sections_len: OWNED_SECTIONS.len(),
+    billable_classes_ptr: BILLABLE_CLASSES.as_ptr(),
+    billable_classes_len: BILLABLE_CLASSES.len(),
+    fee_units_ptr: FEE_UNITS.as_ptr(),
+    fee_units_len: FEE_UNITS.len(),
 };
 
 // Emit the `cdylib` boundary symbols (`busbar_abi`, `busbar_plugin_kind() == "plane"`,

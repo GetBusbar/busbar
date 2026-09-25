@@ -31,7 +31,7 @@ use std::sync::Arc;
 
 use busbar_kernel::ingress::arrival::{BodyIngressEntry, PathIngressEntry};
 use busbar_kernel::plane::registry::PlaneDecl;
-use busbar_kernel::plane::registry::{PlaneDeclaration, PlaneHooks};
+use busbar_kernel::plane::registry::{BillableClass, PlaneDeclaration, PlaneHooks};
 use busbar_kernel::plane_host::{EngineHost, LiveHostFactory};
 use busbar_plugin_loader::{DynPlane, HotPlaneDecl};
 
@@ -177,28 +177,22 @@ pub fn plane_rows(
     // The HOT-lane planes live as long as the process, as a linked plane's image does, and so do the
     // rows read off them: the batch is kept once, the same way the installed row list is.
     let hot: &'static [DynPlane] = hot.leak();
-    let scopes: &'static [&'static str] =
-        hot.iter().map(DynPlane::scope).collect::<Vec<_>>().leak();
     let hot_rows: &'static [PlaneDecl] = hot
         .iter()
-        .zip(scopes)
-        .map(|(plane, scope)| hot_plane_row(plane, scope))
+        .map(hot_plane_row)
         .collect::<Result<Vec<PlaneDecl>, String>>()?
         .leak();
     Ok(linked.planes.iter().chain(hot_rows).collect())
 }
 
 /// ADAPT ONE HOT-LANE PLANE onto the plane axis — the ONE function a linked and a dropped-in plane
-/// both pass through. The row's contract declaration is read off the plane's own vocabulary: its
-/// `name` is the registry key, its `section_key` the declaring section, its `scope` (kept beside it,
-/// `scope`) the one grant kind. The C ABI's decl states nothing else a `PlaneDeclaration` holds — no
-/// nouns (so the key stands in for each), no owned sections, billable classes, fee units, card
-/// domain or path claims — so those are empty rather than invented. Its hooks are
+/// both pass through. The row's contract declaration is the plane's own statement, field for field:
+/// its `name` is the registry key, its `section_key` the declaring section, and every other fact is
+/// read off the decl's declaration tail (the loader refuses a decl that states none). Nothing is
+/// defaulted and nothing stands in for anything. The plane lives for the process, so every string
+/// and list here is borrowed from it or kept once, as the installed row list is. Its hooks are
 /// [`HOT_PLANE_HOOKS`].
-pub fn hot_plane_row(
-    plane: &'static DynPlane,
-    scope: &'static &'static str,
-) -> Result<PlaneDecl, String> {
+pub fn hot_plane_row(plane: &'static DynPlane) -> Result<PlaneDecl, String> {
     let key = plane.name();
     if key.is_empty() || plane.section_key().is_empty() {
         return Err(format!(
@@ -206,23 +200,28 @@ pub fn hot_plane_row(
              name and configured by its section"
         ));
     }
-    let scope_kinds: &'static [&'static str] = match *scope {
-        "" => &[],
-        _ => std::slice::from_ref(scope),
+    let stated = plane.declaration();
+    let list = |items: &'static [String]| -> &'static [&'static str] {
+        items.iter().map(String::as_str).collect::<Vec<_>>().leak()
     };
     let declaration = PlaneDeclaration {
         key,
-        fallback: false,
+        fallback: stated.fallback,
         config_section: plane.section_key(),
-        scope_kinds,
-        subject_noun: key,
-        admin_noun: key,
-        audit_kind: key,
-        card_signing_domain: None,
-        card_kid_prefix: None,
-        owned_config_sections: &[],
-        billable_classes: &[],
-        fee_units: &[],
+        scope_kinds: list(&stated.scope_kinds),
+        subject_noun: &stated.subject_noun,
+        admin_noun: &stated.admin_noun,
+        audit_kind: &stated.audit_kind,
+        card_signing_domain: stated.signing_domain.as_deref(),
+        card_kid_prefix: stated.signing_kid_prefix.as_deref(),
+        owned_config_sections: list(&stated.owned_sections),
+        billable_classes: stated
+            .billable_classes
+            .iter()
+            .map(|(class, family)| BillableClass { class, family })
+            .collect::<Vec<_>>()
+            .leak(),
+        fee_units: list(&stated.fee_units),
     };
     Ok(PlaneDecl::assemble(declaration, HOT_PLANE_HOOKS))
 }
