@@ -607,6 +607,13 @@ moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
   `units: { search_units: 0 }` (0 keeps search free). A rate-card entry with a key busbar does not
   know is still refused in 1.5.5's sentence, with `units` now among the expected fields. Money stays
   unitless: a `currency` key is refused, as in 1.5.5.
+- 1.6.0 Added: a provider entry takes four lane-capability keys, `max_output_key`, `anthropic_adaptive_thinking`, `native_structured_output` and `model_capabilities`.
+  They set how a request that crosses protocols is written for that upstream's models: the
+  output-token cap key an OpenAI-protocol upstream receives, and whether an Anthropic-protocol
+  upstream gets adaptive thinking and native structured outputs. Each key is optional, and an
+  omitted key sends what 1.5.5 sent. A provider key busbar does not know is still refused in 1.5.5's
+  sentence, with the four keys now among the expected fields. See
+  [Lane capabilities](docs/providers.md#lane-capabilities). **Migration:** none.
 - **Two 64-bit ARM Linux builds, and the default one got faster.** The default arm64 artifacts
   (the `busbar-aarch64-unknown-linux-gnu.tar.gz` download and the multi-arch image's `linux/arm64`
   entry) now target ARMv8.1+, using the CPU's native atomic instructions instead of the baseline's

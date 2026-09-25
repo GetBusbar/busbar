@@ -224,6 +224,40 @@
       "rationale": "MEASURED 2026-09-24 by P3A-measure (predev ddad0c62a, pin 3876913, report at /Users/matthew/Developer/tmp/busbar-run/p3a-measure-work/) and re-measured by P3A-register4 at predev b8b554c4f: PUT /api/v1/admin/config/settings with a rate-card entry carrying a `currency` key answers 400 invalid_request in both versions. 1.5.5: \"malformed config settings body: unknown field `currency`, expected one of `input_utok`, `output_utok`, `cache_read_utok`, `cache_write_utok`\". 1.6.0: the same sentence with `, `units`` appended to the backtick list; content-length 189 -> 198 follows the body. Nothing else moves: status, code, audit (0 rows), egress and usage are identical. WHY THE LIST GROWS: the rate-card entry gained the owner-ruled `units:` key (Q42: every billable class a plane declares must be configured, the 1.5.5 upgrade card adds `units: { search_units: 0 }`; Q46(B): `units:` may name only declared classes; decisions in docs/design/1.6.0-QUESTIONS.md), so serde's unknown-field message now names it among the fields an entry accepts — hiding it would make the refusal lie about what the binary takes. WHY `currency` STAYS REFUSED: spec row #66 (docs/design/BUSBAR-1.6.0.md:652, OWNER-LOCKED 2026-09-20) — money is UNITLESS abstract cost, no currency type, no symbol; so this cell's 1.5.5 refusal is the right answer in 1.6.0 too, and D-4's native-currency claim (which wanted this cell at 200) left D-4's scope in the same change. kind=additive with text_list_growth (the Q54 shape): the runner proves the backtick list only GREW — every 1.5.5 field still present, in order, and every byte outside the list identical. PREMISE (evaluated): status 400, code invalid_request, and the exact message = 1.5.5's list plus exactly `units`; any other field, reordering or rewording withholds the entry."
     },
     {
+      "id": "Q66 the providers.<name> unknown-key refusal lists the four lane-capability keys",
+      "kind": "additive",
+      "text_list_growth": true,
+      "transform": {
+        "candidate": [
+          [
+            "^(\\[error\\]|\\[warn\\]|warning:) BUSBAR-\\d{4}: ",
+            "\\1 "
+          ]
+        ]
+      },
+      "changelog": "1.6.0 Added: a provider entry takes four lane-capability keys, `max_output_key`, `anthropic_adaptive_thinking`, `native_structured_output` and `model_capabilities`.",
+      "by": "owner (Matthew Jackson), 2026-09-24 ruling Q66 (answered in Q67): accept the additive difference",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-24",
+        "ruling": "Q66 (answered in Q67, 2026-09-24): ACCEPT the additive difference on neutrality|NEUT-U-providers|validate [effects.stderr]; the providers.<name> unknown-field refusal keeps 1.5.5's exit status and sentence, and its expected-key list gains exactly max_output_key, anthropic_adaptive_thinking, native_structured_output and model_capabilities"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^neutrality\\|NEUT-U-providers\\|validate$",
+      "expected_cells": 1,
+      "classes": [
+        "effects.stderr"
+      ],
+      "premise": {
+        "cell": "neutrality|NEUT-U-providers|validate",
+        "status": 1
+      },
+      "rationale": "MEASURED 2026-09-24 by P3A-register5 against a full local ./bin/oracle record of predev 0e686fa91 (pin 3876913, default all-planes release build, --strict; report at /Users/matthew/Developer/tmp/busbar-run/p3reg5-work/) and first by P3A-register4 at b8b554c4f: a config with an unknown key under providers.<name> is refused as in 1.5.5, exit 1 and the same sentence. After D-1's diagnostic-code rewrite (`[error] BUSBAR-3015: ` -> `[error] `, carried here because an additive entry's list proof reads its OWN transform, not D-1's) the only stderr difference is the expected-key list. 1.5.5: \"providers.anthropic: unknown field `bogus_key`, expected one of `api_key`, `protocol`, `base_url`, `error_map`, `path`, `path_base`, `token_url`, `scope`, `subject`, `auth`, `allow_metadata_hosts`, `health` at line 39 column 5\". 1.6.0: the same sentence with `max_output_key`, `anthropic_adaptive_thinking`, `native_structured_output`, `model_capabilities` inserted after `auth`, in that order (the ProviderCfg field order at 0e686fa91, crates/busbar-kernel/src/config/providers.rs). WHY THE LIST GROWS: these are the per-provider lane capabilities (docs/providers.md#lane-capabilities) that keep the Q57 mapping fixes from turning working cross-protocol requests into 400s (OpenAI o-series/gpt-5 need max_completion_tokens; older Claude models must keep thinking.budget_tokens); every key is optional and an omitted key sends what 1.5.5 sent. Owner ruling Q66 (answered in Q67): accept, registered like Q54 with text_list_growth. kind=additive with text_list_growth, so the runner proves the backtick list only GREW: every 1.5.5 key still present, one list touched, same spelling, every byte outside the list identical; a removed or respelled key, or a reworded sentence, stays red. PREMISE (evaluated): the exit status is 1, as in 1.5.5. The list half of Q66's premise (1.5.5's list plus exactly these four keys) is MEASURED above and not evaluated: the pinned runner's premise grammar (busbar-release src/premise.rs @3876913) probes status, body and JSON pointers only, and this exec cell serves an empty body with the refusal on stderr. The runner's own report names the added keys (\"additive: added max_output_key, anthropic_adaptive_thinking, native_structured_output, model_capabilities\"), so a fifth key, or a reorder, shows in that line on the next run. LANECAPS-MOVE (lane-caps parsing leaving busbar-kernel) may reorder or reword the list when it lands; re-measure then."
+    },
+    {
       "id": "F-018 validation wording",
       "kind": "additive",
       "text_list_growth": true,
@@ -1367,36 +1401,6 @@
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-06",
         "ruling": "2026-09-06 rate-card history decision; decision #79 (2026-09-22) + Q19 as ruled in Q32 (2026-09-24): accepted-difference for billing|rate-card|history-mid-window"
-      },
-      "expires": {
-        "baseline": "1.5.5",
-        "by": "2026-12-31"
-      }
-    },
-    {
-      "id": "D-4 dated rate-card history, native currencies, and the signed amend verb",
-      "kind": "improvement",
-      "changelog": "The 1.6.0 ledger endpoints read money as of a rate-card history snapshot.",
-      "by": "owner (Matthew Jackson), 2026-09-06 rate-card history decision",
-      "cells": "^(ledger\\|amend\\||config\\|rate-card\\|append-not-replace$)",
-      "expected_cells": 3,
-      "classes": [
-        "body",
-        "headers"
-      ],
-      "rationale": "RE-SCOPED AGAIN 2026-09-24 (P3A-register4, architect ruling F2): `ledger|currency|native` is REMOVED from this entry's scope, and its `status: 200` premise probe goes with it. Spec row #66 (docs/design/BUSBAR-1.6.0.md:652, OWNER-LOCKED 2026-09-20) says money is UNITLESS abstract cost with no currency type and no symbol, so the native-currency claim this entry's premise asked the cell to prove (a per-entry `currency` key answered 200) contradicts a locked row and can never be true. MEASURED at predev b8b554c4f (full corpus, pin 3876913, --strict): the three cells left in scope are PASS identical to 1.5.5 and the remaining probe is FALSE (ledger|amend|adjusting-entries answers 1.5.5's unmounted 404, Q63), so the runner withholds this entry and it forgives nothing today. The cell's one real delta (the refusal's expected-field list gaining `units`) is registered on its own terms by the entry \"Q42/Q46 the rate-card unknown-field refusal lists the `units:` key\" (additive, text_list_growth). cells 4 -> 3, expected_cells 4 -> 3; forgives strictly less than before. EARLIER RE-SCOPE 2026-09-24 (item 52, P3A-register): `ledger|currency|minor-unit-rounding` is REMOVED from this entry's scope. The entry's own rationale said that cell 'must not move at all', yet its `body` grant was forgiving it while its money figures moved 18/18/54 -> 2,500,000/2,500,000/5,000,018 (measured) — a money move under an improvement. PREMISE (evaluated): the entry's why is that the amend verb and native-currency cards exist on the build; today ledger|amend|* answer 403 (not 404) but ledger|currency|native still answers 400 unknown field `currency`, so the premise is FALSE and the runner withholds the entry: the `units` list growth that currently moves ledger|currency|native is Q29's grammar, not this entry's native-currency claim, and is reported rather than forgiven under the wrong reason. PRIOR RATIONALE: The ADDITIVE half of the rate-card history (design docs/design/rate-card-history.md §11.3): /api/v1/admin/ledger/{rate-history,repricings} are new reads; /api/v1/admin/ledger/amend-rate-history is a new operator-signed write in the irreducible set; the ledger reads gain optional ?as_of=<history_seq> and ?currency=<CCY> and echo history_seq, head, currency and the adjusting entries. A card prices in one or more currencies natively, with no pivot and no conversion. No 1.5.5 path, field or byte is touched: crates/busbar-core/src/admin/v1/json/openapi.json is unchanged and the 1.6.0 operations are described at docs/openapi-1.6.0-additive.json, reached by name at GET /api/v1/admin/ledger/openapi.json. WHAT MAKES THAT CLAIM CHECKABLE RATHER THAN ASSERTED: each cell in scope is recorded from the published 1.5.5 binary (the pinned darwin digest) answering the 1.6.0 call, so 'this surface is new' is a diff and not a belief. ledger|amend|adjusting-entries and ledger|amend|refused-unsigned both record 404 not_found / 'resource not found', BYTE-IDENTICAL to each other -- the router's generic miss, not a 405 from a path that exists for another method -- which is the proof the refusal is about the ROUTE and that 1.5.5 knows nothing about operator signatures. ledger|currency|native records 400 invalid_request, 'unknown field `currency`, expected one of `input_utok`, `output_utok`, `cache_read_utok`, `cache_write_utok`': 1.5.5 REFUSES the per-entry currency key rather than accepting and dropping it, so 1.6.0 honouring it cannot change the meaning of any card an operator can write today. config|rate-card|append-not-replace records the 400 that makes §4.1 well-defined ('rate_card is AUTHORITATIVE and COMPLETE'), including its eight-model remediation block, and STAYS a 400. ledger|currency|minor-unit-rounding is in scope for its /usage shape only and must not move at all: it is a single-entry history and its figures (18 per row, 54 total, no minor-unit projection) are the USD baseline §3.3's per-currency exponent has to leave alone. NO MONEY CLASS IS WAIVED HERE, deliberately. classes is `body`/`headers` only, so this entry cannot forgive a status. The four cells that answer 404/400 today will answer differently once the routes exist, and that status move is NOT accepted by this entry: it is M6's to register when it lands, with its own scope and its own line. Naming the gap is the point -- an acceptance whose scope is 'whatever the new endpoints end up doing' is one nobody can audit.",
-      "premise": {
-        "all": [
-          {
-            "cell": "ledger|amend|adjusting-entries",
-            "status_not": 404
-          }
-        ]
-      },
-      "signoff": {
-        "who": "owner (Matthew Jackson)",
-        "when": "2026-09-06",
-        "ruling": "2026-09-06 rate-card history decision; re-adjudicated 2026-09-24 by P3A-register under items 47/52/119 (narrowed or premise-bound; forgives no more than before); narrowed 2026-09-24 under spec #66 (money is unitless; ledger|currency|native leaves)"
       },
       "expires": {
         "baseline": "1.5.5",
