@@ -74,7 +74,8 @@ libc = { workspace = true }
 # NOTE: the end-to-end tests load real plugin cdylibs (busbar-secret-example-plugin and
 # busbar-store-sqlite-plugin — the latter built from a sibling ../store-sqlite checkout, since
 # store-sqlite is fully extracted and no longer lives in this workspace), but a cdylib crate cannot
-# be a Rust dependency (no rlib to link). The tests instead locate the artifact on disk and skip if
-# it isn't built — under `cargo test --workspace` every in-tree member cdylib is present; the
-# sibling-built one is present only under dev-gate.yml (see store_fixture_plugin_path()'s doc
-# comment in src/lib.rs).
+# be a Rust dependency (no rlib to link). The tests instead locate the artifact on disk — under
+# `cargo test --workspace` every in-tree member cdylib is present, and the kind:store fixture falls
+# back to the in-tree busbar-store-example-plugin when the sqlite sibling is not built; under CI a
+# missing fixture is a hard failure, never a skip. The sibling-built one is required only under
+# qa-gate.yml's `loader` leg (see store_fixture_plugin_path()'s doc comment in src/lib.rs).
