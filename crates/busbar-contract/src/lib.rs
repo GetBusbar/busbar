@@ -111,7 +111,7 @@ pub use plane::{
 // — the capability crate implements it on every token and sits above this one — so the scan named
 // in its own documentation is what holds the in-tree side.
 pub use plugin::{AbiVersion, Kind, KindMarker, Plugin, STORE_ABI};
-pub use redacted::{constant_time_eq, Redacted};
+pub use redacted::{constant_time_eq, sha256_hex, Redacted};
 pub use scratch::{Scratch, ScratchRefused};
 pub use signal::{Signal, SignalBag, SignalValue};
 pub use transport::{

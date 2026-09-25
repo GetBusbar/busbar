@@ -36,9 +36,16 @@ license = "Apache-2.0"
 # its backing memory on drop, and `SignalBag` keeps the common 0-4-declared-signals case off the
 # heap. Both are LEAF crates — each resolves to a node with NO dependencies of its own in
 # `Cargo.lock`, so neither widens the closure every plugin inherits (#40(a)) by more than itself and
-# in particular neither reaches `libc`. That test is the one that matters here and is why
-# `sha256_hex` did NOT come with them: it is `sha2`, and `sha2 -> cpufeatures -> libc` is an open
-# owner ruling, not a dependency this crate may take on its own authority.
+# in particular neither reaches `libc`. That test is the one that matters here, and it is why
+# `sha256_hex` did not come with them.
+#
+# `sha2` and `hex` arrived with `sha256_hex` (DECISIONS #83; ARCHITECT P68-0 residue (b)): the digest
+# every auth module hashes a credential under before the constant-time compare, so a plugin compares
+# credentials against the contract alone. `sha2 -> cpufeatures -> libc` is the one edge here that
+# reaches `libc`, and it is RULED, not assumed: OWNER RULING 2026-09-22, stated once for the whole
+# tree as the `(dep = libc, via = cpufeatures)` edge exemption in `qa/construction.toml` — two
+# CPU-capability queries (`getauxval`, `sysctlbyname`), no socket, file, process, handle,
+# environment read or HTTP client. `cargo xtask gate denylist` still reds any OTHER path to `libc`.
 #
 # `serde_json` and `async-trait` arrived with the plugin-facing half of `busbar-api` (DECISIONS
 # #83/#84, the per-kind traits and their shapes: `auth`, `hooks`, `secret`, `operation`). `serde_json` is the settings/rewrite carrier those shapes already spoke —
@@ -53,6 +60,8 @@ async-trait = { workspace = true }
 futures = { workspace = true }
 smallvec = { workspace = true }
 zeroize = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 
 # Tests only. The ABI types that seal into the policy journal are serialised by something, and a
 # test that asserts what a serialisation does NOT contain has to run a real serializer over it.

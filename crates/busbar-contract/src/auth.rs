@@ -7,8 +7,9 @@
 //! on the plugin path may link a crate holding semantics; the per-kind capability trait is the
 //! contract's, #35(a)). One name changed on the move and only to de-collide it (#35): the verdict is
 //! [`AuthVerdict`] here because [`crate::kinds::AuthOutcome`] is a different type. `busbar-api`
-//! re-exports it under its original spelling. `sha256_hex` did not come: it is `sha2`, and
-//! `sha2 -> cpufeatures -> libc` is not a dependency this crate takes on its own authority.
+//! re-exports it under its original spelling. `sha256_hex` followed later, beside the constant-time
+//! compare it feeds ([`crate::redacted::sha256_hex`]), once the owner ruled the
+//! `sha2 -> cpufeatures -> libc` edge tree-wide (2026-09-22).
 
 use crate::redacted::Redacted;
 

@@ -106,10 +106,13 @@ impl<T: Zeroize + AsRef<str>> Eq for Redacted<T> {}
 // every other duplicate ("a duplicate that encodes a SECURITY or MONEY property outranks any
 // duplicate that is merely bigger"). `busbar-api` re-exports it at its historical path.
 //
-// ITS SIBLING `sha256_hex` DID NOT COME. It is `hex::encode(Sha256::digest(..))`, so it would drag
-// `sha2 -> cpufeatures -> libc` into the crate EVERY plugin links (DECISIONS #40(a)) — the open
-// owner ruling parked in `docs/design/BUSBAR-1.6.0.md`. This function drags nothing: `core`/`std`
-// only, no crate at all.
+// ITS SIBLING `sha256_hex` FOLLOWED IT (DECISIONS #83, ARCHITECT P68-0 residue (b)). It is
+// `hex::encode(Sha256::digest(..))`, so it brings `sha2 -> cpufeatures -> libc` into the crate EVERY
+// plugin links (#40(a)); the OWNER RULING of 2026-09-22 (the `(dep = libc, via = cpufeatures)` edge
+// exemption in `qa/construction.toml`) settles that edge tree-wide as a CPU-capability query, not an
+// I/O reach, so the digest now sits beside the compare it exists to feed and a plugin hashes both
+// sides without naming `busbar-api`. `busbar-api` re-exports it at its historical path. This
+// function itself still drags nothing: `core`/`std` only.
 
 /// Constant-time comparison of the CONTENTS once lengths already match, to avoid leaking how much
 /// of a token matches via timing. `#[inline(never)]` + `black_box` keep the optimizer from turning
@@ -136,6 +139,17 @@ pub fn constant_time_eq(a: &str, b: &str) -> bool {
     }
 
     std::hint::black_box(result) == 0
+}
+
+/// Lowercase hex SHA-256 of `data` — THE digest facility credentials are compared under (a module
+/// hashes both sides before [`constant_time_eq`]: every digest is 64 hex chars, so
+/// `constant_time_eq`'s length early-exit never fires on a length difference driven by the raw
+/// candidate, and candidate length leaks nothing). This is the pattern every auth module SHOULD
+/// follow when comparing a caller-supplied credential against configured secret material — compare
+/// raw only when the material's length is not itself sensitive.
+pub fn sha256_hex(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(data))
 }
 
 #[cfg(test)]
