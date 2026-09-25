@@ -206,21 +206,15 @@ busbar-voice = ["busbar-voice-codec"]
 #
 # The re-baseline that struck them changed no ceiling upward, so nothing below needs a declaration.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED AT THE MEASURE AFTER THE PLUGIN-CONTRACT MERGE ─────────────
+# ── THE CONTRACT CEILING PAIR (OWNER RULING Q68(3)) — EXPIRED AND STRUCK ──────────────────────
 #
-# One decision measured twice, so both rows move together and to the same figure.
-
-[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
-file    = "qa/construction.toml"
-from    = 7414
-to      = 7418
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value after each owner-locked #83/#84 merge commit into busbar-contract, each in its own commit. This is the re-arm for f42d27d56, the #83 api->contract move of sha256_hex (ARCHITECT P68-0 residue (b)): the credential digest joins constant_time_eq in busbar_contract::redacted and busbar-api keeps only a re-export. Measured by cargo xtask loc busbar-contract: 7414 before, 7418 after; the +4 is the function and its sha2 import, nothing else. The 5652 -> 7414 declaration this replaces had landed at the base and expired."
-
-[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
-file    = "qa/construction.toml"
-from    = 7414
-to      = 7418
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value after each owner-locked #83/#84 merge commit into busbar-contract, each in its own commit. This is the re-arm for f42d27d56, the #83 api->contract move of sha256_hex (ARCHITECT P68-0 residue (b)): the credential digest joins constant_time_eq in busbar_contract::redacted and busbar-api keeps only a re-export. Measured by cargo xtask loc busbar-contract: 7414 before, 7418 after; the +4 is the function and its sha2 import, nothing else. The 5652 -> 7414 declaration this replaces had landed at the base and expired."
+# The pair declared `gate.surface_ceilings.contract_caps` and
+# `rules.loc-ceilings.caps_contract_ceiling` 7414 -> 7418: the re-arm at the measured value after
+# the api->contract move of `sha256_hex` (the credential digest joins `constant_time_eq` in
+# `busbar_contract::redacted`; +4 lines, the function and its sha2 import). Its commit reached the
+# base, so `ceiling-rose` reported both as "a declared raise 7414 -> 7418 that is not a raise at the
+# base" and asked for exactly this strike. THE CEILINGS THEMSELVES DID NOT MOVE: both still read
+# 7418. The next #83/#84 merge into busbar-contract declares its own re-arm here, once.
 
 # ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
 #
