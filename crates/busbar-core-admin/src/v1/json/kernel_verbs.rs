@@ -6,8 +6,8 @@
 //! The closed verb table (`admin_codec::verbs`) declares 26 operations 1.6.0 adds to the
 //! administrative surface: the 18 money-governance verbs ([`NEW_VERBS`]), the five ledger views
 //! ([`LEDGER_VERBS`]) and the three audit-chain reads ([`AUDIT_VERBS`]). The router in this crate
-//! mounts none of them. The node's administrative mount walks every row the table declares through
-//! the kernel loop, and it is the composition root's route step that answers them — the ledger and
+//! mounts none of them. The node's administrative mount walks every row the table declares whose
+//! effect is bound through the kernel loop, and it is the composition root's route step that answers them — the ledger and
 //! audit reads render from the node's own book and chain, `adjust` and `amend_rate_history` land on
 //! the node's amendment journal, and the three disaster-recovery verbs land on the store.
 //!
@@ -18,11 +18,10 @@
 //! verb's contract below is what the root's code does — its request shape, its success body and
 //! the statuses its refusals map to (`units_admin::answer_for`) — never what a design once intended.
 //!
-//! THIRTEEN OF THE EIGHTEEN MONEY-GOVERNANCE VERBS HAVE NO EFFECT BOUND IN THIS BUILD. They resolve
-//! in the table, pass (or are refused by) the scope, operator and dual-control gates, write their
-//! audit row, and then reach a surface that has no handler for them, which answers `404
-//! not_found`. The document says exactly that — `x-busbar-effect-bound: false` and no success
-//! response — rather than describing a success the node cannot produce.
+//! THIRTEEN OF THE EIGHTEEN MONEY-GOVERNANCE VERBS HAVE NO EFFECT BOUND IN THIS BUILD
+//! (`crate::verb::effect_bound`). They are not served — the node's mount hands them to the
+//! surface's own fallback, which answers the unmounted `404` — so this document does not describe
+//! them either: [`operations`] asks the same one question the mount asks.
 
 #[cfg(feature = "openapi-schema")]
 use crate::admin_codec::verbs::ResolvedVerb;
@@ -40,12 +39,6 @@ use std::collections::BTreeMap;
 /// The release that added every operation this module documents, stamped as `x-busbar-since`.
 #[cfg(feature = "openapi-schema")]
 pub(crate) const SINCE: &str = "1.6.0";
-
-/// The vendor extension an operation with no bound effect carries (`false`), so a reader — and the
-/// coverage lock in `tests/tests.rs` — can tell "this verb answers 404 by construction" from "this
-/// operation forgot to document its success".
-#[cfg(feature = "openapi-schema")]
-pub(crate) const EFFECT_BOUND_KEY: &str = "x-busbar-effect-bound";
 
 // ── the typed contracts (schema-only: never serialized at runtime) ──────────────────────────────
 //
@@ -471,8 +464,6 @@ enum Success {
     Document,
     /// `204`: the verb's whole result is its effect.
     NoContent(&'static str),
-    /// No effect is bound in this build: an admitted call answers `404 not_found`.
-    Unbound,
 }
 
 /// One kernel verb's documented contract.
@@ -493,8 +484,7 @@ fn gated_403() -> (&'static str, String) {
     (
         "403",
         "`forbidden`: the credential does not hold `full` (the message names the scope), the \
-         fleet's operator key is not set (every irreducible verb except `set_operator_key` and \
-         `export_keyset`), dual control holds the mutation for an approval, the verb's \
+         fleet's operator key is not set, dual control holds the mutation for an approval, the verb's \
          per-principal rate class is exhausted, or an idempotent retry is still in flight"
             .to_string(),
     )
@@ -517,8 +507,9 @@ fn unavailable_503(what: &str) -> (&'static str, String) {
 #[cfg(feature = "openapi-schema")]
 const BODY_UNREADABLE: &str = "a request body that could not be read to the operator's size cap";
 
-/// The contract for one kernel verb, or `None` for a verb this module does not document — which
-/// the served-surface coverage test turns into a red build, so an arm cannot be forgotten.
+/// The contract for one kernel verb, or `None` for a verb this module does not document — which,
+/// for a verb the build binds an effect to, the served-surface coverage test turns into a red
+/// build, so an arm cannot be forgotten.
 #[cfg(feature = "openapi-schema")]
 fn doc_for(
     verb: KernelVerb,
@@ -526,27 +517,6 @@ fn doc_for(
     req_gen: &mut schemars::SchemaGenerator,
 ) -> Option<VerbDoc> {
     let schema_of = |s: schemars::Schema| serde_json::to_value(s).unwrap_or_else(|_| json!({}));
-    let unbound = |summary: &'static str| VerbDoc {
-        summary,
-        description: "Resolves in the closed verb table and runs the verb's gates (scope, rate \
-                      class, the operator ceremony and dual control) and writes its audit row. \
-                      This build binds NO EFFECT to it: an admitted call reaches a surface with no \
-                      handler for it and answers `404 not_found`. The request body is not read."
-            .to_string(),
-        success: Success::Unbound,
-        request: None,
-        query: Vec::new(),
-        errors: vec![
-            gated_403(),
-            (
-                "404",
-                "`not_found`: the call was admitted and no effect is bound to this verb in this \
-                 build"
-                    .to_string(),
-            ),
-            unavailable_503("the node could not take the unit"),
-        ],
-    };
     let ledger_read =
         |summary: &'static str, description: &str, schema: Value, ok: &'static str| VerbDoc {
             summary,
@@ -579,40 +549,6 @@ fn doc_for(
         ],
     };
     Some(match verb {
-        // ── the thirteen with no effect bound ──
-        // The two read-only new verbs: `read-only` scope (which every credential holds), no
-        // mutation budget, never dual-controlled and not irreducible — no gate can refuse them.
-        KernelVerb::Verify => {
-            let mut doc = unbound("Verify a claim or signature outside the normal request path");
-            doc.errors.retain(|(status, _)| *status != "403");
-            doc
-        }
-        KernelVerb::PlaneFacts => {
-            let mut doc = unbound("Read a plane's own declared facts");
-            doc.errors.retain(|(status, _)| *status != "403");
-            doc
-        }
-        KernelVerb::PlaneRecordWrite => unbound("Write a plane record entry"),
-        KernelVerb::SetOperatorKey => unbound(
-            "Set the fleet's operator public key (irreducible; admitted while the operator is unset)",
-        ),
-        KernelVerb::SetEscrow => unbound("Set the M-of-N key-loss escrow (irreducible)"),
-        KernelVerb::SetDualControl => {
-            unbound("Flip dual-control posture between `single` and `required` (irreducible)")
-        }
-        KernelVerb::SetOverdraftCeiling => unbound("Set a bucket's overdraft ceiling"),
-        KernelVerb::SetDisputeMaxAge => unbound("Set `dispute_max_age`"),
-        KernelVerb::CommitUpgrade => unbound("Commit the schema/version upgrade (irreducible)"),
-        KernelVerb::ResolveDispute => {
-            unbound("Resolve an open dispute (irreducible above `adjust_threshold`)")
-        }
-        KernelVerb::ResolveSlice => unbound("Resolve a slice-level dispute"),
-        KernelVerb::ExportKeyset => unbound(
-            "Export the deployment keyset, sealed to a recipient public key (irreducible; \
-             admitted while the operator is unset)",
-        ),
-        KernelVerb::Approve => unbound("The maker-checker approval verb"),
-
         // ── the three disaster-recovery verbs: their effect lands on the store ──
         KernelVerb::ChainBreak => VerbDoc {
             summary: "Deliberately break the journal chain (disaster recovery; irreducible)",
@@ -861,10 +797,13 @@ pub(crate) fn operations(
         let Some(row) = table.iter().find(|row| row.verb == name) else {
             continue;
         };
+        // The mount's own question: a verb with no bound effect is not served, so not described.
+        if !crate::verb::effect_bound(verb) {
+            continue;
+        }
         let Some(doc) = doc_for(verb, gen, req_gen) else {
             continue;
         };
-        let effect_unbound = matches!(doc.success, Success::Unbound);
         let method = row.method.to_ascii_lowercase();
         let path = row.template.to_string();
         let mut responses = serde_json::Map::new();
@@ -888,31 +827,15 @@ pub(crate) fn operations(
             Success::NoContent(description) => {
                 responses.insert("204".into(), json!({ "description": description }));
             }
-            Success::Unbound => {}
         }
         responses.insert(
             "401".into(),
             json!({"description": "Missing/invalid admin credential (error code `unauthorized`)"}),
         );
+        // Every error status speaks the one `Error` envelope (its `code` enum carries `unavailable`);
+        // the caller's shared pass attaches it.
         for (status, description) in doc.errors {
-            let mut entry = json!({ "description": description });
-            if status == "503" {
-                // `unavailable` is outside the `Error` component's frozen code enum, so this
-                // response carries its own envelope schema naming the one code it can hold.
-                entry["content"] = json!({"application/json": {"schema": {
-                    "type": "object",
-                    "properties": {"error": {
-                        "type": "object",
-                        "properties": {
-                            "code": {"type": "string", "const": "unavailable"},
-                            "message": {"type": "string"}
-                        },
-                        "required": ["code", "message"]
-                    }},
-                    "required": ["error"]
-                }}});
-            }
-            responses.insert(status.into(), entry);
+            responses.insert(status.into(), json!({ "description": description }));
         }
         let http_method = match method.as_str() {
             "get" => axum::http::Method::GET,
@@ -939,9 +862,6 @@ pub(crate) fn operations(
                 "required": true,
                 "content": {"application/json": {"schema": schema}}
             });
-        }
-        if effect_unbound {
-            op[EFFECT_BOUND_KEY] = json!(false);
         }
         out.push((path, method, op));
     }

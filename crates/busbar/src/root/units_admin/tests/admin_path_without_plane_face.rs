@@ -557,8 +557,7 @@ async fn the_operators_rows_for(router: &axum::Router, resource: &str) -> Vec<(S
 /// went (item 237). Each is walked through the root's mount over the real surface, once, and the
 /// operator's `/audit` page must then carry exactly one row for it on the kernel's durable ring:
 /// `applied` where the effect landed (the three store verbs, under a sealed operator key and a store
-/// that applies), `rejected` where it did not. The two read-only 1.6.0 verbs and a ledger view seal
-/// nothing.
+/// that applies), `rejected` where it did not. A ledger view seals nothing.
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_none() {
@@ -618,19 +617,10 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
         );
     }
 
+    // Only the verbs with a bound effect are walked here; the unbound ones are not served at all
+    // (`an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_nothing`).
     let rejected = [
-        ("/api/v1/admin/plane-record-write", "plane_record_write"),
-        ("/api/v1/admin/operator-key", "set_operator_key"),
-        ("/api/v1/admin/escrow", "set_escrow"),
-        ("/api/v1/admin/dual-control", "set_dual_control"),
-        ("/api/v1/admin/overdraft-ceiling", "set_overdraft_ceiling"),
-        ("/api/v1/admin/dispute-max-age", "set_dispute_max_age"),
-        ("/api/v1/admin/commit-upgrade", "commit_upgrade"),
-        ("/api/v1/admin/disputes/resolve", "resolve_dispute"),
-        ("/api/v1/admin/slices/resolve", "resolve_slice"),
         ("/api/v1/admin/adjust", "adjust"),
-        ("/api/v1/admin/export-keyset", "export_keyset"),
-        ("/api/v1/admin/approve", "approve"),
         (
             "/api/v1/admin/ledger/amend-rate-history",
             "amend_rate_history",
@@ -649,11 +639,7 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
         );
     }
 
-    for path in [
-        "/api/v1/admin/verify",
-        "/api/v1/admin/plane-facts",
-        "/api/v1/admin/ledger/totals",
-    ] {
+    for path in ["/api/v1/admin/ledger/totals"] {
         let _ = over(&mounted, "GET", path, Vec::new()).await;
         assert_eq!(
             the_operators_rows_for(&mounted, path).await,
@@ -661,6 +647,117 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
             "{path}: a read seals nothing"
         );
     }
+}
+
+/// The thirteen 1.6.0 verbs this build binds NO EFFECT to, as `(method, path)` — measured, not
+/// assumed: each resolved in the table, walked every gate, sealed a `rejected` row and then reached
+/// a surface with no handler for it, which answered `404`.
+#[cfg(feature = "root-admin")]
+const THE_UNBOUND_VERBS: [(&str, &str); 13] = [
+    ("GET", "/api/v1/admin/verify"),
+    ("GET", "/api/v1/admin/plane-facts"),
+    ("POST", "/api/v1/admin/plane-record-write"),
+    ("POST", "/api/v1/admin/operator-key"),
+    ("POST", "/api/v1/admin/escrow"),
+    ("POST", "/api/v1/admin/dual-control"),
+    ("POST", "/api/v1/admin/overdraft-ceiling"),
+    ("POST", "/api/v1/admin/dispute-max-age"),
+    ("POST", "/api/v1/admin/commit-upgrade"),
+    ("POST", "/api/v1/admin/disputes/resolve"),
+    ("POST", "/api/v1/admin/slices/resolve"),
+    ("POST", "/api/v1/admin/export-keyset"),
+    ("POST", "/api/v1/admin/approve"),
+];
+
+/// AN ADMIN VERB WHOSE EFFECT IS NOT BOUND IS NOT SERVED (architect ruling 2026-09-24).
+///
+/// Under a sealed operator key and a full-scope operator — the posture in which every gate admits —
+/// each of the thirteen answers EXACTLY what an unmounted path answers (`404 not_found` /
+/// `resource not found`, byte for byte, which is also the published 1.5.5 answer for every one of
+/// these paths) and seals NO audit row. It used to be walked through the gates, sealed a `rejected`
+/// row, and then answered the same 404 from a surface with no handler for it. And the set is the
+/// one generic `effect_bound` check's, not a list kept beside it.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_nothing() {
+    busbar_kernel::metrics::init();
+    busbar_core_admin::install();
+    let app = busbar_kernel::test_support::TestApp::new()
+        .admin_chain(vec![])
+        .build();
+    let (_data, bare, _handle) =
+        busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
+    let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
+    let durability = crate::root::durability::build(
+        &crate::root::durability::DurabilityConfig { data_dir: None },
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(rows.clone()),
+    )
+    .expect("a memory-buffered journal cannot fail to open");
+    let held = Arc::new(std::sync::Mutex::new(durability));
+    let read = Arc::new(rows);
+    let mounted = mount(
+        bare,
+        crate::root::kernel::new_kernel(),
+        1 << 20,
+        move |dispatch| {
+            let mut units =
+                crate::root::kernel::ProductionUnits::admin_only_sharing(dispatch, held, read)
+                    .with_auth_chain(a_door_that_identifies_the_operator())
+                    .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+                        ADirectoryThatMintedIt,
+                    )));
+            units.admin.posture = Arc::new(SealedPosture::new(Some([7u8; 32])));
+            units
+        },
+    );
+    let (unmounted_status, unmounted, _) = over(
+        &mounted,
+        "POST",
+        "/api/v1/admin/no-such-operation",
+        b"{}".to_vec(),
+    )
+    .await;
+    assert_eq!(unmounted_status, 404, "the control is the unmounted path");
+    assert_eq!(
+        unmounted,
+        br#"{"error":{"code":"not_found","message":"resource not found"}}"#.to_vec(),
+        "the control is the router's generic miss"
+    );
+    for (method, path) in THE_UNBOUND_VERBS {
+        let body = if method == "GET" {
+            Vec::new()
+        } else {
+            b"{}".to_vec()
+        };
+        let (status, answer, _) = over(&mounted, method, path, body).await;
+        assert_eq!(
+            (status, answer.as_slice()),
+            (unmounted_status, unmounted.as_slice()),
+            "{method} {path}: an unbound verb answers exactly what an unmounted path answers"
+        );
+        assert_eq!(
+            the_operators_rows_for(&mounted, path).await,
+            Vec::<(String, String)>::new(),
+            "{method} {path}: an unserved verb seals no audit row"
+        );
+    }
+    let unbound: std::collections::BTreeSet<(&str, &str)> = busbar_core_admin::NEW_VERBS
+        .iter()
+        .filter(|verb| !busbar_core_admin::verb::effect_bound(**verb))
+        .filter_map(|verb| {
+            let name = busbar_core_admin::verb_name(*verb)?;
+            busbar_core_admin::admin_codec::verbs::table()
+                .into_iter()
+                .find(|row| row.verb == name)
+                .map(|row| (row.method, row.template))
+        })
+        .collect();
+    assert_eq!(
+        unbound,
+        THE_UNBOUND_VERBS.into_iter().collect(),
+        "the measured set is exactly what the one generic check leaves unbound"
+    );
 }
 
 /// A NODE WITH NO SEALED OPERATOR KEY ANSWERS THE AMEND PATH AS 1.5.5 DOES (oracle cells

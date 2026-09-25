@@ -742,7 +742,8 @@ pub fn mount(
 
 /// Whether THIS node serves the row `resolved` names, beyond the table declaring it.
 ///
-/// One row is conditional: `amend_rate_history` verifies an operator signature against the key the
+/// A row whose verb this build binds no effect to (`busbar_core_admin::verb::effect_bound`) is
+/// served nowhere. One further row is conditional: `amend_rate_history` verifies an operator signature against the key the
 /// fleet sealed (`auth.operator_pub`), so a node with no sealed key has nothing to verify against
 /// and the operation does not exist there. Such a node is exactly a 1.5.5-shaped deployment, and it
 /// answers the path as 1.5.5 does — the surface's own `404 not_found`, no audit row — rather than
@@ -752,7 +753,13 @@ pub fn mount(
 /// the verbs unit refuses it rather than this seam guessing.
 #[cfg(feature = "root-admin")]
 pub(crate) fn served_here(binding: &AdminBinding, resolved: &ResolvedVerb) -> bool {
-    if kernel_verb(resolved) != Some(KernelVerb::AmendRateHistory) {
+    let verb = kernel_verb(resolved);
+    // A verb this build binds no effect to is not served at all (architect ruling 2026-09-24): the
+    // surface's own fallback answers it — the unmounted `404`, byte for byte, no audit row.
+    if !verb.is_none_or(busbar_core_admin::verb::effect_bound) {
+        return false;
+    }
+    if verb != Some(KernelVerb::AmendRateHistory) {
         return true;
     }
     binding

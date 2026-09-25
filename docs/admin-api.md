@@ -57,6 +57,7 @@ Every `/api/v1/admin` error (including 401, 404 on an unmatched path, and 405 on
 | `conflict` | 409 | **Terminal**: the request contradicts server state in a way a retry cannot fix (governance disabled, base-defined hook or group, a group another group still parents on, immutable grant change, in-flight idempotency reservation, lockout guard) |
 | `rate_limited` | 429 | The principal's per-minute mutation budget is spent (`Retry-After: 60`) |
 | `internal` | 500 | An internal failure (details are logged server-side, never returned) |
+| `unavailable` | 503 | The node could not take the request into its administrative loop, or could not record what the operation would do (an administrative write that cannot be journalled is not performed). Retry later |
 
 The `version_conflict`/`conflict` split is deliberate: a client distinguishes retryable staleness from a terminal state conflict without ever string-matching the message.
 
@@ -139,7 +140,16 @@ ordinary numbers.
 `POST /api/v1/admin/adjust` corrects a recorded unit's **counts** — per billable class, as decimal
 strings — never a money figure; what the unit costs stays a read-time view of its counts at its own
 rate-card epoch. `POST /api/v1/admin/ledger/amend-rate-history` appends a correction signed by the
-fleet's operator key to the dated rate-card history.
+fleet's operator key to the dated rate-card history. Each corrected rate's `micro_per_unit` is a
+decimal in micro-units per unit, and it must be exact to one nano-unit (a multiple of `0.001`): the
+card holds integers, and a finer figure is refused `400 invalid_request` rather than rounded into a
+price the signature does not cover.
+
+The closed verb table also declares thirteen money-governance verbs whose effect this release does
+not bind (`verify`, `plane-facts`, `plane-record-write`, `operator-key`, `escrow`, `dual-control`,
+`overdraft-ceiling`, `dispute-max-age`, `commit-upgrade`, `disputes/resolve`, `slices/resolve`,
+`export-keyset`, `approve`). They are not served: each answers exactly what a path the node does not
+have answers (`404 not_found`, no audit row), and the OpenAPI document does not describe them.
 
 These paths are served by the composition root's own loop. A node built without it answers them
 exactly as it answers any other path it does not have — the same `404` envelope, no hint that the

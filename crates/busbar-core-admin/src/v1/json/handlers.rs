@@ -4350,6 +4350,14 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                         resps.entry("500").or_insert(json!(
                             {"description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"}
                         ));
+                        // Every operation the closed table declares is walked through the node's
+                        // administrative loop, which answers `503 unavailable` when it cannot take
+                        // the unit or cannot record what the operation would do.
+                        if crate::admin_codec::verbs::resolve(m.as_str(), path).is_some() {
+                            resps.entry("503").or_insert(json!(
+                                {"description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"}
+                            ));
+                        }
                     }
                 }
             }
@@ -4987,8 +4995,9 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
 
     // The generated component schemas (every `$ref`'d view type), merged with the hand-written
     // `Error` schema. The `Error` schema stays hand-written so its `code` enum is the frozen
-    // AdminError taxonomy verbatim (the drift test `openapi_error_enum_matches_admin_error_codes`
-    // locks it); schemars fills in every other referenced view.
+    // AdminError taxonomy verbatim plus the administrative loop's own `unavailable` (the drift test
+    // `openapi_error_enum_matches_admin_error_codes` locks it); schemars fills in every other
+    // referenced view.
     let mut schemas = gen.definitions().clone();
     // Request-body component schemas live in the same `components.schemas` map. The two generators
     // cannot collide today (no type is both a request struct and a response view) and the drift
@@ -5007,7 +5016,8 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                         "code": {"type": "string",
                             "enum": ["not_found", "unauthorized", "method_not_allowed", "forbidden",
                                      "invalid_request", "version_conflict", "conflict",
-                                     "rate_limited", "internal", "unpriced_class"]},
+                                     "rate_limited", "internal", "unpriced_class",
+                                     "unavailable"]},
                         "message": {"type": "string"}
                     },
                     "required": ["code", "message"]
@@ -5086,8 +5096,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                                    omits it (and every schema only it references).",
                 "x-busbar-since": "Added in that release, and answered by the node's \
                                    administrative loop.",
-                "x-busbar-effect-bound": "`false`: no effect is bound to the verb in this build; \
-                                          an admitted call answers `404 not_found`.",
                 "money": "Every money figure is a JSON string holding a decimal integer; every \
                           count is a JSON number."
             }
@@ -5295,9 +5303,8 @@ pub(crate) fn openapi_for_configured_planes(
         .pointer_mut("/components/schemas")
         .and_then(|s| s.as_object_mut())
     {
-        schemas.retain(|name, _| {
-            !reachable_before.contains(name) || reachable_after.contains(name)
-        });
+        schemas
+            .retain(|name, _| !reachable_before.contains(name) || reachable_after.contains(name));
     }
     serde_json::to_string_pretty(&doc)
         .ok()

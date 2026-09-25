@@ -1277,7 +1277,8 @@
                   "conflict",
                   "rate_limited",
                   "internal",
-                  "unpriced_class"
+                  "unpriced_class",
+                  "unavailable"
                 ],
                 "type": "string"
               },
@@ -3853,7 +3854,6 @@
     "x-busbar-marks": {
       "money": "Every money figure is a JSON string holding a decimal integer; every count is a JSON number.",
       "scope": "ONE generated document, describing every administrative operation this build can serve; a node serves it filtered to the planes it configured.",
-      "x-busbar-effect-bound": "`false`: no effect is bound to the verb in this build; an admitted call answers `404 not_found`.",
       "x-busbar-plane": "The operation is mounted only on a node whose config carries that plane's `<section>:` block; elsewhere its path answers `404 not_found` and the node's served `GET /openapi.json` omits it (and every schema only it references).",
       "x-busbar-since": "Added in that release, and answered by the node's administrative loop."
     }
@@ -3913,7 +3913,7 @@
                 }
               }
             },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set, dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
           },
           "404": {
             "content": {
@@ -3929,28 +3929,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "error": {
-                      "properties": {
-                        "code": {
-                          "const": "unavailable",
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
@@ -4013,6 +3992,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -4119,6 +4108,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -4817,87 +4816,6 @@
         "x-busbar-required-scope": "full"
       }
     },
-    "/api/v1/admin/approve": {
-      "post": {
-        "description": "Resolves in the closed verb table and runs the verb's gates (scope, rate class, the operator ceremony and dual control) and writes its audit row. This build binds NO EFFECT to it: an admitted call reaches a surface with no handler for it and answers `404 not_found`. The request body is not read.",
-        "operationId": "PostApprove",
-        "responses": {
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`not_found`: the call was admitted and no effect is bound to this verb in this build"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "properties": {
-                        "code": {
-                          "const": "unavailable",
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "The maker-checker approval verb",
-        "x-busbar-effect-bound": false,
-        "x-busbar-required-scope": "full",
-        "x-busbar-since": "1.6.0"
-      }
-    },
     "/api/v1/admin/audit": {
       "get": {
         "operationId": "GetAudit",
@@ -4989,6 +4907,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -5042,28 +4970,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "error": {
-                      "properties": {
-                        "code": {
-                          "const": "unavailable",
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
@@ -5122,28 +5029,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "error": {
-                      "properties": {
-                        "code": {
-                          "const": "unavailable",
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
@@ -5234,28 +5120,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "error": {
-                      "properties": {
-                        "code": {
-                          "const": "unavailable",
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
@@ -5318,6 +5183,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -5405,6 +5280,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -5445,7 +5330,7 @@
                 }
               }
             },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set, dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
           },
           "404": {
             "content": {
@@ -5461,28 +5346,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "error": {
-                      "properties": {
-                        "code": {
-                          "const": "unavailable",
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
@@ -5498,87 +5362,6 @@
           }
         ],
         "summary": "Deliberately break the journal chain (disaster recovery; irreducible)",
-        "x-busbar-required-scope": "full",
-        "x-busbar-since": "1.6.0"
-      }
-    },
-    "/api/v1/admin/commit-upgrade": {
-      "post": {
-        "description": "Resolves in the closed verb table and runs the verb's gates (scope, rate class, the operator ceremony and dual control) and writes its audit row. This build binds NO EFFECT to it: an admitted call reaches a surface with no handler for it and answers `404 not_found`. The request body is not read.",
-        "operationId": "PostCommitUpgrade",
-        "responses": {
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`not_found`: the call was admitted and no effect is bound to this verb in this build"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "properties": {
-                        "code": {
-                          "const": "unavailable",
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Commit the schema/version upgrade (irreducible)",
-        "x-busbar-effect-bound": false,
         "x-busbar-required-scope": "full",
         "x-busbar-since": "1.6.0"
       }
@@ -5626,6 +5409,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -5751,6 +5544,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -5846,6 +5649,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -5923,6 +5736,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -6041,6 +5864,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -6098,6 +5931,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -6206,6 +6049,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -6310,6 +6163,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -6397,6 +6260,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -6484,6 +6357,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -6496,330 +6379,6 @@
         ],
         "summary": "One retained config version, with its hook-surface snapshot",
         "x-busbar-required-scope": "read-only"
-      }
-    },
-    "/api/v1/admin/dispute-max-age": {
-      "post": {
-        "description": "Resolves in the closed verb table and runs the verb's gates (scope, rate class, the operator ceremony and dual control) and writes its audit row. This build binds NO EFFECT to it: an admitted call reaches a surface with no handler for it and answers `404 not_found`. The request body is not read.",
-        "operationId": "PostDisputeMaxAge",
-        "responses": {
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`not_found`: the call was admitted and no effect is bound to this verb in this build"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "properties": {
-                        "code": {
-                          "const": "unavailable",
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Set `dispute_max_age`",
-        "x-busbar-effect-bound": false,
-        "x-busbar-required-scope": "full",
-        "x-busbar-since": "1.6.0"
-      }
-    },
-    "/api/v1/admin/disputes/resolve": {
-      "post": {
-        "description": "Resolves in the closed verb table and runs the verb's gates (scope, rate class, the operator ceremony and dual control) and writes its audit row. This build binds NO EFFECT to it: an admitted call reaches a surface with no handler for it and answers `404 not_found`. The request body is not read.",
-        "operationId": "PostDisputesResolve",
-        "responses": {
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`not_found`: the call was admitted and no effect is bound to this verb in this build"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "properties": {
-                        "code": {
-                          "const": "unavailable",
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Resolve an open dispute (irreducible above `adjust_threshold`)",
-        "x-busbar-effect-bound": false,
-        "x-busbar-required-scope": "full",
-        "x-busbar-since": "1.6.0"
-      }
-    },
-    "/api/v1/admin/dual-control": {
-      "post": {
-        "description": "Resolves in the closed verb table and runs the verb's gates (scope, rate class, the operator ceremony and dual control) and writes its audit row. This build binds NO EFFECT to it: an admitted call reaches a surface with no handler for it and answers `404 not_found`. The request body is not read.",
-        "operationId": "PostDualControl",
-        "responses": {
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`not_found`: the call was admitted and no effect is bound to this verb in this build"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "properties": {
-                        "code": {
-                          "const": "unavailable",
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Flip dual-control posture between `single` and `required` (irreducible)",
-        "x-busbar-effect-bound": false,
-        "x-busbar-required-scope": "full",
-        "x-busbar-since": "1.6.0"
-      }
-    },
-    "/api/v1/admin/escrow": {
-      "post": {
-        "description": "Resolves in the closed verb table and runs the verb's gates (scope, rate class, the operator ceremony and dual control) and writes its audit row. This build binds NO EFFECT to it: an admitted call reaches a surface with no handler for it and answers `404 not_found`. The request body is not read.",
-        "operationId": "PostEscrow",
-        "responses": {
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`not_found`: the call was admitted and no effect is bound to this verb in this build"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "properties": {
-                        "code": {
-                          "const": "unavailable",
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Set the M-of-N key-loss escrow (irreducible)",
-        "x-busbar-effect-bound": false,
-        "x-busbar-required-scope": "full",
-        "x-busbar-since": "1.6.0"
       }
     },
     "/api/v1/admin/export": {
@@ -6865,6 +6424,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -6877,87 +6446,6 @@
         ],
         "summary": "Every `export:` DEFINITION (the 1.5.3 named-definition map: name -> {module, settings, ...}, referenced by bare name). Secrets are never projected",
         "x-busbar-required-scope": "read-only"
-      }
-    },
-    "/api/v1/admin/export-keyset": {
-      "post": {
-        "description": "Resolves in the closed verb table and runs the verb's gates (scope, rate class, the operator ceremony and dual control) and writes its audit row. This build binds NO EFFECT to it: an admitted call reaches a surface with no handler for it and answers `404 not_found`. The request body is not read.",
-        "operationId": "PostExportKeyset",
-        "responses": {
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`not_found`: the call was admitted and no effect is bound to this verb in this build"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "properties": {
-                        "code": {
-                          "const": "unavailable",
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Export the deployment keyset, sealed to a recipient public key (irreducible; admitted while the operator is unset)",
-        "x-busbar-effect-bound": false,
-        "x-busbar-required-scope": "full",
-        "x-busbar-since": "1.6.0"
       }
     },
     "/api/v1/admin/export/{name}": {
@@ -7055,6 +6543,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -7130,6 +6628,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -7246,6 +6754,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -7372,6 +6890,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -7429,6 +6957,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -7561,6 +7099,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -7670,6 +7218,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -7745,6 +7303,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -7901,6 +7469,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -8036,6 +7614,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -8123,6 +7711,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -8180,6 +7778,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -8312,6 +7920,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -8421,6 +8039,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -8496,6 +8124,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -8631,6 +8269,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -8708,6 +8356,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -8785,6 +8443,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -8911,6 +8579,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -8988,6 +8666,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -9045,6 +8733,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -9154,6 +8852,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -9229,6 +8937,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -9345,6 +9063,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -9471,6 +9199,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -9528,6 +9266,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -9651,6 +9399,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -9746,6 +9504,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -9855,6 +9623,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -9940,6 +9718,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -10064,6 +9852,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -10171,6 +9969,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -10278,6 +10086,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -10375,6 +10193,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -10442,7 +10270,7 @@
                 }
               }
             },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set, dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
           },
           "404": {
             "content": {
@@ -10458,28 +10286,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "error": {
-                      "properties": {
-                        "code": {
-                          "const": "unavailable",
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
@@ -10528,28 +10335,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "error": {
-                      "properties": {
-                        "code": {
-                          "const": "unavailable",
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
@@ -10598,28 +10384,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "error": {
-                      "properties": {
-                        "code": {
-                          "const": "unavailable",
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
@@ -10669,28 +10434,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "error": {
-                      "properties": {
-                        "code": {
-                          "const": "unavailable",
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
@@ -10739,28 +10483,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "error": {
-                      "properties": {
-                        "code": {
-                          "const": "unavailable",
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
@@ -10809,28 +10532,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "error": {
-                      "properties": {
-                        "code": {
-                          "const": "unavailable",
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
@@ -10893,6 +10595,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -10951,6 +10663,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -10963,168 +10685,6 @@
         ],
         "summary": "This OpenAPI 3.1 document",
         "x-busbar-required-scope": "read-only"
-      }
-    },
-    "/api/v1/admin/operator-key": {
-      "post": {
-        "description": "Resolves in the closed verb table and runs the verb's gates (scope, rate class, the operator ceremony and dual control) and writes its audit row. This build binds NO EFFECT to it: an admitted call reaches a surface with no handler for it and answers `404 not_found`. The request body is not read.",
-        "operationId": "PostOperatorKey",
-        "responses": {
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`not_found`: the call was admitted and no effect is bound to this verb in this build"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "properties": {
-                        "code": {
-                          "const": "unavailable",
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Set the fleet's operator public key (irreducible; admitted while the operator is unset)",
-        "x-busbar-effect-bound": false,
-        "x-busbar-required-scope": "full",
-        "x-busbar-since": "1.6.0"
-      }
-    },
-    "/api/v1/admin/overdraft-ceiling": {
-      "post": {
-        "description": "Resolves in the closed verb table and runs the verb's gates (scope, rate class, the operator ceremony and dual control) and writes its audit row. This build binds NO EFFECT to it: an admitted call reaches a surface with no handler for it and answers `404 not_found`. The request body is not read.",
-        "operationId": "PostOverdraftCeiling",
-        "responses": {
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`not_found`: the call was admitted and no effect is bound to this verb in this build"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "properties": {
-                        "code": {
-                          "const": "unavailable",
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Set a bucket's overdraft ceiling",
-        "x-busbar-effect-bound": false,
-        "x-busbar-required-scope": "full",
-        "x-busbar-since": "1.6.0"
       }
     },
     "/api/v1/admin/overlay/{section}": {
@@ -11229,6 +10789,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -11241,158 +10811,6 @@
         ],
         "summary": "DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions|identity-providers|export|tools|agents). Per-section reset: the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)",
         "x-busbar-required-scope": "full"
-      }
-    },
-    "/api/v1/admin/plane-facts": {
-      "get": {
-        "description": "Resolves in the closed verb table and runs the verb's gates (scope, rate class, the operator ceremony and dual control) and writes its audit row. This build binds NO EFFECT to it: an admitted call reaches a surface with no handler for it and answers `404 not_found`. The request body is not read.",
-        "operationId": "GetPlaneFacts",
-        "responses": {
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`not_found`: the call was admitted and no effect is bound to this verb in this build"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "properties": {
-                        "code": {
-                          "const": "unavailable",
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Read a plane's own declared facts",
-        "x-busbar-effect-bound": false,
-        "x-busbar-required-scope": "read-only",
-        "x-busbar-since": "1.6.0"
-      }
-    },
-    "/api/v1/admin/plane-record-write": {
-      "post": {
-        "description": "Resolves in the closed verb table and runs the verb's gates (scope, rate class, the operator ceremony and dual control) and writes its audit row. This build binds NO EFFECT to it: an admitted call reaches a surface with no handler for it and answers `404 not_found`. The request body is not read.",
-        "operationId": "PostPlaneRecordWrite",
-        "responses": {
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`not_found`: the call was admitted and no effect is bound to this verb in this build"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "properties": {
-                        "code": {
-                          "const": "unavailable",
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Write a plane record entry",
-        "x-busbar-effect-bound": false,
-        "x-busbar-required-scope": "full",
-        "x-busbar-since": "1.6.0"
       }
     },
     "/api/v1/admin/plugins": {
@@ -11459,6 +10877,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -11554,6 +10982,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -11641,6 +11079,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -11718,6 +11166,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -11836,6 +11294,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -11926,6 +11394,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -12003,6 +11481,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -12081,6 +11569,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -12158,6 +11656,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -12215,6 +11723,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -12255,7 +11773,7 @@
                 }
               }
             },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set, dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
           },
           "404": {
             "content": {
@@ -12271,28 +11789,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "error": {
-                      "properties": {
-                        "code": {
-                          "const": "unavailable",
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
@@ -12395,6 +11892,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -12472,6 +11979,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -12484,87 +12001,6 @@
         ],
         "summary": "ROTATE the busbar key-signing key. Rotation is REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops verifying, so every outstanding key must be re-minted. 1.5.0 is single-key, so this reports the intent + current kid; the actual swap is an operator action (replace auth.signing_key / the persisted key file and restart/reload every node in lockstep) (1.5.0)",
         "x-busbar-required-scope": "full"
-      }
-    },
-    "/api/v1/admin/slices/resolve": {
-      "post": {
-        "description": "Resolves in the closed verb table and runs the verb's gates (scope, rate class, the operator ceremony and dual control) and writes its audit row. This build binds NO EFFECT to it: an admitted call reaches a surface with no handler for it and answers `404 not_found`. The request body is not read.",
-        "operationId": "PostSlicesResolve",
-        "responses": {
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`not_found`: the call was admitted and no effect is bound to this verb in this build"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "properties": {
-                        "code": {
-                          "const": "unavailable",
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Resolve a slice-level dispute",
-        "x-busbar-effect-bound": false,
-        "x-busbar-required-scope": "full",
-        "x-busbar-since": "1.6.0"
       }
     },
     "/api/v1/admin/store-restore": {
@@ -12613,7 +12049,7 @@
                 }
               }
             },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set (every irreducible verb except `set_operator_key` and `export_keyset`), dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set, dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
           },
           "404": {
             "content": {
@@ -12629,28 +12065,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "error": {
-                      "properties": {
-                        "code": {
-                          "const": "unavailable",
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
@@ -13486,6 +12901,16 @@
               }
             },
             "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The node could not take the request into its administrative loop, or could not record what the operation would do (error code `unavailable`)"
           }
         },
         "security": [
@@ -13498,77 +12923,6 @@
         ],
         "summary": "Metering: current UTC-day bucket ({window, as_of, currency, total, by_model, by_key}), raw token split + derived spend_micros",
         "x-busbar-required-scope": "read-only"
-      }
-    },
-    "/api/v1/admin/verify": {
-      "get": {
-        "description": "Resolves in the closed verb table and runs the verb's gates (scope, rate class, the operator ceremony and dual control) and writes its audit row. This build binds NO EFFECT to it: an admitted call reaches a surface with no handler for it and answers `404 not_found`. The request body is not read.",
-        "operationId": "GetVerify",
-        "responses": {
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`not_found`: the call was admitted and no effect is bound to this verb in this build"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "properties": {
-                        "code": {
-                          "const": "unavailable",
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Verify a claim or signature outside the normal request path",
-        "x-busbar-effect-bound": false,
-        "x-busbar-required-scope": "read-only",
-        "x-busbar-since": "1.6.0"
       }
     }
   }

@@ -16,7 +16,8 @@
 //!
 //! 1. the closed verb table (`admin_codec::verbs::table`): every `(method, path)` the node's
 //!    administrative mount walks through the kernel loop, which is how the 66 legacy operations and
-//!    the 26 1.6.0 kernel verbs are answered;
+//!    the thirteen 1.6.0 kernel verbs whose effect is bound are answered (the other thirteen are
+//!    declared and NOT served — [`unbound_declared_operations`]);
 //! 2. every named-definition section (`NamedMapSection::sections`), five operations each, which the
 //!    router mounts in one loop — including each plane-owned section;
 //! 3. every plane's admin trust verbs (`PlaneDecl::admin_routes`), which the router mounts in one
@@ -51,24 +52,51 @@ fn abs(rel: &str) -> String {
     format!("{ADMIN_PREFIX}{rel}")
 }
 
+/// The kernel loop's verbs by table name.
+fn loop_verbs() -> BTreeMap<&'static str, crate::verb::KernelVerb> {
+    crate::verb::NEW_VERBS
+        .iter()
+        .chain(crate::verb::LEDGER_VERBS)
+        .chain(crate::verb::AUDIT_VERBS)
+        .filter_map(|v| crate::verb::verb_name(*v).map(|name| (name, *v)))
+        .collect()
+}
+
+/// THE OPERATIONS THE TABLE DECLARES AND THIS BUILD DOES NOT SERVE: a kernel verb whose effect is
+/// not bound (`verb::effect_bound`). The node's mount hands each to the surface's own fallback — the
+/// unmounted `404`, no audit row — so none is served and none is documented. Each keeps its admin
+/// corpus entry and cells: they are what shows the answer is 1.5.5's own for a path it never had.
+fn unbound_declared_operations() -> BTreeSet<Op> {
+    let verbs = loop_verbs();
+    crate::admin_codec::verbs::table()
+        .into_iter()
+        .filter(|row| {
+            verbs
+                .get(row.verb)
+                .is_some_and(|v| !crate::verb::effect_bound(*v))
+        })
+        .map(|row| (row.method.to_string(), row.template.to_string()))
+        .collect()
+}
+
 /// EVERY ADMIN OPERATION THIS BUILD CAN SERVE, and who serves it. See the module doc for the three
 /// sources and why they are the complete set.
 fn served_admin_operations() -> BTreeMap<Op, Source> {
     crate::ensure_seam();
     let mut out = BTreeMap::new();
-    let loop_verbs: BTreeSet<&'static str> = crate::verb::NEW_VERBS
-        .iter()
-        .chain(crate::verb::LEDGER_VERBS)
-        .chain(crate::verb::AUDIT_VERBS)
-        .filter_map(|v| crate::verb::verb_name(*v))
-        .collect();
+    let loop_verbs = loop_verbs();
+    let unbound = unbound_declared_operations();
     for row in crate::admin_codec::verbs::table() {
-        let source = if loop_verbs.contains(row.verb) {
+        let op = (row.method.to_string(), row.template.to_string());
+        if unbound.contains(&op) {
+            continue;
+        }
+        let source = if loop_verbs.contains_key(row.verb) {
             Source::KernelLoop
         } else {
             Source::Router
         };
-        out.insert((row.method.to_string(), row.template.to_string()), source);
+        out.insert(op, source);
     }
     for section in NamedMapSection::sections() {
         let source = match section {
@@ -266,13 +294,25 @@ async fn admin_corpus_reconciles_with_the_served_router() {
         );
         entries.insert((method, path), id.clone());
     }
+    let unbound = unbound_declared_operations();
+    assert_eq!(
+        unbound.len(),
+        13,
+        "the thirteen money-governance verbs with no effect bound: {unbound:?}"
+    );
     let unserved: Vec<&Op> = entries
         .keys()
-        .filter(|op| !served.contains_key(*op))
+        .filter(|op| !served.contains_key(*op) && !unbound.contains(*op))
         .collect();
     assert!(
         unserved.is_empty(),
         "admin-bodies.json names operations this build does not serve: {unserved:?}"
+    );
+    let unbound_uncorpused: Vec<&Op> = unbound.iter().filter(|op| !entries.contains_key(*op)).collect();
+    assert!(
+        unbound_uncorpused.is_empty(),
+        "declared-but-unbound operations with NO admin-bodies.json entry (no cell can show they \
+         answer 1.5.5's unmounted 404): {unbound_uncorpused:?}"
     );
     let uncorpused: Vec<&Op> = served
         .keys()
@@ -355,6 +395,15 @@ fn openapi_documents_every_served_admin_operation() {
     assert!(
         undocumented.is_empty(),
         "served admin operations in NO OpenAPI document: {undocumented:?}"
+    );
+    let described_unbound: Vec<Op> = unbound_declared_operations()
+        .into_iter()
+        .filter(|op| documented.contains_key(op))
+        .collect();
+    assert!(
+        described_unbound.is_empty(),
+        "operations with no effect bound are not served, so no document may describe them: \
+         {described_unbound:?}"
     );
     let phantom: Vec<&Op> = documented
         .keys()

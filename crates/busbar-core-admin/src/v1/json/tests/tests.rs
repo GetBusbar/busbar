@@ -206,10 +206,11 @@ fn openapi_operations_carry_stable_operation_ids() {
     // one of them noticing the other: 76 was correct for either section alone and wrong for both
     // together.
     //
-    // 107 = those 81 + the 26 operations the 1.6.0 closed verb table adds (18 money-governance verbs,
-    // 5 ledger views, 3 audit-chain reads), which the node's administrative loop answers and which
-    // the one document now describes (items 45/46: no side-car document).
-    assert_eq!(checked, 107, "expected exactly 107 admin operations");
+    // 94 = those 81 + the 13 of the 26 operations the 1.6.0 closed verb table adds whose effect is
+    // bound (5 money-governance verbs, 5 ledger views, 3 audit-chain reads), which the node's
+    // administrative loop answers and which the one document describes (items 45/46: no side-car
+    // document). The other 13 declare no bound effect and are not served, so not described.
+    assert_eq!(checked, 94, "expected exactly 94 admin operations");
     // Spot-check the exact naming scheme against a few representative paths.
     assert_eq!(
         doc["paths"]["/api/v1/admin/keys"]["get"]["operationId"],
@@ -305,11 +306,60 @@ fn openapi_error_enum_matches_admin_error_codes() {
     ]
     .iter()
     .map(|e| e.code().to_string())
+    // The node's administrative loop answers `503 unavailable` (the root's `answer_for` /
+    // `unavailable_answer`) on every operation it walks, in the same envelope.
+    .chain(std::iter::once("unavailable".to_string()))
     .collect();
     assert_eq!(
         enum_codes, actual_codes,
         "openapi error-code enum drifted from AdminError::code"
     );
+}
+
+/// THE LOOP'S `503 unavailable` IS DOCUMENTED WHEREVER THE LOOP CAN ANSWER IT (architect ruling
+/// 2026-09-24). Every operation the closed table declares is walked through the node's
+/// administrative loop, which answers `503` with code `unavailable` when it cannot take the unit or
+/// cannot record what the operation would do — legacy operations included. So each of them
+/// documents a `503` in the one `Error` envelope, and the enum names the code. An operation the
+/// loop never walks (a plane's section or trust verb) documents none.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_documents_the_loops_503_on_every_operation_it_walks() {
+    let doc = openapi_doc_seamed();
+    let codes = &doc["components"]["schemas"]["Error"]["properties"]["error"]["properties"]["code"]
+        ["enum"];
+    assert!(
+        codes
+            .as_array()
+            .is_some_and(|c| c.iter().any(|v| v == "unavailable")),
+        "the Error code enum must name `unavailable`: {codes}"
+    );
+    let mut walked = 0usize;
+    for (path, item) in doc["paths"].as_object().expect("paths") {
+        for (method, op) in item.as_object().expect("path item") {
+            if method.starts_with("x-") {
+                continue;
+            }
+            let loop_walks = crate::admin_codec::verbs::resolve(&method.to_ascii_uppercase(), path)
+                .is_some();
+            let documented = &op["responses"]["503"];
+            if loop_walks {
+                walked += 1;
+                assert_eq!(
+                    documented["content"]["application/json"]["schema"]["$ref"],
+                    "#/components/schemas/Error",
+                    "{method} {path}: the loop can answer `503 unavailable`, so the operation \
+                     documents it in the one Error envelope"
+                );
+            } else {
+                assert!(
+                    documented.is_null(),
+                    "{method} {path} is not walked through the loop but documents a 503"
+                );
+            }
+        }
+    }
+    assert!(walked >= 66, "only {walked} loop-walked operations were checked");
 }
 
 /// The escalation 403 fires on PUT `/hooks/{name}` and PATCH
@@ -450,21 +500,6 @@ fn openapi_every_operation_has_a_typed_response_schema() {
             let success = responses
                 .keys()
                 .find(|s| s.starts_with('2') && s.as_str() != "204");
-            // A verb with NO EFFECT BOUND in this build (`x-busbar-effect-bound: false`) has no
-            // success to document: an admitted call answers `404 not_found`. It is held to the
-            // stricter shape instead — no 2xx of any kind, and the 404 it does answer documented —
-            // so the mark cannot be used to hide a success body that exists.
-            if op[super::kernel_verbs::EFFECT_BOUND_KEY] == serde_json::Value::Bool(false) {
-                assert!(
-                    !responses.keys().any(|s| s.starts_with('2')),
-                    "{method} {path} is marked effect-unbound but documents a success"
-                );
-                assert!(
-                    responses.contains_key("404"),
-                    "{method} {path} is marked effect-unbound but does not document its 404"
-                );
-                continue;
-            }
             let Some(status) = success else {
                 // A 204-only op (DELETE) legitimately has no success body.
                 assert!(
@@ -652,24 +687,13 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         // change what it does. Its sibling `POST /agents/{name}/approve` is NOT here — that one
         // carries the fingerprint the operator is attesting they saw, which is the whole trust root.
         ("post", "/api/v1/admin/agents/{name}/connect"),
-        // The 1.6.0 kernel verbs whose body the node's administrative loop never reads. The two
-        // recovery verbs are pure commands (the effect is the store's; the verb IS the argument),
-        // and the eleven POSTs with no effect bound in this build reach nothing that could read a
-        // body. Their siblings that DO take one — `store-restore` (`backup_ref`), `adjust` (the
-        // count correction) and `ledger/amend-rate-history` (the signed correction) — are not here.
+        // The 1.6.0 kernel verbs whose body the node's administrative loop never reads: the two
+        // recovery verbs are pure commands (the effect is the store's; the verb IS the argument).
+        // Their siblings that DO take one — `store-restore` (`backup_ref`), `adjust` (the count
+        // correction) and `ledger/amend-rate-history` (the signed correction) — are not here; the
+        // verbs with no effect bound are not served, so not documented at all.
         ("post", "/api/v1/admin/chain-break"),
         ("post", "/api/v1/admin/reseal-epoch-floor"),
-        ("post", "/api/v1/admin/plane-record-write"),
-        ("post", "/api/v1/admin/operator-key"),
-        ("post", "/api/v1/admin/escrow"),
-        ("post", "/api/v1/admin/dual-control"),
-        ("post", "/api/v1/admin/overdraft-ceiling"),
-        ("post", "/api/v1/admin/dispute-max-age"),
-        ("post", "/api/v1/admin/commit-upgrade"),
-        ("post", "/api/v1/admin/disputes/resolve"),
-        ("post", "/api/v1/admin/slices/resolve"),
-        ("post", "/api/v1/admin/export-keyset"),
-        ("post", "/api/v1/admin/approve"),
     ];
 
     let doc = openapi_doc_seamed();
