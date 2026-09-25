@@ -240,10 +240,7 @@ token-sealed:admit-token-mint
 token-sealed:kernel-seal
 token-sealed:secret-once-mint
 lean-core
-neutral-no-dialect
-loc-ceilings:caps-contract
 loc-ceilings:union
-surface-ceiling:contract
 EOF
 )"
   case "${P_to:-}" in

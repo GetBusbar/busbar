@@ -369,18 +369,16 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // section 1.3 pinned word (config/mod.rs, appbuild.rs). Item 379 widened the scan to the eight
     // kernel crates the units became, which is what made it visible.
     "lean-core",
-    // `neutral-no-dialect`: 27 DIALECT/KEY hits in the neutral crates per plane-purity-lint.sh
-    // (busbar-kernel-identity egress_auth tests, busbar-kernel config) — the 59/60 dialect and
-    // strict-purity drains.
-    "neutral-no-dialect",
-    // `loc-ceilings:caps-contract` and `surface-ceiling:contract`: busbar-contract measures 6840
-    // against the ARCHITECTURE.md 1.1 ceiling of 5652 (caps folded in, #37/#38). `loc-ceilings:union`
-    // is the same breach one level up — 58644 against 57456, over by 1188, which the union had been
-    // absorbing while it read its members' slack (item 378 made it read their ceilings). A TRUE
-    // red: the contract surface a plugin author reads is 1188 lines over the owner's number.
-    "loc-ceilings:caps-contract",
+    // `neutral-no-dialect` STRUCK 2026-09-25: the dialect and strict-purity drains emptied it, and
+    // `--posture` scored the name STALE.
+    //
+    // `loc-ceilings:union`: the kernel + contract + unit-* union measures 59342 against 57456 — the
+    // union had been absorbing its members' overage while it read their slack (item 378 made it
+    // read their ceilings). A TRUE red, held under OWNER RULING Q50. Its two members
+    // `loc-ceilings:caps-contract` and `surface-ceiling:contract` are STRUCK 2026-09-25: the pair was
+    // re-armed at the measurement (OWNER RULING Q68(3)), both rows are green, and `--posture` scored
+    // the two names STALE.
     "loc-ceilings:union",
-    "surface-ceiling:contract",
 ];
 
 /// THE `qa-names` GATE'S STANDING REDS, BY NAME.
