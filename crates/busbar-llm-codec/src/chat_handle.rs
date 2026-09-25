@@ -298,11 +298,22 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
     ir.extra.clear();
 }
 
-/// Chat cross-protocol INGRESS preparation (verbatim from the former `IrResp::Chat` arm).
+/// Chat cross-protocol INGRESS preparation (from the former `IrResp::Chat` arm).
+///
+/// What it clears, and why each is a normalization rather than a drop (IR mapping Q57):
+/// - `id` — every dialect's id is a FORMAT (`chatcmpl-…`, `msg_…`, `resp_…`); the ingress writer
+///   mints its own native one (the synthesized-ID contract on [`IrResponse::id`]). The stream path
+///   clears the same field on `MessageStart`.
+/// - `system_fingerprint` — only the OpenAI Chat reader sets it and only the Chat writer emits it,
+///   and a cross-protocol response never has Chat on both ends; no target can carry it.
+///
+/// What it does NOT clear: `stop_sequence`, the matched stop string. The Anthropic writer emits it,
+/// and a Bedrock Converse body carries it (`additionalModelResponseFields.stop_sequence`) — the
+/// same fact, so it maps. Clearing it here nulled it for a Bedrock -> Anthropic buffered answer
+/// while the stream path (`MessageDelta.stop_sequence`) kept it: buffered and stream disagreed.
 pub fn chat_prepare_for_ingress(ir: &mut IrResponse, ingress_protocol: &str, now_epoch: u64) {
     ir.id = None;
     ir.system_fingerprint = None;
-    ir.stop_sequence = None;
     if ir.created.is_none() {
         ir.created = Some(now_epoch);
     }

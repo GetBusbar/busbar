@@ -223,3 +223,8 @@ mod relocated_proto_tests;
 #[cfg(test)]
 #[path = "tests/bedrock_eventstream_tests.rs"]
 mod bedrock_eventstream_tests;
+
+/// IR mapping Q57 — what the cross-protocol seam keeps and what it normalizes (IR-CORE).
+#[cfg(test)]
+#[path = "tests/ir_seam_tests.rs"]
+mod ir_seam_tests;
