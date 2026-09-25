@@ -57,8 +57,10 @@
 # INVARIANT: every test that runs in the qa-gate today runs inside exactly one segment; the
 # umbrella's union is a SUPERSET of today's gate.
 #
-# Reserved -> release map:
-#   mcp-integrity -> 1.6.0    a2a -> 1.6.0
+# Reserved -> release map: EMPTY. `mcp-integrity` and `a2a` were the last two reservations (both
+# mapped to 1.6.0); they are ARMED below, over suites that exist — crates/busbar/tests/
+# qa_mcp_integrity.rs and qa_a2a.rs, each booting the shipped binary against a real loopback
+# upstream. A new reservation goes here with the release it is mapped to.
 # (smart-router struck at item 97: its reservation named a `qa_smart_router` test target that never
 # existed at any point in this repo's history — `git log --all --diff-filter=A -- '*qa_smart_router*'`
 # is empty — and its "-> active in 1.5.5/1.5.6" comment outlived two shipped releases without the
@@ -315,18 +317,36 @@ status    = "active"
 tier      = "live-mock"
 run       = "./scripts/release-check.sh --segment plugin-{repo}"
 
-# ── RESERVED (defined-but-INERT slots — EXCLUDED from the green claim, NAMED in the scope line) ────
+# ── THE TWO PLANE LEGS (armed in 1.6.0; they were the manifest's last reserved slots) ─────────────
+#
+# Arming them was never "a one-line status flip": both named a test target that did not exist, and
+# qa-segments.sh hard-fails an active segment whose target is absent. The suites are the arming.
+# Both run the SHIPPED BINARY (`CARGO_BIN_EXE_busbar`) against a real upstream on a loopback socket
+# and speak to both over the wire — no in-process engine, no stubbed seam — which is why the tier is
+# live-mock. Each suite carries its own CONTROL (an approved upstream IS served, exactly once) so a
+# refusal can never be the same observation as a node that refuses everything. The selftest's block
+# (d) holds both armed and both suites present.
 
 [[segment]]
 id     = "mcp-integrity"
-status = "reserved"   # -> active in 1.6.0 (pure MCP)
+status = "active"
 tier   = "live-mock"
+# THE TOOL-INTEGRITY (RUG-PULL) DEFENCE. An operator approves a tool by the digest of its name,
+# description and input schema; with `verify_ttl: 0s` the call path re-verifies the upstream's live
+# tool list before dispatch. A description or a schema changed under a live approval is refused
+# `403` / `quarantined` and NO `tools/call` reaches the upstream; the suite also pins its approval
+# digest to the plane's cross-language fixture constant.
 run    = "cargo test -p busbar --test qa_mcp_integrity"
 
 [[segment]]
 id     = "a2a"
-status = "reserved"   # -> active in 1.6.0 (A2A)
+status = "active"
 tier   = "live-mock"
+# THE DELEGATION PATH AND THE CARD-IDENTITY DEFENCE. An agent registered under an out-of-band JWS
+# issuer key, connected and approved at the fingerprint the operator saw, serves `message/send`.
+# With `reverify_ttl: 0s` a card re-signed by another key (the look-alike) or re-issued under the
+# right key with new content (the rug-pull) stops the agent being served — `503`, A2A `-32004` —
+# and NO message reaches the agent.
 run    = "cargo test -p busbar --test qa_a2a"
 
 [[segment]]
