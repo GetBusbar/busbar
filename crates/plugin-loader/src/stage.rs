@@ -7,12 +7,21 @@
 //! - **Linux**: `memfd_create` - the verified bytes are written to an anonymous in-memory fd and
 //!   `dlopen`ed via `/proc/self/fd/N`. ZERO disk files, nothing to sweep, nothing to swap.
 //! - **macOS / Windows** (and any non-Linux unix): the verified bytes are written to a file inside
-//!   a PER-PROCESS private staging directory (`<temp>/busbar-plugins-<pid>-<random>`, `0700` on
-//!   unix, created exactly once per process) and loaded from there. On clean shutdown the library
-//!   is unloaded FIRST, then the file (and, when empty, the directory) is removed - the order
-//!   Windows requires, since a mapped DLL's file cannot be deleted. A crash leaves the directory
-//!   behind; [`sweep_dead_staging`] removes any `busbar-plugins-<pid>-*` directory whose pid is no
-//!   longer alive at the next boot.
+//!   a PER-PROCESS private staging directory and loaded from there. Every process stages under ONE
+//!   dedicated parent, `<temp>/busbar-plugin-staging-<uid>` on unix (`<temp>/busbar-plugin-staging`
+//!   elsewhere), created `0700` and refused unless it is a real directory owned by this user; the
+//!   per-process directory inside it is `busbar-plugins-<pid>-<random>`, `0700` on unix, created
+//!   exactly once per process. On clean shutdown the library is unloaded FIRST, then the file (and,
+//!   when empty, the per-process directory) is removed - the order Windows requires, since a mapped
+//!   DLL's file cannot be deleted. A crash leaves the per-process directory behind;
+//!   [`sweep_dead_staging`] removes any `busbar-plugins-<pid>-*` directory INSIDE THE PARENT whose
+//!   pid is no longer alive at the next boot.
+//!
+//! The sweep lists the dedicated parent ONLY, never the OS temp directory itself: boot cost is
+//! bounded by the number of busbar staging directories, not by the size of `$TMPDIR` (a full-temp
+//! scan made boot unbounded on a host with a huge temp dir). Consequence: staging directories left
+//! by a pre-1.6.0 busbar (which staged at the top level, `<temp>/busbar-plugins-<pid>-*`) are NOT
+//! swept; they sit in the OS temp directory, which the OS temp cleaner reaps.
 //!
 //! A pre-existing on-disk library is NEVER loaded: staging always regenerates the file from the
 //! verified in-memory bytes; anything on disk is throwaway output, never trusted input.
@@ -24,6 +33,98 @@ use std::sync::{Mutex, OnceLock};
 
 /// Prefix for the per-process private staging directory (and the dead-pid sweep match).
 const STAGING_PREFIX: &str = "busbar-plugins-";
+
+/// Name stem of the ONE dedicated parent every per-process staging directory lives under. On unix
+/// the effective uid is appended (`busbar-plugin-staging-<uid>`) so two users sharing a `/tmp`
+/// each get their own owner-only parent instead of the second one failing on the first's `0700`.
+const STAGING_PARENT_STEM: &str = "busbar-plugin-staging";
+
+/// The dedicated staging parent under `temp_base` (not created; see [`ensure_staging_parent`]).
+pub(crate) fn staging_parent_in(temp_base: &std::path::Path) -> PathBuf {
+    #[cfg(unix)]
+    {
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let uid = unsafe { libc::geteuid() };
+        temp_base.join(format!("{STAGING_PARENT_STEM}-{uid}"))
+    }
+    #[cfg(not(unix))]
+    {
+        temp_base.join(STAGING_PARENT_STEM)
+    }
+}
+
+/// Is `parent` safe to stage under / sweep: a REAL directory (inspected no-follow, so a planted
+/// symlink is refused, never traversed) and, on unix, owned by this process's effective uid. A
+/// directory someone else owns could have entries swapped or planted under us, so it is refused.
+fn parent_is_trusted(parent: &std::path::Path) -> Result<std::fs::Metadata, String> {
+    let meta = parent.symlink_metadata().map_err(|e| {
+        format!(
+            "cannot inspect plugin staging parent {}: {e}",
+            parent.display()
+        )
+    })?;
+    if !meta.file_type().is_dir() {
+        return Err(format!(
+            "plugin staging parent {} is not a real directory (a symlink or file is refused)",
+            parent.display()
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let euid = unsafe { libc::geteuid() };
+        if meta.uid() != euid {
+            return Err(format!(
+                "plugin staging parent {} is owned by uid {}, not this process's uid {euid}; \
+                 refusing to stage under it",
+                parent.display(),
+                meta.uid()
+            ));
+        }
+    }
+    Ok(meta)
+}
+
+/// Create (or adopt, after verification) the dedicated staging parent under `temp_base`, owner-only
+/// (`0700` on unix). An existing parent is adopted ONLY if [`parent_is_trusted`] accepts it; if it
+/// is ours but its mode was loosened, it is tightened back to `0700`.
+fn ensure_staging_parent(temp_base: &std::path::Path) -> Result<PathBuf, String> {
+    let parent = staging_parent_in(temp_base);
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        builder.mode(0o700);
+    }
+    match builder.create(&parent) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => {
+            return Err(format!(
+                "cannot create plugin staging parent {}: {e}",
+                parent.display()
+            ))
+        }
+    }
+    let _meta = parent_is_trusted(&parent)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if _meta.permissions().mode() & 0o077 != 0 {
+            std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).map_err(
+                |e| {
+                    format!(
+                        "cannot restrict plugin staging parent {} to 0700: {e}",
+                        parent.display()
+                    )
+                },
+            )?;
+        }
+    }
+    Ok(parent)
+}
 
 /// The staged backing that must outlive the loaded [`Library`]. Dropping it releases the staging
 /// resource: the memfd closes (Linux), or the private temp file is removed (and its directory, when
@@ -95,7 +196,7 @@ fn staging_state() -> &'static Mutex<StagingState> {
 }
 
 /// Ensure the per-process private staging directory exists (caller holds the staging lock):
-/// `<temp>/busbar-plugins-<pid>-<random>`, mode `0700` on unix. `create_dir` (not
+/// `<temp>/busbar-plugin-staging-<uid>/busbar-plugins-<pid>-<random>`, mode `0700` on unix. `create_dir` (not
 /// `create_dir_all`) fails if the path already exists, so a pre-planted directory is never adopted.
 fn ensure_staging_dir(state: &mut StagingState) -> Result<PathBuf, String> {
     if let Some(dir) = &state.dir {
@@ -104,7 +205,7 @@ fn ensure_staging_dir(state: &mut StagingState) -> Result<PathBuf, String> {
         }
     }
     let name = format!("{STAGING_PREFIX}{}-{}", std::process::id(), random_hex(8));
-    let dir = std::env::temp_dir().join(name);
+    let dir = ensure_staging_parent(&std::env::temp_dir())?.join(name);
     // `mode()` (unix-only) is the only reason this needs to be `mut` -- `create()` itself takes
     // `&self`. Non-unix targets (Windows CI caught this) see it as genuinely unused.
     #[cfg_attr(not(unix), allow(unused_mut))]
@@ -293,10 +394,16 @@ fn pid_alive(pid: u32) -> bool {
     }
 }
 
-/// BOOT-TIME sweep of orphaned staging directories: any `busbar-plugins-<pid>-*` under the temp
-/// base whose pid is DEAD (a prior busbar crashed before its clean-shutdown cleanup) is removed -
-/// the files are unlocked once the process died. The current process's own directory and any
-/// live process's directory are left alone. Returns the number of directories removed.
+/// BOOT-TIME sweep of orphaned staging directories: any `busbar-plugins-<pid>-*` inside the
+/// dedicated staging parent (`<temp>/busbar-plugin-staging-<uid>`) whose pid is DEAD (a prior
+/// busbar crashed before its clean-shutdown cleanup) is removed - the files are unlocked once the
+/// process died. The current process's own directory and any live process's directory are left
+/// alone. Returns the number of directories removed.
+///
+/// ONLY the parent is listed, never the OS temp directory: boot cost is bounded by busbar's own
+/// staging entries, not by `$TMPDIR`'s size. Pre-1.6.0 top-level `<temp>/busbar-plugins-*`
+/// leftovers are therefore not swept (the OS temp cleaner reaps them). A parent that is missing,
+/// a symlink, or owned by another uid is not listed at all (returns 0).
 ///
 /// UNIX-ONLY IN EFFECT, and the consequence is stated rather than left in [`pid_alive`]'s comment.
 /// The sweep's whole decision is "is this pid dead", and off unix [`pid_alive`] has no
@@ -308,15 +415,39 @@ fn pid_alive(pid: u32) -> bool {
 /// in-memory bytes, so a leftover directory is never trusted input and can never be loaded from.
 /// Closing it needs a real Windows liveness probe (`OpenProcess` + `GetExitCodeProcess`).
 pub fn sweep_dead_staging() -> usize {
-    let base = std::env::temp_dir();
-    let mut removed = 0usize;
-    let Ok(entries) = std::fs::read_dir(&base) else {
+    sweep_dead_staging_under(&std::env::temp_dir(), &mut list_dir_names)
+}
+
+/// The production directory lister: the entry names of `dir` (one `read_dir` of that directory,
+/// nothing recursive).
+fn list_dir_names(dir: &std::path::Path) -> std::io::Result<Vec<std::ffi::OsString>> {
+    Ok(std::fs::read_dir(dir)?
+        .flatten()
+        .map(|e| e.file_name())
+        .collect())
+}
+
+/// [`sweep_dead_staging`] with the temp base and the directory lister injected, so a test can
+/// point it at a private root and COUNT what it lists (the full-temp-scan regression is an
+/// iteration count, not a timing). `list` is called on the staging parent only.
+pub(crate) fn sweep_dead_staging_under(
+    temp_base: &std::path::Path,
+    list: &mut dyn FnMut(&std::path::Path) -> std::io::Result<Vec<std::ffi::OsString>>,
+) -> usize {
+    let parent = staging_parent_in(temp_base);
+    // Never list (or remove under) a parent that is absent, a symlink, or someone else's.
+    if parent_is_trusted(&parent).is_err() {
+        return 0;
+    }
+    let Ok(names) = list(&parent) else {
         return 0;
     };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else { continue };
-        let Some(rest) = name.strip_prefix(STAGING_PREFIX) else {
+    let mut removed = 0usize;
+    for name in names {
+        let Some(name_str) = name.to_str() else {
+            continue;
+        };
+        let Some(rest) = name_str.strip_prefix(STAGING_PREFIX) else {
             continue;
         };
         // `<pid>-<random>`: parse the pid segment.
@@ -326,16 +457,16 @@ pub fn sweep_dead_staging() -> usize {
         if pid == std::process::id() || pid_alive(pid) {
             continue;
         }
+        let path = parent.join(&name);
         // NO-FOLLOW: `is_dir()` follows symlinks, so a symlink named `busbar-plugins-<dead-pid>-*`
-        // planted in the world-writable temp base could aim `remove_dir_all` at an ATTACKER-CHOSEN
-        // directory outside staging. `symlink_metadata` inspects the entry ITSELF; a symlink is not a
-        // directory here, so it is skipped, never traversed. Only a real directory is swept.
-        let is_real_dir = entry
-            .path()
+        // could aim `remove_dir_all` at an ATTACKER-CHOSEN directory outside staging.
+        // `symlink_metadata` inspects the entry ITSELF; a symlink is not a directory here, so it
+        // is skipped, never traversed. Only a real directory is swept.
+        let is_real_dir = path
             .symlink_metadata()
             .map(|m| m.file_type().is_dir())
             .unwrap_or(false);
-        if is_real_dir && std::fs::remove_dir_all(entry.path()).is_ok() {
+        if is_real_dir && std::fs::remove_dir_all(&path).is_ok() {
             removed += 1;
         }
     }

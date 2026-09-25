@@ -590,12 +590,13 @@ fn on_disk_swap_after_verify_does_not_change_what_loads() {
 /// library unloads BEFORE the staged file is removed (the order Windows requires: a mapped
 /// DLL's file cannot be deleted).
 ///
-/// Every `busbar-plugins-<pid>-*` staging directory currently in the temp dir. The prefix is
+/// Every `busbar-plugins-<pid>-*` staging directory currently in the dedicated staging parent
+/// (`<temp>/busbar-plugin-staging-<uid>`, where staging lives since 1.6.0). The prefix is
 /// keyed on the process id, which every test in this binary shares, so this set is only
 /// meaningful as a before/after DIFFERENCE, never as an absolute count.
 fn staging_dirs_for_this_process() -> std::collections::BTreeSet<std::path::PathBuf> {
     let prefix = format!("busbar-plugins-{}-", std::process::id());
-    std::fs::read_dir(std::env::temp_dir())
+    std::fs::read_dir(crate::stage::staging_parent_in(&std::env::temp_dir()))
         .into_iter()
         .flatten()
         .flatten()
