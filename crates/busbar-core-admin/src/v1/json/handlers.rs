@@ -1384,6 +1384,18 @@ pub(crate) async fn delete_group(
     }
 }
 
+/// 1.5.5's list sentence for the overlay-reset refusal: "`a`, `b`, or `c`" (serial comma, `or`
+/// before the last name; "`a` or `b`" for two; the bare name for one). A 1.5.5 client parsing the
+/// refusal sees the sentence it always saw — only the list grew (owner ruling Q54).
+fn overlay_names_sentence(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [a, b] => format!("{a} or {b}"),
+        [head @ .., last] => format!("{}, or {last}", head.join(", ")),
+    }
+}
+
 /// `DELETE /api/v1/admin/overlay/{section}` — DISCARD every overlay mutation for one section and revert
 /// it to what base `config.yaml` declares. `section` ∈ {`groups`, `hooks`, `root`}; an unknown name is
 /// a `400` `invalid_request`. This is the audited revert-to-config front door (per-section, NOT
@@ -1418,14 +1430,16 @@ pub(crate) async fn reset_overlay_section(
         // The valid set is DERIVED from `OverlaySection::all`, never restated here. The
         // hand-written version of this sentence outlived the addition of the `named_maps` section
         // and told operators `export` was not a section for a whole release.
+        // The SENTENCE SHAPE is 1.5.5's, byte for byte — "expected `a`, `b`, or `c`" (serial
+        // comma, `or` before the last name) — only the list is longer (owner ruling Q54).
         let names: Vec<String> = OverlaySection::all()
             .iter()
             .filter(|s| served(s))
             .map(|s| format!("`{}`", s.as_str()))
             .collect();
         return err_json(&AdminError::Validation(format!(
-            "unknown overlay section `{section}`: expected one of {}",
-            names.join(", ")
+            "unknown overlay section `{section}`: expected {}",
+            overlay_names_sentence(&names)
         )));
     };
     let resource = format!("overlay:{}", section.as_str());

@@ -10032,6 +10032,45 @@ async fn test_admin_v1_overlay_reset_unknown_section_400() {
     handle.abort();
 }
 
+/// The unknown-section refusal keeps 1.5.5's EXACT sentence shape — "expected `a`, `b`, or `c`",
+/// serial comma, `or` before the last name — with the longer list (owner ruling Q54: 1.5.5's four
+/// sections plus `identity-providers` and `export`, the two named-map sections a 1.5.5-shaped config
+/// serves; a configured plane's section joins the list). 1.5.5 answered "expected `groups`, `hooks`, `root`, or `plugin_versions`"; a rewording
+/// onto "expected one of …" is a customer-visible change no ruling allows.
+#[tokio::test]
+async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape() {
+    busbar_kernel::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = crate::new_test_app().governance(gov).build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+    let r = reqwest::Client::new()
+        .delete(format!("http://{addr}/api/v1/admin/overlay/limits"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 400);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "invalid_request");
+    // This lib-test app links no plane registry, so every named-map section is served and the list
+    // runs on to `tools`/`agents`; on a 1.5.5-shaped config (no mcp:/agents:) those two are not
+    // sections and the list ends `…, or `export`` — the oracle cell
+    // `admin.ops|DeleteOverlaySection|not-found` pins that form. The SHAPE is what this pins.
+    assert_eq!(
+        body["error"]["message"],
+        "unknown overlay section `limits`: expected `groups`, `hooks`, `root`, \
+         `plugin_versions`, `identity-providers`, `export`, `tools`, or `agents`",
+        "1.5.5's sentence shape (serial comma, `or` before the last name) with the longer list"
+    );
+
+    handle.abort();
+}
+
 /// An EMPTY section (no overlay entries/tombstones) is an idempotent success no-op: `changed:false`
 /// and the config version does NOT bump. Works even with no config files on disk (nothing persisted
 /// ⇒ every section is definitionally already at base).
