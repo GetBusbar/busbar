@@ -107,7 +107,7 @@ fn sample_credential_secret() -> CredentialSecret {
         meta: CredentialMeta {
             id: "cred_1".into(),
             key_id: "vk_1".into(),
-            kind: "sigv4".into(),
+            kind: "generic".into(),
             slot: 0,
             public_id: "AKIA_TEST".into(),
             secret_form: busbar_api::SecretForm::Recoverable,
@@ -176,7 +176,7 @@ fn request_response_json_roundtrip() {
         },
         StoreRequest::ListCredentials("vk_1".into()),
         StoreRequest::LookupCredentialSecret {
-            kind: "sigv4".into(),
+            kind: "generic".into(),
             public_id: "AKIA_TEST".into(),
         },
         StoreRequest::RevokeCredential {
