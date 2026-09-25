@@ -1,5 +1,4 @@
 use super::*;
-use axum::http::header::CONTENT_TYPE;
 use busbar_api::ScopeRef;
 
 /// Helper: a `RoleBindingCfg` from optional pool list / group / admin scope.
@@ -135,37 +134,9 @@ fn admin_scope_bindings_are_module_scoped() {
     );
 }
 
-/// Assert a string is canonical UUID-v4 shaped: five dash-separated lowercase-hex groups of
-/// lengths 8-4-4-4-12, with the version nibble == '4' and the variant nibble in {8,9,a,b}.
-fn assert_uuid_v4_shaped(id: &str) {
-    let segs: Vec<&str> = id.split('-').collect();
-    assert_eq!(
-        segs.iter().map(|s| s.len()).collect::<Vec<_>>(),
-        vec![8, 4, 4, 4, 12],
-        "x-amzn-requestid must be UUID-v4 shaped (8-4-4-4-12), got '{id}'"
-    );
-    assert!(
-        id.chars()
-            .all(|c| c == '-' || c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
-        "UUID must be lowercase hex with dashes only, got '{id}'"
-    );
-    // Version nibble: first char of the third group.
-    assert_eq!(
-        segs[2].chars().next(),
-        Some('4'),
-        "UUID version nibble must be 4, got '{id}'"
-    );
-    // Variant nibble: first char of the fourth group must be one of 8,9,a,b.
-    assert!(
-        matches!(segs[3].chars().next(), Some('8' | '9' | 'a' | 'b')),
-        "UUID variant nibble must be 8/9/a/b, got '{id}'"
-    );
-}
-
-// `test_synth_amzn_request_id_is_uuid_v4` RELOCATED to `busbar-llm`
-// (`src/tests/proto/phase1_5_relocated_tests.rs`): it named the
-// witnessed `bedrock::synth_amzn_request_id` codec fn directly, so it now lives beside that codec.
-// `assert_uuid_v4_shaped` stays here — its other callers below still use it.
+// `assert_uuid_v4_shaped` moved with its callers (the synthetic request-id shape of one dialect's
+// auth failure) to `crates/busbar-llm/tests/auth_native_envelope.rs`; its sibling
+// `test_synth_amzn_request_id_is_uuid_v4` already lives in busbar-llm beside that codec.
 
 #[test]
 fn test_constant_time_eq_same() {
@@ -539,20 +510,20 @@ fn test_extract_client_token_authorization_bearer() {
 #[test]
 fn test_extract_client_token_x_api_key() {
     // Anthropic SDK carrier: raw token, no scheme prefix.
-    let req = req_with("x-api-key", "tok-anthropic");
+    let req = req_with("x-api-key", "tok-x-api-key");
     assert_eq!(
         AuthMiddleware::extract_client_token(&req),
-        Some("tok-anthropic".to_string())
+        Some("tok-x-api-key".to_string())
     );
 }
 
 #[test]
 fn test_extract_client_token_x_goog_api_key() {
     // Gemini SDK carrier: raw token, no scheme prefix.
-    let req = req_with("x-goog-api-key", "tok-gemini");
+    let req = req_with("x-goog-api-key", "tok-x-goog-api-key");
     assert_eq!(
         AuthMiddleware::extract_client_token(&req),
-        Some("tok-gemini".to_string())
+        Some("tok-x-goog-api-key".to_string())
     );
 }
 
@@ -590,12 +561,12 @@ fn test_extract_client_token_empty_carrier_falls_through() {
     let req = Request::builder()
         .uri("/v1/messages")
         .header("x-api-key", "")
-        .header("x-goog-api-key", "tok-gemini")
+        .header("x-goog-api-key", "tok-x-goog-api-key")
         .body(Body::empty())
         .unwrap();
     assert_eq!(
         AuthMiddleware::extract_client_token(&req),
-        Some("tok-gemini".to_string())
+        Some("tok-x-goog-api-key".to_string())
     );
 }
 
@@ -618,7 +589,7 @@ fn test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key
     // present Authorization header short-circuit would silently break those clients yet pass
     // every bearer-only / carrier-only test.
     for non_bearer in [
-        "AWS4-HMAC-SHA256 Credential=AKIA.../20240101/us-east-1/bedrock/aws4_request, \
+        "AWS4-HMAC-SHA256 Credential=AKIA.../20240101/us-east-1/svc/aws4_request, \
              SignedHeaders=host;x-amz-date, Signature=deadbeef",
         "Basic dXNlcjpwYXNz",
     ] {
@@ -646,7 +617,7 @@ fn test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_ap
         .uri("/v1/messages")
         .header(
             "authorization",
-            "AWS4-HMAC-SHA256 Credential=AKIA.../bedrock/aws4_request",
+            "AWS4-HMAC-SHA256 Credential=AKIA.../svc/aws4_request",
         )
         .header("x-goog-api-key", "goog-tok")
         .body(Body::empty())
@@ -658,71 +629,20 @@ fn test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_ap
     );
 }
 
-/// The dialect an auth-failure envelope is shaped in for `path`, on a deployment with NO plane
-/// mounted — the residual arm of the ONE resolver `unauthorized_response` reads. A mounted plane's
-/// answer is a different arm entirely and is pinned where the mount lives (`plane_tests`, and the
-/// live-stack 413 tests in `crate::tests`).
-fn residual_dialect(path: &str) -> &'static str {
-    crate::ingress::native::envelope_dialect(
-        crate::plane::PlaneDispatch::default().ingress_of(path),
-    )
-}
+// THE VENDOR-SHAPED AUTH-FAILURE TESTS live in the LLM plane, in `crates/busbar-llm/tests/
+// auth_native_envelope.rs` (Phase 4 batch 60, S01). They pin what each LLM dialect's registered
+// writer answers a bad credential with (the residual dialect a path resolves to, the per-dialect
+// envelope / status / headers / copy, the router-ingress coverage) — the plane's behaviour reached
+// through core's neutral resolver — so they run in the plane's own test target, the one binary
+// with a single `busbar_kernel` and the real dialect registrations.
 
 /// A deployment with no plane mounted, so every path below resolves through the residual arm.
 fn residual_app() -> std::sync::Arc<crate::state::App> {
     crate::test_support::TestApp::new().build()
 }
 
-#[test]
-fn test_residual_dialect_inference() {
-    assert_eq!(
-        residual_dialect("/v1beta/models/gemini-1.5:generateContent"),
-        "gemini"
-    );
-    // The stable `v1` Gemini alias the router also registers (`/v1/models/*rest`). A colon
-    // `:<action>` in the final segment is the Gemini generateContent/streamGenerateContent shape
-    // → gemini (pins the single resolver's classification of this path shape so it cannot drift).
-    assert_eq!(
-        residual_dialect("/v1/models/gemini-pro:generateContent"),
-        "gemini"
-    );
-    assert_eq!(
-        residual_dialect("/v1/models/gemini-1.5-pro:streamGenerateContent"),
-        "gemini"
-    );
-    // `/v1/models/...` WITHOUT a colon action is the OpenAI `model.retrieve` shape (`GET
-    // /v1/models/{id}`) — shape the auth error as OpenAI so an OpenAI SDK gets a decodable body.
-    assert_eq!(residual_dialect("/v1/models/gpt-4o"), "openai");
-    // `/v1beta/models/...` is Gemini-only even without a colon (OpenAI has no v1beta surface).
-    assert_eq!(residual_dialect("/v1beta/models/gemini-pro"), "gemini");
-    assert_eq!(
-        residual_dialect("/model/anthropic.claude/converse"),
-        "bedrock"
-    );
-    assert_eq!(
-        residual_dialect("/model/anthropic.claude/converse-stream"),
-        "bedrock"
-    );
-    // A pool/model literally named "model" hitting `/model/v1/messages` must NOT be classified
-    // as bedrock (no `/converse[-stream]` suffix) — it falls through to anthropic.
-    assert_eq!(residual_dialect("/model/v1/messages"), "anthropic");
-    // `/model/` prefix without a Converse suffix and without `/v1/messages` is unknown → openai.
-    assert_eq!(residual_dialect("/model/foo/bar"), "openai");
-    assert_eq!(residual_dialect("/v1/messages"), "anthropic");
-    assert_eq!(residual_dialect("/pa/v1/messages"), "anthropic");
-    assert_eq!(
-        residual_dialect("/anthropic/claude/v1/messages"),
-        "anthropic"
-    );
-    assert_eq!(residual_dialect("/v1/chat/completions"), "openai");
-    assert_eq!(residual_dialect("/v2/chat"), "cohere");
-    assert_eq!(residual_dialect("/v1/responses"), "responses");
-    // Unknown → generic (openai-shaped) envelope.
-    assert_eq!(residual_dialect("/stats"), "openai");
-}
-
-/// Decode the JSON body of an `unauthorized_response` for shape assertions. Synchronously
-/// drains the (in-memory, already-complete) body — no network, no runtime needed.
+/// Decode the JSON body of an `unauthorized_response`. Synchronously drains the (in-memory,
+/// already-complete) body — no network, no runtime needed.
 fn decode_body(resp: Response) -> serde_json::Value {
     let bytes = futures::executor::block_on(async {
         axum::body::to_bytes(resp.into_body(), usize::MAX)
@@ -730,145 +650,6 @@ fn decode_body(resp: Response) -> serde_json::Value {
             .expect("test body must collect")
     });
     serde_json::from_slice(&bytes).expect("auth-failure body must be valid JSON")
-}
-
-#[test]
-fn test_unauthorized_response_is_json_with_native_envelope() {
-    // Every supported ingress protocol must get its DISTINCTIVE native error SHAPE, not just
-    // `application/json` — a wrong-shaped 401 is a deterministic proxy tell a native SDK
-    // would choke on. One assertion per ingress-dialect classification arm.
-
-    // Gemini → {"error":{"code":400,"message":..,"status":"INVALID_ARGUMENT"}}, HTTP 400. The
-    // genuine Generative Language API does NOT return 401/UNAUTHENTICATED for a bad API key; it
-    // returns HTTP 400 INVALID_ARGUMENT. A 401/UNAUTHENTICATED body is a tell the google-genai
-    // SDK never sees from real Google on the bad-key path.
-    let resp = unauthorized_response(&residual_app(), "/v1beta/models/x:generateContent");
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(
-        resp.headers()
-            .get(CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok()),
-        Some("application/json")
-    );
-    let body = decode_body(resp);
-    assert_eq!(body["error"]["code"], 400, "gemini body: {body}");
-    assert_eq!(
-        body["error"]["status"], "INVALID_ARGUMENT",
-        "gemini body: {body}"
-    );
-
-    // Gemini stable-v1 alias (`/v1/models/<m>:generateContent`) must shape IDENTICALLY to the
-    // v1beta surface — an earlier bug mis-shaped it as an OpenAI 401.
-    let resp = unauthorized_response(&residual_app(), "/v1/models/gemini-pro:generateContent");
-    assert_eq!(
-        resp.status(),
-        StatusCode::BAD_REQUEST,
-        "stable-v1 gemini status"
-    );
-    let body = decode_body(resp);
-    assert_eq!(body["error"]["code"], 400, "stable-v1 gemini body: {body}");
-    assert_eq!(
-        body["error"]["status"], "INVALID_ARGUMENT",
-        "stable-v1 gemini body: {body}"
-    );
-
-    // Anthropic → top-level {"type":"error","error":{"type":"authentication_error",..}}.
-    let resp = unauthorized_response(&residual_app(), "/pa/v1/messages");
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    let body = decode_body(resp);
-    assert_eq!(body["type"], "error", "anthropic top-level type: {body}");
-    assert_eq!(
-        body["error"]["type"], "authentication_error",
-        "anthropic error.type: {body}"
-    );
-
-    // OpenAI → {"error":{"type":"authentication_error","code":"invalid_api_key",..}} (no
-    // top-level type=error). The genuine OpenAI bad-key 401 body carries
-    // `error.code: "invalid_api_key"`, which the official SDK surfaces as
-    // `AuthenticationError.code`; emitting `code: null` is a deterministic proxy tell. The
-    // writers pair that code ONLY with `error.type: "authentication_error"`, so the envelope
-    // must carry that pairing on the most common failure path.
-    let resp = unauthorized_response(&residual_app(), "/v1/chat/completions");
-    assert_eq!(
-        resp.status(),
-        StatusCode::UNAUTHORIZED,
-        "openai auth status"
-    );
-    let body = decode_body(resp);
-    assert!(
-        body.get("type").is_none(),
-        "openai must NOT carry a top-level type: {body}"
-    );
-    assert_eq!(
-        body["error"]["type"], "authentication_error",
-        "openai error.type must match the real bad-key body: {body}"
-    );
-    assert_eq!(
-            body["error"]["code"], "invalid_api_key",
-            "openai bad-key body must carry code=invalid_api_key (not null), the SDK-visible tell: {body}"
-        );
-
-    // Responses → {"error":{"type":"authentication_error","code":"invalid_api_key","param":null,..}}
-    // (same OpenAI-family bad-key shape, with the SDK-visible code populated).
-    let resp = unauthorized_response(&residual_app(), "/v1/responses");
-    let body = decode_body(resp);
-    assert_eq!(
-        body["error"]["type"], "authentication_error",
-        "responses error.type must match the real bad-key body: {body}"
-    );
-    assert_eq!(
-        body["error"]["code"], "invalid_api_key",
-        "responses bad-key body must carry code=invalid_api_key (not null): {body}"
-    );
-    assert!(
-        body["error"].get("param").is_some(),
-        "responses envelope carries a param field: {body}"
-    );
-
-    // Cohere → bare {"message":..} with NO `error` and NO `type`.
-    let resp = unauthorized_response(&residual_app(), "/v2/chat");
-    let body = decode_body(resp);
-    assert!(
-        body.get("message").is_some(),
-        "cohere body has a top-level message: {body}"
-    );
-    assert!(
-        body.get("error").is_none() && body.get("type").is_none(),
-        "cohere body must be bare (no error/type): {body}"
-    );
-
-    // Bedrock → {"__type":"AccessDeniedException","message":..}, HTTP 403, x-amzn-* headers.
-    let resp = unauthorized_response(&residual_app(), "/model/anthropic.claude/converse");
-    assert_eq!(
-        resp.status(),
-        StatusCode::FORBIDDEN,
-        "a Bedrock SigV4 auth failure is 403, not 401"
-    );
-    assert_eq!(
-        resp.headers()
-            .get("x-amzn-errortype")
-            .and_then(|v| v.to_str().ok()),
-        Some("AccessDeniedException"),
-        "Bedrock auth failure must carry x-amzn-errortype the AWS SDK types off"
-    );
-    let req_id = resp
-        .headers()
-        .get("x-amzn-requestid")
-        .and_then(|v| v.to_str().ok())
-        .expect("Bedrock auth failure must carry a synthetic x-amzn-requestid")
-        .to_string();
-    // Real Bedrock x-amzn-RequestId is UUID-v4 shaped (8-4-4-4-12 lowercase hex). A flat
-    // 32-hex-no-dashes value is a protocol tell — assert the canonical shape, not just presence.
-    assert_uuid_v4_shaped(&req_id);
-    let body = decode_body(resp);
-    assert_eq!(
-        body["__type"], "AccessDeniedException",
-        "bedrock __type: {body}"
-    );
-    assert!(
-        body.get("error").is_none(),
-        "bedrock body uses __type, not an error object: {body}"
-    );
 }
 
 /// Recursively collect every JSON string value reachable in `v` (object values, array elements,
@@ -889,8 +670,10 @@ fn test_unauthorized_body_carries_no_busbar_vocabulary() {
     // internal auth concepts. Previously the literal "invalid or disabled virtual key" (and
     // "unauthorized" / "admin unauthorized") were reflected verbatim into the native error body
     // — a deterministic proxy tell that also discloses the per-virtual-key enable/disable model.
-    // Sweep EVERY supported ingress path (incl. the unknown-path fallback) and assert no leaked
-    // token appears anywhere in the JSON. The invalid-vs-disabled distinction must also be gone.
+    // Sweep the ingress path shapes (incl. the admin-looking and unknown-path fallbacks) through
+    // `unauthorized_response` itself and assert no leaked token appears anywhere in the JSON. The
+    // plane's twin in `crates/busbar-llm/tests/auth_native_envelope.rs` sweeps the same data-plane
+    // paths through the live stack, including the one path shape named after its dialect.
     const FORBIDDEN: &[&str] = &[
         "virtual key",
         "client token",
@@ -903,14 +686,13 @@ fn test_unauthorized_body_carries_no_busbar_vocabulary() {
         "admin",
     ];
     let paths = [
-        "/v1beta/models/x:generateContent", // gemini
-        "/pa/v1/messages",                  // anthropic
-        "/v1/chat/completions",             // openai
-        "/v1/responses",                    // responses
-        "/v2/chat",                         // cohere
-        "/model/anthropic.claude/converse", // bedrock
-        "/api/v1/admin/keys",               // admin path → inferred-proto fallback (openai)
-        "/totally/unknown/path",            // unknown → openai fallback
+        "/v1beta/models/x:generateContent",
+        "/pa/v1/messages",
+        "/v1/chat/completions",
+        "/v2/chat",
+        "/model/vendor.model/converse",
+        "/api/v1/admin/keys",    // admin path → inferred-proto fallback
+        "/totally/unknown/path", // unknown → fallback
     ];
     for path in paths {
         let body = decode_body(unauthorized_response(&residual_app(), path));
@@ -926,336 +708,6 @@ fn test_unauthorized_body_carries_no_busbar_vocabulary() {
             }
         }
     }
-}
-
-#[test]
-fn test_vendor_auth_failure_message_is_plausible_per_proto() {
-    // The wire message is keyed PURELY off the inferred protocol (independent of the failure
-    // reason) and reads like genuine vendor copy. Lock the exact strings so a regression that
-    // reintroduces busbar wording — or distinguishes invalid-vs-disabled — is caught.
-    assert_eq!(
-        vendor_auth_failure_message("anthropic"),
-        "invalid x-api-key"
-    );
-    assert_eq!(
-        vendor_auth_failure_message("openai"),
-        "Incorrect API key provided."
-    );
-    assert_eq!(
-        vendor_auth_failure_message("responses"),
-        "Incorrect API key provided."
-    );
-    // Byte-for-byte the gemini codec's `GEMINI_BAD_KEY_MESSAGE`, pinned as a literal (like the five
-    // siblings above) so this core auth test names no dialect module; gemini owns the const's value.
-    assert_eq!(
-        vendor_auth_failure_message("gemini"),
-        "API key not valid. Please pass a valid API key."
-    );
-    assert_eq!(vendor_auth_failure_message("cohere"), "invalid api token");
-    // AWS conveys AccessDenied via __type / x-amzn-errortype, not a message string.
-    assert_eq!(vendor_auth_failure_message("bedrock"), "");
-    // Any unknown future proto: a neutral credential message, never busbar vocabulary.
-    assert_eq!(
-        vendor_auth_failure_message("some-future-proto"),
-        "authentication failed"
-    );
-}
-
-#[test]
-fn test_every_router_ingress_path_maps_to_non_fallback_proto() {
-    // Coupling guard (router route table ↔ the residual dialect resolver ↔ `protocol_for`). Each
-    // real ingress path the router registers must resolve to a SPECIFIC proto, not the
-    // unknown-path `openai` fallback applied via the final `else`. If a future route is added
-    // without updating the residual classifier's path-shape arms, callers on that protocol would
-    // silently get an OpenAI-shaped 401 — a partial defeat of the indistinguishability promise. We
-    // assert the expected mapping explicitly (a sample path per registered ingress family), so a
-    // regression is caught.
-    let cases = [
-        ("/v1/messages", "anthropic"),
-        ("/somepool/v1/messages", "anthropic"),
-        ("/v1/chat/completions", "openai"),
-        ("/v2/chat", "cohere"),
-        ("/v1/responses", "responses"),
-        ("/v1beta/models/gemini-1.5:generateContent", "gemini"),
-        // BOTH Gemini ingress prefixes the router registers must resolve to a
-        // non-fallback proto. The stable `v1` alias was previously omitted here, masking the
-        // missing `/v1/models/` arm in the residual classifier (a `:`-action path mis-shaped
-        // as openai).
-        ("/v1/models/gemini-pro:generateContent", "gemini"),
-        ("/model/anthropic.claude/converse", "bedrock"),
-        ("/model/anthropic.claude/converse-stream", "bedrock"),
-    ];
-    for (path, expected) in cases {
-        assert_eq!(
-            residual_dialect(path),
-            expected,
-            "router ingress path '{path}' must map to '{expected}', not the fallback"
-        );
-        // And the resolved proto must be a real protocol (never the dead `None` arm). Neutral
-        // registry seam: a KNOWN protocol has a registered declaration (`decl_for`), reached
-        // without naming the witnessed codec (`protocol_for`).
-        assert!(
-            crate::proto::decl_for(residual_dialect(path)).is_some(),
-            "proto for '{path}' must resolve to a known protocol"
-        );
-    }
-}
-
-/// End-to-end through the real router + `auth_middleware` in TOKEN mode: an unauthenticated
-/// POST to `/v2/chat` (Cohere) and `/v1/responses` (Responses) must be rejected 401 with the
-/// RESPECTIVE protocol's native error envelope — not an Anthropic/OpenAI-shaped body. The
-/// existing multi-carrier test only covers the Anthropic path, leaving these two protocol
-/// envelopes untested on the auth boundary (an indistinguishability failure if regressed).
-#[tokio::test]
-async fn test_cohere_and_responses_ingress_token_mode_native_401() {
-    use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
-    use serde_json::json;
-    use std::sync::Arc;
-
-    crate::metrics::init();
-
-    // No upstream call is made — auth rejects before routing — but TestApp needs a lane/pool.
-    let state = Arc::new(MockServerState::new());
-    let server = MockServer::new(state).await;
-
-    let auth_cfg = chain_cfg(&["test-groups-module"]);
-    let app = TestApp::new()
-        .lane(
-            LaneSpec::new("test-model", crate::proto::PROTO_OPENAI, &server.base_url())
-                .api_key("busbar-upstream-key"),
-        )
-        .pool("pa", &[(0, 1)])
-        .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
-        .build();
-
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let body = json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}]}).to_string();
-
-    // Cohere `/v2/chat` → bare {"message":..}, no `error`, no `type`.
-    let r_cohere = client
-        .post(format!("http://{addr}/v2/chat"))
-        .header("x-api-key", "wrong-token")
-        .body(body.clone())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r_cohere.status().as_u16(), 401, "cohere wrong token → 401");
-    assert_eq!(
-        r_cohere
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok()),
-        Some("application/json"),
-    );
-    let env: serde_json::Value = r_cohere.json().await.unwrap();
-    assert!(
-        env.get("message").is_some(),
-        "cohere 401 must carry a bare message: {env}"
-    );
-    assert!(
-        env.get("error").is_none() && env.get("type").is_none(),
-        "cohere 401 must be the bare envelope (no error/type): {env}"
-    );
-
-    // Responses `/v1/responses` → {"error":{"type":"authentication_error","code":"invalid_api_key",..}}
-    // (the genuine OpenAI-family bad-key 401 carries the SDK-visible code=invalid_api_key, which
-    // the writers pair with type=authentication_error).
-    let r_resp = client
-        .post(format!("http://{addr}/v1/responses"))
-        .header("x-api-key", "wrong-token")
-        .body(body)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r_resp.status().as_u16(), 401, "responses wrong token → 401");
-    assert_eq!(
-        r_resp
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok()),
-        Some("application/json"),
-    );
-    let env: serde_json::Value = r_resp.json().await.unwrap();
-    assert_eq!(
-        env["error"]["type"], "authentication_error",
-        "responses 401 must carry error.type=authentication_error: {env}"
-    );
-    assert_eq!(
-        env["error"]["code"], "invalid_api_key",
-        "responses 401 must carry the SDK-visible code=invalid_api_key (not null): {env}"
-    );
-
-    handle.abort();
-    server.shutdown().await;
-}
-
-/// End-to-end through the real router + `auth_middleware` in TOKEN mode: a wrong token on the
-/// Bedrock ingress path (`/model/<id>/converse`) must be rejected with HTTP 403 (NOT 401 —
-/// a native SigV4 auth failure is 403) carrying `x-amzn-errortype: AccessDeniedException`, a
-/// UUID-v4-shaped `x-amzn-requestid`, and a body whose `__type` is `AccessDeniedException`. The
-/// existing end-to-end auth tests only cover anthropic/cohere/responses; the bedrock-specific
-/// status + typing headers were exercised only by a direct `unauthorized_response` call that
-/// bypasses the middleware → router stack, so a regression dropping the 403/headers in the full
-/// pipeline would be uncaught.
-#[tokio::test]
-async fn test_bedrock_ingress_wrong_token_is_403_native_envelope() {
-    use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
-    use serde_json::json;
-    use std::sync::Arc;
-
-    crate::metrics::init();
-
-    // Auth rejects before routing, so no upstream call is made; TestApp still needs a lane/pool.
-    let state = Arc::new(MockServerState::new());
-    let server = MockServer::new(state).await;
-
-    let auth_cfg = chain_cfg(&["test-groups-module"]);
-    let app = TestApp::new()
-        .lane(
-            LaneSpec::new(
-                "test-model",
-                crate::proto::PROTO_ANTHROPIC,
-                &server.base_url(),
-            )
-            .api_key("busbar-upstream-key"),
-        )
-        .pool("pa", &[(0, 1)])
-        .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
-        .build();
-
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let body = json!({"messages": [{"role": "user", "content": [{"text": "hi"}]}]}).to_string();
-
-    let r = client
-        .post(format!("http://{addr}/model/anthropic.claude/converse"))
-        .header("authorization", "Bearer wrong-token")
-        .body(body)
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(
-        r.status().as_u16(),
-        403,
-        "a Bedrock SigV4 auth failure must be 403, not 401 (got {})",
-        r.status()
-    );
-    assert_eq!(
-        r.headers()
-            .get("x-amzn-errortype")
-            .and_then(|v| v.to_str().ok()),
-        Some("AccessDeniedException"),
-        "Bedrock auth failure must carry x-amzn-errortype the AWS SDK types off"
-    );
-    let req_id = r
-        .headers()
-        .get("x-amzn-requestid")
-        .and_then(|v| v.to_str().ok())
-        .expect("Bedrock auth failure must carry x-amzn-requestid")
-        .to_string();
-    assert_uuid_v4_shaped(&req_id);
-    assert_eq!(
-        r.headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok()),
-        Some("application/json"),
-    );
-    let env: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(
-        env["__type"], "AccessDeniedException",
-        "bedrock body must use __type=AccessDeniedException: {env}"
-    );
-
-    handle.abort();
-    server.shutdown().await;
-}
-
-/// End-to-end through the real router + `auth_middleware` in TOKEN mode: a wrong token on EITHER
-/// registered Gemini ingress prefix — the `v1beta` surface (`/v1beta/models/<id>:generateContent`)
-/// AND the stable `v1` alias (`/v1/models/<id>:generateContent`) — must be rejected with the
-/// Gemini-native bad-key envelope: HTTP 400, `error.code == 400`, `error.status ==
-/// "INVALID_ARGUMENT"` (a real Generative Language API bad key is 400 INVALID_ARGUMENT, NOT
-/// 401/UNAUTHENTICATED). The stable-v1 path was previously mis-shaped as an OpenAI 401 because the
-/// residual dialect classifier had no `/v1/models/` arm — this exercises both prefixes through the
-/// full stack.
-#[tokio::test]
-async fn test_gemini_ingress_wrong_token_is_native_bad_key_envelope() {
-    use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
-    use serde_json::json;
-    use std::sync::Arc;
-
-    crate::metrics::init();
-
-    let state = Arc::new(MockServerState::new());
-    let server = MockServer::new(state).await;
-
-    let auth_cfg = chain_cfg(&["test-groups-module"]);
-    let app = TestApp::new()
-        .lane(
-            LaneSpec::new(
-                "test-model",
-                crate::proto::PROTO_ANTHROPIC,
-                &server.base_url(),
-            )
-            .api_key("busbar-upstream-key"),
-        )
-        .pool("pa", &[(0, 1)])
-        .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
-        .build();
-
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let body = json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}).to_string();
-
-    // Both registered Gemini ingress prefixes must produce the identical native bad-key envelope.
-    for path in [
-        "/v1beta/models/gemini-1.5:generateContent",
-        "/v1/models/gemini-1.5:generateContent",
-    ] {
-        let r = client
-            .post(format!("http://{addr}{path}"))
-            .header("x-goog-api-key", "wrong-token")
-            .body(body.clone())
-            .send()
-            .await
-            .unwrap();
-
-        assert_eq!(
-            r.status().as_u16(),
-            400,
-            "a Gemini bad-key auth failure on '{path}' must be 400 INVALID_ARGUMENT (got {})",
-            r.status()
-        );
-        assert_eq!(
-            r.headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok()),
-            Some("application/json"),
-        );
-        let env: serde_json::Value = r.json().await.unwrap();
-        assert_eq!(
-            env["error"]["code"], 400,
-            "gemini error.code on '{path}': {env}"
-        );
-        assert_eq!(
-            env["error"]["status"], "INVALID_ARGUMENT",
-            "gemini error.status on '{path}' must be INVALID_ARGUMENT: {env}"
-        );
-    }
-
-    handle.abort();
-    server.shutdown().await;
 }
 
 /// Regression for the over-broad admin-prefix detection: a path that merely STARTS WITH the
@@ -1323,10 +775,13 @@ async fn test_admin_prefix_is_boundary_safe() {
     let env: serde_json::Value = r.json().await.unwrap();
     // Anthropic native envelope (inferred from the `/v1/messages` suffix), proving the path was
     // shaped by the normal ingress branch rather than the admin branch.
-    assert_eq!(env["type"], "error", "expected anthropic envelope: {env}");
+    assert_eq!(
+        env["type"], "error",
+        "expected the /v1/messages native envelope: {env}"
+    );
     assert_eq!(
         env["error"]["type"], "authentication_error",
-        "expected anthropic authentication_error: {env}"
+        "expected the /v1/messages authentication_error: {env}"
     );
 
     handle.abort();
@@ -1715,7 +1170,7 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
     let (key, plain_token) = gov
         .mint_signed(
             crate::governance::NewKeySpec {
-                name: "mcp-agent".to_string(),
+                name: "audience-agent".to_string(),
                 allowed_pools: Some(vec!["pa".to_string()]),
                 group: None,
                 labels: Default::default(),
@@ -1737,7 +1192,7 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
         &key.id,
         2_000_000_000,
         generation.as_deref(),
-        "https://busbar.example.com/mcp",
+        "https://busbar.example.com/rpc",
         Some("client-1"),
     );
 
@@ -1960,12 +1415,12 @@ fn test_caller_token_debug_redacts_value() {
     );
 }
 
-// ===================== INBOUND BEDROCK SigV4 WIRING TESTS =====================
+// ===================== INBOUND SigV4 WIRING TESTS =====================
 
-/// Sign a Bedrock-shaped POST and return the full `Authorization` header value plus the headers
+/// Sign a SigV4 POST (the verifier is service-agnostic: the service is read from the credential scope) and return the full `Authorization` header value plus the headers
 /// (host / x-amz-date / x-amz-content-sha256) the client would send, using the SAME signer
 /// (`crate::sigv4::sign_v4`) a real client uses. `amzdate` controls the signature timestamp.
-fn sign_bedrock_request(
+fn sign_sigv4_request(
     secret: &str,
     access_key_id: &str,
     region: &str,
@@ -1979,7 +1434,7 @@ fn sign_bedrock_request(
     let headers = vec![
         (
             "host".to_string(),
-            "bedrock-runtime.us-east-1.amazonaws.com".to_string(),
+            "svc.us-east-1.amazonaws.com".to_string(),
         ),
         (X_AMZ_CONTENT_SHA256.to_string(), payload_hash.clone()),
         (X_AMZ_DATE.to_string(), amzdate.to_string()),
@@ -2005,7 +1460,7 @@ fn sign_bedrock_request(
 }
 
 /// Build a `Request` with the given Authorization + signed headers (for `verify_sigv4_ingress_credential`).
-fn bedrock_request(path: &str, auth: &str, headers: &[(String, String)]) -> Request<Body> {
+fn sigv4_request(path: &str, auth: &str, headers: &[(String, String)]) -> Request<Body> {
     let mut b = Request::builder()
         .method("POST")
         .uri(path)
@@ -2023,7 +1478,7 @@ fn gov_with_aws_key() -> (std::sync::Arc<crate::governance::GovState>, String, S
     let (_key, _bearer, akid, secret) = gov
         .create_key_with_aws(
             NewKeySpec {
-                name: "bedrock".to_string(),
+                name: "aws-signer".to_string(),
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
@@ -2044,17 +1499,17 @@ fn test_verify_sigv4_ingress_credential_roundtrip_admits_with_govctx() {
         let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
         a
     };
-    let path = "/model/anthropic.claude/converse";
+    let path = "/model/vendor.model/converse";
     let (auth, headers) =
-        sign_bedrock_request(&secret, &akid, "us-east-1", "bedrock", path, b"", &amzdate);
-    let req = bedrock_request(path, &auth, &headers);
+        sign_sigv4_request(&secret, &akid, "us-east-1", "svc", path, b"", &amzdate);
+    let req = sigv4_request(path, &auth, &headers);
     let key = verify_sigv4_ingress_credential(&gov, &req, b"")
         .expect("a correctly-signed request must verify");
     // Behavioral: the function resolved the SPECIFIC owning key (not just "some enabled key").
     // Tying to the key's identity (name) is a stronger statement than `key.enabled`, which merely
     // restates an input property. The owning key here is the one `gov_with_aws_key` created.
     assert_eq!(
-        key.name, "bedrock",
+        key.name, "aws-signer",
         "verify must resolve the AWS-credentialed key that owns this AccessKeyId"
     );
 }
@@ -2075,7 +1530,7 @@ fn test_verify_sigv4_ingress_credential_roundtrip_with_escaped_query_param_admit
         a
     };
     let datestamp = &amzdate[0..8];
-    let path = "/model/anthropic.claude/converse";
+    let path = "/model/vendor.model/converse";
     // The client's ONE correct URI-encoding of a value containing '/' (per AWS SigV4 query rules,
     // which — unlike CanonicalURI — are never double-encoded).
     let wire_query = "p=a%2Fb";
@@ -2083,7 +1538,7 @@ fn test_verify_sigv4_ingress_credential_roundtrip_with_escaped_query_param_admit
     let headers = vec![
         (
             "host".to_string(),
-            "bedrock-runtime.us-east-1.amazonaws.com".to_string(),
+            "svc.us-east-1.amazonaws.com".to_string(),
         ),
         (X_AMZ_CONTENT_SHA256.to_string(), payload_hash.clone()),
         (X_AMZ_DATE.to_string(), amzdate.to_string()),
@@ -2093,7 +1548,7 @@ fn test_verify_sigv4_ingress_credential_roundtrip_with_escaped_query_param_admit
     let (sig, signed_headers) = crate::sigv4::sign_v4(
         &secret,
         "us-east-1",
-        "bedrock",
+        "svc",
         "POST",
         &canonical_uri,
         wire_query,
@@ -2103,14 +1558,14 @@ fn test_verify_sigv4_ingress_credential_roundtrip_with_escaped_query_param_admit
         datestamp,
     );
     let auth = format!(
-        "AWS4-HMAC-SHA256 Credential={akid}/{datestamp}/us-east-1/bedrock/aws4_request, \
+        "AWS4-HMAC-SHA256 Credential={akid}/{datestamp}/us-east-1/svc/aws4_request, \
              SignedHeaders={signed_headers}, Signature={sig}"
     );
     let full_path = format!("{path}?{wire_query}");
-    let req = bedrock_request(&full_path, &auth, &headers);
+    let req = sigv4_request(&full_path, &auth, &headers);
     let key = verify_sigv4_ingress_credential(&gov, &req, b"")
         .expect("a correctly-signed request with an escaped query param must verify");
-    assert_eq!(key.name, "bedrock");
+    assert_eq!(key.name, "aws-signer");
 }
 
 #[test]
@@ -2118,18 +1573,18 @@ fn test_verify_sigv4_ingress_credential_wrong_secret_rejected() {
     crate::metrics::init();
     let (gov, akid, _secret) = gov_with_aws_key();
     let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
-    let path = "/model/anthropic.claude/converse";
+    let path = "/model/vendor.model/converse";
     // Sign with a DIFFERENT secret than the key's.
-    let (auth, headers) = sign_bedrock_request(
+    let (auth, headers) = sign_sigv4_request(
         "not-the-real-secret",
         &akid,
         "us-east-1",
-        "bedrock",
+        "svc",
         path,
         b"",
         &a,
     );
-    let req = bedrock_request(path, &auth, &headers);
+    let req = sigv4_request(path, &auth, &headers);
     // `verify_sigv4_ingress_credential` collapses every failure to the SAME opaque `Err(())` (no
     // enumeration oracle). Assert that exact value, not just `is_err()`. The variant-level
     // distinction — that a wrong secret is a `SignatureMismatch`, NOT a distinct key-not-found
@@ -2147,18 +1602,18 @@ fn test_verify_sigv4_ingress_credential_unknown_access_key_id_rejected() {
     crate::metrics::init();
     let (gov, _akid, secret) = gov_with_aws_key();
     let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
-    let path = "/model/anthropic.claude/converse";
+    let path = "/model/vendor.model/converse";
     // A well-formed signature under an AccessKeyId that does not exist in the store.
-    let (auth, headers) = sign_bedrock_request(
+    let (auth, headers) = sign_sigv4_request(
         &secret,
         "AKIADOESNOTEXIST0000",
         "us-east-1",
-        "bedrock",
+        "svc",
         path,
         b"",
         &a,
     );
-    let req = bedrock_request(path, &auth, &headers);
+    let req = sigv4_request(path, &auth, &headers);
     // Identical opaque `Err(())` to the wrong-secret case above — the unknown-AccessKeyId path is
     // verified against a dummy secret precisely so it is indistinguishable from a bad signature
     // (no AccessKeyId-enumeration oracle). Assert the exact value, not just `is_err()`.
@@ -2176,10 +1631,9 @@ fn test_verify_sigv4_ingress_credential_expired_date_rejected() {
     // Sign with a timestamp 10 minutes in the past — outside the ±5min skew window.
     let stale = busbar_kernel::store::now().saturating_sub(crate::sigv4::CLOCK_SKEW_SECS + 60);
     let (a, _d) = crate::sigv4::format_amz_time(stale);
-    let path = "/model/anthropic.claude/converse";
-    let (auth, headers) =
-        sign_bedrock_request(&secret, &akid, "us-east-1", "bedrock", path, b"", &a);
-    let req = bedrock_request(path, &auth, &headers);
+    let path = "/model/vendor.model/converse";
+    let (auth, headers) = sign_sigv4_request(&secret, &akid, "us-east-1", "svc", path, b"", &a);
+    let req = sigv4_request(path, &auth, &headers);
     assert!(
         verify_sigv4_ingress_credential(&gov, &req, b"").is_err(),
         "an expired x-amz-date must be rejected"
@@ -2193,7 +1647,7 @@ fn test_verify_sigv4_ingress_credential_missing_authorization_rejected() {
     // No Authorization header at all.
     let req = Request::builder()
         .method("POST")
-        .uri("/model/anthropic.claude/converse")
+        .uri("/model/vendor.model/converse")
         .body(Body::empty())
         .unwrap();
     assert!(verify_sigv4_ingress_credential(&gov, &req, b"").is_err());
@@ -2220,10 +1674,9 @@ fn test_verify_sigv4_ingress_credential_disabled_key_rejected() {
     // Disable the key.
     gov.update_key(&key.id, Some(false), None).unwrap();
     let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
-    let path = "/model/anthropic.claude/converse";
-    let (auth, headers) =
-        sign_bedrock_request(&secret, &akid, "us-east-1", "bedrock", path, b"", &a);
-    let req = bedrock_request(path, &auth, &headers);
+    let path = "/model/vendor.model/converse";
+    let (auth, headers) = sign_sigv4_request(&secret, &akid, "us-east-1", "svc", path, b"", &a);
+    let req = sigv4_request(path, &auth, &headers);
     assert!(
         verify_sigv4_ingress_credential(&gov, &req, b"").is_err(),
         "a correctly-signed request for a DISABLED key must be rejected"
@@ -2261,12 +1714,12 @@ fn test_verify_sigv4_ingress_credential_revoked_key_rejected() {
         let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
         a
     };
-    let path = "/model/anthropic.claude/converse";
+    let path = "/model/vendor.model/converse";
 
     // Baseline: before revocation, the correctly-signed SigV4 request ADMITS.
     let (auth, headers) =
-        sign_bedrock_request(&secret, &akid, "us-east-1", "bedrock", path, b"", &amzdate);
-    let req = bedrock_request(path, &auth, &headers);
+        sign_sigv4_request(&secret, &akid, "us-east-1", "svc", path, b"", &amzdate);
+    let req = sigv4_request(path, &auth, &headers);
     let admitted = verify_sigv4_ingress_credential(&gov, &req, b"")
         .expect("a non-revoked dual-credential key must admit via SigV4");
     assert_eq!(admitted.name, "dual");
@@ -2283,8 +1736,8 @@ fn test_verify_sigv4_ingress_credential_revoked_key_rejected() {
         a
     };
     let (auth2, headers2) =
-        sign_bedrock_request(&secret, &akid, "us-east-1", "bedrock", path, b"", &amzdate2);
-    let req2 = bedrock_request(path, &auth2, &headers2);
+        sign_sigv4_request(&secret, &akid, "us-east-1", "svc", path, b"", &amzdate2);
+    let req2 = sigv4_request(path, &auth2, &headers2);
     assert_eq!(
         verify_sigv4_ingress_credential(&gov, &req2, b""),
         Err(()),
@@ -2300,14 +1753,13 @@ fn test_verify_sigv4_ingress_credential_body_matches_signed_hash_admits() {
     crate::metrics::init();
     let (gov, akid, secret) = gov_with_aws_key();
     let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
-    let path = "/model/anthropic.claude/converse";
+    let path = "/model/vendor.model/converse";
     let body = br#"{"messages":[{"role":"user","content":"hi"}]}"#;
-    let (auth, headers) =
-        sign_bedrock_request(&secret, &akid, "us-east-1", "bedrock", path, body, &a);
-    let req = bedrock_request(path, &auth, &headers);
+    let (auth, headers) = sign_sigv4_request(&secret, &akid, "us-east-1", "svc", path, body, &a);
+    let req = sigv4_request(path, &auth, &headers);
     let key = verify_sigv4_ingress_credential(&gov, &req, body)
         .expect("a correctly-signed request whose body matches the signed hash must verify");
-    assert_eq!(key.name, "bedrock");
+    assert_eq!(key.name, "aws-signer");
 }
 
 #[test]
@@ -2320,20 +1772,13 @@ fn test_verify_sigv4_ingress_credential_tampered_body_rejected() {
     crate::metrics::init();
     let (gov, akid, secret) = gov_with_aws_key();
     let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
-    let path = "/model/anthropic.claude/converse";
+    let path = "/model/vendor.model/converse";
     let signed_body = br#"{"max_tokens":16}"#;
     let tampered_body = br#"{"max_tokens":999999}"#;
     // Sign over the ORIGINAL body (so Authorization + x-amz-content-sha256 are valid for it)...
-    let (auth, headers) = sign_bedrock_request(
-        &secret,
-        &akid,
-        "us-east-1",
-        "bedrock",
-        path,
-        signed_body,
-        &a,
-    );
-    let req = bedrock_request(path, &auth, &headers);
+    let (auth, headers) =
+        sign_sigv4_request(&secret, &akid, "us-east-1", "svc", path, signed_body, &a);
+    let req = sigv4_request(path, &auth, &headers);
     // ...but feed the verifier the TAMPERED bytes (what the middleware would have buffered).
     assert_eq!(
         verify_sigv4_ingress_credential(&gov, &req, tampered_body),
@@ -2351,20 +1796,20 @@ fn test_verify_sigv4_ingress_credential_unsigned_payload_rejected() {
     crate::metrics::init();
     let (gov, akid, secret) = gov_with_aws_key();
     let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
-    let path = "/model/anthropic.claude/converse";
+    let path = "/model/vendor.model/converse";
     let body = b"some-body";
     let (auth, mut headers) =
-        sign_bedrock_request(&secret, &akid, "us-east-1", "bedrock", path, body, &a);
+        sign_sigv4_request(&secret, &akid, "us-east-1", "svc", path, body, &a);
     for (k, v) in headers.iter_mut() {
         if k == X_AMZ_CONTENT_SHA256 {
             *v = "UNSIGNED-PAYLOAD".to_string();
         }
     }
-    let req = bedrock_request(path, &auth, &headers);
+    let req = sigv4_request(path, &auth, &headers);
     assert_eq!(
         verify_sigv4_ingress_credential(&gov, &req, body),
         Err(()),
-        "UNSIGNED-PAYLOAD must be rejected for governed Bedrock ingress"
+        "UNSIGNED-PAYLOAD must be rejected for governed SigV4 ingress"
     );
 }
 
@@ -2623,7 +2068,7 @@ async fn structural_sigv4_gate_rejects_without_reading_the_body() {
     // header-presence checks, so both gate conditions independently reject it. A large
     // Content-Length is announced; NO body bytes are ever sent.
     sock.write_all(
-        b"POST /model/anthropic.claude/converse HTTP/1.1\r\n\
+        b"POST /model/vendor.model/converse HTTP/1.1\r\n\
           Host: localhost\r\n\
           Authorization: AWS4-HMAC-SHA256\r\n\
           Content-Length: 1000000\r\n\
