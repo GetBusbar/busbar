@@ -11,7 +11,7 @@
 //! environment and the filesystem is not a shape (#83(b)) — and the neutral [`SecretResolve`] seam,
 //! which takes the config [`SecretRef`] and moves with it when the fold merges that crate.
 
-use busbar_secret_ref::{SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE};
+use busbar_contract::secret_ref::{SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE};
 
 /// BUILT-IN resolution of a secret reference to its raw bytes: `env` reads the
 /// environment variable; `file` reads the file. Any other module name is FAIL-CLOSED here - the

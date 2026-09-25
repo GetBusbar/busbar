@@ -162,7 +162,6 @@ reqwest = { workspace = true, features = ["json"] }
 rcgen = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
-busbar-secret-ref = { path = "../secret-ref" }
 # THE ADMIN JSON-REST SERVICE, dev-only — a dev-dep BACK-EDGE, not linked into any shipped target
 # (the same shape as the `busbar-llm` back-edge above). `/api/v1/admin/*` is served by busbar-admin,
 # which busbar-core nests through the runtime fn-pointer seam `busbar_core::admin::seam`; production

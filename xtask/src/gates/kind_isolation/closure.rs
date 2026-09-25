@@ -743,7 +743,10 @@ mod tests {
     fn the_banned_sets_are_named_in_the_rules_own_words() {
         assert_eq!(banned_set("busbar-kernel-ledger"), "THE KERNEL");
         assert_eq!(banned_set("busbar-core-admin"), "a `core-*` crate");
-        assert_eq!(banned_set("busbar-secret-ref"), "a secret implementation");
+        assert_eq!(
+            banned_set("busbar-secret-example-plugin"),
+            "a secret implementation"
+        );
         assert_eq!(banned_set("busbar-transport-tcp"), "another plugin");
         assert_eq!(banned_set("busbar-api"), "not `busbar-contract`");
     }

@@ -56,10 +56,10 @@ pub use busbar_contract::secret::{
     SecretErrorKind, SecretModule, SecretModuleError as SecretError, SecretResult,
 };
 pub use secret::{resolve_builtin, resolve_builtin_string, SecretResolve};
-// The config secret-reference type, re-exported from its own leaf crate so a plane crate names
-// `busbar_api::SecretRef` without a separate path dep.
+// The config secret-reference type, re-exported from the contract (the former `busbar-secret-ref`
+// crate merged there, DECISIONS #83) so a plane crate names `busbar_api::SecretRef` unchanged.
 pub use busbar_contract::signal::{Signal, SignalBag, SignalValue};
-pub use busbar_secret_ref::SecretRef;
+pub use busbar_contract::SecretRef;
 pub use store::{
     register_scope_kind, AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow,
     ModelTokens, ModelTokensDelta, PlaneDisposition, PlaneRecord, PlaneRequestCtx, PlaneSelector,

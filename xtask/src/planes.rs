@@ -150,7 +150,6 @@ pub fn neutral_src_roots() -> Vec<String> {
         "crates/busbar-oauth2/src",
         "crates/busbar-timing/src",
         "crates/busbar-unit-transport-key/src",
-        "crates/secret-ref/src",
     ]
     .into_iter()
     .map(str::to_string)

@@ -392,9 +392,10 @@ pub trait Store: Plugin + Send + Sync + 'static {
 
 // ── secret ───────────────────────────────────────────────────────────────────────────────────
 
-/// A reference to a secret, in the plugin's own reference grammar.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SecretRef(pub String);
+/// A reference to a secret: `{ module, settings }`, where `settings` is the resolving plugin's own
+/// reference grammar. There is ONE `SecretRef` (DECISIONS #83 merge, fold F1): the config reference
+/// type defined in [`crate::secret_ref`], re-exported here under the kind ABI's spelling.
+pub use crate::secret_ref::SecretRef;
 
 /// A resolved secret's bytes.
 ///

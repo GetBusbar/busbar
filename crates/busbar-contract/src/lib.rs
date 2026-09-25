@@ -70,6 +70,9 @@ pub mod records;
 pub mod scratch;
 #[allow(missing_docs)]
 pub mod secret;
+// The config secret-reference SHAPE (DECISIONS #83 MERGE, fold F1): the former `busbar-secret-ref`
+// crate. Its `SecretRef` is also the kind ABI's (`kinds::SecretRef` re-exports it): one type.
+pub mod secret_ref;
 pub mod signal;
 pub mod slice;
 pub mod spans;

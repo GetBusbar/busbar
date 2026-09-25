@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use busbar_secret_ref::SecretRef;
+use busbar_contract::SecretRef;
 
 /// `oauth_as:` — busbar as an OAuth 2.1 authorization server. ABSENT BY DEFAULT.
 ///

@@ -2,7 +2,10 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! `SecretRef` — the SECRET REFERENCE type, extracted out of `busbar`'s crate-private
-//! `crates/busbar-core/src/config/secret.rs` into its own tiny crate.
+//! `crates/busbar-core/src/config/secret.rs` into its own tiny crate, and since merged into the
+//! contract (DECISIONS #83: contract = shapes). It is the ONE `SecretRef`: the placeholder
+//! `kinds::SecretRef(String)` the secret kind's trait used to take is gone, and
+//! [`crate::kinds::Secret`] resolves this type.
 //!
 //! Every secret/external value in busbar config is `{ module: <secret-module>, settings: {…} }` — a
 //! reference to a SECRET MODULE (`kind: secret` plugin), never the secret itself. The built-in
@@ -16,7 +19,7 @@
 //! cert:    { file: /run/secrets/tls-cert.pem } # ⇒ { module: file, settings: { path: /run/secrets/tls-cert.pem } }
 //! ```
 //!
-//! **Why this is its own crate.** `SecretRef` used to live `pub(crate)` inside the `busbar` binary
+//! **Why this left the binary.** `SecretRef` used to live `pub(crate)` inside the `busbar` binary
 //! crate — unreachable from `busbar-plugin-pack` or any future schema-generation tooling. The
 //! `x-busbar-secret` schema vocabulary entry's `oneOf` (the reference shape busbar-ui composes for a
 //! secret field) must be generated FROM this real type, not hand-written as a parallel copy that can
@@ -66,7 +69,7 @@ pub const SECRET_FILE_SETTING_PATH: &str = "path";
 /// deserializer means.
 const NON_BLANK: &str = r"\S";
 
-/// A reference to a secret, resolved through a secret MODULE. See the crate docs for the accepted
+/// A reference to a secret, resolved through a secret MODULE. See the module docs for the accepted
 /// YAML/JSON spellings. `settings` is the module's own (opaque) config — busbar passes it through
 /// verbatim and never interprets it beyond the built-ins.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -384,7 +387,7 @@ impl<'de> Deserialize<'de> for SecretRef {
 ///
 /// This fragment is WRITTEN OUT here rather than mechanically generated from the `Deserialize` impl
 /// — serde exposes no schema to generate one from — so "it cannot drift" is not something the code
-/// makes true on its own. What pins it is the round-trip test in this crate's own suite: one table
+/// makes true on its own. What pins it is the round-trip test in this module's own suite: one table
 /// of shapes, each fed to BOTH the validator built from this fragment and `SecretRef::deserialize`,
 /// with the two verdicts asserted equal. Change either side alone and that test says so. It was
 /// added because the two HAD drifted: `minLength: 1` accepted a whitespace-only `{ env: "   " }`
@@ -427,5 +430,5 @@ pub fn oneof_schema() -> serde_json::Value {
 }
 
 #[cfg(test)]
-#[path = "tests/lib_tests.rs"]
+#[path = "tests/secret_ref_tests.rs"]
 mod tests;

@@ -78,6 +78,11 @@ memchr = { workspace = true }
 # test that asserts what a serialisation does NOT contain has to run a real serializer over it.
 [dev-dependencies]
 serde_json = { workspace = true }
+# The `secret_ref` module's suite (merged in with the former `busbar-secret-ref` crate, DECISIONS
+# #83): it round-trips the same YAML shapes the engine accepts and checks `oneof_schema` against a
+# real JSON Schema validator. Test-only, so neither reaches a plugin's closure.
+serde_yaml = { workspace = true }
+jsonschema = { workspace = true }
 
 # The two NEUTRAL capability features that gate the `transport::transport` module's
 # `Transport`/`UpstreamWireKind` wire-selection axis (folded in from `busbar-contract-transport`,

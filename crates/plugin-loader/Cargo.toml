@@ -19,7 +19,7 @@ license = "Apache-2.0"
 # `busbar`) compiles none of it. Build the tool with
 #   cargo build --release -p busbar-plugin-loader --features pack --bin busbar-plugin-pack
 [features]
-pack = ["dep:busbar-secret-ref", "dep:jsonschema"]
+pack = ["dep:jsonschema"]
 
 [[bin]]
 name = "busbar-plugin-pack"
@@ -73,9 +73,6 @@ getrandom = { workspace = true }
 # ── the `pack` feature's own dependencies; see the note above [features]. OPTIONAL, never default.
 # (`hex` and `getrandom` above are this crate's own unconditional deps; `keygen` draws its ed25519
 # seed from the OS RNG through the same `getrandom`.)
-# The extracted SecretRef reference type, so the x-busbar-secret `oneOf` shape is derived from the
-# REAL type the engine deserializes rather than a hand-written parallel copy that can drift.
-busbar-secret-ref = { path = "../secret-ref", optional = true }
 # Pack-time gate for --settings-schema-file: reject a syntactically-invalid JSON Schema 2020-12
 # document at PACK time, not at UI-render time on some operator's machine. Tooling-only, and behind
 # the feature, so it never reaches a plugin or the engine.
