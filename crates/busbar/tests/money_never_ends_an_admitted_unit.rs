@@ -293,11 +293,22 @@ fn no_abort_the_shipped_kernel_can_raise_carries_a_money_reason() {
     }
 }
 
-/// THE CENSUS FLOOR, armed at today's measured number: one hundred `Refusal::new(` constructions in
+/// THE CENSUS FLOOR, armed at today's measured number: ninety-eight `Refusal::new(` constructions in
 /// production source. The scan this file used to run matched fifty-seven of them (item 258); a floor
 /// under the census is what stops a scanner regression from quietly shrinking the population every
 /// "nothing refuses with" claim below is asserted over.
-const MIN_REFUSAL_SITES: usize = 100;
+///
+/// The floor sits AT the population, with no headroom: one lost site is red. It was armed at one
+/// hundred (bea770849), the population grew to one hundred and one, and 04135c892 (UC-STRIKE, owner
+/// ruling 2026-09-08) deleted `posture::check_approve` and
+/// `posture::check_set_dual_control_required` — the removed `approve` / `set_dual_control` verbs'
+/// own checks, zero production callers — taking their three `RefusalStep::Approve` sites
+/// (`SelfApproval`, `PayloadMismatch`, `InsufficientApprovers`) with them. None is a money reason and
+/// none was served. The population is ninety-eight since; the floor is re-armed there. A population
+/// that falls because code was DELETED re-arms this floor in the same commit as the deletion, naming
+/// the sites; a population that falls with no deletion is the scanner regression this floor exists
+/// to catch.
+const MIN_REFUSAL_SITES: usize = 98;
 
 /// THE SITES WHOSE REASON IS CARRIED, NOT WRITTEN — pinned, file by file, at today's measurement.
 ///
