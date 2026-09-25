@@ -199,7 +199,7 @@ fn scoped_key(id: &str, scopes: Option<Vec<busbar_api::ScopeRef>>) -> busbar_api
 /// An app whose governance holds `key`, built so `lookup_by_sub` resolves it from the loaded cache.
 fn app_with_key(key: &busbar_api::VirtualKey) -> Arc<crate::state::App> {
     use busbar_api::Store;
-    let store = Arc::new(busbar_store_memory::MemoryStore::new());
+    let store = Arc::new(crate::governance::MemoryStore::new());
     store.put_key(key).expect("memory store accepts the key");
     let gov = Arc::new(crate::governance::GovState::new(store, None).expect("gov constructs"));
     crate::test_support::TestApp::new().governance(gov).build()
@@ -234,8 +234,8 @@ fn entitlement_check_denies_a_target_outside_the_grant() {
         let server = target_ref(b"fast", 1); // scope_kind 1 = "mcp_server"
         assert!(
             !entitlement_check(host, &caller, &server),
-            "a `pool` grant must NOT cover an `mcp_server` target — scope_kind 1 resolves to \
-             \"mcp_server\", not a phantom second \"pool\""
+            "a `pool` grant must NOT cover a scope_kind 1 target — kind 1 resolves to the server \
+             scope, not a phantom second \"pool\""
         );
         // An unknown caller id is denied.
         let stranger = caller_ref(b"nobody", 0);

@@ -786,7 +786,7 @@ pub type BuiltApp = crate::state::App;
 /// (a crate whose test binary registered the MCP plane, e.g. `busbar-admin`). busbar-core's OWN
 /// `cfg(test)` binary uses the `tests/`-path helper directly and never touches this slot.
 #[cfg(all(not(test), feature = "test-support"))]
-static MCP_TEST_RUNTIME_FACTORY: std::sync::OnceLock<
+static SECTION_PLANE_TEST_RUNTIME_FACTORY: std::sync::OnceLock<
     fn() -> std::sync::Arc<dyn std::any::Any + Send + Sync>,
 > = std::sync::OnceLock::new();
 
@@ -797,17 +797,17 @@ static MCP_TEST_RUNTIME_FACTORY: std::sync::OnceLock<
 pub fn install_test_mcp_runtime_factory(
     factory: fn() -> std::sync::Arc<dyn std::any::Any + Send + Sync>,
 ) {
-    let _ = MCP_TEST_RUNTIME_FACTORY.set(factory);
+    let _ = SECTION_PLANE_TEST_RUNTIME_FACTORY.set(factory);
 }
 
 /// The MCP default runtime for the current build surface, if available.
 #[cfg(test)]
-fn default_test_mcp_runtime() -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
-    Some(crate::plane::registry::default_mcp_test_runtime())
+fn seeded_section_plane_runtime() -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
+    Some(crate::plane::registry::default_section_plane_test_runtime())
 }
 #[cfg(all(not(test), feature = "test-support"))]
-fn default_test_mcp_runtime() -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
-    MCP_TEST_RUNTIME_FACTORY.get().map(|f| f())
+fn seeded_section_plane_runtime() -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
+    SECTION_PLANE_TEST_RUNTIME_FACTORY.get().map(|f| f())
 }
 
 #[allow(dead_code)]
@@ -840,7 +840,7 @@ pub struct TestApp {
     oauth_as: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     /// LAW 7: the configured plane sections. `None` (default) = every linked plane counts configured.
     plane_sections: Option<std::collections::BTreeSet<&'static str>>,
-    mcp_durable_store: Option<std::sync::Arc<dyn busbar_api::Store>>,
+    plane_durable_store: Option<std::sync::Arc<dyn busbar_api::Store>>,
     role_bindings: Option<crate::config::RoleBindings>,
     /// The resolved token-mint policy (`auth.policy:`) for the built App. `None` (default) = the empty
     /// policy (no caps). Set by tests that exercise `MintPolicy` enforcement at the mint site.
@@ -978,7 +978,7 @@ impl TestApp {
             &crate::egress::seam::CoreHostlessEgress,
         );
         Self {
-            mcp_durable_store: None,
+            plane_durable_store: None,
             upstream_credentials: crate::auth::UpstreamCreds::Own,
             upstream_request_timeout_secs: 0,
             lanes: Vec::new(),
@@ -1327,7 +1327,7 @@ impl TestApp {
     /// [`super::plugin_store`]). A deployment that configures no store simply never calls this, and
     /// gets the process-local behaviour both properties had before.
     pub fn mcp_durable_store(mut self, store: std::sync::Arc<dyn busbar_api::Store>) -> Self {
-        self.mcp_durable_store = Some(store);
+        self.plane_durable_store = Some(store);
         self
     }
 
@@ -1478,7 +1478,7 @@ impl TestApp {
     /// Set a pool's resolved `breaker:` config (the runtime `store::BreakerCfg`, flattened to the
     /// neutral carrier the plane reconstructs it from).
     pub fn pool_breaker(mut self, name: &str, b: &busbar_kernel::store::BreakerCfg) -> Self {
-        self.pool_breaker.insert(name.into(), b.to_llm());
+        self.pool_breaker.insert(name.into(), b.to_breaker_input());
         self
     }
     /// Set a pool's own `upstream_credentials:` override (the 1.5.3 per-pool egress-credential mode).
@@ -1579,7 +1579,7 @@ impl TestApp {
         // Captured before the `App` literal moves `self` apart. Attaching it AFTER the app exists is
         // not a convenience either: the boot replay reads the operator's live registrations off the
         // built catalogue, exactly as `run()` does, so there is nothing to replay into until then.
-        let mcp_durable_store = self.mcp_durable_store.clone();
+        let plane_durable_store = self.plane_durable_store.clone();
         let mut by_model = std::collections::HashMap::new();
         // NEUTRAL lane carriers (money-path Phase 3-4 C): the fixture builds `LaneInput`, not `Lane`,
         // and hands `PlaneBuildInput` to the registered `build_runtime` fn-pointer (production parity).
@@ -1619,7 +1619,7 @@ impl TestApp {
         if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
             busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
         ) {
-            if let Some(rt) = default_test_mcp_runtime() {
+            if let Some(rt) = seeded_section_plane_runtime() {
                 plane_slots
                     .entry(crate::state::runtime_slot_key(decl.key))
                     .or_insert(rt);
@@ -1999,7 +1999,7 @@ impl TestApp {
             .record(0, "system", "boot", &app.hook_registry, &app.global_hooks);
         // Mirror main's durable-MCP-trust boot block: attach the plane sinks BEFORE the app is handed
         // to a caller.
-        if let Some(durable) = mcp_durable_store {
+        if let Some(durable) = plane_durable_store {
             // Narrowed to the plane surface exactly as boot does — these are plane sinks.
             let plane_store = crate::plane::store::PlaneStoreView::narrow(durable);
             app.spent_token_ledger.set_sink(plane_store.clone());

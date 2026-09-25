@@ -27,8 +27,8 @@ use crate::{
     admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
     core_routes, cost, durable, egress_auth, endpoints, eventstream, export, failover, governance,
     handlers, hooks, ingress, ir, json, limits, lossless, media, metrics, net_guard, oauth_as,
-    observability, operation, plane, plugin_routes, profile, proto, proxy, ratelimit, sigv4, state,
-    store, telemetry, tls, transport, trust,
+    observability, operation, plane, plugin_routes, profile, proto, proxy, ratelimit, state, store,
+    telemetry, tls, transport, trust,
 };
 use busbar_kernel::plane_host::{
     AffinityInput, AuthStyleInput, ClientSettingsInput, FailoverInput, HealthInput,
@@ -916,7 +916,7 @@ pub fn build_app_from_config(
                 .breaker
                 .as_ref()
                 .map(crate::store::breaker_cfg_to_runtime)
-                .map(|b| b.to_llm()),
+                .map(|b| b.to_breaker_input()),
         });
     }
 
@@ -1035,7 +1035,7 @@ pub fn build_app_from_config(
         );
     }
     let http1_only = upstream_bool_env_override(http1_env, cfg.limits.upstream_http1_only);
-    let llm_client_settings = ClientSettingsInput {
+    let fallback_client_settings = ClientSettingsInput {
         upstream_request_timeout_secs: cfg.limits.upstream_request_timeout_secs,
         pool_max_idle_per_host: cfg.limits.pool_max_idle_per_host,
         pool_idle_timeout_secs: cfg.limits.pool_idle_timeout_secs,
@@ -1575,14 +1575,14 @@ pub fn build_app_from_config(
 
     // Populate the NEUTRAL carrier field-by-field from the already-resolved config (pre-resolved secret
     // plaintexts + rate-card-derived costs + resolved context/tokens are in `lane_inputs`/`pool_inputs`).
-    let llm_build_input = PlaneBuildInput {
+    let fallback_build_input = PlaneBuildInput {
         lanes: lane_inputs,
         pools: pool_inputs,
         upstream_credentials: cfg.upstream_credentials,
         allow_metadata_hosts: cfg.allow_metadata_hosts.clone(),
         allow_all_metadata: cfg.allow_all_metadata,
         blocked_metadata_hosts: cfg.blocked_metadata_hosts.clone(),
-        client_settings: llm_client_settings,
+        client_settings: fallback_client_settings,
         // The cross-protocol translation seam's GLOBAL fallback max-output-tokens and effort→budget
         // table — fallback-plane vocabulary, carried through the neutral carrier so the plane's
         // `build_runtime` stamps them onto its own runtime object (they no longer live on `App`).
@@ -1617,7 +1617,7 @@ pub fn build_app_from_config(
             .and_then(|d| d.build_runtime)
         {
             let slot = f(
-                &llm_build_input as &dyn std::any::Any,
+                &fallback_build_input as &dyn std::any::Any,
                 prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
             );
             plane_slots.insert(fallback_runtime_key, slot);

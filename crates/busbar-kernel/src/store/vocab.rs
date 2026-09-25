@@ -251,7 +251,7 @@ impl BreakerCfg {
     /// `build_runtime` reconstructs from (money-path Phase 3-4 C). Lossless over every field the FSM
     /// reads. `honor_retry_after`/`bench_below_trip_threshold` are always `true` on the LLM path,
     /// carried anyway so a future divergence cannot silently drop.
-    pub fn to_llm(&self) -> crate::plane_host::BreakerInput {
+    pub fn to_breaker_input(&self) -> crate::plane_host::BreakerInput {
         crate::plane_host::BreakerInput {
             base_cooldown_secs: self.base_cooldown_secs,
             max_cooldown_secs: self.max_cooldown_secs,
@@ -270,11 +270,11 @@ impl BreakerCfg {
         }
     }
 
-    /// Reconstruct the runtime breaker cfg from the neutral carrier — the inverse of [`to_llm`],
+    /// Reconstruct the runtime breaker cfg from the neutral carrier — the inverse of [`to_breaker_input`],
     /// called IN-PLANE by the LLM plane's `build_runtime` (the allowed plane->core edge; the plane
     /// names only this pub constructor and the neutral input type).
     ///
-    /// [`to_llm`]: Self::to_llm
+    /// [`to_breaker_input`]: Self::to_breaker_input
     pub fn from_llm(i: &crate::plane_host::BreakerInput) -> Self {
         Self {
             base_cooldown_secs: i.base_cooldown_secs,

@@ -112,7 +112,7 @@ pub(super) fn plain_connector(
         .https_or_http()
         .enable_http1()
         .wrap_connector(http);
-    SpkiObserve::new(ConnectDeadline::new(https, deadline), false)
+    KeyPinObserve::new(ConnectDeadline::new(https, deadline), false)
 }
 
 /// The same shape over a fixture CA with the FULL ALPN offer (h2 then h1) — the evidence-learning
@@ -142,7 +142,7 @@ pub(super) fn tls_connector_all_versions(
         .https_or_http()
         .enable_all_versions()
         .wrap_connector(http);
-    SpkiObserve::new(ConnectDeadline::new(https, deadline), false)
+    KeyPinObserve::new(ConnectDeadline::new(https, deadline), false)
 }
 
 pub(super) fn cfg(dial_bound: usize) -> PoolConfig {
@@ -1084,7 +1084,7 @@ async fn a_dead_on_arrival_delivery_re_enters_checkout() {
         &key,
         dead,
         pool::ConnSnapshot {
-            spki: None,
+            key_pin: None,
             negotiated_h2: false,
         },
     );
@@ -1106,7 +1106,7 @@ async fn a_dead_on_arrival_delivery_re_enters_checkout() {
         &key,
         live,
         pool::ConnSnapshot {
-            spki: None,
+            key_pin: None,
             negotiated_h2: false,
         },
     );
@@ -1174,7 +1174,7 @@ async fn a_dead_on_arrival_fresh_conn_is_terminal_never_re_dialed() {
         &key,
         dead,
         pool::ConnSnapshot {
-            spki: None,
+            key_pin: None,
             negotiated_h2: false,
         },
     );
@@ -1386,7 +1386,7 @@ async fn a_take_message_bounce_retries_once_with_the_original_uri_restored() {
         &key,
         doctored.take_sender(),
         pool::ConnSnapshot {
-            spki: None,
+            key_pin: None,
             negotiated_h2: false,
         },
     );
@@ -1476,7 +1476,7 @@ async fn a_fresh_conn_take_message_bounce_is_terminal_not_retried() {
         &key,
         doctored.take_sender(),
         pool::ConnSnapshot {
-            spki: None,
+            key_pin: None,
             negotiated_h2: false,
         },
     );

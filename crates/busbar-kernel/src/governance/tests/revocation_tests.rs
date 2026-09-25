@@ -4,10 +4,10 @@
 //! Tests for `crates/busbar-core/src/governance/revocation.rs`.
 
 use super::*;
+use crate::governance::MemoryStore;
 use busbar_api::{
     AuditRecord, MeteringDelta, MeteringRow, StoreResult, UsageDelta, UsageLedger, VirtualKey,
 };
-use busbar_store_memory::MemoryStore;
 use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc;
 use std::time::Duration;

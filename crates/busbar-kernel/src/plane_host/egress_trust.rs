@@ -59,7 +59,7 @@ pub trait EgressTrustHost: Send + Sync {
 
     /// The `sha256/<base64>` SPKI pin of a peer certificate a completed handshake produced. Pure DER
     /// walk; pass-through to [`spki::pin`](super::spki::pin).
-    fn peer_spki_pin(&self, cert_der: &[u8]) -> Result<String, SpkiError>;
+    fn peer_leaf_pin(&self, cert_der: &[u8]) -> Result<String, SpkiError>;
 }
 
 /// The production egress-trust capability: a BYTE-FOR-BYTE pass-through to the host-side primitives.
@@ -84,7 +84,7 @@ impl EgressTrustHost for PassThroughEgressTrust {
         super::trust_anchor::resolve(trust_anchor_ref)
     }
 
-    fn peer_spki_pin(&self, cert_der: &[u8]) -> Result<String, SpkiError> {
+    fn peer_leaf_pin(&self, cert_der: &[u8]) -> Result<String, SpkiError> {
         super::spki::pin(cert_der)
     }
 }

@@ -720,7 +720,7 @@ fn plugin_versions_pins_lower_the_floors() {
         plugin_versions: BTreeMap::from([
             ("acme-store-x".to_string(), "1.4.0".to_string()),
             (
-                "busbar-store-valkey-plugin".to_string(),
+                "busbar-store-first-party-plugin".to_string(),
                 "1.5.0".to_string(),
             ),
         ]),
@@ -751,7 +751,7 @@ fn plugin_versions_pins_lower_the_floors() {
         deploy
             .plugins
             .first_party_floors
-            .get("busbar-store-valkey-plugin")
+            .get("busbar-store-first-party-plugin")
             .map(String::as_str),
         Some("1.5.0"),
     );

@@ -69,7 +69,7 @@ pub mod resolve;
 pub mod tls;
 
 pub use deadline::ConnectDeadline;
-pub use observe::{peer_spki, ObservedIo, PeerSpki, SpkiObserve};
+pub use observe::{peer_key_pin, KeyPinObserve, ObservedIo, PeerKeyPin};
 pub use resolve::{EgressResolver, ResolveNames};
 pub use tls::{ClientIdentity, Trust};
 
@@ -78,7 +78,7 @@ pub use tls::{ClientIdentity, Trust};
 /// with the peer identity observed on the way out. ONE concrete type for every posture — the
 /// per-posture differences are VALUES inside the layers, never per-request branches.
 pub type EngineConnector =
-    SpkiObserve<ConnectDeadline<hyper_rustls::HttpsConnector<tunnel::TunnelConnector>>>;
+    KeyPinObserve<ConnectDeadline<hyper_rustls::HttpsConnector<tunnel::TunnelConnector>>>;
 
 /// The pooled egress client — the OWNED pool with dial coalescing (`client.rs`/`pool.rs`),
 /// behind the same `request()` surface the `hyper_util::client::legacy::Client` alias had.
@@ -108,7 +108,7 @@ pub struct EngineSpec {
     pub dns: Dns,
     /// Peer-certificate observation for SPKI pinning ([`observe`]). Off on the pooled posture (no
     /// walk, no hash per connect); on for every pinned posture.
-    pub observe_spki: bool,
+    pub observe_key_pin: bool,
     /// Trust source ([`tls::Trust`]): the compiled-in webpki roots, optionally joined by
     /// operator-registered extras.
     pub trust: Trust,
@@ -180,7 +180,7 @@ impl EngineSpec {
             h2_prior_knowledge,
             pin: None,
             dns: Dns::System,
-            observe_spki: false,
+            observe_key_pin: false,
             trust: Trust::Webpki,
             identity: None,
             proxy: ProxyPosture::BootEnv,
@@ -213,7 +213,7 @@ impl EngineSpec {
             h2_prior_knowledge: false,
             pin: Some(PinnedDest { host, addr }),
             dns: Dns::System,
-            observe_spki: true,
+            observe_key_pin: true,
             trust: Trust::WebpkiPlus(extra_roots),
             identity,
             proxy: ProxyPosture::Direct,
@@ -322,10 +322,10 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
     // One wall-clock bound over the WHOLE connect — TCP + tunnel + TLS handshake (see
     // `deadline`; reqwest's connect_timeout parity on the pinned postures, a strict tightening
     // of the latent black-hole-TLS gap on the pooled posture). Then the peer-identity observation,
-    // a per-connect branch that is pass-through when `observe_spki` is off.
-    let https: EngineConnector = SpkiObserve::new(
+    // a per-connect branch that is pass-through when `observe_key_pin` is off.
+    let https: EngineConnector = KeyPinObserve::new(
         ConnectDeadline::new(https, super::EGRESS_CONNECT_TIMEOUT),
-        spec.observe_spki,
+        spec.observe_key_pin,
     );
 
     // The OWNED pool over the connector stack: the same knobs the legacy builder took, resolved
@@ -566,7 +566,7 @@ mod pool_h2_tests;
 #[path = "tests/resolver_tests.rs"]
 mod resolver_tests;
 
-/// The R1 extras-propagation spike (pooled reuse carries `PeerSpki` on every response), SNI
+/// The R1 extras-propagation spike (pooled reuse carries `PeerKeyPin` on every response), SNI
 /// preservation under the pin with its wrong-name refusing twin, the R2 URI-port-wins proof, and
 /// the whole-connect deadline against a black-holing TLS peer.
 #[cfg(test)]

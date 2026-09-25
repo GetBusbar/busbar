@@ -286,7 +286,7 @@ pub fn builtin_plane_decls() -> &'static [&'static PlaneDecl] {
 /// runtime seeded registers the plane itself (`busbar_mcp::testkit::install_test_seams()`) and drives
 /// its own fixture, exactly as an external `test-support` consumer already did.
 #[cfg(test)]
-pub fn default_mcp_test_runtime() -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
+pub fn default_section_plane_test_runtime() -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
     std::sync::Arc::new(())
 }
 
@@ -660,7 +660,7 @@ pub fn build_dispatch(
 // cleanup): most of it drove the REAL `busbar_llm`/`busbar_mcp`/`busbar_a2a` `PLANE_DECL`s and their
 // real runtime objects, which only type-checks with ONE `busbar_kernel` in the graph — an
 // integration-test target, never this `#[cfg(test)]` unit module. See that file's header. The two
-// `#[cfg(test)]` seams it used to reach through (`builtin_plane_decls`, `default_mcp_test_runtime`
+// `#[cfg(test)]` seams it used to reach through (`builtin_plane_decls`, `default_section_plane_test_runtime`
 // below) now behave identically under `cfg(test)` and under the external `test-support` surface: an
 // EMPTY built-in set unless a test explicitly registers (`register_test_plane`) — the posture the
 // module doc below already described for external consumers.

@@ -1668,7 +1668,7 @@ pub(crate) async fn auth_middleware(
     // match below. The "which protocol uses SigV4" decision is a DECLARED protocol fact
     // (`ProtocolDecl::ingress_auth`), NOT a name-branch on any one protocol — and reading it no
     // longer costs the reader/writer pair the old vtable predicate had to allocate to ask.
-    let ingress_uses_sigv4 = crate::proto::decl_for(crate::ingress::native::envelope_dialect(
+    let ingress_signed = crate::proto::decl_for(crate::ingress::native::envelope_dialect(
         ingress_for_path(&app, &path),
     ))
     .is_some_and(|d| d.uses_sigv4_ingress_auth());
@@ -1680,7 +1680,7 @@ pub(crate) async fn auth_middleware(
     // it.
     let verdict = if admission.is_none()
         && app.auth.keys_in_chain
-        && ingress_uses_sigv4
+        && ingress_signed
         && has_sigv4_authorization(&req)
     {
         // STRUCTURAL GATE, before buffering: require the Authorization header to actually parse
@@ -2027,7 +2027,7 @@ fn verify_sigv4_ingress_credential(
         );
         return Err(());
     }
-    let actual_body_hash = crate::sigv4::sha256_hex(body);
+    let actual_body_hash = busbar_api::sha256_hex(body);
     if !AuthMiddleware::constant_time_eq(&actual_body_hash, &payload_hash.to_ascii_lowercase()) {
         tracing::debug!(
             "inbound SigV4 rejected: request body does not match signed x-amz-content-sha256"

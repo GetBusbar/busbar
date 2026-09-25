@@ -30,7 +30,7 @@ use bytes::Bytes;
 use http_body_util::Full;
 use hyper::client::conn::{http1, http2};
 
-use super::{EngineConnector, H2KeepAlive, PeerSpki};
+use super::{EngineConnector, H2KeepAlive, PeerKeyPin};
 
 /// The pool key — scheme + authority, exactly legacy's, which is why the userinfo strip in
 /// [`super::request`] stays load-bearing (userinfo must never reach this key).
@@ -129,7 +129,7 @@ pub(crate) enum KnownProto {
 /// into every response this connection serves — the extras contract the observe spike pins.
 #[derive(Clone)]
 pub(crate) struct ConnSnapshot {
-    pub(crate) spki: Option<PeerSpki>,
+    pub(crate) key_pin: Option<PeerKeyPin>,
     /// Whether ALPN negotiated h2 on this connection (posture-forced h2c does not set this;
     /// the protocol branch reads posture separately).
     #[allow(dead_code)] // captured for observability parity; the variant carries the protocol
@@ -534,7 +534,7 @@ async fn perform_dial(inner: &Arc<ClientInner>, key: &PoolKey) -> DialOutcome {
     // The connect-time snapshot, read ONCE: the observed peer SPKI (the extras contract) and the
     // ALPN result (the protocol branch).
     let extras = ConnSnapshot {
-        spki: io.peer_spki_snapshot(),
+        key_pin: io.peer_key_pin_snapshot(),
         negotiated_h2: io.negotiated_h2(),
     };
     let is_h2 = extras.negotiated_h2 || inner.h2_pinned();

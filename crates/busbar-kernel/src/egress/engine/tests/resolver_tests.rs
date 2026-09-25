@@ -127,7 +127,7 @@ async fn a_pinned_client_performs_zero_engine_lookups_and_refuses_other_names() 
             addr: fixture.addr.ip(),
         }),
         dns: Dns::Custom(Arc::clone(&counting) as Arc<dyn ResolveNames>),
-        observe_spki: true,
+        observe_key_pin: true,
         ..EngineSpec::pooled_webpki(4, 300, false, false)
     };
     let client = build_client(&spec).expect("a pinned client builds");
@@ -143,7 +143,7 @@ async fn a_pinned_client_performs_zero_engine_lookups_and_refuses_other_names() 
         let resp = client.request(req).await.expect("the pinned hop answers");
         assert_eq!(resp.status(), 200);
         // A plaintext hop under an observing posture is honestly absent, never a pass.
-        assert_eq!(peer_spki(&resp), None);
+        assert_eq!(peer_key_pin(&resp), None);
         use http_body_util::BodyExt;
         let body = resp.into_body().collect().await.expect("body").to_bytes();
         assert_eq!(&body[..], b"pinned answer");

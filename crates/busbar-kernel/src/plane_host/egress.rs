@@ -103,7 +103,7 @@ enum HeadMsg {
     /// packed response headers the plane classifies on (content-type + Location).
     Ok {
         status: u16,
-        spki: Vec<u8>,
+        key_pin: Vec<u8>,
         resp_headers: Vec<u8>,
     },
     /// The resolve-then-pin guard refused the hop (SSRF / scheme / metadata).
@@ -134,9 +134,9 @@ struct HttpEgress {
     /// The observed peer identity bytes, kept alive HERE so the [`EgressHead::observed_spki_ptr`]
     /// handed back at open stays valid for as long as the egress is open (the plane may read it after
     /// `egress_open` returns). Empty on a plaintext hop.
-    observed_spki: Vec<u8>,
+    observed_pin: Vec<u8>,
     /// The packed response-header records (content-type + Location) the plane classifies on, kept alive
-    /// HERE for the same reason `observed_spki` is: the [`EgressHead::resp_headers_ptr`] handed back at
+    /// HERE for the same reason `observed_pin` is: the [`EgressHead::resp_headers_ptr`] handed back at
     /// open borrows these and the plane reads them after `egress_open` returns.
     resp_headers: Vec<u8>,
 }
@@ -260,11 +260,11 @@ fn close_and_remove(id: u64) -> bool {
 /// yields, byte for byte — and it survives a certificate renewal because it pins the KEY, not the
 /// leaf bytes.
 fn observed_identity(resp: &http::Response<hyper::body::Incoming>) -> Vec<u8> {
-    // The ENGINE computed the pin once at connect time (`SpkiObserve`, the same `spki::pin` walk)
+    // The ENGINE computed the pin once at connect time (`KeyPinObserve`, the same `spki::pin` walk)
     // and the pool replayed it onto this response's extensions — per-connection-correctly, so a
     // pooled response is attributed to ITS connection's certificate. Absent on a plaintext hop
     // and on an unwalkable certificate: honestly absent, never a pass.
-    busbar_kernel::egress::engine::peer_spki(resp)
+    busbar_kernel::egress::engine::peer_key_pin(resp)
         .map(|pin| pin.as_bytes().to_vec())
         .unwrap_or_default()
 }
@@ -735,12 +735,12 @@ fn open_http(
             return StatusClass::Fault;
         }
     };
-    let (status, spki, resp_headers) = match head {
+    let (status, key_pin, resp_headers) = match head {
         HeadMsg::Ok {
             status,
-            spki,
+            key_pin,
             resp_headers,
-        } => (status, spki, resp_headers),
+        } => (status, key_pin, resp_headers),
         HeadMsg::Refused(reason) => {
             tracing::debug!(target: "busbar::plane_host::egress", %reason, "governed egress refused");
             let _ = join.join();
@@ -764,16 +764,16 @@ fn open_http(
         ended: Mutex::new(false),
         stop,
         join: Mutex::new(Some(join)),
-        observed_spki: spki,
+        observed_pin: key_pin,
         resp_headers,
     });
 
     // The EgressHead borrows the backend's own SPKI + response-header bytes, which live until close — so
     // the pointers handed back stay valid while the plane holds the EgressOpen.
-    let (spki_ptr, spki_len) = if egress.observed_spki.is_empty() {
+    let (pin_ptr, pin_len) = if egress.observed_pin.is_empty() {
         (std::ptr::null(), 0)
     } else {
-        (egress.observed_spki.as_ptr(), egress.observed_spki.len())
+        (egress.observed_pin.as_ptr(), egress.observed_pin.len())
     };
     let (rh_ptr, rh_len) = if egress.resp_headers.is_empty() {
         (std::ptr::null(), 0)
@@ -790,8 +790,8 @@ fn open_http(
             size: std::mem::size_of::<EgressHead>() as u32,
             version: POD_VERSION,
             status_code: status,
-            observed_spki_ptr: spki_ptr,
-            observed_spki_len: spki_len,
+            observed_spki_ptr: pin_ptr,
+            observed_spki_len: pin_len,
             resp_headers_ptr: rh_ptr,
             resp_headers_len: rh_len,
             client_identity_offered,
@@ -1017,7 +1017,7 @@ fn run_http_stream(
         };
         let status = resp.status().as_u16();
         // READ THE CERTIFICATE BEFORE THE BODY — it belongs to THIS connection.
-        let spki = observed_identity(&resp);
+        let key_pin = observed_identity(&resp);
         // The RESPONSE HEADERS the plane classifies on, surfaced as neutral records — the host formats
         // none of them. `content-type` (SSE vs JSON) is surfaced always; `Location` only when present
         // (a redirect), so the plane can refuse the 3xx with the unguarded target's own location.
@@ -1025,7 +1025,7 @@ fn run_http_stream(
         if head_tx
             .send(HeadMsg::Ok {
                 status,
-                spki,
+                key_pin,
                 resp_headers,
             })
             .is_err()
