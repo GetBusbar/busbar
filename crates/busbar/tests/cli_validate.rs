@@ -64,6 +64,7 @@ models:
 /// A config that configures the plane owning `tools:` and NOTHING else — no provider, no model — so
 /// it validates on any build that links that plane, whatever other planes (and their provider wire
 /// codecs) the build carries.
+#[cfg(linked_axis_stdio_serve)]
 fn write_tools_only_configs(dir: &Path, extra: &str) {
     std::fs::write(dir.join("providers.yaml"), "").unwrap();
     std::fs::write(
@@ -1545,12 +1546,14 @@ fn validate_refuses_a_decisions_model_whose_provider_speaks_a_foreign_dialect() 
 // is as unknown to it as it was to 1.5.5.
 
 /// The published 1.5.5 refusal for `protocol: bogus`, byte for byte (golden cell
-/// `boot.refusal|BOOT-020|validate`).
-#[cfg(feature = "plane-decision")]
+/// `boot.refusal|BOOT-020|validate`). The list is the linked provider wire codecs', so these cells
+/// also need the linked `body-ingress` axis: a build with no provider codec refuses every provider
+/// lane first (BUSBAR-3015), and that is the correct answer there, not a missed 1.5.5 line.
+#[cfg(all(feature = "plane-decision", linked_axis_body_ingress))]
 const PROTOCOLS_1_5_5: &str =
     "must be one of: anthropic, openai, gemini, bedrock, responses, cohere\n";
 
-#[cfg(feature = "plane-decision")]
+#[cfg(all(feature = "plane-decision", linked_axis_body_ingress))]
 #[test]
 fn validate_unknown_protocol_lists_only_the_configured_planes_dialects() {
     let dir = fixture_dir("bogus-protocol-no-decisions");
@@ -1569,7 +1572,7 @@ fn validate_unknown_protocol_lists_only_the_configured_planes_dialects() {
 /// `protocol: jev` with no `decisions:` section refuses as 1.5.5 refuses it: no configured plane
 /// speaks it. (The CONTROL `validate_ok_on_a_good_decisions_config` above is the same provider WITH
 /// the section, which validates clean.)
-#[cfg(feature = "plane-decision")]
+#[cfg(all(feature = "plane-decision", linked_axis_body_ingress))]
 #[test]
 fn validate_refuses_the_decision_protocol_when_no_decisions_section_is_configured() {
     let dir = fixture_dir("decision-protocol-no-decisions");
