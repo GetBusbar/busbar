@@ -26,8 +26,8 @@ const SECS_PER_HOUR: u64 = 3_600;
 /// The SigV4 algorithm token that appears in the `Authorization` header and the string-to-sign.
 pub const SIGV4_ALGORITHM: &str = "AWS4-HMAC-SHA256";
 /// The terminating scope component appended to every Credential scope and fed to the HMAC chain.
-pub const SIGV4_TERMINATION: &str = "aws4_request";
-const SIGV4_KEY_PREFIX: &str = "AWS4";
+pub const SIGNATURE_TERMINATION: &str = "aws4_request";
+const SIGNATURE_KEY_PREFIX: &str = "AWS4";
 
 /// Lowercase hex SHA-256 of `data`.
 pub fn sha256_hex(data: &[u8]) -> String {
@@ -51,12 +51,12 @@ fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
 /// Derive the SigV4 signing key: HMAC chain over date -> region -> service -> "aws4_request".
 fn signing_key(secret: &str, datestamp: &str, region: &str, service: &str) -> Vec<u8> {
     let k_date = hmac(
-        format!("{SIGV4_KEY_PREFIX}{secret}").as_bytes(),
+        format!("{SIGNATURE_KEY_PREFIX}{secret}").as_bytes(),
         datestamp.as_bytes(),
     );
     let k_region = hmac(&k_date, region.as_bytes());
     let k_service = hmac(&k_region, service.as_bytes());
-    hmac(&k_service, SIGV4_TERMINATION.as_bytes())
+    hmac(&k_service, SIGNATURE_TERMINATION.as_bytes())
 }
 
 /// AWS URI-encode a path, preserving `/`. Unreserved chars (A-Za-z0-9-_.~) pass through; everything
@@ -176,7 +176,7 @@ pub fn sign_v4(
     let canonical_request = format!(
         "{method}\n{canonical_uri}\n{canonical_querystring}\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
     );
-    let scope = format!("{datestamp}/{region}/{service}/{SIGV4_TERMINATION}");
+    let scope = format!("{datestamp}/{region}/{service}/{SIGNATURE_TERMINATION}");
     let string_to_sign = format!(
         "{SIGV4_ALGORITHM}\n{amzdate}\n{scope}\n{}",
         sha256_hex(canonical_request.as_bytes())
