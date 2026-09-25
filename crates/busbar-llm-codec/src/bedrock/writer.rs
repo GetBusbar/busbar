@@ -189,7 +189,13 @@ impl ProtocolWriter for BedrockWriter {
         // field, and no "do NOT call a tool" (`IrToolChoice::None`) directive — a cross-protocol
         // request carrying either has that control dropped on egress.
         let mut dropped = Vec::new();
-        if req.response_format.is_some() {
+        // BED-08: a JSON-schema directive projects onto `outputConfig.textFormat`; only the forms
+        // Converse's `json_schema`-only enum cannot express are dropped.
+        if req
+            .response_format
+            .as_ref()
+            .is_some_and(|rf| super::write_bedrock_text_format(rf).is_none())
+        {
             dropped.push("response_format");
         }
         if matches!(req.tool_choice, Some(crate::ir::IrToolChoice::None)) {
@@ -198,15 +204,33 @@ impl ProtocolWriter for BedrockWriter {
         dropped
     }
 
+    /// BED-06 family gate. The reasoning ask is written as `additionalModelRequestFields.thinking`,
+    /// which is CLAUDE's spelling; another Converse family (Amazon Nova's `reasoningConfig`, and
+    /// others) rejects or ignores it. The model id is the only place the family is visible — the
+    /// Converse body carries none — so a cross-protocol ask reaches the wire only when the lane
+    /// model names Claude (`anthropic.` / `claude`, which covers the bare model id, the regional
+    /// and global inference profiles and their ARNs). Any other model, including an opaque
+    /// application-inference-profile ARN, has the ask dropped with a warn rather than risk a 400.
+    fn write_request_for_model(
+        &self,
+        req: &crate::ir::IrRequest,
+        model: &str,
+    ) -> serde_json::Value {
+        if req.reasoning.is_some() && !bedrock_model_is_claude(model) {
+            tracing::warn!(
+                model,
+                "dropping cross-protocol reasoning/thinking ask on Bedrock egress: the lane model \
+                 is not a Claude model, and Converse's `thinking` field is Claude's spelling"
+            );
+            let mut without = req.clone();
+            without.reasoning = None;
+            return self.write_request(&without);
+        }
+        self.write_request(req)
+    }
+
     fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value {
         let _t = busbar_timing::timeit!("bedrock_write_request");
-        // The reasoning carry has no Bedrock Converse shape in this pass; dropped observably (matching
-        // the penalties/top_k convention) rather than silently.
-        if req.reasoning.is_some() {
-            tracing::warn!(
-                "dropping cross-protocol reasoning/thinking ask: no Bedrock Converse mapping in this release"
-            );
-        }
         let mut out = serde_json::Map::new();
 
         // The captured native `cachePoint` markers (see `CACHE_POINTS_SENTINEL`). On a same-protocol
@@ -577,6 +601,47 @@ impl ProtocolWriter for BedrockWriter {
         // typed IR. The typed fields WIN over any same-named raw entry so the structured IR remains
         // the source of truth for the values it models. `extra`'s raw `inferenceConfig` is consumed
         // here (not re-emitted by the trailing extra-merge), so there is no double-emit.
+        // BED-06: the reasoning ASK projects onto `additionalModelRequestFields.thinking`
+        // (`{type: "enabled", budget_tokens}`, the Anthropic-on-Bedrock spelling — Claude is the
+        // Converse family whose reasoning a cross-protocol caller reaches; the IR carries no model,
+        // so the family cannot be chosen per request). A raw native ask already in `extra` (a
+        // same-protocol body, `thinking` or Nova `reasoningConfig`) is authoritative and re-emitted
+        // verbatim below, so nothing is synthesized over it. Budget rules mirror the Anthropic
+        // writer: clamped to leave 1024 answer tokens under `maxTokens`, floored at the 1024
+        // minimum, and dropped with a warn when `maxTokens` has no room for it.
+        let native_reasoning_present = req
+            .extra
+            .get("additionalModelRequestFields")
+            .and_then(|v| v.as_object())
+            .is_some_and(|a| a.contains_key("thinking") || a.contains_key("reasoningConfig"));
+        let mut thinking: Option<serde_json::Value> = None;
+        if let Some(ask) = req.reasoning.filter(|_| !native_reasoning_present) {
+            let table = req
+                .reasoning_budgets
+                .unwrap_or(crate::ir::REASONING_BUDGET_DEFAULTS);
+            let want = ask.to_budget(table);
+            let cap = req.max_tokens.map(|mt| mt.saturating_sub(1024));
+            let budget = cap.map_or(want, |c| want.min(c));
+            if budget >= 1024 {
+                if budget != want {
+                    tracing::warn!(
+                        requested_budget = want,
+                        clamped_budget = budget,
+                        max_tokens = ?req.max_tokens,
+                        "thinking budget clamped to fit under maxTokens on Bedrock egress"
+                    );
+                }
+                thinking = Some(serde_json::json!({"type": "enabled", "budget_tokens": budget}));
+            } else {
+                tracing::warn!(
+                    max_tokens = ?req.max_tokens,
+                    "dropping reasoning ask on Bedrock egress: maxTokens leaves no room for the \
+                     1024-token thinking minimum"
+                );
+            }
+        }
+        let thinking_emitted = thinking.is_some();
+
         let mut inference_config = req
             .extra
             .get("inferenceConfig")
@@ -586,7 +651,14 @@ impl ProtocolWriter for BedrockWriter {
         if let Some(max_tokens) = req.max_tokens {
             inference_config.insert("maxTokens".to_string(), serde_json::json!(max_tokens));
         }
-        if let Some(temperature) = req.temperature {
+        if thinking_emitted && req.temperature.is_some_and(|t| t != 1.0) {
+            // Claude rejects a temperature != 1 alongside thinking; the think-ask wins, observably.
+            tracing::warn!(
+                temperature = ?req.temperature,
+                "omitting temperature on Bedrock egress: not compatible with thinking"
+            );
+        }
+        if let Some(temperature) = req.temperature.filter(|_| !thinking_emitted) {
             // Clamp to Bedrock's native [0.0, 1.0]. OpenAI / Responses accept temperature up
             // to 2.0, so a cross-protocol request can carry a value Bedrock's API rejects with a hard
             // 400 ValidationException; clamping forwards the closest valid value instead. NON-SILENT
@@ -608,7 +680,14 @@ impl ProtocolWriter for BedrockWriter {
         // cross-protocol egress emits the value carried in the IR). `top_k` has no inferenceConfig
         // home — it is emitted below via `additionalModelRequestFields` (fidelity fix).
         if let Some(top_p) = req.top_p {
-            inference_config.insert("topP".to_string(), serde_json::json!(top_p));
+            if thinking_emitted {
+                tracing::warn!(
+                    top_p,
+                    "omitting topP on Bedrock egress: not compatible with thinking"
+                );
+            } else {
+                inference_config.insert("topP".to_string(), serde_json::json!(top_p));
+            }
         }
         if !req.stop.is_empty() {
             inference_config.insert("stopSequences".to_string(), serde_json::json!(req.stop));
@@ -630,12 +709,37 @@ impl ProtocolWriter for BedrockWriter {
         // Dropping it silently is exactly the lossy mutation busbar exists to avoid, so emit a `warn!`
         // so the divergence is observable rather than invisible (mirrors the Anthropic egress). The
         // directive is dropped, not forwarded: there is no native key to carry it on Converse.
-        if req.response_format.is_some() {
-            tracing::warn!(
-                parameter = "response_format",
-                "dropping response_format on Bedrock egress: Converse has no native \
-                 response_format field, so the structured-output directive from a cross-protocol \
-                 request is NOT forwarded"
+        // BED-08: Converse DOES carry structured output natively — `outputConfig.textFormat`
+        // (`{type: "json_schema", structure: {jsonSchema: {schema: "<string>", name,
+        // description}}}`). A JSON-schema directive projects onto it, overlaid onto any raw
+        // `outputConfig` in `extra` (a same-protocol body's own `textFormat` wins — it is what the
+        // typed field was read from). Only the forms the `json_schema`-only enum cannot express
+        // (schema-less JSON mode, plain text) are dropped, observably.
+        let mut output_config = req
+            .extra
+            .get("outputConfig")
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+        if let Some(rf) = &req.response_format {
+            match super::write_bedrock_text_format(rf) {
+                Some(tf) => {
+                    output_config.entry("textFormat").or_insert(tf);
+                }
+                None => {
+                    tracing::warn!(
+                        parameter = "response_format",
+                        "dropping response_format on Bedrock egress: Converse's \
+                         `outputConfig.textFormat` models only a JSON schema, and this directive \
+                         carries none (schema-less JSON mode or plain text)"
+                    );
+                }
+            }
+        }
+        if !output_config.is_empty() {
+            out.insert(
+                "outputConfig".to_string(),
+                serde_json::Value::Object(output_config),
             );
         }
 
@@ -657,7 +761,6 @@ impl ProtocolWriter for BedrockWriter {
             .and_then(|v| v.as_object())
             .cloned()
             .unwrap_or_default();
-        super::super::ir_encode::warn_dropped_tool_strict(&req.tools, "bedrock");
         if !req.tools.is_empty() {
             let mut tools_arr: Vec<serde_json::Value> = Vec::new();
             for tool in &req.tools {
@@ -666,6 +769,10 @@ impl ProtocolWriter for BedrockWriter {
 
                 if let Some(desc) = &tool.description {
                     tool_spec.insert("description".to_string(), serde_json::json!(desc));
+                }
+                // BED-08: Converse `toolSpec.strict` — the per-tool structured-output switch.
+                if let Some(strict) = tool.strict {
+                    tool_spec.insert("strict".to_string(), serde_json::json!(strict));
                 }
 
                 let mut input_schema = serde_json::Map::new();
@@ -708,6 +815,24 @@ impl ProtocolWriter for BedrockWriter {
         if tool_config.contains_key("tools") {
             if let Some(tc) = &req.tool_choice {
                 match write_bedrock_tool_choice(tc) {
+                    // Claude rejects a FORCED/TARGETED tool choice alongside thinking (only auto is
+                    // allowed); the think-ask wins and the choice degrades to `auto`, observably —
+                    // the Anthropic writer's rule, for the same model.
+                    Some(_)
+                        if thinking_emitted
+                            && matches!(
+                                tc,
+                                crate::ir::IrToolChoice::Required
+                                    | crate::ir::IrToolChoice::Tool { .. }
+                            ) =>
+                    {
+                        tracing::warn!(
+                            "downgrading forced/targeted toolChoice to auto on Bedrock egress: not \
+                             compatible with thinking"
+                        );
+                        tool_config
+                            .insert("toolChoice".to_string(), serde_json::json!({"auto": {}}));
+                    }
                     Some(v) => {
                         tool_config.insert("toolChoice".to_string(), v);
                     }
@@ -760,7 +885,15 @@ impl ProtocolWriter for BedrockWriter {
             .and_then(|v| v.as_object())
             .cloned()
             .unwrap_or_default();
-        if let Some(top_k) = req.top_k {
+        if let Some(t) = thinking {
+            additional_fields.insert("thinking".to_string(), t);
+        }
+        if let Some(top_k) = req.top_k.filter(|_| {
+            if thinking_emitted {
+                tracing::warn!("omitting top_k on Bedrock egress: not compatible with thinking");
+            }
+            !thinking_emitted
+        }) {
             // Preserve the source spelling on a same-protocol passthrough: re-emit camelCase `topK`
             // when the reader stamped the sentinel (the body arrived as `topK`), else the canonical
             // snake_case `top_k`. The sentinel only survives on the same-protocol path (`extra` is
@@ -784,7 +917,7 @@ impl ProtocolWriter for BedrockWriter {
             // onto the raw object); re-inserting the raw copy here would clobber that overlay and drop
             // the typed `maxTokens`/`temperature` (inferenceConfig) or `tools` (toolConfig). Every
             // other unmodeled field passes through verbatim.
-            if key == "inferenceConfig" || key == "toolConfig" {
+            if key == "inferenceConfig" || key == "toolConfig" || key == "outputConfig" {
                 continue;
             }
             // `additionalModelRequestFields` was already consumed above (typed `top_k` overlaid onto
@@ -1331,4 +1464,10 @@ impl ProtocolWriter for BedrockWriter {
     fn clone_box(&self) -> Box<dyn ProtocolWriter> {
         Box::new(self.clone())
     }
+}
+
+/// Whether a Bedrock lane model id names a Claude model (see `write_request_for_model`).
+fn bedrock_model_is_claude(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    m.contains("anthropic.") || m.contains("claude")
 }

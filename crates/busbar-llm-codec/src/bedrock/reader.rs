@@ -590,7 +590,9 @@ impl ProtocolReader for BedrockReader {
                             input_schema,
                             cache_control: None,
                             hosted: None,
-                            strict: None,
+                            // BED-08: Converse `toolSpec.strict` (structured-output enforcement on
+                            // the tool's input) is the same per-tool switch the IR carries.
+                            strict: tool_spec.get("strict").and_then(|v| v.as_bool()),
                         });
                     } else if tool_val.get("cachePoint").is_some() {
                         // A `cachePoint` entry in the `toolConfig.tools` array marks the prompt-cache
@@ -756,8 +758,15 @@ impl ProtocolReader for BedrockReader {
             );
         }
 
+        // BED-06: the reasoning ASK rides `additionalModelRequestFields` (Anthropic-on-Bedrock
+        // `thinking`, Nova `reasoningConfig`); promote it so it carries cross-protocol. The raw
+        // object stays in `extra` for the same-protocol passthrough.
+        let reasoning = read_bedrock_reasoning_ask(amrf);
+        // BED-08: Converse's native structured output, `outputConfig.textFormat`.
+        let response_format = read_bedrock_response_format(obj);
+
         Ok(crate::ir::IrRequest {
-            reasoning: None,
+            reasoning,
             reasoning_budgets: None,
             logprobs: None,
             top_logprobs: None,
@@ -789,7 +798,7 @@ impl ProtocolReader for BedrockReader {
             presence_penalty: None,
             seed: None,
             n: None,
-            response_format: None,
+            response_format,
             extra,
         })
     }

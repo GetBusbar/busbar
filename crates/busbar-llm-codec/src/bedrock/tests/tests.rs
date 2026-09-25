@@ -5750,12 +5750,11 @@ fn test_malformed_media_type_warns_and_falls_back_to_png() {
     );
 }
 
-/// A cross-protocol IR carrying `response_format` reaching the Bedrock egress must be DROPPED
-/// (Converse has no native response_format field) — and the wire must contain NO `response_format`
-/// key (it would 400 the upstream). Mirrors the Anthropic-egress drop. The `warn!` itself is not
-/// asserted here (tracing capture is out of scope); the contract is "emits nothing".
+/// A cross-protocol IR carrying a JSON-schema `response_format` reaching the Bedrock egress projects
+/// onto Converse's native `outputConfig.textFormat` (BED-08) — the schema as a JSON STRING, per the
+/// service model — and the wire carries NO foreign `response_format` key (it would 400 upstream).
 #[test]
-fn test_write_request_response_format_dropped() {
+fn test_write_request_response_format_projects_output_config() {
     let writer = BedrockWriter;
     let req = crate::ir::IrRequest {
         system_turns_folded: 0,
@@ -5798,13 +5797,23 @@ fn test_write_request_response_format_dropped() {
     let out = writer.write_request(&req);
     let wire = serde_json::to_string(&out).unwrap();
     assert!(
-        !wire.contains("response_format") && !wire.contains("json_schema"),
-        "response_format must not be emitted on the Bedrock wire; got {wire}"
+        !wire.contains("response_format"),
+        "no foreign response_format key may reach the Bedrock wire; got {wire}"
     );
     assert!(
         out.get("response_format").is_none(),
         "no top-level response_format key may be present; got {out}"
     );
+    let tf = &out["outputConfig"]["textFormat"];
+    assert_eq!(tf["type"], "json_schema", "{out}");
+    assert_eq!(tf["structure"]["jsonSchema"]["name"], "s", "{out}");
+    let schema: serde_json::Value = serde_json::from_str(
+        tf["structure"]["jsonSchema"]["schema"]
+            .as_str()
+            .expect("schema is a string"),
+    )
+    .expect("schema string parses");
+    assert_eq!(schema, serde_json::json!({"type": "object"}), "{out}");
 }
 
 #[test]

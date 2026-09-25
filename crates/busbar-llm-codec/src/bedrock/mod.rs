@@ -1030,6 +1030,80 @@ fn read_bedrock_citations_content(v: &serde_json::Value) -> crate::ir::IrBlock {
     }
 }
 
+/// Read a native reasoning ASK off a Converse `additionalModelRequestFields` object (BED-06). Two
+/// model-family spellings ride there: Anthropic-on-Bedrock `thinking: {type: "enabled",
+/// budget_tokens: N}` → `Budget(N)`, and Amazon Nova `reasoningConfig: {type: "enabled",
+/// maxReasoningEffort: "low"|"medium"|"high"}` → `Effort`. Anything else (disabled, malformed) is no
+/// ask, exactly as the Anthropic reader treats its own `thinking`.
+fn read_bedrock_reasoning_ask(
+    amrf: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<crate::ir::IrReasoningAsk> {
+    let amrf = amrf?;
+    let enabled = |v: &serde_json::Value| v.get("type").and_then(|t| t.as_str()) == Some("enabled");
+    if let Some(budget) = amrf
+        .get("thinking")
+        .filter(|t| enabled(t))
+        .and_then(|t| t.get("budget_tokens"))
+        .and_then(|v| v.as_u64())
+        .and_then(|v| u32::try_from(v).ok())
+    {
+        return Some(crate::ir::IrReasoningAsk::Budget(budget));
+    }
+    amrf.get("reasoningConfig")
+        .filter(|r| enabled(r))
+        .and_then(|r| r.get("maxReasoningEffort"))
+        .and_then(|e| e.as_str())
+        .and_then(crate::ir::IrReasoningEffort::parse)
+        .map(crate::ir::IrReasoningAsk::Effort)
+}
+
+/// Read Converse's native structured-output directive, `outputConfig.textFormat` (`{type:
+/// "json_schema", structure: {jsonSchema: {schema: "<JSON as a string>", name, description}}}`),
+/// into the typed [`crate::ir::IrResponseFormat`] (BED-08). The schema travels as a STRING on this
+/// wire; an unparseable one yields no directive rather than a guessed one.
+fn read_bedrock_response_format(
+    body: &serde_json::Map<String, serde_json::Value>,
+) -> Option<crate::ir::IrResponseFormat> {
+    let tf = body.get("outputConfig")?.get("textFormat")?;
+    if tf.get("type").and_then(|t| t.as_str()) != Some("json_schema") {
+        return None;
+    }
+    let js = tf.get("structure")?.get("jsonSchema")?;
+    let schema: serde_json::Value = serde_json::from_str(js.get("schema")?.as_str()?).ok()?;
+    Some(crate::ir::IrResponseFormat {
+        json: true,
+        schema: Some(schema),
+        name: js.get("name").and_then(|n| n.as_str()).map(String::from),
+        strict: None,
+        description: js
+            .get("description")
+            .and_then(|d| d.as_str())
+            .map(String::from),
+    })
+}
+
+/// Project the typed [`crate::ir::IrResponseFormat`] into Converse's `outputConfig.textFormat`
+/// (BED-08), or `None` when Converse has no shape for it: its `OutputFormat.type` enum is
+/// `json_schema` only, so a schema-less JSON mode and plain-text mode have no native form.
+fn write_bedrock_text_format(rf: &crate::ir::IrResponseFormat) -> Option<serde_json::Value> {
+    if !rf.json {
+        return None;
+    }
+    let schema = rf.schema.as_ref()?;
+    let mut js = serde_json::Map::new();
+    js.insert("schema".to_string(), serde_json::json!(schema.to_string()));
+    if let Some(n) = rf.name.as_deref().filter(|s| !s.is_empty()) {
+        js.insert("name".to_string(), serde_json::json!(n));
+    }
+    if let Some(d) = rf.description.as_deref().filter(|s| !s.is_empty()) {
+        js.insert("description".to_string(), serde_json::json!(d));
+    }
+    Some(serde_json::json!({
+        "type": "json_schema",
+        "structure": { "jsonSchema": serde_json::Value::Object(js) }
+    }))
+}
+
 /// Read the `cache_control` off the LAST block pushed onto an IR content vector, used by the Bedrock
 /// reader to map a native `cachePoint` adjacency back onto the preceding block's first-class IR
 /// `cache_control` field (so a Bedrock->Bedrock and Bedrock->Anthropic round-trip preserves the
@@ -2185,3 +2259,7 @@ mod usage_float_tests;
 #[cfg(test)]
 #[path = "tests/ir_mapping_tests.rs"]
 mod ir_mapping_tests;
+
+#[cfg(test)]
+#[path = "tests/ir_mapping_structured_tests.rs"]
+mod ir_mapping_structured_tests;

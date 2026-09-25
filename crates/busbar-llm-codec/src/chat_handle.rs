@@ -362,10 +362,11 @@ impl IrHandle for ChatReqHandle {
             .map(|p| p.writer().dropped_egress_controls(&self.0))
             .unwrap_or_default()
     }
-    fn write_egress_request(&mut self, egress_proto: &str, _model: &str) -> EgressWire {
-        // Chat is always a JSON body the router post-shapes (write_request_value == Some).
+    fn write_egress_request(&mut self, egress_proto: &str, model: &str) -> EgressWire {
+        // Chat is always a JSON body the router post-shapes (write_request_value == Some). The lane
+        // model rides along for the dialects whose spelling depends on the model family.
         super::proto_codec::protocol_for(egress_proto)
-            .map(|p| EgressWire::Json(p.writer().write_request(&self.0)))
+            .map(|p| EgressWire::Json(p.writer().write_request_for_model(&self.0, model)))
             .unwrap_or_else(|| EgressWire::Bytes(Bytes::new()))
     }
 }

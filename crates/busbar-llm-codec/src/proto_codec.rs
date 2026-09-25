@@ -225,6 +225,20 @@ pub trait ProtocolWriter: Send + Sync {
     /// Write an IR request to wire JSON.
     fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value;
 
+    /// Write an IR request for a KNOWN egress model — the production write the cross-protocol seam
+    /// performs (`ChatReqHandle::write_egress_request`), where the resolved lane wire model is in
+    /// hand. A dialect whose native spelling of a control depends on the model FAMILY behind the
+    /// same wire (Bedrock Converse: Claude's `thinking` vs Nova's `reasoningConfig` in
+    /// `additionalModelRequestFields`) overrides this to decide per family; every other dialect
+    /// writes exactly what [`Self::write_request`] writes. Default: `write_request`, model ignored.
+    fn write_request_for_model(
+        &self,
+        req: &crate::ir::IrRequest,
+        _model: &str,
+    ) -> serde_json::Value {
+        self.write_request(req)
+    }
+
     /// Apply a hook's `rewrite` reply to an INGRESS body of THIS dialect, in place. Returns whether
     /// the body actually changed; `false` leaves it untouched (fail-safe — never a corrupted
     /// request).
