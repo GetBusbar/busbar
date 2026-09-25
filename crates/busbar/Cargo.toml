@@ -368,6 +368,13 @@ hex = { workspace = true }
 rcgen = { workspace = true }
 # THE ADDED-LATENCY INSTRUMENT (`benches/hook_path.rs`) — black-box, boots the shipped binary.
 criterion = { workspace = true }
+# tests/ws_composed_battery.rs (the `ws` transport battery's cross-transport composition cells,
+# moved here off `busbar-transport-ws`'s own `kind-isolation:closure` `closure-test-reach`
+# findings) builds fixture `VerifiedDestination` and `TransportKeyHandle` values through
+# `busbar_contract::plugin::TestKernelSeal`, the one blessed fixture implementor of the SEALED
+# `KernelSeal` trait (#65) — dev-only and feature-gated, so it is absent from every release build,
+# same as every other crate's own battery does it.
+busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 
 # ── THE HOOK-PATH BENCH ── `harness = false` because criterion supplies its own `main`. Still a
 # black-box instrument that boots the shipped binary (see the bench's own header). The split gives
