@@ -36,9 +36,9 @@ nothing outside the crate can link `busbar::root::…` — not another crate, an
 `scan-floor` row reads the manifest on every run and refuses the tree if a `[lib]` ever appears.
 
 **Doc comments are not evidence and this tree is why.** Three comments here call a function DORMANT
-while its body flips four planes onto the kernel loop, and `root/vocabulary.rs` is the opposite —
-dead code whose doc reads as live infrastructure. Everything below is computed from
-comment-stripped, test-stripped code and a graph walk seeded at `main.rs`.
+while its body flips four planes onto the kernel loop, and `root/vocabulary.rs` was the opposite —
+dead code whose doc read as live infrastructure (deleted by K2b, a4df4799d). Everything below is
+computed from comment-stripped, test-stripped code and a graph walk seeded at `main.rs`.
 
 ---
 
@@ -144,21 +144,6 @@ Every mention of `money_book` in `crates/busbar/src/`:
 No chain from `fn main()` arrives at it. The module's own doc calls it dormant, which is correct —
 and is also the only place that fact was written down before this gate.
 
-## 5. `crates/busbar/src/root/vocabulary.rs` — 225 lines, MODULE UNREACHED
-
-Every mention of `vocabulary` outside the module itself:
-
-| Site | What it is |
-|---|---|
-| `root/mod.rs:19` | a doc comment |
-| `root/mod.rs:83` | `pub mod vocabulary;` — **a declaration, not a use** |
-
-No chain from `fn main()` arrives at it. **This is the dangerous one to read by eye:** unlike
-`money_book.rs`, its doc comment describes live boot infrastructure ("the leak-once interner… filled
-at boot, sealed, and read-only after"), and `root/mod.rs:19` repeats that description. Nothing
-interns anything through it. A reader who trusted the prose would conclude the opposite of the
-truth.
-
 ---
 
 ## THE CONTRAST — `crates/busbar/src/root/units_llm.rs` (1 930 lines) IS LIVE. DO NOT FOLD IT.
@@ -179,7 +164,7 @@ main.rs:1754 root::units_llm::bind_book(...)   (the money book, bound into the l
 Note also `units_llm.rs`'s own `native_run_via_loop` is `#[cfg(test)]` and documents itself as
 dormant — that part IS dead, and the gate still passes the module, because the shipped chain above
 is real. **A gate that redded `units_llm.rs` would be wrong; one that greened `units_mcp.rs` would
-be useless.** That separation is what makes the five rows above worth citing.
+be useless.** That separation is what makes the rows above worth citing.
 
 ---
 
@@ -191,11 +176,10 @@ be useless.** That separation is what makes the five rows above worth citing.
 | `units_a2a.rs` | 1 784 | whole file except `scope_policy` (:589), which `main.rs:1062` calls |
 | `units_voice.rs` | 2 047 | the unit half only, roughly `:1042`–`:2024` (~1 000 lines). **The node half is LIVE.** |
 | `money_book.rs` | 239 | whole file |
-| `vocabulary.rs` | 225 | whole file |
 
-That is on the order of **5 100 lines of production scaffolding that no request can reach**, plus
+That is on the order of **4 900 lines of production scaffolding that no request can reach**, plus
 the test files that exercise it (`root/tests/units_{a2a,mcp,voice}.rs`,
-`root/tests/{money_book,vocabulary}.rs`).
+`root/tests/money_book.rs`).
 
 ## What would make these rows go away honestly
 
