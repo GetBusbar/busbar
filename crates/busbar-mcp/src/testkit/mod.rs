@@ -298,6 +298,20 @@ pub const TEST_SEAM: TestPlaneSeam = TestPlaneSeam {
     error_surface_driver: ERROR_SURFACE_DRIVER,
 };
 
+/// THIS PLANE'S SERVED-LEG WITNESSES — `(capability key, [(loop step or core capability, witness)])`.
+///
+/// What a test binary that links this crate without naming it runs through ITS registered runner for
+/// this plane's key (the composition root's kernel-loop rider): each witness drives `tools/call` on the
+/// served path, asserts one capability or one loop step on what came out, and returns how many units
+/// it expects to have reached this plane's `drive`. See `mcp/tests/served_witness.rs`.
+pub const SERVED: (
+    &str,
+    &[(&str, crate::mcp::upstream::served_witness::Witness)],
+) = (
+    crate::PLANE_KEY,
+    crate::mcp::upstream::served_witness::WITNESSES,
+);
+
 /// [`install_test_seams`], then seed this plane's always-present default runtime for every `TestApp`
 /// the linking test binary builds (the test-support analogue of the kernel's own `cfg(test)` seeding).
 fn install_linked_test_seams() {

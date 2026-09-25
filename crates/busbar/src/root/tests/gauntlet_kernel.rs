@@ -397,3 +397,251 @@ fn host_selection_seam_routes_session_to_registered_runner_when_set() {
         "the registered session runner ran, not the inline fallback"
     );
 }
+
+// ── THE SERVED LEG, ASKED OF EVERY SERVED PLANE ─────────────────────────────────────────────────
+//
+// The rider above is the served root leg of every one-shot plane `install()` flips (DECISIONS #28):
+// nothing of a plane's capability lives in it — the plane's `drive` carries all of it — so what the
+// root owes the ledgers is proof that each capability and each loop step HOLDS WHEN THE PLANE IS
+// DRIVEN THROUGH THIS RIDER. Each test below asks exactly that of every served plane the ledgers
+// (`qa/capability-equality.json`, `qa/teller-steps.json`) cite it for: it installs the real runners
+// (`gauntlet_install::install()`, what boot calls), runs the plane's own served witness for the
+// capability — the plane's `testkit::SERVED` table, reached through `$OUT_DIR/served_witness.rs`,
+// which `build.rs` generates from the manifest, so this file names no plane — and requires the
+// plane's `drive` to have run INSIDE THE KERNEL LOOP exactly as many times as the witness says it
+// served a unit. Unflip a plane and its drives stop landing here: every test citing it goes red.
+
+mod served {
+    include!(concat!(env!("OUT_DIR"), "/served_witness.rs"));
+}
+
+/// This file, as the ledgers spell a test that lives in it.
+const THIS_FILE: &str = "crates/busbar/src/root/tests/gauntlet_kernel.rs";
+
+fn ledger(name: &str) -> serde_json::Value {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../qa")
+        .join(name);
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("{} parses: {e}", path.display()))
+}
+
+/// The plane keys whose ledger cells name `THIS_FILE::test_fn` as their root-leg proof: a
+/// capability-equality column (`<plane>-client` / `<plane>-server`) or a teller-steps matrix row.
+fn planes_citing(test_fn: &str) -> std::collections::BTreeSet<String> {
+    let cite = format!("{THIS_FILE}::{test_fn}");
+    let mut planes = std::collections::BTreeSet::new();
+    let equality = ledger("capability-equality.json");
+    for cell in equality["cells"].as_array().expect("`cells` is an array") {
+        if cell["root"]["test"].as_str() == Some(cite.as_str()) {
+            let column = cell["plane"].as_str().expect("a cell names its column");
+            let plane = column.split_once('-').map_or(column, |(p, _)| p);
+            planes.insert(plane.to_string());
+        }
+    }
+    let steps = ledger("teller-steps.json");
+    for (plane, row) in steps["matrix"].as_object().expect("`matrix` is an object") {
+        for cell in row.as_object().expect("a matrix row is an object").values() {
+            if cell["root"]["test"].as_str() == Some(cite.as_str()) {
+                planes.insert(plane.clone());
+            }
+        }
+    }
+    planes
+}
+
+/// The plane keys this build links, off the linked table boot registers from.
+fn linked_planes() -> std::collections::BTreeSet<String> {
+    crate::LINKED
+        .planes
+        .iter()
+        .map(|decl| decl.declaration.key.to_string())
+        .collect()
+}
+
+/// Run `witness` — a loop step or a core capability — through the served rider for every linked
+/// plane whose served-witness table carries it, and require each plane's `drive` to have run inside
+/// the kernel loop exactly as many times as its witness served a unit. Every linked plane a ledger
+/// cell cites `test_fn` for must be among the planes that answered.
+async fn run_served(witness: &str, test_fn: &str) {
+    crate::root::gauntlet_install::install();
+    let linked = linked_planes();
+    let mut answered = std::collections::BTreeSet::new();
+    for (plane, table) in served::SERVED_WITNESSES
+        .iter()
+        .filter(|(key, _)| linked.contains(*key))
+    {
+        let Some((_, run)) = table.iter().find(|(id, _)| *id == witness) else {
+            continue;
+        };
+        let before = crate::root::gauntlet_kernel::DRIVES_IN_LOOP.with(std::cell::Cell::get);
+        let served = run().await;
+        let driven =
+            crate::root::gauntlet_kernel::DRIVES_IN_LOOP.with(std::cell::Cell::get) - before;
+        assert!(
+            served >= 1,
+            "plane `{plane}`'s `{witness}` witness served no unit at all"
+        );
+        assert_eq!(
+            driven, served,
+            "plane `{plane}`'s `{witness}` witness served {served} unit(s), and the kernel-loop rider \
+             carried {driven} of them into the plane's `drive`: the capability did not hold on the \
+             served root leg"
+        );
+        answered.insert(plane.to_string());
+    }
+    assert!(
+        !answered.is_empty() || served::SERVED_WITNESSES.is_empty(),
+        "no linked served plane carries a `{witness}` witness"
+    );
+    let owed: Vec<String> = planes_citing(test_fn)
+        .into_iter()
+        .filter(|p| linked.contains(p) && !answered.contains(p))
+        .collect();
+    assert!(
+        owed.is_empty(),
+        "the ledgers cite {THIS_FILE}::{test_fn} as the served-leg proof for {owed:?}, and no \
+         `{witness}` witness of theirs ran through the rider"
+    );
+}
+
+/// ARRIVAL, on the served leg: one call is one unit the rider carries.
+#[tokio::test]
+async fn served_rider_carries_one_unit_per_call() {
+    run_served("arrival", "served_rider_carries_one_unit_per_call").await;
+}
+
+/// DECODE, on the served leg: a body that is not an envelope is refused by its decode.
+#[tokio::test]
+async fn served_rider_refuses_a_body_that_does_not_decode() {
+    run_served("decode", "served_rider_refuses_a_body_that_does_not_decode").await;
+}
+
+/// AUTHENTICATE, on the served leg: only an authenticated caller becomes a unit.
+#[tokio::test]
+async fn served_rider_is_reached_only_by_an_authenticated_caller() {
+    run_served(
+        "authenticate",
+        "served_rider_is_reached_only_by_an_authenticated_caller",
+    )
+    .await;
+}
+
+/// VERIFY, on the served leg: a destination the unit may not reach is refused before any dial.
+#[tokio::test]
+async fn served_rider_refuses_a_destination_before_it_dials() {
+    run_served(
+        "verify",
+        "served_rider_refuses_a_destination_before_it_dials",
+    )
+    .await;
+}
+
+/// APPROVE, on the served leg: a grant short of the operation's scope is refused.
+#[tokio::test]
+async fn served_rider_refuses_a_grant_short_of_the_operation() {
+    run_served(
+        "approve",
+        "served_rider_refuses_a_grant_short_of_the_operation",
+    )
+    .await;
+}
+
+/// ADMIT, on the served leg: a caller over its budget is refused before the dial.
+#[tokio::test]
+async fn served_rider_refuses_an_over_budget_caller_before_it_dials() {
+    run_served(
+        "admit",
+        "served_rider_refuses_an_over_budget_caller_before_it_dials",
+    )
+    .await;
+}
+
+/// ROUTE, on the served leg: a failed upstream is answered inside the unit.
+#[tokio::test]
+async fn served_rider_answers_a_failed_upstream_inside_the_unit() {
+    run_served(
+        "route",
+        "served_rider_answers_a_failed_upstream_inside_the_unit",
+    )
+    .await;
+}
+
+/// METER, on the served leg: one call meters exactly one request.
+#[tokio::test]
+async fn served_rider_meters_exactly_one_request_per_call() {
+    run_served("meter", "served_rider_meters_exactly_one_request_per_call").await;
+}
+
+/// AUDIT, on the served leg: one call is audited exactly once.
+#[tokio::test]
+async fn served_rider_audits_each_call_once() {
+    run_served("audit", "served_rider_audits_each_call_once").await;
+}
+
+/// EXIT, on the served leg: one call ends once.
+#[tokio::test]
+async fn served_rider_ends_each_call_once() {
+    run_served("exit", "served_rider_ends_each_call_once").await;
+}
+
+/// AUDIT-CHAIN, on the served leg: the call's record is linked into its tamper-evident chain.
+#[tokio::test]
+async fn served_rider_chains_what_it_audits() {
+    run_served("audit-chain", "served_rider_chains_what_it_audits").await;
+}
+
+/// GOVERNANCE-BUDGET, on the served leg: the spend is the presenting key's.
+#[tokio::test]
+async fn served_rider_charges_the_presenting_key() {
+    run_served(
+        "governance-budget",
+        "served_rider_charges_the_presenting_key",
+    )
+    .await;
+}
+
+/// DISPOSITION, on the served leg: an upstream answer is classified, not mistaken for a trip.
+#[tokio::test]
+async fn served_rider_classifies_the_upstream_answer() {
+    run_served("disposition", "served_rider_classifies_the_upstream_answer").await;
+}
+
+/// METRICS, on the served leg: the upstream leg is on the scrape.
+#[tokio::test]
+async fn served_rider_counts_the_upstream_attempt() {
+    run_served("metrics", "served_rider_counts_the_upstream_attempt").await;
+}
+
+/// TRUST-PINNING, on the served leg: a drifted or demoted peer is not served.
+#[tokio::test]
+async fn served_rider_refuses_an_unpinned_peer() {
+    run_served("trust-pinning", "served_rider_refuses_an_unpinned_peer").await;
+}
+
+/// NET-GUARD, on the served leg: the dialled address is the one the guard judged.
+#[tokio::test]
+async fn served_rider_dials_only_the_judged_address() {
+    run_served("net-guard", "served_rider_dials_only_the_judged_address").await;
+}
+
+/// EGRESS-AUTH, on the served leg: the upstream is handed the planned credential only.
+#[tokio::test]
+async fn served_rider_presents_only_the_planned_credential() {
+    run_served(
+        "egress-auth",
+        "served_rider_presents_only_the_planned_credential",
+    )
+    .await;
+}
+
+/// CATALOGUE, on the served leg: what the caller may not see is not served.
+#[tokio::test]
+async fn served_rider_serves_only_the_callers_catalogue() {
+    run_served(
+        "catalogue",
+        "served_rider_serves_only_the_callers_catalogue",
+    )
+    .await;
+}

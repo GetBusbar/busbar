@@ -326,9 +326,10 @@ impl A2aPlane {
         Arc::clone(&self.relay.read().unwrap_or_else(|e| e.into_inner()))
     }
 
-    /// Swap the relay seam. TEST ONLY, and compiled out of every release binary — a production
+    /// Swap the relay seam. TEST-SUPPORT ONLY (this crate's own tests, and the served-leg witnesses a
+    /// linking crate's test build runs), and compiled out of every release binary — a production
     /// build has exactly one way to obtain a seam, which is the constructor above.
-    #[cfg(all(test, feature = "test-support"))]
+    #[cfg(feature = "test-support")]
     pub(crate) fn set_relay_seam(&self, seam: Arc<dyn super::relay::RelaySeam>) {
         *self.relay.write().unwrap_or_else(|e| e.into_inner()) = seam;
     }

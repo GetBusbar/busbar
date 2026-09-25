@@ -218,6 +218,18 @@ impl<A: TestAppSeam> TestAppA2aExt for A {
     }
 }
 
+/// THIS PLANE'S SERVED-LEG WITNESSES — `(capability key, [(loop step or core capability, witness)])`.
+///
+/// What a test binary that links this crate without naming it runs through ITS registered runner for
+/// this plane's key (the composition root's kernel-loop rider): each witness drives an inbound call on
+/// the served path through the real router, asserts one capability or one loop step on what came out,
+/// and returns how many units it expects to have reached this plane's `drive`. See
+/// `a2a/tests/served_witness.rs`.
+pub const SERVED: (&str, &[(&str, crate::a2a::relay::served_witness::Witness)]) = (
+    crate::PLANE_KEY,
+    crate::a2a::relay::served_witness::WITNESSES,
+);
+
 /// THIS PLANE'S LINKED-TEST-SEAM ENTRY — what a test binary that links this crate without naming it
 /// registers into the kernel's test-seam registry and loops: the cross-plane install
 /// and the trust verbs' error-surface driver.

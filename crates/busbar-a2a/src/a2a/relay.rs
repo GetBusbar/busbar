@@ -2331,9 +2331,19 @@ fn relay_stream_once(
 // ONE HARNESS, shared by both test modules below. A second harness is a second thing that can stop
 // matching what the production router does, and the defect this area exists to catch is invisible
 // to any test that does not go through the composition root's router build.
-#[cfg(all(test, feature = "test-support"))]
+//
+// Compiled under `test-support` (not only `test`) because the served-leg witnesses below drive the
+// same harness from a linking crate's test binary.
+#[cfg(feature = "test-support")]
+#[cfg_attr(not(test), allow(dead_code))]
 #[path = "tests/relay_harness.rs"]
 mod relay_harness;
+
+// THIS PLANE'S SERVED-LEG WITNESSES, exported through `crate::testkit::SERVED` so the binary crate's
+// test build runs them through its real kernel-loop rider (see the module header).
+#[cfg(feature = "test-support")]
+#[path = "tests/served_witness.rs"]
+pub(crate) mod served_witness;
 
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/relay_tests.rs"]

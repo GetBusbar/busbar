@@ -46,6 +46,16 @@ const TRANSPORT_CHAIN: [&str; 1] = ["http"];
 /// nothing outside this file reads it, so a process-global monotonic is enough.
 static NEXT_KEY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+#[cfg(test)]
+thread_local! {
+    /// TEST-ONLY: how many plane `drive`s THIS thread has run inside the kernel loop's Route step.
+    /// The served-leg witnesses (`tests/gauntlet_kernel.rs`) read it before and after a plane's own
+    /// served scenario, so "the capability was exercised on the served path" is a count of drives
+    /// this rider actually carried — never inferred from a status code. Per thread because the test
+    /// harness runs tests in parallel and a `#[tokio::test]` runs its whole scenario on its own.
+    pub(crate) static DRIVES_IN_LOOP: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// One gauntlet request expressed as a kernel [`Units`] value: the plane rides at Verify (its
 /// `verify_destination`) and Route (its `drive`); every other step proceeds with the neutral facts a
 /// pass-through carries, exactly as the substrate `GauntletAdapter` does — only the loop differs.
@@ -259,7 +269,11 @@ impl RouteAwait for GauntletKernelUnit<'_> {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take();
             let resp = match plane {
-                Some(plane) => plane.drive(self.request()).await,
+                Some(plane) => {
+                    #[cfg(test)]
+                    DRIVES_IN_LOOP.with(|n| n.set(n.get() + 1));
+                    plane.drive(self.request()).await
+                }
                 None => Self::plane_spent(),
             };
             // The plane's response is the answer, verbatim — stashed as a live body the outer handler

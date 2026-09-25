@@ -798,9 +798,19 @@ pub(super) async fn exchange(
 // Shared fixtures for the upstream-leg batteries: a REAL fake MCP peer and a REAL fake RFC 8693
 // token endpoint, both recording every byte they receive. Declared here rather than duplicated per
 // file so a test that means to vary ONE thing varies one thing.
-#[cfg(all(test, feature = "test-support"))]
+//
+// Compiled under `test-support` (not only `test`) because the served-leg witnesses below drive the
+// same fake peer from a linking crate's test binary.
+#[cfg(feature = "test-support")]
+#[cfg_attr(not(test), allow(dead_code))]
 #[path = "tests/upstream_support.rs"]
 mod upstream_support;
+
+// THIS PLANE'S SERVED-LEG WITNESSES, exported through `crate::testkit::SERVED` so the binary crate's
+// test build runs them through its real kernel-loop rider (see the module header).
+#[cfg(feature = "test-support")]
+#[path = "tests/served_witness.rs"]
+pub(crate) mod served_witness;
 
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/upstream_join_tests.rs"]
