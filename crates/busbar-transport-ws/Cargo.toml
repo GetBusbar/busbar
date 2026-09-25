@@ -27,14 +27,12 @@ futures = { workspace = true }
 # fixture implementor of the SEALED `KernelSeal` trait; this crate's test harnesses used to
 # forge their own. Dev-only and feature-gated, so it is absent from every release build.
 busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
-# The layer this one composes over, AND IT COMPOSES OVER IT AT TEST TIME ONLY. `ws` is an upgrade of
-# an HTTP connection, expressed as this transport adopting the stream that one gives up — but the
-# adoption is a contract trait method, so the shipped crate never names the transport it adopts
-# from; the composition root does. The only lines in this crate that say `busbar_transport_http` or
-# `busbar_transport_tcp` are in `src/tests/battery.rs`, which builds a real pair to drive the
-# upgrade through. A dev-dependency is available to a `#[cfg(test)]` module inside the lib and is
-# absent from every release build, so the battery is unchanged and the plugin closure loses both
-# (DECISIONS #40 — the closure, not the direct edge).
-busbar-transport-http = { path = "../busbar-transport-http" }
-busbar-transport-tcp = { path = "../busbar-transport-tcp" }
+# `ws` composing OVER `http`/`tcp` (`WsTransport::over`, adoption through a contract trait) is real
+# and shipped, but a dev-dependency's own SHIPPED closure is linked into this crate's `cargo test`
+# binary whole (`kind-isolation:closure`'s `closure-test-reach` finding), so naming either sibling
+# transport here — even under `[dev-dependencies]` — reopens the exact closure #40(a) closes for the
+# artifact. The cells that proved the composition with a real `http`/`tcp` instance moved to
+# `crates/busbar/tests/ws_composed_battery.rs`, the composition root, which already carries both as
+# ordinary dependencies (see that file's header). This crate's own battery keeps every cell that
+# does not construct another transport.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "test-util"] }
