@@ -118,8 +118,8 @@ fn a_first_party_replay_below_the_high_water_mark_is_refused() {
     let release = test_key(1);
     let artifact = b"genuine busbar-signed 1.0.0 with a known fixed defect";
     let mut old = manifest(
-        "busbar-store-valkey-plugin",
-        "valkey",
+        "busbar-store-gamma-plugin",
+        "gamma",
         FIRST_PARTY_PUBLISHER,
     );
     old.version = "1.0.0".into();
@@ -142,7 +142,7 @@ fn a_first_party_replay_below_the_high_water_mark_is_refused() {
     // This deployment HAS loaded 1.2.0 of this name. The genuine 1.0.0 is now a replay.
     let mut pol = policy(Some(&release), &[], true, true);
     pol.first_party_high_water.insert(
-        "busbar-store-valkey-plugin".to_string(),
+        "busbar-store-gamma-plugin".to_string(),
         "1.2.0".to_string(),
     );
     let err = evaluate(artifact, &old, &pol).unwrap_err();
@@ -157,8 +157,8 @@ fn a_first_party_replay_below_the_high_water_mark_is_refused() {
     // The artifact AT the mark, and above it, still load — the floor is a floor, not a pin.
     for v in ["1.2.0", "1.3.0"] {
         let mut cur = manifest(
-            "busbar-store-valkey-plugin",
-            "valkey",
+            "busbar-store-gamma-plugin",
+            "gamma",
             FIRST_PARTY_PUBLISHER,
         );
         cur.version = v.into();
@@ -183,8 +183,8 @@ fn an_explicit_rollback_pin_overrides_the_high_water_mark() {
     let release = test_key(1);
     let artifact = b"the 1.0.0 an operator deliberately rolled back to";
     let mut old = manifest(
-        "busbar-store-valkey-plugin",
-        "valkey",
+        "busbar-store-gamma-plugin",
+        "gamma",
         FIRST_PARTY_PUBLISHER,
     );
     old.version = "1.0.0".into();
@@ -192,14 +192,14 @@ fn an_explicit_rollback_pin_overrides_the_high_water_mark() {
 
     let mut pol = policy(Some(&release), &[], false, false);
     pol.first_party_high_water.insert(
-        "busbar-store-valkey-plugin".to_string(),
+        "busbar-store-gamma-plugin".to_string(),
         "1.2.0".to_string(),
     );
     // Without the pin: refused.
     assert!(evaluate(artifact, &old, &pol).is_err());
     // With the pin at the rollback target: admitted, for THIS NAME only.
     pol.first_party_floors.insert(
-        "busbar-store-valkey-plugin".to_string(),
+        "busbar-store-gamma-plugin".to_string(),
         "1.0.0".to_string(),
     );
     assert!(
@@ -263,8 +263,8 @@ fn first_party_signed_is_trusted_with_zero_config() {
     let m = sign(
         &release,
         manifest(
-            "busbar-store-valkey-plugin",
-            "valkey",
+            "busbar-store-gamma-plugin",
+            "gamma",
             FIRST_PARTY_PUBLISHER,
         ),
         artifact,
@@ -345,8 +345,8 @@ fn first_party_version_floats_free_of_the_binary_version() {
     let release = test_key(1);
     let artifact = b"current first-party build on its own version line";
     let mut m = manifest(
-        "busbar-store-valkey-plugin",
-        "valkey",
+        "busbar-store-gamma-plugin",
+        "gamma",
         FIRST_PARTY_PUBLISHER,
     );
     m.version = "1.0.1".into(); // binary is 1.5.0 — and that must not matter
@@ -367,7 +367,7 @@ fn first_party_version_floats_free_of_the_binary_version() {
     // loose opt-in flag can launder that (verified first-party never consults opt-ins).
     let mut floored = policy(Some(&release), &[], true, true);
     floored.first_party_floors.insert(
-        "busbar-store-valkey-plugin".to_string(),
+        "busbar-store-gamma-plugin".to_string(),
         "1.0.2".to_string(),
     );
     let err = evaluate(artifact, &m, &floored).unwrap_err();
@@ -381,7 +381,7 @@ fn first_party_version_floats_free_of_the_binary_version() {
     // reject here purely because a floor exists, regardless of the version satisfying it.)
     let mut met = policy(Some(&release), &[], true, true);
     met.first_party_floors.insert(
-        "busbar-store-valkey-plugin".to_string(),
+        "busbar-store-gamma-plugin".to_string(),
         "1.0.0".to_string(),
     );
     assert!(
@@ -405,8 +405,8 @@ fn first_party_floor_override_is_scoped_per_name() {
     let artifact_a = b"old first-party A";
     let artifact_b = b"old first-party B";
     let mut a = manifest(
-        "busbar-store-valkey-plugin",
-        "valkey",
+        "busbar-store-gamma-plugin",
+        "gamma",
         FIRST_PARTY_PUBLISHER,
     );
     a.version = "1.4.0".into();
@@ -418,7 +418,7 @@ fn first_party_floor_override_is_scoped_per_name() {
     // Floor A at 1.4.1 (above what A ships) and leave B unpinned.
     let mut pol = policy(Some(&release), &[], false, false);
     pol.first_party_floors.insert(
-        "busbar-store-valkey-plugin".to_string(),
+        "busbar-store-gamma-plugin".to_string(),
         "1.4.1".to_string(),
     );
 
@@ -448,8 +448,8 @@ fn first_party_claim_without_embedded_key_is_unsigned() {
     let m = sign(
         &release,
         manifest(
-            "busbar-store-valkey-plugin",
-            "valkey",
+            "busbar-store-gamma-plugin",
+            "gamma",
             FIRST_PARTY_PUBLISHER,
         ),
         artifact,
@@ -486,8 +486,8 @@ fn first_party_publisher_name_cannot_be_forged_with_another_key() {
     let m = sign(
         &attacker,
         manifest(
-            "busbar-store-valkey-plugin",
-            "valkey",
+            "busbar-store-gamma-plugin",
+            "gamma",
             FIRST_PARTY_PUBLISHER,
         ),
         artifact,
@@ -532,8 +532,8 @@ fn stripped_signature_old_first_party_is_rejected_by_default() {
     let release = test_key(1);
     let artifact = b"old vulnerable first-party build";
     let mut old = manifest(
-        "busbar-store-valkey-plugin",
-        "valkey",
+        "busbar-store-gamma-plugin",
+        "gamma",
         FIRST_PARTY_PUBLISHER,
     );
     old.version = "1.0.0".into(); // below the 1.5.0 binary
@@ -581,7 +581,7 @@ fn tampering_any_signed_field_fails() {
     assert!(evaluate(artifact, &forged, &pol).is_err());
     // Flip the ALIAS (the config-selection identity): signature must break.
     let mut forged = m.clone();
-    forged.alias = "valkey".into();
+    forged.alias = "gamma".into();
     assert!(evaluate(artifact, &forged, &pol).is_err());
     // Swap the library under a good manifest -> hash mismatch.
     assert!(evaluate(b"different!", &m, &pol).is_err());
@@ -672,13 +672,13 @@ fn version_ordering_is_numeric_not_lexical() {
 
 #[test]
 fn name_and_semver_validators() {
-    assert!(valid_name("busbar-store-valkey-plugin"));
-    assert!(valid_name("valkey"));
+    assert!(valid_name("busbar-store-gamma-plugin"));
+    assert!(valid_name("gamma"));
     assert!(!valid_name(""));
-    assert!(!valid_name("Valkey"));
+    assert!(!valid_name("Gamma"));
     assert!(!valid_name("re dis"));
-    assert!(!valid_name("-valkey"));
-    assert!(!valid_name("valkey-"));
+    assert!(!valid_name("-gamma"));
+    assert!(!valid_name("gamma-"));
     assert!(!valid_name("../evil"));
     assert!(valid_semver("1.5.0"));
     assert!(valid_semver("1.5.0-rc1"));
@@ -838,8 +838,8 @@ fn garbage_first_party_floor_does_not_erase_the_binary_floor() {
     let release = test_key(1);
     let artifact = b"old first-party build";
     let mut old = manifest(
-        "busbar-store-valkey-plugin",
-        "valkey",
+        "busbar-store-gamma-plugin",
+        "gamma",
         FIRST_PARTY_PUBLISHER,
     );
     old.version = "1.0.0".into(); // below `binary_version` ("1.5.0", set by `policy()`)
@@ -847,7 +847,7 @@ fn garbage_first_party_floor_does_not_erase_the_binary_floor() {
 
     let mut pol = policy(Some(&release), &[], false, false);
     pol.first_party_floors.insert(
-        "busbar-store-valkey-plugin".to_string(),
+        "busbar-store-gamma-plugin".to_string(),
         "v9.9.9".to_string(),
     );
 
@@ -1037,8 +1037,8 @@ fn manifest_with_no_host_field_parses_and_loads() {
     let key = test_key(1);
     let artifact = b"pre-existing manifest bytes";
     let json = r#"{
-            "name": "busbar-store-valkey-plugin",
-            "alias": "valkey",
+            "name": "busbar-store-gamma-plugin",
+            "alias": "gamma",
             "kind": "store",
             "version": "1.5.0",
             "publisher": "acme",
@@ -1062,7 +1062,7 @@ fn manifest_with_no_host_field_parses_and_loads() {
 fn manifest_with_host_busbar_loads() {
     let key = test_key(1);
     let artifact = b"same-host bytes";
-    let mut m = manifest("busbar-store-valkey-plugin", "valkey", "acme");
+    let mut m = manifest("busbar-store-gamma-plugin", "gamma", "acme");
     m.host = Some(HOST_IDENTITY.to_string());
     let m = sign(&key, m, artifact);
     validate_structure(&m, artifact, &abi, HOST_IDENTITY)

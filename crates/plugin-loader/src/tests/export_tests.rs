@@ -62,7 +62,7 @@ unsafe extern "C-unwind" fn fake_free(ptr: *mut u8, len: usize) {
 /// `<profile_dir>/<name>` copy and the raw `<profile_dir>/deps/<name>` compiler output (a scoped
 /// `cargo test -p busbar-plugin-loader` only produces the latter). Under CI a missing cdylib is a
 /// hard failure rather than a silent skip, so this coverage of the load seam cannot quietly vanish.
-fn export_example_plugin_path() -> Option<std::path::PathBuf> {
+fn hermetic_export_plugin_path() -> Option<std::path::PathBuf> {
     let candidate = (|| {
         let exe = std::env::current_exe().ok()?;
         let profile_dir = exe.parent()?.parent()?;
@@ -83,8 +83,8 @@ fn export_example_plugin_path() -> Option<std::path::PathBuf> {
     if candidate.is_none() && std::env::var_os("CI").is_some() {
         panic!(
             "the export example plugin cdylib is not built under CI: `cargo test --workspace` \
-             must build busbar_export_example_plugin (checked both the uplifted target dir and \
-             target/deps). Refusing to silently skip the routes-query load rules."
+             must build the in-tree export-example-plugin (checked both the uplifted target \
+             dir and target/deps). Refusing to silently skip the routes-query load rules."
         );
     }
     candidate
@@ -93,7 +93,7 @@ fn export_example_plugin_path() -> Option<std::path::PathBuf> {
 /// Stage the hermetic export example plugin (a genuine `Library`, handle and `close`), then splice
 /// in the fake `call`/`free` so the answer to each op is the test's to choose.
 fn raw_with_fake_call() -> Option<RawPlugin> {
-    let path = export_example_plugin_path()?;
+    let path = hermetic_export_plugin_path()?;
     let bytes = std::fs::read(&path).expect("read the export example plugin cdylib");
     let (lib, staged) = stage::load_library_from_bytes(&bytes, "fake-call-export")
         .expect("stage the export example plugin cdylib for the fake-call harness");

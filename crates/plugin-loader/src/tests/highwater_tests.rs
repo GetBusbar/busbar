@@ -27,7 +27,7 @@ fn without_a_data_dir_the_store_creates_no_file() {
     let (mut marks, note) = HighWaterMarks::load(None);
     assert!(note.is_none());
     assert!(!marks.is_persistent());
-    assert!(marks.raise("busbar-store-valkey-plugin", "1.2.0"));
+    assert!(marks.raise("busbar-store-gamma-plugin", "1.2.0"));
     marks.persist().expect("a memory-only persist is a no-op");
     assert_eq!(
         std::fs::read_dir(&dir).unwrap().count(),
@@ -36,7 +36,7 @@ fn without_a_data_dir_the_store_creates_no_file() {
     );
     // The floor is live in memory regardless.
     assert_eq!(
-        marks.marks().get("busbar-store-valkey-plugin").unwrap(),
+        marks.marks().get("busbar-store-gamma-plugin").unwrap(),
         "1.2.0"
     );
 }
@@ -48,13 +48,13 @@ fn with_a_data_dir_the_floor_survives_a_restart() {
     let dir = tmpdir();
     let (mut marks, _) = HighWaterMarks::load(Some(&dir));
     assert!(marks.is_persistent());
-    assert!(marks.raise("busbar-store-valkey-plugin", "1.2.0"));
+    assert!(marks.raise("busbar-store-gamma-plugin", "1.2.0"));
     marks.persist().unwrap();
 
     let (reloaded, note) = HighWaterMarks::load(Some(&dir));
     assert!(note.is_none(), "a file this store wrote reloads clean");
     assert_eq!(
-        reloaded.marks().get("busbar-store-valkey-plugin").unwrap(),
+        reloaded.marks().get("busbar-store-gamma-plugin").unwrap(),
         "1.2.0",
         "the floor survives the restart"
     );

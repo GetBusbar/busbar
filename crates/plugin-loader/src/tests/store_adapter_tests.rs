@@ -719,7 +719,7 @@ pub(super) fn cached_published_sqlite_tarball() -> Option<std::path::PathBuf> {
 /// pinned digest — so what it proves about the published wire and what this proves about the
 /// adapter are about one binary.
 #[test]
-fn a_round_trip_through_the_published_sqlite_store() {
+fn a_round_trip_through_the_published_store() {
     let Some(tarball_path) = cached_published_sqlite_tarball() else {
         eprintln!(
             "skip: no published store-sqlite tarball in the oracle cache (run \
@@ -733,7 +733,7 @@ fn a_round_trip_through_the_published_sqlite_store() {
     assert_eq!(
         unpacked.manifest.abi_version,
         crate::registry::STORE_ABI_FLOOR,
-        "the published sqlite store is a store at the published payload schema"
+        "the published store is at the published payload schema"
     );
 
     let db = std::env::temp_dir().join(format!(
@@ -745,12 +745,12 @@ fn a_round_trip_through_the_published_sqlite_store() {
     let store = match load_dyn_store_from_bytes_at_abi(
         &unpacked.lib_bytes,
         &cfg,
-        "published-store-sqlite",
+        "published-store",
         &unpacked.manifest.kind,
         unpacked.manifest.abi_version,
     ) {
         Ok(store) => store,
-        Err(e) => panic!("the published sqlite store must load on this binary: {e}"),
+        Err(e) => panic!("the published store must load on this binary: {e}"),
     };
     let adapter = StoreAdapter::over_loaded_store(store);
     assert!(
@@ -788,12 +788,12 @@ fn a_round_trip_through_the_published_sqlite_store() {
     });
     assert!(
         failures.is_empty(),
-        "on the published sqlite store no seam method may error; failures:\n{}",
+        "on the published store no seam method may error; failures:\n{}",
         failures.join("\n")
     );
     assert!(
         log.lines().is_empty(),
-        "on the published sqlite store no seam method may log; captured:\n{}",
+        "on the published store no seam method may log; captured:\n{}",
         log.lines().join("\n")
     );
     assert_eq!(adapter.shim_state().records_shipped, 1);

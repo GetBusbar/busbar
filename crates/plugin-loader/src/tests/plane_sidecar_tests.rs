@@ -74,7 +74,7 @@ fn appended_call_rows_newer_than_the_cutoff_survive_a_purge_over_the_abi() {
         "only the ts-100 row is older than the cutoff; a wire that drops `ts` reports 3"
     );
 
-    let left = n_list_mcp_calls(store.as_ref(), "vk_owner").expect("list calls");
+    let left = n_list_calls(store.as_ref(), "vk_owner").expect("list calls");
     let seqs: Vec<u64> = left.iter().map(|c| c.seq).collect();
     assert_eq!(
         seqs,

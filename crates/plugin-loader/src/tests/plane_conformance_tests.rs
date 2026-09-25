@@ -826,7 +826,7 @@ fn third_party_plane_refused_by_default_accepted_under_allow_third_party() {
 fn open_plane_refuses_non_plane_kind() {
     let release = SigningKey::from_bytes(&[1u8; 32]);
     let dir = plane_tmpdir("kind-gate");
-    let mut m = plane_manifest("busbar-store-valkey-plugin", "valkey", "busbar");
+    let mut m = plane_manifest("busbar-store-gamma-plugin", "gamma", "busbar");
     m.kind = "store".into();
     m.abi_version = busbar_plugin::cold::ABI_VERSION; // store-admissible so the KIND gate is what fires
     let m = sign(&release, m, b"store lib");
@@ -834,7 +834,7 @@ fn open_plane_refuses_non_plane_kind() {
 
     let reg =
         crate::registry::scan_and_validate(&dir, &first_party_only_policy(&release)).expect("scan");
-    let err = reg.open_plane("valkey").map(|_| ()).unwrap_err();
+    let err = reg.open_plane("gamma").map(|_| ()).unwrap_err();
     assert!(
         err.contains("kind 'store'") && err.contains("not 'plane'"),
         "the kind gate must fire before any load: {err}"

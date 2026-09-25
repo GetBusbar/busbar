@@ -25,7 +25,7 @@ fn supported_abi_auth_floor_admits_v1() {
 }
 
 /// THE STORE FLOOR IS 2 AND MUST STAY THERE. Every published first-party store plugin
-/// (sqlite/postgres/mysql/valkey) carries `abi_version: 2`, the 1.5.x wire. The 2→3 and 3→4 bumps
+/// (beta/alpha/mysql/gamma) carries `abi_version: 2`, the 1.5.x wire. The 2→3 and 3→4 bumps
 /// changed what a plugin is COMPILED against, not a byte the engine exchanges with a built artifact:
 /// every variant the 1.5.x engine sent still exists unchanged, and the eight neutral plane-record
 /// verbs added since are ones a v2 plugin answers with `STATUS_UNSUPPORTED`, which `DynStore`
@@ -184,31 +184,31 @@ fn write_tarball(dir: &Path, file: &str, m: &Manifest, lib: &[u8]) {
 fn scan_registers_by_name_and_alias_from_manifest_not_filename() {
     let release = key(1);
     let dir = tmpdir("happy");
-    let valkey = sign(
+    let gamma = sign(
         &release,
-        manifest("busbar-store-valkey-plugin", "valkey", "busbar"),
-        b"valkey lib",
+        manifest("busbar-store-gamma-plugin", "gamma", "busbar"),
+        b"gamma lib",
     );
     let pg = sign(
         &release,
-        manifest("busbar-store-postgres", "postgres", "busbar"),
+        manifest("busbar-store-alpha", "alpha", "busbar"),
         b"pg lib",
     );
     // Filenames lie on purpose - identity must come from the signed manifest.
-    write_tarball(&dir, "totally-not-valkey.tar.gz", &valkey, b"valkey lib");
+    write_tarball(&dir, "totally-not-gamma.tar.gz", &gamma, b"gamma lib");
     write_tarball(&dir, "misc.tgz", &pg, b"pg lib");
 
     let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
     assert_eq!(reg.loadable().len(), 2);
-    assert!(reg.resolve("valkey").is_some(), "alias resolves");
+    assert!(reg.resolve("gamma").is_some(), "alias resolves");
     assert!(
-        reg.resolve("busbar-store-valkey-plugin").is_some(),
+        reg.resolve("busbar-store-gamma-plugin").is_some(),
         "name resolves"
     );
-    assert!(reg.resolve("postgres").is_some());
+    assert!(reg.resolve("alpha").is_some());
     assert_eq!(
-        reg.resolve("valkey").unwrap().manifest.name,
-        "busbar-store-valkey-plugin"
+        reg.resolve("gamma").unwrap().manifest.name,
+        "busbar-store-gamma-plugin"
     );
     assert!(reg.resolve("no-such").is_none());
     let _ = std::fs::remove_dir_all(&dir);
@@ -222,7 +222,7 @@ fn one_invalid_tarball_fails_the_whole_scan() {
     let dir = tmpdir("invalid");
     let good = sign(
         &release,
-        manifest("busbar-store-valkey-plugin", "valkey", "busbar"),
+        manifest("busbar-store-gamma-plugin", "gamma", "busbar"),
         b"lib",
     );
     write_tarball(&dir, "good.tar.gz", &good, b"lib");
@@ -311,7 +311,7 @@ fn untrusted_is_skipped_not_fatal_but_reference_fails_loud() {
 }
 
 /// Phase 3: two loadable plugins claiming the same ALIAS is a hard error naming both - the
-/// "can't use valkey and a third-party valkey" case (third-party allowed via opt-in).
+/// "can't use gamma and a third-party gamma" case (third-party allowed via opt-in).
 #[test]
 fn alias_conflict_is_a_hard_error_naming_both() {
     let release = key(1);
@@ -319,12 +319,12 @@ fn alias_conflict_is_a_hard_error_naming_both() {
     let dir = tmpdir("conflict");
     let first = sign(
         &release,
-        manifest("busbar-store-valkey-plugin", "valkey", "busbar"),
+        manifest("busbar-store-gamma-plugin", "gamma", "busbar"),
         b"lib1",
     );
     let third = sign(
         &acme,
-        manifest("acme-store-valkey", "valkey", "acme"),
+        manifest("acme-store-gamma", "gamma", "acme"),
         b"lib2",
     );
     write_tarball(&dir, "first.tar.gz", &first, b"lib1");
@@ -336,12 +336,12 @@ fn alias_conflict_is_a_hard_error_naming_both() {
     assert_eq!(errs.len(), 1, "got {errs:?}");
     assert!(errs[0].contains("alias conflict"), "got {}", errs[0]);
     assert!(
-        errs[0].contains("busbar-store-valkey-plugin"),
+        errs[0].contains("busbar-store-gamma-plugin"),
         "names first: {}",
         errs[0]
     );
     assert!(
-        errs[0].contains("acme-store-valkey"),
+        errs[0].contains("acme-store-gamma"),
         "names second: {}",
         errs[0]
     );
@@ -355,12 +355,12 @@ fn name_and_alias_vs_name_conflicts_are_hard_errors() {
     let dir = tmpdir("nameconflict");
     let a = sign(
         &release,
-        manifest("busbar-store-valkey-plugin", "valkey", "busbar"),
+        manifest("busbar-store-gamma-plugin", "gamma", "busbar"),
         b"a",
     );
     let b = sign(
         &release,
-        manifest("busbar-store-valkey-plugin", "valkey2", "busbar"),
+        manifest("busbar-store-gamma-plugin", "valkey2", "busbar"),
         b"b",
     );
     write_tarball(&dir, "a.tar.gz", &a, b"a");
@@ -376,12 +376,12 @@ fn name_and_alias_vs_name_conflicts_are_hard_errors() {
     let dir = tmpdir("aliasvsname");
     let a = sign(
         &release,
-        manifest("busbar-store-valkey-plugin", "valkey", "busbar"),
+        manifest("busbar-store-gamma-plugin", "gamma", "busbar"),
         b"a",
     );
     let b = sign(
         &release,
-        manifest("acme-store-x", "busbar-store-valkey-plugin", "busbar"),
+        manifest("acme-store-x", "busbar-store-gamma-plugin", "busbar"),
         b"b",
     );
     write_tarball(&dir, "a.tar.gz", &a, b"a");
@@ -437,14 +437,14 @@ fn open_secret_refuses_non_secret_kind_and_vice_versa() {
     // And a trusted store plugin beside it.
     let st = sign(
         &release,
-        manifest("busbar-store-valkey-plugin", "valkey", "busbar"),
+        manifest("busbar-store-gamma-plugin", "gamma", "busbar"),
         b"store lib",
     );
-    write_tarball(&dir, "valkey.tar.gz", &st, b"store lib");
+    write_tarball(&dir, "gamma.tar.gz", &st, b"store lib");
     let reg = scan_and_validate(&dir, &policy(&release)).expect("scan admits both kinds");
     assert_eq!(reg.loadable().len(), 2, "one secret + one store validated");
     // The kind gates: a store referenced as a secret module fails naming the kind...
-    let err = reg.open_secret("valkey", "{}").map(|_| ()).unwrap_err();
+    let err = reg.open_secret("gamma", "{}").map(|_| ()).unwrap_err();
     assert!(err.contains("kind 'store'"), "got {err}");
     // ...and a secret plugin cannot back the store.
     let err = reg.open_store("vault", "{}").map(|_| ()).unwrap_err();
@@ -465,12 +465,12 @@ fn open_auth_refuses_non_auth_kind() {
     let dir = tmpdir("authkind");
     let m = sign(
         &release,
-        manifest("busbar-store-valkey-plugin", "valkey", "busbar"),
+        manifest("busbar-store-gamma-plugin", "gamma", "busbar"),
         b"store lib",
     );
-    write_tarball(&dir, "valkey.tar.gz", &m, b"store lib");
+    write_tarball(&dir, "gamma.tar.gz", &m, b"store lib");
     let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
-    let err = reg.open_auth("valkey", "{}").map(|_| ()).unwrap_err();
+    let err = reg.open_auth("gamma", "{}").map(|_| ()).unwrap_err();
     assert!(err.contains("kind 'store'"), "got {err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -485,10 +485,10 @@ fn open_hook_refuses_non_hook_kind() {
     let dir = tmpdir("hookkind");
     let m = sign(
         &release,
-        manifest("busbar-store-valkey-plugin", "valkey", "busbar"),
+        manifest("busbar-store-gamma-plugin", "gamma", "busbar"),
         b"store lib",
     );
-    write_tarball(&dir, "valkey.tar.gz", &m, b"store lib");
+    write_tarball(&dir, "gamma.tar.gz", &m, b"store lib");
     let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
     let projectors = std::sync::Arc::new(crate::hook::HookProjectors {
         decide: Box::new(|_req, _cands, _ctx| serde_json::Value::Null),
@@ -499,7 +499,7 @@ fn open_hook_refuses_non_hook_kind() {
         describe_schema: Box::new(|_v| None),
     });
     let err = reg
-        .open_hook("valkey", "{}", "valkey", projectors)
+        .open_hook("gamma", "{}", "gamma", projectors)
         .map(|_| ())
         .unwrap_err();
     assert!(err.contains("kind 'store'"), "got {err}");
@@ -555,7 +555,7 @@ fn inventory_reports_every_row_class_without_loading() {
     let dir = tmpdir("inventory");
     let good = sign(
         &release,
-        manifest("busbar-store-valkey-plugin", "valkey", "busbar"),
+        manifest("busbar-store-gamma-plugin", "gamma", "busbar"),
         b"g",
     );
     let third = sign(&acme, manifest("acme-store-dynamo", "dynamo", "acme"), b"t");
@@ -576,7 +576,7 @@ fn inventory_reports_every_row_class_without_loading() {
 }
 
 /// The REAL `kind: store` cdylib — exactly the loader tests' `store_fixture_plugin_path` in
-/// `crate::tests` (the sibling-built store-sqlite plugin, else the in-tree store-example one; see
+/// `crate::tests` (the sibling-built store-beta plugin, else the in-tree store-example one; see
 /// that function's doc for where a missing cdylib is a hard failure: ci.yml's `check` job on every
 /// push, qa-gate.yml's `loader` job on `qa`). Used here purely to prove the tarball PIPELINE's
 /// mechanics (sign, package, scan, resolve-by-alias, open), never store-specific behavior.
@@ -593,23 +593,23 @@ fn store_fixture_cdylib() -> Option<PathBuf> {
 fn end_to_end_open_store_from_signed_tarball() {
     let Some(path) = store_fixture_cdylib() else {
         eprintln!(
-            "skip: no kind:store cdylib built (run under --workspace, or build ../store-sqlite)"
+            "skip: no kind:store cdylib built (run under --workspace, or build the sibling store plugin repo)"
         );
         return;
     };
     let lib = std::fs::read(&path).expect("read the kind:store fixture cdylib");
     let acme = key(3);
     let dir = tmpdir("e2e");
-    let m = sign(&acme, manifest("acme-store-sqlite", "sqlite", "acme"), &lib);
-    let bytes = tarball::package(&m, "libbusbar_store_sqlite_plugin.so", &lib).unwrap();
-    std::fs::write(dir.join("sqlite.tar.gz"), bytes).unwrap();
+    let m = sign(&acme, manifest("acme-store-beta", "beta", "acme"), &lib);
+    let bytes = tarball::package(&m, "libbusbar_store_beta_plugin.so", &lib).unwrap();
+    std::fs::write(dir.join("beta.tar.gz"), bytes).unwrap();
 
     let mut pol = policy(&key(1));
     pol.publishers
         .insert("acme".to_string(), acme.verifying_key());
     let reg = scan_and_validate(&dir, &pol).expect("scan");
     let store = reg
-        .open_store("sqlite", r#"{"db_path": ":memory:"}"#)
+        .open_store("beta", r#"{"db_path": ":memory:"}"#)
         .expect("open the real store through the full pipeline");
     let key = busbar_api::VirtualKey {
         id: "vk_pipeline".into(),
@@ -644,7 +644,7 @@ fn end_to_end_open_store_from_signed_tarball() {
 fn first_party_downgrade_is_rejected_in_pipeline() {
     let release = key(1);
     let dir = tmpdir("downgrade");
-    let mut m = manifest("busbar-store-valkey-plugin", "valkey", "busbar");
+    let mut m = manifest("busbar-store-gamma-plugin", "gamma", "busbar");
     m.version = "1.0.0".into();
     let m = sign(&release, m, b"old lib");
     write_tarball(&dir, "old.tar.gz", &m, b"old lib");
@@ -652,18 +652,18 @@ fn first_party_downgrade_is_rejected_in_pipeline() {
     // Unpinned: its 1.0.0 line is its own business — it loads.
     let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
     assert!(
-        reg.resolve("valkey").is_some(),
+        reg.resolve("gamma").is_some(),
         "an unpinned first-party plugin loads regardless of the binary version"
     );
 
     // Pinned above its version: rejected with the anti-downgrade reason, end to end.
     let mut pinned = policy(&release);
     pinned.first_party_floors.insert(
-        "busbar-store-valkey-plugin".to_string(),
+        "busbar-store-gamma-plugin".to_string(),
         "1.0.1".to_string(),
     );
     let reg = scan_and_validate(&dir, &pinned).expect("scan");
-    assert!(reg.resolve("valkey").is_none());
+    assert!(reg.resolve("gamma").is_none());
     assert!(reg.skipped()[0].reason.contains("anti-downgrade"));
     let rows = inventory(&dir, &pinned);
     assert!(
@@ -684,20 +684,20 @@ fn a_malformed_floor_skips_the_plugin_and_keeps_the_boot_alive() {
     let dir = tmpdir("malformed-floor");
     let m = sign(
         &release,
-        manifest("busbar-store-valkey-plugin", "valkey", "busbar"),
+        manifest("busbar-store-gamma-plugin", "gamma", "busbar"),
         b"lib",
     );
-    write_tarball(&dir, "valkey.tar.gz", &m, b"lib");
+    write_tarball(&dir, "gamma.tar.gz", &m, b"lib");
 
     let mut pol = policy(&release);
     pol.min_versions.insert(
-        "busbar-store-valkey-plugin".to_string(),
+        "busbar-store-gamma-plugin".to_string(),
         "v9.9.9".to_string(),
     );
 
     let reg = scan_and_validate(&dir, &pol).expect("scan must succeed — the boot is not killed");
     assert!(
-        reg.resolve("valkey").is_none(),
+        reg.resolve("gamma").is_none(),
         "the malformed-floor plugin must not be loadable"
     );
     assert!(
@@ -723,20 +723,20 @@ fn a_referenced_plugin_with_a_malformed_floor_fails_the_boot_loudly() {
     let dir = tmpdir("malformed-floor-referenced");
     let m = sign(
         &release,
-        manifest("busbar-store-valkey-plugin", "valkey", "busbar"),
+        manifest("busbar-store-gamma-plugin", "gamma", "busbar"),
         b"lib",
     );
-    write_tarball(&dir, "valkey.tar.gz", &m, b"lib");
+    write_tarball(&dir, "gamma.tar.gz", &m, b"lib");
 
     let mut pol = policy(&release);
     pol.min_versions.insert(
-        "busbar-store-valkey-plugin".to_string(),
+        "busbar-store-gamma-plugin".to_string(),
         "v9.9.9".to_string(),
     );
 
     let reg = scan_and_validate(&dir, &pol).expect("scan");
     let reason = reg
-        .unresolved_reason("valkey")
+        .unresolved_reason("gamma")
         .expect("a malformed-floor plugin must be reportable as unresolved")
         .reason
         .clone();
@@ -860,7 +860,7 @@ fn a_first_party_replay_is_refused_after_the_mark_records_the_newer_load() {
     let dir = tmpdir("replay");
 
     // 1. The deployment loads 1.2.0.
-    let mut current = manifest("busbar-store-valkey-plugin", "valkey", "busbar");
+    let mut current = manifest("busbar-store-gamma-plugin", "gamma", "busbar");
     current.version = "1.2.0".into();
     let current = sign(&release, current, b"1.2.0 lib");
     write_tarball(&dir, "store.tar.gz", &current, b"1.2.0 lib");
@@ -874,12 +874,12 @@ fn a_first_party_replay_is_refused_after_the_mark_records_the_newer_load() {
     // 2. The mark records what was actually loaded.
     assert!(marks.record_registry(&reg), "the mark rises on a load");
     assert_eq!(
-        marks.marks().get("busbar-store-valkey-plugin").unwrap(),
+        marks.marks().get("busbar-store-gamma-plugin").unwrap(),
         "1.2.0"
     );
 
     // 3. The attacker swaps in the GENUINE, busbar-signed 1.0.0 with a known fixed defect.
-    let mut old = manifest("busbar-store-valkey-plugin", "valkey", "busbar");
+    let mut old = manifest("busbar-store-gamma-plugin", "gamma", "busbar");
     old.version = "1.0.0".into();
     let old = sign(&release, old, b"1.0.0 lib");
     write_tarball(&dir, "store.tar.gz", &old, b"1.0.0 lib");
@@ -908,13 +908,13 @@ fn a_first_party_replay_is_refused_after_the_mark_records_the_newer_load() {
     // 5. The mark does NOT fall to the refused artifact's version.
     assert!(!marks.record_registry(&reg));
     assert_eq!(
-        marks.marks().get("busbar-store-valkey-plugin").unwrap(),
+        marks.marks().get("busbar-store-gamma-plugin").unwrap(),
         "1.2.0"
     );
 
     // 6. The documented override: an explicit, audited rollback pin admits that exact version.
     pol.first_party_floors
-        .insert("busbar-store-valkey-plugin".into(), "1.0.0".into());
+        .insert("busbar-store-gamma-plugin".into(), "1.0.0".into());
     let reg = scan_and_validate(&dir, &pol).expect("scan");
     assert_eq!(
         reg.loadable().len(),

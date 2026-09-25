@@ -8,8 +8,8 @@ use crate::sign::{sign, SigningKey};
 
 fn manifest() -> Manifest {
     Manifest {
-        name: "busbar-store-valkey-plugin".into(),
-        alias: "valkey".into(),
+        name: "busbar-store-gamma-plugin".into(),
+        alias: "gamma".into(),
         kind: "store".into(),
         version: "1.5.0".into(),
         publisher: "busbar".into(),
@@ -31,10 +31,10 @@ fn package_then_unpack_roundtrips() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
     let lib = b"\x7fELF pretend library";
     let m = sign(&key, manifest(), lib);
-    let tarball = package(&m, "libbusbar_store_valkey.so", lib).unwrap();
+    let tarball = package(&m, "libbusbar_store_gamma.so", lib).unwrap();
     let up = unpack(&tarball).unwrap();
     assert_eq!(up.manifest, m);
-    assert_eq!(up.lib_name, "libbusbar_store_valkey.so");
+    assert_eq!(up.lib_name, "libbusbar_store_gamma.so");
     assert_eq!(up.lib_bytes, lib);
 }
 
@@ -57,7 +57,7 @@ fn a_tarball_cut_inside_the_manifest_refuses_in_1_5_5_words() {
     let mut m = sign(&key, manifest(), &lib);
     // A manifest long enough that 200 compressed bytes end inside it, as the real one's does.
     m.description = (0..400).map(|i| format!("{i:x}")).collect();
-    let tarball = package(&m, "libbusbar_store_valkey.so", &lib).unwrap();
+    let tarball = package(&m, "libbusbar_store_gamma.so", &lib).unwrap();
     let err = unpack(&tarball[..200]).unwrap_err();
     assert_eq!(err, "cannot read manifest member: unexpected end of file");
 }
@@ -159,7 +159,7 @@ fn oversized_manifest_member_is_refused() {
 #[test]
 fn tarball_extension_matcher() {
     assert!(is_plugin_tarball(
-        "busbar-store-valkey-1.5.0-aarch64.tar.gz"
+        "busbar-store-gamma-1.5.0-aarch64.tar.gz"
     ));
     assert!(is_plugin_tarball("x.tgz"));
     assert!(!is_plugin_tarball("x.so"));

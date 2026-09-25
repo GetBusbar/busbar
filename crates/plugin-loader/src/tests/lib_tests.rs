@@ -68,7 +68,7 @@ fn resolve_store_fixture(
         Some(p) => Ok(Some(p)),
         None if ci => Err(
             "no kind:store cdylib under CI: neither the ../store-sqlite sibling nor \
-             the in-tree busbar_store_example_plugin (which `cargo test --workspace` in ci.yml \
+             the in-tree store-example-plugin (which `cargo test --workspace` in ci.yml \
              builds) is present. Refusing to silently skip loader-mechanism coverage of the \
              kind:store dlopen seam."
                 .to_string(),
@@ -140,7 +140,7 @@ fn the_store_fixture_resolves_on_every_ci_push() {
 /// process's OWN prior runs' files (matched by name pattern, not PID liveness — simpler and
 /// good enough for a `$TMPDIR` nuisance, not a correctness concern) older than an hour, once
 /// per test-binary invocation.
-fn unique_sqlite_cfg(name: &str) -> String {
+fn unique_store_cfg(name: &str) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Once;
     static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -194,7 +194,7 @@ fn refuses_non_plugin() {
 fn validate_and_inventory() {
     let Some(path) = store_fixture_plugin_path() else {
         eprintln!(
-            "skip: no kind:store cdylib built (run under --workspace, or build ../store-sqlite)"
+            "skip: no kind:store cdylib built (run under --workspace, or build the sibling store plugin repo)"
         );
         return;
     };
@@ -364,7 +364,7 @@ fn the_library_extension_match_uses_this_filesystems_case_rule() {
 fn inventory_reports_valid_and_invalid_libraries_in_the_same_directory() {
     let Some(real_plugin) = store_fixture_plugin_path() else {
         eprintln!(
-            "skip: no kind:store cdylib built (run under --workspace, or build ../store-sqlite)"
+            "skip: no kind:store cdylib built (run under --workspace, or build the sibling store plugin repo)"
         );
         return;
     };
@@ -414,7 +414,7 @@ fn inventory_reports_valid_and_invalid_libraries_in_the_same_directory() {
 fn wire_up_raw_rejects_a_kind_mismatch_against_the_seam_and_the_manifest() {
     let Some(store_plugin) = store_fixture_plugin_path() else {
         eprintln!(
-            "skip: no kind:store cdylib built (run under --workspace, or build ../store-sqlite)"
+            "skip: no kind:store cdylib built (run under --workspace, or build the sibling store plugin repo)"
         );
         return;
     };
@@ -423,12 +423,12 @@ fn wire_up_raw_rejects_a_kind_mismatch_against_the_seam_and_the_manifest() {
     // Seam mismatch: a real STORE library loaded through the SECRET entry point (expected_kind
     // = secret, exported_kind = store) must be refused, naming both kinds. Both kind-check
     // guards run BEFORE `busbar_open`/real backing construction, so an empty `"{}"` config here
-    // never actually reaches sqlite today — but `unique_sqlite_cfg` costs nothing and removes
+    // never actually reaches sqlite today — but `unique_store_cfg` costs nothing and removes
     // the latent risk of this test starting to collide with sibling tests on the shared
     // `busbar-governance.db` default path if that check ordering ever changes.
     let Err(err) = load_secret_from_bytes(
         &bytes,
-        &unique_sqlite_cfg("kind-mismatch-seam"),
+        &unique_store_cfg("kind-mismatch-seam"),
         "kind-mismatch-seam",
         abi_kind::STORE,
     ) else {
@@ -441,7 +441,7 @@ fn wire_up_raw_rejects_a_kind_mismatch_against_the_seam_and_the_manifest() {
     // manifest_kind lies about it — must still be refused.
     let Err(err) = load_store_from_bytes(
         &bytes,
-        &unique_sqlite_cfg("kind-mismatch-manifest"),
+        &unique_store_cfg("kind-mismatch-manifest"),
         "kind-mismatch-manifest",
         "secret",
     ) else {
@@ -475,9 +475,12 @@ fn response_len_cap_refuses_oversized() {
         response_len_ok(MAX_PLUGIN_RESPONSE_LEN, "p").is_ok(),
         "the exact cap is allowed"
     );
-    let err = response_len_ok(MAX_PLUGIN_RESPONSE_LEN + 1, "sqlite").unwrap_err();
+    let err = response_len_ok(MAX_PLUGIN_RESPONSE_LEN + 1, "the-plugin").unwrap_err();
     assert!(err.contains("oversized response"), "got {err}");
-    assert!(err.contains("sqlite"), "names the offending plugin: {err}");
+    assert!(
+        err.contains("the-plugin"),
+        "names the offending plugin: {err}"
+    );
 }
 
 /// Pins the length cap on the `busbar_open` error path, mirroring `response_len_ok`'s on the
@@ -517,14 +520,14 @@ fn open_err_is_readable_refuses_an_oversized_length() {
 fn load_store_from_bytes_loads_the_given_bytes() {
     let Some(path) = store_fixture_plugin_path() else {
         eprintln!(
-            "skip: no kind:store cdylib built (run under --workspace, or build ../store-sqlite)"
+            "skip: no kind:store cdylib built (run under --workspace, or build the sibling store plugin repo)"
         );
         return;
     };
     let bytes = std::fs::read(&path).expect("read the kind:store fixture cdylib");
     let store = load_store_from_bytes(
         &bytes,
-        &unique_sqlite_cfg("fixture-from-bytes"),
+        &unique_store_cfg("fixture-from-bytes"),
         "fixture-from-bytes",
         "store",
     )
@@ -558,7 +561,7 @@ fn load_store_from_bytes_loads_the_given_bytes() {
 fn on_disk_swap_after_verify_does_not_change_what_loads() {
     let Some(path) = store_fixture_plugin_path() else {
         eprintln!(
-            "skip: no kind:store cdylib built (run under --workspace, or build ../store-sqlite)"
+            "skip: no kind:store cdylib built (run under --workspace, or build the sibling store plugin repo)"
         );
         return;
     };
@@ -573,11 +576,11 @@ fn on_disk_swap_after_verify_does_not_change_what_loads() {
     // Confirm loading the victim PATH would pick up whatever is on disk...
     std::fs::write(&victim, b"\x7fELF hostile junk, not a plugin").unwrap();
     assert!(
-        load_store(&victim, &unique_sqlite_cfg("toctou-victim")).is_err(),
+        load_store(&victim, &unique_store_cfg("toctou-victim")).is_err(),
         "the swapped-in junk is not a loadable plugin (path load sees the swap)"
     );
     // ..but the from-bytes load, fed the bytes we verified BEFORE the swap, loads fine.
-    let store = load_store_from_bytes(&verified, &unique_sqlite_cfg("toctou"), "toctou", "store")
+    let store = load_store_from_bytes(&verified, &unique_store_cfg("toctou"), "toctou", "store")
         .expect("verified bytes still load despite the on-disk swap");
     assert!(store.list_keys().expect("list over the ABI").is_empty());
     let _ = std::fs::remove_dir_all(&dir);
@@ -619,7 +622,7 @@ fn staging_dirs_for_this_process() -> std::collections::BTreeSet<std::path::Path
 fn from_bytes_load_leaves_no_artifact_after_drop() {
     let Some(path) = store_fixture_plugin_path() else {
         eprintln!(
-            "skip: no kind:store cdylib built (run under --workspace, or build ../store-sqlite)"
+            "skip: no kind:store cdylib built (run under --workspace, or build the sibling store plugin repo)"
         );
         return;
     };
@@ -630,7 +633,7 @@ fn from_bytes_load_leaves_no_artifact_after_drop() {
     let staged: Option<std::path::PathBuf> = {
         let store = load_dyn_store_from_bytes(
             &bytes,
-            &unique_sqlite_cfg("no-leak-check"),
+            &unique_store_cfg("no-leak-check"),
             "no-leak-check",
             "store",
         )
@@ -690,7 +693,7 @@ fn from_bytes_load_leaves_no_artifact_after_drop() {
 fn hot_swap_old_and_new_coexist_then_old_unmaps_new_keeps_serving() {
     let Some(path) = store_fixture_plugin_path() else {
         eprintln!(
-            "skip: no kind:store cdylib built (run under --workspace, or build ../store-sqlite)"
+            "skip: no kind:store cdylib built (run under --workspace, or build the sibling store plugin repo)"
         );
         return;
     };
@@ -701,7 +704,7 @@ fn hot_swap_old_and_new_coexist_then_old_unmaps_new_keeps_serving() {
     // `from_bytes_load_leaves_no_artifact_after_drop` does) so each generation's OWN
     // `staged_path()` is reachable — asserting on it, not a process-wide directory count that a
     // concurrent test in this binary can shift in either direction between samples.
-    let old = load_dyn_store_from_bytes(&bytes, &unique_sqlite_cfg("old-gen"), "old-gen", "store")
+    let old = load_dyn_store_from_bytes(&bytes, &unique_store_cfg("old-gen"), "old-gen", "store")
         .expect("load OLD");
     let old_path = old.staged_path().map(std::path::Path::to_path_buf);
     if let Some(p) = &old_path {
@@ -725,7 +728,7 @@ fn hot_swap_old_and_new_coexist_then_old_unmaps_new_keeps_serving() {
 
     // Load the NEW instance ALONGSIDE the old — both libraries are mapped simultaneously. On
     // macOS/Windows this is two staged files at once; on Linux two memfds (no disk).
-    let new = load_dyn_store_from_bytes(&bytes, &unique_sqlite_cfg("new-gen"), "new-gen", "store")
+    let new = load_dyn_store_from_bytes(&bytes, &unique_store_cfg("new-gen"), "new-gen", "store")
         .expect("load NEW alongside OLD");
     let new_path = new.staged_path().map(std::path::Path::to_path_buf);
     if let (Some(op), Some(np)) = (&old_path, &new_path) {
@@ -738,7 +741,7 @@ fn hot_swap_old_and_new_coexist_then_old_unmaps_new_keeps_serving() {
         assert_ne!(op, np, "each generation stages its OWN file");
     }
     // The NEW instance is a DISTINCT on-disk SQLite backend (each generation gets its own
-    // `unique_sqlite_cfg()` db_path): it does NOT see the old key. Because each generation has a
+    // `unique_store_cfg()` db_path): it does NOT see the old key. Because each generation has a
     // genuinely separate backing file, this is real proof that NEW is a second, independent
     // load — not a cached alias of the first.
     assert!(
@@ -810,7 +813,7 @@ fn hot_swap_old_and_new_coexist_then_old_unmaps_new_keeps_serving() {
 fn repeated_reloads_do_not_leak_staged_libraries() {
     let Some(path) = store_fixture_plugin_path() else {
         eprintln!(
-            "skip: no kind:store cdylib built (run under --workspace, or build ../store-sqlite)"
+            "skip: no kind:store cdylib built (run under --workspace, or build the sibling store plugin repo)"
         );
         return;
     };
@@ -823,7 +826,7 @@ fn repeated_reloads_do_not_leak_staged_libraries() {
     for i in 0..16 {
         let s = load_dyn_store_from_bytes(
             &bytes,
-            &unique_sqlite_cfg(&format!("reload-{i}")),
+            &unique_store_cfg(&format!("reload-{i}")),
             &format!("reload-{i}"),
             "store",
         )
@@ -859,7 +862,7 @@ fn repeated_reloads_do_not_leak_staged_libraries() {
 fn linux_from_bytes_load_touches_no_disk() {
     let Some(path) = store_fixture_plugin_path() else {
         eprintln!(
-            "skip: no kind:store cdylib built (run under --workspace, or build ../store-sqlite)"
+            "skip: no kind:store cdylib built (run under --workspace, or build the sibling store plugin repo)"
         );
         return;
     };
@@ -871,7 +874,7 @@ fn linux_from_bytes_load_touches_no_disk() {
     // two samples would have made this assertion fail for a reason unrelated to THIS load.
     let store = load_dyn_store_from_bytes(
         &bytes,
-        &unique_sqlite_cfg("memfd-check"),
+        &unique_store_cfg("memfd-check"),
         "memfd-check",
         "store",
     )
@@ -1031,7 +1034,7 @@ fn dyn_store_with_fake_call() -> Option<DynStore> {
         .expect("stage the kind:store fixture cdylib for the fake-call harness");
     let mut raw = wire_up_raw(
         lib,
-        &unique_sqlite_cfg("fake-call-store"),
+        &unique_store_cfg("fake-call-store"),
         "fake-call-store".to_string(),
         abi_kind::STORE,
         abi_kind::STORE,
@@ -1051,7 +1054,7 @@ fn dyn_store_with_fake_call() -> Option<DynStore> {
 fn denylist_unsupported_status_falls_back_empty() {
     let Some(store) = dyn_store_with_fake_call() else {
         eprintln!(
-            "skip: no kind:store cdylib built (run under --workspace, or build ../store-sqlite)"
+            "skip: no kind:store cdylib built (run under --workspace, or build the sibling store plugin repo)"
         );
         return;
     };
@@ -1076,7 +1079,7 @@ fn denylist_unsupported_status_falls_back_empty() {
 fn denylist_legacy_v1_decode_failure_falls_back_empty() {
     let Some(store) = dyn_store_with_fake_call() else {
         eprintln!(
-            "skip: no kind:store cdylib built (run under --workspace, or build ../store-sqlite)"
+            "skip: no kind:store cdylib built (run under --workspace, or build the sibling store plugin repo)"
         );
         return;
     };
@@ -1108,7 +1111,7 @@ fn denylist_legacy_v1_decode_failure_falls_back_empty() {
 fn no_plugin_crash_shape_can_empty_the_denylist() {
     let Some(store) = dyn_store_with_fake_call() else {
         eprintln!(
-            "skip: no kind:store cdylib built (run under --workspace, or build ../store-sqlite)"
+            "skip: no kind:store cdylib built (run under --workspace, or build the sibling store plugin repo)"
         );
         return;
     };
@@ -1202,7 +1205,7 @@ fn audit_fixture() -> AuditRecord {
 fn denylist_backend_error_with_unknown_variant_text_propagates() {
     let Some(store) = dyn_store_with_fake_call() else {
         eprintln!(
-            "skip: no kind:store cdylib built (run under --workspace, or build ../store-sqlite)"
+            "skip: no kind:store cdylib built (run under --workspace, or build the sibling store plugin repo)"
         );
         return;
     };
@@ -1231,7 +1234,7 @@ fn denylist_backend_error_with_unknown_variant_text_propagates() {
 fn audit_tail_backend_error_propagates_not_masked_by_fallback() {
     let Some(store) = dyn_store_with_fake_call() else {
         eprintln!(
-            "skip: no kind:store cdylib built (run under --workspace, or build ../store-sqlite)"
+            "skip: no kind:store cdylib built (run under --workspace, or build the sibling store plugin repo)"
         );
         return;
     };
@@ -1265,7 +1268,7 @@ fn audit_tail_backend_error_propagates_not_masked_by_fallback() {
 fn panic_in_list_denylist_fails_closed_not_empty() {
     let Some(store) = dyn_store_with_fake_call() else {
         eprintln!(
-            "skip: no kind:store cdylib built (run under --workspace, or build ../store-sqlite)"
+            "skip: no kind:store cdylib built (run under --workspace, or build the sibling store plugin repo)"
         );
         return;
     };
@@ -1290,7 +1293,7 @@ fn panic_in_list_denylist_fails_closed_not_empty() {
 fn denylist_status_matrix() {
     let Some(store) = dyn_store_with_fake_call() else {
         eprintln!(
-            "skip: no kind:store cdylib built (run under --workspace, or build ../store-sqlite)"
+            "skip: no kind:store cdylib built (run under --workspace, or build the sibling store plugin repo)"
         );
         return;
     };
@@ -1316,7 +1319,7 @@ fn denylist_status_matrix() {
 fn append_audit_status_matrix() {
     let Some(store) = dyn_store_with_fake_call() else {
         eprintln!(
-            "skip: no kind:store cdylib built (run under --workspace, or build ../store-sqlite)"
+            "skip: no kind:store cdylib built (run under --workspace, or build the sibling store plugin repo)"
         );
         return;
     };
@@ -1390,7 +1393,7 @@ fn transport_error_classification() {
 /// so checking only `profile_dir` silently found nothing even though the cdylib really was
 /// built. Same fix already applied to `store_fixture_plugin_path` above and `hook_plugin_path`
 /// in `hook.rs`.
-fn secret_example_plugin_path() -> Option<std::path::PathBuf> {
+fn hermetic_secret_plugin_path() -> Option<std::path::PathBuf> {
     let candidate = (|| {
         let exe = std::env::current_exe().ok()?;
         let profile_dir = exe.parent()?.parent()?;
@@ -1411,8 +1414,8 @@ fn secret_example_plugin_path() -> Option<std::path::PathBuf> {
     if candidate.is_none() && std::env::var_os("CI").is_some() {
         panic!(
             "the secret example plugin cdylib is not built under CI: `cargo test --workspace` \
-                 must build busbar_secret_example_plugin (checked both the uplifted target dir and \
-                 target/deps). Refusing to silently skip the only over-the-ABI coverage of the \
+                 must build the in-tree secret-example-plugin (checked both the uplifted target dir \
+                 and target/deps). Refusing to silently skip the only over-the-ABI coverage of the \
                  DynSecret dlopen seam."
         );
     }
@@ -1423,8 +1426,8 @@ fn secret_example_plugin_path() -> Option<std::path::PathBuf> {
 /// `SecretModule::resolve` through the `DynSecret` wrapper — a hit, a miss (fail-closed, never an
 /// empty `Ok`), and a reference whose `settings` carries no `key` at all.
 #[test]
-fn load_and_exercise_secret_example_plugin() {
-    let Some(path) = secret_example_plugin_path() else {
+fn load_and_exercise_secret_plugin() {
+    let Some(path) = hermetic_secret_plugin_path() else {
         eprintln!("skip: secret example plugin cdylib not built (run under --workspace)");
         return;
     };
@@ -1462,10 +1465,10 @@ fn load_and_exercise_secret_example_plugin() {
 }
 
 /// Locate the hermetic `busbar-export-example-plugin` cdylib, mirroring
-/// `secret_example_plugin_path` above (see its doc for the uplifted-vs-`deps` rationale). CI
+/// `hermetic_secret_plugin_path` above (see its doc for the uplifted-vs-`deps` rationale). CI
 /// (`cargo test --workspace`) always builds it, so a missing cdylib there is a hard failure, not a
 /// silent skip — it is the only over-the-ABI coverage of the `DynExport` dlopen seam.
-fn export_example_plugin_path() -> Option<std::path::PathBuf> {
+fn hermetic_export_plugin_path() -> Option<std::path::PathBuf> {
     let candidate = (|| {
         let exe = std::env::current_exe().ok()?;
         let profile_dir = exe.parent()?.parent()?;
@@ -1486,8 +1489,8 @@ fn export_example_plugin_path() -> Option<std::path::PathBuf> {
     if candidate.is_none() && std::env::var_os("CI").is_some() {
         panic!(
             "the export example plugin cdylib is not built under CI: `cargo test --workspace` \
-                 must build busbar_export_example_plugin (checked both the uplifted target dir and \
-                 target/deps). Refusing to silently skip the only over-the-ABI coverage of the \
+                 must build the in-tree export-example-plugin (checked both the uplifted target dir \
+                 and target/deps). Refusing to silently skip the only over-the-ABI coverage of the \
                  DynExport dlopen seam."
         );
     }
@@ -1499,9 +1502,9 @@ fn export_example_plugin_path() -> Option<std::path::PathBuf> {
 /// assert the sink acks `Delivered` (an `Ok(())`). This is the exact seam the engine's
 /// observability export will consume: verified bytes in, a `DynExport` out.
 #[test]
-fn load_and_exercise_export_example_plugin() {
+fn load_and_exercise_export_plugin() {
     use busbar_plugin::cold::export::ExportStream;
-    let Some(path) = export_example_plugin_path() else {
+    let Some(path) = hermetic_export_plugin_path() else {
         eprintln!("skip: export example plugin cdylib not built (run under --workspace)");
         return;
     };
@@ -1535,7 +1538,7 @@ fn load_and_exercise_export_example_plugin() {
 // time, because they never cross the ABI.
 
 /// Locate the hermetic in-tree `busbar-store-example-plugin` cdylib. Mirrors
-/// `secret_example_plugin_path`/`export_example_plugin_path`, including checking BOTH the uplifted
+/// `hermetic_secret_plugin_path`/`hermetic_export_plugin_path`, including checking BOTH the uplifted
 /// `<profile_dir>/<name>` copy and the raw `<profile_dir>/deps/<name>` compiler output (a scoped
 /// `cargo test -p busbar-plugin-loader` only produces the latter).
 ///
@@ -1669,7 +1672,7 @@ fn n_list_task_events(s: &dyn busbar_api::Store, id: &str) -> StoreResult<Vec<Sa
             .collect(),
     )
 }
-fn n_list_mcp_calls(s: &dyn busbar_api::Store, p: &str) -> StoreResult<Vec<SampleCall>> {
+fn n_list_calls(s: &dyn busbar_api::Store, p: &str) -> StoreResult<Vec<SampleCall>> {
     Ok(
         s.list_plane_records("call", &PlaneSelector::Parent(p.into()))?
             .iter()
@@ -1686,7 +1689,7 @@ fn store_example_plugin_path() -> Option<std::path::PathBuf> {
     if candidate.is_none() && std::env::var_os("CI").is_some() {
         panic!(
             "the store example plugin cdylib is not built under CI: `cargo test --workspace` must \
-             build busbar_store_example_plugin (checked both the uplifted target dir and \
+             build the in-tree store-example-plugin (checked both the uplifted target dir and \
              target/deps). Refusing to silently skip the ONLY end-to-end proof that a task written \
              through a plugin store survives a restart."
         );
@@ -1826,11 +1829,11 @@ fn task_state_written_through_a_plugin_store_survives_a_restart() {
         "the provenance chain must survive with `hash`/`prev_hash` verbatim"
     );
     assert_eq!(
-        n_list_mcp_calls(store.as_ref(), "vk_owner").expect("list_mcp_calls after restart"),
+        n_list_calls(store.as_ref(), "vk_owner").expect("list_calls after restart"),
         vec![call]
     );
     assert_eq!(
-        n_list_call_principals(store.as_ref()).expect("list_mcp_call_principals after restart"),
+        n_list_call_principals(store.as_ref()).expect("list_call_principals after restart"),
         vec!["vk_owner".to_string()],
         "the boot enumeration must find the principal whose chain this process never saw written"
     );
@@ -1843,7 +1846,7 @@ fn task_state_written_through_a_plugin_store_survives_a_restart() {
     // have already proven.
     let call_purged = store
         .purge_plane_records_before("call", 2_000)
-        .expect("purge_mcp_calls_before");
+        .expect("purge_calls_before");
     assert_eq!(
         call_purged, 1,
         "the `call` retention op drops the older row and the count comes from the plugin, not a default"
@@ -1858,8 +1861,8 @@ fn task_state_written_through_a_plugin_store_survives_a_restart() {
         vec![task.clone()],
         "the purge must have been written through, not just applied in the plugin's memory"
     );
-    assert!(n_list_mcp_calls(store.as_ref(), "vk_owner")
-        .expect("list_mcp_calls")
+    assert!(n_list_calls(store.as_ref(), "vk_owner")
+        .expect("list_calls")
         .is_empty());
 
     drop(store);
@@ -2164,25 +2167,25 @@ fn a_plugin_predating_the_task_variants_still_gets_the_pre_existing_defaults() {
         &store,
         |s| s.append_plane_record(&call_record(&call)),
         (),
-        "append_mcp_call",
+        "append_call",
     );
     under_old_plugin_shapes(
         &store,
-        |s| n_list_mcp_calls(s, "vk"),
+        |s| n_list_calls(s, "vk"),
         Vec::new(),
-        "list_mcp_calls",
+        "list_calls",
     );
     under_old_plugin_shapes(
         &store,
         |s| n_list_call_principals(s),
         Vec::new(),
-        "list_mcp_call_principals",
+        "list_call_principals",
     );
     under_old_plugin_shapes(
         &store,
         |s| s.purge_plane_records_before("call", 9),
         0,
-        "purge_mcp_calls_before",
+        "purge_calls_before",
     );
 }
 
@@ -2251,7 +2254,7 @@ fn no_plugin_failure_shape_can_launder_a_dropped_task_into_success() {
 fn redeem_plane_token_unsupported_and_broken_shapes_fail_closed_not_fresh() {
     let Some(store) = dyn_store_with_fake_call() else {
         eprintln!(
-            "skip: no kind:store cdylib built (run under --workspace, or build ../store-sqlite)"
+            "skip: no kind:store cdylib built (run under --workspace, or build the sibling store plugin repo)"
         );
         return;
     };
@@ -2317,7 +2320,7 @@ fn event_free_probe() -> SampleEvent {
 #[test]
 fn validate_plugin_unloads_on_a_worker_not_the_callers_thread() {
     let Some(path) = store_example_plugin_path() else {
-        eprintln!("skip: busbar_store_example_plugin cdylib not built");
+        eprintln!("skip: store-example-plugin cdylib not built");
         return;
     };
     let before = UNLOADS_ON_WORKER.with(std::cell::Cell::get);
