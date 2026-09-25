@@ -139,7 +139,7 @@ i=0; while [ $i -lt 50 ] && ! assert_port_free "$LP"; do sleep 0.1; i=$((i+1)); 
 # artefact, not the cell's contract, so the driver removes any staging directory the first boot
 # left in the cell's own TMPDIR before the second boot looks. Only the recording's private tmp is
 # touched, and only the prefix busbar stages under.
-rm -rf "${TMPDIR:-/tmp}"/busbar-plugins-* 2>/dev/null || true
+rm -rf "${TMPDIR:-/tmp}"/busbar-plugin-staging-*/busbar-plugins-* "${TMPDIR:-/tmp}"/busbar-plugins-* 2>/dev/null || true
 
 # ---- corrupt/reconfigure between the two boots, per mode -------------------------------------------
 DB2="$DB"; cfg2_groups="$GROUPS_ORACLE"; cfg2_chain="keys"; expect_boot=refuse
