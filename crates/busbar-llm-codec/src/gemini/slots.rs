@@ -73,8 +73,17 @@ pub(super) fn read_gemini_hosted_tools(
 pub(super) fn write_gemini_hosted_tools(hosted: &[IrHostedTool]) -> Vec<serde_json::Value> {
     hosted
         .iter()
-        .map(|tool| {
+        .filter_map(|tool| {
             let (key, params_set) = match tool {
+                // OAI-09: Gemini has no free-text / grammar tool (N).
+                IrHostedTool::Custom(_) => {
+                    tracing::warn!(
+                        hosted_tool = tool.kind_str(),
+                        "dropping an OpenAI custom tool on Gemini egress: Gemini has no free-text \
+                         / grammar tool (lossy-by-target)"
+                    );
+                    return None;
+                }
                 IrHostedTool::WebSearch(ws) => (
                     GEMINI_GOOGLE_SEARCH,
                     ws.max_uses.is_some()
@@ -98,7 +107,7 @@ pub(super) fn write_gemini_hosted_tools(hosted: &[IrHostedTool]) -> Vec<serde_js
                      the tool is kept"
                 );
             }
-            serde_json::json!({ key: {} })
+            Some(serde_json::json!({ key: {} }))
         })
         .collect()
 }
@@ -237,6 +246,14 @@ pub(super) fn gemini_unsupported_slots(req: &IrRequest) -> Vec<&'static str> {
     }
     if req.verbosity.is_some() {
         dropped.push("verbosity");
+    }
+    // OAI-09: an OpenAI custom tool has no Gemini form.
+    if req
+        .hosted_tools
+        .iter()
+        .any(|t| matches!(t, IrHostedTool::Custom(_)))
+    {
+        dropped.push("custom_tool");
     }
     dropped
 }

@@ -83,6 +83,15 @@ impl ProtocolWriter for ResponsesWriter {
     }
 
     fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value {
+        self.write_request_for_lane(req, "", &crate::proto_codec::LaneCaps::default())
+    }
+
+    fn write_request_for_lane(
+        &self,
+        req: &crate::ir::IrRequest,
+        _model: &str,
+        caps: &crate::proto_codec::LaneCaps,
+    ) -> serde_json::Value {
         let mut out = serde_json::Map::new();
         let mut input_arr: Vec<serde_json::Value> = Vec::new();
 
@@ -616,15 +625,24 @@ impl ProtocolWriter for ResponsesWriter {
         // overlay below would forward the original, and must win: it can carry `summary` too).
         //
         // `Off` (IR-09) is matched FIRST: projected through the table it would read as the smallest
-        // ENABLE ask. `effort: "none"` is accepted only by the newest OpenAI reasoning models and no
-        // lane capability says this lane has one, so the ask is omitted (with a warn). A
-        // Responses-origin `"none"` still rides `extra` verbatim on a same-protocol write.
+        // ENABLE ask. `effort: "none"` is accepted only by the newest OpenAI reasoning models: a
+        // lane that declares it (`LaneCaps::reasoning_none`, round 3 item 12) gets it; on any other
+        // the ask is omitted (with a warn). A Responses-origin `"none"` still rides `extra`
+        // verbatim on a same-protocol write.
         if req.reasoning == Some(crate::ir::IrReasoningAsk::Off) {
             if !req.extra.contains_key("reasoning") {
-                tracing::warn!(
-                    "omitting reasoning OFF on Responses egress: reasoning.effort \"none\" is not \
-                     accepted by every OpenAI reasoning model and this lane does not declare it"
-                );
+                if caps.reasoning_none {
+                    out.insert(
+                        "reasoning".to_string(),
+                        serde_json::json!({"effort": "none"}),
+                    );
+                } else {
+                    tracing::warn!(
+                        "omitting reasoning OFF on Responses egress: reasoning.effort \"none\" is \
+                         not accepted by every OpenAI reasoning model and this lane does not \
+                         declare it"
+                    );
+                }
             }
         } else if let Some(ask) = req.reasoning {
             if !req.extra.contains_key("reasoning") {
@@ -1800,6 +1818,11 @@ impl ProtocolWriter for ResponsesWriter {
                 "param": serde_json::Value::Null,
             }
         })
+    }
+
+    /// IR-18: `encrypted_content` is read back as an OpenAI-minted blob.
+    fn reads_signature_origin_as_own(&self, origin: crate::ir::IrSignatureOrigin) -> bool {
+        origin == crate::ir::IrSignatureOrigin::OpenAi
     }
 
     fn clone_box(&self) -> Box<dyn ProtocolWriter> {

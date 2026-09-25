@@ -194,6 +194,14 @@ impl ProtocolReader for AnthropicReader {
         Box::new(self.clone())
     }
 
+    /// IR-18: a `signature_delta` on the Anthropic wire is Claude's.
+    fn stream_signature_origin(
+        &self,
+        _state: &crate::ir::StreamDecodeState,
+    ) -> Option<crate::ir::IrSignatureOrigin> {
+        Some(crate::ir::IrSignatureOrigin::Anthropic)
+    }
+
     fn read_request(&self, body: &serde_json::Value) -> Result<crate::ir::IrRequest, IrError> {
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,

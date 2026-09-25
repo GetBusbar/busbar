@@ -410,13 +410,18 @@ impl ProtocolReader for GeminiReader {
                             // response writer relays it), which it echoes back. Stamping it Gemini
                             // would make the foreign backend's writer drop its own signature on the
                             // next turn. A Gemini BACKEND's response is stamped (`read_response`).
+                            // IR-18 (round 3 items 15/19): busbar's provenance envelope — a
+                            // foreign signature this client was handed wrapped — restores the
+                            // original bytes and their origin; a bare signature stays unknown.
+                            let (signature, signature_origin) =
+                                crate::ir::sig_envelope::read_carried_opt(signature, None);
                             msg_content.push(crate::ir::IrBlock::Thinking {
                                 text,
                                 signature,
                                 redacted: false,
                                 cache_control: None,
                                 kind: Some(crate::ir::IrThinkingKind::Summary),
-                                signature_origin: None,
+                                signature_origin,
                             });
                         }
                         // Text part
@@ -1512,10 +1517,12 @@ impl ProtocolReader for GeminiReader {
                         .and_then(|s| s.as_str())
                         .map(String::from);
                     // A Gemini thought part is a SUMMARY of the model's reasoning (IR-17), and its
-                    // signature was minted by Gemini (IR-18).
-                    let signature_origin = signature
-                        .as_ref()
-                        .map(|_| crate::ir::IrSignatureOrigin::Gemini);
+                    // signature was minted by Gemini (IR-18) — unless it is busbar's provenance
+                    // envelope, which restores the bytes and origin it recorded.
+                    let (signature, signature_origin) = crate::ir::sig_envelope::read_carried_opt(
+                        signature,
+                        Some(crate::ir::IrSignatureOrigin::Gemini),
+                    );
                     content.push(crate::ir::IrBlock::Thinking {
                         text,
                         signature,
@@ -1694,6 +1701,14 @@ impl ProtocolReader for GeminiReader {
             request_echo: None,
             stop_detail: None,
         })
+    }
+
+    /// IR-18: a streamed `thoughtSignature` on the Gemini wire is Gemini-minted.
+    fn stream_signature_origin(
+        &self,
+        _state: &crate::ir::StreamDecodeState,
+    ) -> Option<crate::ir::IrSignatureOrigin> {
+        Some(crate::ir::IrSignatureOrigin::Gemini)
     }
 
     fn clone_box(&self) -> Box<dyn ProtocolReader> {

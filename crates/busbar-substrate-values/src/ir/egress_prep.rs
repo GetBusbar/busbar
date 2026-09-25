@@ -80,6 +80,14 @@ pub struct LaneCaps {
     /// output directive is written in the dialect's pre-capability form (a forced tool on the
     /// Anthropic wire).
     pub native_structured_output: bool,
+    /// The lane accepts `reasoning_effort: "none"` (OpenAI Chat) / `reasoning.effort: "none"`
+    /// (Responses) — reasoning switched OFF on a model that reasons by default. False: an Off ask
+    /// is omitted on those dialects (a model that does not know the word 400s on it).
+    pub reasoning_none: bool,
+    /// The lane's model cannot switch thinking off (Claude Fable 5.x, Opus 5.5): an Off ask OMITS
+    /// the Anthropic/Bedrock `thinking` member instead of writing `{type:"disabled"}`, which such a
+    /// model rejects. False: Off is written as `{type:"disabled"}`.
+    pub thinking_always_on: bool,
 }
 
 impl LaneCaps {
@@ -89,5 +97,7 @@ impl LaneCaps {
         max_output_key: MaxOutputKey::MaxTokens,
         anthropic_adaptive_thinking: false,
         native_structured_output: false,
+        reasoning_none: false,
+        thinking_always_on: false,
     };
 }

@@ -771,6 +771,15 @@ impl ProtocolWriter for BedrockWriter {
             .map(|id| (HDR_AMZN_REQUEST_ID, id))
     }
 
+    /// IR-18: a Converse `reasoningText.signature` is read back as Claude's or the Bedrock model's
+    /// own (the reader tells the two apart by the conversation's model id).
+    fn reads_signature_origin_as_own(&self, origin: crate::ir::IrSignatureOrigin) -> bool {
+        matches!(
+            origin,
+            crate::ir::IrSignatureOrigin::Anthropic | crate::ir::IrSignatureOrigin::BedrockOther
+        )
+    }
+
     fn clone_box(&self) -> Box<dyn ProtocolWriter> {
         Box::new(self.clone())
     }
@@ -1219,6 +1228,14 @@ impl BedrockWriter {
         let mut thinking_disabled = false;
         match req.reasoning.filter(|_| !native_reasoning_present) {
             None => {}
+            // A lane whose Claude model cannot switch thinking off (`LaneCaps::thinking_always_on`,
+            // round 3 item 12) rejects `{type:"disabled"}`: omitted with a warn.
+            Some(crate::ir::IrReasoningAsk::Off) if caps.thinking_always_on => {
+                tracing::warn!(
+                    "omitting reasoning OFF on Bedrock egress: this lane's model cannot switch \
+                     thinking off (thinking_always_on) and rejects thinking.type \"disabled\""
+                );
+            }
             Some(crate::ir::IrReasoningAsk::Off) => thinking_disabled = true,
             Some(crate::ir::IrReasoningAsk::Effort(effort)) if caps.anthropic_adaptive_thinking => {
                 thinking = Some(serde_json::json!({ "type": super::THINKING_TYPE_ADAPTIVE }));

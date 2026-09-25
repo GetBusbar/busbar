@@ -570,7 +570,12 @@ fn oai09_custom_tool_is_not_an_empty_name_function() {
 
     let ir = super::OpenAiReader.read_request(&body).expect("reads");
     let same = super::openai_writer().write_request(&ir);
-    assert_eq!(same["tools"][0], custom, "{same}");
+    // Round 3 item 11: the custom tool now rides the typed hosted-tool slot and is written after
+    // the function tools (same members, same object).
+    assert!(
+        same["tools"].as_array().unwrap().contains(&custom),
+        "{same}"
+    );
 }
 
 // ── OAI-06: bare-base64 `file.file_data` ─────────────────────────────────────────────────────────

@@ -15,6 +15,11 @@ impl ProtocolWriter for AnthropicWriter {
         PATH_UPSTREAM
     }
 
+    /// IR-18: an Anthropic `signature` is read back as Claude's.
+    fn reads_signature_origin_as_own(&self, origin: crate::ir::IrSignatureOrigin) -> bool {
+        origin == crate::ir::IrSignatureOrigin::Anthropic
+    }
+
     fn write_error(&self, status: u16, kind: &str, message: &str) -> serde_json::Value {
         // Native Anthropic error envelope: `{"type":"error","error":{"type":<kind>,"message":<msg>}}`
         // (see the Anthropic SDK / API error shape — the `anthropic.APIStatusError` family decodes
@@ -240,7 +245,7 @@ impl ProtocolWriter for AnthropicWriter {
                         .is_none_or(|allowed| allowed.contains(&t.name))
             })
             .filter_map(write_tool)
-            .chain(req.hosted_tools.iter().map(write_hosted_tool))
+            .chain(req.hosted_tools.iter().filter_map(write_hosted_tool))
             .collect();
         if !tools_array.is_empty() {
             out.insert("tools".to_string(), serde_json::Value::Array(tools_array));
@@ -412,6 +417,15 @@ impl ProtocolWriter for AnthropicWriter {
             // Reasoning switched OFF (IR-09, ANT-09) — matched FIRST: `to_budget` would read it as a
             // zero budget and drop it, losing the caller's "off" on a reasoning-by-default model.
             // Not an emitted thinking ask, so the sampling knobs below stay.
+            // A lane whose model cannot switch thinking off (`LaneCaps::thinking_always_on`,
+            // round 3 item 12) rejects `{type:"disabled"}`: the ask is omitted with a warn and the
+            // model thinks at its default.
+            Some(crate::ir::IrReasoningAsk::Off) if caps.thinking_always_on => {
+                tracing::warn!(
+                    "omitting reasoning OFF on Anthropic egress: this lane's model cannot switch \
+                     thinking off (thinking_always_on) and rejects thinking.type \"disabled\""
+                );
+            }
             Some(crate::ir::IrReasoningAsk::Off) => {
                 out.insert(
                     "thinking".to_string(),

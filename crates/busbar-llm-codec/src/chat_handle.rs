@@ -321,6 +321,30 @@ pub fn chat_prepare_for_ingress(ir: &mut IrResponse, ingress_protocol: &str, now
         ir.created = Some(now_epoch);
     }
     super::proto_codec::ToolIdRemap::default().remap_response(ingress_protocol, ir);
+    envelope_foreign_signatures(ir, ingress_protocol);
+}
+
+/// IR-18 (architect ruling, round 3 item 15): a reasoning signature another family minted is
+/// wrapped in the busbar provenance envelope before the ingress writer places it in a client
+/// carrier that has no origin field, so the client's next turn brings back the original bytes AND
+/// their origin (the ingress reader unwraps it) instead of a blob its own family would reject.
+fn envelope_foreign_signatures(ir: &mut IrResponse, ingress_protocol: &str) {
+    let Some(p) = super::proto_codec::protocol_for(ingress_protocol) else {
+        return;
+    };
+    let writer = p.writer();
+    for block in &mut ir.content {
+        if let crate::ir::IrBlock::Thinking {
+            signature: Some(sig),
+            signature_origin,
+            ..
+        } = block
+        {
+            *sig = crate::ir::sig_envelope::for_client(sig, *signature_origin, |o| {
+                writer.reads_signature_origin_as_own(o)
+            });
+        }
+    }
 }
 
 /// Chat token-usage billing projection (from the former `IrResp::Chat` `usage()` arm).

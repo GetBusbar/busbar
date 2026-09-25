@@ -521,6 +521,7 @@ impl ProtocolReader for OpenAiReader {
 
         // Handle tools array
         let mut tools: Vec<crate::ir::IrTool> = Vec::new();
+        let mut custom_tools: Vec<crate::ir::IrHostedTool> = Vec::new();
         if let Some(tools_val) = obj.get("tools") {
             // A PRESENT `tools` that is not an array is a malformed request — reject it (mirroring the
             // `messages` type-check) rather than coercing to empty, which would forward a tool-less
@@ -531,6 +532,13 @@ impl ProtocolReader for OpenAiReader {
                 retry_after: None,
             })?;
             for tool_val in tools_arr {
+                // OAI-09 (round 3 item 11): a `custom` tool (free-text / grammar input) crosses in
+                // the typed hosted-tool slot, so a Responses lane receives it; one carrying a member
+                // the IR cannot hold stays the raw same-protocol tool.
+                if let Some(custom) = super::slots::read_custom_tool(tool_val) {
+                    custom_tools.push(custom);
+                    continue;
+                }
                 tools.push(read_openai_tool(tool_val)?);
             }
         } else if let Some(functions) = obj.get("functions").and_then(|f| f.as_array()) {
@@ -701,7 +709,7 @@ impl ProtocolReader for OpenAiReader {
             prompt_cache_key: None,
             verbosity: None,
             allowed_tools: None,
-            hosted_tools: Vec::new(),
+            hosted_tools: custom_tools,
             // IR-14: `developer` only when EVERY folded entry was one, `system` only when every one
             // was; mixed (or none) says nothing.
             system_role: match system_roles_seen {

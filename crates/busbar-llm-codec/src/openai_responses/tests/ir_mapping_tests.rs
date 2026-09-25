@@ -145,8 +145,12 @@ fn rsp01_stream_signature_becomes_reasoning_encrypted_content() {
         .iter()
         .find(|p| p["type"] == "response.output_item.done" && p["item"]["type"] == "reasoning")
         .expect("a reasoning output_item.done");
+    // IR-18 (round 3 item 15): a Claude signature rides the Responses carrier inside busbar's
+    // provenance envelope, which the Responses reader unwraps back to these exact bytes.
+    let claude_sig =
+        crate::ir::sig_envelope::wrap(crate::ir::IrSignatureOrigin::Anthropic, "SIG-ANTHROPIC");
     assert_eq!(
-        done["item"]["encrypted_content"], "SIG-ANTHROPIC",
+        done["item"]["encrypted_content"], claude_sig,
         "the streamed signature must ride the reasoning item: {done}"
     );
     let completed = payloads
@@ -157,7 +161,7 @@ fn rsp01_stream_signature_becomes_reasoning_encrypted_content() {
         .as_array()
         .and_then(|o| o.iter().find(|i| i["type"] == "reasoning"))
         .expect("reasoning item in the terminal output[]");
-    assert_eq!(reasoning["encrypted_content"], "SIG-ANTHROPIC");
+    assert_eq!(reasoning["encrypted_content"], claude_sig);
 }
 
 // ─────────────────────────────────────── RSP-02 ───────────────────────────────────────
@@ -188,7 +192,12 @@ fn rsp02_stream_reasoning_encrypted_content_becomes_signature_delta() {
         .iter()
         .position(|p| p["delta"]["type"] == "signature_delta")
         .unwrap_or_else(|| panic!("no signature_delta in: {out}"));
-    assert_eq!(payloads[sig_pos]["delta"]["signature"], "ENC-RESPONSES");
+    // IR-18 (round 3 item 15): the OpenAI blob rides the Anthropic carrier inside busbar's
+    // provenance envelope, which the Anthropic reader unwraps back to these exact bytes.
+    assert_eq!(
+        payloads[sig_pos]["delta"]["signature"],
+        crate::ir::sig_envelope::wrap(crate::ir::IrSignatureOrigin::OpenAi, "ENC-RESPONSES")
+    );
     let stop_pos = payloads
         .iter()
         .position(|p| p["type"] == "content_block_stop" && p["index"] == 0)
@@ -228,7 +237,12 @@ fn rsp02_reasoning_part_done_does_not_close_before_item_done() {
     assert!(
         sse_payloads(&out)
             .iter()
-            .any(|p| p["delta"]["type"] == "signature_delta" && p["delta"]["signature"] == "ENC-2"),
+            .any(|p| p["delta"]["type"] == "signature_delta"
+                && p["delta"]["signature"]
+                    == crate::ir::sig_envelope::wrap(
+                        crate::ir::IrSignatureOrigin::OpenAi,
+                        "ENC-2"
+                    )),
         "encrypted_content lost when the reasoning part closed first: {out}"
     );
 }

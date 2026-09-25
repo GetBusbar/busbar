@@ -208,6 +208,9 @@ pub(super) fn read_hosted_tool(tool: &serde_json::Value) -> Option<crate::ir::Ir
             });
             (auto_container && obj.len() == 2).then_some(crate::ir::IrHostedTool::CodeExecution)
         }
+        // OAI-09 (round 3 item 11): the flat Responses custom tool.
+        "custom" => crate::ir::IrCustomTool::read_members(obj, &["type"])
+            .map(crate::ir::IrHostedTool::Custom),
         _ => None,
     }
 }
@@ -266,6 +269,13 @@ pub(super) fn write_hosted_tool(tool: &crate::ir::IrHostedTool) -> Option<serde_
                  (lossy-by-target)"
             );
             None
+        }
+        // OAI-09 (round 3 item 11): a custom (free-text / grammar) tool, flat on this wire.
+        crate::ir::IrHostedTool::Custom(c) => {
+            let mut out = serde_json::Map::new();
+            out.insert("type".to_string(), serde_json::json!("custom"));
+            out.extend(c.write_members());
+            Some(serde_json::Value::Object(out))
         }
     }
 }

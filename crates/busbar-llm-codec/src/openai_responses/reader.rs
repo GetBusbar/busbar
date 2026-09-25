@@ -444,10 +444,15 @@ impl ProtocolReader for ResponsesReader {
                             }
                             if !text.is_empty() || signature.is_some() {
                                 // IR-18: an `encrypted_content` on this dialect is an OpenAI-minted
-                                // blob. IR-17: `content[]` vs `summary[]` says full vs summary.
-                                let signature_origin = signature
-                                    .as_ref()
-                                    .map(|_| crate::ir::IrSignatureOrigin::OpenAi);
+                                // blob, unless it is busbar's provenance envelope (another family's
+                                // signature handed to this client earlier), which restores the
+                                // original bytes and origin. IR-17: `content[]` vs `summary[]`
+                                // says full vs summary.
+                                let (signature, signature_origin) =
+                                    crate::ir::sig_envelope::read_carried_opt(
+                                        signature,
+                                        Some(crate::ir::IrSignatureOrigin::OpenAi),
+                                    );
                                 messages.push(crate::ir::IrMessage {
                                     role: crate::ir::IrRole::Assistant,
                                     content: vec![crate::ir::IrBlock::Thinking {
@@ -1708,11 +1713,14 @@ impl ProtocolReader for ResponsesReader {
                         // Skip a wholly-empty reasoning item (no text and no encrypted_content)
                         // rather than emitting a blank Thinking block.
                         if !text.is_empty() || signature.is_some() {
-                            // IR-18: this dialect's `encrypted_content` is OpenAI-minted. IR-17:
-                            // `content[]` vs `summary[]` says full vs summary.
-                            let signature_origin = signature
-                                .as_ref()
-                                .map(|_| crate::ir::IrSignatureOrigin::OpenAi);
+                            // IR-18: this dialect's `encrypted_content` is OpenAI-minted (a busbar
+                            // provenance envelope restores the bytes and origin it recorded).
+                            // IR-17: `content[]` vs `summary[]` says full vs summary.
+                            let (signature, signature_origin) =
+                                crate::ir::sig_envelope::read_carried_opt(
+                                    signature,
+                                    Some(crate::ir::IrSignatureOrigin::OpenAi),
+                                );
                             content.push(crate::ir::IrBlock::Thinking {
                                 text: text.into_owned(),
                                 signature,
@@ -1909,6 +1917,14 @@ impl ProtocolReader for ResponsesReader {
             request_echo: None,
             stop_detail: None,
         })
+    }
+
+    /// IR-18: a reasoning item's `encrypted_content` on the Responses wire is OpenAI-minted.
+    fn stream_signature_origin(
+        &self,
+        _state: &crate::ir::StreamDecodeState,
+    ) -> Option<crate::ir::IrSignatureOrigin> {
+        Some(crate::ir::IrSignatureOrigin::OpenAi)
     }
 
     fn clone_box(&self) -> Box<dyn ProtocolReader> {

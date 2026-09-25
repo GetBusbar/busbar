@@ -1645,6 +1645,8 @@ impl IrModality {
 /// | `CodeExecution` | `code_execution_<version>`        | `code_interpreter` (`container:{type:"auto"}`) | `codeExecution` | — |
 /// | `WebFetch`      | `web_fetch_<version>`             | —                          | `urlContext`      | — |
 ///
+/// | `Custom`        | —                                 | `custom` (flat)            | —                 | `custom` (nested) |
+///
 /// The versioned Anthropic tool type is chosen by the WRITER (its current GA version), not carried:
 /// the version names Anthropic's own tool schema revision, which no other dialect has.
 #[derive(Debug, Clone, PartialEq)]
@@ -1652,6 +1654,65 @@ pub enum IrHostedTool {
     WebSearch(IrWebSearch),
     CodeExecution,
     WebFetch(IrWebFetch),
+    /// OAI-09 (round 3 item 11): an OpenAI CUSTOM tool — free-text input, optionally constrained by
+    /// a grammar — which OpenAI Chat and Responses both offer and no other dialect has.
+    Custom(IrCustomTool),
+}
+
+/// An OpenAI custom tool (OAI-09): Chat `{"type":"custom","custom":{name, description, format}}`,
+/// Responses `{"type":"custom", name, description, format}`. `format` (`{"type":"text"}` or
+/// `{"type":"grammar","grammar":{syntax, definition}}`) is the same object on both wires and rides
+/// verbatim.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct IrCustomTool {
+    pub name: String,
+    pub description: Option<String>,
+    pub format: Option<serde_json::Value>,
+}
+
+impl IrCustomTool {
+    /// Read the tool's members from the object that holds them (Chat's `custom` sub-object, or the
+    /// flat Responses tool). `None` without a non-empty string `name`, or when the object carries a
+    /// member the IR cannot hold (it then stays the dialect's raw same-protocol tool).
+    pub fn read_members(
+        obj: &serde_json::Map<String, serde_json::Value>,
+        extra_ok: &[&str],
+    ) -> Option<Self> {
+        if obj.keys().any(|k| {
+            !["name", "description", "format"].contains(&k.as_str())
+                && !extra_ok.contains(&k.as_str())
+        }) {
+            return None;
+        }
+        let name = obj
+            .get("name")?
+            .as_str()
+            .filter(|n| !n.is_empty())?
+            .to_string();
+        let description = match obj.get("description") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(d) => Some(d.as_str()?.to_string()),
+        };
+        let format = obj.get("format").filter(|f| !f.is_null()).cloned();
+        Some(IrCustomTool {
+            name,
+            description,
+            format,
+        })
+    }
+
+    /// The members as a JSON object (`name`, then `description` / `format` when set).
+    pub fn write_members(&self) -> serde_json::Map<String, serde_json::Value> {
+        let mut out = serde_json::Map::new();
+        out.insert("name".to_string(), serde_json::json!(self.name));
+        if let Some(d) = &self.description {
+            out.insert("description".to_string(), serde_json::json!(d));
+        }
+        if let Some(f) = &self.format {
+            out.insert("format".to_string(), f.clone());
+        }
+        out
+    }
 }
 
 impl IrHostedTool {
@@ -1661,6 +1722,7 @@ impl IrHostedTool {
             IrHostedTool::WebSearch(_) => "web_search",
             IrHostedTool::CodeExecution => "code_execution",
             IrHostedTool::WebFetch(_) => "web_fetch",
+            IrHostedTool::Custom(_) => "custom_tool",
         }
     }
 }

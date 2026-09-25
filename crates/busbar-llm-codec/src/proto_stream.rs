@@ -290,6 +290,20 @@ impl StreamTranslate {
         // encode is a permanent corruption of the tool_use/tool_result correlation, not a cosmetic one.
         if !self.ir_already_prepared {
             self.tool_id_remap.remap_event(ingress_name, &mut ev);
+            // IR-18 (round 3 item 15): a signature the egress family minted that the client's
+            // carrier would read as its own family's is wrapped in the busbar provenance envelope —
+            // the stream half of `chat_prepare_for_ingress` (an already-prepared answer carries it).
+            if let crate::ir::IrStreamEvent::BlockDelta {
+                delta: crate::ir::IrDelta::SignatureDelta(sig),
+                ..
+            } = &mut ev
+            {
+                let origin = self.egress.reader().stream_signature_origin(&self.decode);
+                let writer = self.ingress.writer();
+                *sig = crate::ir::sig_envelope::for_client(sig, origin, |o| {
+                    writer.reads_signature_origin_as_own(o)
+                });
+            }
         }
         // Cross-protocol stream identity strip: a `StreamTranslate` only exists when
         // ingress != egress (`new` returns None otherwise), so every event here crosses a

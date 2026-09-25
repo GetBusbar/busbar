@@ -478,7 +478,9 @@ impl ProtocolReader for BedrockReader {
                                     ..
                                 } = &mut block
                                 {
-                                    *signature_origin = signature_origin_here;
+                                    if signature_origin.is_none() {
+                                        *signature_origin = signature_origin_here;
+                                    }
                                 }
                                 msg_content.push(block);
                             }

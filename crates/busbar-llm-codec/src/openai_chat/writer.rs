@@ -455,10 +455,13 @@ impl ProtocolWriter for OpenAiWriter {
         // (Anthropic/Gemini source) is bucketized through the effort table.
         //
         // `Off` (IR-09) is matched FIRST: projected through the table it would read as the smallest
-        // ENABLE ask. Chat's `"none"` is accepted only by the newest reasoning models, and no lane
-        // capability states that this lane has one, so the ask is omitted (a lane that is not told
-        // to reason does not). An OpenAI-origin `"none"` still rides `extra` verbatim.
-        if req.reasoning == Some(crate::ir::IrReasoningAsk::Off) {
+        // ENABLE ask. Chat's `"none"` is accepted only by the newest reasoning models: a lane that
+        // declares it (`LaneCaps::reasoning_none`, round 3 item 12) gets `"none"`; on any other the
+        // ask is omitted (a lane that is not told to reason does not). An OpenAI-origin `"none"`
+        // still rides `extra` verbatim.
+        if req.reasoning == Some(crate::ir::IrReasoningAsk::Off) && caps.reasoning_none {
+            out.insert("reasoning_effort".to_string(), serde_json::json!("none"));
+        } else if req.reasoning == Some(crate::ir::IrReasoningAsk::Off) {
             tracing::warn!(
                 "omitting reasoning OFF on OpenAI Chat egress: reasoning_effort \"none\" is not \
                  accepted by every OpenAI reasoning model and this lane does not declare it"
@@ -501,7 +504,11 @@ impl ProtocolWriter for OpenAiWriter {
         // so this writer is the inverse of the reader.
         // An OpenAI-origin request that declared its tools as legacy `functions` (OAI-07) carries
         // that array verbatim in `extra`; emitting `tools` too would declare every function twice.
-        if !req.tools.is_empty() && !req.extra.contains_key("functions") {
+        // OAI-09 (round 3 item 11): the typed custom tools, written after the function tools.
+        let custom_tools = super::slots::write_custom_tools(req);
+        if (!req.tools.is_empty() || !custom_tools.is_empty())
+            && !req.extra.contains_key("functions")
+        {
             let mut tools_arr: Vec<serde_json::Value> = Vec::new();
             for tool in &req.tools {
                 // A non-function tool this dialect's own reader carried as `hosted` (a Chat `custom`
@@ -552,6 +559,7 @@ impl ProtocolWriter for OpenAiWriter {
 
                 tools_arr.push(serde_json::Value::Object(tool_obj));
             }
+            tools_arr.extend(custom_tools.iter().cloned());
             if !tools_arr.is_empty() {
                 out.insert("tools".to_string(), serde_json::Value::Array(tools_arr));
             }
@@ -569,7 +577,7 @@ impl ProtocolWriter for OpenAiWriter {
         if let Some(v) = super::slots::write_tool_choice(req)
             .filter(|_| !req.extra.contains_key("function_call"))
         {
-            if req.tools.is_empty() {
+            if req.tools.is_empty() && custom_tools.is_empty() {
                 tracing::warn!(
                     "dropping tool_choice on OpenAI egress: \"tool_choice\" is only allowed when \
                      \"tools\" are specified (likely because the hosted tools that carried it were \

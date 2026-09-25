@@ -172,6 +172,18 @@ pub trait ProtocolReader: Send + Sync {
     /// Read a whole (non-streaming) response from wire JSON.
     fn read_response(&self, body: &serde_json::Value) -> Result<crate::ir::IrResponse, IrError>;
 
+    /// IR-18: the model family that minted the reasoning signatures this reader emits as
+    /// `IrDelta::SignatureDelta` on a stream (a delta has no origin of its own — the buffered
+    /// `IrBlock::Thinking.signature_origin` does). The stream seam uses it to envelope a foreign
+    /// signature for the client carrier (`ir::sig_envelope`). Default `None` (unknown: the
+    /// pre-slot behaviour, never enveloped).
+    fn stream_signature_origin(
+        &self,
+        _state: &crate::ir::StreamDecodeState,
+    ) -> Option<crate::ir::IrSignatureOrigin> {
+        None
+    }
+
     /// Clone this reader as a trait object.
     fn clone_box(&self) -> Box<dyn ProtocolReader>;
 }
@@ -335,6 +347,14 @@ pub trait ProtocolWriter: Send + Sync {
     /// URL" without knowing that anything named `anthropic_version` exists. Default: no-op, `false`.
     fn reshape_for_path_base(&self, _body: &mut serde_json::Value) -> bool {
         false
+    }
+
+    /// IR-18: whether this dialect's signature carrier reads a signature minted by `origin` as its
+    /// OWN. A client-bound signature of any other origin is wrapped in the busbar provenance
+    /// envelope (`ir::sig_envelope`) so it survives the client round trip; this dialect's reader
+    /// unwraps it. Default `true` (a dialect with no signature carrier never envelopes).
+    fn reads_signature_origin_as_own(&self, _origin: crate::ir::IrSignatureOrigin) -> bool {
+        true
     }
 
     /// Write a response/stream event to wire (event_type, data).

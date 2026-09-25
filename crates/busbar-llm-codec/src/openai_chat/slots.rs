@@ -145,9 +145,40 @@ pub(super) fn write_slot_members(req: &IrRequest) -> serde_json::Map<String, ser
                      built-in tool of this kind (only web search, as `web_search_options`)"
                 );
             }
+            // A custom tool is a `tools[]` entry, written by the writer's tools loop
+            // (`write_custom_tools`), not a top-level member.
+            IrHostedTool::Custom(_) => {}
         }
     }
     out
+}
+
+/// OAI-09 (round 3 item 11): a Chat `{"type":"custom","custom":{name, description?, format?}}`
+/// tool → the typed custom hosted tool; `None` for any other tool, or a custom tool carrying a
+/// member the IR cannot hold (it stays the raw same-protocol tool).
+pub(super) fn read_custom_tool(tool: &serde_json::Value) -> Option<IrHostedTool> {
+    let obj = tool.as_object()?;
+    if obj.get("type").and_then(|t| t.as_str()) != Some("custom")
+        || obj.keys().any(|k| k != "type" && k != "custom")
+    {
+        return None;
+    }
+    crate::ir::IrCustomTool::read_members(obj.get("custom")?.as_object()?, &[])
+        .map(IrHostedTool::Custom)
+}
+
+/// The `tools[]` entries for the IR's custom tools, in the Chat spelling.
+pub(super) fn write_custom_tools(req: &IrRequest) -> Vec<serde_json::Value> {
+    req.hosted_tools
+        .iter()
+        .filter_map(|t| match t {
+            IrHostedTool::Custom(c) => Some(serde_json::json!({
+                "type": "custom",
+                "custom": serde_json::Value::Object(c.write_members()),
+            })),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The hosted-tool kinds the Chat writer cannot express (for `dropped_egress_controls`).

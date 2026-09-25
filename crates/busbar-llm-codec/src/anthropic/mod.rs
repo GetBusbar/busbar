@@ -894,9 +894,35 @@ fn write_usage_object(usage: Option<&crate::ir::IrUsage>) -> serde_json::Value {
     usage_map.insert("server_tool_use".to_string(), write_server_tool_use(usage));
     usage_map.insert(
         "service_tier".to_string(),
-        serde_json::json!(usage.detail.service_tier.as_deref().unwrap_or("standard")),
+        serde_json::json!(
+            anthropic_served_tier(usage.detail.service_tier.as_deref()).unwrap_or("standard")
+        ),
     );
     serde_json::Value::Object(usage_map)
+}
+
+/// The IR served-tier attribution → an Anthropic `usage.service_tier` word, or `None` when
+/// Anthropic has no word for it. The IR slot can carry OpenAI-family words (a Chat backend's
+/// `flex` / `scale`, which the Chat reader keeps so the two OpenAI dialects agree); an Anthropic
+/// client's SDK types the member as `standard | priority | batch`, so an unknown word is never
+/// written — it is DROPPED with a warn and the member takes its absent form (round 3 item 10).
+/// OpenAI's `default` IS the standard tier.
+fn anthropic_served_tier(tier: Option<&str>) -> Option<&'static str> {
+    let word = tier?;
+    let mapped = match word {
+        "standard" | "default" => Some("standard"),
+        "priority" => Some("priority"),
+        "batch" => Some("batch"),
+        _ => None,
+    };
+    if mapped.is_none() {
+        tracing::warn!(
+            service_tier = word,
+            "dropping usage.service_tier on Anthropic response egress: Anthropic names only \
+             standard / priority / batch"
+        );
+    }
+    mapped
 }
 
 /// Build the wire `usage` object of a `message_delta` event (`MessageDeltaUsage`). The spec
@@ -935,7 +961,7 @@ fn write_message_delta_usage(usage: &crate::ir::IrUsage) -> serde_json::Value {
             write_cache_creation_object(usage),
         );
     }
-    if let Some(tier) = &d.service_tier {
+    if let Some(tier) = anthropic_served_tier(d.service_tier.as_deref()) {
         usage_map.insert("service_tier".to_string(), serde_json::json!(tier));
     }
     serde_json::Value::Object(usage_map)
@@ -1015,10 +1041,13 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
                 .and_then(|v| v.as_str().map(String::from));
             let cache_control = read_cache_control(obj.get("cache_control"))?;
             // IR-18: a signature read off the Anthropic wire is Anthropic's, so a foreign writer
-            // never sends it as its own reasoning blob.
-            let signature_origin = signature
-                .as_ref()
-                .map(|_| crate::ir::IrSignatureOrigin::Anthropic);
+            // never sends it as its own reasoning blob — unless it is busbar's provenance envelope
+            // (another family's signature handed to this client earlier), which restores the
+            // original bytes and their origin.
+            let (signature, signature_origin) = crate::ir::sig_envelope::read_carried_opt(
+                signature,
+                Some(crate::ir::IrSignatureOrigin::Anthropic),
+            );
             Ok(crate::ir::IrBlock::Thinking {
                 text,
                 signature,
@@ -1567,7 +1596,7 @@ fn read_hosted_tool(tool_val: &serde_json::Value) -> Option<crate::ir::IrHostedT
 /// `allowed_domains` OR `blocked_domains`, never both: a foreign source that set both keeps the
 /// allow-list (the narrower constraint) and the block-list is dropped with a warn. A web-search
 /// `search_context_size` has no Anthropic member and is dropped with a warn; the tool is kept.
-fn write_hosted_tool(tool: &crate::ir::IrHostedTool) -> serde_json::Value {
+fn write_hosted_tool(tool: &crate::ir::IrHostedTool) -> Option<serde_json::Value> {
     fn put_limits(
         obj: &mut serde_json::Map<String, serde_json::Value>,
         max_uses: Option<u32>,
@@ -1642,8 +1671,18 @@ fn write_hosted_tool(tool: &crate::ir::IrHostedTool) -> serde_json::Value {
             );
             obj.insert("name".to_string(), serde_json::json!("code_execution"));
         }
+        // OAI-09: Anthropic has no free-text / grammar tool (N): dropped with a warn and reported
+        // by `dropped_egress_controls`.
+        crate::ir::IrHostedTool::Custom(_) => {
+            tracing::warn!(
+                hosted_tool = tool.kind_str(),
+                "dropping an OpenAI custom tool on Anthropic egress: Anthropic has no free-text / \
+                 grammar tool (lossy-by-target)"
+            );
+            return None;
+        }
     }
-    serde_json::Value::Object(obj)
+    Some(serde_json::Value::Object(obj))
 }
 
 /// Anthropic request `service_tier` → IR (IR-04): `auto` → Auto, `standard_only` → Default.
@@ -1699,6 +1738,14 @@ fn anthropic_unrepresentable_slots(req: &crate::ir::IrRequest) -> Vec<&'static s
         .is_some_and(|m| m.iter().any(|x| *x != crate::ir::IrModality::Text))
     {
         dropped.push("output_modalities");
+    }
+    // OAI-09: an OpenAI custom tool has no Anthropic form.
+    if req
+        .hosted_tools
+        .iter()
+        .any(|t| matches!(t, crate::ir::IrHostedTool::Custom(_)))
+    {
+        dropped.push("custom_tool");
     }
     dropped
 }
@@ -2919,3 +2966,7 @@ mod ir_mapping_q57_tests;
 #[cfg(test)]
 #[path = "tests/ir_slot_wiring_tests.rs"]
 mod ir_slot_wiring_tests;
+
+#[cfg(test)]
+#[path = "tests/ir_round3_tests.rs"]
+mod ir_round3_tests;

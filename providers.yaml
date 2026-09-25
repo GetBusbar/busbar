@@ -870,6 +870,21 @@ bedrock:
   error_map:
     ThrottlingException: rate_limit
     ServiceQuotaExceededException: billing
+  # Lane capabilities for Claude on Bedrock (model ids carry an `anthropic.` provider segment, behind
+  # an optional inference-profile prefix such as `us.`). The newest generations take reasoning ONLY
+  # as adaptive thinking and structured output natively (Converse `outputConfig`), exactly as on the
+  # first-party `anthropic` entry. Claude Sonnet 4.5, Haiku 4.5, Opus 4.5 and Opus 4.6 support
+  # Converse structured outputs per AWS's supported-model list
+  # (https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-structured-outputs.html);
+  # they keep budget thinking. Written in flow (JSON) style. First matching rule wins.
+  model_capabilities: [
+    {"models": ["*anthropic.claude-opus-4-7*", "*anthropic.claude-opus-5*",
+                "*anthropic.claude-sonnet-5*", "*anthropic.claude-fable-5*"],
+     "anthropic_adaptive_thinking": true, "native_structured_output": true},
+    {"models": ["*anthropic.claude-sonnet-4-5*", "*anthropic.claude-haiku-4-5*",
+                "*anthropic.claude-opus-4-5*", "*anthropic.claude-opus-4-6*"],
+     "native_structured_output": true}
+  ]
 
 # -- Cohere v2 Chat protocol (/v2/chat) -----------------------------------------------------------
 # Cohere's Command family via the v2 Chat API. Bearer auth; the protocol targets /v2/chat. Errors

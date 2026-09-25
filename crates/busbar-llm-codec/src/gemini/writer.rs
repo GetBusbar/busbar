@@ -1609,6 +1609,11 @@ impl ProtocolWriter for GeminiWriter {
             .unwrap_or(false)
     }
 
+    /// IR-18: a `thoughtSignature` is read back as Gemini-minted.
+    fn reads_signature_origin_as_own(&self, origin: crate::ir::IrSignatureOrigin) -> bool {
+        origin == crate::ir::IrSignatureOrigin::Gemini
+    }
+
     fn clone_box(&self) -> Box<dyn ProtocolWriter> {
         Box::new(self.clone())
     }

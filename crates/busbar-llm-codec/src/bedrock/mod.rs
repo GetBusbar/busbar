@@ -459,16 +459,22 @@ fn read_bedrock_reasoning_block(reasoning: &serde_json::Value) -> Option<crate::
             .and_then(|t| t.as_str())
             .unwrap_or("")
             .to_string();
-        let signature = reasoning_text
-            .get("signature")
-            .and_then(|s| s.as_str().map(String::from));
+        // IR-18: a busbar provenance envelope (another family's signature handed to this client
+        // earlier) restores the original bytes and origin; a genuine Converse signature's origin
+        // is left for the caller to derive from the model id.
+        let (signature, signature_origin) = crate::ir::sig_envelope::read_carried_opt(
+            reasoning_text
+                .get("signature")
+                .and_then(|s| s.as_str().map(String::from)),
+            None,
+        );
         return Some(crate::ir::IrBlock::Thinking {
             text,
             signature,
             redacted: false,
             cache_control: None,
             kind: None,
-            signature_origin: None,
+            signature_origin,
         });
     }
     if let Some(redacted) = reasoning.get("redactedContent").and_then(|r| r.as_str()) {
@@ -2489,3 +2495,7 @@ mod ir_mapping_structured_tests;
 #[cfg(test)]
 #[path = "tests/ir_slot_wiring_tests.rs"]
 mod ir_slot_wiring_tests;
+
+#[cfg(test)]
+#[path = "tests/ir_round3_tests.rs"]
+mod ir_round3_tests;
