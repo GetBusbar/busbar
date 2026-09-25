@@ -69,8 +69,10 @@
 //!   machine reads.
 //!
 //! and the ledger cannot outlive the debt: [`ROW_STALE`] reds when a declared-unshipped capability
-//! ACQUIRES a production site (strike the row in the commit that wires it), or when a declaration
-//! names a symbol that is no longer defined where it says.
+//! ACQUIRES a production site (strike the row in the commit that wires it), and [`ROW_DEAD_SYMBOL`]
+//! reds — naming the row and the symbol — when a declaration names a symbol its `built` file no
+//! longer defines in production code. A row whose subject is gone points at nothing: its site row
+//! reds with it, so it can never print as a tracked debt or as a construction proof.
 //!
 //! A declaration is refused if its reason is shorter than [`MIN_REASON`]. A shrug is not a reason.
 //!
@@ -130,6 +132,10 @@ const DID_NOT_RUN: &str = "DID NOT RUN";
 
 pub const ROW_SCAN_FLOOR: &str = "unconstructed:scan-floor";
 pub const ROW_STALE: &str = "unconstructed:stale-declaration";
+/// A declaration whose `symbol` its `built` file no longer defines. Its own row, not a clause of
+/// [`ROW_STALE`]: folded into a row that was already red for another reason, a dead declaration
+/// read as nothing new, and its site row went on printing PASS about a symbol that was gone.
+pub const ROW_DEAD_SYMBOL: &str = "unconstructed:dead-symbol";
 
 /// THE REVIEWED REGISTER OF UNSHIPPED CAPABILITIES — the ratchet the `unshipped` flag never had
 /// (item 230).
@@ -490,13 +496,34 @@ fn mentions(files: &[&Scanned], cap: &Capability) -> Vec<Mention> {
     out
 }
 
+/// The name a `fn` declaration line declares: the identifier right after the `fn` keyword.
+/// `None` when the line is not a declaration ([`is_fn_decl`]).
+fn declared_fn_name(code: &str) -> Option<&str> {
+    let t = code.trim_start();
+    if !is_fn_decl(t) {
+        return None;
+    }
+    let mut words = t.split_whitespace();
+    words.find(|w| w.trim_start_matches('(') == "fn")?;
+    let name = words.next()?;
+    let end = name
+        .char_indices()
+        .find(|(_, c)| !is_word_char(*c))
+        .map_or(name.len(), |(i, _)| i);
+    Some(&name[..end]).filter(|n| !n.is_empty())
+}
+
 /// Is `symbol` DEFINED in `built`? The staleness anchor: a declaration about a capability that no
 /// longer exists is a row that outlived its subject.
+///
+/// A definition is a `fn` line whose DECLARED NAME is `symbol` — the same comment- and
+/// literal-aware line [`classify`] reads — in production code: a `fn` under `#[cfg(test)]` is a
+/// test helper, not the capability, and a line that merely MENTIONS the name (a parameter, a
+/// return type, a sibling's body) defines nothing.
 fn defines(text: &str, symbol: &str) -> bool {
-    test_scope(text).iter().any(|l| {
-        let t = l.code.trim_start();
-        !l.is_comment && is_fn_decl(t) && word_hit(t, symbol)
-    })
+    test_scope(text)
+        .iter()
+        .any(|l| !l.is_comment && !l.gated && declared_fn_name(&l.code) == Some(symbol))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -510,6 +537,11 @@ fn all_rows_did_not_run(caps: &[Capability], why: &str) -> Verdict {
         format!("{why} — {DID_NOT_RUN}"),
     )];
     rows.push(Row::fail(ROW_STALE, "the scan did not run", DID_NOT_RUN));
+    rows.push(Row::fail(
+        ROW_DEAD_SYMBOL,
+        "the scan did not run",
+        DID_NOT_RUN,
+    ));
     for c in caps {
         rows.push(Row::fail(
             row_site(&c.id),
@@ -531,7 +563,11 @@ impl Gate for UnconstructedGate {
         // THE OWED SET IS READ OFF THE DECLARATION FILE, because the rows ARE the declarations.
         // A capability added to the file without being measured, or measured without being owed,
         // is exactly the reconciliation failure `execute` exists to catch.
-        let mut ids = vec![ROW_SCAN_FLOOR.to_string(), ROW_STALE.to_string()];
+        let mut ids = vec![
+            ROW_SCAN_FLOOR.to_string(),
+            ROW_STALE.to_string(),
+            ROW_DEAD_SYMBOL.to_string(),
+        ];
         if let Ok(caps) = Ctx::workspace().and_then(|cx| declarations(&cx)) {
             for c in &caps {
                 if !c.id.is_empty() {
@@ -636,6 +672,7 @@ impl Gate for UnconstructedGate {
         )];
 
         let mut stale: Vec<String> = Vec::new();
+        let mut dead: Vec<String> = Vec::new();
 
         for c in &caps {
             let files: Vec<&Scanned> = c
@@ -648,18 +685,31 @@ impl Gate for UnconstructedGate {
             let (sites, rejected): (Vec<&Mention>, Vec<&Mention>) =
                 all.iter().partition(|m| m.rejected.is_none());
 
-            // STALENESS, half one: the declaration's subject must still exist.
-            if let Some(t) = built_text.get(&c.built) {
-                if !defines(t, &c.symbol) {
-                    stale.push(format!(
-                        "`{}` declares `{}` is built in {}, which defines no such item. A \
-                         declaration cannot outlive its subject — strike the row or correct it",
-                        c.id, c.symbol, c.built
-                    ));
-                }
+            let id = row_site(&c.id);
+
+            // THE DECLARATION'S SUBJECT MUST STILL EXIST. A row naming a symbol that is gone
+            // points at nothing: it reds its own site row and [`ROW_DEAD_SYMBOL`], by row and by
+            // symbol, whatever the construct scan found — neither a tracked debt nor a
+            // construction proof can be about a function that is not there.
+            let symbol_live = built_text
+                .get(&c.built)
+                .is_some_and(|t| defines(t, &c.symbol));
+            if !symbol_live {
+                let finding = format!(
+                    "DEAD SYMBOL: row `{}` declares `symbol = \"{}\"` built in {}, which defines no \
+                     production `fn {}` — a ledgered row that points at nothing proves nothing. \
+                     Strike the row (and its KNOWN_UNSHIPPED entry) or correct it",
+                    c.id, c.symbol, c.built, c.symbol
+                );
+                dead.push(finding.clone());
+                rows.push(Row::fail(
+                    id,
+                    format!("`{}` names a symbol that no longer exists", c.id),
+                    finding,
+                ));
+                continue;
             }
 
-            let id = row_site(&c.id);
             if sites.is_empty() {
                 let detail = format!(
                     "NO PRODUCTION CONSTRUCTION SITE for `{}` (built in {}, construct {:?}) \
@@ -763,13 +813,31 @@ impl Gate for UnconstructedGate {
             }
         }
 
+        rows.push(if dead.is_empty() {
+            Row::pass(
+                ROW_DEAD_SYMBOL,
+                "every declaration names a symbol that exists",
+                format!(
+                    "{CLEAN} — every declared `symbol` is a production `fn` in its `built` file \
+                     ({} row(s) checked)",
+                    caps.len()
+                ),
+            )
+        } else {
+            Row::fail(
+                ROW_DEAD_SYMBOL,
+                "a declaration names a symbol that no longer exists",
+                dead.join(" | "),
+            )
+        });
+
         rows.push(if stale.is_empty() {
             Row::pass(
                 ROW_STALE,
                 "no declaration outlived its subject",
                 format!(
-                    "{CLEAN} — every declared capability is still defined where it says, and no \
-                     `unshipped` row has quietly acquired a construction site ({} row(s) checked)",
+                    "{CLEAN} — no `unshipped` row has quietly acquired a construction site and \
+                     the register names only declared debts ({} row(s) checked)",
                     caps.len()
                 ),
             )
@@ -993,19 +1061,42 @@ impl Gate for UnconstructedGate {
         ));
 
         // ── CONTROL 10 — A DECLARATION THAT OUTLIVED ITS SUBJECT. ───────────────────────────
+        // The symbol is renamed away while its construct needle stays live, so the site scan alone
+        // would still read PASS: the dead-symbol row, and the site row with it, must go RED naming
+        // the row and the symbol.
         report.push(prove_rows_red(
             &base,
             self,
-            "a declaration naming a symbol its `built` file no longer defines reds \
-             `stale-declaration`",
-            &[ROW_STALE],
+            "a declaration naming a symbol its `built` file no longer defines reds `dead-symbol` \
+             and its own site row, by row and by symbol",
+            &[ROW_DEAD_SYMBOL, &row_site("ledger-dual-write")],
             on_base(
                 SETTLE,
                 cx.read(SETTLE)
                     .unwrap_or_default()
                     .replace("pub fn dual_writing(", "pub fn renamed_away("),
             ),
-            &["defines no such item"],
+            &["DEAD SYMBOL", "ledger-dual-write", "dual_writing"],
+        ));
+
+        // ── CONTROL 10b — THE SYMBOL SURVIVING ONLY AS A TEST HELPER IS STILL DEAD. ─────────
+        // The production definition is renamed away and a `#[cfg(test)]` `fn dual_writing` is left
+        // behind: a test helper is not the capability, so the row must stay RED.
+        report.push(prove_rows_red(
+            &base,
+            self,
+            "a symbol defined only under #[cfg(test)] is a dead symbol",
+            &[ROW_DEAD_SYMBOL],
+            on_base(
+                SETTLE,
+                format!(
+                    "{}\n#[cfg(test)]\nmod planted {{\n    fn dual_writing() {{}}\n}}\n",
+                    cx.read(SETTLE)
+                        .unwrap_or_default()
+                        .replace("pub fn dual_writing(", "pub fn renamed_away(")
+                ),
+            ),
+            &["DEAD SYMBOL", "dual_writing"],
         ));
 
         // ── CONTROL 12 — A SELF-DECLARED UNSHIPPED CAPABILITY IS RED (item 230). ────────────
@@ -1130,6 +1221,81 @@ mod tests {
             "{}",
             row.detail
         );
+    }
+
+    /// A declared row whose construct needle is live (so its site scan passes) but whose symbol
+    /// is `symbol`: the plant for the dead-symbol rule.
+    fn planted_symbol_row(symbol: &str) -> String {
+        format!(
+            "[[capability]]\n\
+             id        = \"planted-symbol-row\"\n\
+             built     = \"crates/busbar-kernel-ledger/src/settle.rs\"\n\
+             symbol    = \"{symbol}\"\n\
+             construct = [\"Ledger::dual_writing(\"]\n\
+             scope     = [\"crates\"]\n\
+             why       = \"a planted row checking that a declaration's subject must still exist\"\n"
+        )
+    }
+
+    fn run_with_row(symbol: &str) -> crate::ledger::Verdict {
+        let cx = Ctx::workspace().expect("workspace context");
+        let decls = cx.read(DECLARATIONS).expect("declarations");
+        let mut ov = Overlay::new();
+        ov.set(
+            DECLARATIONS,
+            format!("{decls}\n{}", planted_symbol_row(symbol)),
+        );
+        UnconstructedGate.run(&cx.with_overlay(ov))
+    }
+
+    fn row<'v>(v: &'v crate::ledger::Verdict, id: &str) -> &'v crate::ledger::Row {
+        v.rows
+            .iter()
+            .find(|r| r.id == id)
+            .unwrap_or_else(|| panic!("no row {id}"))
+    }
+
+    /// UC-GATE: a row naming a symbol its `built` file does not define reds `dead-symbol`, naming
+    /// the row and the symbol, and its own site row reds with it — even though its construct
+    /// needle has a live production site. The same row naming the live symbol stays GREEN.
+    #[test]
+    fn a_row_naming_a_missing_symbol_is_red_and_a_live_one_green() {
+        let dead = run_with_row("set_error_map");
+        let d = row(&dead, ROW_DEAD_SYMBOL);
+        assert_eq!(d.status, Status::Fail, "{}", d.detail);
+        assert!(d.detail.contains("planted-symbol-row"), "{}", d.detail);
+        assert!(d.detail.contains("set_error_map"), "{}", d.detail);
+        let site = row(&dead, &row_site("planted-symbol-row"));
+        assert_eq!(site.status, Status::Fail, "{}", site.detail);
+
+        let live = run_with_row("dual_writing");
+        let d = row(&live, ROW_DEAD_SYMBOL);
+        assert_eq!(d.status, Status::Pass, "{}", d.detail);
+        let site = row(&live, &row_site("planted-symbol-row"));
+        assert_eq!(site.status, Status::Pass, "{}", site.detail);
+    }
+
+    /// The resolver: only a production `fn` whose declared NAME is the symbol defines it.
+    #[test]
+    fn only_a_production_fn_of_that_name_defines_a_symbol() {
+        assert!(defines(
+            "pub fn set_error_map(&mut self) {}",
+            "set_error_map"
+        ));
+        assert!(defines(
+            "pub(crate) async fn set_error_map<T>(x: T) {}",
+            "set_error_map"
+        ));
+        // A mention on another fn's line is not a definition.
+        assert!(!defines("fn other(set_error_map: u8) {}", "set_error_map"));
+        assert!(!defines("fn set_error_map_v2() {}", "set_error_map"));
+        // A test helper is not the capability.
+        assert!(!defines(
+            "#[cfg(test)]\nmod tests {\n    fn set_error_map() {}\n}\n",
+            "set_error_map"
+        ));
+        // Neither is a comment.
+        assert!(!defines("// fn set_error_map() {}", "set_error_map"));
     }
 
     /// The register and the declaration file agree today: every id on the register is declared
