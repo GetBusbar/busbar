@@ -815,17 +815,17 @@ pub(crate) fn operations(
         };
         let method = row.method.to_ascii_lowercase();
         let path = row.template.to_string();
-        let mut responses = serde_json::Map::new();
+        let mut by_status = serde_json::Map::new();
         match doc.success {
             Success::Json(schema, description) => {
-                responses.insert(
+                by_status.insert(
                     "200".into(),
                     json!({"description": description,
                            "content": {"application/json": {"schema": schema}}}),
                 );
             }
             Success::Document => {
-                responses.insert(
+                by_status.insert(
                     "200".into(),
                     json!({"description": "The one administrative OpenAPI document",
                            "content": {"application/json": {"schema": {
@@ -834,17 +834,17 @@ pub(crate) fn operations(
                 );
             }
             Success::NoContent(description) => {
-                responses.insert("204".into(), json!({ "description": description }));
+                by_status.insert("204".into(), json!({ "description": description }));
             }
         }
-        responses.insert(
+        by_status.insert(
             "401".into(),
             json!({"description": "Missing/invalid admin credential (error code `unauthorized`)"}),
         );
         // Every error status speaks the one `Error` envelope (its `code` enum carries `unavailable`);
         // the caller's shared pass attaches it.
         for (status, description) in doc.errors {
-            responses.insert(status.into(), json!({ "description": description }));
+            by_status.insert(status.into(), json!({ "description": description }));
         }
         let http_method = match method.as_str() {
             "get" => axum::http::Method::GET,
@@ -861,7 +861,7 @@ pub(crate) fn operations(
             "security": [{"adminToken": []}, {"bearerAuth": []}],
             "x-busbar-required-scope": scope.as_str(),
             "x-busbar-since": SINCE,
-            RESPONSES_KEY: responses,
+            RESPONSES_KEY: by_status,
         });
         if !doc.query.is_empty() {
             op["parameters"] = Value::Array(doc.query);

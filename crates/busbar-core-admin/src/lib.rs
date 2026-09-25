@@ -100,21 +100,29 @@ fn seam_mount(
 /// (this crate) has `cfg(test)` false for its busbar-core dependency, so it must install them
 /// explicitly — the same three `install_test_seams()` calls busbar-core's `tests/plane_integration.rs`
 /// makes. All are idempotent (first-wins), so calling this from every router builder is safe.
+///
+/// A `#[cfg(test)]` MODULE, not a bare `#[cfg(test)] fn`: this body is test-binary-only code, and the
+/// module is the form `plane-purity` reads as test scope. As a bare fn its plane-crate names were
+/// counted as PRODUCTION side channels of this neutral crate, which they never were.
 #[cfg(test)]
-fn ensure_seam() {
-    static SEAM_ONCE: std::sync::Once = std::sync::Once::new();
-    SEAM_ONCE.call_once(|| {
-        busbar_llm::testkit::install_test_seams();
-        busbar_mcp::testkit::install_test_seams();
-        busbar_a2a::testkit::install_test_seams();
-        // Having registered the MCP plane above, seed its always-present default runtime for every
-        // `TestApp` — the test-support analogue of busbar-core's own `cfg(test)` seeding.
-        busbar_kernel::test_support::install_test_mcp_runtime_factory(
-            busbar_mcp::testkit::default_mcp_runtime,
-        );
-        install();
-    });
+mod test_seams {
+    pub(crate) fn ensure_seam() {
+        static SEAM_ONCE: std::sync::Once = std::sync::Once::new();
+        SEAM_ONCE.call_once(|| {
+            busbar_llm::testkit::install_test_seams();
+            busbar_mcp::testkit::install_test_seams();
+            busbar_a2a::testkit::install_test_seams();
+            // Having registered the MCP plane above, seed its always-present default runtime for
+            // every `TestApp` — the test-support analogue of busbar-core's own `cfg(test)` seeding.
+            busbar_kernel::test_support::install_test_mcp_runtime_factory(
+                busbar_mcp::testkit::default_mcp_runtime,
+            );
+            super::install();
+        });
+    }
 }
+#[cfg(test)]
+use test_seams::ensure_seam;
 
 /// Build a `TestApp` after ensuring the process-wide test seams (planes, protocols, runtimes, mount
 /// seam) are installed — moved admin tests use this in place of `TestApp::new()` so the seams are in
