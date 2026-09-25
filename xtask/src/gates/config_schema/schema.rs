@@ -297,6 +297,13 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         // fields that carry them; a tracked SOURCE relocation exactly like `ModelCfg` above, so the
         // snapshot does not move by a byte.
         "crates/busbar-substrate-values/src/ir/lane_caps.rs".to_string(),
+        // `ProviderCfg` / `ProviderDef` / `ProviderDeploy` / `HealthCfg` / `HealthMode` /
+        // `ProviderAuth` — the `providers:` section's shapes (the LLM plane's upstream catalog
+        // vocabulary). Moved VERBATIM out of `busbar-kernel/src/config/{providers,mod}.rs` beside
+        // `lane_caps.rs` above (architect ruling PROVIDERS-MOVE); the kernel re-exports them at their
+        // historical paths. A tracked SOURCE relocation exactly like `ModelCfg` above, so the
+        // snapshot does not move by a byte.
+        "crates/busbar-substrate-values/src/ir/providers.rs".to_string(),
         core_file(cx, &core, "auth/mod.rs")?,
         format!("{a2a}/config.rs"),
         // `oauth_as:` — including the `default_grant` CEILING that decides what a self-registered
