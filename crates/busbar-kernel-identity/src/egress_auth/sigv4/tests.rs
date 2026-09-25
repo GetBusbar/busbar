@@ -12,10 +12,10 @@ fn format_amz_time_known_epoch() {
 }
 
 #[test]
-fn uri_encode_path_bedrock_model() {
+fn uri_encode_path_model_id_with_a_colon() {
     assert_eq!(
-        uri_encode_path("/model/anthropic.claude-3:0/converse"),
-        "/model/anthropic.claude-3%3A0/converse"
+        uri_encode_path("/model/vendor.model-3:0/converse"),
+        "/model/vendor.model-3%3A0/converse"
     );
 }
 

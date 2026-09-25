@@ -17,7 +17,7 @@ fn trust_token() -> Grant<Dial> {
 fn sealed_destination() -> VerifiedDestination {
     VerifiedDestination::seal(
         &trust_token(),
-        LaneId::new("bedrock.us-east-1.amazonaws.com"),
+        LaneId::new("runtime.us-east-1.amazonaws.com"),
     )
 }
 
@@ -105,7 +105,7 @@ fn a_custom_header_scheme_omits_the_header_for_a_key_with_crlf_in_it() {
     let t = token();
     for (header, secret) in [
         ("api-key", "azure-key-\r\nX-Forwarded-For: 10.0.0.1"),
-        ("x-goog-api-key", "gemini-key-\r\ninjected"),
+        ("x-goog-api-key", "goog-key-\r\ninjected"),
         // A bare control byte, which is the other spelling of the same defect.
         ("api-key", "azure-key-\u{0}-nul"),
     ] {
@@ -152,13 +152,13 @@ fn x_goog_api_key_scheme_uses_its_own_header_name() {
         &Scheme::ApiKeyHeader {
             header: "x-goog-api-key",
         },
-        "gemini-key",
+        "goog-key",
         &empty_body(),
     );
-    let envelope = substitute(&decoration, "gemini-key", Vec::new());
+    let envelope = substitute(&decoration, "goog-key", Vec::new());
     assert_eq!(
         envelope,
-        vec![("x-goog-api-key".to_string(), "gemini-key".to_string())]
+        vec![("x-goog-api-key".to_string(), "goog-key".to_string())]
     );
 }
 
@@ -365,9 +365,9 @@ fn substitute_touches_only_the_field_the_slot_names() {
     let t = token();
     let decoration = decorate(&t, &Scheme::Bearer, "key-b", &empty_body());
     let before: Vec<(String, String)> = vec![
-        ("host".to_string(), "api.openai.com".to_string()),
+        ("host".to_string(), "api.upstream.example".to_string()),
         ("content-type".to_string(), "application/json".to_string()),
-        ("openai-beta".to_string(), "responses=v1".to_string()),
+        ("x-upstream-beta".to_string(), "feature=v1".to_string()),
     ];
     let after = substitute(&decoration, "key-b", before.clone());
 
@@ -397,11 +397,11 @@ fn lane_cross_check_catches_envelope_divergence_after_decoration() {
     let seal = KernelSeal::acquire_for_kernel();
     let trust = Grant::<Dial>::mint(&seal);
     let verified =
-        VerifiedDestination::seal(&trust, LaneId::new("bedrock.us-east-1.amazonaws.com"));
+        VerifiedDestination::seal(&trust, LaneId::new("runtime.us-east-1.amazonaws.com"));
 
     let matching = vec![(
         "host".to_string(),
-        "bedrock.us-east-1.amazonaws.com".to_string(),
+        "runtime.us-east-1.amazonaws.com".to_string(),
     )];
     assert!(lane_cross_check(&verified, "host", &matching).is_ok());
 
@@ -421,17 +421,17 @@ fn lane_cross_check_is_against_the_sealed_lane_not_the_callers_belief() {
     use busbar_contract::caps::{Dial, Grant, LaneId};
     let seal = KernelSeal::acquire_for_kernel();
     let trust = Grant::<Dial>::mint(&seal);
-    let verified = VerifiedDestination::seal(&trust, LaneId::new("bedrock-us-east-1"));
+    let verified = VerifiedDestination::seal(&trust, LaneId::new("lane-us-east-1"));
 
     // The envelope carries a lane the trust unit did NOT seal.
-    let diverged = vec![("host".to_string(), "bedrock-eu-west-1".to_string())];
+    let diverged = vec![("host".to_string(), "lane-eu-west-1".to_string())];
     assert_eq!(
         lane_cross_check(&verified, "host", &diverged),
         Err(LaneMismatch::EnvelopeDivergedFromVerifiedDestination { field: "host" })
     );
 
     // The envelope carrying the sealed lane is the one case that passes.
-    let matching = vec![("host".to_string(), "bedrock-us-east-1".to_string())];
+    let matching = vec![("host".to_string(), "lane-us-east-1".to_string())];
     assert!(lane_cross_check(&verified, "host", &matching).is_ok());
 
     // A missing field is a mismatch too — there is nothing to check the seal against.
@@ -460,7 +460,7 @@ fn lane_cross_check_reads_the_sealed_destination_not_the_callers_expectation() {
     let two_spellings = vec![
         (
             "host".to_string(),
-            "bedrock.us-east-1.amazonaws.com".to_string(),
+            "runtime.us-east-1.amazonaws.com".to_string(),
         ),
         ("Host".to_string(), "evil.example.com".to_string()),
     ];
@@ -471,8 +471,8 @@ fn lane_cross_check_reads_the_sealed_destination_not_the_callers_expectation() {
 
     // And a destination the trust unit sealed with no host of its own compares against the lane it
     // did seal, rather than against anything the caller holds.
-    let lane_only = VerifiedDestination::seal(&trust_token(), LaneId::new("bedrock-us-east-1"));
-    let named = vec![("lane".to_string(), "bedrock-us-east-1".to_string())];
+    let lane_only = VerifiedDestination::seal(&trust_token(), LaneId::new("lane-us-east-1"));
+    let named = vec![("lane".to_string(), "lane-us-east-1".to_string())];
     assert!(lane_cross_check(&lane_only, "lane", &named).is_ok());
     let renamed = vec![("lane".to_string(), "cheap-lane".to_string())];
     assert!(lane_cross_check(&lane_only, "lane", &renamed).is_err());
