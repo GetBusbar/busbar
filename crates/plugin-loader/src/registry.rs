@@ -454,7 +454,8 @@ impl PluginRegistry {
         let p = self.resolve_kind(name_or_alias, "export", "serve as a telemetry sink")?;
         let (name, declares) = (&p.manifest.name, &p.manifest.declares);
         crate::observe::grant_series(name, p.first_party(), &declares.metrics)?;
-        crate::export::load_export_image(p.image(), cfg_json, name, &p.manifest.kind)
+        crate::export::load_export_image(p.image(), cfg_json, name, &p.manifest.kind)?
+            .with_destinations(&declares.destinations, cfg_json)
     }
 
     /// Open a PLANE resolved by name or alias: verifies the resolved plugin's `kind` is `plane`, then

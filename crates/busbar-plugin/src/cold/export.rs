@@ -86,7 +86,10 @@ pub const EXPORT_ABI_VERSION: u32 = 3;
 /// 2 (K9a S2): the `validate` op ([`ExportRequest::Validate`] / [`ExportResponse::Validated`]).
 /// 3 (K9a S3): PLUGIN DIAGNOSTICS — a manifest's `declares.diagnostics`
 ///   ([`crate::cold::observe::DiagnosticDecl`]).
-pub const EXPORT_ABI_MINOR: u32 = 3;
+/// 4 (K9a S4): the DESTINATION HANDLE — a manifest's `declares.destinations`, the host-executed
+///   [`HostOp`]s a delivery may answer with ([`ExportResponse::Host`]), and the op that resumes it
+///   with their [`HostResult`]s ([`ExportRequest::Resume`]).
+pub const EXPORT_ABI_MINOR: u32 = 4;
 
 /// One observability stream an export sink can carry OUT of the engine — the FROZEN word-space of
 /// the export projection grammar, the same discipline as the hook phase names.
@@ -564,6 +567,121 @@ pub enum ExportRequest {
         /// The instance's `settings:` block exactly as configured.
         settings: serde_json::Value,
     },
+    /// `resume` — the host performed the [`HostOp`]s a `deliver` (or an earlier `resume`) answered
+    /// with ([`ExportResponse::Host`]), and hands back one [`HostResult`] per op, in order, under
+    /// the `token` the sink chose. The sink answers as it would have answered the delivery —
+    /// [`ExportResponse::Delivered`] — or with more ops (the host bounds the rounds).
+    ///
+    /// This is how a COLD sink has the host act for it without a host-callback vtable: the sink
+    /// never opens a path or dials a socket, it ASKS, and the host executes under its own rules and
+    /// reports what happened (export ABI minor 4). A sink that never answers `Host` never sees it.
+    Resume {
+        /// The token the sink's `Host` answer carried, echoed so a sink serving concurrent
+        /// deliveries can tell whose ops these were.
+        token: u64,
+        /// One result per op, in the order the ops were asked.
+        results: Vec<HostResult>,
+    },
+}
+
+/// One act a sink asks the HOST to perform for it (K9a S4): the host executes it under its own
+/// rules and hands the outcome back on [`ExportRequest::Resume`].
+///
+/// A DESTINATION is named by the settings key the sink's manifest declares
+/// (`declares.destinations`): the host resolves the key against the OPERATOR's settings for the
+/// instance and opens the path found there itself — so a sink can write only where the operator's
+/// configuration pointed a declared destination, and never names a path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum HostOp {
+    /// Append `data` to the destination (opened for append, created if absent, per write — the
+    /// file an external rotator moved is not written through a stale handle). When `rotate_at` is
+    /// set and the destination already holds at least that many bytes, the host rotates it first
+    /// (as [`HostOp::Rotate`] with `keep`), under the same per-destination lock as the write.
+    Write {
+        /// The declared destination (a settings key).
+        destination: String,
+        /// The bytes to append, as UTF-8.
+        data: String,
+        /// Rotate first when the destination holds at least this many bytes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rotate_at: Option<u64>,
+        /// Archives a rotation keeps (`<path>.1` … `<path>.<keep>`).
+        #[serde(default = "default_keep")]
+        keep: u32,
+    },
+    /// Rotate the destination by rename: drop `<path>.<keep>`, shift `<path>.<i>` to
+    /// `<path>.<i+1>`, then rename `<path>` to `<path>.1`. A failed step is reported, never
+    /// escalated into truncating the live file.
+    Rotate {
+        /// The declared destination (a settings key).
+        destination: String,
+        /// Archives kept.
+        #[serde(default = "default_keep")]
+        keep: u32,
+    },
+    /// Flush the destination to stable storage.
+    Flush {
+        /// The declared destination (a settings key).
+        destination: String,
+    },
+}
+
+fn default_keep() -> u32 {
+    9
+}
+
+/// What the host did with one [`HostOp`] (K9a S4), handed back in order on
+/// [`ExportRequest::Resume`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum HostResult {
+    /// The op completed. `rotation` is present when a rotation ran as part of it.
+    Done {
+        /// The rotation that ran first, if one did.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rotation: Option<Rotation>,
+    },
+    /// The op did not complete: `step` names which host act failed (`destination` — no such
+    /// destination was granted; `open`; `append`; `flush`), `error` says why.
+    Failed {
+        /// The host act that failed.
+        step: String,
+        /// Why, in the host's words.
+        error: String,
+        /// The rotation that ran before the failure, if one did.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rotation: Option<Rotation>,
+    },
+}
+
+/// What a rotation did (K9a S4): where the live file went, whether that rename happened, and every
+/// step that failed on the way — so a sink reports each the way it chooses, and nothing is lost.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rotation {
+    /// `<path>.1` — where the live file was renamed to.
+    pub archive: String,
+    /// Whether the live file was renamed (false: the host keeps APPENDING to it rather than
+    /// truncating recorded data).
+    pub renamed: bool,
+    /// Every failed step, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub faults: Vec<RotationFault>,
+}
+
+/// One failed step of a [`Rotation`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RotationFault {
+    /// `retention` (dropping the oldest archive) | `shift` (moving an archive up) | `rename` (the
+    /// live file to `<path>.1`).
+    pub step: String,
+    /// The file the step acted on.
+    pub from: String,
+    /// Where it was going, for `shift` and `rename`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// Why it failed.
+    pub error: String,
 }
 
 /// The success payload for an export `call`, matched to the request variant. A module-level FAILURE (a
@@ -604,6 +722,14 @@ pub enum ExportResponse {
     /// `validate` — every problem with the settings, one complete operator-facing line each;
     /// empty when the sink accepts them.
     Validated(Vec<String>),
+    /// `deliver` / `resume` — the sink needs the host to act first: perform `ops` in order, then
+    /// [`ExportRequest::Resume`] with `token` and their results.
+    Host {
+        /// The sink's own correlation token, echoed on the resume.
+        token: u64,
+        /// The acts, in order.
+        ops: Vec<HostOp>,
+    },
 }
 
 #[cfg(test)]

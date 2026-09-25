@@ -13,7 +13,8 @@
 //! `busbar-store-example-plugin`'s config-less posture.
 
 use busbar_plugin_sdk::{
-    ExportHandler, ExportStream, Observations, PluginDiagnostic, PluginMetric,
+    ExportHandler, ExportStream, HostOp, HostResult, HostStep, Observations, PluginDiagnostic,
+    PluginMetric,
 };
 
 /// The trivial sink: carries the metrics stream, counts what it was handed, drops the batches.
@@ -30,6 +31,10 @@ struct ExampleExport {
     /// Batches handed to `deliver` since the last drain. `Relaxed` is right: nothing orders against
     /// this and the only reader is the drain, which is called from the same boundary call.
     delivered: std::sync::atomic::AtomicU64,
+    /// Rotations the host reported performing for this sink since the last drain (K9a S4).
+    rotated: std::sync::atomic::AtomicU64,
+    /// Host acts the host reported FAILING for this sink since the last drain (K9a S4).
+    host_failures: std::sync::atomic::AtomicU64,
     /// The settings this instance was opened with, when they are a JSON object — read by the host
     /// seams' witnesses (K9a) and by nothing else; a sink with no settings behaves as it always did.
     settings: serde_json::Map<String, serde_json::Value>,
@@ -46,6 +51,12 @@ impl ExampleExport {
 /// host refuses from any plugin.
 const DELIVERED_TOTAL: &str = "example_export_deliveries_total";
 
+/// Rotations the host performed for this sink (K9a S4's witness).
+const ROTATED_TOTAL: &str = "example_export_rotations_total";
+
+/// Host acts that failed for this sink (K9a S4's witness).
+const HOST_FAILURES_TOTAL: &str = "example_export_host_failures_total";
+
 impl ExportHandler for ExampleExport {
     /// `metrics` and `logs`: `logs` because it is the stream the host PUSHES today (the request-log
     /// line), so an `export:` instance naming this plugin is actually handed batches — which is what
@@ -58,6 +69,44 @@ impl ExportHandler for ExampleExport {
     fn deliver(&self, _stream: ExportStream, _payload: &serde_json::Value) {
         self.delivered
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// With a `path` DESTINATION configured (K9a S4's witness), have the HOST append the batch as
+    /// one JSON line — rotating at `rotate_bytes` — instead of dropping it. The sink names the
+    /// destination by its settings key; it never opens the path.
+    fn deliver_via_host(&self, stream: ExportStream, payload: &serde_json::Value) -> HostStep {
+        self.deliver(stream, payload);
+        if self.setting("path").is_none() {
+            return HostStep::Done;
+        }
+        let rotate_at = self.settings.get("rotate_bytes").and_then(|v| v.as_u64());
+        let data = format!("{payload}\n");
+        let destination = "path".to_string();
+        let write = HostOp::Write {
+            destination,
+            data,
+            rotate_at,
+            keep: 9,
+        };
+        HostStep::Host {
+            token: 0,
+            ops: vec![write],
+        }
+    }
+
+    /// Count what the host reports: each rotation it ran, and each act that failed.
+    fn resume(&self, _token: u64, results: Vec<HostResult>) -> HostStep {
+        use std::sync::atomic::Ordering::Relaxed;
+        for result in results {
+            let (rotation, failed) = match result {
+                HostResult::Done { rotation } => (rotation, false),
+                HostResult::Failed { rotation, .. } => (rotation, true),
+            };
+            self.host_failures.fetch_add(u64::from(failed), Relaxed);
+            self.rotated
+                .fetch_add(u64::from(rotation.is_some_and(|r| r.renamed)), Relaxed);
+        }
+        HostStep::Done
     }
 
     /// The one setting this sink has a shape for: `series`, when present, is a string (K9a S2's
@@ -77,19 +126,28 @@ impl ExportHandler for ExampleExport {
     /// host folds a counter as a DELTA. Returning a running total instead would make every response
     /// re-report every earlier delivery, and the folded counter would grow quadratically.
     fn drain_observations(&self) -> Observations {
-        let n = self.delivered.swap(0, std::sync::atomic::Ordering::Relaxed);
-        if n == 0 {
-            return Observations::none();
+        use std::sync::atomic::Ordering::Relaxed;
+        // `series` names the delivery counter instead: the FIRST-PARTY NAMESPACE witness (K9a S1)
+        // opens the sink under a reserved name its manifest declares.
+        let delivered = self.setting("series").unwrap_or(DELIVERED_TOTAL);
+        let mut observed = Observations::none();
+        for (series, counter) in [
+            (delivered, &self.delivered),
+            (ROTATED_TOTAL, &self.rotated),
+            (HOST_FAILURES_TOTAL, &self.host_failures),
+        ] {
+            let n = counter.swap(0, Relaxed);
+            if n > 0 {
+                observed = observed.metric(PluginMetric::counter(series, n as f64));
+            }
         }
-        // `series` names the counter instead: the FIRST-PARTY NAMESPACE witness (K9a S1) opens the
-        // sink under a reserved name its manifest declares.
-        let name = self.setting("series").unwrap_or(DELIVERED_TOTAL);
-        let observed = Observations::none().metric(PluginMetric::counter(name, n as f64));
         // `diagnostic` names a code the sink raises per drain of deliveries: the PLUGIN DIAGNOSTICS
         // witness (K9a S3) opens the sink under a code its manifest declares.
         match self.setting("diagnostic") {
-            Some(code) => observed.diagnostic(PluginDiagnostic::warn(code, "batches delivered")),
-            None => observed,
+            Some(code) if !observed.is_empty() => {
+                observed.diagnostic(PluginDiagnostic::warn(code, "batches delivered"))
+            }
+            _ => observed,
         }
     }
 }

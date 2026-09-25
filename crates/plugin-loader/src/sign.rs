@@ -178,11 +178,11 @@ pub struct Manifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
     /// What the plugin DECLARES it will say to the host beyond its kind's answers (K9a, the export
-    /// kind's host seams): the metric series it emits and the diagnostics it raises. SIGNED like
-    /// every other field, so a grant the host makes on a declaration is made on what the publisher
-    /// signed. Absent (empty) for
-    /// every manifest packed before the section existed, and skipped when empty, so their
-    /// canonical bytes — and therefore their signatures — are unchanged.
+    /// kind's host seams): the metric series it emits, the diagnostics it raises and the settings
+    /// keys that name its destinations. SIGNED like every other field, so a grant the host makes on
+    /// a declaration is made on what the publisher signed. Absent (empty) for every manifest packed
+    /// before the section existed, and skipped when empty, so their canonical bytes — and therefore
+    /// their signatures — are unchanged.
     #[serde(default, skip_serializing_if = "Declares::is_empty")]
     pub declares: Declares,
 }
@@ -204,12 +204,17 @@ pub struct Declares {
     /// for a first-party plugin — see [`busbar_plugin::cold::observe::DiagnosticDecl`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub diagnostics: Vec<busbar_plugin::cold::observe::DiagnosticDecl>,
+    /// The SETTINGS KEYS that name a destination the host opens for the plugin (S4, the
+    /// destination handle): the host resolves each against the operator's settings at open, and
+    /// the plugin's host ops name the key, never a path.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub destinations: Vec<String>,
 }
 
 impl Declares {
     /// Nothing declared — the section is left off the wire (and out of the signed bytes).
     pub fn is_empty(&self) -> bool {
-        self.metrics.is_empty() && self.diagnostics.is_empty()
+        self.metrics.is_empty() && self.diagnostics.is_empty() && self.destinations.is_empty()
     }
 }
 

@@ -180,7 +180,7 @@ fn export_abi_version_is_three() {
 /// loader gates on stays put — pinned so a seam cannot land without saying so.
 #[test]
 fn export_abi_minor_counts_the_host_seams() {
-    assert_eq!((EXPORT_ABI_VERSION, EXPORT_ABI_MINOR), (3, 3));
+    assert_eq!((EXPORT_ABI_VERSION, EXPORT_ABI_MINOR), (3, 4));
 }
 
 /// S1's declaration wire: `{"name": …, "type": …}`, the same `type` token a reported metric carries.
@@ -350,4 +350,59 @@ fn a_declared_diagnostic_wire_is_pinned() {
     let mut extra = wire;
     extra["retired"] = serde_json::json!(true);
     assert!(serde_json::from_value::<crate::cold::observe::DiagnosticDecl>(extra).is_err());
+}
+
+/// S4's continuation wire: a delivery answered `{"Host":{"token":…,"ops":[…]}}` and resumed with
+/// `{"op":"resume","token":…,"results":[…]}`.
+#[test]
+fn the_host_op_continuation_wire_is_pinned() {
+    let asked = ExportResponse::Host {
+        token: 7,
+        ops: vec![HostOp::Write {
+            destination: "path".into(),
+            data: "line\n".into(),
+            rotate_at: Some(10),
+            keep: 9,
+        }],
+    };
+    assert_eq!(
+        serde_json::to_value(&asked).expect("encode"),
+        serde_json::json!({"Host": {"token": 7, "ops": [
+            {"op": "write", "destination": "path", "data": "line\n", "rotate_at": 10, "keep": 9}
+        ]}})
+    );
+    let resumed = ExportRequest::Resume {
+        token: 7,
+        results: vec![
+            HostResult::Done {
+                rotation: Some(Rotation {
+                    archive: "/l.1".into(),
+                    renamed: true,
+                    faults: vec![],
+                }),
+            },
+            HostResult::Failed {
+                step: "open".into(),
+                error: "denied".into(),
+                rotation: None,
+            },
+        ],
+    };
+    assert_eq!(
+        serde_json::to_value(&resumed).expect("encode"),
+        serde_json::json!({"op": "resume", "token": 7, "results": [
+            {"outcome": "done", "rotation": {"archive": "/l.1", "renamed": true}},
+            {"outcome": "failed", "step": "open", "error": "denied"}
+        ]})
+    );
+    let defaulted: HostOp =
+        serde_json::from_value(serde_json::json!({"op": "rotate", "destination": "path"}))
+            .expect("decode");
+    assert_eq!(
+        defaulted,
+        HostOp::Rotate {
+            destination: "path".into(),
+            keep: 9
+        }
+    );
 }

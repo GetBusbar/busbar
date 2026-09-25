@@ -28,7 +28,14 @@ pub struct DynExport {
     /// The HTTP routes this instance declared to `Routes` at load — collected ONCE, retained so the
     /// engine's router builder can collision-check + mount them without a second ABI call.
     routes: Vec<Route>,
+    /// The destinations the host bound for this instance at open (K9a S4): its manifest's declared
+    /// settings keys, resolved against the operator's settings. Empty unless bound.
+    destinations: crate::host::Destinations,
 }
+
+/// How many times one delivery may answer with host ops before the host stops performing them —
+/// a sink that keeps asking is a sink that is not finishing, and the batch is dropped naming it.
+const MAX_HOST_ROUNDS: usize = 8;
 
 impl DynExport {
     /// The observability streams this sink declared at load.
@@ -63,21 +70,56 @@ impl DynExport {
 
     /// Hand one batch for `stream` across the ABI. Returns `Ok(())` on a `Delivered` ack; a transport
     /// failure or an unexpected response variant is an `Err` naming the plugin.
+    ///
+    /// A sink may answer with HOST OPS instead of the ack (K9a S4): the host performs them and
+    /// resumes the sink with their results, until it acks — at most [`MAX_HOST_ROUNDS`] times.
     pub fn deliver(&self, stream: ExportStream, payload: &serde_json::Value) -> Result<(), String> {
-        let req = ExportRequest::Deliver {
+        let mut req = ExportRequest::Deliver {
             stream,
             payload: payload.clone(),
         };
-        match self
-            .raw
-            .transport_call::<ExportRequest, ExportResponse>(&req)?
-        {
-            ExportResponse::Delivered => Ok(()),
-            other => Err(format!(
-                "export plugin '{}' returned an unexpected response to deliver: {other:?}",
-                self.raw.path
-            )),
+        for _ in 0..=MAX_HOST_ROUNDS {
+            match self
+                .raw
+                .transport_call::<ExportRequest, ExportResponse>(&req)?
+            {
+                ExportResponse::Delivered => return Ok(()),
+                ExportResponse::Host { token, ops } => {
+                    let results = ops.iter().map(|op| self.perform(op)).collect();
+                    req = ExportRequest::Resume { token, results };
+                }
+                other => {
+                    return Err(format!(
+                        "export plugin '{}' returned an unexpected response to deliver: {other:?}",
+                        self.raw.path
+                    ))
+                }
+            }
         }
+        Err(format!(
+            "export plugin '{}' asked the host to act more than {MAX_HOST_ROUNDS} times for one \
+             delivery",
+            self.raw.path
+        ))
+    }
+
+    /// Perform one host op for this sink (K9a S4).
+    fn perform(
+        &self,
+        op: &busbar_plugin::cold::export::HostOp,
+    ) -> busbar_plugin::cold::export::HostResult {
+        self.destinations.perform(op)
+    }
+
+    /// Bind the destinations this instance's manifest `declared` against its `settings` (JSON
+    /// text) — the host's half of the destination handle (K9a S4), run at open.
+    pub fn with_destinations(
+        mut self,
+        declared: &[String],
+        settings: &str,
+    ) -> Result<Self, String> {
+        self.destinations = crate::host::Destinations::bind(declared, settings)?;
+        Ok(self)
     }
 }
 
@@ -297,6 +339,7 @@ fn export_from_raw(raw: RawPlugin, display: &str) -> Result<DynExport, String> {
         raw,
         streams,
         routes,
+        destinations: Default::default(),
     })
 }
 

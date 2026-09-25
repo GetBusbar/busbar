@@ -721,3 +721,84 @@ fn a_declared_diagnostic_is_stated_and_raised_the_same_through_either_door() {
     assert_eq!(row.manifest.declares.diagnostics, vec![decl]);
     assert!(!row.first_party());
 }
+
+/// **K9a S4 — THE DESTINATION HANDLE, BOTH WAYS.** The export fixture, its manifest declaring the
+/// `path` settings key a destination, registered through the LINKED door and the DROPPED-IN door
+/// and opened with the operator's path: each delivery has the HOST append the batch (the sink
+/// names the key; the host opens the path it resolved), rotating at the sink's limit — and both
+/// doors leave the same files and report the same folds. RED ARM, in the same test: the same sink
+/// whose manifest does NOT declare the key is refused every write — the path the operator's
+/// settings name is never created — and it reports the refusals.
+#[test]
+fn a_sink_writes_its_declared_destination_through_the_host_the_same_through_either_door() {
+    let declaring = |name: &str, declared: bool| {
+        let mut m = super::both_ways::statement(
+            "export",
+            name,
+            name,
+            busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+        );
+        if declared {
+            m.declares.destinations = vec!["path".into()];
+        }
+        m
+    };
+    let dir = std::env::temp_dir().join(format!("busbar-s4-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let door = std::sync::atomic::AtomicUsize::new(0);
+    let _guard = crate::observe::testing::exclusive();
+    let run = |registry: &PluginRegistry, name: &str| {
+        let n = door.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = dir.join(format!("door-{n}.jsonl"));
+        let cfg = serde_json::json!({ "path": path.display().to_string(), "rotate_bytes": 20 });
+        let sink = registry.open_export(name, &cfg.to_string()).expect("opens");
+        let before = crate::observe::testing::folds().len();
+        for n in 1..=4 {
+            sink.deliver(ExportStream::Logs, &serde_json::json!({ "n": n }))
+                .expect("deliver");
+        }
+        let folds: Vec<Compared> = crate::observe::testing::folds()[before..]
+            .iter()
+            .filter(|(who, ..)| who == name)
+            .map(|(_, k, m, d)| (k.clone(), m.clone(), d.clone()))
+            .collect();
+        let read = |p: &std::path::Path| std::fs::read_to_string(p).ok();
+        serde_json::json!({
+            "live": read(&path),
+            "archive": read(&path.with_extension("jsonl.1")),
+            "folds": folds,
+        })
+        .to_string()
+    };
+    let Some([linked, dropped]) = super::both_ways::both_doors(
+        declaring("s4-fixture", true),
+        |registry| run(registry, "s4-fixture"),
+        String::clone,
+    ) else {
+        eprintln!("skip: the export fixture's cdylib is not built");
+        return;
+    };
+    let expected_files = r#""archive":"{\"n\":1}\n{\"n\":2}\n{\"n\":3}\n","#;
+    assert!(linked.1.contains(expected_files), "{}", linked.1);
+    assert!(linked.1.contains(r#""live":"{\"n\":4}\n""#), "{}", linked.1);
+    assert!(
+        linked.1.contains("example_export_rotations_total"),
+        "{}",
+        linked.1
+    );
+    assert_eq!(linked, dropped, "both doors write and rotate the same");
+
+    // RED ARM: undeclared, the key is not a destination — every write refused, nothing created.
+    let registry = super::both_ways::linked(
+        declaring("s4-undeclared", false),
+        super::both_ways::fixture("export").1,
+    );
+    let refused = run(&registry, "s4-undeclared");
+    assert!(refused.contains(r#""live":null"#), "{refused}");
+    assert!(
+        refused.contains("example_export_host_failures_total"),
+        "{refused}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

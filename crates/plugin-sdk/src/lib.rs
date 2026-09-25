@@ -861,7 +861,26 @@ pub unsafe fn hook_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcom
 
 /// Re-export the export wire types so a plugin author names `busbar_plugin_sdk::ExportStream` (etc.)
 /// without a direct `busbar-plugin` dependency, mirroring the hook/auth re-export path.
-pub use busbar_plugin::cold::export::{ExportField, ExportRequest, ExportResponse, ExportStream};
+pub use busbar_plugin::cold::export::{
+    ExportField, ExportRequest, ExportResponse, ExportStream, HostOp, HostResult, Rotation,
+    RotationFault,
+};
+
+/// What a sink answers a delivery (or a resume) with when it has the host act for it (export ABI
+/// minor 4): finished, or these [`HostOp`]s first — the host performs them and calls
+/// [`ExportHandler::resume`] with their results under the same `token`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostStep {
+    /// Nothing (more) for the host to do: the delivery is done.
+    Done,
+    /// Perform these, in order, then resume me with `token`.
+    Host {
+        /// The sink's correlation token, echoed on the resume.
+        token: u64,
+        /// The acts.
+        ops: Vec<HostOp>,
+    },
+}
 
 /// Re-export the observability envelope (#85) so a plugin author names
 /// `busbar_plugin_sdk::PluginMetric` (etc.) without a direct `busbar-plugin` dependency, mirroring
@@ -939,6 +958,29 @@ pub trait ExportHandler: Send + Sync {
     fn validate(&self, _instance: &str, _settings: &serde_json::Value) -> Vec<String> {
         Vec::new()
     }
+
+    /// Accept one batch, with the host acting for the sink where it needs to (export ABI minor 4):
+    /// answer [`HostStep::Host`] to have the host perform [`HostOp`]s — append to a declared
+    /// destination, rotate it, flush it — and receive their results on [`resume`](Self::resume).
+    /// Default: [`deliver`](Self::deliver), then done — every sink written before the op.
+    fn deliver_via_host(&self, stream: ExportStream, payload: &serde_json::Value) -> HostStep {
+        self.deliver(stream, payload);
+        HostStep::Done
+    }
+
+    /// The results of the [`HostOp`]s a [`HostStep::Host`] asked for, in order, under its `token`.
+    /// Answer [`HostStep::Done`], or more ops. Default: done.
+    fn resume(&self, _token: u64, _results: Vec<HostResult>) -> HostStep {
+        HostStep::Done
+    }
+}
+
+/// A [`HostStep`] as the wire answers it.
+fn host_step(step: HostStep) -> ExportResponse {
+    match step {
+        HostStep::Done => ExportResponse::Delivered,
+        HostStep::Host { token, ops } => ExportResponse::Host { token, ops },
+    }
 }
 
 /// The export handle behind the opaque `*mut c_void`: a boxed [`ExportHandler`]. Named at the module
@@ -963,9 +1005,9 @@ pub fn dispatch_export(handler: &dyn ExportHandler, req: ExportRequest) -> Expor
     match req {
         ExportRequest::Streams => ExportResponse::Streams(handler.streams()),
         ExportRequest::Deliver { stream, payload } => {
-            handler.deliver(stream, &payload);
-            ExportResponse::Delivered
+            host_step(handler.deliver_via_host(stream, &payload))
         }
+        ExportRequest::Resume { token, results } => host_step(handler.resume(token, results)),
         ExportRequest::Routes => ExportResponse::Routes(handler.routes()),
         ExportRequest::Endpoint { request } => {
             ExportResponse::Endpoint(handler.handle_http(&request))

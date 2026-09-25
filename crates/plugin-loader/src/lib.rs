@@ -37,6 +37,7 @@ pub mod fetch;
 mod ffi_thread;
 pub mod highwater;
 pub mod hook;
+mod host;
 mod hostlog;
 mod legacy_usage;
 pub mod observe;
