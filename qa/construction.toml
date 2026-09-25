@@ -1539,6 +1539,15 @@ known_sites = [
   "crates/plugin-loader/src/",
   "crates/plugin-sdk/src/boundary.rs",
   "crates/plane-example/src/",
+  # REVIEWED 2026-09-25 (item 141): a first-party plugin's diagnostic written as the host's own
+  # line needs a tracing callsite and field names that are 'static by tracing's type; `site` makes
+  # ONE per (code, level, field-name list) and interns it, so the allocation is bounded by the
+  # catalogue and made once — the leak-once intern shape of ids.rs `key` above.
+  "crates/busbar-substrate-values/src/diagnostics/emit.rs::site",
+  # REVIEWED 2026-09-25 (item 141): a first-party plugin's DECLARED diagnostic joins the process
+  # catalogue, whose entries are `&'static Diagnostic` with `&'static str` text by the catalogue's
+  # type; one allocation per declared code, once, at boot, before the catalogue is first read.
+  "crates/busbar/src/root/linked.rs::declared_diagnostics",
 ]
 
 # The escape list, mirroring crates/busbar-contract/src/caps/fixtures/lint_rules.rs HOLD_ESCAPES. A test in that
