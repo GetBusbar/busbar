@@ -38,10 +38,14 @@ and what is new to write if you want it.
 - **The reserved name `admin`** is still refused for a model, pool or provider, with the 1.5.5
   message.
 
-One exception, and `--validate` already tells you whether it applies to you: a provider whose
-`api_key` reference does not resolve no longer starts with an empty credential. If you were
-relying on that — most often to run a keyless local ollama or vLLM — you need one edit. See
-[§6](#6-a-provider-credential-that-cannot-resolve-refuses-boot).
+Two exceptions, and `--validate` already tells you whether either applies to you:
+
+- a provider whose `api_key` reference does not resolve no longer starts with an empty credential.
+  If you were relying on that — most often to run a keyless local ollama or vLLM — you need one
+  edit. See [§6](#6-a-provider-credential-that-cannot-resolve-refuses-boot).
+- a config with a `rate_card:` must price every billable unit the plane counts, and a 1.5.5 card
+  never priced `search_units` (a rerank's unit). If you have a `rate_card:`, you need one edit. See
+  [§7](#a-card-must-configure-every-billable-unit-its-plane-counts).
 
 ## 2. Deprecated env vars keep working, with a warning
 
@@ -239,6 +243,41 @@ another plane's card says. A card that is present and does not price a class the
 it rather than answering zero. `/usage` prices each row with the card and fees of the plane that
 served it, and every plane's card and fees are dated in the same history.
 
+### A card must configure every billable unit its plane counts
+
+A plane's card that is present must give a rate — `0` is a rate — for every billable unit the plane
+counts, or boot and `--validate` refuse, naming the section and each missing unit:
+
+```
+pools.rate_card does not configure billable unit(s) search_units declared by this plane; add them (0 to make them free)
+```
+
+**This is the one edit a 1.5.5 config with a `rate_card:` needs.** The LLM plane counts `input`,
+`output`, `cache_read`, `cache_write` and `search_units`; the first four are the `*_utok` tiers, and a
+tier the entry leaves out is `0`, as in 1.5.5. `search_units` has no tier, and 1.5.5 billed it at
+`0`, so the upgrade that keeps every figure 1.5.5 billed is to price it at `0` on every entry:
+
+```yaml
+rate_card:
+  claude-sonnet: { input_utok: 3, output_utok: 15, units: { search_units: 0 } }
+```
+
+The same holds for a card written at run time: `PUT /api/v1/admin/config/settings` with a
+`rate_card` that leaves `search_units` out is refused (400) with the same message, where 1.5.5
+applied it. A script or dashboard that writes cards through the admin API needs the same
+`"units": {"search_units": 0}` on each entry.
+
+Put it on every entry, not just one: boot is satisfied by any entry, but a lane whose own entry is
+silent about a unit it serves refuses that traffic rather than pricing it at zero. Write a real rate
+instead of `0` to start billing reranks (`units:` rates are micro-units per unit). The other planes
+are new in 1.6.0, so their cards are new config; the same rule holds for each (`tools.rate_card`:
+`tool_calls`, `bytes`; `agents.rate_card`: `bytes`; `streams.rate_card`: the seven voice units;
+`decisions.rate_card`: `decision`), and `--validate` names whatever your build counts.
+
+Likewise, a nonzero `<section>.fees` key for a unit the plane does not count (for example
+`streams.fees.per_request`: a voice session pays `per_session`) refuses boot, naming the key and the
+units the plane counts. `fees:` is 1.6.0 config, so no 1.5.5 config is affected.
+
 **Cards survive a restart.** On a node with a data directory, every applied rate card is journalled
 and a restart rebuilds the dated history; a journal written before this upgrade starts its history
 at the boot card from instant zero. A node with no data directory keeps no journal: after a restart
@@ -272,6 +311,9 @@ prices only what happens after the edit; it cannot repair a window that is alrea
 ## Quick checklist
 
 - [ ] Install 1.6.0, `busbar --validate`, start. That is the whole upgrade.
+- [ ] If you have a `rate_card:`: add `units: { search_units: 0 }` to every entry (or a real rate to
+      bill reranks). `--validate` names each unit a card leaves out
+      ([§7](#a-card-must-configure-every-billable-unit-its-plane-counts)).
 - [ ] If `--validate` names a provider `api_key` that does not resolve: fix the reference, or — for
       an upstream that takes no credential (local ollama / vLLM) — declare `api_key: none`. It is
       a boot refusal now, not a warning ([§6](#6-a-provider-credential-that-cannot-resolve-refuses-boot)).
