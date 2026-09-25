@@ -184,9 +184,9 @@ busbar-voice = ["busbar-voice-codec"]
 # and an entry that describes no rise is refused as stale. It cannot be left behind, and it cannot
 # cover the next raise of the same ceiling.
 
-# ONE ENTRY STANDS: `rules.loc-ceilings.kernel_ceiling` (OWNER RULING Q50, below). The two before
-# it (items 376 and 381, Q11/Q32, owner ruling 2026-09-24) expired when their commit reached the
-# base and are struck below, with the record of what they declared.
+# NO ENTRY STANDS. The last one, `rules.loc-ceilings.kernel_ceiling` (OWNER RULING Q50), expired
+# when its commit reached the base and is struck below with the record of what it declared, as the
+# two before it (items 376 and 381, Q11/Q32, owner ruling 2026-09-24) were.
 #
 # All twelve of the earlier set were struck on 2026-09-22 in the re-baseline below, for two
 # reasons, both of which are this section's own rules:
@@ -206,11 +206,14 @@ busbar-voice = ["busbar-voice-codec"]
 #
 # The re-baseline that struck them changed no ceiling upward, so nothing below needs a declaration.
 
-[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
-file    = "qa/construction.toml"
-from    = 51439
-to      = 51799
-because = "OWNER RULING Q50 (Q61, 2026-09-24): approve the busbar-kernel LOC ceiling at today's measure. The growth is Phase 2 money and security fixes the owner ruled (role-bound re-check, decision config checks, the amendment journal, the per-pool lane gauge, the named 409, per-plane fees, token-family caps) plus the Q51 read-path fix (65ca7c874, +70). Measured by cargo xtask loc at 65ca7c874. Ratchets DOWN when item 142's breaker fold lands."
+# ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
+#
+# The entry declared `rules.loc-ceilings.kernel_ceiling` 51439 -> 51799: the owner approved the
+# busbar-kernel LOC ceiling at the measure taken after the ruled money and security fixes and the
+# budget-book read fix (+70). Its commit reached the base, so `ceiling-rose` reported the entry as "a
+# declared raise 51439 -> 51799 that is not a raise at the base" and asked for exactly this strike.
+# THE CEILING ITSELF DID NOT MOVE: `kernel_ceiling` still reads 51799, held there by the same ruling
+# until the breaker fold lands and the commit that lands it lowers the figure to its measure.
 
 # ── ITEMS 376 + 381 (Q11/Q32, OWNER-SIGNED 2026-09-24) — EXPIRED AND STRUCK ──────────────────────
 #
@@ -1129,7 +1132,10 @@ known_sites = [
   "crates/busbar-kernel/src/config/mod.rs:2369",
   "crates/busbar-kernel/src/config/pools.rs:302",
   "crates/busbar-kernel/src/config/prepass.rs:123",
-  "crates/busbar-kernel/src/config/providers.rs:75",
+  # `crates/busbar-kernel/src/config/providers.rs:75` STRUCK: the provider config shapes moved to
+  # the LLM plane side and left that file 20 lines long, so the pin named a line that does not exist
+  # and waived nothing. A reviewed site that points at nothing is a waiver waiting for the next
+  # literal written there.
   "crates/busbar-kernel/src/config/transaction.rs:365",
   "crates/busbar-kernel/src/config_validate/mod.rs:126",
   "crates/busbar-kernel/src/config_validate/mod.rs:134",
