@@ -1201,11 +1201,6 @@ kind = "plugin-tooling"
 count = "4"
 
 [[cell]]
-crate = "busbar-hooks-ranking"
-kind = "api"
-count = "4"
-
-[[cell]]
 crate = "busbar-kernel"
 kind = "contract"
 count = "103"
@@ -2404,16 +2399,6 @@ verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. busbar-api / the loader are not on it."
 why     = "busbar-hook-test-plugin names busbar-plugin-sdk: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "delete the busbar-plugin-sdk dependency from busbar-hook-test-plugin's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
-from    = "busbar-hooks-ranking"
-to      = "busbar-api"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. busbar-api / the loader are not on it."
-why     = "busbar-hooks-ranking names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-api dependency from busbar-hooks-ranking's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
 from    = "busbar-kernel"

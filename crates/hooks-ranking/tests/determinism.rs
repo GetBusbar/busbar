@@ -18,7 +18,7 @@
 //! This crate only exports `native_policy`, so exercising it via that public entry point is also
 //! the most representative path: it is exactly what `resolve_policy` calls in production.
 
-use busbar_api::{Candidate, RoutingContext, RoutingDecision, RoutingRequest};
+use busbar_contract::hooks::{Candidate, RoutingContext, RoutingDecision, RoutingRequest};
 use std::time::Duration;
 
 fn cand_tied(idx: usize, rate: Option<f64>) -> Candidate<'static> {
