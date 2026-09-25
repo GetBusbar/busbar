@@ -29,6 +29,6 @@ use std::collections::BTreeMap;
 /// does not consume is warn-and-dropped by the codec that declines it. Same-protocol round-trips
 /// re-emit the whole map verbatim.
 ///
-/// THE ONE DEFINITION (#83a, O13): the substrate's `lossless::SourceScopedExtra` was a second alias of
+/// THE ONE DEFINITION: the substrate's `lossless::SourceScopedExtra` was a second alias of
 /// this same type; it is now a re-export of this one.
 pub type SourceScopedExtra = BTreeMap<String, Map<String, Value>>;

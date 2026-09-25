@@ -488,7 +488,7 @@ fn lane_cross_check_reads_the_sealed_destination_not_the_callers_expectation() {
     assert!(lane_cross_check(&verified, "host", &[]).is_err());
 }
 
-// ── THE MOVED HEADER BUILDERS (#83a SD-2, O7): one legality rule, two ways to present a key ──────
+// ── THE SHARED HEADER BUILDERS: one legality rule, two ways to present a key ─────────────────────
 
 /// Keys a config system can hand the egress path, each with whether the `http` crate's
 /// `HeaderValue::from_str` (the rule the dialects' shared builders judged a key by) admits it.

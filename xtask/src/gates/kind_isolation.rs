@@ -1530,7 +1530,7 @@ struct CrateInfo {
     instance: Option<String>,
     /// THE KEYS A TRANSPORT CRATE DECLARES (#50): every `const KEY: &'static str = "…";` in an
     /// `impl TransportMeta for …` under its `src/`. One crate may carry several wires — `http`
-    /// holds `grpc` and `sse` since the dep-wall §6.5 fold — and each declared key is transport
+    /// holds `grpc` and `sse`, which it absorbed as modules — and each declared key is transport
     /// vocabulary exactly as a crate named for it would be. Empty for every other kind.
     declared_keys: Vec<String>,
     /// THE SHIPPED DEPENDENCY DECLARATIONS — `[dependencies]`, `[build-dependencies]` and both of
@@ -8821,7 +8821,7 @@ mod plant_tests {
 
     /// A WIRE A TRANSPORT CRATE DECLARES IS TRANSPORT VOCABULARY (#50), read off its
     /// `impl TransportMeta` rather than off its crate name, so a wire folded into a sibling crate
-    /// (the dep-wall §6.5 fold) stays a transport word. Every transport crate declares its own id,
+    /// (as `grpc` and `sse` are folded into `http`) stays a transport word. Every transport crate declares its own id,
     /// and a key declared by a module planted inside another transport crate joins the vocabulary.
     #[test]
     fn a_declared_transport_key_is_transport_vocabulary() {
