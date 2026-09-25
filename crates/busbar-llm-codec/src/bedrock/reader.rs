@@ -910,7 +910,7 @@ impl ProtocolReader for BedrockReader {
                         state.thinking_block_open = true;
                         out.push(IrStreamEvent::BlockStart {
                             index: idx,
-                            block: crate::ir::IrBlockMeta::Thinking,
+                            block: crate::ir::IrBlockMeta::Thinking { kind: None },
                             refusal: false,
                         });
                     } else if start_obj.is_empty() && state.started && !state.text_block_open {
@@ -1053,7 +1053,7 @@ impl ProtocolReader for BedrockReader {
                             let block = if reasoning.contains_key("redactedContent") {
                                 crate::ir::IrBlockMeta::RedactedThinking
                             } else {
-                                crate::ir::IrBlockMeta::Thinking
+                                crate::ir::IrBlockMeta::Thinking { kind: None }
                             };
                             out.push(IrStreamEvent::BlockStart {
                                 index: idx,

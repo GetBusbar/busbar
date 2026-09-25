@@ -2161,12 +2161,13 @@ pub fn bedrock_response_to_eventstream(
                 text,
                 signature,
                 redacted,
+                kind,
                 ..
             } => {
                 push(
                     &IrStreamEvent::BlockStart {
                         index,
-                        block: IrBlockMeta::Thinking,
+                        block: IrBlockMeta::Thinking { kind: *kind },
                         refusal: false,
                     },
                     &mut out,

@@ -2120,7 +2120,7 @@ fn test_stream_text_not_reopened_after_close() {
             evs[0],
             crate::ir::IrStreamEvent::BlockStart {
                 index: 0,
-                block: crate::ir::IrBlockMeta::Thinking,
+                block: crate::ir::IrBlockMeta::Thinking { kind: None },
                 refusal: _,
             }
         ),
@@ -2198,7 +2198,7 @@ fn test_stream_message_end_closes_dangling_text_block() {
             evs[0],
             crate::ir::IrStreamEvent::BlockStart {
                 index: 0,
-                block: crate::ir::IrBlockMeta::Thinking,
+                block: crate::ir::IrBlockMeta::Thinking { kind: None },
                 refusal: _,
             }
         ),
@@ -3717,7 +3717,7 @@ fn test_write_response_event_redacted_thinking_and_image_blocks_suppressed() {
     let (_, start) = writer
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::Thinking,
+            block: crate::ir::IrBlockMeta::Thinking { kind: None },
             refusal: false,
         })
         .expect("a reasoning block has a native Cohere opening frame");
@@ -4677,7 +4677,7 @@ fn test_thinking_blockstop_emits_no_orphan_content_end() {
     // A plaintext Thinking block is balanced: content-start, then content-end.
     let start = writer.write_response_event(&IrStreamEvent::BlockStart {
         index: 1,
-        block: crate::ir::IrBlockMeta::Thinking,
+        block: crate::ir::IrBlockMeta::Thinking { kind: None },
         refusal: false,
     });
     assert_eq!(start.expect("thinking opens").1["type"], ET_CONTENT_START);
@@ -5240,7 +5240,7 @@ fn test_stream_tool_plan_delta_becomes_leading_reasoning_before_tool_call() {
             &evs[0],
             crate::ir::IrStreamEvent::BlockStart {
                 index: 0,
-                block: crate::ir::IrBlockMeta::Thinking,
+                block: crate::ir::IrBlockMeta::Thinking { kind: None },
                 refusal: _,
             }
         ),

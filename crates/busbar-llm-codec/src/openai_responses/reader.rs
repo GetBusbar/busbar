@@ -917,7 +917,13 @@ impl ProtocolReader for ResponsesReader {
                                 state.open_tools.insert(idx);
                                 out.push(IrStreamEvent::BlockStart {
                                     index: idx,
-                                    block: crate::ir::IrBlockMeta::Thinking,
+                                    // IR-17: what the added item already says (usually unknown —
+                                    // its arrays fill on the deltas that follow).
+                                    block: crate::ir::IrBlockMeta::Thinking {
+                                        kind: data
+                                            .get("item")
+                                            .and_then(super::slots::reasoning_kind),
+                                    },
                                     refusal: false,
                                 });
                             }
@@ -959,9 +965,15 @@ impl ProtocolReader for ResponsesReader {
                             return out;
                         }
                         state.open_tools.insert(idx);
+                        // IR-17: the event that opens the block says which reasoning array it fills.
+                        let kind = if event_type == EVT_REASONING_TEXT_DELTA {
+                            crate::ir::IrThinkingKind::Full
+                        } else {
+                            crate::ir::IrThinkingKind::Summary
+                        };
                         out.push(IrStreamEvent::BlockStart {
                             index: idx,
-                            block: crate::ir::IrBlockMeta::Thinking,
+                            block: crate::ir::IrBlockMeta::Thinking { kind: Some(kind) },
                             refusal: false,
                         });
                     }

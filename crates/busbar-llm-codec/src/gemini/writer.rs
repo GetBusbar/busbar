@@ -965,7 +965,7 @@ impl ProtocolWriter for GeminiWriter {
                 // opening event (a redacted block is dropped exactly like plaintext thinking — Gemini
                 // has no encrypted-reasoning shape).
                 crate::ir::IrBlockMeta::Text
-                | crate::ir::IrBlockMeta::Thinking
+                | crate::ir::IrBlockMeta::Thinking { .. }
                 | crate::ir::IrBlockMeta::RedactedThinking
                 | crate::ir::IrBlockMeta::Image => None,
             },

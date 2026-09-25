@@ -271,6 +271,13 @@ const EVT_REASONING_TEXT_DELTA: &str = "response.reasoning_text.delta";
 // part): carries the COMPLETE assembled reasoning text and precedes the reasoning item's
 // `output_item.done`.
 const EVT_REASONING_TEXT_DONE: &str = "response.reasoning_text.done";
+// IR-17 (round 3 item 16): a SUMMARY reasoning block streams as one `summary_text` part —
+// `reasoning_summary_part.added`, `reasoning_summary_text.delta` runs, then
+// `reasoning_summary_text.done` and `reasoning_summary_part.done` before the item's `output_item.done`.
+const EVT_REASONING_SUMMARY_PART_ADDED: &str = "response.reasoning_summary_part.added";
+const EVT_REASONING_SUMMARY_TEXT_DELTA: &str = "response.reasoning_summary_text.delta";
+const EVT_REASONING_SUMMARY_TEXT_DONE: &str = "response.reasoning_summary_text.done";
+const EVT_REASONING_SUMMARY_PART_DONE: &str = "response.reasoning_summary_part.done";
 const EVT_RESPONSE_COMPLETED: &str = "response.completed";
 const EVT_RESPONSE_FAILED: &str = "response.failed";
 const EVT_RESPONSE_INCOMPLETE: &str = "response.incomplete";
@@ -1488,6 +1495,10 @@ pub struct ResponsesWriter {
     /// THIS index, and so a reasoning BlockStop is never mistaken for a text/tool close. Per-stream
     /// INSTANCE state for the same reason as the other open-index sets; a poisoned lock degrades safely.
     open_reasoning_indices: std::sync::Mutex<std::collections::BTreeSet<usize>>,
+    /// IR-17 (round 3 item 16): the open reasoning items whose Thinking block is a SUMMARY. Their
+    /// text streams as `reasoning_summary_text` and lands in the item's `summary[]` (the buffered
+    /// `insert_reasoning_text` shape); every other reasoning item keeps `content[]`.
+    summary_reasoning_indices: std::sync::Mutex<std::collections::BTreeSet<usize>>,
     /// Per-stream accumulator of streamed reasoning TEXT, keyed by `output_index`. The terminal
     /// `response.output[]` reasoning item carries the COMPLETE reasoning text the stream delivered via
     /// `reasoning_text.delta`; the IR streams it as `ThinkingDelta` fragments, so the writer
@@ -1558,6 +1569,7 @@ pub const ResponsesWriter: ResponsesWriter = ResponsesWriter {
     logprob_accum: std::sync::Mutex::new(std::collections::BTreeMap::new()),
     output_items: std::sync::Mutex::new(std::collections::BTreeMap::new()),
     open_reasoning_indices: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+    summary_reasoning_indices: std::sync::Mutex::new(std::collections::BTreeSet::new()),
     reasoning_accum: std::sync::Mutex::new(std::collections::BTreeMap::new()),
     reasoning_sig_accum: std::sync::Mutex::new(std::collections::BTreeMap::new()),
     failed: AtomicBool::new(false),
@@ -1663,6 +1675,12 @@ impl Clone for ResponsesWriter {
                     .map(|set| set.clone())
                     .unwrap_or_default(),
             ),
+            summary_reasoning_indices: std::sync::Mutex::new(
+                self.summary_reasoning_indices
+                    .lock()
+                    .map(|set| set.clone())
+                    .unwrap_or_default(),
+            ),
             reasoning_accum: std::sync::Mutex::new(
                 self.reasoning_accum
                     .lock()
@@ -1735,6 +1753,9 @@ impl ResponsesWriter {
         // Clear the per-stream reasoning open-set and text accumulator so a reused/cloned writer does
         // not leak a previous stream's reasoning into a new stream's output.
         if let Ok(mut set) = self.open_reasoning_indices.lock() {
+            set.clear();
+        }
+        if let Ok(mut set) = self.summary_reasoning_indices.lock() {
             set.clear();
         }
         if let Ok(mut map) = self.reasoning_accum.lock() {
@@ -2126,6 +2147,28 @@ impl ResponsesWriter {
                 set.insert(index);
                 true
             })
+            .unwrap_or(false)
+    }
+
+    /// IR-17: remember that the reasoning item at `index` is a summary (`mark`), or ask whether it
+    /// is. Lock poisoning degrades to "not a summary" (the pre-slot `content[]` shape).
+    fn mark_summary_reasoning(&self, index: usize) {
+        if let Ok(mut set) = self.summary_reasoning_indices.lock() {
+            set.insert(index);
+        }
+    }
+
+    fn is_summary_reasoning(&self, index: usize) -> bool {
+        self.summary_reasoning_indices
+            .lock()
+            .map(|set| set.contains(&index))
+            .unwrap_or(false)
+    }
+
+    fn take_summary_reasoning(&self, index: usize) -> bool {
+        self.summary_reasoning_indices
+            .lock()
+            .map(|mut set| set.remove(&index))
             .unwrap_or(false)
     }
 

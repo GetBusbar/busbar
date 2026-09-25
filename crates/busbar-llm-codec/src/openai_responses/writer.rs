@@ -921,7 +921,7 @@ impl ProtocolWriter for ResponsesWriter {
                 // `RedactedReasoningDelta` is dropped (`Vec::new()`), and the matching `BlockStop`
                 // finds no open reasoning index and emits nothing — a clean, event-balanced drop.
                 crate::ir::IrBlockMeta::RedactedThinking => Vec::new(),
-                crate::ir::IrBlockMeta::Thinking => {
+                crate::ir::IrBlockMeta::Thinking { kind } => {
                     // REASONING (stream): open a native Responses `reasoning` output item. The IR
                     // Thinking BlockStart carries only the index; emit `output_item.added` typed
                     // "reasoning" with a stable `rs_…` item_id (so the matching `.done` reconstructs
@@ -931,20 +931,52 @@ impl ProtocolWriter for ResponsesWriter {
                         return Vec::new();
                     }
                     let item_id = self.item_id_for(ITEM_ID_PREFIX_RS, *index);
-                    vec![(
-                        EVT_OUTPUT_ITEM_ADDED.to_string(),
-                        serde_json::json!({
-                            "type": EVT_OUTPUT_ITEM_ADDED,
-                            "output_index": index,
-                            "item_id": item_id,
-                            "item": {
-                                "type": ITEM_TYPE_REASONING,
-                                "id": item_id,
-                                "summary": [],
-                                "content": []
-                            }
-                        }),
-                    )]
+                    // IR-17 (round 3 item 16): a SUMMARY block opens the item with its one
+                    // `summary_text` part (no `content[]`, as the buffered item has none); every
+                    // other block keeps the pre-slot `reasoning_text` shape.
+                    if *kind == Some(crate::ir::IrThinkingKind::Summary) {
+                        self.mark_summary_reasoning(*index);
+                        vec![
+                            (
+                                EVT_OUTPUT_ITEM_ADDED.to_string(),
+                                serde_json::json!({
+                                    "type": EVT_OUTPUT_ITEM_ADDED,
+                                    "output_index": index,
+                                    "item_id": item_id,
+                                    "item": {
+                                        "type": ITEM_TYPE_REASONING,
+                                        "id": item_id,
+                                        "summary": []
+                                    }
+                                }),
+                            ),
+                            (
+                                EVT_REASONING_SUMMARY_PART_ADDED.to_string(),
+                                serde_json::json!({
+                                    "type": EVT_REASONING_SUMMARY_PART_ADDED,
+                                    "output_index": index,
+                                    "item_id": item_id,
+                                    "summary_index": 0,
+                                    "part": { "type": "summary_text", "text": "" }
+                                }),
+                            ),
+                        ]
+                    } else {
+                        vec![(
+                            EVT_OUTPUT_ITEM_ADDED.to_string(),
+                            serde_json::json!({
+                                "type": EVT_OUTPUT_ITEM_ADDED,
+                                "output_index": index,
+                                "item_id": item_id,
+                                "item": {
+                                    "type": ITEM_TYPE_REASONING,
+                                    "id": item_id,
+                                    "summary": [],
+                                    "content": []
+                                }
+                            }),
+                        )]
+                    }
                 }
                 crate::ir::IrBlockMeta::Image => Vec::new(),
             },
@@ -1015,13 +1047,18 @@ impl ProtocolWriter for ResponsesWriter {
                     // streamed chain-of-thought. `content_index: 0` — the single reasoning content
                     // part of the item.
                     self.append_reasoning(*index, text);
+                    let (event, part_key) = if self.is_summary_reasoning(*index) {
+                        (EVT_REASONING_SUMMARY_TEXT_DELTA, "summary_index")
+                    } else {
+                        (EVT_REASONING_TEXT_DELTA, "content_index")
+                    };
                     vec![(
-                        EVT_REASONING_TEXT_DELTA.to_string(),
+                        event.to_string(),
                         serde_json::json!({
-                            "type": EVT_REASONING_TEXT_DELTA,
+                            "type": event,
                             "output_index": index,
                             "item_id": self.item_id_for(ITEM_ID_PREFIX_RS, *index),
-                            "content_index": 0,
+                            part_key: 0,
                             "delta": text
                         }),
                     )]
@@ -1094,14 +1131,17 @@ impl ProtocolWriter for ResponsesWriter {
                     // the chain-of-thought.
                     let item_id = self.item_id_for(ITEM_ID_PREFIX_RS, *index);
                     let text = self.take_reasoning_accum(*index);
-                    let mut item = serde_json::json!({
-                        "type": ITEM_TYPE_REASONING,
-                        "id": item_id,
-                        "summary": [],
-                        "content": [
-                            { "type": CONTENT_TYPE_REASONING_TEXT, "text": text }
-                        ]
-                    });
+                    let summary = self.take_summary_reasoning(*index);
+                    // IR-17: the same `summary[]` / `content[]` placement the buffered item uses.
+                    let mut item_obj = serde_json::Map::new();
+                    item_obj.insert("type".to_string(), serde_json::json!(ITEM_TYPE_REASONING));
+                    item_obj.insert("id".to_string(), serde_json::json!(item_id));
+                    super::slots::insert_reasoning_text(
+                        &mut item_obj,
+                        &text,
+                        summary.then_some(crate::ir::IrThinkingKind::Summary),
+                    );
+                    let mut item = serde_json::Value::Object(item_obj);
                     // RSP-01: the buffered signature becomes the item's `encrypted_content` — the
                     // same member, on the same item shape, `write_response` emits.
                     if let Some(sig) = self.take_reasoning_signature(*index) {
@@ -1110,27 +1150,61 @@ impl ProtocolWriter for ResponsesWriter {
                         }
                     }
                     self.record_output_item(*index, item.clone());
-                    vec![
-                        (
-                            EVT_REASONING_TEXT_DONE.to_string(),
-                            serde_json::json!({
-                                "type": EVT_REASONING_TEXT_DONE,
-                                "output_index": index,
-                                "item_id": item_id,
-                                "content_index": 0,
-                                "text": text,
-                            }),
-                        ),
-                        (
-                            EVT_OUTPUT_ITEM_DONE.to_string(),
-                            serde_json::json!({
-                                "type": EVT_OUTPUT_ITEM_DONE,
-                                "output_index": index,
-                                "item_id": item_id,
-                                "item": item,
-                            }),
-                        ),
-                    ]
+                    if summary {
+                        vec![
+                            (
+                                EVT_REASONING_SUMMARY_TEXT_DONE.to_string(),
+                                serde_json::json!({
+                                    "type": EVT_REASONING_SUMMARY_TEXT_DONE,
+                                    "output_index": index,
+                                    "item_id": item_id,
+                                    "summary_index": 0,
+                                    "text": text,
+                                }),
+                            ),
+                            (
+                                EVT_REASONING_SUMMARY_PART_DONE.to_string(),
+                                serde_json::json!({
+                                    "type": EVT_REASONING_SUMMARY_PART_DONE,
+                                    "output_index": index,
+                                    "item_id": item_id,
+                                    "summary_index": 0,
+                                    "part": { "type": "summary_text", "text": text },
+                                }),
+                            ),
+                            (
+                                EVT_OUTPUT_ITEM_DONE.to_string(),
+                                serde_json::json!({
+                                    "type": EVT_OUTPUT_ITEM_DONE,
+                                    "output_index": index,
+                                    "item_id": item_id,
+                                    "item": item,
+                                }),
+                            ),
+                        ]
+                    } else {
+                        vec![
+                            (
+                                EVT_REASONING_TEXT_DONE.to_string(),
+                                serde_json::json!({
+                                    "type": EVT_REASONING_TEXT_DONE,
+                                    "output_index": index,
+                                    "item_id": item_id,
+                                    "content_index": 0,
+                                    "text": text,
+                                }),
+                            ),
+                            (
+                                EVT_OUTPUT_ITEM_DONE.to_string(),
+                                serde_json::json!({
+                                    "type": EVT_OUTPUT_ITEM_DONE,
+                                    "output_index": index,
+                                    "item_id": item_id,
+                                    "item": item,
+                                }),
+                            ),
+                        ]
+                    }
                 } else if self.take_tool_open(*index) {
                     // Native `response.output_item.done` carries the SAME stable `item_id` as the
                     // matching `output_item.added` (so a client correlates the `added → done`

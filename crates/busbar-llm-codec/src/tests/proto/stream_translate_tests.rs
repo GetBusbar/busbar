@@ -2519,7 +2519,7 @@ fn cohere_truncated_tool_call_survives_gemini_ingress() {
 fn all_block_metas() -> Vec<IrBlockMeta> {
     let witnesses = vec![
         IrBlockMeta::Text,
-        IrBlockMeta::Thinking,
+        IrBlockMeta::Thinking { kind: None },
         IrBlockMeta::RedactedThinking,
         IrBlockMeta::Image,
         IrBlockMeta::ToolUse {
@@ -2530,7 +2530,7 @@ fn all_block_metas() -> Vec<IrBlockMeta> {
     for w in &witnesses {
         match w {
             IrBlockMeta::Text
-            | IrBlockMeta::Thinking
+            | IrBlockMeta::Thinking { .. }
             | IrBlockMeta::RedactedThinking
             | IrBlockMeta::Image
             | IrBlockMeta::ToolUse { .. } => {}
@@ -2612,7 +2612,9 @@ fn every_writer_that_suppresses_a_block_start_suppresses_its_stop() {
                 || (name == PROTO_BEDROCK
                     && matches!(
                         meta,
-                        IrBlockMeta::Text | IrBlockMeta::Thinking | IrBlockMeta::RedactedThinking
+                        IrBlockMeta::Text
+                            | IrBlockMeta::Thinking { .. }
+                            | IrBlockMeta::RedactedThinking
                     ));
 
             if is_declared_exception {

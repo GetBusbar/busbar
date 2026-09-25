@@ -102,7 +102,10 @@ fn coh01_thinking_and_text_are_separate_balanced_blocks() {
         .collect();
     assert_eq!(
         starts,
-        vec![(0, IrBlockMeta::Thinking), (1, IrBlockMeta::Text)],
+        vec![
+            (0, IrBlockMeta::Thinking { kind: None }),
+            (1, IrBlockMeta::Text)
+        ],
         "{evs:?}"
     );
     let stops: Vec<usize> = evs
@@ -164,7 +167,7 @@ fn coh01_thinking_then_tool_call_is_balanced() {
         .filter_map(|e| match e {
             E::BlockStart {
                 index,
-                block: IrBlockMeta::Thinking,
+                block: IrBlockMeta::Thinking { kind: None },
                 refusal: _,
             } => Some(format!("start-thinking-{index}")),
             E::BlockStart {

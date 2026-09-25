@@ -6271,7 +6271,7 @@ fn test_streaming_reasoning_round_trip() {
             e,
             crate::ir::IrStreamEvent::BlockStart {
                 index: 0,
-                block: crate::ir::IrBlockMeta::Thinking,
+                block: crate::ir::IrBlockMeta::Thinking { kind: None },
                 refusal: _,
             }
         )),
@@ -6300,7 +6300,7 @@ fn test_streaming_reasoning_round_trip() {
     let (etype, payload) = writer
         .write_response_event(&crate::ir::IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::Thinking,
+            block: crate::ir::IrBlockMeta::Thinking { kind: None },
             refusal: false,
         })
         .expect("Thinking BlockStart emits a frame");

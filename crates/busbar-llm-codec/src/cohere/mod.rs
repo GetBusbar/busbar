@@ -962,7 +962,7 @@ fn cohere_open_thinking_block(
     state.thinking_block_open = true;
     out.push(IrStreamEvent::BlockStart {
         index,
-        block: crate::ir::IrBlockMeta::Thinking,
+        block: crate::ir::IrBlockMeta::Thinking { kind: None },
         refusal: false,
     });
     Some(index)

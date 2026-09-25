@@ -752,7 +752,7 @@ impl ProtocolWriter for AnthropicWriter {
                     IrBlockMeta::Text => {
                         serde_json::json!({ "type": "text", "text": "", "citations": null })
                     }
-                    IrBlockMeta::Thinking => {
+                    IrBlockMeta::Thinking { .. } => {
                         serde_json::json!({ "type": "thinking", "thinking": "", "signature": "" })
                     }
                     // A REDACTED thinking block emits NO content_block_start HERE. Native Anthropic

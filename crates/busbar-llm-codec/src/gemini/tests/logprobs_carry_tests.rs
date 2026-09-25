@@ -267,7 +267,7 @@ fn stream_thinking_plus_logprobs_do_not_collide_on_index_zero() {
         e,
         IrStreamEvent::BlockStart {
             index: 0,
-            block: IrBlockMeta::Thinking,
+            block: IrBlockMeta::Thinking { .. },
             refusal: _,
         }
     )));

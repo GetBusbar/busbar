@@ -4902,7 +4902,7 @@ fn test_stream_reasoning_content_round_trips() {
     assert!(
             events.iter().any(|e| matches!(
                 e,
-                IrStreamEvent::BlockStart { index: 0, block: IrBlockMeta::Thinking, refusal: _, }
+                IrStreamEvent::BlockStart { index: 0, block: IrBlockMeta::Thinking { .. }, refusal: _, }
             )),
             "a Thinking BlockStart must be lazily opened on the first reasoningContent delta; got {events:?}"
         );
@@ -4936,7 +4936,7 @@ fn test_stream_reasoning_content_round_trips() {
         writer
             .write_response_event(&IrStreamEvent::BlockStart {
                 index: 0,
-                block: IrBlockMeta::Thinking,
+                block: IrBlockMeta::Thinking { kind: None },
                 refusal: false,
             })
             .is_none(),

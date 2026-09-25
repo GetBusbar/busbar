@@ -1285,7 +1285,13 @@ impl IrUsage {
 #[derive(Debug, Clone, PartialEq)]
 pub enum IrBlockMeta {
     Text,
-    Thinking,
+    /// A plaintext reasoning block. `kind` (IR-17, round 3 item 16) says whether its text is the
+    /// full reasoning or a summary of it — the stream counterpart of `IrBlock::Thinking.kind`, so a
+    /// Responses writer puts a summary back into `summary[]` on the stream as it does buffered.
+    /// `None` == unknown (the pre-slot behaviour).
+    Thinking {
+        kind: Option<IrThinkingKind>,
+    },
     /// A streaming REDACTED (encrypted/opaque) reasoning block — the streaming counterpart of a
     /// buffered `IrBlock::Thinking { redacted: true }` (Anthropic `redacted_thinking`, Bedrock
     /// `reasoningContent.redactedContent`). Distinguished from plaintext `Thinking` at BLOCK-START

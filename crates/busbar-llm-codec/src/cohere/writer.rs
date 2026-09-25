@@ -730,7 +730,7 @@ impl ProtocolWriter for CohereWriter {
                 // and stream its deltas as `tool-plan-delta` — the frame for the plan that precedes a
                 // tool call — so a foreign model's reasoning reached a Cohere client as a plan
                 // (COH-09).
-                crate::ir::IrBlockMeta::Thinking => {
+                crate::ir::IrBlockMeta::Thinking { .. } => {
                     self.mark_text_open(*index);
                     Some((
                         "".to_string(),

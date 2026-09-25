@@ -1015,7 +1015,7 @@ impl ProtocolReader for CohereReader {
                     state.thinking_block_open = true;
                     out.push(IrStreamEvent::BlockStart {
                         index: plan_idx,
-                        block: crate::ir::IrBlockMeta::Thinking,
+                        block: crate::ir::IrBlockMeta::Thinking { kind: None },
                         refusal: false,
                     });
                 }

@@ -548,7 +548,7 @@ impl ProtocolReader for AnthropicReader {
                 let block_type = block.get("type").and_then(|t| t.as_str())?;
                 let meta = match block_type {
                     "text" => IrBlockMeta::Text,
-                    "thinking" => IrBlockMeta::Thinking,
+                    "thinking" => IrBlockMeta::Thinking { kind: None },
                     STOP_TOOL_USE => {
                         let id = block.get("id").and_then(|i| i.as_str()).map(String::from)?;
                         let name = block

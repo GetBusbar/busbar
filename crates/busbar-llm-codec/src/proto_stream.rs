@@ -1277,6 +1277,7 @@ pub fn response_to_ir_events(ir: &crate::ir::IrResponse) -> Vec<crate::ir::IrStr
                 text,
                 signature,
                 redacted,
+                kind,
                 ..
             } => {
                 events.push(IrStreamEvent::BlockStart {
@@ -1284,7 +1285,8 @@ pub fn response_to_ir_events(ir: &crate::ir::IrResponse) -> Vec<crate::ir::IrStr
                     block: if *redacted {
                         IrBlockMeta::RedactedThinking
                     } else {
-                        IrBlockMeta::Thinking
+                        // IR-17 (round 3 item 16): the block's kind rides the stream start.
+                        IrBlockMeta::Thinking { kind: *kind }
                     },
                     refusal: false,
                 });

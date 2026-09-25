@@ -306,7 +306,8 @@ impl ProtocolWriter for BedrockWriter {
                 // start behaves exactly like a `Thinking` start — emit no start frame but STILL
                 // `mark_block_open` so the matching `BlockStop` emits `contentBlockStop`; the opaque
                 // bytes ride the following `RedactedReasoningDelta`, re-emitted under `redactedContent`.
-                crate::ir::IrBlockMeta::Thinking | crate::ir::IrBlockMeta::RedactedThinking => {
+                crate::ir::IrBlockMeta::Thinking { .. }
+                | crate::ir::IrBlockMeta::RedactedThinking => {
                     self.mark_block_open(*index);
                     None
                 }

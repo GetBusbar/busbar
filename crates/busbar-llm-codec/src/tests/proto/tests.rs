@@ -312,7 +312,7 @@ fn test_openai_streaming_reasoning_blocks() {
             e,
             IrStreamEvent::BlockStart {
                 index: 0,
-                block: IrBlockMeta::Thinking,
+                block: IrBlockMeta::Thinking { kind: None },
                 refusal: _,
             }
         )

@@ -4240,7 +4240,7 @@ fn content_block_start_carries_seed_fields() {
     let (_et, out) = anthropic_writer()
         .write_response_event(&crate::ir::IrStreamEvent::BlockStart {
             index: 2,
-            block: crate::ir::IrBlockMeta::Thinking,
+            block: crate::ir::IrBlockMeta::Thinking { kind: None },
             refusal: false,
         })
         .expect("thinking block_start writes");

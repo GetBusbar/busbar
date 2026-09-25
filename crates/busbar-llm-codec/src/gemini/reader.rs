@@ -1004,7 +1004,10 @@ impl ProtocolReader for GeminiReader {
                                             state.thinking_block_open = true;
                                             out.push(IrStreamEvent::BlockStart {
                                                 index: 0,
-                                                block: crate::ir::IrBlockMeta::Thinking,
+                                                block: crate::ir::IrBlockMeta::Thinking {
+                                                    // IR-17: a Gemini thought part is a summary.
+                                                    kind: Some(crate::ir::IrThinkingKind::Summary),
+                                                },
                                                 refusal: false,
                                             });
                                         }

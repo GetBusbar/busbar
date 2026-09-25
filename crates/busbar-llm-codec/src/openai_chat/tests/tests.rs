@@ -3783,7 +3783,7 @@ fn late_reasoning_delta_after_text_does_not_shift_indices() {
             e,
             IrStreamEvent::BlockStart {
                 index: 1,
-                block: crate::ir::IrBlockMeta::Thinking,
+                block: crate::ir::IrBlockMeta::Thinking { kind: None },
                 refusal: _,
             }
         )),
@@ -3842,7 +3842,7 @@ fn early_reasoning_delta_still_opens_thinking_at_index_0() {
             e,
             IrStreamEvent::BlockStart {
                 index: 0,
-                block: crate::ir::IrBlockMeta::Thinking,
+                block: crate::ir::IrBlockMeta::Thinking { kind: None },
                 refusal: _,
             }
         )),
