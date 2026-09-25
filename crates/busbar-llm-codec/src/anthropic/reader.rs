@@ -270,6 +270,9 @@ impl ProtocolReader for AnthropicReader {
 
         // Handle tools array
         let mut tools: Vec<crate::ir::IrTool> = Vec::new();
+        // IR-11 (ANT-13): an Anthropic server tool whose KIND the IR models (web search, web fetch,
+        // code execution) crosses the seam in the typed slot, NOT as a raw hosted `IrTool`.
+        let mut hosted_tools: Vec<crate::ir::IrHostedTool> = Vec::new();
         if let Some(tools_val) = obj.get("tools") {
             // A PRESENT `tools` that is not an array is a malformed request — reject it (mirroring the
             // `messages` type-check above) rather than coercing to empty, which would forward a
@@ -280,7 +283,10 @@ impl ProtocolReader for AnthropicReader {
                 retry_after: None,
             })?;
             for tool_val in tools_arr {
-                tools.push(read_tool(tool_val)?);
+                match read_hosted_tool(tool_val) {
+                    Some(hosted) => hosted_tools.push(hosted),
+                    None => tools.push(read_tool(tool_val)?),
+                }
             }
         }
 
@@ -331,8 +337,10 @@ impl ProtocolReader for AnthropicReader {
         //     else `Dynamic` — "the model decides", Gemini's `thinkingBudget:-1` (ANT-09);
         //   * no `thinking` but an `output_config.effort` word → `Effort(word)`: the caller asked for
         //     that reasoning depth, and the adaptive-by-default models honour it;
-        //   * `{type:"disabled"}` (or malformed) → no ask. The IR has no explicit OFF (IR-09), and a
-        //     foreign target treats an absent ask as its default.
+        //   * `{type:"disabled"}` → `Off` (IR-09, ANT-09): the caller switched reasoning OFF, which a
+        //     reasoning-by-default foreign model must hear (Chat/Responses `"none"`, Gemini
+        //     `thinkingBudget:0`) rather than read as "never said";
+        //   * a malformed `thinking` → no ask.
         // Everything stays in `extra` too except a promoted budget-form `thinking` (removed below),
         // so a same-protocol hop through the IR still re-emits the caller's exact objects.
         let thinking_type = obj
@@ -356,6 +364,7 @@ impl ProtocolReader for AnthropicReader {
                     .map(crate::ir::IrReasoningAsk::Effort)
                     .unwrap_or(crate::ir::IrReasoningAsk::Dynamic),
             ),
+            Some(THINKING_TYPE_DISABLED) => Some(crate::ir::IrReasoningAsk::Off),
             None => effort.map(crate::ir::IrReasoningAsk::Effort),
             Some(_) => None,
         };
@@ -370,6 +379,12 @@ impl ProtocolReader for AnthropicReader {
             .or(output_format_legacy)
             .and_then(read_anthropic_output_format);
         let stream = obj.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+        // IR-04: Anthropic `service_tier` (`auto` / `standard_only`). It also rides `extra`, so a
+        // same-protocol hop re-emits the caller's exact value.
+        let service_tier = obj
+            .get("service_tier")
+            .and_then(|v| v.as_str())
+            .and_then(read_anthropic_service_tier);
 
         // Collect unmodeled top-level keys into `extra`. The set of modeled keys is a static,
         // never-changing list of `&'static str` literals, so it lives as a compile-time SORTED slice
@@ -441,13 +456,13 @@ impl ProtocolReader for AnthropicReader {
             response_format,
             extra,
             metadata: None,
-            service_tier: None,
+            service_tier,
             store: None,
             safety_identifier: None,
             prompt_cache_key: None,
             verbosity: None,
             allowed_tools: None,
-            hosted_tools: Vec::new(),
+            hosted_tools,
             system_role: None,
             output_modalities: None,
         })
@@ -638,11 +653,17 @@ impl ProtocolReader for AnthropicReader {
                     Ok(usage) => usage,
                     Err(refusal) => return Some(IrStreamEvent::Error(refusal)),
                 };
+                // IR-16 / IR-02: the context-window refinement of a length stop (ANT-11) and a
+                // refusal's `stop_details` category, carried beside the coarse reason.
+                let stop_detail = read_anthropic_stop_detail(
+                    delta.get("stop_reason").and_then(|r| r.as_str()),
+                    delta.get("stop_details"),
+                );
                 Some(IrStreamEvent::MessageDelta {
                     stop_reason,
                     stop_sequence,
                     usage,
-                    stop_detail: None,
+                    stop_detail,
                 })
             }
             EVT_MESSAGE_STOP => Some(IrStreamEvent::MessageStop),
@@ -879,7 +900,11 @@ impl ProtocolReader for AnthropicReader {
             stop_sequence,
 
             request_echo: None,
-            stop_detail: None,
+            // IR-16 / IR-02 (buffered twin of the `message_delta` read above).
+            stop_detail: read_anthropic_stop_detail(
+                obj.get("stop_reason").and_then(|r| r.as_str()),
+                obj.get("stop_details"),
+            ),
         })
     }
 }

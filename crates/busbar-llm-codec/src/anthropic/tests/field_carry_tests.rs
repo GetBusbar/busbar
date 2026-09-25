@@ -273,8 +273,8 @@ fn anthropic_document_block_carry() {
         "document.cache_control survives same-protocol"
     );
 
-    // CROSS-protocol seam clears extra → Media projection; url + cache_control survive, context and
-    // citations are the documented drop.
+    // CROSS-protocol seam clears extra → Media projection; url + cache_control survive, and so do
+    // context and citations, which ride the IR-12 Media slots.
     let mut crossed = ir.clone();
     crossed.extra.clear();
     let cout = anthropic_writer().write_request(&crossed);
@@ -285,13 +285,14 @@ fn anthropic_document_block_carry() {
         "document.source.url survives cross-protocol via Media"
     );
     assert_eq!(cdoc["cache_control"]["type"], "ephemeral");
-    assert!(
-        cdoc.get("context").is_none(),
-        "document.context dropped cross-protocol: {cdoc}"
+    assert_eq!(
+        cdoc["context"], "quarterly report",
+        "document.context carried via Media (IR-12): {cdoc}"
     );
-    assert!(
-        cdoc.get("citations").is_none(),
-        "document.citations dropped cross-protocol: {cdoc}"
+    assert_eq!(
+        cdoc["citations"],
+        serde_json::json!({"enabled": true}),
+        "document.citations carried via Media (IR-12): {cdoc}"
     );
 }
 

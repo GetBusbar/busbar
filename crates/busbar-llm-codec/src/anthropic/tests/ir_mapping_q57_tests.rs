@@ -484,7 +484,9 @@ fn ant12_content_filter_stop_is_a_refusal() {
 }
 
 /// ANT-13: an Anthropic server tool is hosted, not a function: it never reaches a foreign backend as
-/// a function tool with a null schema, and the Anthropic writer re-emits its raw definition.
+/// a function tool with a null schema. A KIND the IR models (web search) crosses in the IR-11
+/// hosted slot and the Anthropic writer re-emits it as its server tool; any other server tool
+/// (`bash_*`) keeps its raw definition, same-protocol only.
 #[test]
 fn ant13_server_tools_are_hosted_not_functions() {
     let body = json!({"model": "m", "max_tokens": 100, "messages": [user_text("hi")],
@@ -496,7 +498,7 @@ fn ant13_server_tools_are_hosted_not_functions() {
     for egress in ["openai", "responses", "gemini", "bedrock", "cohere"] {
         let s = serde_json::to_string(&xreq("anthropic", egress, &body)).unwrap();
         assert!(
-            !s.contains("web_search"),
+            !s.contains("\"name\":\"web_search\""),
             "{egress}: server tool leaked as a function: {s}"
         );
         assert!(
@@ -515,6 +517,11 @@ fn ant13_server_tools_are_hosted_not_functions() {
         .write_request(&ir);
     assert_eq!(
         back.pointer("/tools/1"),
+        Some(&json!({"type": "bash_20250124", "name": "bash"})),
+        "{back}"
+    );
+    assert_eq!(
+        back.pointer("/tools/2"),
         Some(&json!({"type": "web_search_20250305", "name": "web_search", "max_uses": 3})),
         "{back}"
     );

@@ -167,6 +167,7 @@ impl ProtocolWriter for AnthropicWriter {
         if req.n.is_some() {
             dropped.push("n");
         }
+        dropped.extend(anthropic_unrepresentable_slots(req));
         dropped
     }
 
@@ -223,7 +224,24 @@ impl ProtocolWriter for AnthropicWriter {
             serde_json::Value::Array(messages_array),
         );
         // `strict` is carried natively (Anthropic GA per-tool `strict`), so no drop warn here.
-        let tools_array: Vec<_> = req.tools.iter().filter_map(write_tool).collect();
+        //
+        // IR-10: a tool SUBSET (`allowed_tools`) has no Anthropic `tool_choice` form, so it is
+        // expressed by omission — only the listed function tools are sent; `tool_choice` already
+        // carries the mode (auto / required → `auto` / `any`). IR-11: the hosted tools that crossed
+        // the seam follow the function tools in Anthropic's server-tool spelling.
+        let tools_array: Vec<_> = req
+            .tools
+            .iter()
+            .filter(|t| {
+                t.hosted.is_some()
+                    || req
+                        .allowed_tools
+                        .as_ref()
+                        .is_none_or(|allowed| allowed.contains(&t.name))
+            })
+            .filter_map(write_tool)
+            .chain(req.hosted_tools.iter().map(write_hosted_tool))
+            .collect();
         if !tools_array.is_empty() {
             out.insert("tools".to_string(), serde_json::Value::Array(tools_array));
         }
@@ -391,6 +409,15 @@ impl ProtocolWriter for AnthropicWriter {
         // alongside thinking, so when the ask IS emitted those knobs are omitted (warned) below.
         let mut thinking_emitted = false;
         match req.reasoning {
+            // Reasoning switched OFF (IR-09, ANT-09) — matched FIRST: `to_budget` would read it as a
+            // zero budget and drop it, losing the caller's "off" on a reasoning-by-default model.
+            // Not an emitted thinking ask, so the sampling knobs below stay.
+            Some(crate::ir::IrReasoningAsk::Off) => {
+                out.insert(
+                    "thinking".to_string(),
+                    serde_json::json!({ "type": THINKING_TYPE_DISABLED }),
+                );
+            }
             Some(crate::ir::IrReasoningAsk::Effort(effort)) if caps.anthropic_adaptive_thinking => {
                 out.insert(
                     "thinking".to_string(),
@@ -577,6 +604,29 @@ impl ProtocolWriter for AnthropicWriter {
                 "dropping n on Anthropic egress: the Messages API returns a single completion and \
                  models no candidate-count parameter (lossy-by-target)"
             );
+        }
+        // IR-04: the capacity tier in Anthropic's spelling; a tier Anthropic cannot name (Flex /
+        // Scale) is dropped. Emitted before the `extra` overlay, so a native value wins.
+        if let Some(tier) = req.service_tier {
+            match write_anthropic_service_tier(tier) {
+                Some(word) => {
+                    out.insert("service_tier".to_string(), serde_json::json!(word));
+                }
+                None => tracing::warn!(
+                    service_tier = tier.as_str(),
+                    "dropping service_tier on Anthropic egress: Anthropic offers only auto /                      standard_only capacity (lossy-by-target)"
+                ),
+            }
+        }
+        // The Q57 slots with no Anthropic form (store, safety_identifier, prompt_cache_key,
+        // verbosity, the metadata map, non-text output modalities): dropped, observably.
+        for slot in anthropic_unrepresentable_slots(req) {
+            if slot != "service_tier" {
+                tracing::warn!(
+                    parameter = slot,
+                    "dropping {slot} on Anthropic egress: the Messages API has no such request                      member (lossy-by-target)"
+                );
+            }
         }
         // Carry the end-user identifier into Anthropic's spelling (`metadata.user_id`). Emitted
         // before the `extra` overlay: if the request natively carried an Anthropic `metadata`
@@ -870,13 +920,16 @@ impl ProtocolWriter for AnthropicWriter {
                 stop_reason,
                 stop_sequence,
                 usage,
-                stop_detail: _,
+                stop_detail,
             } => {
                 let mut delta_obj = serde_json::Map::new();
                 if let Some(reason) = stop_reason {
                     delta_obj.insert(
                         "stop_reason".to_string(),
-                        serde_json::json!(write_anthropic_stop_reason(*reason)),
+                        serde_json::json!(write_anthropic_stop_reason_detailed(
+                            *reason,
+                            stop_detail.as_ref()
+                        )),
                     );
                 } else {
                     delta_obj.insert("stop_reason".to_string(), serde_json::Value::Null);
@@ -893,9 +946,13 @@ impl ProtocolWriter for AnthropicWriter {
                         .unwrap_or(serde_json::Value::Null),
                 );
                 // The published `MessageDelta` schema also requires `stop_details` and `container`,
-                // both nullable; busbar carries neither, so they are `null` (the shape a real
-                // `message_delta` has whenever no refusal detail / code-execution container applies).
-                delta_obj.insert("stop_details".to_string(), serde_json::Value::Null);
+                // both nullable. `stop_details` is the refusal object when the IR carries a refusal
+                // detail (IR-02), else `null`; busbar carries no code-execution container, so
+                // `container` is `null`.
+                delta_obj.insert(
+                    "stop_details".to_string(),
+                    write_anthropic_stop_details(*stop_reason, stop_detail.as_ref()),
+                );
                 delta_obj.insert("container".to_string(), serde_json::Value::Null);
                 // `usage`: every `MessageDeltaUsage` member the spec requires, plus the 5m/1h tier
                 // split when the source reported it — it rides the streamed `message_delta.usage`
@@ -1040,7 +1097,12 @@ impl ProtocolWriter for AnthropicWriter {
         obj.insert(
             "stop_reason".to_string(),
             resp.stop_reason
-                .map(|reason| serde_json::json!(write_anthropic_stop_reason(reason)))
+                .map(|reason| {
+                    serde_json::json!(write_anthropic_stop_reason_detailed(
+                        reason,
+                        resp.stop_detail.as_ref()
+                    ))
+                })
                 .unwrap_or(serde_json::Value::Null),
         );
 
@@ -1063,9 +1125,12 @@ impl ProtocolWriter for AnthropicWriter {
         }
 
         // stop_details / container: required, nullable members of the published `Message` schema.
-        // busbar carries neither (no refusal detail, no code-execution container), so both are
-        // `null` — the value a real response carries whenever they do not apply.
-        obj.insert("stop_details".to_string(), serde_json::Value::Null);
+        // `stop_details` is the refusal object when the IR carries a refusal detail (IR-02), else
+        // `null`; busbar carries no code-execution container, so `container` is `null`.
+        obj.insert(
+            "stop_details".to_string(),
+            write_anthropic_stop_details(resp.stop_reason, resp.stop_detail.as_ref()),
+        );
         obj.insert("container".to_string(), serde_json::Value::Null);
 
         // usage: every member the published `Usage` schema requires, with the source's values

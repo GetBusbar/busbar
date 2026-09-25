@@ -335,8 +335,8 @@ fn small_budget_maps_to_low_not_minimal_on_openai() {
     );
 }
 
-/// A disabled-form `thinking` param is NOT promoted (stays in extra for same-proto fidelity)
-/// and no foreign target gains an ask from it.
+/// A disabled-form `thinking` param reads as the explicit OFF ask (IR-09, ANT-09) and still rides
+/// extra for same-proto fidelity; no foreign target gains an ENABLE ask from it.
 #[test]
 fn disabled_thinking_stays_in_extra() {
     let body = serde_json::json!({
@@ -345,12 +345,17 @@ fn disabled_thinking_stays_in_extra() {
         "thinking": {"type": "disabled"}
     });
     let ir = AnthropicReader.read_request(&body).expect("parses");
-    assert_eq!(ir.reasoning, None);
+    assert_eq!(ir.reasoning, Some(crate::ir::IrReasoningAsk::Off));
     assert!(ir.extra.contains_key("thinking"));
     let gout = Protocol::gemini().writer().write_request(&{
         let mut c = ir.clone();
         c.extra.clear();
         c
     });
-    assert!(gout["generationConfig"].get("thinkingConfig").is_none());
+    // Gemini's OFF is `thinkingBudget: 0`; anything else there would be an enable ask.
+    let budget = gout.pointer("/generationConfig/thinkingConfig/thinkingBudget");
+    assert!(
+        budget.is_none() || budget == Some(&serde_json::json!(0)),
+        "{gout}"
+    );
 }

@@ -238,11 +238,13 @@ const STOP_PAUSE_TURN: &str = "pause_turn";
 const STOP_REFUSAL: &str = "refusal";
 
 /// `stop_reason` an Anthropic model reports when generation stopped because the CONTEXT WINDOW (not
-/// the caller's `max_tokens`) ran out (Claude 4.5+). The IR has no dedicated variant (IR-16), so the
-/// reader maps it to [`crate::ir::IrStopReason::MaxTokens`] — the same "output was cut off by a
-/// length limit" signal every other dialect names (`length`, `MAX_TOKENS`,
-/// `incomplete/max_output_tokens`) — instead of `Other`, which every writer renders as a NATURAL stop
-/// and so told a foreign client a truncated answer was complete (ANT-11).
+/// the caller's `max_tokens`) ran out (Claude 4.5+). The reader maps it to the coarse
+/// [`crate::ir::IrStopReason::MaxTokens`] — the same "output was cut off by a length limit" signal
+/// every other dialect names (`length`, `MAX_TOKENS`, `incomplete/max_output_tokens`) — instead of
+/// `Other`, which every writer renders as a NATURAL stop and so told a foreign client a truncated
+/// answer was complete; and it sets the IR-16 refinement
+/// [`crate::ir::IrStopDetail::ContextWindowExceeded`] beside it, which this writer (and Bedrock's)
+/// renders back as this exact token (ANT-11).
 const STOP_MODEL_CONTEXT_WINDOW_EXCEEDED: &str = "model_context_window_exceeded";
 
 /// Native structured outputs: `output_config.format.type`. Anthropic's Messages API constrains the
@@ -254,6 +256,10 @@ const OUTPUT_FORMAT_JSON_SCHEMA: &str = "json_schema";
 /// Anthropic `thinking.type` for ADAPTIVE thinking (the model decides how much to think), the only
 /// on-mode Opus 4.7+/5.x, Sonnet 5 and Fable accept — `{type:"enabled",budget_tokens}` 400s there.
 const THINKING_TYPE_ADAPTIVE: &str = "adaptive";
+
+/// Anthropic `thinking.type` that switches reasoning OFF — the IR's [`crate::ir::IrReasoningAsk::Off`]
+/// (IR-09, ANT-09).
+const THINKING_TYPE_DISABLED: &str = "disabled";
 
 /// Anthropic tool `type` for an ordinary client (function) tool. Absent `type` means the same thing.
 /// Any OTHER `type` is an Anthropic-defined SERVER / client-executed tool (`web_search_*`, `bash_*`,
@@ -1008,13 +1014,18 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
                 .get("signature")
                 .and_then(|v| v.as_str().map(String::from));
             let cache_control = read_cache_control(obj.get("cache_control"))?;
+            // IR-18: a signature read off the Anthropic wire is Anthropic's, so a foreign writer
+            // never sends it as its own reasoning blob.
+            let signature_origin = signature
+                .as_ref()
+                .map(|_| crate::ir::IrSignatureOrigin::Anthropic);
             Ok(crate::ir::IrBlock::Thinking {
                 text,
                 signature,
                 redacted: false,
                 cache_control,
                 kind: None,
-                signature_origin: None,
+                signature_origin,
             })
         }
         STOP_TOOL_USE => {
@@ -1184,17 +1195,18 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
             };
             let cache_control = read_cache_control(obj.get("cache_control"))?;
             // `document.context` (a free-text hint) and `document.citations` (an `{enabled}` toggle)
-            // have no neutral/cross-protocol slot — `IrBlock::Media` carries neither. They ARE kept
-            // 100% lossless same-protocol: `stash_unmodeled_blocks` parks the raw document verbatim
-            // when either is present, and `write_message` splices it back on an Anthropic→Anthropic
-            // hop. On a CROSS-protocol egress (extra cleared at the seam) only the Media projection
-            // remains, so warn that these two are dropped there rather than losing them silently.
-            if obj.get("context").is_some() || obj.get("citations").is_some() {
-                tracing::warn!(
-                    "anthropic `document.context`/`document.citations` have no cross-protocol slot: \
-                     carried byte-exact on a same-protocol hop, dropped on a foreign egress"
-                );
-            }
+            // ride the IR-12 `Media.context` / `Media.citations` slots, so they cross to Bedrock
+            // (the other dialect with the same two members). Same-protocol they are still kept
+            // byte-exact: `stash_unmodeled_blocks` parks the raw document verbatim when either is
+            // present, and `write_message` splices it back on an Anthropic→Anthropic hop.
+            let doc_citations = obj
+                .get("citations")
+                .and_then(|c| c.get("enabled"))
+                .and_then(|v| v.as_bool());
+            let doc_context = obj
+                .get("context")
+                .and_then(|v| v.as_str())
+                .map(String::from);
             let name = obj
                 .get("title")
                 .and_then(|v| v.as_str())
@@ -1253,8 +1265,8 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
                 source: ir_source,
                 name,
                 cache_control,
-                citations: None,
-                context: None,
+                citations: doc_citations,
+                context: doc_context,
             })
         }
         // A native `search_result` block — the RAG grounding payload a caller supplies so the model
@@ -1482,6 +1494,215 @@ fn read_tool(tool_val: &serde_json::Value) -> Result<crate::ir::IrTool, IrError>
     })
 }
 
+/// Versioned `type` prefixes of the Anthropic server tools whose KIND the IR models (IR-11). The
+/// version suffix names Anthropic's own schema revision and is not carried; the writer picks one.
+const HOSTED_TYPE_PREFIX_WEB_SEARCH: &str = "web_search_";
+const HOSTED_TYPE_PREFIX_WEB_FETCH: &str = "web_fetch_";
+const HOSTED_TYPE_PREFIX_CODE_EXECUTION: &str = "code_execution_";
+
+/// The server-tool versions this writer emits for a hosted tool that crossed the seam (IR-11). The
+/// BASIC variants, not the newest: they are accepted by every Claude model that has the tool,
+/// including the older generations and the Vertex / Foundry-hosted surfaces, which do not offer the
+/// `_20260209` dynamic-filtering variants — the lane's model is not known here, and the newest
+/// variant would 400 there. `code_execution_20250825` is the version every current model lists.
+const HOSTED_TOOL_WEB_SEARCH: &str = "web_search_20250305";
+const HOSTED_TOOL_WEB_FETCH: &str = "web_fetch_20250910";
+const HOSTED_TOOL_CODE_EXECUTION: &str = "code_execution_20250825";
+
+/// An Anthropic server tool of a KIND the IR models → [`crate::ir::IrHostedTool`] (IR-11, ANT-13).
+/// `None` for a function tool or any other Anthropic-defined tool (`bash_*`, `text_editor_*`,
+/// `mcp_toolset`, …), which `read_tool` keeps as a raw same-protocol-only hosted `IrTool`.
+fn read_hosted_tool(tool_val: &serde_json::Value) -> Option<crate::ir::IrHostedTool> {
+    let obj = tool_val.as_object()?;
+    let ty = obj.get("type")?.as_str()?;
+    let max_uses = || {
+        obj.get("max_uses")
+            .and_then(|v| v.as_u64())
+            .and_then(|v| u32::try_from(v).ok())
+    };
+    let domains = |k: &str| -> Vec<String> {
+        obj.get(k)
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|d| d.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    if ty.starts_with(HOSTED_TYPE_PREFIX_WEB_SEARCH) {
+        let user_location = obj
+            .get("user_location")
+            .and_then(|v| v.as_object())
+            .map(|l| {
+                let text = |k: &str| l.get(k).and_then(|v| v.as_str()).map(String::from);
+                crate::ir::IrUserLocation {
+                    city: text("city"),
+                    region: text("region"),
+                    country: text("country"),
+                    timezone: text("timezone"),
+                }
+            });
+        Some(crate::ir::IrHostedTool::WebSearch(crate::ir::IrWebSearch {
+            max_uses: max_uses(),
+            allowed_domains: domains("allowed_domains"),
+            blocked_domains: domains("blocked_domains"),
+            user_location,
+            search_context_size: None,
+        }))
+    } else if ty.starts_with(HOSTED_TYPE_PREFIX_WEB_FETCH) {
+        Some(crate::ir::IrHostedTool::WebFetch(crate::ir::IrWebFetch {
+            max_uses: max_uses(),
+            allowed_domains: domains("allowed_domains"),
+            blocked_domains: domains("blocked_domains"),
+        }))
+    } else if ty.starts_with(HOSTED_TYPE_PREFIX_CODE_EXECUTION) {
+        Some(crate::ir::IrHostedTool::CodeExecution)
+    } else {
+        None
+    }
+}
+
+/// [`crate::ir::IrHostedTool`] → the Anthropic server-tool definition (IR-11). Anthropic accepts
+/// `allowed_domains` OR `blocked_domains`, never both: a foreign source that set both keeps the
+/// allow-list (the narrower constraint) and the block-list is dropped with a warn. A web-search
+/// `search_context_size` has no Anthropic member and is dropped with a warn; the tool is kept.
+fn write_hosted_tool(tool: &crate::ir::IrHostedTool) -> serde_json::Value {
+    fn put_limits(
+        obj: &mut serde_json::Map<String, serde_json::Value>,
+        max_uses: Option<u32>,
+        allowed: &[String],
+        blocked: &[String],
+    ) {
+        if let Some(n) = max_uses {
+            obj.insert("max_uses".to_string(), serde_json::json!(n));
+        }
+        if !allowed.is_empty() {
+            obj.insert("allowed_domains".to_string(), serde_json::json!(allowed));
+            if !blocked.is_empty() {
+                tracing::warn!(
+                    "dropping hosted-tool blocked_domains on Anthropic egress: Anthropic accepts \
+                     allowed_domains or blocked_domains, not both; the allow-list is kept"
+                );
+            }
+        } else if !blocked.is_empty() {
+            obj.insert("blocked_domains".to_string(), serde_json::json!(blocked));
+        }
+    }
+    let mut obj = serde_json::Map::new();
+    match tool {
+        crate::ir::IrHostedTool::WebSearch(ws) => {
+            obj.insert(
+                "type".to_string(),
+                serde_json::json!(HOSTED_TOOL_WEB_SEARCH),
+            );
+            obj.insert("name".to_string(), serde_json::json!("web_search"));
+            put_limits(
+                &mut obj,
+                ws.max_uses,
+                &ws.allowed_domains,
+                &ws.blocked_domains,
+            );
+            if let Some(loc) = &ws.user_location {
+                let mut l = serde_json::Map::new();
+                l.insert("type".to_string(), serde_json::json!("approximate"));
+                for (k, v) in [
+                    ("city", &loc.city),
+                    ("region", &loc.region),
+                    ("country", &loc.country),
+                    ("timezone", &loc.timezone),
+                ] {
+                    if let Some(v) = v {
+                        l.insert(k.to_string(), serde_json::json!(v));
+                    }
+                }
+                obj.insert("user_location".to_string(), serde_json::Value::Object(l));
+            }
+            if ws.search_context_size.is_some() {
+                tracing::warn!(
+                    "dropping web search search_context_size on Anthropic egress: the Anthropic web \
+                     search tool has no such member; the tool is kept"
+                );
+            }
+        }
+        crate::ir::IrHostedTool::WebFetch(wf) => {
+            obj.insert("type".to_string(), serde_json::json!(HOSTED_TOOL_WEB_FETCH));
+            obj.insert("name".to_string(), serde_json::json!("web_fetch"));
+            put_limits(
+                &mut obj,
+                wf.max_uses,
+                &wf.allowed_domains,
+                &wf.blocked_domains,
+            );
+        }
+        crate::ir::IrHostedTool::CodeExecution => {
+            obj.insert(
+                "type".to_string(),
+                serde_json::json!(HOSTED_TOOL_CODE_EXECUTION),
+            );
+            obj.insert("name".to_string(), serde_json::json!("code_execution"));
+        }
+    }
+    serde_json::Value::Object(obj)
+}
+
+/// Anthropic request `service_tier` → IR (IR-04): `auto` → Auto, `standard_only` → Default.
+fn read_anthropic_service_tier(word: &str) -> Option<crate::ir::IrServiceTier> {
+    match word {
+        "auto" => Some(crate::ir::IrServiceTier::Auto),
+        "standard_only" => Some(crate::ir::IrServiceTier::Default),
+        _ => None,
+    }
+}
+
+/// IR service tier → Anthropic request `service_tier` (IR-04): Auto / Priority → `auto` (use
+/// Priority capacity when the org has it), Default → `standard_only`. Flex / Scale have no
+/// Anthropic form: `None` (dropped with a warn, reported by `dropped_egress_controls`).
+fn write_anthropic_service_tier(tier: crate::ir::IrServiceTier) -> Option<&'static str> {
+    match tier {
+        crate::ir::IrServiceTier::Auto | crate::ir::IrServiceTier::Priority => Some("auto"),
+        crate::ir::IrServiceTier::Default => Some("standard_only"),
+        crate::ir::IrServiceTier::Flex | crate::ir::IrServiceTier::Scale => None,
+    }
+}
+
+/// The Q57 request slots the Anthropic Messages API has no form for (ir-slots-landed.md "N" for
+/// Anthropic): each one a request carries is dropped by `write_request` with a warn and reported
+/// from `dropped_egress_controls`. `metadata` is the free-form map (Anthropic's `metadata` holds
+/// only `user_id`, which carries as `user`); output modalities other than text have no form.
+fn anthropic_unrepresentable_slots(req: &crate::ir::IrRequest) -> Vec<&'static str> {
+    let mut dropped = Vec::new();
+    if req.metadata.is_some() {
+        dropped.push("metadata");
+    }
+    if req
+        .service_tier
+        .is_some_and(|t| write_anthropic_service_tier(t).is_none())
+    {
+        dropped.push("service_tier");
+    }
+    if req.store.is_some() {
+        dropped.push("store");
+    }
+    if req.safety_identifier.is_some() {
+        dropped.push("safety_identifier");
+    }
+    if req.prompt_cache_key.is_some() {
+        dropped.push("prompt_cache_key");
+    }
+    if req.verbosity.is_some() {
+        dropped.push("verbosity");
+    }
+    if req
+        .output_modalities
+        .as_ref()
+        .is_some_and(|m| m.iter().any(|x| *x != crate::ir::IrModality::Text))
+    {
+        dropped.push("output_modalities");
+    }
+    dropped
+}
+
 /// Parse Anthropic's `cache_control` object (`{"type":"ephemeral"}`) into the IR's `CacheControl`.
 ///
 /// Shared by every site that can carry an Anthropic cache breakpoint — text/system blocks, tool
@@ -1585,6 +1806,72 @@ fn write_anthropic_stop_reason(reason: crate::ir::IrStopReason) -> &'static str 
         S::PauseTurn => STOP_PAUSE_TURN,
         S::Refusal | S::Safety => STOP_REFUSAL,
         S::Error | S::Other => STOP_END_TURN,
+    }
+}
+
+/// The IR-16 / IR-02 refinement of an Anthropic stop (`ir-slots-landed.md`): the raw
+/// `model_context_window_exceeded` token becomes [`crate::ir::IrStopDetail::ContextWindowExceeded`]
+/// beside the coarse `MaxTokens` (ANT-11), and a `refusal` stop's
+/// `stop_details:{type:"refusal", category, explanation}` becomes
+/// [`crate::ir::IrStopDetail::Refusal`] beside the coarse `Refusal`. Shared by the buffered and the
+/// stream reader so the two paths cannot disagree.
+fn read_anthropic_stop_detail(
+    stop_reason: Option<&str>,
+    stop_details: Option<&serde_json::Value>,
+) -> Option<crate::ir::IrStopDetail> {
+    match stop_reason? {
+        STOP_MODEL_CONTEXT_WINDOW_EXCEEDED => Some(crate::ir::IrStopDetail::ContextWindowExceeded),
+        STOP_REFUSAL => {
+            let d = stop_details?.as_object()?;
+            if d.get("type").and_then(|t| t.as_str()) != Some(STOP_REFUSAL) {
+                return None;
+            }
+            let text = |k: &str| d.get(k).and_then(|v| v.as_str()).map(String::from);
+            Some(crate::ir::IrStopDetail::Refusal {
+                category: text("category"),
+                explanation: text("explanation"),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The Anthropic `stop_reason` token for a coarse reason plus its IR-16 refinement: a length stop
+/// refined as ContextWindowExceeded is Anthropic's own `model_context_window_exceeded` (ANT-11);
+/// everything else is [`write_anthropic_stop_reason`].
+fn write_anthropic_stop_reason_detailed(
+    reason: crate::ir::IrStopReason,
+    detail: Option<&crate::ir::IrStopDetail>,
+) -> &'static str {
+    match (reason, detail) {
+        (
+            crate::ir::IrStopReason::MaxTokens,
+            Some(crate::ir::IrStopDetail::ContextWindowExceeded),
+        ) => STOP_MODEL_CONTEXT_WINDOW_EXCEEDED,
+        _ => write_anthropic_stop_reason(reason),
+    }
+}
+
+/// The Anthropic `stop_details` member (required, nullable) for a stop: the refusal object when the
+/// stop is written as `refusal` and the IR carries a Refusal detail (IR-02 category), else `null`
+/// — Anthropic populates it only on a refusal stop.
+fn write_anthropic_stop_details(
+    reason: Option<crate::ir::IrStopReason>,
+    detail: Option<&crate::ir::IrStopDetail>,
+) -> serde_json::Value {
+    match (reason.map(write_anthropic_stop_reason), detail) {
+        (
+            Some(STOP_REFUSAL),
+            Some(crate::ir::IrStopDetail::Refusal {
+                category,
+                explanation,
+            }),
+        ) => serde_json::json!({
+            "type": STOP_REFUSAL,
+            "category": category,
+            "explanation": explanation,
+        }),
+        _ => serde_json::Value::Null,
     }
 }
 
@@ -1963,8 +2250,8 @@ fn write_block(block: &crate::ir::IrBlock) -> serde_json::Value {
             source,
             name,
             cache_control,
-            citations: _,
-            context: _,
+            citations,
+            context,
         } => {
             // Anthropic has exactly ONE attachment block — `document` — and no audio or video block
             // at all. So a Document projects natively (this is the slot an OpenAI `file` part or a
@@ -2005,6 +2292,16 @@ fn write_block(block: &crate::ir::IrBlock) -> serde_json::Value {
                 if let Some(n) = name {
                     obj.insert("title".to_string(), serde_json::json!(n));
                 }
+                // IR-12: the document's citation toggle and context hint (Anthropic / Bedrock).
+                if let Some(c) = context {
+                    obj.insert("context".to_string(), serde_json::json!(c));
+                }
+                if let Some(enabled) = citations {
+                    obj.insert(
+                        "citations".to_string(),
+                        serde_json::json!({ "enabled": enabled }),
+                    );
+                }
                 if let Some(cc) = cache_control {
                     obj.insert("cache_control".to_string(), write_cache_control(cc));
                 }
@@ -2033,14 +2330,18 @@ fn anthropic_effort_word(effort: crate::ir::IrReasoningEffort) -> &'static str {
     }
 }
 
-/// Anthropic `output_config.effort` word → IR effort. `xhigh`/`max` sit above the IR's top level
-/// (IR-09 has no slot for them), so they read as `High`, the nearest the IR can carry.
+/// Anthropic `output_config.effort` word → IR effort. `xhigh`/`max` are the IR-09 words above
+/// `High` (ANT-09) — each foreign writer projects them onto its own top (OpenAI `"high"`, the
+/// budget table's top entry); `anthropic_effort_word` writes them back verbatim. Anthropic has no
+/// `minimal`, so that word is not read.
 fn read_anthropic_effort_word(word: &str) -> Option<crate::ir::IrReasoningEffort> {
     use crate::ir::IrReasoningEffort as E;
     match word {
         "low" => Some(E::Low),
         "medium" => Some(E::Medium),
-        "high" | "xhigh" | "max" => Some(E::High),
+        "high" => Some(E::High),
+        "xhigh" => Some(E::XHigh),
+        "max" => Some(E::Max),
         _ => None,
     }
 }
@@ -2224,13 +2525,22 @@ fn write_message(
         .enumerate()
         .filter_map(|(i, block)| {
             if let crate::ir::IrBlock::Thinking {
-                signature: None,
+                signature,
                 redacted: false,
+                signature_origin,
                 ..
             } = block
             {
-                dropped_unsigned_thinking += 1;
-                return None;
+                // IR-18: a signature minted by another vendor (Gemini, OpenAI, a non-Claude Bedrock
+                // model) is not a valid Anthropic signature — Anthropic 400s on it exactly as on a
+                // missing one. Only an Anthropic-origin (or unknown-origin, the pre-slot behaviour)
+                // signature is sent.
+                let foreign =
+                    signature_origin.is_some_and(|o| o != crate::ir::IrSignatureOrigin::Anthropic);
+                if signature.is_none() || foreign {
+                    dropped_unsigned_thinking += 1;
+                    return None;
+                }
             }
             if !attachment_is_sendable(block) {
                 return None;
@@ -2246,8 +2556,8 @@ fn write_message(
     if dropped_unsigned_thinking > 0 {
         tracing::warn!(
             dropped = dropped_unsigned_thinking,
-            "dropped assistant thinking block(s) with no signature from anthropic request egress \
-             (anthropic rejects unsigned thinking blocks with a 400)"
+            "dropped assistant thinking block(s) with no Anthropic signature (none, or another \
+             vendor's, IR-18) from anthropic request egress (anthropic rejects them with a 400)"
         );
     }
     // When no blocks survive (e.g. an all-thinking assistant message whose unsigned thinking blocks
@@ -2605,3 +2915,7 @@ mod usage_float_tests;
 #[cfg(test)]
 #[path = "tests/ir_mapping_q57_tests.rs"]
 mod ir_mapping_q57_tests;
+
+#[cfg(test)]
+#[path = "tests/ir_slot_wiring_tests.rs"]
+mod ir_slot_wiring_tests;
