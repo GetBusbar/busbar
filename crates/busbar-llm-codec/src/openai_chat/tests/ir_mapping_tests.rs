@@ -165,10 +165,11 @@ fn oai10_xhigh_effort_maps_to_high() {
         "reasoning_effort": "xhigh"
     });
     let ir = super::OpenAiReader.read_request(&body).expect("reads");
+    // IR-09 landed: `xhigh` is the IR's own word now (its budget projection is still High's).
     assert_eq!(
         ir.reasoning,
         Some(crate::ir::IrReasoningAsk::Effort(
-            crate::ir::IrReasoningEffort::High
+            crate::ir::IrReasoningEffort::XHigh
         ))
     );
     let same = super::openai_writer().write_request(&ir);

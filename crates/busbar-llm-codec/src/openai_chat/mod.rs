@@ -33,6 +33,7 @@ use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming
 
 pub mod handler;
 mod reader;
+mod slots;
 mod writer;
 
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
@@ -217,23 +218,29 @@ fn read_cache_write_tokens(
 /// OpenAI `service_tier` (the tier that SERVED the request, a top-level response / chunk member) →
 /// the IR's `IrUsageDetail::service_tier`, which speaks the Anthropic vocabulary
 /// (`standard` / `priority` / `batch`, see the field's doc). OpenAI's `default` IS the standard tier
-/// and `priority` is the same word on both wires (OAI-03). `flex` and `scale` name OpenAI-only tiers
-/// the IR vocabulary has no word for, so they stay unmapped rather than inventing one.
+/// and `priority` is the same word on both wires (OAI-03). `flex` and `scale` are OpenAI-family
+/// tiers with no Anthropic word; they are carried in the IR tier vocabulary
+/// ([`crate::ir::IrServiceTier::as_str`]), which the Responses writer also speaks, so a flex/scale
+/// turn keeps its tier across the two OpenAI dialects.
 fn read_openai_service_tier(v: Option<&serde_json::Value>) -> Option<String> {
     match v?.as_str()? {
         "default" => Some("standard".to_string()),
         "priority" => Some("priority".to_string()),
+        "flex" => Some(crate::ir::IrServiceTier::Flex.as_str().to_string()),
+        "scale" => Some(crate::ir::IrServiceTier::Scale.as_str().to_string()),
         _ => None,
     }
 }
 
 /// The inverse of [`read_openai_service_tier`]: the IR tier word → OpenAI's `service_tier` value,
 /// `None` when OpenAI has no response value for it (`batch` is a separate OpenAI API, not a tier a
-/// chat completion reports).
+/// chat completion reports). The OpenAI-family words are accepted as-is.
 fn write_openai_service_tier(tier: Option<&str>) -> Option<&'static str> {
     match tier? {
-        "standard" => Some("default"),
+        "standard" | "default" => Some("default"),
         "priority" => Some("priority"),
+        "flex" => Some("flex"),
+        "scale" => Some("scale"),
         _ => None,
     }
 }
@@ -646,6 +653,9 @@ fn modeled_request_keys() -> &'static std::collections::HashSet<&'static str> {
             "reasoning_effort",
         ]
         .into_iter()
+        // The Q57 typed request slots (`slots.rs`): metadata, service_tier, store,
+        // safety_identifier, prompt_cache_key, verbosity, modalities, web_search_options.
+        .chain(slots::SLOT_KEYS)
         .collect()
     })
 }
@@ -746,9 +756,10 @@ fn media_part_from_ir(
             }
             Some(serde_json::json!({ "type": "file", "file": serde_json::Value::Object(file) }))
         }
-        // This protocol's OWN uploads handle: re-emit the native `file_id` form verbatim.
-        (K::Document, S::Vendor { vendor, value }) if *vendor == VENDOR_NAME => {
-            let id = value.get("file_id").and_then(|i| i.as_str())?;
+        // An OpenAI Files handle — this dialect's own or a Responses `input_file.file_id`, the same
+        // namespace (SHR-03): re-emit the native `file_id` form.
+        (K::Document, source) if super::openai_annotations::openai_file_id(source).is_some() => {
+            let id = super::openai_annotations::openai_file_id(source)?;
             let mut file = serde_json::Map::new();
             file.insert("file_id".to_string(), serde_json::json!(id));
             if let Some(n) = name {
@@ -824,25 +835,21 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
             // url>`, which the Anthropic writer then emitted as a base64 source whose data was a
             // URL — an invalid Anthropic request. For a `data:<mime>;base64,<payload>` URI we now
             // split out the real MIME type and payload so the cross-protocol image is valid.
-            // `image_url.detail` (`low`/`high`/`auto`) is a cost/latency knob ONE
-            // vendor models — `IrBlock::Image` has no field for it (owner decision: an IR field is
-            // added only when at least TWO protocols model a knob; `detail` is OpenAI-family-only),
-            // and it is nested inside `"messages"`, a MODELED key, so it cannot ride `extra` either
-            // the way an unmodeled top-level field can. Warn so the loss is diagnosable rather than
-            // silent, even OpenAI->OpenAI same-lane.
-            if let Some(detail) = image_obj.get("detail").and_then(|v| v.as_str()) {
-                if detail != "auto" {
-                    tracing::warn!(
-                        detail,
-                        "dropping image_url.detail: no cross-protocol carrier exists for this \
-                         cost/latency hint (not even on a same-protocol OpenAI round-trip)"
-                    );
-                }
+            // `image_url.detail` (`low`/`high`/`auto`) is the image-fidelity ask the IR carries
+            // (IR-08; Responses and Cohere use the same words). An unknown word is dropped with a
+            // warn rather than coerced onto a fidelity the caller did not ask for.
+            let detail = image_obj.get("detail").and_then(|v| v.as_str());
+            let parsed = detail.and_then(crate::ir::IrImageDetail::parse);
+            if let (Some(word), None) = (detail, parsed) {
+                tracing::warn!(
+                    detail = word,
+                    "dropping an unknown image_url.detail word: the IR carries auto/low/high only"
+                );
             }
             Ok(crate::ir::IrBlock::Image {
                 source: super::ir_encode::parse_image_url(url),
                 cache_control: None,
-                detail: None,
+                detail: parsed,
             })
         }
         // An audio ATTACHMENT the caller sent for the model to listen to:
@@ -949,8 +956,8 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
         }
         // OpenAI gpt-4o-and-later responses carry `refusal` content parts; a client replaying its
         // OpenAI conversation history through busbar will include them. Map a refusal to a Text block
-        // carrying the refusal string so the turn survives translation rather than being rejected with
-        // a 400 (the prior `_ => Err` behavior turned legitimate replayed history into a hard error).
+        // carrying the refusal string, flagged as a refusal (IR-02), so the turn survives translation
+        // rather than being rejected with a 400, and a dialect with a refusal part keeps it one.
         "refusal" => {
             let text = obj
                 .get("refusal")
@@ -961,7 +968,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
                 text,
                 cache_control: None,
                 citations: Vec::new(),
-                refusal: false,
+                refusal: true,
             })
         }
         // Forward-compatibility: an unknown/future content-part type (one OpenAI adds after this
@@ -1427,6 +1434,10 @@ pub struct OpenAiWriter {
     /// stream is single-threaded at any instant so contention is nil, and a poisoned lock degrades
     /// to minting fresh rather than panicking on the request path.
     chunk_id: std::sync::Mutex<Option<String>>,
+    /// The IR indices of THIS STREAM'S text blocks that opened as a refusal
+    /// (`BlockStart{refusal: true}`, IR-02). Their text deltas are written as `delta.refusal`, not
+    /// `delta.content` — the wire has no block frame to carry the flag, so the writer remembers it.
+    refusal_blocks: std::sync::Mutex<std::collections::BTreeSet<usize>>,
 }
 
 /// Value-namespace constructor for [`OpenAiWriter`], mirroring the identically-shaped consts on the
@@ -1444,6 +1455,7 @@ pub struct OpenAiWriter {
 #[allow(clippy::declare_interior_mutable_const)]
 pub const OpenAiWriter: OpenAiWriter = OpenAiWriter {
     chunk_id: std::sync::Mutex::new(None),
+    refusal_blocks: std::sync::Mutex::new(std::collections::BTreeSet::new()),
 };
 
 /// A FRESH writer as a VALUE, for the one-shot `write_request` / `write_response` calls the test
@@ -1466,6 +1478,12 @@ impl Clone for OpenAiWriter {
             chunk_id: std::sync::Mutex::new(
                 self.chunk_id.lock().map(|id| id.clone()).unwrap_or(None),
             ),
+            refusal_blocks: std::sync::Mutex::new(
+                self.refusal_blocks
+                    .lock()
+                    .map(|s| s.clone())
+                    .unwrap_or_default(),
+            ),
         }
     }
 }
@@ -1480,6 +1498,21 @@ impl OpenAiWriter {
             Ok(mut slot) => slot.get_or_insert_with(mint).clone(),
             Err(_) => mint(),
         }
+    }
+
+    /// Remember that the text block at `index` is a refusal (IR-02).
+    fn mark_refusal_block(&self, index: usize) {
+        if let Ok(mut set) = self.refusal_blocks.lock() {
+            set.insert(index);
+        }
+    }
+
+    /// Is the text block at `index` a refusal? A poisoned lock reads as "no" (ordinary content).
+    fn is_refusal_block(&self, index: usize) -> bool {
+        self.refusal_blocks
+            .lock()
+            .map(|set| set.contains(&index))
+            .unwrap_or(false)
     }
 }
 
@@ -1594,3 +1627,7 @@ mod float_usage_tests;
 #[cfg(test)]
 #[path = "tests/ir_mapping_tests.rs"]
 mod ir_mapping_tests;
+
+#[cfg(test)]
+#[path = "tests/ir_slot_wiring_tests.rs"]
+mod ir_slot_wiring_tests;

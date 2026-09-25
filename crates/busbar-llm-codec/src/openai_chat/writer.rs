@@ -23,6 +23,12 @@ impl ProtocolWriter for OpenAiWriter {
         self.write_request_for_lane(req, "", &LaneCaps::default())
     }
 
+    /// A hosted tool of a kind Chat has no built-in for (code execution, web fetch) is dropped by
+    /// the writer (IR-11); the seam records each as a dropped control.
+    fn dropped_egress_controls(&self, req: &crate::ir::IrRequest) -> Vec<&'static str> {
+        super::slots::dropped_hosted_kinds(req)
+    }
+
     fn write_request_for_lane(
         &self,
         req: &crate::ir::IrRequest,
@@ -38,6 +44,11 @@ impl ProtocolWriter for OpenAiWriter {
         // text-less variants (ToolUse / ToolResult / Image) have no OpenAI system representation and
         // are projected to empty text — a documented lossy projection, not a silent drop. The match
         // is exhaustive (no `_ =>` catch-all) so a future IrBlock variant forces a compile error.
+        // IR-14: the folded system turn keeps the role the caller wrote it in (`developer` from a
+        // Chat / Responses developer message); absent, it is `system` as before.
+        let system_role = req
+            .system_role
+            .map_or("system", crate::ir::IrSystemRole::as_str);
         for block in &req.system {
             let text: &str = match block {
                 crate::ir::IrBlock::Text { text, .. } => text,
@@ -49,7 +60,7 @@ impl ProtocolWriter for OpenAiWriter {
                 | crate::ir::IrBlock::Json(_) => "",
             };
             messages_array.push(serde_json::json!({
-                "role": "system",
+                "role": system_role,
                 "content": text
             }));
         }
@@ -87,19 +98,36 @@ impl ProtocolWriter for OpenAiWriter {
 
                 for block in &msg.content {
                     match block {
+                        // IR-02: a refusal in replayed assistant history is Chat's `refusal` part
+                        // (assistant content only; any other role keeps it as text).
+                        crate::ir::IrBlock::Text {
+                            text,
+                            refusal: true,
+                            ..
+                        } if msg.role == crate::ir::IrRole::Assistant => {
+                            content_arr
+                                .push(serde_json::json!({ "type": "refusal", "refusal": text }));
+                        }
                         crate::ir::IrBlock::Text { text, .. } => {
                             content_arr.push(serde_json::json!({ "type": "text", "text": text }));
                         }
-                        crate::ir::IrBlock::Image { source, .. } => {
+                        crate::ir::IrBlock::Image { source, detail, .. } => {
                             // A URL is emitted verbatim, a base64 image re-wrapped as a data URI. A
                             // Responses `file_id` / Bedrock `s3Location` reference has no `image_url`
                             // projection (image_url_from_ir returns None) — SKIP it with a warn rather
                             // than corrupt the block.
                             match super::super::ir_encode::image_url_from_ir(source) {
-                                Some(url) => content_arr.push(serde_json::json!({
-                                    "type": "image_url",
-                                    "image_url": { "url": url }
-                                })),
+                                Some(url) => {
+                                    let mut image_url = serde_json::json!({ "url": url });
+                                    // IR-08: the image-fidelity ask, when the source stated one.
+                                    if let Some(d) = detail {
+                                        image_url["detail"] = serde_json::json!(d.as_str());
+                                    }
+                                    content_arr.push(serde_json::json!({
+                                        "type": "image_url",
+                                        "image_url": image_url
+                                    }))
+                                }
                                 None => tracing::warn!(
                                     "dropping unresolvable vendor-scoped image reference on OpenAI \
                                      egress: a Responses input_image.file_id or a Bedrock s3Location \
@@ -425,7 +453,17 @@ impl ProtocolWriter for OpenAiWriter {
         }
         // The reasoning carry in chat-completions spelling: `reasoning_effort`. A numeric budget
         // (Anthropic/Gemini source) is bucketized through the effort table.
-        if let Some(ask) = req.reasoning {
+        //
+        // `Off` (IR-09) is matched FIRST: projected through the table it would read as the smallest
+        // ENABLE ask. Chat's `"none"` is accepted only by the newest reasoning models, and no lane
+        // capability states that this lane has one, so the ask is omitted (a lane that is not told
+        // to reason does not). An OpenAI-origin `"none"` still rides `extra` verbatim.
+        if req.reasoning == Some(crate::ir::IrReasoningAsk::Off) {
+            tracing::warn!(
+                "omitting reasoning OFF on OpenAI Chat egress: reasoning_effort \"none\" is not \
+                 accepted by every OpenAI reasoning model and this lane does not declare it"
+            );
+        } else if let Some(ask) = req.reasoning {
             let table = req
                 .reasoning_budgets
                 .unwrap_or(crate::ir::REASONING_BUDGET_DEFAULTS);
@@ -527,9 +565,8 @@ impl ProtocolWriter for OpenAiWriter {
         // tools `prepare_for_egress` stripped (`ir/variant.rs`) — must degrade with a warn, not ship
         // a guaranteed 400.
         // Likewise the legacy `function_call` directive rides `extra` verbatim on an OpenAI-origin IR.
-        if let Some(tc) = req
-            .tool_choice
-            .as_ref()
+        // An allowed-tools subset (IR-10) is written as Chat's `{type:"allowed_tools", ...}` choice.
+        if let Some(v) = super::slots::write_tool_choice(req)
             .filter(|_| !req.extra.contains_key("function_call"))
         {
             if req.tools.is_empty() {
@@ -539,17 +576,15 @@ impl ProtocolWriter for OpenAiWriter {
                      stripped on the cross-protocol seam)"
                 );
             } else {
-                let v = match tc {
-                    crate::ir::IrToolChoice::Auto => serde_json::json!("auto"),
-                    crate::ir::IrToolChoice::None => serde_json::json!("none"),
-                    crate::ir::IrToolChoice::Required => serde_json::json!("required"),
-                    crate::ir::IrToolChoice::Tool { name } => {
-                        serde_json::json!({"type": TOOL_TYPE_FUNCTION, "function": {"name": name}})
-                    }
-                };
                 out.insert("tool_choice".to_string(), v);
             }
         }
+
+        // The Q57 typed request slots (metadata, service_tier, store, safety_identifier,
+        // prompt_cache_key, verbosity, modalities, web_search_options) — see `slots.rs`. Written
+        // before `extra`, which wins on the same dialect (the reader parks there only a raw member
+        // the slot cannot reproduce).
+        out.extend(super::slots::write_slot_members(req));
 
         // Add extra fields
         for (key, value) in &req.extra {
@@ -618,9 +653,15 @@ impl ProtocolWriter for OpenAiWriter {
             IrStreamEvent::BlockStart {
                 index,
                 block,
-                refusal: _,
+                refusal,
             } => match block {
-                crate::ir::IrBlockMeta::Text => None,
+                // A refusal text block (IR-02): its deltas are written as `delta.refusal`.
+                crate::ir::IrBlockMeta::Text => {
+                    if *refusal {
+                        self.mark_refusal_block(*index);
+                    }
+                    None
+                }
                 crate::ir::IrBlockMeta::ToolUse { id, name } => {
                     // Stamp the CANONICAL IR block index here so parallel tool calls keep distinct,
                     // stable keys and each call's BlockStart + BlockDeltas share ONE value. This is
@@ -658,7 +699,11 @@ impl ProtocolWriter for OpenAiWriter {
             },
             IrStreamEvent::BlockDelta { index, delta } => match delta {
                 crate::ir::IrDelta::TextDelta(text) => {
-                    let delta_obj = serde_json::json!({ "content": text });
+                    let delta_obj = if self.is_refusal_block(*index) {
+                        serde_json::json!({ "refusal": text })
+                    } else {
+                        serde_json::json!({ "content": text })
+                    };
                     let chunk_obj = serde_json::json!({
                         "object": OBJ_CHUNK,
                         "choices": [{
@@ -1059,12 +1104,41 @@ impl ProtocolWriter for OpenAiWriter {
         // refusal message: it is written to `refusal` and `content` is null, which is exactly the
         // shape a native OpenAI refusal takes (OAI-12). Every other turn keeps its text in `content`
         // and `refusal: null`.
-        let refused = resp.stop_reason == Some(crate::ir::IrStopReason::Refusal);
-        let joined = (!text_parts.is_empty()).then(|| text_parts.concat());
-        let (content_val, refusal_val) = match joined {
-            Some(text) if refused => (serde_json::Value::Null, serde_json::json!(text)),
-            Some(text) => (serde_json::json!(text), serde_json::Value::Null),
-            None => (serde_json::Value::Null, serde_json::Value::Null),
+        //
+        // EXACT carry (IR-02): when the IR flags which text IS the refusal message (a Chat
+        // `message.refusal`, a Responses `refusal` part), those blocks — and only those — go to
+        // `refusal`, and every other text block stays in `content`. The stop-reason rule above is
+        // the fallback for a source that states only that the turn was refused (Anthropic).
+        let flagged = resp
+            .content
+            .iter()
+            .any(|b| matches!(b, crate::ir::IrBlock::Text { refusal: true, .. }));
+        let (content_val, refusal_val) = if flagged {
+            let part = |want: bool| -> serde_json::Value {
+                let texts: Vec<&str> = resp
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        crate::ir::IrBlock::Text { text, refusal, .. } if *refusal == want => {
+                            Some(text.as_str())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                if texts.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::json!(texts.concat())
+                }
+            };
+            (part(false), part(true))
+        } else {
+            let refused = resp.stop_reason == Some(crate::ir::IrStopReason::Refusal);
+            match (!text_parts.is_empty()).then(|| text_parts.concat()) {
+                Some(text) if refused => (serde_json::Value::Null, serde_json::json!(text)),
+                Some(text) => (serde_json::json!(text), serde_json::Value::Null),
+                None => (serde_json::Value::Null, serde_json::Value::Null),
+            }
         };
         let mut message_obj = serde_json::json!({
             "role": "assistant",

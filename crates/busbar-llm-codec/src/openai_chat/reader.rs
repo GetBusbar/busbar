@@ -115,6 +115,8 @@ impl ProtocolReader for OpenAiReader {
         // Count of `system`/`developer`-role entries folded out of `messages` below — restores the
         // 1.5.5 `message_count` semantics (the raw wire array length) onto `IrFacts::shape()`.
         let mut system_turns_folded: usize = 0;
+        // IR-14: which role the folded system entries were written in — `(saw system, saw developer)`.
+        let mut system_roles_seen = (false, false);
 
         // Extract scalar fields and extra
         let _model = obj.get("model").and_then(|v| v.as_str()).map(String::from);
@@ -241,6 +243,11 @@ impl ProtocolReader for OpenAiReader {
                 // never push a System IrMessage; we accumulate its content into system_blocks.
                 if role == crate::ir::IrRole::System {
                     system_turns_folded += 1;
+                    if role_str == "developer" {
+                        system_roles_seen.1 = true;
+                    } else {
+                        system_roles_seen.0 = true;
+                    }
                     let blocks_before = system_blocks.len();
                     if let Some(content) = content_val {
                         if let Some(text) = content.as_str() {
@@ -433,12 +440,12 @@ impl ProtocolReader for OpenAiReader {
                     }
 
                     // A message-level `refusal` string (an assistant turn OpenAI echoes into replayed
-                    // history) carries the same content as a `refusal` content PART: reason-neutral
-                    // assistant text. Map it to a Text block so it survives a CROSS-protocol hop
-                    // (Anthropic/Gemini/Bedrock have no distinct refusal part — it is plain assistant
-                    // text there), mirroring `read_openai_block`'s `"refusal"` content-part arm and the
-                    // response reader's `message.refusal` handling. A same-protocol re-serialize
-                    // reshapes it into `content` text (value preserved).
+                    // history) carries the same content as a `refusal` content PART. Map it to a Text
+                    // block flagged as a refusal (IR-02) so it survives a CROSS-protocol hop (plain
+                    // assistant text where the target has no refusal part), mirroring
+                    // `read_openai_block`'s `"refusal"` content-part arm and the response reader's
+                    // `message.refusal` handling. A same-protocol re-serialize writes it back as a
+                    // `refusal` content part (value preserved).
                     if let Some(refusal) = msg_val
                         .get("refusal")
                         .and_then(|v| v.as_str())
@@ -448,7 +455,7 @@ impl ProtocolReader for OpenAiReader {
                             text: refusal.to_string(),
                             cache_control: None,
                             citations: Vec::new(),
-                            refusal: false,
+                            refusal: true,
                         });
                     }
 
@@ -618,17 +625,20 @@ impl ProtocolReader for OpenAiReader {
         // The reasoning ASK in chat-completions spelling: a top-level `reasoning_effort` word.
         // Promoted so it carries to Anthropic/Gemini thinking budgets via the effort table.
         let reasoning_effort_raw = obj.get("reasoning_effort").and_then(|v| v.as_str());
-        // `xhigh` (the gpt-5 family's step above `high`) has no IR word yet (IR-09); it is carried
-        // as the highest effort the IR has, `High`, so a cross-protocol lane still thinks at its top
-        // level instead of losing the ask entirely (OAI-10). The raw word still rides `extra` (below)
-        // so an OpenAI-origin re-serialize writes `xhigh` back verbatim. `none` (reasoning OFF) has
-        // no IR slot and stays unmapped until IR-09 lands.
-        let reasoning = reasoning_effort_raw
-            .and_then(|raw| {
-                crate::ir::IrReasoningEffort::parse(raw)
-                    .or_else(|| (raw == "xhigh").then_some(crate::ir::IrReasoningEffort::High))
-            })
-            .map(crate::ir::IrReasoningAsk::Effort);
+        // IR-09 (OAI-10): `xhigh` (the gpt-5 family's step above `high`) is the IR's `XHigh`, and
+        // `none` is reasoning switched OFF (`IrReasoningAsk::Off` — not "the caller said nothing"),
+        // so a cross-protocol lane gets the top effort / thinking disabled instead of losing the ask.
+        // (`max` is not a Chat word and stays unmapped.) The raw word still rides `extra` (below) so
+        // an OpenAI-origin re-serialize writes it back verbatim.
+        let reasoning = reasoning_effort_raw.and_then(|raw| match raw {
+            "none" => Some(crate::ir::IrReasoningAsk::Off),
+            "xhigh" => Some(crate::ir::IrReasoningAsk::Effort(
+                crate::ir::IrReasoningEffort::XHigh,
+            )),
+            other => {
+                crate::ir::IrReasoningEffort::parse(other).map(crate::ir::IrReasoningAsk::Effort)
+            }
+        });
         // `reasoning_effort` is a MODELED key (in `modeled_request_keys()` below), so it is
         // excluded from the generic `extra` sweep — an unrecognised value (e.g. a `gpt-5`-family
         // spelling this build's `IrReasoningEffort::parse` doesn't know, like "none"/"xhigh")
@@ -637,13 +647,14 @@ impl ProtocolReader for OpenAiReader {
         // re-inserting here — the reader's own escape hatch — is the only implementable rescue.
         if let Some(raw) = reasoning_effort_raw {
             if crate::ir::IrReasoningEffort::parse(raw).is_none() {
-                tracing::warn!(
-                    reasoning_effort = raw,
-                    carried_as_high = reasoning.is_some(),
-                    "reasoning_effort value has no exact IR word; preserving it verbatim in extra so \
-                     a same-protocol OpenAI egress still carries it (a cross-protocol hop carries \
-                     `xhigh` as the IR's highest effort and any other unknown word as no ask)"
-                );
+                if reasoning.is_none() {
+                    tracing::warn!(
+                        reasoning_effort = raw,
+                        "reasoning_effort value has no IR word; preserving it verbatim in extra so \
+                         a same-protocol OpenAI egress still carries it (a cross-protocol hop \
+                         carries no ask)"
+                    );
+                }
                 extra.insert(
                     "reasoning_effort".to_string(),
                     serde_json::Value::String(raw.to_string()),
@@ -659,7 +670,7 @@ impl ProtocolReader for OpenAiReader {
             .and_then(|v| v.as_u64())
             .and_then(|v| u32::try_from(v).ok());
 
-        Ok(crate::ir::IrRequest {
+        let mut ir = crate::ir::IrRequest {
             reasoning,
             reasoning_budgets: None,
             logprobs,
@@ -691,9 +702,20 @@ impl ProtocolReader for OpenAiReader {
             verbosity: None,
             allowed_tools: None,
             hosted_tools: Vec::new(),
-            system_role: None,
+            // IR-14: `developer` only when EVERY folded entry was one, `system` only when every one
+            // was; mixed (or none) says nothing.
+            system_role: match system_roles_seen {
+                (true, false) => Some(crate::ir::IrSystemRole::System),
+                (false, true) => Some(crate::ir::IrSystemRole::Developer),
+                _ => None,
+            },
             output_modalities: None,
-        })
+        };
+        // The Q57 typed request slots (metadata, service_tier, store, safety_identifier,
+        // prompt_cache_key, verbosity, modalities, web_search_options, allowed_tools) — see
+        // `slots.rs`.
+        super::slots::read_request_slots(obj, &mut ir);
+        Ok(ir)
     }
 
     /// OpenAI's flat stream → IR block-structured events. One chat.completion.chunk
@@ -843,10 +865,26 @@ impl ProtocolReader for OpenAiReader {
         if refusal_delta.is_some() {
             state.refusal_seen = true;
         }
-        if let Some(content) = delta
+        let content_delta = delta
             .and_then(|d| d.get("content"))
-            .and_then(|c| c.as_str())
-            .or(refusal_delta)
+            .and_then(|c| c.as_str());
+        // IR-02: the refusal rides its OWN text block, opened with `refusal: true`, so a writer with a
+        // refusal slot (Chat `delta.refusal`, Responses refusal events) carries it exactly. A
+        // non-empty refusal wins over an empty `content` on the same chunk.
+        let (text_delta, is_refusal) = match (content_delta, refusal_delta) {
+            (Some(c), _) if !c.is_empty() => (Some(c), false),
+            (_, Some(r)) => (Some(r), true),
+            (c, None) => (c, false),
+        };
+        // A non-empty delta of the OTHER kind than the open text block closes it, so a refusal and
+        // ordinary content never share one block.
+        if state.text_block_open
+            && text_delta.is_some_and(|t| !t.is_empty())
+            && is_refusal != open_text_is_refusal(state)
+        {
+            close_text_block(state, &mut out);
+        }
+        if let Some(content) = text_delta
             // An EMPTY delta after the text block closed carries nothing and must not open a new,
             // empty text block.
             .filter(|c| !(state.text_block_closed && c.is_empty()))
@@ -873,10 +911,13 @@ impl ProtocolReader for OpenAiReader {
             };
             if !state.text_block_open {
                 state.text_block_open = true;
+                if is_refusal {
+                    state.tool_ir_index.insert(REFUSAL_TEXT_KEY, ti);
+                }
                 out.push(IrStreamEvent::BlockStart {
                     index: ti,
                     block: crate::ir::IrBlockMeta::Text,
-                    refusal: false,
+                    refusal: is_refusal,
                 });
             }
             out.push(IrStreamEvent::BlockDelta {
@@ -1367,11 +1408,13 @@ impl ProtocolReader for OpenAiReader {
         if let Some(text) = message_val.get("refusal").and_then(|v| v.as_str()) {
             if !text.is_empty() {
                 saw_refusal = true;
+                // Flagged as the refusal message (IR-02), so a dialect with a refusal slot carries it
+                // exactly; everywhere else it is plain assistant text.
                 content.push(crate::ir::IrBlock::Text {
                     text: text.to_string(),
                     cache_control: None,
                     citations: Vec::new(),
-                    refusal: false,
+                    refusal: true,
                 });
             }
         }
@@ -1573,6 +1616,17 @@ const LATE_THINKING_KEY: usize = usize::MAX;
 /// The `open_tools` / `tool_ir_index` join key of a streamed legacy `delta.function_call` (OAI-08).
 /// Real tool keys are clamped to `MAX_TOOL_INDEX`, so this can never collide with one.
 const LEGACY_FUNCTION_CALL_KEY: usize = usize::MAX - 1;
+
+/// The `tool_ir_index` key that records the IR index of the text block opened for `delta.refusal`
+/// (IR-02). Never an `open_tools` member, so no tool close replays it.
+const REFUSAL_TEXT_KEY: usize = usize::MAX - 2;
+
+/// Is the open text block the refusal block?
+fn open_text_is_refusal(state: &crate::ir::StreamDecodeState) -> bool {
+    state.text_block_open
+        && state.text_index.is_some()
+        && state.tool_ir_index.get(&REFUSAL_TEXT_KEY).copied() == state.text_index
+}
 
 /// The IR index of the open (or last) Thinking block: the recorded late index, else the reserved 0.
 fn thinking_index(state: &crate::ir::StreamDecodeState) -> usize {

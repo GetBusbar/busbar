@@ -205,10 +205,11 @@ fn openai_carry_request_message_and_content_fields() {
         json!("{\"a\":1}"),
         "messages[].tool_calls arguments"
     );
-    // messages[].refusal — carried as assistant text (cross-protocol-meaningful).
+    // messages[].refusal — carried as a refusal-flagged text block (IR-02) and written back as
+    // the assistant's `refusal` content part.
     assert_eq!(
-        m[2]["content"][0]["text"],
-        json!("I refuse"),
+        m[2]["content"][0],
+        json!({"type": "refusal", "refusal": "I refuse"}),
         "messages[].refusal"
     );
     // messages[].audio and messages[].function_call — parked in the per-message extras sentinel.
@@ -618,12 +619,14 @@ fn openai_response_provider_specific_fields_drop_only_on_cross_proto_reserialize
         .expect("read must tolerate provider-specific fields");
     assert_eq!(ir.usage.output_tokens, 2, "usage still tapped for billing");
 
-    // Cross-protocol re-serialize is the ONLY path that touches these fields, and it drops them
-    // cleanly (no IR carrier) rather than corrupting them.
+    // Cross-protocol re-serialize is the ONLY path that touches these fields. `service_tier` now
+    // has a carrier in the IR tier vocabulary (OAI-03: flex/scale), so it survives; `audio` has
+    // none and drops cleanly rather than being corrupted.
     let out = openai_writer().write_response(&ir);
-    assert!(
-        out.get("service_tier").is_none(),
-        "response/service_tier drops on cross-protocol re-serialize (no IR carrier): {out}"
+    assert_eq!(
+        out.get("service_tier"),
+        Some(&json!("scale")),
+        "response/service_tier is carried (OAI-03): {out}"
     );
     assert!(
         out["choices"][0]["message"].get("audio").is_none(),

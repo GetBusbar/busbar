@@ -1517,8 +1517,8 @@ fn read_request_preserves_sampling_params_in_extra() {
     assert_eq!(out["n"], serde_json::json!(2));
 }
 
-/// `reasoning_effort` values the IR has no word for (`"none"` — a real `gpt-5`-family spelling,
-/// reasoning OFF, which waits on IR-09) must NOT be lost (`"xhigh"` now maps to `High`, OAI-10).
+/// `reasoning_effort` values the IR has no word for (a spelling newer than this build) must NOT be
+/// lost (`"xhigh"` and `"none"` now map to `XHigh` / `Off`, OAI-10 / IR-09).
 /// `reasoning_effort` is a MODELED key, so it is excluded from the generic `extra` sweep; without a
 /// rescue, an unrecognised value is stripped from BOTH the typed field AND `extra` — total loss,
 /// even OpenAI->OpenAI same-lane.
@@ -1530,7 +1530,7 @@ fn unknown_reasoning_effort_survives_in_extra() {
     let body = serde_json::json!({
         "model": "gpt-5",
         "messages": [{ "role": "user", "content": "hi" }],
-        "reasoning_effort": "none"
+        "reasoning_effort": "ultra"
     });
 
     let cap = WarnCapture::default();
@@ -1545,19 +1545,19 @@ fn unknown_reasoning_effort_survives_in_extra() {
     );
     assert_eq!(
         ir.extra.get("reasoning_effort"),
-        Some(&serde_json::json!("none")),
+        Some(&serde_json::json!("ultra")),
         "the raw value must survive in extra so it is not silently lost: {:?}",
         ir.extra
     );
     assert!(
-        cap.contains("none"),
+        cap.contains("ultra"),
         "the unrecognised value must be warned about: {:?}",
         cap.messages()
     );
 
     // And it reaches the upstream body on a same-protocol write via the extra-forwarding loop.
     let out = openai_writer().write_request(&ir);
-    assert_eq!(out["reasoning_effort"], serde_json::json!("none"));
+    assert_eq!(out["reasoning_effort"], serde_json::json!("ultra"));
 }
 
 // --- tool-call-only assistant turn → content: null, not [] ---
@@ -5029,9 +5029,9 @@ fn read_response_surfaces_a_refusal_as_text_and_promotes_the_stop_reason() {
             text: "I can't help with that.".to_string(),
             cache_control: None,
             citations: Vec::new(),
-            refusal: false,
+            refusal: true,
         }],
-        "the refusal text must not be dropped"
+        "the refusal text must not be dropped, and is flagged as the refusal (IR-02)"
     );
     assert_eq!(
         ir.stop_reason,
@@ -5349,55 +5349,59 @@ fn write_response_omits_annotations_when_there_are_no_citations() {
     assert!(v["choices"][0]["message"].get("annotations").is_none());
 }
 
-/// `image_url.detail` is a cost/latency hint no `IrBlock::Image` field can carry
-/// (nested inside `messages`, a modeled key, so it cannot ride `extra` either — and only one
-/// protocol models it, so per owner decision no IR field is added). It must at least be
-/// diagnosable via a warn rather than silently vanishing, even OpenAI->OpenAI same-lane. `"auto"`
-/// is the default and must NOT warn (it is not information loss).
+/// `image_url.detail` is carried in the Image block's typed slot (IR-08) — `high` reaches the IR
+/// (and a same-lane re-serialize) without a drop warn. Only a word the IR does not know (a vendor
+/// adding e.g. `"original"`) is dropped, and that drop warns rather than vanishing.
 #[test]
-fn image_detail_warns_on_drop_except_auto() {
+fn image_detail_is_carried_and_only_an_unknown_word_warns() {
     use busbar_substrate_values::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
-    let body_high = serde_json::json!({
-        "model": "gpt-4o",
-        "messages": [{
-            "role": "user",
-            "content": [{
-                "type": "image_url",
-                "image_url": {"url": "https://example.com/x.png", "detail": "high"}
+    let body = |detail: &str| {
+        serde_json::json!({
+            "model": "gpt-4o",
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "image_url",
+                    "image_url": {"url": "https://example.com/x.png", "detail": detail}
+                }]
             }]
-        }]
-    });
+        })
+    };
     let cap = WarnCapture::default();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
-    let _ir = tracing::subscriber::with_default(subscriber, || {
-        OpenAiReader.read_request(&body_high).expect("parses")
+    let ir = tracing::subscriber::with_default(subscriber, || {
+        OpenAiReader.read_request(&body("high")).expect("parses")
     });
     assert!(
-        cap.contains("detail"),
-        "a non-auto detail must warn on drop: {:?}",
-        cap.messages()
+        matches!(
+            ir.messages[0].content[0],
+            IrBlock::Image {
+                detail: Some(crate::ir::IrImageDetail::High),
+                ..
+            }
+        ),
+        "{:?}",
+        ir.messages[0].content
+    );
+    assert!(!cap.contains("detail"), "{:?}", cap.messages());
+    let out = openai_writer().write_request(&ir);
+    assert_eq!(
+        out["messages"][0]["content"][0]["image_url"]["detail"],
+        serde_json::json!("high")
     );
 
-    let body_auto = serde_json::json!({
-        "model": "gpt-4o",
-        "messages": [{
-            "role": "user",
-            "content": [{
-                "type": "image_url",
-                "image_url": {"url": "https://example.com/x.png", "detail": "auto"}
-            }]
-        }]
-    });
     let cap2 = WarnCapture::default();
     let subscriber2 = tracing_subscriber::registry().with(cap2.clone());
     let _ir2 = tracing::subscriber::with_default(subscriber2, || {
-        OpenAiReader.read_request(&body_auto).expect("parses")
+        OpenAiReader
+            .read_request(&body("original"))
+            .expect("parses")
     });
     assert!(
-        !cap2.contains("detail"),
-        "the default 'auto' detail is not information loss and must not warn: {:?}",
+        cap2.contains("detail"),
+        "an unknown detail word must warn on drop: {:?}",
         cap2.messages()
     );
 }
