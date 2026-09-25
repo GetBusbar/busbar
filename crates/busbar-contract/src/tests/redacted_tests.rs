@@ -30,7 +30,7 @@ fn embedded_in_a_derived_debug_struct_is_redacted() {
     }
     let h = Holder {
         id: "acct-1".into(),
-        token: Redacted::new("bearer-abc-XYZ".to_string()),
+        token: Redacted::new("token-abc-XYZ".to_string()),
     };
     let dbg = format!("{h:?}");
     assert!(
@@ -38,7 +38,7 @@ fn embedded_in_a_derived_debug_struct_is_redacted() {
         "non-secret fields still show: {dbg}"
     );
     assert!(
-        !dbg.contains("bearer-abc-XYZ"),
+        !dbg.contains("token-abc-XYZ"),
         "the secret must not appear in a derived Debug: {dbg}"
     );
     assert!(dbg.contains("[REDACTED]"));

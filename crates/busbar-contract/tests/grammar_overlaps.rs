@@ -195,21 +195,27 @@ fn the_path_family_is_decided_rather_than_assumed() {
 /// exactly as two patterns are, because a one-level prefix IS a pattern.
 #[test]
 fn a_one_level_prefix_and_a_pattern_are_compared_segment_by_segment() {
-    let prefix = Selector::PrefixOneLevel("/a2a");
+    let prefix = Selector::PrefixOneLevel("/mesh");
 
     // Same root, one level down: the prefix's own shape.
-    assert!(prefix.overlaps(&Selector::PathPattern(&[PathSeg::Lit("a2a"), PathSeg::Var])));
+    assert!(prefix.overlaps(&Selector::PathPattern(&[
+        PathSeg::Lit("mesh"),
+        PathSeg::Var
+    ])));
     // A different root cannot be reached from this prefix.
-    assert!(!prefix.overlaps(&Selector::PathPattern(&[PathSeg::Lit("mcp"), PathSeg::Var])));
+    assert!(!prefix.overlaps(&Selector::PathPattern(&[
+        PathSeg::Lit("grid"),
+        PathSeg::Var
+    ])));
     // Right root, wrong depth: a prefix takes exactly one segment, never two.
     assert!(!prefix.overlaps(&Selector::PathPattern(&[
-        PathSeg::Lit("a2a"),
+        PathSeg::Lit("mesh"),
         PathSeg::Var,
         PathSeg::Var,
     ])));
     // A tail swallows whatever is left, so it reaches one level down as well.
     assert!(prefix.overlaps(&Selector::PathPattern(&[
-        PathSeg::Lit("a2a"),
+        PathSeg::Lit("mesh"),
         PathSeg::Tail
     ])));
 }
@@ -232,17 +238,17 @@ fn two_suffixes_collide_only_when_one_ends_the_other() {
 /// however the rest of it is filled in.
 #[test]
 fn a_suffix_against_a_pattern_pins_the_patterns_last_segments() {
-    let a2a_tasks =
-        Selector::PathPattern(&[PathSeg::Lit("a2a"), PathSeg::Lit("tasks"), PathSeg::Var]);
-    // `/a2a/tasks/<id>` has three segments and the last two are `tasks` and one variable: no path
+    let mesh_tasks =
+        Selector::PathPattern(&[PathSeg::Lit("mesh"), PathSeg::Lit("tasks"), PathSeg::Var]);
+    // `/mesh/tasks/<id>` has three segments and the last two are `tasks` and one variable: no path
     // it matches can end `/v1/embeddings`, because that would need the second-from-last segment to
     // be `v1`.
-    assert!(!Selector::PathSuffix("/v1/embeddings").overlaps(&a2a_tasks));
-    assert!(!a2a_tasks.overlaps(&Selector::PathSuffix("/v1/audio/speech")));
+    assert!(!Selector::PathSuffix("/v1/embeddings").overlaps(&mesh_tasks));
+    assert!(!mesh_tasks.overlaps(&Selector::PathSuffix("/v1/audio/speech")));
     // The variable IS the last segment, so a suffix inside one segment still reaches it.
-    assert!(Selector::PathSuffix("-draft").overlaps(&a2a_tasks));
+    assert!(Selector::PathSuffix("-draft").overlaps(&mesh_tasks));
     // And the pinned literals, when they do line up.
-    assert!(Selector::PathSuffix("/tasks/live").overlaps(&a2a_tasks));
+    assert!(Selector::PathSuffix("/tasks/live").overlaps(&mesh_tasks));
 
     // A tail is open-ended: whatever the suffix asks for, the tail can supply.
     let admin = Selector::PathPattern(&[
@@ -273,21 +279,21 @@ fn a_suffix_against_a_pattern_pins_the_patterns_last_segments() {
 /// at all lands inside one segment, and any variable segment can be that one.
 #[test]
 fn a_substring_against_a_pattern_asks_for_consecutive_segments() {
-    let a2a_agents =
-        Selector::PathPattern(&[PathSeg::Lit("a2a"), PathSeg::Lit("agents"), PathSeg::Var]);
+    let mesh_agents =
+        Selector::PathPattern(&[PathSeg::Lit("mesh"), PathSeg::Lit("agents"), PathSeg::Var]);
 
     // `/v1/audio/` needs the whole segments `v1` and `audio` next to each other, with something
     // after them. Nothing this pattern matches has that shape.
-    assert!(!Selector::PathContains("/v1/audio/").overlaps(&a2a_agents));
-    assert!(!Selector::PathContains("/v1/messages").overlaps(&a2a_agents));
+    assert!(!Selector::PathContains("/v1/audio/").overlaps(&mesh_agents));
+    assert!(!Selector::PathContains("/v1/messages").overlaps(&mesh_agents));
     // With no slash it lives inside a segment, and the variable is one.
-    assert!(Selector::PathContains(":predict").overlaps(&a2a_agents));
+    assert!(Selector::PathContains(":predict").overlaps(&mesh_agents));
     // One leading slash asks only that a segment START with the rest, and the variable can.
-    assert!(Selector::PathContains("/converse").overlaps(&a2a_agents));
+    assert!(Selector::PathContains("/converse").overlaps(&mesh_agents));
     // A literal segment that starts with it works too.
-    assert!(Selector::PathContains("/agen").overlaps(&a2a_agents));
+    assert!(Selector::PathContains("/agen").overlaps(&mesh_agents));
     // And one that does not, does not.
-    assert!(!Selector::PathContains("/a2a/agents/x/y").overlaps(&a2a_agents));
+    assert!(!Selector::PathContains("/mesh/agents/x/y").overlaps(&mesh_agents));
 
     // A tail answers anything.
     assert!(
@@ -322,7 +328,7 @@ fn the_header_family_is_decided_rather_than_assumed() {
         ))
     );
     assert!(!Selector::HeaderPrefix("authorization", "AWS4-")
-        .overlaps(&Selector::HeaderExact("authorization", "Bearer xyz")));
+        .overlaps(&Selector::HeaderExact("authorization", "Token xyz")));
 
     // Header names are compared without regard to case, as the wire treats them.
     assert!(
@@ -350,7 +356,7 @@ fn claims_on_different_transports_never_collide() {
     let a = Claim {
         transport: "http",
         selector: Selector::ExactPath("/v1/chat/completions"),
-        scheme: Some("bearer"),
+        scheme: Some("token"),
         scheme_alternatives: &[],
         idempotency: None,
     };
@@ -382,7 +388,7 @@ fn one_ladder_table_writes_both_lists() {
             transport: "http",
             selector,
             scheme: Some("inbound"),
-            scheme_alternatives: &["bearer"],
+            scheme_alternatives: &["token"],
             idempotency: None,
         }
     }
@@ -418,7 +424,7 @@ fn one_ladder_table_writes_both_lists() {
     // The builder is the caller's, so scheme and alternatives are declared once, not per row.
     for claim in FIXTURE_CLAIMS {
         assert_eq!(claim.scheme, Some("inbound"));
-        assert_eq!(claim.scheme_alternatives, &["bearer"]);
+        assert_eq!(claim.scheme_alternatives, &["token"]);
     }
 }
 
@@ -436,7 +442,7 @@ fn a_claim_with_no_scheme_offers_nothing_to_narrow_to() {
         transport: "http",
         selector: Selector::ExactPath("/v1/chat/completions"),
         scheme: Some("inbound"),
-        scheme_alternatives: &["bearer", "api-key"],
+        scheme_alternatives: &["token", "api-key"],
         idempotency: None,
     };
     let open = Claim {
@@ -451,10 +457,10 @@ fn a_claim_with_no_scheme_offers_nothing_to_narrow_to() {
 
     // The check the step runs, written out: narrowing is membership of the declared set.
     let narrows_to = |claim: &Claim, alt: &str| claim.scheme_alternatives.contains(&alt);
-    assert!(narrows_to(&authenticated, "bearer"));
+    assert!(narrows_to(&authenticated, "token"));
     assert!(!narrows_to(&authenticated, "anonymous"));
     // Nothing narrows within an open claim, including the word the planes used to invent.
-    assert!(!narrows_to(&open, "bearer"));
+    assert!(!narrows_to(&open, "token"));
     assert!(!narrows_to(&open, "anonymous"));
 }
 
@@ -523,16 +529,17 @@ fn a_disjoint_answer_is_never_contradicted_by_an_arrival() {
     }
 }
 
-/// Every path-family form, in the spellings the declared claim set actually uses.
+/// Every path-family form, in the shapes the declared claim set actually uses (plane roots
+/// spelled neutrally).
 fn path_fixtures() -> Vec<Selector> {
-    const A2A_TASKS: &[PathSeg] = &[PathSeg::Lit("a2a"), PathSeg::Lit("tasks"), PathSeg::Var];
-    const A2A_PUSH: &[PathSeg] = &[
-        PathSeg::Lit("a2a"),
+    const MESH_TASKS: &[PathSeg] = &[PathSeg::Lit("mesh"), PathSeg::Lit("tasks"), PathSeg::Var];
+    const MESH_PUSH: &[PathSeg] = &[
+        PathSeg::Lit("mesh"),
         PathSeg::Lit("tasks"),
         PathSeg::Var,
         PathSeg::Lit("pushNotificationConfigs"),
     ];
-    const A2A_AGENTS: &[PathSeg] = &[PathSeg::Lit("a2a"), PathSeg::Lit("agents"), PathSeg::Var];
+    const MESH_AGENTS: &[PathSeg] = &[PathSeg::Lit("mesh"), PathSeg::Lit("agents"), PathSeg::Var];
     const ADMIN: &[PathSeg] = &[
         PathSeg::Lit("api"),
         PathSeg::Lit("v1"),
@@ -542,14 +549,14 @@ fn path_fixtures() -> Vec<Selector> {
     const V1_MODELS: &[PathSeg] = &[PathSeg::Lit("v1"), PathSeg::Lit("models"), PathSeg::Tail];
     const MODEL_INVOKE: &[PathSeg] = &[PathSeg::Lit("model"), PathSeg::Var, PathSeg::Lit("invoke")];
     vec![
-        Selector::ExactPath("/mcp"),
-        Selector::ExactPath("/a2a/tasks"),
+        Selector::ExactPath("/grid"),
+        Selector::ExactPath("/mesh/tasks"),
         Selector::ExactPath("/v1/audio/speech"),
-        Selector::PrefixOneLevel("/a2a"),
+        Selector::PrefixOneLevel("/mesh"),
         Selector::PrefixOneLevel("/v1"),
-        Selector::PathPattern(A2A_TASKS),
-        Selector::PathPattern(A2A_PUSH),
-        Selector::PathPattern(A2A_AGENTS),
+        Selector::PathPattern(MESH_TASKS),
+        Selector::PathPattern(MESH_PUSH),
+        Selector::PathPattern(MESH_AGENTS),
         Selector::PathPattern(ADMIN),
         Selector::PathPattern(V1_MODELS),
         Selector::PathPattern(MODEL_INVOKE),
@@ -570,8 +577,8 @@ fn path_fixtures() -> Vec<Selector> {
 /// Every path the fixtures' own vocabulary can spell, to the depth they reach.
 fn arrival_corpus() -> Vec<String> {
     let vocabulary = [
-        "a2a",
-        "mcp",
+        "mesh",
+        "grid",
         "tasks",
         "agents",
         "pushNotificationConfigs",

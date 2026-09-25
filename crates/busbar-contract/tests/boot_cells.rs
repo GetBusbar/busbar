@@ -66,7 +66,7 @@ fn ladder() -> Vec<Rung> {
             what: "a key header of one dialect",
             selector: Selector::HeaderPresent("x-api-key"),
             takes: Selector::HeaderExact("x-api-key", "abc"),
-            leaves: Selector::HeaderExact("authorization", "Bearer abc"),
+            leaves: Selector::HeaderExact("authorization", "Token abc"),
         },
         Rung {
             what: "a key header of another dialect",
@@ -78,7 +78,7 @@ fn ladder() -> Vec<Rung> {
             what: "a signed-request authorization prefix",
             selector: Selector::HeaderPrefix("authorization", "AWS4-HMAC-SHA256"),
             takes: Selector::HeaderExact("authorization", "AWS4-HMAC-SHA256 Credential=…"),
-            leaves: Selector::HeaderExact("authorization", "Bearer abc"),
+            leaves: Selector::HeaderExact("authorization", "Token abc"),
         },
         Rung {
             what: "the completions suffix",
@@ -145,7 +145,7 @@ fn every_rung_is_a_claim_that_a_boot_would_check() {
         let claim = Claim {
             transport: "http",
             selector: rung.selector,
-            scheme: Some("bearer"),
+            scheme: Some("token"),
             scheme_alternatives: &[],
             idempotency: None,
         };

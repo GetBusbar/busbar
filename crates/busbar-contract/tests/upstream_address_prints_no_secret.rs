@@ -21,10 +21,10 @@ const TOKEN: &str = "sk-live-8f2b1c";
 
 fn spawned() -> UpstreamAddress {
     UpstreamAddress::Program {
-        path: "/usr/local/bin/mcp-server",
+        path: "/usr/local/bin/grid-server",
         args: &["--stdio", "--quiet"],
         env: &[
-            ("MCP_API_TOKEN", TOKEN),
+            ("GRID_API_TOKEN", TOKEN),
             ("HOME", "/var/empty"),
             ("EMPTY", ""),
         ],
@@ -46,7 +46,7 @@ fn a_spawned_programs_debug_says_which_names_are_set_and_never_a_value() {
     );
 
     // What a reader is owed instead: the names, and the size of what sits behind each.
-    assert!(rendered.contains("MCP_API_TOKEN"), "{rendered}");
+    assert!(rendered.contains("GRID_API_TOKEN"), "{rendered}");
     assert!(rendered.contains("HOME"), "{rendered}");
     assert!(
         rendered.contains(&format!("<{} bytes>", TOKEN.len())),
@@ -56,7 +56,10 @@ fn a_spawned_programs_debug_says_which_names_are_set_and_never_a_value() {
 
     // And the rest of the arm, which carries nothing secret and is printed plainly.
     assert!(rendered.contains("Program"), "{rendered}");
-    assert!(rendered.contains("/usr/local/bin/mcp-server"), "{rendered}");
+    assert!(
+        rendered.contains("/usr/local/bin/grid-server"),
+        "{rendered}"
+    );
     assert!(rendered.contains("--stdio"), "{rendered}");
 }
 
