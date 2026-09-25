@@ -540,20 +540,27 @@ fn dup_claim_guard_admits_streams_alone_and_refuses_a_streams_collision() {
 }
 
 #[test]
-fn dup_claim_guard_passes_for_the_shipped_empty_registry() {
-    // STAGE 1 INVARIANT: every shipped plane claims `&[]`, so the guard is a no-op over the real set.
+fn dup_claim_guard_passes_for_the_shipped_registry() {
+    // The shipped roster's owned-config claims are disjoint and claim nothing core still owns, so the
+    // guard admits the real set.
     let decls = merged_boot_plane_decls(&[], builtin_plane_decls());
     busbar_kernel::plane::registry::check_owned_config_claims(
         &decls.iter().map(|d| &d.declaration).collect::<Vec<_>>(),
         busbar_kernel::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
     )
-    .expect("stage 1 ships an EMPTY owned-config registry — no plane claims any section, so the guard must pass");
+    .expect("the shipped roster's owned-config claims must pass the dup-claim guard");
+    // And no plane claims ANOTHER plane's declaring section: a section a plane owns beside its own
+    // (its endpoint door, which the config pre-pass lifts off the registry) is no sibling's noun.
     for decl in &decls {
-        assert!(
-            decl.owned_config_sections.is_empty(),
-            "stage 1 is infra-only: plane `{}` must claim NO owned config sections (registry starts empty)",
-            decl.key
-        );
+        for owned in decl.owned_config_sections {
+            assert!(
+                !decls
+                    .iter()
+                    .any(|other| other.key != decl.key && other.config_section == *owned),
+                "plane `{}` claims `{owned}`, which another shipped plane declares as its section",
+                decl.key
+            );
+        }
     }
 }
 

@@ -2614,68 +2614,20 @@ pub fn resolve(
     if let Err(e) = deploy.tools.0.validate_registry() {
         errors.push(e);
     }
-    // A present plane registry section whose owning plane is NOT registered names a registry this
-    // build cannot serve: refuse it (the config deletion-gate leg), naming the SECTION (its
-    // plane-declared grammar key) rather than a hard-coded plane. With the plane registered the decl
-    // is present and this never fires; with it compiled out the `RawPlaneSection` reports
-    // `is_present()` for a section the operator wrote, and there is no decl for it.
-    //
-    // FAIL-CLOSED: this reads the FROZEN STATIC noun source
-    // `busbar_kernel::plane::config::NAMED_MAP_SECTIONS`, NOT the registry-derived
-    // `NamedMapSection::sections()` — the latter goes EMPTY of a plane's section when the plane is
-    // compiled out, which would let a `tools:`/`agents:` block for an absent plane slip through
-    // silently. The mirror's two core sections (`identity-providers`/`export`) are not plane sections,
-    // so `plane_section` answers `None` for them (never present) and they are skipped; only a plane
-    // section that is present with no decl is refused, byte-identical to the former `[Tools, Agents]`
-    // loop.
     // LAW 7 (BUSBAR-1.6.0.md: "Core loads a plugin **iff** its configuration section is present"):
-    // the plane sections this config writes, by the SAME `is_present()` the deletion gate reads — so
-    // "configured" is exactly what a build without the plane would refuse. Carried on `RootCfg`.
+    // the plane sections this config writes, carried on `RootCfg`. A section whose owning plane is
+    // not registered never gets here: the pre-pass lifts only the sections REGISTERED planes declare,
+    // so an undeclared one is refused at parse as an unknown field (Option A, S11b (c) / Q67) and no
+    // carrier can be present without its plane.
     let mut plane_sections = std::collections::BTreeSet::new();
-    for section in busbar_kernel::plane::config::NAMED_MAP_SECTIONS {
-        let present = deploy
-            .plane_section(section)
-            .is_some_and(|cfg| cfg.is_present());
-        if present {
-            plane_sections.insert(section);
-        }
-        if present && crate::plane::registry::plane_decl_for_config_section(section).is_none() {
-            errors.push(format!(
-                "`{section}:` is configured, but this build was compiled without the plane that \
-                 owns it, so busbar cannot serve it. Rebuild with that plane's feature enabled, or \
-                 remove the `{section}:` block."
-            ));
-        }
-    }
-    // THE SINGULAR PLANE SECTIONS. Each of these is one posture (or one model-serving table) per
-    // deployment rather than a registry of named definitions, so neither is a `NamedMapSection` and
-    // neither is in the mirror above — they are checked here, on the same terms: a present block
-    // with no registered owning plane names a section this build cannot serve and is refused at
-    // resolve, byte-identical to a present `tools:`/`agents:` naming a compiled-out plane. With the
-    // owning plane registered the decl is present and this never fires; with it compiled out the
-    // `RawPlaneSection` reports `is_present()` for a section the operator wrote, and there is no
-    // decl for it.
-    //
-    // WRITTEN AS ONE LIST RATHER THAN AS ONE `if` PER SECTION, because the `if` per section is
-    // exactly how this went wrong once: `streams:` had a leg, `decisions:` arrived beside it and
-    // got none, and a `decisions:` block in a build without that plane was accepted in silence —
-    // the same class of no-op the section's own grammar exists to refuse. The list does not make
-    // the next singular section IMPOSSIBLE to omit (it cannot be derived: reading a section's
-    // `is_present()` means naming its `DeployCfg` field, and the fields are concrete), but it is
-    // one obvious place to add it, beside the two already there, rather than a shape to re-copy.
     for (section, present) in [
-        ("streams", deploy.streams.0.is_present()),
-        (DecisionsSection::SECTION, deploy.decisions.0.is_present()),
+        (Some(ToolsSection::SECTION), deploy.tools.0.is_present()),
+        (Some(AgentsSection::SECTION), deploy.agents.0.is_present()),
+        (Some(StreamsSection::SECTION), deploy.streams.0.is_present()),
+        (DecisionsSection::section(), deploy.decisions.0.is_present()),
     ] {
-        if present {
+        if let (Some(section), true) = (section, present) {
             plane_sections.insert(section);
-        }
-        if present && crate::plane::registry::plane_decl_for_config_section(section).is_none() {
-            errors.push(format!(
-                "`{section}:` is configured, but this build was compiled without the plane that \
-                 owns it, so busbar cannot serve it. Rebuild with that plane's feature enabled, or \
-                 remove the `{section}:` block."
-            ));
         }
     }
 
@@ -2727,12 +2679,11 @@ pub fn resolve(
     // The `mcp:` endpoint is LOWERED through the plane seam into its validated resource, type-erased
     // as `Option<Arc<dyn Any>>` — so `RootCfg` names no plane-specific resource type. The plane's
     // `lower_endpoint` hook returns the SAME `Display` string boot produced for that error type,
-    // collected verbatim. With that plane compiled out there is no hook: a PRESENT `mcp:` block
-    // names a plane this build does not carry, so it is refused (the config deletion-gate leg) with
-    // the same wording.
+    // collected verbatim. With that plane compiled out nothing declares the block, so the pre-pass
+    // never lifts it: it is refused at parse as an unknown field (Option A, S11b (c) / Q67).
     let endpoint_block = deploy.endpoint.0.as_ref();
     // The endpoint's owning plane is looked up by its CONFIG SECTION (the `tools:` plane owns the
-    // `mcp:` door), so no plane key is named here. Compiled out ⇒ no decl ⇒ the deletion-gate refusal.
+    // `mcp:` door), so no plane key is named here.
     let endpoint_section = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2];
     let lower = crate::plane::registry::plane_decl_for_config_section(endpoint_section)
         .and_then(|d| d.lower_endpoint);
@@ -2740,21 +2691,9 @@ pub fn resolve(
     if endpoint_block.is_some_and(|ep| ep.is_present()) {
         plane_sections.insert(endpoint_section);
     }
-    let lowered_endpoint = match (endpoint_block, lower) {
-        (None, _) => None,
-        (Some(ep), Some(lower)) => lower(&**ep).map_err(|e| errors.push(e)).ok(),
-        (Some(ep), None) => {
-            if ep.is_present() {
-                errors.push(
-                    "an endpoint block is configured for a plane this build was compiled without, \
-                     so busbar cannot serve it. Rebuild with that plane's feature enabled, or \
-                     remove the block."
-                        .to_string(),
-                );
-            }
-            None
-        }
-    };
+    let lowered_endpoint = endpoint_block
+        .zip(lower)
+        .and_then(|(ep, lower)| lower(&**ep).map_err(|e| errors.push(e)).ok());
 
     // The lowered endpoint resource, if any, keyed by its owning plane's config SECTION — the
     // neutral, section-keyed shape `RootCfg` carries in place of a per-plane field (mirroring

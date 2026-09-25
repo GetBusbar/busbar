@@ -631,17 +631,22 @@ fn norm_type(t: &str) -> (String, bool) {
     (t, false)
 }
 
-/// THE PRE-PASS'S LIFT DECLARATIONS, read from its own source: every key it lifts
-/// (`const LIFTED_*KEYS` string lists) and, per carrier TYPE, the key that type is lifted from
-/// (`impl LiftableSection for T { const KEY … = <literal> | LIFTED_*KEYS[n]; }`).
+/// THE PRE-PASS'S LIFT DECLARATIONS: every key it lifts — the kernel's own (`const LIFTED_*KEYS`
+/// string lists) and every section a plane DECLARES ([`super::declared`]; the kernel spells none,
+/// #49) — and, per carrier TYPE, the key that type is lifted from
+/// (`impl LiftableSection for T { const KEY … = <literal> | LIFTED_*KEYS[n] | Declared::Door; }`).
+/// A carrier that declares no key is matched by its field's own name.
 struct Lift {
     keys: BTreeSet<String>,
     carriers: BTreeMap<String, String>,
 }
 
 impl Lift {
-    fn read(sources: &[(String, Vec<char>)]) -> Result<Lift, String> {
-        let mut keys: BTreeSet<String> = BTreeSet::new();
+    fn read(
+        sources: &[(String, Vec<char>)],
+        declared: &super::declared::Declarations,
+    ) -> Result<Lift, String> {
+        let mut keys: BTreeSet<String> = declared.sections.clone();
         let mut lists: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (_, src) in sources {
             for (name, body) in scan::lift_lists_named(src) {
@@ -656,7 +661,7 @@ impl Lift {
                 // An expression this reader cannot resolve to a literal is left unrecorded: the
                 // carrier then matches by its field's own name, exactly as an undeclared one does,
                 // and a key it failed to carry is still an orphan below — never a silent pass.
-                let Some(key) = resolve_lift_key(&expr, &lists) else {
+                let Some(key) = resolve_lift_key(&expr, &lists, declared, path)? else {
                     continue;
                 };
                 if let Some(prior) = carriers.insert(ty.clone(), key.clone()) {
@@ -679,18 +684,46 @@ impl Lift {
     }
 }
 
-/// `"lit"` → `lit`; `[path::]LIFTED_*KEYS[n]` → the n-th literal of that list; anything else `None`.
-fn resolve_lift_key(expr: &str, lists: &BTreeMap<String, Vec<String>>) -> Option<String> {
+/// `"lit"` → `lit`; `[path::]LIFTED_*KEYS[n]` → the n-th literal of that list; `[path::]Kernel(e)`
+/// → `e` resolved the same way; `[path::]Door` → THE door section the plane declarations declare
+/// (refused when they declare more than one: one carrier type carries one key); anything else
+/// (`ByField`) `None`, so the carrier is matched by its field's own name.
+fn resolve_lift_key(
+    expr: &str,
+    lists: &BTreeMap<String, Vec<String>>,
+    declared: &super::declared::Declarations,
+    path: &str,
+) -> Result<Option<String>, String> {
     let e = expr.trim();
+    // `[path::]Door` — the door section the plane declarations declare.
+    let head = e.split('(').next().unwrap_or(e);
+    if matches!(head.rsplit("::").next().map(str::trim), Some("Door")) {
+        if declared.doors.len() > 1 {
+            return Err(format!(
+                "config-schema: the door carrier in {path} is lifted from `{e}`, and the plane \
+                 declarations declare {} door sections ({:?}). One carrier type carries one key.",
+                declared.doors.len(),
+                declared.doors
+            ));
+        }
+        return Ok(declared.doors.iter().next().cloned());
+    }
+    // `[path::]Kernel(e)` — `e`, resolved the same way.
+    if let Some(inner) = e.strip_suffix(')').and_then(|x| x.split_once("Kernel(")) {
+        return resolve_lift_key(inner.1, lists, declared, path);
+    }
     if let Some(lit) = scan::string_literals(e).into_iter().next() {
         if e.starts_with('"') && e.ends_with('"') {
-            return Some(lit);
+            return Ok(Some(lit));
         }
     }
-    let (head, idx) = e.strip_suffix(']')?.rsplit_once('[')?;
-    let name = head.rsplit("::").next()?.trim();
-    let n: usize = idx.trim().parse().ok()?;
-    lists.get(name)?.get(n).cloned()
+    let lookup = || -> Option<String> {
+        let (head, idx) = e.strip_suffix(']')?.rsplit_once('[')?;
+        let name = head.rsplit("::").next()?.trim();
+        let n: usize = idx.trim().parse().ok()?;
+        lists.get(name)?.get(n).cloned()
+    };
+    Ok(lookup())
 }
 
 fn parse_struct(
@@ -943,8 +976,17 @@ fn collide(
     Ok(())
 }
 
-/// The full fingerprint over an explicit `(path, text)` list.
+/// The full fingerprint over an explicit `(path, text)` list, with no plane declarations (every
+/// lifted key comes from a `LIFTED_*KEYS` list in `files`).
 pub fn extract(files: &[(String, String)]) -> Result<Value, String> {
+    extract_with(files, &super::declared::Declarations::default())
+}
+
+/// [`extract`], with the plane-declared sections the pre-pass lifts ([`super::declared::read`]).
+pub fn extract_with(
+    files: &[(String, String)],
+    declared: &super::declared::Declarations,
+) -> Result<Value, String> {
     let sources: Vec<(String, Vec<char>)> = files
         .iter()
         .map(|(p, t)| {
@@ -959,7 +1001,7 @@ pub fn extract(files: &[(String, String)]) -> Result<Value, String> {
     // The pre-pass's lift list, read from its own declarations and BEFORE any declaration is
     // parsed: it decides which skipped fields are still grammar, and a list declared in one file
     // governs a carrier declared in another.
-    let lifted = Lift::read(&sources)?;
+    let lifted = Lift::read(&sources, declared)?;
     let mut carried: BTreeSet<String> = BTreeSet::new();
 
     let mut decls: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
@@ -1256,5 +1298,8 @@ pub fn render(cx: &Ctx) -> Result<String, String> {
         let text = cx.read(&path)?;
         read.push((path, text));
     }
-    Ok(canonical(&extract(&read)?))
+    Ok(canonical(&extract_with(
+        &read,
+        &super::declared::read(cx)?,
+    )?))
 }

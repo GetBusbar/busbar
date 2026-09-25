@@ -266,11 +266,13 @@ where
 #[derive(Debug)]
 pub struct ToolsSection(pub Box<dyn PlaneCfg>);
 
+impl ToolsSection {
+    /// The declaring section this carrier holds, read off the frozen named-map list.
+    pub(crate) const SECTION: &'static str = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2];
+}
 impl Default for ToolsSection {
     fn default() -> Self {
-        ToolsSection(default_plane_section(
-            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-        ))
+        ToolsSection(default_plane_section(Self::SECTION))
     }
 }
 impl<'de> serde::Deserialize<'de> for ToolsSection {
@@ -278,11 +280,7 @@ impl<'de> serde::Deserialize<'de> for ToolsSection {
     where
         D: serde::Deserializer<'de>,
     {
-        deserialize_plane_section(
-            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-            deserializer,
-        )
-        .map(ToolsSection)
+        deserialize_plane_section(Self::SECTION, deserializer).map(ToolsSection)
     }
 }
 
@@ -292,11 +290,13 @@ impl<'de> serde::Deserialize<'de> for ToolsSection {
 #[derive(Debug)]
 pub struct AgentsSection(pub Box<dyn PlaneCfg>);
 
+impl AgentsSection {
+    /// The declaring section this carrier holds, read off the frozen named-map list.
+    pub(crate) const SECTION: &'static str = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3];
+}
 impl Default for AgentsSection {
     fn default() -> Self {
-        AgentsSection(default_plane_section(
-            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
-        ))
+        AgentsSection(default_plane_section(Self::SECTION))
     }
 }
 impl<'de> serde::Deserialize<'de> for AgentsSection {
@@ -304,11 +304,7 @@ impl<'de> serde::Deserialize<'de> for AgentsSection {
     where
         D: serde::Deserializer<'de>,
     {
-        deserialize_plane_section(
-            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
-            deserializer,
-        )
-        .map(AgentsSection)
+        deserialize_plane_section(Self::SECTION, deserializer).map(AgentsSection)
     }
 }
 
@@ -324,9 +320,13 @@ impl<'de> serde::Deserialize<'de> for AgentsSection {
 #[derive(Debug)]
 pub struct StreamsSection(pub Box<dyn PlaneCfg>);
 
+impl StreamsSection {
+    /// The declaring section this carrier holds — the one place the kernel spells it.
+    pub(crate) const SECTION: &'static str = "streams";
+}
 impl Default for StreamsSection {
     fn default() -> Self {
-        StreamsSection(default_plane_section("streams"))
+        StreamsSection(default_plane_section(Self::SECTION))
     }
 }
 impl<'de> serde::Deserialize<'de> for StreamsSection {
@@ -334,7 +334,7 @@ impl<'de> serde::Deserialize<'de> for StreamsSection {
     where
         D: serde::Deserializer<'de>,
     {
-        deserialize_plane_section("streams", deserializer).map(StreamsSection)
+        deserialize_plane_section(Self::SECTION, deserializer).map(StreamsSection)
     }
 }
 
@@ -349,23 +349,38 @@ impl<'de> serde::Deserialize<'de> for StreamsSection {
 /// not gain one, so the plane's own typed section cannot be named from a kernel struct. It lowers
 /// through this seam at `parse_section` exactly as the four above it do.
 ///
-/// Keyed by the bare `"decisions"` config-section literal rather than a
-/// [`NAMED_MAP_SECTIONS`] index, on the same terms as [`StreamsSection`]: the generic seam resolves
-/// the owning plane's decl by config section, and `decisions:` is deliberately NOT a
-/// named-definition-map section — joining that frozen array would mount admin routes and move a
-/// second golden, which this stage does not do.
+/// KEYED BY NO LITERAL (#49): the section this carrier holds is READ OFF THE REGISTRY
+/// ([`DecisionsSection::section`]) — the declaring section of the registered plane that OWNS its own
+/// declaring section's grammar (`PlaneDeclaration::owned_config_sections`) and that no named carrier
+/// (`tools:`/`agents:`/`streams:`) or core holds. It is deliberately NOT a named-definition-map
+/// section — joining that frozen array would mount admin routes and move a second golden.
 #[derive(Debug)]
 pub struct DecisionsSection(pub Box<dyn PlaneCfg>);
 
 impl DecisionsSection {
-    /// The top-level key this carrier is lifted from, read off the pre-pass's lift list — the one
-    /// place the key is spelled, because `cargo xtask gate config-schema` reads that list as source
-    /// literals (see [`crate::config::prepass::LIFTED_TOP_LEVEL_KEYS`]).
-    pub(crate) const SECTION: &'static str = crate::config::prepass::LIFTED_TOP_LEVEL_KEYS[5];
+    /// The section this carrier holds, or `None` when no registered plane declares one — in which
+    /// case nothing lifts into it and the carrier stays at its raw empty default.
+    pub(crate) fn section() -> Option<&'static str> {
+        let named = [
+            ToolsSection::SECTION,
+            AgentsSection::SECTION,
+            StreamsSection::SECTION,
+        ];
+        crate::plane::registry::plane_decls()
+            .iter()
+            .map(|d| &d.declaration)
+            .find(|d| {
+                d.owned_config_sections.contains(&d.config_section)
+                    && !named.contains(&d.config_section)
+                    && !crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS
+                        .contains(&d.config_section)
+            })
+            .map(|d| d.config_section)
+    }
 }
 impl Default for DecisionsSection {
     fn default() -> Self {
-        DecisionsSection(default_plane_section(Self::SECTION))
+        DecisionsSection(default_plane_section(Self::section().unwrap_or_default()))
     }
 }
 impl<'de> serde::Deserialize<'de> for DecisionsSection {
@@ -373,7 +388,8 @@ impl<'de> serde::Deserialize<'de> for DecisionsSection {
     where
         D: serde::Deserializer<'de>,
     {
-        deserialize_plane_section(Self::SECTION, deserializer).map(DecisionsSection)
+        deserialize_plane_section(Self::section().unwrap_or_default(), deserializer)
+            .map(DecisionsSection)
     }
 }
 
@@ -383,18 +399,20 @@ impl<'de> serde::Deserialize<'de> for DecisionsSection {
 #[derive(Debug, Default)]
 pub struct EndpointSection(pub Option<Box<dyn PlaneEndpointCfg>>);
 
+impl EndpointSection {
+    /// The DECLARING section of the plane that owns the endpoint door. The door's own key is never
+    /// spelled: it is whatever section that plane declares beside this one
+    /// (`PlaneDeclaration::owned_config_sections`), read by the pre-pass off the registry.
+    pub(crate) const OWNER: &'static str = ToolsSection::SECTION;
+}
+
 impl<'de> serde::Deserialize<'de> for EndpointSection {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        // The endpoint door is owned by the `tools:` plane, so it is keyed by that CONFIG SECTION —
-        // no plane key is named here.
-        deserialize_plane_endpoint(
-            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-            deserializer,
-        )
-        .map(EndpointSection)
+        // Keyed by its owning plane's CONFIG SECTION — no plane key is named here.
+        deserialize_plane_endpoint(Self::OWNER, deserializer).map(EndpointSection)
     }
 }
 

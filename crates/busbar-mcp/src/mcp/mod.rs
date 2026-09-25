@@ -135,8 +135,10 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         audit_kind: "mcp_server",
         card_signing_domain: None,
         card_kid_prefix: None,
-        // config-seam stage 1: the registry starts EMPTY — nothing has moved out of core yet.
-        owned_config_sections: &[],
+        // The section this plane owns BESIDE `tools:`: its own endpoint door, `mcp:`. Declared here
+        // because the kernel never spells it (#49) — its pre-pass lifts exactly the sections the
+        // registered planes declare, so a build without this plane refuses `mcp:` as unknown.
+        owned_config_sections: &["mcp"],
         // The classes the plane crate declares (`busbar_plane_mcp::meta`), by its own symbols.
         billable_classes: &[
             BillableClass {

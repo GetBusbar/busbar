@@ -3942,29 +3942,54 @@ fn test_auth_policy_rejects_bad_input_at_parse() {
     assert!(err.to_string().contains("unknown field"), "got: {err}");
 }
 
+/// The top-level section [`NEUTRAL_SECTION_PLANE`] declares and owns.
+const NEUTRAL_SECTION: &str = "neutral_section";
+
+/// A NEUTRAL plane that DECLARES AND OWNS a singular section of its own ([`NEUTRAL_SECTION`]) — the
+/// generic singular carrier `plane::config::DecisionsSection` holds it — all hooks stubbed, so the
+/// pre-pass, which lifts only the sections a REGISTERED plane declares, lifts it. With no
+/// `parse_section` hook the value is captured raw.
+static NEUTRAL_SECTION_PLANE: crate::plane::registry::PlaneDecl =
+    crate::plane::registry::PlaneDecl {
+        declaration: crate::plane::registry::PlaneDeclaration {
+            key: "neutral-test-section",
+            fallback: false,
+            config_section: NEUTRAL_SECTION,
+            scope_kinds: &[],
+            owned_config_sections: &[NEUTRAL_SECTION],
+            ..crate::test_support::NEUTRAL_FALLBACK.declaration
+        },
+        ..crate::test_support::NEUTRAL_FALLBACK
+    };
+
 /// DECISIONS #47/#48 (`docs/design/BUSBAR-1.6.0.md:373`/`:374`): `decisions:` is the FIFTH plane's
-/// declaring top-level section, so the config PRE-PASS must lift it. `DeployCfg` is
-/// `deny_unknown_fields`, so before the lift existed a document carrying `decisions:` was refused
-/// outright AT THAT KEY, before any plane seam was consulted.
+/// declaring top-level section, so the config PRE-PASS lifts it — while a REGISTERED plane declares
+/// it (#49: the kernel reads the lift list off the plane registry). `DeployCfg` is
+/// `deny_unknown_fields`, so without the lift a document carrying `decisions:` is refused outright
+/// AT THAT KEY (the test below).
 ///
-/// THE LIFT IS ALL THIS PROVES, and that is deliberate: `is_present()` is true of an untyped raw
-/// capture too, so no assertion available HERE can tell a typed section from a raw one. This crate
-/// cannot name the decision plane (the dep wall, DECISIONS #40), so the plane that owns `decisions:`
-/// is never registered in this test binary and the seam always takes its raw arm. The typed half —
-/// that the hooks are wired, that `deny_unknown_fields` runs inside the block, and that
-/// `decisions: "hello"` is REFUSED — is proven where the owning decl is written and registrable,
-/// `crates/busbar/src/root/tests/plane_decision.rs`. What THIS binary can prove about a build with
-/// no owning plane is the test below it.
+/// THE LIFT IS ALL THIS PROVES, and that is deliberate: this crate cannot name the decision plane
+/// (the dep wall, DECISIONS #40), so the plane seeded here is a NEUTRAL one that declares and owns a
+/// singular section of its own with no `parse_section` hook — the kernel keys that carrier by no
+/// literal, so the neutral section lands exactly where `decisions:` does — and the seam takes its
+/// raw arm. The typed half — that the
+/// hooks are wired, that `deny_unknown_fields` runs inside the block, and that `decisions: "hello"`
+/// is REFUSED — is proven where the owning decl is written and registrable,
+/// `crates/busbar/src/root/tests/plane_decision.rs`.
 #[test]
 fn test_decisions_section_parses() {
-    crate::test_support::register_neutral_test_plane();
-    let deploy: DeployCfg = crate::config::deploy_from_yaml_str(
-        "decisions:\n  \
+    let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
+        crate::test_support::neutral_fallback_plane(),
+        &NEUTRAL_SECTION_PLANE,
+    ]);
+    let section = NEUTRAL_SECTION;
+    let deploy: DeployCfg = crate::config::deploy_from_yaml_str(&format!(
+        "{section}:\n  \
            models:\n    \
-             primary: { provider: example-upstream, upstream_model: example-1 }\n\
-         providers: {}\nmodels: {}\npools: {}\n",
-    )
-    .expect("a document carrying the 1.6.0 `decisions:` section must parse");
+             primary: {{ provider: example-upstream, upstream_model: example-1 }}\n\
+         providers: {{}}\nmodels: {{}}\npools: {{}}\n",
+    ))
+    .expect("a document carrying a section a registered plane declares must parse");
 
     // The second half, because "the document parsed" is ALSO true of a key read and thrown away:
     // the lifted value must be BANKED onto the carrier (`PlaneCfg` is already in scope).
@@ -3984,53 +4009,41 @@ fn test_decisions_section_parses() {
     );
 }
 
-/// THE DELETION-GATE LEG FOR `decisions:`. A section an operator wrote, in a build compiled without
-/// the plane that owns it, names a grammar busbar cannot serve — and must be REFUSED at resolve,
-/// exactly as a present `tools:`/`agents:`/`streams:` naming a compiled-out plane already is.
+/// THE DELETION-GATE LEG FOR `decisions:` (Option A, S11b (c) / Q67). A section an operator wrote,
+/// in a build with no registered plane declaring it, is a key this build does not know — and is
+/// REFUSED AT PARSE with serde's standard unknown-field message, naming the key, exactly as 1.5.5
+/// refused any key it did not know. The kernel cannot say more: naming the plane that would own it
+/// means spelling a plane section it does not have (#49).
 ///
-/// This leg did not exist: `resolve`'s `NAMED_MAP_SECTIONS` loop does not contain `decisions` (it is
-/// a singular model-serving section, deliberately not a named-definition map), and the hand-written
-/// leg beside it covered `streams:` alone. So a `decisions:` block in a `--no-default-features`
-/// build parsed, named a plane that was not there, and boot said nothing.
-///
-/// This test binary IS that build: `busbar-kernel` may not name `busbar-plane-decision`, so nothing
-/// here can register a plane owning `decisions` and the condition the leg refuses on is the
-/// standing state rather than one a fixture has to manufacture.
+/// This test binary IS that build: `busbar-kernel` may not name `busbar-plane-decision`, and the
+/// registry is seeded with the neutral fallback plane alone, so nothing declares `decisions`.
 #[test]
-fn a_decisions_section_with_no_owning_plane_is_refused_at_resolve() {
-    crate::test_support::register_neutral_test_plane();
-    let deploy: DeployCfg = crate::config::deploy_from_yaml_str(
+fn a_decisions_section_with_no_owning_plane_is_refused_as_an_unknown_key() {
+    let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
+        crate::test_support::neutral_fallback_plane(),
+    ]);
+    let err = crate::config::deploy_from_yaml_str(
         "decisions:\n  \
            models:\n    \
              jev: { provider: typesafe }\n\
          providers: {}\nmodels: {}\npools: {}\n",
     )
-    .expect(
-        "with no plane to own it the section is captured raw — the parse is not where it fails",
-    );
-
-    let errors = resolve(&deploy, &HashMap::new()).expect_err(
-        "a `decisions:` block naming a plane this build does not have must be refused at resolve",
-    );
+    .expect_err("a `decisions:` block no registered plane declares must be refused")
+    .to_string();
     assert!(
-        errors.iter().any(|e| {
-            e.contains("`decisions:` is configured")
-                && e.contains("compiled without the plane that owns it")
-        }),
-        "the refusal must name the SECTION the operator wrote; got: {errors:?}"
+        err.contains("unknown field `decisions`"),
+        "the refusal must be serde's unknown-field refusal NAMING the key the operator wrote; got: {err}"
     );
 
     // The control, in the same test, because a leg that refuses everything is not a leg: an ABSENT
-    // `decisions:` must not trip it. Without this the assertion above would still pass if the leg
-    // fired unconditionally.
+    // `decisions:` must parse and resolve clean. Without this the assertion above would still pass if
+    // every document were refused.
     let bare: DeployCfg =
         crate::config::deploy_from_yaml_str("providers: {}\nmodels: {}\npools: {}\n")
             .expect("a document with no `decisions:` section still parses");
     let bare_errors = resolve(&bare, &HashMap::new()).err().unwrap_or_default();
     assert!(
-        !bare_errors
-            .iter()
-            .any(|e| e.contains("`decisions:` is configured")),
+        !bare_errors.iter().any(|e| e.contains("unknown field")),
         "an absent `decisions:` section must not be refused; got: {bare_errors:?}"
     );
 }

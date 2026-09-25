@@ -98,47 +98,49 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
 // asserts against the registered SET (or needs a plane-free registry) wraps its own body in
 // `crate::plane::registry::TestRegistryIsolation::empty()` around this call, the same as any other
 // `register_test_plane` caller.
-static NEUTRAL_FALLBACK_PLANE: crate::plane::registry::PlaneDecl =
-    crate::plane::registry::PlaneDecl {
-        declaration: crate::plane::registry::PlaneDeclaration {
-            key: "neutral-test-fallback",
-            fallback: true,
-            config_section: "pools",
-            scope_kinds: &["pool"],
-            subject_noun: "pool",
-            admin_noun: "pool",
-            audit_kind: "pool_request",
-            card_signing_domain: None,
-            card_kid_prefix: None,
-            owned_config_sections: &[],
-            billable_classes: &[],
-            fee_units: &[],
-        },
-        wire_format_names: || &[],
-        claims: |_| Vec::new(),
-        admission: |_| None,
-        build: |_| None,
-        routes: None,
-        admin_routes: None,
-        openapi: None,
-        hydrate: None,
-        start: None,
-        config_validate: None,
-        named_def_list: None,
-        named_def_get: None,
-        registry_contains: None,
-        reresolve_gates: None,
-        openapi_schemas: None,
-        on_swap: None,
-        parse_section: None,
-        parse_endpoint: None,
-        lower_endpoint: None,
-        build_runtime: None,
-        viewer: None,
-        retain_verify_gates: None,
-        default_section: None,
-        resolve_provider: None,
-    };
+static NEUTRAL_FALLBACK_PLANE: crate::plane::registry::PlaneDecl = NEUTRAL_FALLBACK;
+
+/// The neutral fallback plane's row, as a value a test's own neutral plane can extend.
+pub const NEUTRAL_FALLBACK: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
+    declaration: crate::plane::registry::PlaneDeclaration {
+        key: "neutral-test-fallback",
+        fallback: true,
+        config_section: "pools",
+        scope_kinds: &["pool"],
+        subject_noun: "pool",
+        admin_noun: "pool",
+        audit_kind: "pool_request",
+        card_signing_domain: None,
+        card_kid_prefix: None,
+        owned_config_sections: &[],
+        billable_classes: &[],
+        fee_units: &[],
+    },
+    wire_format_names: || &[],
+    claims: |_| Vec::new(),
+    admission: |_| None,
+    build: |_| None,
+    routes: None,
+    admin_routes: None,
+    openapi: None,
+    hydrate: None,
+    start: None,
+    config_validate: None,
+    named_def_list: None,
+    named_def_get: None,
+    registry_contains: None,
+    reresolve_gates: None,
+    openapi_schemas: None,
+    on_swap: None,
+    parse_section: None,
+    parse_endpoint: None,
+    lower_endpoint: None,
+    build_runtime: None,
+    viewer: None,
+    retain_verify_gates: None,
+    default_section: None,
+    resolve_provider: None,
+};
 
 /// SAY, IN ONE LINE, THAT THIS TEST NEEDS A PLANE TO EXIST — not what it does, only that config
 /// resolution has somewhere to put a `pools:`/fallback section rather than refusing with "no plane is
@@ -148,6 +150,12 @@ static NEUTRAL_FALLBACK_PLANE: crate::plane::registry::PlaneDecl =
 /// instead, where the real `busbar_llm`/`busbar_mcp`/`busbar_a2a` crates are reachable.
 pub fn register_neutral_test_plane() {
     crate::plane::registry::register_test_plane(&NEUTRAL_FALLBACK_PLANE);
+}
+
+/// The neutral fallback plane [`register_neutral_test_plane`] registers, for a test that seeds an
+/// ISOLATED registry (`TestRegistryIsolation::seeded`) instead of adding to the shared one.
+pub fn neutral_fallback_plane() -> &'static crate::plane::registry::PlaneDecl {
+    &NEUTRAL_FALLBACK_PLANE
 }
 
 pub fn build_once(
