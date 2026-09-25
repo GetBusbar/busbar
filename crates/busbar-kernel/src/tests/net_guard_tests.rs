@@ -67,7 +67,7 @@ fn is_alternate_ipv4_encoding_flags_obfuscated_forms() {
     assert!(!is_alternate_ipv4_encoding("127.0.0.1"));
     assert!(!is_alternate_ipv4_encoding("8.8.8.8"));
     // DNS names and the empty string are not alternate encodings.
-    assert!(!is_alternate_ipv4_encoding("api.openai.com"));
+    assert!(!is_alternate_ipv4_encoding("api.provider.example"));
     assert!(!is_alternate_ipv4_encoding("example.com"));
     assert!(!is_alternate_ipv4_encoding(""));
 }
@@ -191,8 +191,8 @@ fn interior_spaces_are_not_trimmed_away() {
         None
     );
     assert_eq!(
-        extract_normalized_host("  https://api.openai.com/v1  ").as_deref(),
-        Some("api.openai.com")
+        extract_normalized_host("  https://api.provider.example/v1  ").as_deref(),
+        Some("api.provider.example")
     );
 }
 

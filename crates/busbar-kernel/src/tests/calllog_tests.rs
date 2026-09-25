@@ -266,7 +266,7 @@ impl DurableCallStore {
                     // Two DIFFERENT records claiming one chain position: a forked or tampered log,
                     // and the single most important thing this store can tell an operator.
                     Err(busbar_api::StoreError(format!(
-                        "MCP call log fork: a DIFFERENT record already occupies ({}, {})",
+                        "call log fork: a DIFFERENT record already occupies ({}, {})",
                         principal, record.seq
                     )))
                 }
