@@ -569,6 +569,23 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // preserved out of caution during a future audit of this table. It is here because a crate is
     // on its way out, and it goes when the crate does.
     ("api", "contract"),
+    // THE #40 WALL, GRANTED FOR ALL SEVEN PLUGIN KINDS AT ONCE. DECISIONS #40(a), OWNER-LOCKED:
+    // "a plugin crate's entire workspace dependency closure = `busbar-contract` and nothing else".
+    // So a plugin-kind crate's edge to the contract is not a coupling this gate ratchets: it is the
+    // ONE edge the architecture leaves a plugin, and `:closure` measures everything past it.
+    // It is stated here for every kind in `truths::PLUGIN_KINDS`, not kind by kind as each one's
+    // first crate happened to reach the contract — `store`, `plane` and `transport` were granted
+    // that way and `auth`, `hooks`, `secret` and `export` were not, so the day the dependency-wall
+    // wave repointed `busbar-hooks-ranking` at the contract, the plugin DOING what #40 asks was
+    // scored `new-forbidden-edge`. `the_wall_is_granted_for_every_plugin_kind` holds this block to
+    // the seven; [`is_the_wall`] is the same rule where an edge or a vocabulary cell is judged.
+    ("auth", "contract"),
+    ("export", "contract"),
+    ("hooks", "contract"),
+    ("plane", "contract"),
+    ("secret", "contract"),
+    ("store", "contract"),
+    ("transport", "contract"),
     // The pre-split dialects: a codec is written on the closed span grammar the contract re-exports.
     ("codec", "grammar"),
     ("contract", "grammar"),
@@ -597,7 +614,6 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // instance seal below (the cross-instance witness) still refuses a plane naming a DIFFERENT
     // plane's codec — a plane may path-dep ITS OWN codec and nothing else.
     ("plane", "codec"),
-    ("plane", "contract"),
     // The composition root is the one thing that names all three axes — that is what a root IS.
     ("root", "api"),
     ("root", "cleanliness"),
@@ -610,9 +626,7 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("root", "substrate"),
     ("root", "transport"),
     ("root", "unit"),
-    ("store", "contract"),
     ("substrate", "contract"),
-    ("transport", "contract"),
     // `("transport", "transport")` WAS HERE, AND IT IS STRUCK.
     //
     // It granted the CLASS `transport -> transport` — eight live edges (`grpc -> http`,
@@ -646,6 +660,21 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // measured in the `[[dep]]` ledger like every other Neutral kind's.
     ("cleanliness", "contract"),
 ];
+
+/// The kind `busbar-contract` resolves to — the one sink #40 leaves a plugin.
+pub(super) const CONTRACT_KIND: &str = "contract";
+
+/// THE #40 WALL AS A RULE: a crate of one of the seven plugin kinds naming `busbar-contract`.
+///
+/// That edge is the rule itself, not an instance of debt, so it owes NO per-crate row: `:deps` and
+/// `:test-deps` do not ask for a `[[dep]]` row for it, and `:matrix` does not measure a plugin
+/// crate's contract column (a plugin names the face it is written against on every `use` line). A
+/// row that still records one is reported as a per-crate exception to a rule that excepts nothing.
+/// Everything a plugin reaches PAST the contract is still judged — here as an ungranted class, and
+/// by `:closure` as a breach of the wall.
+pub(super) fn is_the_wall(from: &str, to: &str) -> bool {
+    to == CONTRACT_KIND && truths::PLUGIN_KINDS.contains(&from)
+}
 
 /// THE TRUSTED COMPUTING BASE: the loader and the plugin tooling, which `ARCHITECTURE.md` 1.4 says
 /// in its own words are NOT kinds. Their edges are neither granted nor refused by the kind rules,
@@ -2501,6 +2530,21 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
     for e in &measured {
         // The announced window, above.
         if announced.contains(e.from.as_str()) || announced.contains(e.to.as_str()) {
+            continue;
+        }
+        // THE WALL OWES NO ROW. A plugin-kind crate naming `busbar-contract` is #40(a) itself, not
+        // an instance of debt ([`is_the_wall`]); asking for a `[[dep]]` row for it is asking for a
+        // per-crate exception to a rule that has none. A row that still records one is reported,
+        // so the ledger does not carry a line that reads like a decision and is not one.
+        if is_the_wall(&e.class.0, &e.class.1) {
+            if listed.contains_key(&(e.from.as_str(), e.to.as_str())) {
+                offenders.push(format!(
+                    "rule-granted-row\t{} -> {}\tthe `[[dep]]` row records a {} -> {} edge, and #40(a) \
+                     grants every plugin kind its edge to busbar-contract as the RULE: a per-crate \
+                     row for it is an exception to a rule that excepts nothing. Strike the row.",
+                    e.from, e.to, e.class.0, e.class.1
+                ));
+            }
             continue;
         }
         let Some(row) = listed.get(&(e.from.as_str(), e.to.as_str())) else {
@@ -6081,12 +6125,14 @@ impl Gate for KindIsolationGate {
             ));
         }
 
-        // THE CONTRACT SINK IS THE SPEC'S, NOT A MEASUREMENT. `hooks -> contract` is in no snapshot
-        // and never was; PLUGIN-TREE.md §4 grants it, as it grants every kind the contract. This case plants that
-        // dependency and requires the row to stay GREEN — it was RED before the sink was read off
-        // the spec, which is what made `store -> contract` a "new kind-to-kind edge class" the day
-        // busbar-store-memory implemented the record contract, and failed the green baseline on the
-        // real tree.
+        // A GRANTED EDGE IS STILL AN EDGE THAT MUST BE WRITTEN DOWN — outside the #40 wall.
+        //
+        // RE-TARGETED (SHA-KI): the subject was `busbar-export-planted -> busbar-contract`, and that
+        // edge is no longer a ledger instance at all — #40(a) grants every plugin kind its contract
+        // edge as the RULE ([`is_the_wall`]), so the case proved a finding the architecture forbids
+        // the gate to make. The claim it carried is unchanged and still true of every OTHER granted
+        // class, so it is asked of one: a kernel workflow crate naming the contract (`kernel ->
+        // contract`, granted) still owes its `[[dep]]` row.
         //
         // The case is asked of the PER-PUSH gate only, for the reason the ship twin's own arm is
         // narrowed: on the ship sha `:deps` also carries the transitional ratchet, and every legacy
@@ -6098,15 +6144,39 @@ impl Gate for KindIsolationGate {
                 "an edge the architecture grants is still an edge that must be written down",
                 &[ROW_DEPS],
                 manifest_plant(
-                    "crates/busbar-export-planted",
-                    "busbar-export-planted",
+                    "crates/busbar-kernel-planted",
+                    "busbar-kernel-planted",
                     &["busbar-contract"],
                 ),
                 &[
                     "unlisted-dep-edge",
-                    "busbar-export-planted -> busbar-contract",
-                    "export -> contract",
+                    "busbar-kernel-planted -> busbar-contract",
+                    "kernel -> contract",
                 ],
+            ));
+
+            // THE #40 WALL, BOTH WAYS. A plugin-kind crate whose one dependency is busbar-contract
+            // IS DECISIONS #40(a) — `hooks -> contract` was scored `new-forbidden-edge` plus an
+            // unlisted `[[dep]]`, `[[cell]]` and `[[edge]]` the day `busbar-hooks-ranking` was
+            // repointed at the contract, for doing exactly what the wall asks. GREEN on the shipped
+            // graph, the test graph and the vocabulary matrix alike, with a source file that names
+            // the contract the way every plugin does. And the same crate reaching `busbar-api` is
+            // RED: the wall is one crate wide, not "the contract plus whatever else".
+            report.push(prove_rows_green(
+                cx,
+                subject,
+                "a plugin-kind crate whose one dependency is busbar-contract is the #40 wall, not \
+                 an edge to write down",
+                &[ROW_DEPS, ROW_TEST_DEPS, ROW_MATRIX],
+                the_wall_plant(&[]),
+            ));
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "a plugin-kind crate reaching busbar-api reaches past the #40 wall",
+                &[ROW_DEPS],
+                the_wall_plant(&["busbar-api"]),
+                &["busbar-hooks-planted -> busbar-api", "hooks -> api"],
             ));
         }
 
@@ -8500,6 +8570,26 @@ fn lock_plus(cx: &Ctx, package: &str, dep: &str) -> Overlay {
     ov
 }
 
+/// A planted HOOKS-kind crate standing on the #40 wall: `busbar-contract` in both halves of the
+/// build graph, a source file that names it the way every plugin does, plus `extra` shipped deps.
+fn the_wall_plant(extra: &[&str]) -> Overlay {
+    let mut body = "[package]\nname = \"busbar-hooks-planted\"\nversion = \"0.0.0\"\n\n\
+                    [dependencies]\nbusbar-contract = { workspace = true }\n"
+        .to_string();
+    for d in extra {
+        body.push_str(&format!("{d} = {{ workspace = true }}\n"));
+    }
+    body.push_str("\n[dev-dependencies]\nbusbar-contract = { workspace = true }\n");
+    let mut ov = Overlay::new();
+    ov.set("crates/busbar-hooks-planted/Cargo.toml", body);
+    ov.set(
+        "crates/busbar-hooks-planted/src/lib.rs",
+        "//! A hooks plugin written against busbar_contract alone.\n\
+         pub use busbar_contract::Plugin;\n",
+    );
+    ov
+}
+
 /// A real manifest with a section APPENDED, so a plant adds one edge and takes none away: a plant
 /// that rewrote the whole file would strike the crate's real edges too, and the dead-allowance
 /// findings that produced would be the ones a reader mistook for the case's own.
@@ -8770,6 +8860,80 @@ mod plant_tests {
                 "plane -> cleanliness",
                 "busbar-plane-mcp -> busbar-oauth2",
             ],
+        );
+    }
+
+    // ── the #40 wall: every plugin kind -> busbar-contract is the rule (SHA-KI) ──────────────────
+
+    /// The class table grants the wall for EVERY plugin kind, and the rule the edge and matrix
+    /// judges read is that one pair shape and no other.
+    #[test]
+    fn the_wall_is_granted_for_every_plugin_kind() {
+        for k in truths::PLUGIN_KINDS {
+            assert!(
+                ARCHITECTURE_ALLOWED.contains(&(k, CONTRACT_KIND)),
+                "ARCHITECTURE_ALLOWED does not grant `{k} -> contract`, the one edge #40(a) leaves \
+                 a plugin"
+            );
+            assert!(is_the_wall(k, CONTRACT_KIND), "{k} -> contract is the wall");
+            assert_eq!(
+                verdict_for(&(k.to_string(), CONTRACT_KIND.to_string())),
+                "allowed"
+            );
+            assert!(!is_the_wall(k, "api"), "{k} -> api is past the wall");
+            assert!(!is_the_wall(k, "kernel"), "{k} -> kernel is past the wall");
+        }
+        for neutral in [
+            "kernel",
+            "core",
+            "api",
+            "root",
+            "unit",
+            "legacy",
+            "plugin-tooling",
+        ] {
+            assert!(
+                !is_the_wall(neutral, CONTRACT_KIND),
+                "`{neutral}` is not a plugin kind; its contract edge is an ordinary ledger row"
+            );
+        }
+    }
+
+    /// Asked of the rule directly, finding by finding, so no standing debt on the real tree can
+    /// answer it: the planted crate on the wall draws NO finding on either half of the graph, and
+    /// the same crate reaching busbar-api draws one that names the api edge.
+    #[test]
+    fn a_plugin_crate_on_the_wall_draws_no_finding_and_one_past_it_is_red() {
+        let green = the_wall_plant(&[]);
+        assert_bites(&ws(), &green);
+        let cx = ws().with_overlay(green);
+        let (crates, _) = crates_of(&cx);
+        assert!(
+            crates
+                .iter()
+                .any(|c| c.name == "busbar-hooks-planted" && c.kind == Some("hooks")),
+            "the plant must resolve to the hooks kind"
+        );
+        for half in [Half::Shipped, Half::Test] {
+            let row = rule_deps(&cx, &crates, &reg_of(&cx), half, false);
+            assert!(
+                !row.detail.contains("busbar-hooks-planted"),
+                "a hooks crate naming only busbar-contract drew a {} finding: {}",
+                half.word(),
+                row.detail
+            );
+        }
+
+        let red = deps_over(the_wall_plant(&["busbar-api"]));
+        assert_red_naming(
+            &red,
+            &["busbar-hooks-planted -> busbar-api", "hooks -> api"],
+        );
+        assert!(
+            !red.detail
+                .contains("busbar-hooks-planted -> busbar-contract"),
+            "the contract half of the plant must stay unreported: {}",
+            red.detail
         );
     }
 

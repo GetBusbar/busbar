@@ -86,6 +86,12 @@
 //! EDGE — refused, whatever `ARCHITECTURE.md` may or may not grant, because an edge nobody wrote
 //! down is an edge nobody reviewed.
 //!
+//! ONE COLUMN IS NOT MEASURED, AND IT IS A RULE RATHER THAN AN ALLOWANCE: a crate of one of the
+//! seven plugin kinds is not counted in the `contract` column. #40(a) makes `busbar-contract` the
+//! only crate a plugin may name, so that column in a plugin crate measures the wall standing, not a
+//! coupling; the exemption is the kind table's own `is_the_wall`, it covers no other pair, and a
+//! ledger row that still records such a cell or class is RED (`rule-granted-cell`/`-edge`).
+//!
 //! The ship twin owes the same row at ZERO everywhere, and owes it without consulting the ledger:
 //! `qa/kind-isolation.toml` is a record of what 1.6.0 still has to delete, not a shape it is
 //! allowed to keep.
@@ -535,6 +541,14 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
         for (kind, words) in &vocab {
             // `dialect` is not a kind (DECISIONS #4) and no longer a column; the vendor-name
             // confinement is [`vendors`]'. Every column here comes from the census.
+            //
+            // THE ONE COLUMN A PLUGIN CRATE IS NOT MEASURED IN is the contract's: #40(a) makes
+            // `busbar-contract` the one crate a plugin may name, so a plugin naming it on every
+            // `use` line is the wall standing, not a coupling to ratchet ([`super::is_the_wall`]).
+            // Every other kind's column is still counted in that crate.
+            if c.kind.is_some_and(|k| super::is_the_wall(k, kind)) {
+                continue;
+            }
             for n in needles_for(words, c) {
                 let parts = needle_segments(&n.word);
                 if parts.is_empty() {
@@ -1530,6 +1544,19 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
 
     // A ROW WHOSE CELL IS GONE IS A DEAD ALLOWANCE. The exemption cannot outlive the coupling.
     for (krate, kind) in listed.cells.keys() {
+        // A PLUGIN CRATE'S CONTRACT CELL IS NOT GONE, IT IS THE RULE: the column is not measured
+        // for a plugin kind (see [`measure`]), so the row is an exception to a rule that excepts
+        // nothing, and it says so rather than reading as a coupling that drained.
+        let src = kind_of.get(krate.as_str()).copied().unwrap_or("?");
+        if super::is_the_wall(src, kind) {
+            offenders.push(format!(
+                "rule-granted-cell\t{krate} \u{d7} {kind}\t#40(a) grants every plugin kind the \
+                 contract's vocabulary as the RULE, so a {src} crate's contract column is not \
+                 measured and a `[[cell]]` row for it is an exception to a rule that excepts \
+                 nothing. Strike it."
+            ));
+            continue;
+        }
         let live = matrix
             .iter()
             .any(|((k, kd), c)| k == krate && kd == kind && c.count > 0);
@@ -1553,6 +1580,14 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
         }
     }
     for (src, dst) in listed.edges.keys() {
+        if super::is_the_wall(src, dst) {
+            offenders.push(format!(
+                "rule-granted-edge\t{src} -> {dst}\t#40(a) grants every plugin kind the contract's \
+                 vocabulary as the RULE; an `[[edge]]` class for it is an exception to a rule that \
+                 excepts nothing. Strike the class."
+            ));
+            continue;
+        }
         let live = matrix.iter().any(|((k, kd), c)| {
             kd == dst && c.count > 0 && kind_of.get(k.as_str()).copied() == Some(src.as_str())
         });
@@ -2327,17 +2362,26 @@ pub fn selftest<'a>(
     // The honest fixture for "this row covers nothing" is a tree in which the thing it covered is
     // GONE, and a crate leaves the measurement the way it leaves the census: its manifest goes.
 
-    // A `[[cell]]` ROW WHOSE CRATE IS NOT THERE. `busbar-auth-admin-tokens` carries two cells; both
-    // of them measure nothing the moment the crate stops being one.
+    // A `[[cell]]` ROW WHOSE CRATE IS NOT THERE. `busbar-auth-static-plugin` carries live cells;
+    // every one of them measures nothing the moment the crate stops being one.
+    //
+    // RE-TARGETED (SHA-KI): the subject was `busbar-auth-admin-tokens × api`, and that row went
+    // dead on the real tree when the crate's last `busbar-api` name moved to the contract
+    // (dee18b57f) — so its red became standing debt the debt-free base subtracts, and the case
+    // came back green. `busbar-auth-static-plugin × plugin-tooling` is a live row (the SDK edge
+    // stays until F6), and removing the crate's manifest kills it exactly as it did the old one.
     let mut ov = crate::ctx::Overlay::new();
-    ov.remove("crates/auth-admin-tokens/Cargo.toml");
+    ov.remove("crates/auth-static-plugin/Cargo.toml");
     report.push(prove_rows_red(
         cx,
         gate,
         "a `[[cell]]` row whose cell measures nothing is a dead allowance, not a tight one",
         &[ROW_MATRIX],
         ov,
-        &["dead-cell", "busbar-auth-admin-tokens \u{d7} api"],
+        &[
+            "dead-cell",
+            "busbar-auth-static-plugin \u{d7} plugin-tooling",
+        ],
     ));
 
     // A `[[disagreement]]` ROW WHOSE TWO SCANNERS HAVE NOTHING LEFT TO DISAGREE ABOUT. The note is
