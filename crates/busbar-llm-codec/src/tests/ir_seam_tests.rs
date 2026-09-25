@@ -20,6 +20,102 @@ fn xresp(egress: &str, ingress: &'static str, body: &Value) -> Value {
     ingress_p.writer().write_response(&ir)
 }
 
+/// Every `url_citation` annotation anywhere in a written body, whichever OpenAI shape it has.
+fn url_citations(v: &Value) -> Vec<Value> {
+    let mut out = Vec::new();
+    let mut stack = vec![v];
+    while let Some(n) = stack.pop() {
+        match n {
+            Value::Object(m) => {
+                if m.get("type").and_then(Value::as_str) == Some("url_citation") {
+                    // Chat nests the fields under `url_citation`; Responses flattens them.
+                    out.push(m.get("url_citation").cloned().unwrap_or_else(|| n.clone()));
+                }
+                stack.extend(m.values());
+            }
+            Value::Array(a) => stack.extend(a.iter()),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// SHR-01: an OpenAI Chat backend's `url_citation` (with its character span) reaches a Responses
+/// client. Before, the shared reader dropped the span and the Responses writer, which requires one,
+/// dropped the whole citation — `annotations: []`.
+#[test]
+fn shr01_chat_citation_with_its_span_reaches_a_responses_client() {
+    let body = json!({
+        "id": "chatcmpl-1", "object": "chat.completion", "created": 1, "model": "gpt",
+        "choices": [{"index": 0, "finish_reason": "stop", "message": {
+            "role": "assistant", "content": "hello world",
+            "annotations": [{"type": "url_citation", "url_citation": {
+                "url": "https://c.example", "title": "t", "start_index": 6, "end_index": 11}}]}}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
+    });
+    let out = xresp("openai", "responses", &body);
+    let cites = url_citations(&out);
+    assert_eq!(
+        cites.len(),
+        1,
+        "citation lost on openai -> responses: {out}"
+    );
+    assert_eq!(cites[0]["url"], "https://c.example");
+    assert_eq!(cites[0]["start_index"], 6);
+    assert_eq!(cites[0]["end_index"], 11);
+}
+
+/// SHR-01, the reverse hop: a Responses backend's citation keeps its span for a Chat client.
+#[test]
+fn shr01_responses_citation_keeps_its_span_for_a_chat_client() {
+    let body = json!({
+        "id": "resp_1", "object": "response", "created_at": 1, "status": "completed",
+        "model": "gpt",
+        "output": [{"type": "message", "id": "msg_1", "role": "assistant", "status": "completed",
+            "content": [{"type": "output_text", "text": "hello world", "annotations": [
+                {"type": "url_citation", "url": "https://c.example", "title": "t",
+                 "start_index": 6, "end_index": 11}]}]}],
+        "usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+    });
+    let out = xresp("responses", "openai", &body);
+    let cites = url_citations(&out);
+    assert_eq!(
+        cites.len(),
+        1,
+        "citation lost on responses -> openai: {out}"
+    );
+    assert_eq!(cites[0]["start_index"], 6, "span dropped: {out}");
+    assert_eq!(cites[0]["end_index"], 11, "span dropped: {out}");
+}
+
+/// The span rule's other half: offsets a citation carries into the CITED DOCUMENT (an Anthropic
+/// `char_location`) are not a span of the answer text and must never be written as one.
+#[test]
+fn shr01_document_offsets_are_never_written_as_an_answer_span() {
+    let c = crate::ir::IrCitation {
+        kind: Some("char_location".to_string()),
+        url: Some("https://doc.example".to_string()),
+        start_index: Some(0),
+        end_index: Some(5),
+        ..Default::default()
+    };
+    let chat =
+        crate::openai_annotations::chat_url_annotations("hello world", 0, std::slice::from_ref(&c));
+    assert_eq!(chat.len(), 1);
+    assert!(
+        chat[0]["url_citation"].get("start_index").is_none(),
+        "a document offset was written as an answer span: {chat:?}"
+    );
+    // A text-span kind keeps its carried span.
+    let web = crate::ir::IrCitation {
+        kind: Some("web_search_result_location".to_string()),
+        ..c
+    };
+    let chat = crate::openai_annotations::chat_url_annotations("hello world", 0, &[web]);
+    assert_eq!(chat[0]["url_citation"]["start_index"], 0);
+    assert_eq!(chat[0]["url_citation"]["end_index"], 5);
+}
+
 /// SEAM (`chat_prepare_for_ingress`): the matched stop string survives the buffered seam. A
 /// Bedrock Converse body carries it (`additionalModelResponseFields.stop_sequence`) and the
 /// Anthropic writer emits it; the seam used to null it, so the buffered answer said `null` where
