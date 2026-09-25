@@ -445,6 +445,34 @@ impl SeriesDecl {
     }
 }
 
+/// One `BUSBAR-NNNN` diagnostic a plugin's signed manifest DECLARES it raises
+/// (`declares.diagnostics[]`) — PLUGIN DIAGNOSTICS (K9a S3).
+///
+/// The host registers a first-party plugin's declarations into its diagnostics catalogue through
+/// the same seam a linked plane's owned codes take, before anything reads the catalogue, so a
+/// [`PluginDiagnostic`] the plugin reports under the code resolves exactly as a built-in one does:
+/// same code, same catalogue entry, same severity clamp. The fields are the catalogue entry's, one
+/// for one; a declaration whose code is already in the catalogue, whose class (`code / 1000`) is not
+/// one of the host's, or whose severity is not a severity token refuses the boot naming the plugin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiagnosticDecl {
+    /// The numeric code (`1001` renders `BUSBAR-1001`); its thousands digit is its class.
+    pub code: u16,
+    /// Stable kebab-case anchor (the docs fragment).
+    pub slug: String,
+    /// Short human title.
+    pub title: String,
+    /// `benign_recurring` | `actionable` | `fatal` — the catalogue's severity tokens.
+    pub severity: String,
+    /// What the condition means.
+    pub summary: String,
+    /// What an operator should do.
+    pub action: String,
+    /// The version the code was introduced in.
+    pub since: String,
+}
+
 #[cfg(test)]
 #[path = "tests/observe_tests.rs"]
 mod tests;

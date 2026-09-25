@@ -178,13 +178,18 @@ pub struct Manifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
     /// What the plugin DECLARES it will say to the host beyond its kind's answers (K9a, the export
-    /// kind's host seams): the metric series it emits. SIGNED like every other field, so a grant
-    /// the host makes on a declaration is made on what the publisher signed. Absent (empty) for
+    /// kind's host seams): the metric series it emits and the diagnostics it raises. SIGNED like
+    /// every other field, so a grant the host makes on a declaration is made on what the publisher
+    /// signed. Absent (empty) for
     /// every manifest packed before the section existed, and skipped when empty, so their
     /// canonical bytes — and therefore their signatures — are unchanged.
     #[serde(default, skip_serializing_if = "Declares::is_empty")]
     pub declares: Declares,
 }
+
+/// The declaration shapes a manifest's `declares` section carries, named here so a packer or a
+/// host reaches them beside [`Manifest`].
+pub use busbar_plugin::cold::observe::{DiagnosticDecl, SeriesDecl};
 
 /// A manifest's `declares` section — the statements a plugin makes ABOUT ITSELF that the host
 /// grants or refuses at open, never trusts as-is (the export ABI's minor, `EXPORT_ABI_MINOR`).
@@ -195,12 +200,16 @@ pub struct Declares {
     /// first-party plugin only — see [`busbar_plugin::cold::observe::SeriesDecl`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub metrics: Vec<busbar_plugin::cold::observe::SeriesDecl>,
+    /// The `BUSBAR-NNNN` diagnostics the plugin raises (S3): registered into the host's catalogue
+    /// for a first-party plugin — see [`busbar_plugin::cold::observe::DiagnosticDecl`].
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<busbar_plugin::cold::observe::DiagnosticDecl>,
 }
 
 impl Declares {
     /// Nothing declared — the section is left off the wire (and out of the signed bytes).
     pub fn is_empty(&self) -> bool {
-        self.metrics.is_empty()
+        self.metrics.is_empty() && self.diagnostics.is_empty()
     }
 }
 

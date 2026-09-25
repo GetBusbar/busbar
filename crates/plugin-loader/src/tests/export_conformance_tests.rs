@@ -647,3 +647,77 @@ unsafe extern "C-unwind" fn unsupported_call(
     *out_len = 0;
     STATUS_UNSUPPORTED
 }
+
+/// **K9a S3 — PLUGIN DIAGNOSTICS, BOTH WAYS.** The export fixture, its manifest declaring a
+/// `BUSBAR-NNNN` code, registered through the LINKED door and the DROPPED-IN door: both rows state
+/// the same declaration and are FIRST-PARTY — which is everything the composition root reads to
+/// register the code into the host's catalogue (`root::linked::declared_diagnostics`, whose own
+/// tests hold the catalogue half) — and a sink raising the code hands the host the same diagnostic
+/// either way. RED ARM, in the same test: the same declaration dropped in by a THIRD party is not
+/// first-party, which the root refuses.
+#[test]
+fn a_declared_diagnostic_is_stated_and_raised_the_same_through_either_door() {
+    use busbar_plugin::cold::observe::DiagnosticDecl;
+    let decl = DiagnosticDecl {
+        code: 6990,
+        slug: "s3-example-batches-delivered".into(),
+        title: "Example batches delivered".into(),
+        severity: "actionable".into(),
+        summary: "The example sink delivered batches.".into(),
+        action: "None.".into(),
+        since: "1.6.0".into(),
+    };
+    let declaring = |name: &str| {
+        let mut m = super::both_ways::statement(
+            "export",
+            name,
+            name,
+            busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+        );
+        m.declares.diagnostics = vec![decl.clone()];
+        m
+    };
+    let cfg = serde_json::json!({ "diagnostic": "BUSBAR-6990" }).to_string();
+    let _guard = crate::observe::testing::exclusive();
+    let transcript = |registry: &PluginRegistry| {
+        let first_party = registry.resolve("s3-fixture").map(|p| p.first_party());
+        let sink = registry.open_export("s3-fixture", &cfg).expect("opens");
+        let before = crate::observe::testing::folds().len();
+        sink.deliver(ExportStream::Logs, &serde_json::json!({ "n": 1 }))
+            .expect("deliver");
+        let raised: Vec<Vec<serde_json::Value>> = crate::observe::testing::folds()[before..]
+            .iter()
+            .filter(|(who, ..)| who == "s3-fixture")
+            .map(|(.., d)| d.clone())
+            .collect();
+        serde_json::json!({ "first_party": first_party, "raised": raised }).to_string()
+    };
+    let Some([linked, dropped]) =
+        super::both_ways::both_doors(declaring("s3-fixture"), transcript, String::clone)
+    else {
+        eprintln!("skip: the export fixture's cdylib is not built");
+        return;
+    };
+    assert!(
+        linked.0.contains("s3-example-batches-delivered"),
+        "{}",
+        linked.0
+    );
+    assert!(
+        linked.1.contains(r#""first_party":true"#) && linked.1.contains("BUSBAR-6990"),
+        "{}",
+        linked.1
+    );
+    assert_eq!(linked, dropped, "both doors state and raise the same");
+
+    // RED ARM: a third party's declaration is not first-party.
+    let (crate_snake, _) = super::both_ways::fixture("export");
+    let lib = std::fs::read(super::both_ways::cdylib(crate_snake).expect("built above"))
+        .expect("read the cdylib");
+    let mut third = declaring("s3-third-party");
+    third.publisher = "acme".into();
+    let registry = super::both_ways::dropped_third_party(crate_snake, third, &lib);
+    let row = registry.resolve("s3-third-party").expect("admitted");
+    assert_eq!(row.manifest.declares.diagnostics, vec![decl]);
+    assert!(!row.first_party());
+}

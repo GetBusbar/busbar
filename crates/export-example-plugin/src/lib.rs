@@ -12,7 +12,9 @@
 //! after counting it. Config JSON is ignored (this sink has no configurable shape), mirroring
 //! `busbar-store-example-plugin`'s config-less posture.
 
-use busbar_plugin_sdk::{ExportHandler, ExportStream, Observations, PluginMetric};
+use busbar_plugin_sdk::{
+    ExportHandler, ExportStream, Observations, PluginDiagnostic, PluginMetric,
+};
 
 /// The trivial sink: carries the metrics stream, counts what it was handed, drops the batches.
 ///
@@ -82,7 +84,13 @@ impl ExportHandler for ExampleExport {
         // `series` names the counter instead: the FIRST-PARTY NAMESPACE witness (K9a S1) opens the
         // sink under a reserved name its manifest declares.
         let name = self.setting("series").unwrap_or(DELIVERED_TOTAL);
-        Observations::none().metric(PluginMetric::counter(name, n as f64))
+        let observed = Observations::none().metric(PluginMetric::counter(name, n as f64));
+        // `diagnostic` names a code the sink raises per drain of deliveries: the PLUGIN DIAGNOSTICS
+        // witness (K9a S3) opens the sink under a code its manifest declares.
+        match self.setting("diagnostic") {
+            Some(code) => observed.diagnostic(PluginDiagnostic::warn(code, "batches delivered")),
+            None => observed,
+        }
     }
 }
 

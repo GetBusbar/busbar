@@ -718,3 +718,109 @@ fn the_host_series_catalog_holds_every_series_the_host_defines() {
     assert!(host_series("busbar_request_duration_seconds_count"));
     assert!(!host_series("busbar_example_deliveries_total"));
 }
+
+/// A fresh `plugins/` directory holding one `kind: export` row signed by `signer` under `publisher`,
+/// declaring `decls`, scanned under a posture holding the release key `[7; 32]` and allowlisting
+/// any other signer as its publisher. Manifest-only: nothing here is loaded.
+fn declaring_registry(
+    tag: &str,
+    publisher: &str,
+    signer: &SigningKey,
+    decls: Vec<busbar_plugin_loader::sign::DiagnosticDecl>,
+) -> busbar_plugin_loader::PluginRegistry {
+    let dir = std::env::temp_dir().join(format!("busbar-root-s3-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let release = SigningKey::from_bytes(&[7u8; 32]);
+    let mut manifest = Manifest {
+        name: format!("s3-{tag}"),
+        alias: format!("s3-{tag}"),
+        kind: "export".into(),
+        version: "1.6.0".into(),
+        publisher: publisher.into(),
+        abi_version: 3,
+        sha256: String::new(),
+        signature: String::new(),
+        description: String::new(),
+        homepage: String::new(),
+        license: String::new(),
+        needs: Default::default(),
+        settings_schema: None,
+        schema_derived: false,
+        host: None,
+        declares: Default::default(),
+    };
+    manifest.declares.diagnostics = decls;
+    let lib = b"a manifest-only row";
+    let signed = sign(signer, manifest, lib);
+    let tarball = busbar_plugin_loader::tarball::package(&signed, "lib.so", lib).unwrap();
+    std::fs::write(dir.join("s3.tar.gz"), tarball).unwrap();
+    let policy = TrustPolicy {
+        first_party_key: Some(release.verifying_key()),
+        binary_version: "1.6.0".into(),
+        publishers: [(publisher.to_string(), signer.verifying_key())]
+            .into_iter()
+            .filter(|_| publisher != "busbar")
+            .collect(),
+        ..Default::default()
+    };
+    let registry = busbar_plugin_loader::scan_and_validate(&dir, &policy).expect("the scan");
+    let _ = std::fs::remove_dir_all(&dir);
+    registry
+}
+
+fn decl(code: u16, severity: &str) -> busbar_plugin_loader::sign::DiagnosticDecl {
+    busbar_plugin_loader::sign::DiagnosticDecl {
+        code,
+        slug: format!("s3-code-{code}"),
+        title: "A declared plugin code".into(),
+        severity: severity.into(),
+        summary: "The plugin raised it.".into(),
+        action: "Read the plugin's docs.".into(),
+        since: "1.6.0".into(),
+    }
+}
+
+/// **K9a S3 — PLUGIN DIAGNOSTICS join the catalogue.** A first-party plugin's declared code becomes
+/// a catalogue entry one for one (its class from its thousands digit, its severity from its token),
+/// so the host's fold resolves a diagnostic the plugin raises under it exactly as a built-in one.
+/// RED ARMS: the same declaration from a third party is refused; a code the catalogue already holds
+/// is refused (never shadowed); a class or severity that is not the host's is refused. (The loader's
+/// both-ways test proves either door states the same declaration as first-party.)
+#[test]
+fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does() {
+    use busbar_substrate_values::diagnostics::{by_code, Class, Severity};
+    let release = SigningKey::from_bytes(&[7u8; 32]);
+    assert!(by_code(6990).is_none(), "the witness code must be free");
+    let registry = declaring_registry("ok", "busbar", &release, vec![decl(6990, "actionable")]);
+    let declared = declared_diagnostics(&registry, &[]).expect("a first-party declaration joins");
+    assert_eq!(declared.len(), 1);
+    let d = declared[0];
+    assert_eq!(
+        (d.code, d.class, d.severity, d.slug, d.retired),
+        (
+            6990,
+            Class::Plugins,
+            Severity::Actionable,
+            "s3-code-6990",
+            false
+        )
+    );
+    assert_eq!(d.banner().to_string(), "BUSBAR-6990");
+
+    let acme = SigningKey::from_bytes(&[8u8; 32]);
+    let third = declaring_registry("third", "acme", &acme, vec![decl(6990, "actionable")]);
+    let refused = declared_diagnostics(&third, &[]).expect_err("a third party is refused");
+    assert!(refused.contains("not first-party"), "{refused}");
+
+    let taken = busbar_substrate_values::diagnostics::REGISTRY[0].code;
+    for (tag, bad) in [
+        ("taken", decl(taken, "actionable")),
+        ("class", decl(990, "actionable")),
+        ("severity", decl(6991, "loud")),
+    ] {
+        let registry = declaring_registry(tag, "busbar", &release, vec![bad]);
+        let refused = declared_diagnostics(&registry, &[]).expect_err(tag);
+        assert!(refused.starts_with("plugin 's3-"), "{tag}: {refused}");
+    }
+}

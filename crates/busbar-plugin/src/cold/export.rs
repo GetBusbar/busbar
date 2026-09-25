@@ -84,7 +84,9 @@ pub const EXPORT_ABI_VERSION: u32 = 3;
 /// 1 (K9a S1): the FIRST-PARTY METRIC NAMESPACE — a manifest's `declares.metrics`
 ///   ([`crate::cold::observe::SeriesDecl`]).
 /// 2 (K9a S2): the `validate` op ([`ExportRequest::Validate`] / [`ExportResponse::Validated`]).
-pub const EXPORT_ABI_MINOR: u32 = 2;
+/// 3 (K9a S3): PLUGIN DIAGNOSTICS — a manifest's `declares.diagnostics`
+///   ([`crate::cold::observe::DiagnosticDecl`]).
+pub const EXPORT_ABI_MINOR: u32 = 3;
 
 /// One observability stream an export sink can carry OUT of the engine — the FROZEN word-space of
 /// the export projection grammar, the same discipline as the hook phase names.

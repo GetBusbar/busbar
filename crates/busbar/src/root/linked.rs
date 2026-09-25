@@ -501,6 +501,7 @@ pub fn register_exports(dropped: Option<&'static busbar_plugin_loader::PluginReg
     let Some(registry) = dropped else {
         return;
     };
+    let _ = DROPPED.set(registry);
     if let Err(refusal) = shadowed_export(registry) {
         eprintln!("busbar: {refusal}");
         std::process::exit(2);
@@ -580,14 +581,89 @@ pub fn shadowed_export(registry: &busbar_plugin_loader::PluginRegistry) -> Resul
     }
 }
 
-/// THE DIAGNOSTICS AXIS: every entry's owned diagnostics, installed once.
+/// The plugin registry [`register_exports`] installed — read again by [`register_diagnostics`], so
+/// the configured `plugins.dir` is scanned once.
+static DROPPED: std::sync::OnceLock<&'static busbar_plugin_loader::PluginRegistry> =
+    std::sync::OnceLock::new();
+
+/// THE DIAGNOSTICS AXIS: every entry's owned diagnostics, and every first-party plugin's DECLARED
+/// ones (K9a S3), installed once. A declaration the catalogue refuses refuses the boot.
 pub fn register_diagnostics(linked: &Linked) {
-    let installed: Vec<&'static busbar_substrate_values::diagnostics::Diagnostic> = linked
+    let mut installed: Vec<&'static busbar_substrate_values::diagnostics::Diagnostic> = linked
         .diagnostics
         .iter()
         .flat_map(|diags| diags.iter().copied())
         .collect();
+    if let Some(registry) = DROPPED.get() {
+        match declared_diagnostics(registry, &installed) {
+            Ok(declared) => installed.extend(declared),
+            Err(refusal) => {
+                eprintln!("busbar: {refusal}");
+                std::process::exit(2);
+            }
+        }
+    }
     busbar_substrate_values::diagnostics::install_diagnostics(installed.leak());
+}
+
+/// PLUGIN DIAGNOSTICS (K9a S3): the catalogue entries `registry`'s plugins DECLARE
+/// (`declares.diagnostics`), one for one, beside the `taken` ones already installed. Only a
+/// first-party plugin (linked door, or signed by the release key) may declare a code; a code the
+/// catalogue already holds, a class that is not the host's, or a severity that is not a severity
+/// token is refused naming the plugin — a code is REGISTERED, never shadowed or renumbered.
+pub fn declared_diagnostics(
+    registry: &busbar_plugin_loader::PluginRegistry,
+    taken: &[&'static busbar_substrate_values::diagnostics::Diagnostic],
+) -> Result<Vec<&'static busbar_substrate_values::diagnostics::Diagnostic>, String> {
+    use busbar_substrate_values::diagnostics::{Class, Diagnostic, Severity, REGISTRY};
+    let leak = |s: &str| -> &'static str { Box::leak(s.to_string().into_boxed_str()) };
+    let mut declared: Vec<&'static Diagnostic> = Vec::new();
+    for p in registry.linked().iter().chain(registry.loadable()) {
+        let (name, decls) = (&p.manifest.name, &p.manifest.declares.diagnostics);
+        if !decls.is_empty() && !p.first_party() {
+            return Err(format!(
+                "plugin '{name}' declares diagnostics but is not first-party; only a first-party \
+                 plugin's codes join the catalogue"
+            ));
+        }
+        for d in decls {
+            let refuse = |why: &str| {
+                Err(format!(
+                    "plugin '{name}' declares BUSBAR-{:04}: {why}",
+                    d.code
+                ))
+            };
+            let class = Class::ALL
+                .into_iter()
+                .find(|c| c.ordinal() == d.code / 1000);
+            let severity = [
+                Severity::BenignRecurring,
+                Severity::Actionable,
+                Severity::Fatal,
+            ]
+            .into_iter()
+            .find(|s| s.as_str() == d.severity);
+            let held = REGISTRY.iter().chain(taken).chain(&declared);
+            let (Some(class), Some(severity)) = (class, severity) else {
+                return refuse("its class or severity is not the host's");
+            };
+            if held.map(|h| h.code).any(|code| code == d.code) {
+                return refuse("the catalogue already holds that code");
+            }
+            declared.push(Box::leak(Box::new(Diagnostic {
+                code: d.code,
+                class,
+                slug: leak(&d.slug),
+                title: leak(&d.title),
+                severity,
+                summary: leak(&d.summary),
+                action: leak(&d.action),
+                since: leak(&d.since),
+                retired: false,
+            })));
+        }
+    }
+    Ok(declared)
 }
 
 /// THE WS-ACCEPT AXIS: each duplex entry installs its inbound arrivals — and none does when no entry

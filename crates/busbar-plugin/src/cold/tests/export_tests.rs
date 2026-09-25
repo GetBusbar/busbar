@@ -180,7 +180,7 @@ fn export_abi_version_is_three() {
 /// loader gates on stays put — pinned so a seam cannot land without saying so.
 #[test]
 fn export_abi_minor_counts_the_host_seams() {
-    assert_eq!((EXPORT_ABI_VERSION, EXPORT_ABI_MINOR), (3, 2));
+    assert_eq!((EXPORT_ABI_VERSION, EXPORT_ABI_MINOR), (3, 3));
 }
 
 /// S1's declaration wire: `{"name": …, "type": …}`, the same `type` token a reported metric carries.
@@ -335,4 +335,19 @@ fn the_validate_op_wire_is_pinned() {
         serde_json::to_value(&resp).expect("encode"),
         serde_json::json!({"Validated": ["export.tail.settings: no"]})
     );
+}
+
+/// S3's declaration wire: the catalogue entry's fields, one for one, and nothing else.
+#[test]
+fn a_declared_diagnostic_wire_is_pinned() {
+    let wire = serde_json::json!({
+        "code": 6990, "slug": "s", "title": "t", "severity": "actionable",
+        "summary": "m", "action": "a", "since": "1.6.0"
+    });
+    let d: crate::cold::observe::DiagnosticDecl =
+        serde_json::from_value(wire.clone()).expect("decode");
+    assert_eq!(serde_json::to_value(&d).expect("encode"), wire);
+    let mut extra = wire;
+    extra["retired"] = serde_json::json!(true);
+    assert!(serde_json::from_value::<crate::cold::observe::DiagnosticDecl>(extra).is_err());
 }
