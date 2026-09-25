@@ -271,92 +271,6 @@ fn host_selection_seam_unset_session_key_routes_to_substrate() {
     );
 }
 
-// ── W2.a: THE MCP PRODUCTION FLIP ───────────────────────────────────────────────────────────────
-// The shipped serving path for MCP `tools/call` now rides the unified kernel loop: the plane declares
-// its capability key and the composition root registers the kernel-loop runner under it at boot.
-
-#[cfg(feature = "plane-mcp")]
-#[test]
-fn install_flips_mcp_onto_the_unified_kernel_loop() {
-    // The composition-root install (main.rs calls this at boot) must register a kernel-loop runner
-    // under MCP's capability key — the per-plane FLIP. Before W2.a this was empty (dormant), so this
-    // asserts the shipped MCP path is genuinely swapped onto the unified loop, not the substrate loop.
-    crate::root::gauntlet_install::install();
-    assert!(
-        busbar_kernel::plane_host::gauntlet_runner_registered(busbar_mcp::PLANE_KEY),
-        "install() must register MCP ({}) onto the unified kernel loop — the W2.a flip",
-        busbar_mcp::PLANE_KEY,
-    );
-}
-
-// ── W2.b: THE REMAINING PRODUCTION FLIPS ────────────────────────────────────────────────────────
-// Every other plane now rides the unified kernel loop too. Each declares its capability key and the
-// composition root registers a kernel-loop runner under it at boot — one-shot for a2a/llm, session
-// for voice/streaming. Red-before-green: with the plane's `flip_*_to_kernel(..)` line removed from
-// install(), each of these asserts fails (no runner registered); with it present, they pass.
-
-#[cfg(feature = "plane-a2a")]
-#[test]
-fn install_flips_a2a_onto_the_unified_kernel_loop() {
-    crate::root::gauntlet_install::install();
-    assert!(
-        busbar_kernel::plane_host::gauntlet_runner_registered(busbar_a2a::PLANE_KEY),
-        "install() must register A2A ({}) onto the unified kernel loop — the W2.b flip",
-        busbar_a2a::PLANE_KEY,
-    );
-}
-
-#[cfg(feature = "proto-llm")]
-#[test]
-fn install_flips_llm_onto_the_unified_kernel_loop() {
-    crate::root::gauntlet_install::install();
-    assert!(
-        busbar_kernel::plane_host::gauntlet_runner_registered(busbar_llm::PLANE_KEY),
-        "install() must register the LLM native plane ({}) onto the unified kernel loop — the W2.b flip",
-        busbar_llm::PLANE_KEY,
-    );
-}
-
-#[cfg(feature = "plane-voice")]
-#[test]
-fn install_flips_voice_session_onto_the_unified_kernel_loop() {
-    // Voice/streaming is a SESSION plane, so the flip registers a SESSION runner (open-pass admit),
-    // asserted through the session read-side twin rather than the one-shot one.
-    crate::root::gauntlet_install::install();
-    assert!(
-        busbar_kernel::plane_host::session_runner_registered(busbar_voice::PLANE_KEY),
-        "install() must register the voice session plane ({}) onto the unified kernel loop — the W2.b flip",
-        busbar_voice::PLANE_KEY,
-    );
-}
-
-/// THE KEY A PLANE ASKS ITS RUNNER UNDER IS ITS DECLARATION'S KEY (K2d precondition).
-///
-/// Each plane's gauntlet asks the host-selection seam for a runner under `<crate>::PLANE_KEY` (the
-/// constant its pure plane / codec crate owns, re-exported), while the plane table registers it under
-/// `PLANE_DECLARATION.key`. `install()` may flip a plane by the second only while the two are one
-/// string: a drift would register the runner under a key the plane never asks for, and the plane
-/// would run the inline fallback with every flip still "present".
-#[test]
-fn every_flipped_plane_asks_for_its_runner_under_its_declaration_key() {
-    #[cfg(feature = "plane-mcp")]
-    {
-        assert_eq!(busbar_mcp::PLANE_KEY, busbar_plane_mcp::PLANE_KEY);
-        assert_eq!(busbar_mcp::PLANE_KEY, busbar_mcp::PLANE_DECLARATION.key);
-    }
-    #[cfg(feature = "plane-a2a")]
-    {
-        assert_eq!(busbar_a2a::PLANE_KEY, busbar_plane_a2a::PLANE_KEY);
-        assert_eq!(busbar_a2a::PLANE_KEY, busbar_a2a::PLANE_DECLARATION.key);
-    }
-    // `busbar_voice::PLANE_KEY` is `busbar_voice_codec::PLANE_KEY` re-exported (the binary has no
-    // edge to the codec crate); the declaration spells its own literal, so that is the pair to hold.
-    #[cfg(feature = "plane-voice")]
-    assert_eq!(busbar_voice::PLANE_KEY, busbar_voice::PLANE_DECLARATION.key);
-    #[cfg(feature = "proto-llm")]
-    assert_eq!(busbar_llm::PLANE_KEY, busbar_llm::PLANE_DECLARATION.key);
-}
-
 // ── THE KERNEL-LOOP AXES, READ OFF THE LINKED TABLE ────────────────────────────────────────────
 // Which planes ride the unified kernel loop is manifest data: a `[package.metadata.busbar.linked-axes]`
 // row carrying `gauntlet-one-shot` or `gauntlet-session` puts the plane's declaration key in
@@ -458,8 +372,8 @@ fn every_linked_plane_the_teller_ledger_runs_rides_the_kernel_loop() {
 
 /// THE ROOT'S PROSE AGREES WITH `install()` (item 238).
 ///
-/// The four tests above prove `install()` registers the kernel-loop runner for every plane in the
-/// build. The files that describe that runner used to call it DORMANT and "not the shipped path",
+/// The tests above prove `install()` registers the kernel-loop runner for every plane the build's
+/// linked table puts on a kernel-loop axis. The files that describe that runner used to call it DORMANT and "not the shipped path",
 /// and `install()`'s own doc said a key with no runner "fails closed" when `run_gauntlet` runs the
 /// inline fallback. An on-call engineer tracing a billing figure reads the prose first, so a
 /// contradiction there sends them to the wrong path. Every composition-root source file is read,
