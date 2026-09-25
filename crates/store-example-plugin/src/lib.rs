@@ -231,7 +231,7 @@ impl FileStore {
     /// read-modify-write really is atomic the way a real backend's single transaction is.
     ///
     /// The persist itself is ATOMIC, through this crate's own [`durable_write`] (inlined from
-    /// `busbar_api::durable::write` — kind-isolation §6.7 D2: it was the one non-shape symbol this
+    /// `busbar_api::durable::write`, the one non-shape symbol this
     /// crate took from `busbar-api`):
     /// sibling temp, fsync, rename, temp cleaned on every error path. The rename publish means even a
     /// reader that does NOT hold the lock (`read` below) sees either the old complete state or the new
@@ -267,7 +267,7 @@ impl FileStore {
 /// loss. On any error before the rename the temp is removed (an RAII guard, not a manual cleanup, so
 /// no early `?` can leave one behind) and `path` is left untouched.
 ///
-/// Inlined from `busbar_api::durable::write` (kind-isolation §6.7 D2): this plugin took exactly one
+/// Inlined from `busbar_api::durable::write`: this plugin took exactly one
 /// non-shape symbol from `busbar-api`, and a `kind: store` plugin's own persistence choke point does
 /// not need the rest of that crate's shared primitive (`DurableOpts`, `remove`, `create_dir_all`,
 /// fault injection) to make one JSON file durable. Same sequence, same guarantees, same temp-naming
