@@ -63,8 +63,6 @@
 // It comes off with the last plane switch, when `main()` calls into this module.
 #![allow(dead_code)]
 
-#[cfg(any(test, feature = "test-harness"))]
-pub mod a2a_kernel_rider;
 pub mod adapters;
 pub mod auth_bindings;
 pub mod cli;
@@ -93,3 +91,10 @@ pub mod units_mcp;
 #[cfg(feature = "root-voice")]
 pub mod units_voice;
 pub mod vocabulary;
+
+// The per-call metering shadow on the plane-neutral kernel bridge: a plane whose one flat charge
+// fires inside `drive` rides `gauntlet_kernel::run_gauntlet_via_kernel` byte- and money-identically
+// to the substrate gauntlet.
+#[cfg(test)]
+#[path = "tests/percall_meter_shadow.rs"]
+mod percall_meter_shadow;
