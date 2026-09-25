@@ -39,8 +39,17 @@ license = "Apache-2.0"
 # in particular neither reaches `libc`. That test is the one that matters here and is why
 # `sha256_hex` did NOT come with them: it is `sha2`, and `sha2 -> cpufeatures -> libc` is an open
 # owner ruling, not a dependency this crate may take on its own authority.
+#
+# `serde_json` and `async-trait` arrived with the plugin-facing half of `busbar-api` (DECISIONS
+# #83/#84, the per-kind traits and their shapes: `auth`, `hooks`, `secret`, `operation`). `serde_json` is the settings/rewrite carrier those shapes already spoke —
+# a `SecretModule` takes a settings `Map`, a rewrite reply is JSON arrays — and it resolves to
+# `itoa`/`memchr`/`serde_core`/`zmij` in `Cargo.lock`, none of which reaches `libc`. `async-trait`
+# is a proc-macro: it runs at compile time and links nothing into a plugin, and `RoutingPolicy`'s
+# every implementor already writes `#[async_trait]` against it.
 [dependencies]
 serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
 futures = { workspace = true }
 smallvec = { workspace = true }
 zeroize = { workspace = true }

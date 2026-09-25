@@ -10,6 +10,17 @@
 #![deny(missing_docs)]
 #![deny(missing_debug_implementations)]
 
+// THE PLUGIN-FACING HALF OF THE RETIRING API SHIM (DECISIONS #83: contract = shapes; #84: nothing
+// on the plugin path may link a crate holding semantics; #35(a): one capability trait per kind lands
+// here). `auth`, `hooks`, `secret` and `operation` are module-path-ONLY, byte-identical moves out of
+// `busbar-api`, which re-exports every item under its original name until the fold retires it. Two
+// names de-collided on the move (#35): `auth::AuthVerdict` (not `kinds::AuthOutcome`) and
+// `secret::SecretModuleError` (not `kinds::SecretError`). Nothing here is re-exported at the crate
+// root, so neither shadows the kind ABI's own spelling. `#[allow(missing_docs)]` travels with them
+// for the reason it travels with `records`: documenting a self-evident field or variant would EDIT
+// the moved surface.
+#[allow(missing_docs)]
+pub mod auth;
 pub mod authz;
 pub mod bounded;
 pub mod caps;
@@ -19,9 +30,13 @@ pub mod count;
 pub mod dest;
 pub mod duration;
 pub mod grammar;
+#[allow(missing_docs)]
+pub mod hooks;
 pub mod ids;
 pub(crate) mod json_grammar;
 pub mod kinds;
+#[allow(missing_docs)]
+pub mod operation;
 pub mod plane;
 pub mod plugin;
 pub mod redacted;
@@ -36,6 +51,8 @@ pub mod redacted;
 #[allow(missing_docs)]
 pub mod records;
 pub mod scratch;
+#[allow(missing_docs)]
+pub mod secret;
 pub mod signal;
 pub mod slice;
 pub mod spans;

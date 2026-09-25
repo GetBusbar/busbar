@@ -22,25 +22,29 @@
 
 mod auth;
 pub mod durable;
-mod hooks;
-pub mod operation;
 mod secret;
 mod store;
 pub mod usage_migration;
 
-pub use auth::{
-    constant_time_eq, sha256_hex, AuthModule, AuthOutcome, AuthPrincipal, CallerToken,
-    IdentityRefusal, Principal, UpstreamCreds,
+// THE PLUGIN CONTRACTS LEFT THIS CRATE (DECISIONS #83/#84; the per-kind traits are the contract's,
+// #35(a)). `auth`, `hooks`, `secret` and `operation` now live in `busbar_contract` under the same
+// module names, moved module-path-only and byte-identical; these lines keep every `busbar_api::…`
+// spelling resolving until the fold retires the crate. Two names were de-collided on the move (#35)
+// and are aliased back here: `AuthVerdict` → `AuthOutcome`, `SecretModuleError` → `SecretError`.
+pub use auth::{constant_time_eq, sha256_hex, UpstreamCreds};
+pub use busbar_contract::auth::{
+    AuthModule, AuthPrincipal, AuthVerdict as AuthOutcome, CallerToken, IdentityRefusal, Principal,
 };
-pub use auth::{
+pub use busbar_contract::auth::{
     AuthPlugin, BeginLogin, CompleteLogin, FieldKind, LoginField, LoginForm, LoginHop,
     LoginHttpResponse, LoginKind, LoginModule, LoginOutcome,
 };
-pub use hooks::{
+pub use busbar_contract::hooks::{
     BudgetBucketState, CallerIdentity, Candidate, HookStatus, PolicyError, PolicyResult,
     PromptProjection, RewriteReply, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
     TransformOutcome,
 };
+pub use busbar_contract::operation;
 // `Redacted` and the signal catalog LEFT THIS CRATE (DECISIONS #84) and are re-exported, not
 // defined, here. Both are SHAPES in the #83(d) sense — a redacting/zeroizing secret wrapper
 // whose `Debug` every implementation must agree prints nothing, and a wire/config key catalog
@@ -48,10 +52,10 @@ pub use hooks::{
 // (#38). These lines keep `busbar_api::Redacted`, `busbar_api::Signal`, `busbar_api::SignalBag`
 // and `busbar_api::SignalValue` resolving for every caller that already spells them that way.
 pub use busbar_contract::redacted::Redacted;
-pub use secret::{
-    resolve_builtin, resolve_builtin_string, SecretError, SecretErrorKind, SecretModule,
-    SecretResolve, SecretResult,
+pub use busbar_contract::secret::{
+    SecretErrorKind, SecretModule, SecretModuleError as SecretError, SecretResult,
 };
+pub use secret::{resolve_builtin, resolve_builtin_string, SecretResolve};
 // The config secret-reference type, re-exported from its own leaf crate so a plane crate names
 // `busbar_api::SecretRef` without a separate path dep.
 pub use busbar_contract::signal::{Signal, SignalBag, SignalValue};
