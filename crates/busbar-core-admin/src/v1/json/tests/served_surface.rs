@@ -486,6 +486,55 @@ async fn served_openapi_lists_only_the_configured_planes() {
             .collect()
     };
 
+    // Every `$ref` a JSON subtree names, so the components a set of operations references can be
+    // read off the document rather than typed into this test.
+    fn refs_in(v: &serde_json::Value, out: &mut BTreeSet<String>) {
+        match v {
+            serde_json::Value::Object(m) => {
+                for (k, x) in m {
+                    match (k.as_str(), x.as_str()) {
+                        ("$ref", Some(r)) => {
+                            if let Some(name) = r.strip_prefix("#/components/schemas/") {
+                                out.insert(name.to_string());
+                            }
+                        }
+                        _ => refs_in(x, out),
+                    }
+                }
+            }
+            serde_json::Value::Array(a) => a.iter().for_each(|x| refs_in(x, out)),
+            _ => {}
+        }
+    }
+
+    // ── every plane section configured: the components ONLY plane operations reference ──
+    let sections = ["tools", "agents"];
+    let app = crate::new_test_app()
+        .governance(gov("served-openapi-token"))
+        .plane_sections(&sections)
+        .build();
+    let full = served_openapi(app).await;
+    let plane_owned: BTreeSet<String> = sections
+        .iter()
+        .flat_map(|s| plane_paths(&full, s))
+        .collect();
+    let (mut by_plane, mut by_rest) = (BTreeSet::new(), BTreeSet::new());
+    for (path, item) in full["paths"].as_object().expect("paths") {
+        let into = if plane_owned.contains(path) {
+            &mut by_plane
+        } else {
+            &mut by_rest
+        };
+        refs_in(item, into);
+    }
+    let plane_only: BTreeSet<String> = by_plane.difference(&by_rest).cloned().collect();
+    let full_schemas = full["components"]["schemas"].as_object().expect("schemas");
+    assert!(
+        !plane_only.is_empty() && plane_only.iter().all(|n| full_schemas.contains_key(n)),
+        "a node configuring every plane section serves the components only its plane operations \
+         reference ({plane_only:?}) — without them the check below would pass vacuously"
+    );
+
     // ── a 1.5.5 config: no plane section at all ──
     let app = crate::new_test_app()
         .governance(gov("served-openapi-token"))
@@ -526,10 +575,10 @@ async fn served_openapi_lists_only_the_configured_planes() {
     );
     // No component survives that only a dropped plane operation referenced.
     let schemas = doc["components"]["schemas"].as_object().expect("schemas");
-    for plane_only in ["McpTrustView", "A2aTrustView"] {
+    for name in &plane_only {
         assert!(
-            !schemas.contains_key(plane_only),
-            "{plane_only} is referenced only by unconfigured plane operations and was served"
+            !schemas.contains_key(name),
+            "{name} is referenced only by unconfigured plane operations and was served"
         );
     }
 

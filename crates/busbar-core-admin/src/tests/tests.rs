@@ -1,6 +1,11 @@
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
+use busbar_kernel::proto::PROTO_ANTHROPIC;
 use busbar_kernel::test_support::warn_capture::WarnCapture;
 use std::sync::Arc;
+
+/// The OpenAPI 3 Operation Object's status-keyed field, spelled once. It is the OpenAPI
+/// specification's own key, not a busbar or instance word.
+const OAS_OPERATION_STATUSES: &str = "responses"; // plane-purity: frozen-wire OpenAPI 3 Operation Object field name, fixed by the OpenAPI specification
 
 /// Build a `GovState` that CAN mint 1.5.0 signed-token keys: it carries a deterministic
 /// `TokenSigner` (fixed key bytes + the default kid) so `POST /keys` issues a `bbk_` token instead
@@ -1088,7 +1093,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
 
     let body = serde_json::json!({
         "providers": {
-            "test-provider": {"protocol": "anthropic", "base_url": "http://127.0.0.1:1/", "api_key_env": "BUSBAR_TEST_APPLY_NO_KEY"}
+            "test-provider": {"protocol": PROTO_ANTHROPIC, "base_url": "http://127.0.0.1:1/", "api_key_env": "BUSBAR_TEST_APPLY_NO_KEY"}
         },
         "config": {
             "listen": "127.0.0.1:0",
@@ -1164,11 +1169,13 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
     let config_path = dir.join("config.yaml");
     std::fs::write(
         &providers_path,
-        "test-provider:
-  protocol: anthropic
+        format!(
+            "test-provider:
+  protocol: {PROTO_ANTHROPIC}
   base_url: http://127.0.0.1:1/
   api_key_env: BUSBAR_TEST_RELOAD_NO_SUCH_KEY
-",
+"
+        ),
     )
     .unwrap();
     // Disk truth: the SAME identity as the running lane (m0 @ test-provider) plus a NEW model.
@@ -4681,9 +4688,9 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
                 METHODS.contains(&method.as_str()),
                 "{path} documents `{key}`, which is no admin operation method"
             );
-            let statuses = op["responses"]
+            let statuses = op[OAS_OPERATION_STATUSES]
                 .as_object()
-                .unwrap_or_else(|| panic!("{method} {path} documents no responses"))
+                .unwrap_or_else(|| panic!("{method} {path} documents no status"))
                 .keys()
                 .cloned()
                 .collect();
@@ -4778,7 +4785,7 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
                 ));
             } else if !statuses.contains(&answer.0.to_string()) {
                 failures.push(format!(
-                    "{m} {path} answered {} which its documented responses {statuses:?} do not \
+                    "{m} {path} answered {} which its documented statuses {statuses:?} do not \
                      list: {}",
                     answer.0, answer.1
                 ));
@@ -9654,11 +9661,13 @@ fn write_reset_fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, st
     let config_path = dir.join("config.yaml");
     std::fs::write(
         &providers_path,
-        "test-provider:
-  protocol: anthropic
+        format!(
+            "test-provider:
+  protocol: {PROTO_ANTHROPIC}
   base_url: http://127.0.0.1:1/
   api_key_env: BUSBAR_TEST_RESET_NO_SUCH_KEY
-",
+"
+        ),
     )
     .unwrap();
     // Base config: one model/pool + a base group `team` with a month budget. This IS the truth a
@@ -11177,11 +11186,13 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_crede
     std::fs::write(&token_path, "admintok-v1").unwrap();
     std::fs::write(
         &providers_path,
-        "test-provider:
-  protocol: anthropic
+        format!(
+            "test-provider:
+  protocol: {PROTO_ANTHROPIC}
   base_url: http://127.0.0.1:1/
   api_key_env: BUSBAR_TEST_GOV_ROTATE_NO_SUCH_KEY
-",
+"
+        ),
     )
     .unwrap();
     // `auth.admin_auth` DECLARES the admin-tokens module with a file-backed ref — the precondition
@@ -13910,11 +13921,13 @@ fn write_named_map_fixture(
     let config_path = dir.join("config.yaml");
     std::fs::write(
         &providers_path,
-        "test-provider:
-  protocol: anthropic
+        format!(
+            "test-provider:
+  protocol: {PROTO_ANTHROPIC}
   base_url: http://127.0.0.1:1/
   api_key_env: BUSBAR_TEST_NAMEDMAP_NO_SUCH_KEY
-",
+"
+        ),
     )
     .unwrap();
     std::fs::write(
@@ -13938,12 +13951,12 @@ identity-providers:
     module: admin-tokens
     token: { file: ADMIN_TOKEN_FILE }
 tools:
-  base-mcp:
-    url: https://mcp.internal/fs
+  base-tools:
+    url: https://tools.internal/fs
     pin: { mechanism: cert_spki, key: \"sha256/BASE=\" }
 agents:
   base-agent:
-    url: https://a2a.example/planner
+    url: https://agents.example/planner
     pin:
       mechanism: unpinned
 "
@@ -14007,10 +14020,12 @@ async fn named_map_app_opts(
     tokio::task::JoinHandle<()>,
 ) {
     busbar_kernel::metrics::init();
-    busbar_mcp::testkit::install_test_seams();
-    busbar_a2a::testkit::install_test_seams();
     let (dir, config_path, providers_path) =
         write_named_map_fixture(tag, reference_corp_ad, base_export);
+    // Disk truth, read back before the paths move into the fixture: the plane sections below are
+    // seeded from it.
+    let disk: serde_yaml::Value =
+        serde_yaml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
     // The DEFAULT overlay filename next to config.yaml — the same path `load_config_from_disk`
     // resolves for a config with no explicit `config.overlay` block. A named-map mutation rebuilds
     // from disk truth PLUS the on-disk overlay, so a fixture whose live overlay path differed from
@@ -14034,48 +14049,54 @@ async fn named_map_app_opts(
             }))
             .unwrap(),
         );
-    // The MCP plane's base entry, seeded to match config.yaml exactly (a `TestApp` does not parse
+    // The plane sections' base entries, seeded FROM config.yaml itself (a `TestApp` does not parse
     // config.yaml, so without this the read surface and disk truth would disagree and the
-    // base-protection guard would be measuring the disagreement rather than the guard). Seeded
-    // through the NEUTRAL runtime-slot seam (the plane crate builds the `McpRuntime` and hands it back
-    // type-erased) rather than the `busbar_mcp` `.mcp_server(...)` builder, so this in-crate helper
-    // names no plane type across the crate boundary.
+    // base-protection guard would be measuring the disagreement rather than the guard). Each section
+    // reaches its plane through the NEUTRAL registry — the decl that owns the config section parses
+    // it and builds the runtime, exactly as `appbuild` does at boot — so this helper names no plane,
+    // no plane crate and no plane type.
+    let owner = |section: &str| {
+        busbar_kernel::plane::registry::plane_decl_for_config_section(section)
+            .unwrap_or_else(|| panic!("no plane is registered to own the `{section}:` section"))
+    };
+    let parse = |section: &str| {
+        let decl = owner(section);
+        let parse = decl
+            .parse_section
+            .unwrap_or_else(|| panic!("the `{section}:` plane parses its own section"));
+        let cfg = parse(&disk[section]).unwrap_or_else(|e| panic!("`{section}:` parses: {e}"));
+        (
+            decl,
+            std::sync::Arc::<dyn busbar_kernel::plane::config::PlaneCfg>::from(cfg),
+        )
+    };
+    // `tools:` — a per-generation runtime built through the plane's own `build_runtime`, installed
+    // under its runtime slot.
     {
-        let mut tools = busbar_mcp::mcp::config::ToolsCfg::default();
-        tools.servers.insert(
-            "base-mcp".to_string(),
-            serde_json::from_value(serde_json::json!({
-                "url": "https://mcp.internal/fs",
-                "pin": {"mechanism": "cert_spki", "key": "sha256/BASE="}
-            }))
-            .unwrap(),
-        );
+        let (decl, cfg) = parse("tools");
+        let build = decl
+            .build_runtime
+            .expect("the `tools:` plane builds its runtime from its section");
         builder.install_plane_runtime(
-            busbar_kernel::state::runtime_slot_key("mcp"),
-            busbar_mcp::testkit::mcp_runtime_with_servers(tools),
+            busbar_kernel::state::runtime_slot_key(decl.key),
+            build(cfg.as_any(), None),
         );
     }
-    // The A2A plane's base entry, mirroring the fixture config above — set as the App's type-erased
-    // `agents:` handle through the neutral seam (the admin agents named-map reads it), again naming no
-    // plane type on this side of the boundary.
+    // `agents:` — the App's type-erased named-definition handle (the admin agents named-map reads
+    // it), and the plane object its admin verbs re-read the registry off, built from the SAME
+    // section through the plane's own `build` so the runtime this generation carries holds
+    // `base-agent` (or a patch of it 404s).
     {
-        let mut agents = busbar_a2a::a2a::config::AgentsCfg::default();
-        agents.agents.insert(
-            "base-agent".to_string(),
-            serde_yaml::from_str("url: https://a2a.example/planner\npin:\n  mechanism: unpinned\n")
-                .unwrap(),
-        );
-        builder.set_plane_defs_any(
-            busbar_a2a::PLANE_DECL.key,
-            std::sync::Arc::new(agents.clone()),
-        );
-        // The A2A admin verbs re-read the agent registry off the plane's OWN runtime slot (the same
-        // shape as MCP above), so the runtime this generation carries must hold `base-agent` or a patch
-        // of it 404s. Build the plane from the same `AgentsCfg` and install it under the A2A slot.
-        if let Some(plane) =
-            busbar_a2a::a2a::plane::A2aPlane::from_config(&agents, Some("https://busbar.example"))
-        {
-            builder.install_plane_runtime(busbar_a2a::PLANE_DECL.key, plane);
+        let (decl, cfg) = parse("agents");
+        builder.set_plane_defs_any(decl.key, cfg.clone());
+        let ctx = busbar_kernel::plane::registry::BuildCtx {
+            endpoint_slot: None,
+            agent_defs: cfg.as_any(),
+            public_url: Some("https://busbar.example"),
+            prior: None,
+        };
+        if let Some(plane) = (decl.build)(&ctx) {
+            builder.install_plane_runtime(decl.key, plane);
         }
     }
     builder = if base_export {
@@ -15004,7 +15025,7 @@ async fn drive_named_map_errors() {
     for (section, base) in [
         ("identity-providers", "base-idp"),
         ("export", "base-metrics"),
-        ("tools", "base-mcp"),
+        ("tools", "base-tools"),
         ("agents", "base-agent"),
     ] {
         let c = |label: &str,

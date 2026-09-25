@@ -111,47 +111,51 @@ fn build_with_hook_makes_an_mcp_attach_live() {
         return;
     };
     // The ONLY thing this test reads of the `tools.fs` registration is its hook ATTACH
-    // (`hooks: [screen]`), whose resolution lands in `App::mcp_server_gates`. Drive that through
-    // core's NEUTRAL container-hook seam rather than the `busbar_mcp` `.mcp_server(McpServerDefCfg)`
-    // builder, so this in-crate unit test names no plane config type across the crate boundary (the
-    // full end-to-end `.mcp_server(...)` path is covered by `tests/plane_integration.rs`).
+    // (`hooks: [screen]`), whose resolution lands in the plane's gate map. Drive that through core's
+    // NEUTRAL container-hook seam, keyed by the plane the registry says owns the `tools:` section, so
+    // this in-crate unit test names no plane, no plane crate and no plane config type (the full
+    // end-to-end builder path is covered by the plane crate's own integration tests).
     let mut builder = crate::new_test_app().hook_env(env);
+    let tools = busbar_kernel::plane::registry::plane_decl_for_config_section("tools")
+        .expect("a plane is registered to own the `tools:` section");
     builder.set_container_hooks(
-        busbar_mcp::PLANE_DECL.key,
+        tools.key,
         vec![("fs".to_string(), vec!["screen".to_string()])],
         Vec::new(),
     );
     // The `reresolve_gates` seam re-reads the SERVER REGISTRY off the plane's runtime slot, so the
     // runtime this generation carries must actually hold the `fs` server (with its `hooks: [screen]`
-    // attach) for the re-resolution under test to have anything to resolve. Install it through the MCP
-    // test-kit's neutral runtime builder — an in-crate `#[cfg(test)]` reach across the dev-dep edge, the
-    // same one `admin::tests` uses — so `build()`'s default empty runtime is not what gets read back.
+    // attach) for the re-resolution under test to have anything to resolve. Build it the way
+    // `appbuild` does — the owning plane parses its own section and builds its runtime from it — so
+    // `build()`'s default empty runtime is not what gets read back.
     {
-        let mut tools = busbar_mcp::mcp::config::ToolsCfg::default();
-        tools.servers.insert(
-            "fs".to_string(),
-            serde_json::from_value(serde_json::json!({
-                "url": "https://mcp.internal/fs",
-                "pin": {"mechanism": "cert_spki", "key": "sha256/BASE="},
-                "hooks": ["screen"]
-            }))
-            .unwrap(),
-        );
+        let section: serde_yaml::Value = serde_yaml::from_str(
+            "fs:\n  url: https://tools.internal/fs\n  pin: { mechanism: cert_spki, key: \"sha256/BASE=\" }\n  hooks: [screen]\n",
+        )
+        .unwrap();
+        let parse = tools
+            .parse_section
+            .expect("the plane parses its own section");
+        let cfg = parse(&section).expect("the `tools:` section parses");
+        let build = tools
+            .build_runtime
+            .expect("the plane builds its runtime from its section");
         builder.install_plane_runtime(
-            busbar_kernel::state::runtime_slot_key("mcp"),
-            busbar_mcp::testkit::mcp_runtime_with_servers(tools),
+            busbar_kernel::state::runtime_slot_key(tools.key),
+            build(cfg.as_any(), None),
         );
     }
     let app = builder.build();
     assert!(
-        !app.plane_gates("mcp").is_some_and(|g| g.contains_key("fs")),
+        !app.plane_gates(tools.key)
+            .is_some_and(|g| g.contains_key("fs")),
         "the attach names a hook no registry entry defines yet, so it resolves to nothing"
     );
 
     let next = build_with_hook(&app, "screen", hook(HookKind::Gate, false))
         .expect("a valid gate registers");
     assert_eq!(
-        next.plane_gates("mcp")
+        next.plane_gates(tools.key)
             .and_then(|g| g.get("fs"))
             .map(|g| g.len())
             .unwrap_or_default(),
@@ -2331,11 +2335,11 @@ async fn validate_config_pins_the_scan_to_the_running_plugins_dir() {
         r#"
 listen: "0.0.0.0:8080"
 providers:
-  anthropic:
-    api_key: {{ env: ANTHROPIC_API_KEY }}
+  upstream:
+    api_key: {{ env: UPSTREAM_API_KEY }}
 models:
   claude:
-    provider: anthropic
+    provider: upstream
 pools:
   main:
     members:
@@ -2352,11 +2356,12 @@ plugins:
     );
     let deploy: busbar_kernel::config::DeployCfg =
         serde_yaml::from_str(&yaml).expect("test DeployCfg yaml must parse");
-    let def: busbar_kernel::config::ProviderDef = serde_yaml::from_str(
-        "protocol: anthropic\nbase_url: https://api.anthropic.com\nerror_map:\n  \"400\": client_error\n",
-    )
+    let def: busbar_kernel::config::ProviderDef = serde_yaml::from_str(&format!(
+        "protocol: {}\nbase_url: https://upstream.example\nerror_map:\n  \"400\": client_error\n",
+        busbar_kernel::proto::PROTO_ANTHROPIC
+    ))
     .unwrap();
-    let defs = std::collections::HashMap::from([("anthropic".to_string(), def)]);
+    let defs = std::collections::HashMap::from([("upstream".to_string(), def)]);
 
     let view = svc
         .validate_config(deploy, defs)
@@ -2387,8 +2392,8 @@ mod dated_rate_card_history {
     use busbar_kernel_ledger::cost::{Author, CardEntryDraft, History, RateCard, TierRates};
 
     /// The one priced lane. It is a metering row's `model` and a card entry's lane, spelled once.
-    const LANE: &str = "m-openai-chat";
-    const PROVIDER: &str = "openai-chat";
+    const LANE: &str = "m-priced-chat";
+    const PROVIDER: &str = "priced-chat";
     const KEY: &str = "vk_payg";
     /// One thousand input tokens per row, so a rate of N micro-units per token reads back as
     /// exactly `N * 1_000` micro-units and the cards separate arithmetically.
@@ -3218,8 +3223,8 @@ mod one_recorded_usage_every_surface {
 
     /// The one lane the recorded usage was served on — a metering row's `model`, a card entry's
     /// lane, and a `LedgerEntry`'s `lane`, spelled once so no surface can be reading another name.
-    const LANE: &str = "m-openai-chat";
-    const PROVIDER: &str = "openai-chat";
+    const LANE: &str = "m-priced-chat";
+    const PROVIDER: &str = "priced-chat";
     const KEY: &str = "vk_auditor";
     /// One thousand input tokens per posting, so a rate of N micro-units per token reads back as
     /// exactly `N * 1_000` micro-units and the two cards separate arithmetically.
@@ -3613,7 +3618,7 @@ mod plane_fees_on_admin_usage {
 
     const KEY: &str = "vk_plane_fees";
     const LLM_MODEL: &str = "m";
-    const LLM_PROVIDER: &str = "openai-chat";
+    const LLM_PROVIDER: &str = "priced-chat";
     /// The plane with `fees.per_request: 3`.
     const FEE_PLANE: &str = "tp";
     /// A plane that configured no fees.
@@ -3701,14 +3706,14 @@ mod plane_fees_on_admin_usage {
         Arc::new(GovState::new(store, None).unwrap())
     }
 
-    /// Serve `llm` pools calls and `plane` calls on `plane` exactly as the host does: the admission
+    /// Serve `pool_calls` pools calls and `calls` calls on `plane` exactly as the host does: the admission
     /// (the budget book — the pools pool unqualified, the plane's pool qualified by its key) and
     /// the metering row (the plane's subject in `model`, its key in `provider`). Returns the budget
     /// book's spend (minor units) and `/admin/usage`'s total spend (micro-units).
     ///
     /// The app is built BEFORE the plane registry is seeded: building it registers the neutral test
     /// plane, which would re-lock the registry an isolation already holds on this thread.
-    async fn serve(llm: usize, plane: &str, calls: usize) -> (i64, i64) {
+    async fn serve(pool_calls: usize, plane: &str, calls: usize) -> (i64, i64) {
         let gov = gov();
         let cost = cost();
         let app = crate::new_test_app()
@@ -3718,7 +3723,7 @@ mod plane_fees_on_admin_usage {
         let _planes = TestRegistryIsolation::seeded(&[&POOLS, &FEE, &FREE]);
         let now = busbar_kernel::store::now();
         let key = key();
-        for _ in 0..llm {
+        for _ in 0..pool_calls {
             assert!(gov.try_admit(&cost, &key, "", now).is_ok(), "a pools call");
             gov.record_metering(KEY, LLM_MODEL, LLM_PROVIDER, None, now);
         }
