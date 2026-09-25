@@ -61,6 +61,18 @@ models:
     .unwrap();
 }
 
+/// A config that configures the plane owning `tools:` and NOTHING else — no provider, no model — so
+/// it validates on any build that links that plane, whatever other planes (and their provider wire
+/// codecs) the build carries.
+fn write_tools_only_configs(dir: &Path, extra: &str) {
+    std::fs::write(dir.join("providers.yaml"), "").unwrap();
+    std::fs::write(
+        dir.join("config.yaml"),
+        format!("listen: \"127.0.0.1:0\"\nproviders: {{}}\nmodels: {{}}\n{extra}"),
+    )
+    .unwrap();
+}
+
 /// The variable `validate_notes_unset_interpolated_env_vars_by_name` relies on being ABSENT. Named
 /// here because [`run_busbar`] is what has to guarantee that, per child.
 const UNSET_INTERPOLATION_VAR: &str = "BUSBAR_CLI_VALIDATE_TEST_UNSET_VAR";
@@ -940,14 +952,15 @@ fn validate_fails_on_unresolvable_browser_login_client_secret() {
 ///
 /// GATED ON the linked `stdio-serve` axis (`linked_axis_stdio_serve`, emitted by build.rs from
 /// `[package.metadata.busbar.linked-axes]`): the collision check lives in the plane that owns
-/// `tools:`, the linked row carrying that axis, and is compiled out with it: a `--no-default-features` binary has no `tools:` plane to collide in, so
-/// `--validate` exiting 0 there is the correct answer, not the missed refusal this test exists to
-/// pin. Same shape as the `auth-admin-tokens` gate above.
+/// `tools:`, the linked row carrying that axis, and is compiled out with it — a binary without that
+/// plane has no `tools:` to collide in, so `--validate` exiting 0 there is the correct answer, not the
+/// missed refusal this test exists to pin. The config configures that plane and nothing else (no
+/// provider, no model), so the test runs on every build that links it, whatever else is linked.
 #[cfg(linked_axis_stdio_serve)]
 #[test]
 fn validate_refuses_a_publish_as_collision_with_a_namespaced_default() {
     let dir = fixture_dir("publish-as-collision");
-    write_configs(
+    write_tools_only_configs(
         &dir,
         r#"tools:
   foo:
@@ -978,7 +991,7 @@ fn validate_refuses_a_publish_as_collision_with_a_namespaced_default() {
     // GREEN, one name changed and nothing else: the refusal is about the collision, not about
     // `publish_as:` existing. Without this half the test above is satisfied by a build that refuses
     // every override.
-    write_configs(
+    write_tools_only_configs(
         &dir,
         r#"tools:
   foo:

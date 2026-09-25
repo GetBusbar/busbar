@@ -141,6 +141,31 @@ fn verify(
     min_hook_fields: usize,
     min_asymmetries: usize,
 ) -> Result<Summary, String> {
+    verify_scoped(
+        matrix,
+        ledger,
+        allow,
+        columns,
+        min_hook_fields,
+        min_asymmetries,
+        true,
+    )
+}
+
+/// [`verify`], told whether EVERY plane is linked into this build. With the whole roster the
+/// staleness check is exact. With part of it, an allowlist row can only be judged for a plane that
+/// is linked, and only on the one question the part can answer: the plane that row says is `None`
+/// now FILLS the hook. A row for an unlinked plane, or one whose `Some` sibling is not linked here,
+/// is not stale — it is unobservable in this build.
+fn verify_scoped(
+    matrix: &Matrix,
+    ledger: &serde_json::Value,
+    allow: &serde_json::Value,
+    columns: &BTreeMap<&str, &[&str]>,
+    min_hook_fields: usize,
+    min_asymmetries: usize,
+    every_plane_linked: bool,
+) -> Result<Summary, String> {
     if matrix.len() < min_hook_fields {
         return Err(format!(
             "only {} hook fields reflected (floor {min_hook_fields}). A matrix that lost its rows \
@@ -276,6 +301,9 @@ fn verify(
     let stale: Vec<String> = declared_set
         .iter()
         .filter(|c| !asymmetric_nones.contains(*c))
+        .filter(|(f, p)| {
+            every_plane_linked || matrix.get(f).and_then(|row| row.get(p)).copied() == Some(true)
+        })
         .map(|(f, p)| format!("{f}×{p}"))
         .collect();
     if !stale.is_empty() {
@@ -321,13 +349,14 @@ fn installed_plane_decls_are_behaviourally_isomorphic_or_declared() {
     let ledger = read_json(&root.join("qa/capability-equality.json"));
     let allow = read_json(&root.join("qa/plane-hook-isomorphism.allow"));
 
-    let summary = verify(
+    let summary = verify_scoped(
         &matrix,
         &ledger,
         &allow,
         &columns_map(),
         MIN_HOOK_FIELDS,
         MIN_ASYMMETRIES,
+        cfg!(linked_every_plane),
     )
     .unwrap_or_else(|e| panic!("plane isomorphism: {e}"));
 
@@ -338,11 +367,13 @@ fn installed_plane_decls_are_behaviourally_isomorphic_or_declared() {
         installed_decls().len(),
         summary.asymmetric_nones.len(),
     );
-    assert_eq!(
-        summary.declared,
-        summary.asymmetric_nones.len(),
-        "declared count must equal the reflected asymmetric-None count exactly"
-    );
+    if cfg!(linked_every_plane) {
+        assert_eq!(
+            summary.declared,
+            summary.asymmetric_nones.len(),
+            "declared count must equal the reflected asymmetric-None count exactly"
+        );
+    }
 }
 
 /// The `root-*` legs THIS BUILD CARRIES, reflected one feature at a time. See the twin in
@@ -566,6 +597,45 @@ fn selftest_undeclared_asymmetric_none_is_red() {
         .expect_err("an undeclared asymmetric None must be red");
     assert!(
         err.contains("UNDECLARED") && err.contains("h0×p_b"),
+        "got: {err}"
+    );
+}
+
+/// PART OF THE ROSTER LINKED: a row whose `Some` sibling is not linked is unobservable, not stale —
+/// while a row whose own plane now FILLS the hook is still RED. The whole-roster verdict on the same
+/// matrix stays exact.
+#[test]
+fn selftest_a_partial_roster_scopes_staleness_to_what_it_can_observe() {
+    let (full, ledger, allow, cols) = fixtures();
+    // Only `p_b` linked: its `h0` None has no linked `Some` sibling to be asymmetric against.
+    let mut part: Matrix = BTreeMap::new();
+    for (field, row) in &full {
+        let mut r = BTreeMap::new();
+        r.insert("p_b".to_string(), row["p_b"]);
+        part.insert(field.clone(), r);
+    }
+    verify_scoped(&part, &ledger, &allow, &cols, 15, 1, false)
+        .expect("a row whose sibling is not linked is unobservable in a partial build, not stale");
+    let err = verify_scoped(&part, &ledger, &allow, &cols, 15, 1, true)
+        .expect_err("with the whole roster claimed, the same row is stale");
+    assert!(
+        err.contains("STALE") && err.contains("h0×p_b"),
+        "got: {err}"
+    );
+    // A row declaring `p_b` None on a hook `p_b` FILLS is stale in any build.
+    let mut allow_filled = allow.clone();
+    allow_filled["asymmetries"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "field": "h1", "planes_none": ["p_b"], "capability": "cap-x",
+            "reason": "a fixture argument long enough to be an actual reviewable argument here"
+        }));
+    let err = verify_scoped(&part, &ledger, &allow_filled, &cols, 15, 1, false).expect_err(
+        "a plane that fills the hook it is declared None on is stale in a partial build",
+    );
+    assert!(
+        err.contains("STALE") && err.contains("h1×p_b"),
         "got: {err}"
     );
 }

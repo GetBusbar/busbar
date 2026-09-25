@@ -14,11 +14,11 @@ use busbar_kernel::registry::{check_claims, claims_overlap, ConflictReason, Plug
 /// the test that reads it for what a change to this snapshot means. The rows are fixture DATA
 /// (`fixtures/sealed_order.txt`, one `<plane key> <selector>` row per claim), so this source names
 /// no plane.
-#[cfg(all(feature = "plane-voice", feature = "plane-decision"))]
+#[cfg(linked_every_plane)]
 const SEALED_ORDER: &str = include_str!("fixtures/sealed_order.txt");
 
 /// The claim count each plane of the shipped composition declares (`<plane key> <claims>` rows).
-#[cfg(all(feature = "plane-voice", feature = "plane-decision"))]
+#[cfg(linked_every_plane)]
 const CLAIMS_PER_PLANE: &str = include_str!("fixtures/claims_per_plane.txt");
 
 /// Whether this build links a plane on the kernel's SESSION loop (the `gauntlet-session` axis of the
@@ -111,7 +111,7 @@ fn seven_transports_and_five_planes_register() {
 /// should have to say so here.
 // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
 // because the numbers below are that composition's, not a subset of it.
-#[cfg(all(feature = "plane-voice", feature = "plane-decision"))]
+#[cfg(linked_every_plane)]
 #[test]
 fn the_planes_declare_fifty_claims() {
     let claims = plane_claims();
@@ -159,7 +159,7 @@ fn the_planes_declare_fifty_claims() {
 /// plane (item 251) added one more — its `/v1/models` against the llm plane's tail pattern — for 64.
 // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
 // because the numbers below are that composition's, not a subset of it.
-#[cfg(all(feature = "plane-voice", feature = "plane-decision"))]
+#[cfg(linked_every_plane)]
 #[test]
 fn one_hundred_and_sixty_four_cross_plane_pairs_overlap() {
     use busbar_kernel::grammar::family;
@@ -203,7 +203,7 @@ fn one_hundred_and_sixty_four_cross_plane_pairs_overlap() {
 /// account of itself. There is none, and the assertion is that there is none.
 // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
 // because the numbers below are that composition's, not a subset of it.
-#[cfg(all(feature = "plane-voice", feature = "plane-decision"))]
+#[cfg(linked_every_plane)]
 #[test]
 fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
     use busbar_contract::grammar::PathSeg;
@@ -250,7 +250,7 @@ fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
 /// which is the whole claim of this file — the declared set of planes seals.
 // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
 // because the numbers below are that composition's, not a subset of it.
-#[cfg(all(feature = "plane-voice", feature = "plane-decision"))]
+#[cfg(linked_every_plane)]
 #[test]
 fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
     let claims = plane_claims();
@@ -291,7 +291,7 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
 /// respelled has to update it, on purpose, with the new order visible in the same diff.
 // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
 // because the numbers below are that composition's, not a subset of it.
-#[cfg(all(feature = "plane-voice", feature = "plane-decision"))]
+#[cfg(linked_every_plane)]
 #[test]
 fn the_sealed_order_of_the_fifty_claims_is_pinned() {
     let claims = plane_claims();
@@ -578,7 +578,7 @@ fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
 /// composition and a node that boots.
 // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
 // because the numbers below are that composition's, not a subset of it.
-#[cfg(all(feature = "plane-voice", feature = "plane-decision"))]
+#[cfg(linked_every_plane)]
 #[test]
 fn the_seal_answers_now_that_every_claim_names_a_registered_transport() {
     let sealed = seal(ClientSettings::default()).expect("every claim names a live transport");
