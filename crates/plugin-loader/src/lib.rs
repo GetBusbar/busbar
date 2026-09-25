@@ -62,10 +62,13 @@ pub use export::{load_export_from_bytes, DynExport};
 // the same reason the endpoint types above are: the engine names these through the loader
 // rather than taking a second, direct dependency on the ABI crate.
 pub use busbar_plugin::cold::export::{ExportField, ExportStream};
+/// The HOT-lane plane declaration, re-exported for the reason the endpoint types above are: the
+/// composition root names the decl a linked plane exports through the loader, not a second edge.
+pub use busbar_plugin::hot::PlaneDecl as HotPlaneDecl;
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
 pub use highwater::{HighWaterMarks, HIGH_WATER_FILE};
 pub use hook::DlopenPolicy;
-pub use plane::{load_plane, load_plane_from_bytes, DynPlane};
+pub use plane::{link_plane, load_plane, load_plane_from_bytes, DynPlane};
 pub use registry::{
     inventory as inventory_tarballs, scan_and_validate, supported_abi, InventoryEntry,
     LoadablePlugin, PluginRegistry, SkippedPlugin,

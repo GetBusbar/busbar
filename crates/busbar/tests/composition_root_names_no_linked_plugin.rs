@@ -181,6 +181,7 @@ fn the_generator_emits_the_enabled_rows_in_manifest_order() {
 one = []
 two = []
 three = []
+four = []
 unit-a = []
 unit-b = []
 
@@ -188,11 +189,13 @@ unit-b = []
 one = "busbar-first"
 two = "busbar-second"
 three = "busbar-third"
+four = "busbar-fourth"
 
 [package.metadata.busbar.linked-axes]
 one = "plane protocols"
 two = "plane egress"
 three = "plane diagnostics egress"
+four = "hot-plane"
 
 [package.metadata.busbar.linked-entry]
 busbar-third = "crate::root::third_half"
@@ -201,7 +204,7 @@ busbar-third = "crate::root::third_half"
 unit-a = "alpha"
 unit-b = "beta"
 "#;
-    let enabled = |f: &str| matches!(f, "one" | "three" | "unit-b");
+    let enabled = |f: &str| matches!(f, "one" | "three" | "four" | "unit-b");
     let (out, cfgs) = linked_source(manifest, &enabled);
     let first = out
         .find("extern crate busbar_first as _;")
@@ -218,6 +221,10 @@ unit-b = "beta"
     assert!(out.contains("assemble(crate::root::third_half::PLANE_DECLARATION, crate::root::third_half::PLANE_HOOKS)"));
     assert!(out.contains("    protocols: &[busbar_first::linked::PROTOCOLS, ],\n"));
     assert!(out.contains("    diagnostics: &[crate::root::third_half::DIAGNOSTICS, ],\n"));
+    assert!(
+        out.contains("    hot_planes: &[&busbar_fourth::linked::PLANE_DECL, ],\n"),
+        "the plane axis's HOT lane references the entry's C-ABI decl: {out}"
+    );
     assert!(
         out.contains("    stdio_serve: &[],\n"),
         "an axis nobody lists is empty: {out}"

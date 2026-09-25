@@ -356,6 +356,7 @@ dependencies = [
  "busbar-plane-llm",
  "busbar-plane-mcp",
  "busbar-plane-streaming",
+ "busbar-plugin-example-plane",
  "busbar-plugin-loader",
  "busbar-store-example-plugin",
  "busbar-substrate-values",

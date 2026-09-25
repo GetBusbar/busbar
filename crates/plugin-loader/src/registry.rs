@@ -480,6 +480,17 @@ impl PluginRegistry {
         }
         crate::plane::load_plane_from_bytes(&p.lib_bytes, &p.manifest.name, &p.manifest.kind)
     }
+
+    /// Open EVERY loadable plane, in scan (filename) order, through [`Self::open_plane`] — the planes
+    /// a dropped-in plugins directory contributes to the plane axis. The first that will not load
+    /// fails the whole set, naming it: a trusted plane that cannot be admitted is not skipped.
+    pub fn open_planes(&self) -> Result<Vec<crate::DynPlane>, String> {
+        self.loadable
+            .iter()
+            .filter(|p| p.manifest.kind == busbar_plugin::cold::kind::PLANE)
+            .map(|p| self.open_plane(&p.manifest.name))
+            .collect()
+    }
 }
 
 /// Discover plugin tarballs (`*.tar.gz` / `*.tgz`) in `dir`, sorted by filename. A missing

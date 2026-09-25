@@ -24,7 +24,8 @@
 // so the two are written in each crate rather than shared by a path that climbs out of one of them.
 
 /// A registration axis: its manifest name, the `LINKED` field it fills, and the entry item a crate
-/// that registers on it exports. The plane axis is the one exception, built below (two items, joined).
+/// that registers on it exports. The plane axis is the one exception, built below (two items, joined),
+/// and its HOT lane (`hot-plane`: the entry's `#[repr(C)]` `PLANE_DECL`, referenced) beside it.
 pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("protocols", "protocols", "PROTOCOLS"),
     ("path-ingress", "path_ingress", "PATH_INGRESS"),
@@ -143,6 +144,7 @@ pub(crate) fn linked_source(
         for axis in &list {
             assert!(
                 axis == "plane"
+                    || axis == "hot-plane"
                     || AXES.iter().any(|(a, _, _)| a == axis)
                     || SEAMS.iter().any(|(a, _)| a == axis),
                 "Cargo.toml: `{krate}` names an unknown linked axis `{axis}`"
@@ -195,6 +197,11 @@ pub(crate) fn linked_source(
          static LINKED: crate::root::linked::Linked = crate::root::linked::Linked {\n    \
          planes: &LINKED_PLANES,\n",
     );
+    out.push_str("    hot_planes: &[");
+    for e in on_axis("hot-plane") {
+        out.push_str(&format!("&{e}::PLANE_DECL, "));
+    }
+    out.push_str("],\n");
     for (axis, field, item) in AXES {
         out.push_str(&format!("    {field}: &["));
         for e in on_axis(axis) {

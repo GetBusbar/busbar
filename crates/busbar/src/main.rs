@@ -203,13 +203,16 @@ fn register_protocols() {
     root::linked::register_protocols(&LINKED, ROOT_UNITS);
 }
 
-/// REGISTER THE LINKED PLANES — the composition root's one write into the plane axis
-/// (`busbar_kernel::plane::registry::install_planes`), over the plane table of [`LINKED`]: each
-/// entry's contract declaration joined kernel-side to its behaviour (`PlaneDecl::assemble`). `merged_boot_plane_decls` normalises the
-/// installed set to canonical layering order, so each row lands in its own slot regardless of the
-/// table's order. Then the two unconditional seams, then every root unit's seal.
+/// REGISTER THE PLANES — the composition root's one write into the plane axis
+/// (`busbar_kernel::plane::registry::install_planes`), over the plane tables of [`LINKED`] (each
+/// entry's contract declaration joined kernel-side to its behaviour, `PlaneDecl::assemble`, and each
+/// linked HOT-lane plane) and the HOT-lane planes dropped into the configured `plugins.dir` — the
+/// linked and the dropped-in ones adapted by one function (`root::linked::hot_plane_row`).
+/// `merged_boot_plane_decls` normalises the installed set to canonical layering order, so each row
+/// lands in its own slot regardless of the table's order. Then the two unconditional seams, then
+/// every root unit's seal.
 fn register_planes() {
-    root::linked::register_planes(&LINKED);
+    root::linked::register_planes(&LINKED, root::linked::dropped_planes_from_config());
 
     // THE AUTHORIZATION-SERVER PLANE'S SEAM, registered UNCONDITIONALLY (no feature flag — see the
     // manifest note on the `busbar-oauth2` dependency), before any config loads. Mirrors

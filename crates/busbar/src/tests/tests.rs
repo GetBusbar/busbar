@@ -1163,7 +1163,7 @@ fn main_rs_doc_claims_match_the_code_beside_them() {
         .find("\nfn register_planes() {")
         .expect("register_planes")..];
     let register_planes = &register_planes[..register_planes.find("\n}\n").expect("it closes")];
-    assert!(register_planes.contains("root::linked::register_planes(&LINKED)"));
+    assert!(register_planes.contains("root::linked::register_planes(&LINKED, "));
     assert!(
         !MAIN.contains("is not pushed here yet"),
         "register_planes' doc says A2A is not pushed, and the function registers it"

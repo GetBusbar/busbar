@@ -26,15 +26,14 @@
 //! because this crate may not name `busbar-kernel`). So `PlaneDecl` + [`PlaneHostVtable`] are no
 //! longer the 0-caller ABI `docs/design/BUSBAR-1.6.0.md` §11a forbids.
 //!
-//! WHAT IS GENUINELY NOT HERE, stated as a measurement rather than a filing: a dropped-in plane is
-//! driven through [`DynPlane`], not yet INSTALLED into `busbar_kernel::plane::registry` beside the
-//! compiled-in decls. Two things are missing for that — an adapter from this C-ABI decl to the native
-//! Rust `PlaneDecl` the registry seals, and manifest-CARRIED claims — and both belong to the same
-//! change that routes the kernel's own request loop through `&PlaneHostVtable` rather than
-//! `&dyn EngineHost`, because until the loop is unified there is no single seam for an adapted decl to
-//! be installed ON. That change is `docs/design/1.6.0-TRACKER.md`'s H6, in this release, with an owner;
-//! it is NOT deferred past 1.6.0 and nothing here should be read as filing it away. [`DynPlane`] is the
-//! boundary-safe handle it adapts.
+//! ONE ADMISSION, BOTH DOORS. A plane dropped into `plugins/` reaches the composition root as a
+//! [`DynPlane`] through [`load_plane_from_bytes`]; the SAME plane linked into the binary reaches it as
+//! a [`DynPlane`] through [`link_plane`] — the same airlock, the same size bound, the same vocabulary
+//! reads, with no library behind it. The root adapts either onto the plane axis through one function
+//! (`crates/busbar/src/root/linked.rs`, `register_planes`), so a registry row cannot tell which door
+//! its plane came in by (#2 rule (1)). What the row does NOT yet carry is the plane's DRIVE: the
+//! kernel's request loop still runs every plane through `&dyn EngineHost`, not `&PlaneHostVtable`
+//! (`docs/design/1.6.0-TRACKER.md` H6 part 1, in this release, with an owner).
 
 use crate::stage;
 use busbar_plugin::hot::decl::{
@@ -472,6 +471,15 @@ pub fn load_plane_from_bytes(
 ) -> Result<DynPlane, String> {
     let (lib, staged) = stage::load_library_from_bytes(bytes, display)?;
     wire_up_plane(lib, display.to_string(), manifest_kind, Some(staged))
+}
+
+/// Admit a plane LINKED into this binary through exactly the admission a dropped-in one gets: the
+/// frozen preamble, the attested-size bound and the capped vocabulary reads of [`assemble`], over
+/// the plane's own `'static` decl rather than one resolved out of a mapped library. The composition
+/// root adapts the result through the same function it adapts a dropped-in [`DynPlane`] through, so
+/// the two doors cannot disagree about what a plane declares.
+pub fn link_plane(decl: &'static PlaneDecl, display: &str) -> Result<DynPlane, String> {
+    assemble(decl, display.to_string(), None, None)
 }
 
 /// Load a plane from the `cdylib` at `lib_path`. A bare path load has no signed manifest, so the

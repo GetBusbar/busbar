@@ -11,8 +11,11 @@
 //! `linked` entry module — a `linked_*` cfg per root-bound seam an enabled entry drives, and the
 //! `ROOT_UNITS` table of each enabled root module's [`RootUnit`]. `main.rs` includes it and hands the
 //! tables to the functions below — and they are the SAME functions a plugin dropped into `plugins/`
-//! feeds, once its loaded declaration is adapted onto the same axes (#2 rule (1): compiled in or
-//! dropped in, same contract, same loading path). Nothing here asks where a row came from.
+//! feeds (#2 rule (1): compiled in or dropped in, same contract, same loading path). On the plane
+//! axis that is literal: a HOT-lane plane dropped into `plugins/` ([`dropped_planes`]) and the same
+//! plane linked into the build ([`Linked::hot_planes`]) are both admitted by the loader into a
+//! `DynPlane` and adapted onto the axis by the one [`hot_plane_row`]. Nothing here asks where a row
+//! came from.
 //!
 //! What a plugin STATES about itself (its plane declaration) is contract data; what the kernel RUNS
 //! for it is typed by the kernel's own seams (its plane hooks, protocol declarations, arrivals,
@@ -28,7 +31,9 @@ use std::sync::Arc;
 
 use busbar_kernel::ingress::arrival::{BodyIngressEntry, PathIngressEntry};
 use busbar_kernel::plane::registry::PlaneDecl;
+use busbar_kernel::plane::registry::{PlaneDeclaration, PlaneHooks};
 use busbar_kernel::plane_host::{EngineHost, LiveHostFactory};
+use busbar_plugin_loader::{DynPlane, HotPlaneDecl};
 
 /// A provider composition step, captured off the resolved configuration before the app is built and
 /// run once the deployment's secret resolver exists.
@@ -42,6 +47,10 @@ pub type StdioServe =
 pub struct Linked {
     /// The plane axis: each entry's contract declaration joined kernel-side to its hooks.
     pub planes: &'static [PlaneDecl],
+    /// The plane axis, HOT lane: each linked plane that exports a `#[repr(C)]` plane declaration
+    /// (`busbar_plugin::hot::PlaneDecl`) instead of Rust hooks — admitted and adapted exactly as the
+    /// same plane dropped into `plugins/` is (see [`register_planes`]).
+    pub hot_planes: &'static [&'static HotPlaneDecl],
     /// Protocol declarations, appended to the installed protocol set in this order.
     pub protocols: &'static [&'static [&'static busbar_kernel::proto::ProtocolDecl]],
     /// URL-model arrivals, by protocol name.
@@ -137,10 +146,165 @@ fn replaced<F: Copy + 'static>(
         .unwrap_or(arrival)
 }
 
-/// THE PLANE AXIS: every entry's registry row, installed once.
-pub fn register_planes(linked: &Linked) {
-    let installed: Vec<&'static PlaneDecl> = linked.planes.iter().collect();
-    busbar_kernel::plane::registry::install_planes(installed.leak());
+/// THE PLANE AXIS: every entry's registry row and every HOT-lane plane's — linked or dropped in —
+/// installed once. A plane whose declaration the loader will not admit refuses the boot (exit 2)
+/// whichever door it came in by, before any listener binds.
+pub fn register_planes(linked: &Linked, dropped: Vec<DynPlane>) {
+    match plane_rows(linked, dropped) {
+        Ok(rows) => busbar_kernel::plane::registry::install_planes(rows.leak()),
+        Err(refusal) => {
+            eprintln!("busbar: {refusal}");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// The rows [`register_planes`] installs, in install order: the linked Rust-hook planes, then the
+/// linked HOT-lane planes, then the dropped-in ones — each HOT-lane plane admitted by the loader
+/// (`link_plane` for a linked decl, the `plugins/` load for a dropped one) and adapted by the one
+/// [`hot_plane_row`]. The kernel's boot fold (`merged_boot_plane_decls`) then orders, dedups and
+/// claim-checks them without knowing which door any came in by.
+pub fn plane_rows(
+    linked: &Linked,
+    dropped: Vec<DynPlane>,
+) -> Result<Vec<&'static PlaneDecl>, String> {
+    let mut hot = linked
+        .hot_planes
+        .iter()
+        .map(|decl| busbar_plugin_loader::link_plane(decl, "linked plane"))
+        .collect::<Result<Vec<DynPlane>, String>>()?;
+    hot.extend(dropped);
+    // The HOT-lane planes live as long as the process, as a linked plane's image does, and so do the
+    // rows read off them: the batch is kept once, the same way the installed row list is.
+    let hot: &'static [DynPlane] = hot.leak();
+    let scopes: &'static [&'static str] =
+        hot.iter().map(DynPlane::scope).collect::<Vec<_>>().leak();
+    let hot_rows: &'static [PlaneDecl] = hot
+        .iter()
+        .zip(scopes)
+        .map(|(plane, scope)| hot_plane_row(plane, scope))
+        .collect::<Result<Vec<PlaneDecl>, String>>()?
+        .leak();
+    Ok(linked.planes.iter().chain(hot_rows).collect())
+}
+
+/// ADAPT ONE HOT-LANE PLANE onto the plane axis — the ONE function a linked and a dropped-in plane
+/// both pass through. The row's contract declaration is read off the plane's own vocabulary: its
+/// `name` is the registry key, its `section_key` the declaring section, its `scope` (kept beside it,
+/// `scope`) the one grant kind. The C ABI's decl states nothing else a `PlaneDeclaration` holds — no
+/// nouns (so the key stands in for each), no owned sections, billable classes, fee units, card
+/// domain or path claims — so those are empty rather than invented. Its hooks are
+/// [`HOT_PLANE_HOOKS`].
+pub fn hot_plane_row(
+    plane: &'static DynPlane,
+    scope: &'static &'static str,
+) -> Result<PlaneDecl, String> {
+    let key = plane.name();
+    if key.is_empty() || plane.section_key().is_empty() {
+        return Err(format!(
+            "plane {plane:?} declares no name or no config section; a plane is installed by its \
+             name and configured by its section"
+        ));
+    }
+    let scope_kinds: &'static [&'static str] = match *scope {
+        "" => &[],
+        _ => std::slice::from_ref(scope),
+    };
+    let declaration = PlaneDeclaration {
+        key,
+        fallback: false,
+        config_section: plane.section_key(),
+        scope_kinds,
+        subject_noun: key,
+        admin_noun: key,
+        audit_kind: key,
+        card_signing_domain: None,
+        card_kid_prefix: None,
+        owned_config_sections: &[],
+        billable_classes: &[],
+        fee_units: &[],
+    };
+    Ok(PlaneDecl::assemble(declaration, HOT_PLANE_HOOKS))
+}
+
+/// THE KERNEL HOOKS OF A HOT-LANE PLANE: the inert set (claims no path, binds no audience, builds no
+/// slot), because the kernel's request loop does not yet drive a plane through its C-ABI slots —
+/// `docs/design/1.6.0-TRACKER.md` H6 part 1. The same set for every HOT-lane plane, whichever door.
+pub const HOT_PLANE_HOOKS: PlaneHooks = PlaneHooks {
+    wire_format_names: || &[],
+    claims: |_| Vec::new(),
+    admission: |_| None,
+    build: |_| None,
+    routes: None,
+    admin_routes: None,
+    openapi: None,
+    hydrate: None,
+    start: None,
+    config_validate: None,
+    named_def_list: None,
+    named_def_get: None,
+    registry_contains: None,
+    reresolve_gates: None,
+    openapi_schemas: None,
+    on_swap: None,
+    parse_section: None,
+    parse_endpoint: None,
+    lower_endpoint: None,
+    build_runtime: None,
+    viewer: None,
+    retain_verify_gates: None,
+    default_section: None,
+    resolve_provider: None,
+};
+
+/// THE PLANES DROPPED INTO `dir`: every tarball the loader's three-phase scan admits under `policy`
+/// whose signed kind is `plane`, loaded over the HOT-tier ABI from its verified bytes, in the scan's
+/// (filename) order. A scan the loader refuses yields no plane here — the plugins preflight reads the
+/// same directory under the same policy later in boot and refuses it there with every problem named;
+/// a trusted plane that will not LOAD is a refusal here, as a linked plane's would be.
+pub fn dropped_planes(
+    dir: &std::path::Path,
+    policy: &busbar_plugin_loader::sign::TrustPolicy,
+) -> Result<Vec<DynPlane>, String> {
+    let Ok(registry) = busbar_plugin_loader::scan_and_validate(dir, policy) else {
+        return Ok(Vec::new());
+    };
+    registry.open_planes()
+}
+
+/// THE PLANES DROPPED INTO THE CONFIGURED `plugins.dir`, read before the plane axis is installed —
+/// so before the configuration is parsed, which needs that axis. Only the kernel-owned `plugins:`
+/// block is read, off the same file and environment interpolation the boot load uses; the trust
+/// policy and the persisted first-party floors are resolved as the preflight resolves them. No
+/// `plugins:` block, `enabled: false`, or no readable file: no planes, and the directory is not read.
+pub fn dropped_planes_from_config() -> Vec<DynPlane> {
+    let path =
+        crate::root::cli::resolve_config_path(crate::root::cli::config_path_flag().as_deref());
+    let plugins = std::fs::read_to_string(path).ok().and_then(|raw| {
+        let text = busbar_kernel::config::interpolate_env_with(
+            &raw,
+            busbar_kernel::config::EnvSubst::Lenient,
+            &mut Vec::new(),
+        )
+        .ok()?;
+        let doc: serde_yaml::Value = serde_yaml::from_str(&text).ok()?;
+        serde_yaml::from_value::<busbar_kernel::config::PluginsCfg>(doc.get("plugins")?.clone())
+            .ok()
+    });
+    let Some(plugins) = plugins.filter(|p| p.enabled) else {
+        return Vec::new();
+    };
+    let Ok(mut policy) = plugins.to_policy() else {
+        return Vec::new();
+    };
+    let data_dir = busbar_kernel::preflight::fleet_data_dir();
+    policy.first_party_high_water = busbar_plugin_loader::HighWaterMarks::load(data_dir.as_deref())
+        .0
+        .marks();
+    dropped_planes(std::path::Path::new(&plugins.dir), &policy).unwrap_or_else(|refusal| {
+        eprintln!("busbar: {refusal}");
+        std::process::exit(2);
+    })
 }
 
 /// THE DIAGNOSTICS AXIS: every entry's owned diagnostics, installed once.
@@ -196,3 +360,7 @@ pub fn seal(units: &[&RootUnit]) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/linked.rs"]
+mod tests;
