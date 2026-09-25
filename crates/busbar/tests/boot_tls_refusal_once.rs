@@ -10,7 +10,11 @@
 //! the same prefix a second time (since 029230dd7), so the line read `TLS configuration error for
 //! '<addr>': TLS configuration error for '<addr>': …`. This boots the real binary on the oracle's own
 //! mutation (non-PEM bytes resolved from the environment) and counts the prefix.
-#![cfg(unix)]
+//!
+//! The fixture is an LLM config (`providers:`/`models:`/`pools:`), so it needs the LLM plane in the
+//! build: without `proto-llm` no plane owns those sections and boot refuses them before the listener
+//! is ever reached — the same gate every LLM-config boot test in `cli_validate.rs` carries.
+#![cfg(all(unix, feature = "proto-llm"))]
 
 use std::path::PathBuf;
 use std::process::Command;
