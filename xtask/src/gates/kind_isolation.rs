@@ -1528,6 +1528,11 @@ struct CrateInfo {
     remainder: Vec<String>,
     /// The instance this crate is an instance OF, when its remainder names one.
     instance: Option<String>,
+    /// THE KEYS A TRANSPORT CRATE DECLARES (#50): every `const KEY: &'static str = "…";` in an
+    /// `impl TransportMeta for …` under its `src/`. One crate may carry several wires — `http`
+    /// holds `grpc` and `sse` since the dep-wall §6.5 fold — and each declared key is transport
+    /// vocabulary exactly as a crate named for it would be. Empty for every other kind.
+    declared_keys: Vec<String>,
     /// THE SHIPPED DEPENDENCY DECLARATIONS — `[dependencies]`, `[build-dependencies]` and both of
     /// their per-target forms, with `package = …` and `[workspace.dependencies]` renames resolved.
     /// See [`crate::manifest`] for the five spellings the one-section reader could not see.
@@ -1856,14 +1861,21 @@ fn census(cx: &Ctx) -> Result<Vec<CrateInfo>, String> {
         // by the registration.
         let kind = overrides.get(name.as_str()).copied().or(kind);
         let (deps, dev_deps) = deps_of(&text, &renames);
+        let dir = manifest_dir(&rel);
+        let declared_keys = if kind == Some("transport") {
+            declared_transport_keys(cx, &dir)
+        } else {
+            Vec::new()
+        };
         out.push(CrateInfo {
-            dir: manifest_dir(&rel),
+            dir,
             manifest: rel,
             name,
             kind,
             family: family_of(kind),
             remainder,
             instance: None,
+            declared_keys,
             deps,
             dev_deps,
             ambiguous,
@@ -1873,8 +1885,44 @@ fn census(cx: &Ctx) -> Result<Vec<CrateInfo>, String> {
     Ok(out)
 }
 
+/// The registry keys a transport crate DECLARES: each `const KEY` inside an
+/// `impl TransportMeta for …` block of a `.rs` file under `<dir>/src`. Read off the source, never
+/// typed here, so a wire folded into a sibling crate stays a transport word on the commit that folds
+/// it, and a wire added as a module teaches this gate its name the way a new crate would.
+fn declared_transport_keys(cx: &Ctx, dir: &str) -> Vec<String> {
+    let spec = WalkSpec::new([format!("{dir}/src")])
+        .ext("rs")
+        .allow_empty();
+    let Ok(files) = cx.walk(&spec) else {
+        return Vec::new();
+    };
+    let mut keys = Vec::new();
+    for f in files {
+        let mut in_meta = false;
+        for line in f.text.lines() {
+            let t = line.trim();
+            if t.starts_with("impl ") && t.contains("TransportMeta for ") {
+                in_meta = true;
+            } else if in_meta && t.starts_with("const KEY: &'static str = \"") {
+                if let Some(key) = t
+                    .strip_prefix("const KEY: &'static str = \"")
+                    .and_then(|r| r.strip_suffix("\";"))
+                {
+                    keys.push(key.to_string());
+                }
+                in_meta = false;
+            } else if t == "}" && !line.starts_with(' ') {
+                in_meta = false;
+            }
+        }
+    }
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
 /// The instance vocabularies, DERIVED: plane instances are the plane crates' names, transport
-/// instances are the transport crates' names.
+/// instances are the transport crates' names AND every key a transport crate declares.
 fn vocabularies(crates: &[CrateInfo]) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut planes = BTreeSet::new();
     let mut transports = BTreeSet::new();
@@ -1890,6 +1938,7 @@ fn vocabularies(crates: &[CrateInfo]) -> (BTreeSet<String>, BTreeSet<String>) {
             }
             Some("transport") => {
                 transports.insert(c.remainder.join("-"));
+                transports.extend(c.declared_keys.iter().cloned());
             }
             _ => {}
         }
@@ -8639,6 +8688,44 @@ mod plant_tests {
         load_registry(cx).expect("the registry reads")
     }
 
+    /// A WIRE A TRANSPORT CRATE DECLARES IS TRANSPORT VOCABULARY (#50), read off its
+    /// `impl TransportMeta` rather than off its crate name, so a wire folded into a sibling crate
+    /// (the dep-wall §6.5 fold) stays a transport word. Every transport crate declares its own id,
+    /// and a key declared by a module planted inside another transport crate joins the vocabulary.
+    #[test]
+    fn a_declared_transport_key_is_transport_vocabulary() {
+        let cx = ws();
+        let crates = census(&cx).expect("the census reads");
+        let transports: Vec<&CrateInfo> = crates
+            .iter()
+            .filter(|c| c.kind == Some("transport"))
+            .collect();
+        assert!(
+            !transports.is_empty(),
+            "the census found no transport crate"
+        );
+        for c in &transports {
+            let id = c.remainder.join("-");
+            assert!(
+                c.declared_keys.contains(&id),
+                "{} declares {:?}, not its own id `{id}`",
+                c.name,
+                c.declared_keys
+            );
+        }
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-tcp/src/planted_wire/meta.rs",
+            "impl TransportMeta for PlantedWire {\n    const KEY: &'static str = \"plantedwire\";\n}\n",
+        );
+        let planted = cx.with_overlay(ov);
+        let (_, ports) = vocabularies(&census(&planted).expect("the planted census reads"));
+        assert!(
+            ports.contains("plantedwire"),
+            "a declared key did not join the transport vocabulary: {ports:?}"
+        );
+    }
+
     /// THE PLANT MUST BITE against the tree it is planted over: no removal of a path that tree has
     /// not got, and at least one change it does not already carry.
     fn assert_bites(base: &Ctx, ov: &Overlay) {
@@ -9018,6 +9105,7 @@ mod plant_tests {
             family: Family::Neutral,
             remainder: Vec::new(),
             instance: None,
+            declared_keys: Vec::new(),
             deps: Vec::new(),
             dev_deps: Vec::new(),
             ambiguous: Vec::new(),

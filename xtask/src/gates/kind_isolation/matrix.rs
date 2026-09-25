@@ -236,6 +236,25 @@ fn vocabulary(crates: &[CrateInfo]) -> BTreeMap<&'static str, Vec<Needle>> {
             owner: c.name.clone(),
             id: String::new(),
         });
+        // A WIRE A CRATE DECLARES IS VOCABULARY LIKE ONE IT IS NAMED FOR (#50). `http` holds
+        // `grpc` and `sse` as modules since the dep-wall §6.5 fold, each registering under its own
+        // key, so each key is a transport instance's bare and kind-qualified id, owned by the crate
+        // that declares it — exactly the needles a crate named for that wire contributed.
+        for key in &c.declared_keys {
+            if own_id(c).as_deref() == Some(key.as_str()) {
+                continue;
+            }
+            entry.push(Needle {
+                word: format!("{kind}-{key}"),
+                owner: c.name.clone(),
+                id: key.clone(),
+            });
+            entry.push(Needle {
+                word: key.clone(),
+                owner: c.name.clone(),
+                id: key.clone(),
+            });
+        }
         let Some(id) = own_id(c) else { continue };
         let mut ids = vec![id.clone()];
         for (from, to, _) in PLANE_ALIASES {
