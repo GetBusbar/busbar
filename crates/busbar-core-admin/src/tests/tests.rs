@@ -4586,73 +4586,323 @@ async fn test_admin_v1_config_effective_snapshot_no_secrets() {
     handle.abort();
 }
 
-/// `GET /api/v1/admin/openapi.json` returns a valid OpenAPI 3.1 doc, and — the DRIFT GUARD — every GET
-/// path it documents (from V1_GET_PATHS) actually resolves on the live router (never a phantom
-/// endpoint in the discovery contract). Also asserts the stable error `code` enum is present.
+/// ROUTER ↔ DOCUMENT PARITY FOR THE WHOLE ADMIN SURFACE (item 370), in both directions, over the
+/// document the node actually SERVES (`GET /openapi.json`, every plane configured so nothing is
+/// filtered out) — never a hand-kept list of paths.
+///
+/// It used to walk the 14-entry `V1_GET_PATHS` constant, so every non-GET verb, every named-map
+/// section route and every plane trust verb had no proof it resolved, and nothing checked that the
+/// router serves nothing the document omits. Now:
+///
+/// 1. DOCUMENT → ROUTER: every documented `(method, path)` this crate's router answers is asked
+///    live, and must answer neither the router's unmatched-path fallback nor a 405 — and the status
+///    it answers must be one of the operation's documented response codes. The kernel loop's
+///    operations (the closed-table rows the NODE's administrative loop answers, not this router)
+///    are excluded by the table, never by anything the document says about itself.
+/// 2. ROUTER → DOCUMENT, per path: on every documented path, every method the document does NOT
+///    list must answer the router's 405 (or the unmatched fallback) — a handler hung on an extra
+///    method of a documented path is an undocumented operation.
+/// 3. ROUTER → DOCUMENT, per route: every `(method, path)` the JSON transport mounts by literal
+///    `.route(..)` (read out of the router's own source, `v1/json/mod.rs`) is documented. The
+///    loop-mounted routes (named-map sections, plane trust verbs) come from the same registries the
+///    document is generated from and are reconciled by `served_surface.rs`.
+///
+/// Also pins the document's identity and the stable error-code enum.
 #[tokio::test]
 async fn test_admin_v1_openapi_paths_all_resolve() {
+    use std::collections::{BTreeMap, BTreeSet};
+    const PREFIX: &str = busbar_kernel::admin::v1::contract::ADMIN_PREFIX;
+    const METHODS: [&str; 5] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
     busbar_kernel::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = crate::new_test_app().governance(gov).build();
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    crate::ensure_seam();
+    // Every plane configured: the served document is then unfiltered (Law 7 filters only
+    // unconfigured planes) and every plane admin route answers instead of its 404 gate.
+    let every_plane: Vec<&'static str> = busbar_kernel::plane::registry::plane_decls()
+        .iter()
+        .map(|d| d.config_section)
+        .collect();
+    // A FRESH node per path probed: every write probe spends the per-principal admin mutation
+    // budget (10/min on the config class), so one node cannot answer a hundred writes honestly —
+    // it would answer the limiter's 429 instead of the operation.
+    let spawn = || {
+        let gov = gov_with_signer(Arc::new(MemoryStore::new()), Some("admintok".to_string()));
+        let app = crate::new_test_app()
+            .governance(gov)
+            .plane_sections(&every_plane)
+            .build();
+        let router = crate::build_router(app);
+        async move {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+            (addr, handle)
+        }
+    };
     let client = reqwest::Client::new();
+    let ask = |addr: std::net::SocketAddr, method: &str, path: &str| {
+        let method = reqwest::Method::from_bytes(method.as_bytes()).unwrap();
+        let req = client
+            .request(method.clone(), format!("http://{addr}{path}"))
+            .header("x-admin-token", "admintok");
+        // An unparseable body on every write: a served handler refuses it before it touches
+        // anything, and an unserved path answers its fallback either way.
+        let req = if method == reqwest::Method::GET {
+            req
+        } else {
+            req.header("content-type", "application/json").body("{")
+        };
+        async move {
+            let resp = req.send().await.unwrap();
+            (resp.status().as_u16(), resp.text().await.unwrap())
+        }
+    };
 
-    let doc: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/openapi.json"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let (addr, handle) = spawn().await;
+    let doc: serde_json::Value =
+        serde_json::from_str(&ask(addr, "GET", &format!("{PREFIX}/openapi.json")).await.1)
+            .expect("the served openapi.json parses");
     assert_eq!(doc["openapi"], "3.1.0");
     assert_eq!(doc["info"]["title"], "Busbar Admin API");
-    // The stable error code enum is documented.
     let codes = doc["components"]["schemas"]["Error"]["properties"]["error"]["properties"]["code"]
         ["enum"]
         .as_array()
         .unwrap();
     assert!(codes.iter().any(|c| c == "not_found"));
 
-    // The runtime hook mutation methods are documented in the discovery contract.
-    assert!(
-        doc["paths"]["/api/v1/admin/hooks"]["post"].is_object(),
-        "POST /api/v1/admin/hooks (register) must be in the openapi doc"
-    );
-    assert!(
-        doc["paths"]["/api/v1/admin/hooks/{name}"]["delete"].is_object(),
-        "DELETE /api/v1/admin/hooks/{{name}} (remove) must be in the openapi doc"
-    );
-
-    // DRIFT GUARD: every documented GET path is both listed in the doc AND actually mounted.
-    // V1_GET_PATHS entries are RELATIVE; the wire path derives from the contract prefix (whose
-    // literal value is pinned by its own golden test in contract.rs).
+    // The documented operations, read off the served document.
+    let mut documented: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
+    for (path, item) in doc["paths"].as_object().expect("paths") {
+        for (key, op) in item.as_object().expect("path item") {
+            if key.starts_with("x-") {
+                continue;
+            }
+            let method = key.to_ascii_uppercase();
+            assert!(
+                METHODS.contains(&method.as_str()),
+                "{path} documents `{key}`, which is no admin operation method"
+            );
+            let statuses = op["responses"]
+                .as_object()
+                .unwrap_or_else(|| panic!("{method} {path} documents no responses"))
+                .keys()
+                .cloned()
+                .collect();
+            documented.insert((method, path.clone()), statuses);
+        }
+    }
+    // Non-vacuity: the old constant's 14 GETs are a strict subset, and every verb is present.
     for (rel, _) in crate::v1::json::V1_GET_PATHS {
-        let path = format!("{}{rel}", busbar_kernel::admin::v1::contract::ADMIN_PREFIX);
         assert!(
-            doc["paths"][&path]["get"].is_object(),
-            "documented path {path} missing from openapi doc"
+            documented.contains_key(&("GET".to_string(), format!("{PREFIX}{rel}"))),
+            "GET {PREFIX}{rel} is missing from the served document"
         );
-        let status = client
-            .get(format!("http://{addr}{path}"))
-            .header("x-admin-token", "admintok")
-            .send()
-            .await
-            .unwrap()
-            .status();
-        assert_ne!(
-            status.as_u16(),
-            404,
-            "openapi documents {path} but the router does not mount it (phantom endpoint)"
+    }
+    for m in METHODS {
+        assert!(
+            documented.keys().any(|(dm, _)| dm == m),
+            "the served document documents no {m} operation at all"
         );
     }
 
+    // The kernel loop's operations: closed-table rows the NODE answers, not this router.
+    let loop_verbs: BTreeSet<&'static str> = crate::verb::NEW_VERBS
+        .iter()
+        .chain(crate::verb::LEDGER_VERBS)
+        .chain(crate::verb::AUDIT_VERBS)
+        .filter_map(|v| crate::verb::verb_name(*v))
+        .collect();
+    let kernel_loop: BTreeSet<(String, String)> = crate::admin_codec::verbs::table()
+        .into_iter()
+        .filter(|row| loop_verbs.contains(row.verb))
+        .map(|row| (row.method.to_string(), row.template.to_string()))
+        .collect();
+    let concrete = |path: &str| {
+        path.split('/')
+            .map(|seg| {
+                if seg.starts_with('{') {
+                    "resolve-probe"
+                } else {
+                    seg
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("/")
+    };
+    let mut fallback: BTreeMap<&str, (u16, String)> = BTreeMap::new();
+    for m in METHODS {
+        fallback.insert(
+            m,
+            ask(addr, m, &format!("{PREFIX}/no-such-admin-route/resolve")).await,
+        );
+    }
+    assert_eq!(
+        fallback["GET"].0, 404,
+        "the unmatched-path control is the router's 404"
+    );
+
+    let mut failures: Vec<String> = Vec::new();
+
     handle.abort();
+
+    // ── 1. document → router, and 2. router → document per documented path ──
+    let mut probed = 0usize;
+    let paths: BTreeSet<&String> = documented.keys().map(|(_, p)| p).collect();
+    for path in paths {
+        let (addr, handle) = spawn().await;
+        for m in METHODS {
+            let op = (m.to_string(), path.clone());
+            let answer = match documented.get(&op) {
+                Some(_) if kernel_loop.contains(&op) => continue,
+                _ => ask(addr, m, &concrete(path)).await,
+            };
+            let Some(statuses) = documented.get(&op) else {
+                // 2. An undocumented method on a documented path must not be served.
+                if answer.0 != 405 && answer != fallback[m] {
+                    failures.push(format!(
+                        "{m} {path} is NOT documented but the router serves it ({}): {}",
+                        answer.0, answer.1
+                    ));
+                }
+                continue;
+            };
+            // 1. A documented operation resolves, on its method, with a documented status.
+            probed += 1;
+            if answer == fallback[m] {
+                failures.push(format!(
+                    "{m} {path} is documented but the router answers its unmatched-path \
+                     fallback: nothing serves it (phantom endpoint)"
+                ));
+            } else if answer.0 == 405 {
+                failures.push(format!(
+                    "{m} {path} is documented but the router mounts the path without this method"
+                ));
+            } else if !statuses.contains(&answer.0.to_string()) {
+                failures.push(format!(
+                    "{m} {path} answered {} which its documented responses {statuses:?} do not \
+                     list: {}",
+                    answer.0, answer.1
+                ));
+            }
+        }
+        handle.abort();
+    }
+    assert!(
+        probed > crate::v1::json::V1_GET_PATHS.len() * 4,
+        "only {probed} documented operations were probed on the router"
+    );
+
+    // ── 3. router → document, per literal route of the JSON transport ──
+    let literal = literal_admin_routes(include_str!("../v1/json/mod.rs"));
+    assert!(
+        literal.len() >= 50,
+        "only {} literal admin routes were read out of v1/json/mod.rs — the scanner lost the \
+         router",
+        literal.len()
+    );
+    for (method, rel) in &literal {
+        let path = format!("{PREFIX}{rel}");
+        if !documented.contains_key(&(method.clone(), path.clone())) {
+            failures.push(format!(
+                "{method} {path} is mounted by v1/json/mod.rs but is in NO served document"
+            ));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "admin router / OpenAPI document disagree:\n  {}",
+        failures.join("\n  ")
+    );
+}
+
+/// Every `(METHOD, relative path)` the JSON transport's router mounts with a literal `.route(..)`
+/// call, read out of the router's source (`JsonV1::router`, up to its `.fallback`). A path given as
+/// a contract constant is resolved through the constant's own value; an unknown constant fails
+/// loudly rather than being skipped.
+fn literal_admin_routes(src: &str) -> Vec<(String, String)> {
+    use busbar_kernel::admin::v1::contract as c;
+    let consts: [(&str, &str); 5] = [
+        ("PATH_HOOKS", c::PATH_HOOKS),
+        ("PATH_GROUPS", c::PATH_GROUPS),
+        ("PATH_PLUGINS_INSPECT", c::PATH_PLUGINS_INSPECT),
+        ("PATH_ADMIN_AUTH", c::PATH_ADMIN_AUTH),
+        ("PATH_CONFIG_VALIDATE", c::PATH_CONFIG_VALIDATE),
+    ];
+    let start = src
+        .find("impl AdminTransport for JsonV1")
+        .expect("v1/json/mod.rs implements the JSON transport");
+    let body = &src[start..];
+    let body = &body[..body
+        .find(".fallback(")
+        .expect("the router ends in its fallback")];
+    let mut out = Vec::new();
+    let mut rest = body;
+    while let Some(at) = rest.find(".route(") {
+        let after = &rest[at + ".route(".len()..];
+        // The call's argument text, to its matching `)`.
+        let mut depth = 1usize;
+        let mut end = 0usize;
+        for (i, ch) in after.char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let args = &after[..end];
+        rest = &after[end..];
+        let (first, second) = args.split_once(',').expect(".route(path, method_router)");
+        let first = first.trim();
+        let rel = if let Some(lit) = first.strip_prefix('"') {
+            lit.trim_end_matches('"').to_string()
+        } else {
+            consts
+                .iter()
+                .find(|(name, _)| *name == first)
+                .unwrap_or_else(|| {
+                    panic!("v1/json/mod.rs mounts a route at `{first}`, a path this scanner cannot resolve — name its value here")
+                })
+                .1
+                .to_string()
+        };
+        // The method-router chain's methods: identifiers called at paren depth 0.
+        let mut depth = 0usize;
+        let mut ident = String::new();
+        let mut methods = Vec::new();
+        for ch in second.chars() {
+            match ch {
+                '(' => {
+                    if depth == 0
+                        && ["get", "post", "put", "patch", "delete"].contains(&ident.as_str())
+                    {
+                        methods.push(ident.to_ascii_uppercase());
+                    }
+                    depth += 1;
+                    ident.clear();
+                }
+                ')' => {
+                    depth = depth.saturating_sub(1);
+                    ident.clear();
+                }
+                c if c.is_ascii_alphanumeric() || c == '_' => ident.push(c),
+                _ => ident.clear(),
+            }
+        }
+        assert!(
+            !methods.is_empty(),
+            "the route at {rel} mounts no method this scanner recognises: {second}"
+        );
+        for m in methods {
+            out.push((m, rel.clone()));
+        }
+    }
+    out
 }
 
 /// `GET openapi.json` serves the PRE-GZIPPED embedded bytes to a client whose `Accept-Encoding`
@@ -13191,7 +13441,8 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
 /// This used to be a hand-maintained list that nothing tied to anything: an operation could be added
 /// to the router and the doc and simply never appear here, and its declared 4xx set would go
 /// unaudited forever. The committed doc is a projection of the code (`openapi_json_matches_committed_file`
-/// fails the build the moment it drifts) and every path in it is proven mounted
+/// fails the build the moment it drifts) and every operation in it that this crate's router answers
+/// is proven mounted with a documented status, and every router route proven documented
 /// (`test_admin_v1_openapi_paths_all_resolve`), so keying off it closes the loop: router → doc →
 /// this audit.
 fn documented_operations() -> Vec<(
