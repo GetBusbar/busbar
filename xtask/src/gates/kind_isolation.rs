@@ -187,7 +187,17 @@ const MAKE_A_NEW_KIND: &str = "make a new plugin kind, do not fuse two";
 pub const REGISTRY_FILE: &str = "qa/kind-isolation.toml";
 
 /// A crate census below this is not a tree this gate can be a gate over.
-const MIN_MANIFESTS: usize = 50;
+///
+/// 30, not 50 (item F0b, same shape as F0's `workspace-deps` `MIN_CRATE_MANIFESTS`, `98434a220`).
+/// The Phase 4 fold's planned end state is 35 crates under `crates/`, 34 if `busbar-core-connsec`
+/// folds, and the roster's 33 (docs/design/1.6.0-TODO.md "THE FOLD"; docs/design/BUSBAR-1.6.0.md
+/// crate roster) — at 50 this row was already standing at its own floor pre-fold ("the tree sits
+/// EXACTLY at MIN_MANIFESTS") and would have reddened `:registry` at fold #1. The floor guards
+/// against a BLIND census (an emptied or unreadable `crates/`, a walk that stopped matching), which
+/// finds a handful or nothing; it is not a ratchet on the roster. 30 sits three under the smallest
+/// planned roster variant, so no planned fold trips it, while any walk that loses more than a
+/// third of today's census is still RED.
+const MIN_MANIFESTS: usize = 30;
 /// Likewise for the source walk the vocabulary rule reads.
 const MIN_SOURCES: usize = 600;
 
@@ -8165,6 +8175,33 @@ fn all_but(cx: &Ctx, ext: &str, keep: usize) -> Overlay {
     ov
 }
 
+/// THE CENSUS HELD AT EXACTLY `n` MANIFESTS — item F0b's boundary fixture.
+///
+/// `all_but` thins the `crates/` walk, but [`census`] also reads root/`xtask`/`examples`/`testing`
+/// manifests the registry's off-tree table does not cover, so "keep 29 files under `crates/`" and
+/// "the census is 29" are not the same claim near the new, much lower floor — they were 24 apart at
+/// the old floor of 50 and nobody had to tell them apart. This removes exactly enough CENSUSED
+/// `crates/` manifests, and only those, to land the real census at `n`, so a boundary case can plant
+/// the number the floor actually reads rather than a number of files that merely implies it.
+///
+/// A `#[cfg(test)]`-only fixture: unlike `all_but`, its only caller is the two boundary cases in
+/// `plant_tests`, run through `cargo test`, not the `prove_rows_red` battery `cargo xtask selftest`
+/// runs (item 89's IMPOSS rule is why — see those cases' own comment).
+#[cfg(test)]
+fn census_holding(cx: &Ctx, n: usize) -> Overlay {
+    let full = census(cx).unwrap_or_default();
+    let excess = full.len().saturating_sub(n);
+    let mut ov = Overlay::new();
+    for c in full
+        .iter()
+        .filter(|c| c.manifest.starts_with("crates/"))
+        .take(excess)
+    {
+        ov.remove(c.manifest.clone());
+    }
+    ov
+}
+
 /// THE TREE WITH EVERY CRATE OF THE NAMED KINDS OUT OF THE CENSUS — the floors' own fixture.
 ///
 /// A rule whose subject is "no crate of any of these kinds reached me" cannot be proven by a plant
@@ -8187,13 +8224,16 @@ fn kinds_gone(cx: &Ctx, kinds: &[&str]) -> Overlay {
     ov
 }
 
-/// THE CENSUS HELD AT ITS FLOOR under a plant that removes `removed` manifests.
+/// THE CENSUS HELD AWAY FROM ITS FLOOR under a plant that removes `removed` manifests.
 ///
-/// The tree sits EXACTLY at [`MIN_MANIFESTS`] (Phase 0 F0), so a plant that takes one crate out
-/// drops the census below its floor, and the floor refusal — its own proven case — then answers
-/// for the whole `:registry` row: `the crate census collapsed below its floor`, and never the rule
-/// the case is about. The floor is not lowered. Each removed manifest is replaced by one inert
-/// kernel-kind filler crate, so the census stays a census and the row judges what was planted.
+/// [`MIN_MANIFESTS`] is 30 (item F0b); the Phase 4 fold walks the real census down toward that
+/// number one commit at a time, so a plant elsewhere in this battery that removes a manifest for a
+/// reason of its own — a dead kind, a retired alias, a struck legacy row — can, late in the fold,
+/// land close enough to the floor that the removal ALSO drops the census below it. When that
+/// happens the floor refusal, its own proven case, answers for the whole `:registry` row: `the
+/// crate census collapsed below its floor`, and never the rule the case is about. The floor is not
+/// lowered. Each removed manifest is replaced by one inert kernel-kind filler crate, so the census
+/// stays a census and the row judges what was planted.
 fn hold_census_floor(ov: &mut Overlay, removed: usize) {
     for i in 0..removed {
         ov.set(
@@ -8583,6 +8623,77 @@ mod plant_tests {
         let cx = ws().with_overlay(ov);
         let (crates, _) = crates_of(&cx);
         rule_registry(&cx, &crates, &reg_of(&cx), false)
+    }
+
+    // ── item F0b: the two crate-count floors, lowered to 30, proven at their new boundary ────────
+    //
+    // `MIN_MANIFESTS` and `closure::MIN_GRAPH_CRATES` moved 50 -> 30 and 40 -> 30 (same shape as
+    // F0's `workspace-deps` `MIN_CRATE_MANIFESTS`, `98434a220`) so the Phase 4 fold's planned end
+    // state (35 crates, 34 / 33 in the roster variants) clears both. The coarse collapse cases
+    // above (`all_but(cx, "toml", 4)`, `all_but(cx, "rs", 4)`) already prove each floor fires on a
+    // genuine collapse; these two prove the LOWERED floor fires exactly one manifest under itself
+    // and admits the real, un-planted tree — which sits well over 30 today, before the fold has
+    // touched a single crate. `:registry` and `:closure` both carry unrelated standing debt on the
+    // real tree right now (dead-kind/dead-transitional findings, a two-hop breach), so a
+    // `prove_rows_green` case asking either row to be wholly clean would be Impossible by
+    // construction (item 89); these read the FLOOR arm's own detail instead of the row's overall
+    // status, which is provable on the real tree regardless of that other debt.
+    #[test]
+    fn the_registry_census_floor_reds_one_below_thirty_and_admits_the_real_tree() {
+        assert_eq!(
+            MIN_MANIFESTS, 30,
+            "this case is pinned to the lowered floor"
+        );
+        let cx = ws();
+
+        let plant = census_holding(&cx, MIN_MANIFESTS - 1);
+        assert_bites(&cx, &plant);
+        let planted = cx.with_overlay(plant);
+        assert_eq!(
+            crates_of(&planted).0.len(),
+            MIN_MANIFESTS - 1,
+            "the fixture must land the census exactly one under the floor"
+        );
+        assert_red_naming(
+            &registry_over(census_holding(&cx, MIN_MANIFESTS - 1)),
+            &["floor", &MIN_MANIFESTS.to_string()],
+        );
+
+        let real = registry_over(Overlay::new());
+        assert!(
+            !real.detail.contains("collapsed below its floor"),
+            "the real tree's census must clear the lowered floor of {MIN_MANIFESTS}: {}",
+            real.detail
+        );
+    }
+
+    #[test]
+    fn the_closure_graph_floor_reds_one_below_thirty_and_admits_the_real_tree() {
+        const MIN_GRAPH_CRATES: usize = 30;
+        let cx = ws();
+
+        let plant = census_holding(&cx, MIN_GRAPH_CRATES - 1);
+        assert_bites(&cx, &plant);
+        let planted = cx.with_overlay(plant);
+        let (planted_crates, _) = crates_of(&planted);
+        assert_eq!(
+            planted_crates.len(),
+            MIN_GRAPH_CRATES - 1,
+            "the fixture must land the census exactly one under the floor"
+        );
+        assert_red_naming(
+            &closure::rule_closure(&planted, &planted_crates),
+            &["floor", &MIN_GRAPH_CRATES.to_string()],
+        );
+
+        let (real_crates, _) = crates_of(&cx);
+        let real = closure::rule_closure(&cx, &real_crates);
+        assert!(
+            !real.detail.contains("under the floor")
+                && !real.detail.contains("could not be walked over this tree"),
+            "the real tree's census must clear the lowered floor of {MIN_GRAPH_CRATES}: {}",
+            real.detail
+        );
     }
 
     #[test]
