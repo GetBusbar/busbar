@@ -64,3 +64,63 @@ fn a_sink_that_will_not_open_refuses_naming_the_instance() {
     let refusal = open(&cfg).expect_err("bytes that are not a library do not open");
     assert!(refusal.starts_with("export.tail: "), "{refusal}");
 }
+
+/// THE SHED CAP (PB-12): a plugin sink that states no admission is held to the host's
+/// [`MAX_INFLIGHT_PLUGIN_DELIVERIES`] — the 65th delivery in flight is SHED, never queued, and a
+/// released slot admits again; a sink that states its bound is held to exactly that. RED arm, in
+/// the same test: a stated bound of 0 is the host's cap, never a gate that admits nothing (or
+/// everything).
+#[test]
+fn a_plugin_sink_sheds_deliveries_beyond_its_inflight_cap() {
+    assert_eq!(MAX_INFLIGHT_PLUGIN_DELIVERIES, 64);
+    let fill = |a: &Admission, n: usize| -> Vec<_> {
+        (0..n)
+            .map(|i| {
+                a.gate
+                    .try_enter()
+                    .unwrap_or_else(|| panic!("slot {i} is within the cap"))
+            })
+            .collect()
+    };
+    let host = Admission::of("k9-tail", None);
+    assert!(host.live);
+    let held = fill(&host, MAX_INFLIGHT_PLUGIN_DELIVERIES);
+    assert!(
+        host.gate.try_enter().is_none(),
+        "the delivery past the cap is shed"
+    );
+    drop(held);
+    assert!(
+        host.gate.try_enter().is_some(),
+        "a released slot admits again"
+    );
+
+    let stated = Admission::of("k9-tail", Some((true, 3, "webhook".into())));
+    let held = fill(&stated, 3);
+    assert!(
+        stated.gate.try_enter().is_none(),
+        "a stated bound is the cap"
+    );
+    drop(held);
+
+    // RED ARM: `inflight: 0` states no bound — the host's cap, not zero.
+    let zero = Admission::of("k9-tail", Some((true, 0, String::new())));
+    let _held = fill(&zero, MAX_INFLIGHT_PLUGIN_DELIVERIES);
+    assert!(zero.gate.try_enter().is_none());
+    // A sink that is not live keeps its gate but takes nothing.
+    assert!(!Admission::of("k9-tail", Some((false, 0, String::new()))).live);
+}
+
+/// Each configured instance holds its OWN admission gate: one saturated instance never consumes a
+/// sibling's budget (the per-instance posture the request-log webhook always had).
+#[test]
+fn each_plugin_sink_instance_gets_its_own_admission_gate() {
+    let a = Admission::of("request-log-webhook", Some((true, 1, "webhook".into())));
+    let b = Admission::of("request-log-webhook", Some((true, 1, "webhook".into())));
+    let _held = a.gate.try_enter().expect("a admits one");
+    assert!(a.gate.try_enter().is_none(), "a is saturated");
+    assert!(
+        b.gate.try_enter().is_some(),
+        "b is untouched by a's saturation"
+    );
+}

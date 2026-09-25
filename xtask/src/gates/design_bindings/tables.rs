@@ -95,8 +95,8 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("gate", "scripts/signing-gate.sh", "signed loads; unsigned, wrong-key and tampered manifests refused with the literal messages"),
     ]),
     ("PB-12", &[
-        ("test", "each_webhook_instance_gets_its_own_admission_gate", "the webhook admission gate is per instance (the corrected export-sink config row)"),
-        ("test", "file_sink_sheds_appends_beyond_its_inflight_cap", "the fixed MAX_INFLIGHT_FILE_APPENDS cap"),
+        ("test", "each_plugin_sink_instance_gets_its_own_admission_gate", "the export sink admission gate is per instance (the corrected export-sink config row)"),
+        ("test", "a_plugin_sink_sheds_deliveries_beyond_its_inflight_cap", "the fixed MAX_INFLIGHT_PLUGIN_DELIVERIES cap"),
         ("test", "producerless_stream_is_a_loud_config_error", "validate-time refusal of a producerless stream"),
         ("test", "audit_is_refused_as_a_stream_with_the_reason", "the audit stream refusal literal"),
         ("test", "unknown_stream_names_the_vocabulary", "an unknown stream names the vocabulary"),

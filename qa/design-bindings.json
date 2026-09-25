@@ -696,15 +696,15 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "each_webhook_instance_gets_its_own_admission_gate",
-     "proves": "the webhook admission gate is per instance (the corrected export-sink config row)",
+     "ref": "each_plugin_sink_instance_gets_its_own_admission_gate",
+     "proves": "the export sink admission gate is per instance (the corrected export-sink config row)",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "file_sink_sheds_appends_beyond_its_inflight_cap",
-     "proves": "the fixed MAX_INFLIGHT_FILE_APPENDS cap",
+     "ref": "a_plugin_sink_sheds_deliveries_beyond_its_inflight_cap",
+     "proves": "the fixed MAX_INFLIGHT_PLUGIN_DELIVERIES cap",
      "source": "curated",
      "status": "mapped"
     },
@@ -752,7 +752,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:each_webhook_instance_gets_its_own_admission_gate, test:file_sink_sheds_appends_beyond_its_inflight_cap, test:producerless_stream_is_a_loud_config_error, test:audit_is_refused_as_a_stream_with_the_reason, test:unknown_stream_names_the_vocabulary, test:durable_true_is_a_loud_not_yet_implemented_error, test:fields_on_metrics_is_a_loud_error, test:empty_streams_list_is_a_loud_error"
+   "verdict_detail": "test:each_plugin_sink_instance_gets_its_own_admission_gate, test:a_plugin_sink_sheds_deliveries_beyond_its_inflight_cap, test:producerless_stream_is_a_loud_config_error, test:audit_is_refused_as_a_stream_with_the_reason, test:unknown_stream_names_the_vocabulary, test:durable_true_is_a_loud_not_yet_implemented_error, test:fields_on_metrics_is_a_loud_error, test:empty_streams_list_is_a_loud_error"
   },
   {
    "id": "PB-13",

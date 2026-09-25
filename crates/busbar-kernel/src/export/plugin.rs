@@ -97,14 +97,30 @@ struct Admission {
     gate: AdmissionGate,
 }
 
+impl Admission {
+    /// The admission a sink of `module` is held to: as it `stated` when started — whether it takes
+    /// deliveries, its in-flight bound (`0`: the host's) and its gate's name (empty: the module's)
+    /// — or, stating none, the host's: live, [`MAX_INFLIGHT_PLUGIN_DELIVERIES`], the module's name.
+    fn of(module: &str, stated: Option<(bool, u64, String)>) -> Admission {
+        let (live, inflight, gate) = stated.unwrap_or((true, 0, String::new()));
+        let bound = match inflight {
+            0 => MAX_INFLIGHT_PLUGIN_DELIVERIES,
+            n => usize::try_from(n).unwrap_or(usize::MAX),
+        };
+        let bound = bound.clamp(1, tokio::sync::Semaphore::MAX_PERMITS);
+        let gate = leak(if gate.is_empty() { module } else { &gate });
+        Admission {
+            live,
+            gate: AdmissionGate::new(bound, gate),
+        }
+    }
+}
+
 impl PluginSink {
-    /// The admission it stated when started; before then, or when it stated none, the host's:
-    /// live, [`MAX_INFLIGHT_PLUGIN_DELIVERIES`], the gate named for the module.
+    /// The admission it stated when started; before then, or when it stated none, the host's.
     fn admission(&self) -> &Admission {
-        self.admission.get_or_init(|| Admission {
-            live: true,
-            gate: AdmissionGate::new(MAX_INFLIGHT_PLUGIN_DELIVERIES, leak(&self.module)),
-        })
+        self.admission
+            .get_or_init(|| Admission::of(&self.module, None))
     }
 }
 
@@ -187,19 +203,9 @@ pub fn start() {
             tracing::warn!(error = %e, "export plugin start failed");
             None
         });
-        let Some((live, inflight, gate)) = stated else {
-            continue;
-        };
-        let bound = match inflight {
-            0 => MAX_INFLIGHT_PLUGIN_DELIVERIES,
-            n => usize::try_from(n).unwrap_or(usize::MAX),
-        };
-        let bound = bound.clamp(1, tokio::sync::Semaphore::MAX_PERMITS);
-        let gate = leak(if gate.is_empty() { &s.module } else { &gate });
-        let _ = s.admission.set(Admission {
-            live,
-            gate: AdmissionGate::new(bound, gate),
-        });
+        if stated.is_some() {
+            let _ = s.admission.set(Admission::of(&s.module, stated));
+        }
     }
 }
 
