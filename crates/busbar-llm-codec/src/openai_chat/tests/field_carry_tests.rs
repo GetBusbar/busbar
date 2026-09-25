@@ -344,8 +344,9 @@ fn openai_carry_response_identity_and_choice_fields() {
 }
 
 /// Backs: `choices[].message.refusal`. A structured-outputs / safety refusal arrives as
-/// `content: null` + a `refusal` string; the reader carries the text as assistant text so the turn
-/// is not an empty 200.
+/// `content: null` + a `refusal` string; the reader carries the text as assistant text with the
+/// `Refusal` stop reason (so the turn is not an empty 200 on a foreign client), and the writer puts
+/// a refused turn's text back in `message.refusal` with `content: null` (OAI-12).
 #[test]
 fn openai_carry_response_message_refusal() {
     let body = json!({
@@ -357,9 +358,13 @@ fn openai_carry_response_message_refusal() {
     let ir = OpenAiReader.read_response(&body).expect("read");
     let out = openai_writer().write_response(&ir);
     assert_eq!(
-        out["choices"][0]["message"]["content"],
+        out["choices"][0]["message"]["refusal"],
         json!("I cannot help with that"),
-        "choices[].message.refusal must survive as assistant content: {out}"
+        "choices[].message.refusal must survive in its own slot: {out}"
+    );
+    assert!(
+        out["choices"][0]["message"]["content"].is_null(),
+        "a refused turn carries no content: {out}"
     );
 }
 

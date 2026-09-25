@@ -412,7 +412,7 @@ fn write_request_forces_logprobs_flag_when_only_top_logprobs_present() {
 }
 
 #[test]
-fn write_request_emits_max_tokens_from_modeled_cap() {
+fn write_request_emits_modeled_cap_as_max_completion_tokens() {
     let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
@@ -442,13 +442,10 @@ fn write_request_emits_max_tokens_from_modeled_cap() {
         extra: serde_json::Map::new(),
     };
     let out = openai_writer().write_request(&req);
-    assert_eq!(out["max_tokens"], serde_json::json!(512));
-    // No stray `max_completion_tokens` (it is folded into the single modeled cap).
-    assert!(out
-        .as_object()
-        .expect("object")
-        .get("max_completion_tokens")
-        .is_none());
+    // An IR cap with no OpenAI source spelling (empty `extra`: another dialect's request, or the
+    // seam default) is written as `max_completion_tokens` (OAI-01), and only once.
+    assert_eq!(out["max_completion_tokens"], serde_json::json!(512));
+    assert!(out.as_object().expect("object").get("max_tokens").is_none());
 }
 
 #[test]
@@ -481,9 +478,10 @@ fn max_completion_tokens_survives_read_write_roundtrip() {
 }
 
 #[test]
-fn max_completion_tokens_maps_to_max_tokens_cross_protocol() {
-    // On the CROSS-protocol seam `extra` is cleared (the sentinel vanishes with it), so the
-    // cap re-emits as the canonical `max_tokens` — other protocols have no `max_completion_tokens`.
+fn max_completion_tokens_is_the_cross_protocol_cap_key() {
+    // On the CROSS-protocol seam `extra` is cleared (the source-spelling sentinel vanishes with
+    // it), so the cap is written as `max_completion_tokens` — the key the o-series / gpt-5 lanes
+    // require (they 400 on `max_tokens`) and every current OpenAI chat model accepts (OAI-01).
     // Mirror the seam by clearing extra before the write.
     let body = serde_json::json!({
         "messages": [{ "role": "user", "content": "hi" }],
@@ -493,16 +491,13 @@ fn max_completion_tokens_maps_to_max_tokens_cross_protocol() {
     ir.extra.clear(); // the translate seam clears extra on a cross-protocol hop
     let out = openai_writer().write_request(&ir);
     assert_eq!(
-        out["max_tokens"],
+        out["max_completion_tokens"],
         serde_json::json!(777),
-        "cross-protocol egress emits the canonical `max_tokens`"
+        "cross-protocol egress emits `max_completion_tokens`"
     );
     assert!(
-        out.as_object()
-            .expect("object")
-            .get("max_completion_tokens")
-            .is_none(),
-        "cross-protocol egress must not carry `max_completion_tokens`"
+        out.as_object().expect("object").get("max_tokens").is_none(),
+        "cross-protocol egress must not carry `max_tokens`"
     );
 }
 
@@ -1283,10 +1278,10 @@ fn text_then_tool_closes_text_block_before_opening_tool() {
 // block at that already-closed index (a second `content_block_start` at one index = an unbalanced IR
 // stream on an Anthropic egress). Reachable with OpenAI-compatible backends (vLLM/Azure/OpenRouter).
 // Pre-fix: `text_index` stays `Some` and the reopen fires on `!text_block_open`, emitting TWO
-// BlockStart at the same index. Post-fix: `text_block_closed` latches on the close and the resumed
-// text is dropped, leaving exactly one balanced text block.
+// BlockStart at the same index. `text_block_closed` latches on the close; the resumed text opens a
+// NEW text block at a fresh index (OAI-14), so both text blocks are balanced and nothing is dropped.
 #[test]
-fn preamble_text_then_tool_then_text_keeps_one_balanced_text_block() {
+fn preamble_text_then_tool_then_text_opens_a_fresh_balanced_text_block() {
     let reader = OpenAiReader;
     let mut st = crate::ir::StreamDecodeState::default();
     let mut events = Vec::new();
@@ -1339,21 +1334,28 @@ fn preamble_text_then_tool_then_text_keeps_one_balanced_text_block() {
             _ => None,
         })
         .collect();
+    // The resumed text is carried (OAI-14) in a SECOND text block at a FRESH index — never a
+    // second BlockStart at the closed index.
     assert_eq!(
         text_starts.len(),
-        1,
-        "the text block must be opened exactly once, never reopened at a closed index: {events:?}"
+        2,
+        "resumed text opens one new text block: {events:?}"
     );
-    let text_idx = text_starts[0];
-    // …and exactly one BlockStop at that text index, so the block is balanced.
-    let text_stops = events
-        .iter()
-        .filter(|e| matches!(e, IrStreamEvent::BlockStop { index } if *index == text_idx))
-        .count();
-    assert_eq!(
-        text_stops, 1,
-        "the text block index must be closed exactly once (balanced): {events:?}"
+    assert_ne!(
+        text_starts[0], text_starts[1],
+        "the resumed text block must not reopen the closed index: {events:?}"
     );
+    // …and each text index is closed exactly once, so both blocks are balanced.
+    for text_idx in text_starts {
+        let text_stops = events
+            .iter()
+            .filter(|e| matches!(e, IrStreamEvent::BlockStop { index } if *index == text_idx))
+            .count();
+        assert_eq!(
+            text_stops, 1,
+            "text block {text_idx} must be closed exactly once (balanced): {events:?}"
+        );
+    }
 }
 
 // --- total_tokens must saturate, never overflow-panic/wrap ---
@@ -1429,10 +1431,11 @@ fn read_request_preserves_sampling_params_in_extra() {
     assert_eq!(out["n"], serde_json::json!(2));
 }
 
-/// `reasoning_effort` values `IrReasoningEffort::parse` does not know (`"none"`,
-/// `"xhigh"` — real `gpt-5`-family spellings) must NOT be lost. `reasoning_effort` is a MODELED
-/// key, so it is excluded from the generic `extra` sweep; without a rescue, an unrecognised value
-/// is stripped from BOTH the typed field AND `extra` — total loss, even OpenAI->OpenAI same-lane.
+/// `reasoning_effort` values the IR has no word for (`"none"` — a real `gpt-5`-family spelling,
+/// reasoning OFF, which waits on IR-09) must NOT be lost (`"xhigh"` now maps to `High`, OAI-10).
+/// `reasoning_effort` is a MODELED key, so it is excluded from the generic `extra` sweep; without a
+/// rescue, an unrecognised value is stripped from BOTH the typed field AND `extra` — total loss,
+/// even OpenAI->OpenAI same-lane.
 #[test]
 fn unknown_reasoning_effort_survives_in_extra() {
     use busbar_substrate_values::testkit::warn_capture::WarnCapture;
@@ -1441,7 +1444,7 @@ fn unknown_reasoning_effort_survives_in_extra() {
     let body = serde_json::json!({
         "model": "gpt-5",
         "messages": [{ "role": "user", "content": "hi" }],
-        "reasoning_effort": "xhigh"
+        "reasoning_effort": "none"
     });
 
     let cap = WarnCapture::default();
@@ -1456,19 +1459,19 @@ fn unknown_reasoning_effort_survives_in_extra() {
     );
     assert_eq!(
         ir.extra.get("reasoning_effort"),
-        Some(&serde_json::json!("xhigh")),
+        Some(&serde_json::json!("none")),
         "the raw value must survive in extra so it is not silently lost: {:?}",
         ir.extra
     );
     assert!(
-        cap.contains("xhigh"),
+        cap.contains("none"),
         "the unrecognised value must be warned about: {:?}",
         cap.messages()
     );
 
     // And it reaches the upstream body on a same-protocol write via the extra-forwarding loop.
     let out = openai_writer().write_request(&ir);
-    assert_eq!(out["reasoning_effort"], serde_json::json!("xhigh"));
+    assert_eq!(out["reasoning_effort"], serde_json::json!("none"));
 }
 
 // --- tool-call-only assistant turn → content: null, not [] ---
@@ -3572,11 +3575,11 @@ fn write_response_string_tool_arguments_emitted_verbatim() {
     );
 }
 
-// Regression: a reasoning delta arriving AFTER the text block has opened must NOT be
-// honored as a Thinking-at-index-0 block. Doing so would flip `reasoning_seen`, bumping `offset`
-// from 0 to 1, and retroactively shift the IR index of the already-opened text block — corrupting
-// BlockStart/BlockStop pairing. The late reasoning delta must be dropped: no BlockStart{index:0},
-// no thinking BlockDelta, and `reasoning_seen`/`offset` must stay put.
+// Regression: a reasoning delta arriving AFTER the text block has opened must NOT be honored as a
+// Thinking-at-index-0 block — that would flip `reasoning_seen` and retroactively shift the IR index
+// of the already-opened text block, corrupting BlockStart/BlockStop pairing. It is carried instead
+// (OAI-14) as a Thinking block at the NEXT FREE index: the open text block closes at 0, the thinking
+// opens at 1, and resumed text opens a fresh text block at 2. No index is ever reused or shifted.
 #[test]
 fn late_reasoning_delta_after_text_does_not_shift_indices() {
     let mut state = crate::ir::StreamDecodeState::default();
@@ -3599,42 +3602,49 @@ fn late_reasoning_delta_after_text_does_not_shift_indices() {
     assert!(state.text_block_open);
     assert!(!state.reasoning_seen);
 
-    // A late reasoning delta now arrives. It must be IGNORED (answer phase already started).
+    // A late reasoning delta: text closes at 0, thinking opens at the next free index (1).
     let c2 = serde_json::json!({
         "choices": [{"index": 0, "delta": {"reasoning_content": "late thought"}, "finish_reason": null}]
     });
     let evs2 = OpenAiReader.read_response_events("", &c2, &mut state);
     assert!(
-        !evs2.iter().any(|e| matches!(
-            e,
-            IrStreamEvent::BlockStart {
-                block: crate::ir::IrBlockMeta::Thinking,
-                ..
-            }
-        )),
-        "late reasoning must NOT open a thinking block, got {evs2:?}"
+        matches!(evs2.first(), Some(IrStreamEvent::BlockStop { index: 0 })),
+        "the open text block closes at its own index first, got {evs2:?}"
     );
     assert!(
-        !evs2.iter().any(|e| matches!(
+        evs2.iter().any(|e| matches!(
             e,
-            IrStreamEvent::BlockDelta {
-                delta: crate::ir::IrDelta::ThinkingDelta(_),
-                ..
+            IrStreamEvent::BlockStart {
+                index: 1,
+                block: crate::ir::IrBlockMeta::Thinking,
             }
         )),
-        "late reasoning must NOT emit a ThinkingDelta, got {evs2:?}"
+        "late reasoning opens a thinking block at the next free index, got {evs2:?}"
+    );
+    assert!(
+        evs2.iter().any(|e| matches!(
+            e,
+            IrStreamEvent::BlockDelta {
+                index: 1,
+                delta: crate::ir::IrDelta::ThinkingDelta(_),
+            }
+        )),
+        "late reasoning is carried as a ThinkingDelta, got {evs2:?}"
     );
     assert!(
         !state.reasoning_seen,
         "late reasoning must NOT flip reasoning_seen (which would shift already-opened indices)"
     );
-    assert!(!state.thinking_block_open);
 
-    // A subsequent text delta must still land on index 0 — proving the index was not shifted.
+    // Resumed text closes the thinking block and lands on a FRESH index (2), never 0 again.
     let c3 = serde_json::json!({
         "choices": [{"index": 0, "delta": {"content": " world"}, "finish_reason": null}]
     });
     let evs3 = OpenAiReader.read_response_events("", &c3, &mut state);
+    assert!(
+        matches!(evs3.first(), Some(IrStreamEvent::BlockStop { index: 1 })),
+        "the thinking block closes at its own index, got {evs3:?}"
+    );
     let text_idx = evs3.iter().find_map(|e| match e {
         IrStreamEvent::BlockDelta {
             index,
@@ -3644,8 +3654,8 @@ fn late_reasoning_delta_after_text_does_not_shift_indices() {
     });
     assert_eq!(
         text_idx,
-        Some(0),
-        "text must stay at index 0 after a stray late reasoning delta, got {evs3:?}"
+        Some(2),
+        "resumed text opens a fresh block past the thinking block, got {evs3:?}"
     );
 }
 

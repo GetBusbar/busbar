@@ -214,6 +214,30 @@ fn read_cache_write_tokens(
     )
 }
 
+/// OpenAI `service_tier` (the tier that SERVED the request, a top-level response / chunk member) →
+/// the IR's `IrUsageDetail::service_tier`, which speaks the Anthropic vocabulary
+/// (`standard` / `priority` / `batch`, see the field's doc). OpenAI's `default` IS the standard tier
+/// and `priority` is the same word on both wires (OAI-03). `flex` and `scale` name OpenAI-only tiers
+/// the IR vocabulary has no word for, so they stay unmapped rather than inventing one.
+fn read_openai_service_tier(v: Option<&serde_json::Value>) -> Option<String> {
+    match v?.as_str()? {
+        "default" => Some("standard".to_string()),
+        "priority" => Some("priority".to_string()),
+        _ => None,
+    }
+}
+
+/// The inverse of [`read_openai_service_tier`]: the IR tier word → OpenAI's `service_tier` value,
+/// `None` when OpenAI has no response value for it (`batch` is a separate OpenAI API, not a tier a
+/// chat completion reports).
+fn write_openai_service_tier(tier: Option<&str>) -> Option<&'static str> {
+    match tier? {
+        "standard" => Some("default"),
+        "priority" => Some("priority"),
+        _ => None,
+    }
+}
+
 /// Fallback `model` string stamped onto a cross-protocol OpenAI response when the egress backend
 /// supplied none. The native OpenAI `chat.completion` / `chat.completion.chunk` schemas define
 /// `model` as a REQUIRED non-nullable string, and the official `openai-python` (>=1.0) Pydantic
@@ -224,16 +248,15 @@ fn read_cache_write_tokens(
 /// model id keeps the synthesized value plausible.
 const DEFAULT_MODEL: &str = OPENAI_FAMILY_DEFAULT_MODEL;
 
-/// Busbar-internal sentinel key for `max_completion_tokens` source tracking. The reader folds BOTH `max_tokens` and the
-/// modern `max_completion_tokens` into the single IR `max_tokens` field so a caller's output-token
-/// cap survives the cross-protocol seam. But OpenAI's o1/o3 reasoning models REJECT `max_tokens` and
-/// require `max_completion_tokens`; an OpenAI->OpenAI passthrough to such a model that arrived as
-/// `max_completion_tokens` must re-emit `max_completion_tokens`, not `max_tokens`. The reader records
-/// the source spelling under this sentinel in `extra` so the writer can re-emit the SAME key on a
-/// same-protocol passthrough. `extra` is cleared on the cross-protocol seam, so the sentinel
-/// naturally vanishes there and a cross-protocol egress emits the canonical `max_tokens` — exactly
-/// the desired scope (other protocols have no `max_completion_tokens`). The `__busbar` prefix never
-/// collides with a real OpenAI field, and the writer consumes (does not leak) it.
+/// Busbar-internal sentinel key for output-cap source tracking. The reader folds BOTH `max_tokens`
+/// and the modern `max_completion_tokens` into the single IR `max_tokens` field so a caller's
+/// output-token cap survives the cross-protocol seam, and records the SOURCE spelling here (`true` =
+/// `max_completion_tokens`, `false` = `max_tokens`) so an OpenAI-origin IR re-emits the key the caller
+/// sent. `extra` is cleared on the cross-protocol seam, so the sentinel vanishes there, and a cap with
+/// no sentinel is written as `max_completion_tokens` — the key the o-series / gpt-5 reasoning models
+/// require (they 400 on `max_tokens`) and every current OpenAI chat model accepts (OAI-01). The
+/// `__busbar` prefix never collides with a real OpenAI field, and the writer consumes (does not leak)
+/// it.
 const MAX_COMPLETION_TOKENS_SENTINEL: &str = "__busbar_max_completion_tokens";
 
 /// Busbar-internal sentinel key parking OpenAI's per-message PROVIDER-SPECIFIC fields — an assistant
@@ -245,6 +268,12 @@ const MAX_COMPLETION_TOKENS_SENTINEL: &str = "__busbar_max_completion_tokens";
 /// naturally drop there — the correct scope, since no other dialect models them. The `__busbar` prefix
 /// never collides with a real OpenAI field, and the writer consumes (does not leak) it.
 const MESSAGE_EXTRAS_SENTINEL: &str = "__busbar_openai_message_extras";
+
+/// Busbar-internal key INSIDE one message's `MESSAGE_EXTRAS_SENTINEL` entry marking a legacy
+/// `role:"function"` result turn (value: its function `name`). The reader reads such a turn as a
+/// tool result (OAI-07); the writer uses the marker to write an OpenAI-origin re-serialize back in
+/// the legacy shape. Never reaches the wire.
+const LEGACY_FUNCTION_ROLE_KEY: &str = "__busbar_legacy_function_role";
 
 // `MESSAGE_NAMES_SENTINEL` — the `extra` key parking OpenAI's per-message `messages[].name` — lives
 // in the neutral `busbar_substrate_values::proto` leaf (core's `ir/variant.rs` names it there in the generic
@@ -283,6 +312,8 @@ const RESP_FORMAT_JSON_OBJECT: &str = "json_object";
 
 /// Tool `type` field value for all Chat Completions function tools.
 const TOOL_TYPE_FUNCTION: &str = "function";
+/// Tool `type` field value for a Chat Completions custom (free-text / grammar input) tool.
+const TOOL_TYPE_CUSTOM: &str = "custom";
 
 /// Fallback `json_schema.name` synthesized when the IR carries none.
 /// OpenAI REQUIRES this field and the SDK rejects it when absent.
@@ -867,7 +898,21 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
             {
-                Some(data_uri) => super::ir_encode::parse_image_url(data_uri),
+                Some(data_uri)
+                    if data_uri.starts_with("data:")
+                        || data_uri.starts_with("https://")
+                        || data_uri.starts_with("http://") =>
+                {
+                    super::ir_encode::parse_image_url(data_uri)
+                }
+                // `file_data` is documented as the base64-encoded file content, and clients send it
+                // BARE (no `data:` prefix) as well as wrapped. Parsed as a URL, a bare payload became
+                // an attachment every writer drops (OAI-06); it is the base64 payload itself, typed by
+                // the filename's extension (the only type signal a bare payload carries).
+                Some(bare_base64) => crate::ir::IrImageSource::Base64 {
+                    media_type: file_media_type_from_name(name.as_deref()).to_string(),
+                    data: bare_base64.to_string(),
+                },
                 None => {
                     let file_id = file_obj
                         .get("file_id")
@@ -927,6 +972,32 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
     }
 }
 
+/// The media type of a bare-base64 `file.file_data` payload, from its `filename` extension.
+/// `application/octet-stream` when there is no filename or the extension is not one listed here —
+/// the payload's type is then genuinely unknown, and no specific type is invented for it.
+fn file_media_type_from_name(name: Option<&str>) -> &'static str {
+    let ext = name
+        .and_then(|n| n.rsplit_once('.'))
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "pdf" => "application/pdf",
+        "txt" => "text/plain",
+        "md" => "text/markdown",
+        "csv" => "text/csv",
+        "html" | "htm" => "text/html",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "wav" => "audio/wav",
+        "mp3" => "audio/mpeg",
+        _ => "application/octet-stream",
+    }
+}
+
 /// Read an OpenAI-format tool from JSON.
 fn read_openai_tool(tool_val: &serde_json::Value) -> Result<crate::ir::IrTool, IrError> {
     let obj = tool_val.as_object().ok_or(IrError {
@@ -934,6 +1005,26 @@ fn read_openai_tool(tool_val: &serde_json::Value) -> Result<crate::ir::IrTool, I
         provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
         retry_after: None,
     })?;
+
+    // A tool whose `type` is not `function` — today Chat's `custom` tool
+    // (`{"type":"custom","custom":{"name","description","format"}}`, free-text or grammar input, no
+    // JSON-schema parameters) — has no function-tool projection in any other dialect. Reading it as
+    // a function yielded an EMPTY-NAME, null-schema function tool that every foreign backend rejects
+    // (OAI-09). It is carried as a `hosted` tool instead: the raw definition rides verbatim, the
+    // cross-protocol seam drops it with its hosted-tool diagnostic, and this dialect's own writer
+    // re-emits it unchanged.
+    if let Some(kind) = obj.get("type").and_then(|t| t.as_str()) {
+        if kind != TOOL_TYPE_FUNCTION {
+            return Ok(crate::ir::IrTool {
+                name: String::new(),
+                description: None,
+                input_schema: serde_json::Value::Null,
+                cache_control: None,
+                hosted: Some(tool_val.clone()),
+                strict: None,
+            });
+        }
+    }
 
     // OpenAI nests the tool definition under `function` ({"type":"function","function":{...}}).
     // Read from there, falling back to the top level so a flattened/native-shaped tool still works.
@@ -1490,3 +1581,7 @@ mod field_carry_tests;
 #[cfg(test)]
 #[path = "tests/float_usage_tests.rs"]
 mod float_usage_tests;
+
+#[cfg(test)]
+#[path = "tests/ir_mapping_tests.rs"]
+mod ir_mapping_tests;
