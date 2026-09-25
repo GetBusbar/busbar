@@ -16,12 +16,15 @@
 //! per-destination lock. An op names the handle by its key, never a path: a sink can write only
 //! where the operator's configuration pointed a declared destination.
 //!
+//! **The egress carrier.** An [`HostOp::Http`] is carried by the [`EgressCarrier`] the composition
+//! root installs — the host's own egress — never dialled by the plugin.
+//!
 //! **Why each write opens the path.** A destination is appended to by opening it for append (created
 //! if absent) per write, which is what the host's request-log file sink has always done: a file an
 //! external rotator moved aside is not written through a stale descriptor, and an unopenable path is
 //! a per-write failure the sink reports rather than a boot it refuses.
 
-use busbar_plugin::cold::export::{HostOp, HostResult, Rotation, RotationFault};
+use busbar_plugin::cold::export::{HostOp, HostResult, HttpRequest, Rotation, RotationFault};
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::Path;
@@ -68,9 +71,12 @@ impl Destinations {
     /// delivery: every failure — including a destination this sink was not granted — is an
     /// outcome the sink is told about.
     pub fn perform(&self, op: &HostOp) -> HostResult {
-        let (HostOp::Write { destination, .. }
-        | HostOp::Rotate { destination, .. }
-        | HostOp::Flush { destination }) = op;
+        let destination = match op {
+            HostOp::Write { destination, .. }
+            | HostOp::Rotate { destination, .. }
+            | HostOp::Flush { destination } => destination,
+            HostOp::Http(request) => return carry(request),
+        };
         let Some(d) = self.0.get(destination) else {
             let error = format!("no destination '{destination}' was granted to this sink");
             return failed("destination", error, None);
@@ -87,7 +93,38 @@ impl Destinations {
                 rotation: Some(rotate(&d.path, *keep)),
             },
             HostOp::Flush { .. } => flush(d),
+            HostOp::Http(request) => carry(request),
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE EGRESS CARRIER (K9a S5). The host ALWAYS owns the outbound chokepoint (Part 4 Axis 3): a
+// sink's HTTP request is carried by what the composition root installs — the host's egress, with
+// its URL policy, TLS and deadlines — and a host that installs none carries nothing.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The host's egress, as the loader drives it for a cold sink.
+pub trait EgressCarrier: Send + Sync {
+    /// Carry `request` under the host's egress policy: the far end's answer, or a
+    /// [`HostResult::Failed`] (`refused` when the policy refuses it, `request` when it fails in
+    /// flight). Called on the delivery's blocking thread.
+    fn carry(&self, request: &HttpRequest) -> HostResult;
+}
+
+static CARRIER: std::sync::OnceLock<&'static dyn EgressCarrier> = std::sync::OnceLock::new();
+
+/// Install the host's egress carrier — the composition root's one write. The first install wins;
+/// a later one returns `false`.
+pub fn install_egress_carrier(carrier: &'static dyn EgressCarrier) -> bool {
+    CARRIER.set(carrier).is_ok()
+}
+
+/// Carry one sink request through the installed carrier; with none installed, refuse it.
+fn carry(request: &HttpRequest) -> HostResult {
+    match CARRIER.get() {
+        Some(carrier) => carrier.carry(request),
+        None => failed("refused", "this host carries no plugin egress", None),
     }
 }
 

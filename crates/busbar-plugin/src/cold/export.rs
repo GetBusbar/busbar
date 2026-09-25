@@ -89,7 +89,9 @@ pub const EXPORT_ABI_VERSION: u32 = 3;
 /// 4 (K9a S4): the DESTINATION HANDLE — a manifest's `declares.destinations`, the host-executed
 ///   [`HostOp`]s a delivery may answer with ([`ExportResponse::Host`]), and the op that resumes it
 ///   with their [`HostResult`]s ([`ExportRequest::Resume`]).
-pub const EXPORT_ABI_MINOR: u32 = 4;
+/// 5 (K9a S5): the EGRESS CARRIER — [`HostOp::Http`] / [`HostResult::Http`]: the host performs a
+///   sink's outbound HTTP request through its own egress.
+pub const EXPORT_ABI_MINOR: u32 = 5;
 
 /// One observability stream an export sink can carry OUT of the engine — the FROZEN word-space of
 /// the export projection grammar, the same discipline as the hook phase names.
@@ -625,6 +627,38 @@ pub enum HostOp {
         /// The declared destination (a settings key).
         destination: String,
     },
+    /// Perform one outbound HTTP request through the HOST's egress (K9a S5) — its URL policy (the
+    /// SSRF and cloud-metadata refusal), its TLS, its timeouts. The sink never dials; a request the
+    /// policy refuses is a [`HostResult::Failed`] with step `refused`.
+    Http(HttpRequest),
+}
+
+/// An outbound HTTP request a sink asks the host to carry (K9a S5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HttpRequest {
+    /// The method, e.g. `POST`.
+    pub method: String,
+    /// The target URL.
+    pub url: String,
+    /// Request headers, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<(String, String)>,
+    /// The request body, as UTF-8.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub body: String,
+    /// The end-to-end deadline in milliseconds; `0` is the host's default ceiling.
+    #[serde(default)]
+    pub timeout_ms: u64,
+}
+
+/// What the far end answered a carried [`HttpRequest`] (K9a S5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HttpResponse {
+    /// The response status.
+    pub status: u16,
+    /// The response body as UTF-8 (lossy), read up to the host's cap.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub body: String,
 }
 
 fn default_keep() -> u32 {
@@ -642,8 +676,12 @@ pub enum HostResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rotation: Option<Rotation>,
     },
+    /// The far end answered a carried [`HostOp::Http`].
+    Http(HttpResponse),
     /// The op did not complete: `step` names which host act failed (`destination` — no such
-    /// destination was granted; `open`; `append`; `flush`), `error` says why.
+    /// destination was granted; `open`; `append`; `flush`; `refused` — the host's egress policy
+    /// refused the request, or this host carries none; `request` — the request failed in flight),
+    /// `error` says why.
     Failed {
         /// The host act that failed.
         step: String,

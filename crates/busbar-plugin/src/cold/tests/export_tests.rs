@@ -180,7 +180,7 @@ fn export_abi_version_is_three() {
 /// loader gates on stays put — pinned so a seam cannot land without saying so.
 #[test]
 fn export_abi_minor_counts_the_host_seams() {
-    assert_eq!((EXPORT_ABI_VERSION, EXPORT_ABI_MINOR), (3, 4));
+    assert_eq!((EXPORT_ABI_VERSION, EXPORT_ABI_MINOR), (3, 5));
 }
 
 /// S1's declaration wire: `{"name": …, "type": …}`, the same `type` token a reported metric carries.
@@ -404,5 +404,30 @@ fn the_host_op_continuation_wire_is_pinned() {
             destination: "path".into(),
             keep: 9
         }
+    );
+}
+
+/// S5's carrier wire: `{"op":"http","method":…,"url":…,…}` answered `{"outcome":"http","status":…}`.
+#[test]
+fn the_egress_carrier_wire_is_pinned() {
+    let asked = HostOp::Http(HttpRequest {
+        method: "POST".into(),
+        url: "https://collector.example/v1".into(),
+        headers: vec![("content-type".into(), "application/json".into())],
+        body: "{}".into(),
+        timeout_ms: 5000,
+    });
+    assert_eq!(
+        serde_json::to_value(&asked).expect("encode"),
+        serde_json::json!({"op": "http", "method": "POST", "url": "https://collector.example/v1",
+            "headers": [["content-type", "application/json"]], "body": "{}", "timeout_ms": 5000})
+    );
+    let answered = HostResult::Http(HttpResponse {
+        status: 204,
+        body: String::new(),
+    });
+    assert_eq!(
+        serde_json::to_value(&answered).expect("encode"),
+        serde_json::json!({"outcome": "http", "status": 204})
     );
 }

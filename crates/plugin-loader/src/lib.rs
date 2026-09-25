@@ -63,6 +63,7 @@ pub use export::{load_export_from_bytes, load_export_image, DynExport};
 // the same reason the endpoint types above are: the engine names these through the loader
 // rather than taking a second, direct dependency on the ABI crate.
 pub use busbar_plugin::cold::export::{ExportField, ExportStream};
+pub use busbar_plugin::cold::export::{HostResult, HttpRequest, HttpResponse};
 /// The borrowed-string range of that decl's declaration tail, re-exported beside it.
 pub use busbar_plugin::hot::DeclStr as HotDeclStr;
 /// The HOT-lane plane declaration, re-exported for the reason the endpoint types above are: the
@@ -76,6 +77,7 @@ pub use busbar_plugin::hot::StatusClass as HotStatusClass;
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
 pub use highwater::{HighWaterMarks, HIGH_WATER_FILE};
 pub use hook::DlopenPolicy;
+pub use host::{install_egress_carrier, EgressCarrier};
 pub use plane::{
     link_plane, load_plane, load_plane_from_bytes, DynPlane, HotClaim, HotDeclaration, ServedPlane,
 };

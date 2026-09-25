@@ -212,9 +212,11 @@ fn scheme_is(url: &str, scheme: &str) -> bool {
 ///     guards do NOT block the same set on the localhost family — they intentionally differ.
 ///
 /// `None` (webhook disabled) is always valid. Pure, so it is unit-testable without touching the
-/// process-wide `OnceLock`s. `pub(crate)` since 1.5.3: called by the built-in `request-log-webhook` /
-/// `generic-webhook` exporters ([`crate::export::webhook`]) that now own the delivery.
-pub(crate) fn validate_webhook_url(url: Option<String>) -> Result<Option<String>, String> {
+/// process-wide `OnceLock`s. Called by the built-in `request-log-webhook` / `generic-webhook`
+/// exporters ([`crate::export::webhook`]) that now own the delivery; `pub` since K9a S5, because it
+/// is the URL policy the composition root's egress carrier applies to every request a plugin sink
+/// asks the host to make.
+pub fn validate_webhook_url(url: Option<String>) -> Result<Option<String>, String> {
     let Some(u) = url else {
         return Ok(None);
     };

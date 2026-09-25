@@ -802,3 +802,92 @@ fn a_sink_writes_its_declared_destination_through_the_host_the_same_through_eith
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The egress this test binary installs: it records every request it is asked to carry and answers
+/// `204`, and its POLICY refuses any URL on `refused.example` before anything is sent — the shape of
+/// the host's own carrier (URL policy first, then the hop).
+struct RecordingCarrier(std::sync::Mutex<Vec<busbar_plugin::cold::export::HttpRequest>>);
+
+impl crate::EgressCarrier for RecordingCarrier {
+    fn carry(
+        &self,
+        request: &busbar_plugin::cold::export::HttpRequest,
+    ) -> busbar_plugin::cold::export::HostResult {
+        use busbar_plugin::cold::export::{HostResult, HttpResponse};
+        if request.url.contains("refused.example") {
+            return HostResult::Failed {
+                step: "refused".into(),
+                error: "the host's egress policy refuses this target".into(),
+                rotation: None,
+            };
+        }
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(request.clone());
+        HostResult::Http(HttpResponse {
+            status: 204,
+            body: String::new(),
+        })
+    }
+}
+
+static CARRIER: RecordingCarrier = RecordingCarrier(std::sync::Mutex::new(Vec::new()));
+
+/// **K9a S5 — THE EGRESS CARRIER, BOTH WAYS.** The export fixture registered through the LINKED
+/// door and the DROPPED-IN door, opened with a `url`: each delivery has the HOST carry the POST
+/// through the installed egress (the sink never dials), and both doors hand the carrier the same
+/// requests and fold the same answer. RED ARM, in the same test: a target the host's policy refuses
+/// never reaches the wire — nothing is carried — and the sink is told, and reports it.
+#[test]
+fn a_sinks_outbound_request_is_carried_by_the_host_the_same_through_either_door() {
+    crate::install_egress_carrier(&CARRIER);
+    let manifest = super::both_ways::statement(
+        "export",
+        "s5-fixture",
+        "s5-fixture",
+        busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+    );
+    let _guard = crate::observe::testing::exclusive();
+    let run = |registry: &PluginRegistry, url: &str| {
+        let cfg = serde_json::json!({ "url": url }).to_string();
+        let sink = registry.open_export("s5-fixture", &cfg).expect("opens");
+        let before = crate::observe::testing::folds().len();
+        CARRIER.0.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        for n in 1..=2 {
+            sink.deliver(ExportStream::Logs, &serde_json::json!({ "n": n }))
+                .expect("deliver");
+        }
+        let carried = CARRIER.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let folds: Vec<Compared> = crate::observe::testing::folds()[before..]
+            .iter()
+            .filter(|(who, ..)| who == "s5-fixture")
+            .map(|(_, k, m, d)| (k.clone(), m.clone(), d.clone()))
+            .collect();
+        serde_json::json!({ "carried": carried, "folds": folds }).to_string()
+    };
+    let Some([linked, dropped]) = super::both_ways::both_doors(
+        manifest.clone(),
+        |registry| run(registry, "https://collector.example/v1"),
+        String::clone,
+    ) else {
+        eprintln!("skip: the export fixture's cdylib is not built");
+        return;
+    };
+    assert!(
+        linked.1.contains(r#""body":"{\"n\":2}""#)
+            && linked.1.contains("example_export_posts_total"),
+        "{}",
+        linked.1
+    );
+    assert_eq!(linked, dropped, "both doors are carried the same");
+
+    // RED ARM: the policy refuses the target — nothing is carried, and the sink reports it.
+    let registry = super::both_ways::linked(manifest, super::both_ways::fixture("export").1);
+    let refused = run(&registry, "https://refused.example/v1");
+    assert!(refused.contains(r#""carried":[]"#), "{refused}");
+    assert!(
+        refused.contains("example_export_host_failures_total"),
+        "{refused}"
+    );
+}

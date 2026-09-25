@@ -862,8 +862,8 @@ pub unsafe fn hook_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcom
 /// Re-export the export wire types so a plugin author names `busbar_plugin_sdk::ExportStream` (etc.)
 /// without a direct `busbar-plugin` dependency, mirroring the hook/auth re-export path.
 pub use busbar_plugin::cold::export::{
-    ExportField, ExportRequest, ExportResponse, ExportStream, HostOp, HostResult, Rotation,
-    RotationFault,
+    ExportField, ExportRequest, ExportResponse, ExportStream, HostOp, HostResult, HttpRequest,
+    HttpResponse, Rotation, RotationFault,
 };
 
 /// What a sink answers a delivery (or a resume) with when it has the host act for it (export ABI
@@ -961,7 +961,7 @@ pub trait ExportHandler: Send + Sync {
 
     /// Accept one batch, with the host acting for the sink where it needs to (export ABI minor 4):
     /// answer [`HostStep::Host`] to have the host perform [`HostOp`]s — append to a declared
-    /// destination, rotate it, flush it — and receive their results on [`resume`](Self::resume).
+    /// destination, rotate it, flush it, carry an HTTP request (minor 5) — and receive their results on [`resume`](Self::resume).
     /// Default: [`deliver`](Self::deliver), then done — every sink written before the op.
     fn deliver_via_host(&self, stream: ExportStream, payload: &serde_json::Value) -> HostStep {
         self.deliver(stream, payload);

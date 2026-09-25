@@ -824,3 +824,35 @@ fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does
         assert!(refused.starts_with("plugin 's3-"), "{tag}: {refused}");
     }
 }
+
+/// **K9a S5 — THE HOST'S EGRESS CARRIER applies the host's URL policy before any hop.** A target the
+/// built-in webhook guard refuses — plaintext, loopback, cloud metadata — is refused with the
+/// guard's own words and nothing is dialled, so a plugin sink can reach no further than the host's
+/// own telemetry egress may. RED: carry the request without the policy check and the loopback
+/// target is dialled (a `request` failure, not a `refused` one).
+#[cfg(linked_egress)]
+#[test]
+fn the_egress_carrier_refuses_what_the_host_policy_refuses() {
+    use busbar_plugin_loader::{EgressCarrier as _, HostResult, HttpRequest};
+    for url in [
+        "http://collector.example/v1",
+        "https://127.0.0.1:9/v1",
+        "https://169.254.169.254/latest",
+    ] {
+        let request = HttpRequest {
+            method: "POST".into(),
+            url: url.into(),
+            headers: Vec::new(),
+            body: "{}".into(),
+            timeout_ms: 500,
+        };
+        match HostEgressCarrier.carry(&request) {
+            HostResult::Failed { step, error, .. } => {
+                assert_eq!(step, "refused", "{url}: {error}");
+                let guard = busbar_kernel::observability::validate_webhook_url(Some(url.into()));
+                assert_eq!(Err(error), guard, "{url}");
+            }
+            other => panic!("{url} was carried: {other:?}"),
+        }
+    }
+}

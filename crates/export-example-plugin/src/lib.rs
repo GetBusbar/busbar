@@ -13,8 +13,8 @@
 //! `busbar-store-example-plugin`'s config-less posture.
 
 use busbar_plugin_sdk::{
-    ExportHandler, ExportStream, HostOp, HostResult, HostStep, Observations, PluginDiagnostic,
-    PluginMetric,
+    ExportHandler, ExportStream, HostOp, HostResult, HostStep, HttpRequest, Observations,
+    PluginDiagnostic, PluginMetric,
 };
 
 /// The trivial sink: carries the metrics stream, counts what it was handed, drops the batches.
@@ -35,6 +35,8 @@ struct ExampleExport {
     rotated: std::sync::atomic::AtomicU64,
     /// Host acts the host reported FAILING for this sink since the last drain (K9a S4).
     host_failures: std::sync::atomic::AtomicU64,
+    /// Batches the host POSTed for this sink and the far end accepted (K9a S5).
+    posted: std::sync::atomic::AtomicU64,
     /// The settings this instance was opened with, when they are a JSON object — read by the host
     /// seams' witnesses (K9a) and by nothing else; a sink with no settings behaves as it always did.
     settings: serde_json::Map<String, serde_json::Value>,
@@ -57,6 +59,9 @@ const ROTATED_TOTAL: &str = "example_export_rotations_total";
 /// Host acts that failed for this sink (K9a S4's witness).
 const HOST_FAILURES_TOTAL: &str = "example_export_host_failures_total";
 
+/// Batches the host carried out for this sink and the far end accepted (K9a S5's witness).
+const POSTED_TOTAL: &str = "example_export_posts_total";
+
 impl ExportHandler for ExampleExport {
     /// `metrics` and `logs`: `logs` because it is the stream the host PUSHES today (the request-log
     /// line), so an `export:` instance naming this plugin is actually handed batches — which is what
@@ -76,21 +81,30 @@ impl ExportHandler for ExampleExport {
     /// destination by its settings key; it never opens the path.
     fn deliver_via_host(&self, stream: ExportStream, payload: &serde_json::Value) -> HostStep {
         self.deliver(stream, payload);
-        if self.setting("path").is_none() {
-            return HostStep::Done;
+        let mut ops = Vec::new();
+        if self.setting("path").is_some() {
+            let rotate_at = self.settings.get("rotate_bytes").and_then(|v| v.as_u64());
+            ops.push(HostOp::Write {
+                destination: "path".to_string(),
+                data: format!("{payload}\n"),
+                rotate_at,
+                keep: 9,
+            });
         }
-        let rotate_at = self.settings.get("rotate_bytes").and_then(|v| v.as_u64());
-        let data = format!("{payload}\n");
-        let destination = "path".to_string();
-        let write = HostOp::Write {
-            destination,
-            data,
-            rotate_at,
-            keep: 9,
-        };
-        HostStep::Host {
-            token: 0,
-            ops: vec![write],
+        // With a `url` configured (K9a S5's witness), have the HOST POST the batch through its
+        // egress — this sink never dials.
+        if let Some(url) = self.setting("url") {
+            ops.push(HostOp::Http(HttpRequest {
+                method: "POST".into(),
+                url: url.to_string(),
+                headers: vec![("content-type".into(), "application/json".into())],
+                body: payload.to_string(),
+                timeout_ms: 5_000,
+            }));
+        }
+        match ops.is_empty() {
+            true => HostStep::Done,
+            false => HostStep::Host { token: 0, ops },
         }
     }
 
@@ -98,10 +112,15 @@ impl ExportHandler for ExampleExport {
     fn resume(&self, _token: u64, results: Vec<HostResult>) -> HostStep {
         use std::sync::atomic::Ordering::Relaxed;
         for result in results {
-            let (rotation, failed) = match result {
-                HostResult::Done { rotation } => (rotation, false),
-                HostResult::Failed { rotation, .. } => (rotation, true),
+            let (rotation, failed, posted) = match result {
+                HostResult::Done { rotation } => (rotation, false, false),
+                HostResult::Failed { rotation, .. } => (rotation, true, false),
+                HostResult::Http(answer) => {
+                    let ok = (200..300).contains(&answer.status);
+                    (None, !ok, ok)
+                }
             };
+            self.posted.fetch_add(u64::from(posted), Relaxed);
             self.host_failures.fetch_add(u64::from(failed), Relaxed);
             self.rotated
                 .fetch_add(u64::from(rotation.is_some_and(|r| r.renamed)), Relaxed);
@@ -135,6 +154,7 @@ impl ExportHandler for ExampleExport {
             (delivered, &self.delivered),
             (ROTATED_TOTAL, &self.rotated),
             (HOST_FAILURES_TOTAL, &self.host_failures),
+            (POSTED_TOTAL, &self.posted),
         ] {
             let n = counter.swap(0, Relaxed);
             if n > 0 {

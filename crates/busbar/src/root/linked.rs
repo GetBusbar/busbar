@@ -682,6 +682,7 @@ pub fn register_ws_arrivals(linked: &Linked) {
 pub fn register_seams() {
     #[cfg(linked_egress)]
     {
+        busbar_plugin_loader::install_egress_carrier(&HostEgressCarrier);
         busbar_kernel::egress::seam::install_hostless_egress(
             &busbar_kernel::egress::seam::CoreHostlessEgress,
         );
@@ -697,6 +698,57 @@ pub fn register_seams() {
     busbar_kernel::admin_verbs::install_plane_admin_envelope(
         &busbar_kernel::admin::planeverbs::CorePlaneAdminEnvelope,
     );
+}
+
+/// THE EGRESS CARRIER (K9a S5): how the host carries an outbound HTTP request a plugin sink asks it
+/// to make — the sink never dials. The request meets the host's webhook URL policy first (https
+/// only; loopback, link-local, private, CGNAT and cloud-metadata targets refused, the same guard the
+/// built-in request-log webhook applies), then rides the host's governed hop — its TLS, its
+/// private/plaintext refusal, the request's deadline — and the body is read to a bound.
+#[cfg(linked_egress)]
+pub struct HostEgressCarrier;
+
+/// How much of a far end's answer a carried request reads back.
+#[cfg(linked_egress)]
+const CARRIED_BODY_MAX: usize = 64 * 1024;
+
+#[cfg(linked_egress)]
+impl busbar_plugin_loader::EgressCarrier for HostEgressCarrier {
+    fn carry(
+        &self,
+        request: &busbar_plugin_loader::HttpRequest,
+    ) -> busbar_plugin_loader::HostResult {
+        use busbar_kernel::egress::seam::HostlessEgress as _;
+        use busbar_plugin_loader::{HostResult, HttpResponse};
+        let failed = |step: &str, error: String| HostResult::Failed {
+            step: step.to_string(),
+            error,
+            rotation: None,
+        };
+        let policy = busbar_kernel::observability::validate_webhook_url(Some(request.url.clone()));
+        if let Err(refusal) = policy {
+            return failed("refused", refusal);
+        }
+        let hop = busbar_kernel::egress::seam::HopSpec {
+            verb: &request.method,
+            url: &request.url,
+            headers: &request.headers,
+            body: request.body.as_bytes(),
+            allow_private: false,
+            allow_plaintext: false,
+            client_identity_ref: 0,
+            trust_anchor_ref: 0,
+            timeout: std::time::Duration::from_millis(request.timeout_ms),
+            resolved_addr: None,
+        };
+        match busbar_kernel::egress::seam::CoreHostlessEgress.buffered(&hop, CARRIED_BODY_MAX) {
+            Ok(answer) => HostResult::Http(HttpResponse {
+                status: answer.status,
+                body: String::from_utf8_lossy(&answer.body).into_owned(),
+            }),
+            Err(fault) => failed("request", fault.cause),
+        }
+    }
 }
 
 /// THE ROOT UNITS' SEALS, in table order. A composition that disagrees with itself must not bind a
