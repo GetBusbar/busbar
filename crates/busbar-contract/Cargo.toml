@@ -53,6 +53,15 @@ license = "Apache-2.0"
 # `itoa`/`memchr`/`serde_core`/`zmij` in `Cargo.lock`, none of which reaches `libc`. `async-trait`
 # is a proc-macro: it runs at compile time and links nothing into a plugin, and `RoutingPolicy`'s
 # every implementor already writes `#[async_trait]` against it.
+#
+# `http` and `memchr` arrived with the substrate-values SHAPES (DECISIONS #83; SD-1 of the #83a
+# split: `billing`, `codec`, `ir`, `protocol`, and the two upstream signal shapes). `http` is the bare
+# header/status vocabulary a protocol-seam trait names (`HeaderMap` in a detection predicate and in
+# a dialect's error-header attach) — the spec's own "header vocabulary only" acceptance; it resolves
+# to `bytes`/`fnv`/`itoa` and opens nothing. `memchr` is the SSE frame-boundary scan's byte search,
+# a leaf already in this crate's closure through `serde_json`. Neither reaches `libc`. The shapes
+# whose signatures name the reference-counted `bytes::Bytes` buffer (the IR handle, the wire body,
+# the media carriers) did NOT come: `tests/bounded_limits.rs` bans that type from this surface.
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -62,6 +71,8 @@ smallvec = { workspace = true }
 zeroize = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+http = { workspace = true }
+memchr = { workspace = true }
 
 # Tests only. The ABI types that seal into the policy journal are serialised by something, and a
 # test that asserts what a serialisation does NOT contain has to run a real serializer over it.

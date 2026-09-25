@@ -30,12 +30,7 @@ pub mod invoke;
 pub mod neutral_handles;
 pub mod subscribe;
 
-use serde_json::{Map, Value};
-use std::collections::BTreeMap;
-
-/// Request/response extras NAMESPACED BY SOURCE PROTOCOL — the transparent alias `busbar-core`
-/// spells `crate::lossless::SourceScopedExtra`. Outer key = source protocol name, inner map = that
-/// protocol's unmodeled fields, so a cross-protocol hop cannot leak a source-only key into a foreign
-/// dialect. Declared here beside the neutral IR that carries it; the two aliases resolve to the same
-/// concrete type, so a value flows between core and substrate with no conversion.
-pub type SourceScopedExtra = BTreeMap<String, Map<String, Value>>;
+/// Request/response extras NAMESPACED BY SOURCE PROTOCOL. A SHAPE: defined once, in
+/// `busbar_contract::ir`, and re-exported here under its historical path (DECISIONS #83; the
+/// `lossless` alias of the same type is a re-export of this one too, #83a O13).
+pub use busbar_contract::ir::SourceScopedExtra;

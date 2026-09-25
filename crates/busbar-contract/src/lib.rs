@@ -22,23 +22,40 @@
 #[allow(missing_docs)]
 pub mod auth;
 pub mod authz;
+// THE SUBSTRATE-VALUES SHAPES (DECISIONS #83: contract = shapes; #83a, SD-1): `billing`, `codec`,
+// `ir`, `protocol` (and `diagnostic`, below) are module-path-only moves out of `busbar-substrate-values`, which re-exports
+// every item under its historical path until the split retires it (and the two upstream signal shapes
+// joined `upstream`). `#[allow(missing_docs, missing_debug_implementations)]` travels with them for
+// the reason it travels with `records`: documenting a self-evident field or deriving a `Debug` would
+// EDIT the moved surface. Nothing here is re-exported at the crate root.
+#[allow(missing_docs, missing_debug_implementations)]
+pub mod billing;
 pub mod bounded;
 pub mod caps;
 pub mod civil;
+#[allow(missing_docs, missing_debug_implementations)]
+pub mod codec;
 pub mod config;
 pub mod count;
 pub mod dest;
+// The diagnostic SHAPES and the three `#[macro_export]` emit macros (#83a O3, SD-1), moved out of
+// `busbar-substrate-values::diagnostics` beside the rest; the catalog stays kernel-side.
+pub mod diagnostic;
 pub mod duration;
 pub mod grammar;
 #[allow(missing_docs)]
 pub mod hooks;
 pub mod ids;
+#[allow(missing_docs, missing_debug_implementations)]
+pub mod ir;
 pub(crate) mod json_grammar;
 pub mod kinds;
 #[allow(missing_docs)]
 pub mod operation;
 pub mod plane;
 pub mod plugin;
+#[allow(missing_docs, missing_debug_implementations)]
+pub mod protocol;
 pub mod redacted;
 // The money-path durable record SHAPES (DECISIONS #83: contract = shapes, ledger = semantics;
 // DECISIONS #84: nothing on the plugin path may link a crate holding semantics). The module is a

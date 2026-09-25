@@ -6,7 +6,6 @@
 //! types a plane crate names without reaching into `busbar-core`; core re-exports them from
 //! `busbar_kernel::handlers::{WireBody, EgressCtx}` so its own call sites are unchanged.
 
-use busbar_api::operation::Operation;
 use bytes::Bytes;
 use serde_json::Value;
 
@@ -37,25 +36,10 @@ impl WireBody {
     }
 }
 
-/// What routing hands a `RequestHandler` so it can render the upstream URL path. RESOLVED PRIMITIVES
-/// ONLY — never the `Lane` or a config handle: a codec/handler touching routing state is exactly the
-/// coupling this fixes. Grows a field (region, api-version, …) when a protocol needs more; the trait
-/// signature does not. Routing populates it from the lane and applies any `lane.path` override itself.
-pub struct EgressCtx<'a> {
-    /// Which operation's endpoint to render — the template selector.
-    pub operation: Operation,
-    /// The resolved wire model id (routing calls `Lane::wire_model()`), for URL-model protocols
-    /// (Gemini `models/{model}:…`, Bedrock `model/{model}/invoke`).
-    pub model: &'a str,
-    /// Whether the caller asked to stream (chat/audio path variants); `false` for the JSON ops.
-    pub stream: bool,
-    /// Optional per-provider path-BASE override (the lane's `path_base`). For URL-model protocols
-    /// (Gemini) it replaces the protocol's hardcoded base segment (e.g. `/v1beta/models`) so a
-    /// provider can be pointed at a different layout — e.g. Vertex AI's
-    /// `/v1/projects/{p}/locations/{l}/publishers/google/models`. `None` uses the protocol default.
-    /// Distinct from the full-path `path` override, which is static and ignores the per-request model.
-    pub path_base: Option<&'a str>,
-}
+/// What routing hands a `RequestHandler` so it can render the upstream URL path. A SHAPE: defined
+/// in `busbar_contract::codec` (DECISIONS #83, SD-1 of the #83a split) and re-exported here under its
+/// historical path.
+pub use busbar_contract::codec::EgressCtx;
 
 /// The egress request wire a hop produced: a JSON `Value` still to be shim/model-shaped by the
 /// router before serialization, or a FINAL body (a non-JSON egress wire — multipart transcription /

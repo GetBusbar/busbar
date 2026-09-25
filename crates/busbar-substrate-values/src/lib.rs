@@ -26,6 +26,10 @@
 // both the module and the three macros so `busbar_substrate_values::diagnostics::…` and
 // `busbar_substrate_values::diag_warn!` resolve exactly as before.
 pub mod diagnostics;
+// The three emit macros are `busbar_contract`'s now (#83a O3, SD-1: the diagnostic shapes moved with
+// them); re-exported at this crate's root so `busbar_substrate_values::diag_warn!` and every
+// `crate::diag_warn!` site resolve exactly as before.
+pub use busbar_contract::{diag_debug, diag_error, diag_warn};
 
 // The five neutral transport/crypto utility leaves: JSON canonicalization + the depth-guarded parser
 // seam, the base64/media-type helper, the AWS EventStream framing codec, the source-scoped

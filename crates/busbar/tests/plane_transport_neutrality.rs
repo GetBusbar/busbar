@@ -76,9 +76,11 @@ const NEUTRAL_ROOTS: &[&str] = &[
 /// crate split carried the field out of the scanned roots; the day after that the `_` became a
 /// boundary — a tightening that was right, and that never had to reckon with this field
 /// because it was no longer in scope. Restoring the roots above puts it back in scope, so the
-/// judgement has to be made in the open rather than inherited from an accident of ordering.
+/// judgement has to be made in the open rather than inherited from an accident of ordering. The
+/// entry follows the FIELD: `TokenUsage` moved, module-path-only, to `busbar_contract::billing`
+/// (#83a SD-1), a root this gate already scans, so the file it names moved with it.
 const NOUN_EXEMPTIONS: &[(&str, &str, &str)] = &[(
-    "crates/busbar-substrate-values/src/billing.rs",
+    "crates/busbar-contract/src/billing.rs",
     "input_audio",
     "A BILLING MODALITY, not a transport noun. `TokenUsage` partitions `input` into `input_text` / \
      `input_audio` / `input_image` — the per-modality breakdown a transcription-style operation's \

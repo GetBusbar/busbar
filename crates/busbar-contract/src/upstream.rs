@@ -131,3 +131,55 @@ status_classes! {
     /// without penalising it.
     ContextLength => "context_length", ContextLength,
 }
+
+// ── THE TWO SIGNAL SHAPES a dialect hands the classifier (DECISIONS #83: contract = shapes) ─────────
+//
+// Relocated, module-path-only, from `busbar-substrate-values::breaker`, which re-exports both under
+// their historical paths (SD-1 of the #83a split). What a dialect RETURNS from its error reader is
+// the raw error; what the classifier returns is the canonical signal; both sides of the seam must
+// agree on the fields. The classifier itself — the operator `error_map` and the status defaults —
+// is semantics, and stays on the egress side.
+
+/// Raw upstream error extracted from HTTP response (Stage 1a output).
+#[derive(Debug, Clone)]
+pub struct RawUpstreamError {
+    /// The upstream's HTTP status code.
+    pub http_status: u16,
+    /// Provider-specific error *code* (e.g. a numeric `code` field), checked against `error_map`.
+    pub provider_code: Option<String>,
+    /// Provider-specific structured error *type* (e.g. a `type`/`error.type` string), checked
+    /// against `error_map` as a second signal when the code doesn't match.
+    pub structured_type: Option<String>,
+    /// Upstream `Retry-After` header value in whole seconds, when present. The per-protocol
+    /// `extract_error` methods only see the body (no headers), so the forwarding layer — which has
+    /// the response headers — parses and sets this after `extract_error` returns. `normalize_raw_error`
+    /// then propagates it into `CanonicalSignal.retry_after` so the cooldown floor is honored.
+    pub retry_after_secs: Option<u64>,
+}
+
+impl RawUpstreamError {
+    /// THE STATUS ALONE, claiming no provider vocabulary — what one outbound attempt reports when
+    /// nothing on the path could read its upstream's error shape. It is the most restrictive USEFUL
+    /// answer rather than the most restrictive possible one: `classify` still places the failure
+    /// from the status, which is strictly better than a non-2xx the breaker never hears about.
+    pub fn from_status(status: u16) -> Self {
+        Self {
+            http_status: status,
+            provider_code: None,
+            structured_type: None,
+            retry_after_secs: None,
+        }
+    }
+}
+
+/// Canonical signal emitted by protocol normalizers.
+/// Stage 1 output → Stage 2 input.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CanonicalSignal {
+    /// The status class the signal was placed in.
+    pub class: StatusClass,
+    /// The provider code or structured type that placed it, when one did.
+    pub provider_signal: Option<String>,
+    /// The upstream's stated cooldown floor in whole seconds, when it stated one.
+    pub retry_after: Option<u64>,
+}

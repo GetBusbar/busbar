@@ -151,18 +151,17 @@ pub async fn read_capped<E>(
     (Bytes::from(buf), end)
 }
 
-/// The `application/json` media type — the default `Content-Type`/`Accept` for the JSON REST
-/// surfaces. Hoisted to one const so the literal isn't repeated across egress/health/observability.
-/// Lives here (not `pub(crate)` in core) so a plane crate and the relocated `OperationHandler`
-/// codec surface name it without reaching into `busbar-core`; core's `proxy` re-exports it for its
-/// own `crate::proxy::APPLICATION_JSON` call sites.
-pub const APPLICATION_JSON: &str = "application/json";
-
-/// Streaming MIME type for SSE (Server-Sent Events) responses — the `Content-Type` value that
-/// signals an open event-stream to the client. Neutral protocol-boundary content-type named by
-/// core's proxy engine and by the plane crates; lives here so a plane names it without reaching
-/// into `busbar-core`.
-pub const TEXT_EVENT_STREAM: &str = "text/event-stream";
+// ── THE SHAPE VOCABULARY lives in `busbar_contract::protocol` (DECISIONS #83: contract = shapes;
+//    SD-1 of the #83a split): the media-type and default user-agent literals a declaration defaults
+//    to, the provider context-length code, the agnostic error-KIND tokens and the context-length
+//    disposition label a dialect and the kernel both key on. Re-exported here under their historical
+//    paths, so every caller compiles unchanged.
+pub use busbar_contract::protocol::{
+    APPLICATION_JSON, DISPOSITION_CONTEXT_LENGTH, EGRESS_UA_DEFAULT, KIND_API_ERROR,
+    KIND_AUTHENTICATION, KIND_INSUFFICIENT_QUOTA, KIND_INVALID_REQUEST, KIND_NOT_FOUND,
+    KIND_OVERLOADED, KIND_PERMISSION, KIND_RATE_LIMIT, KIND_REQUEST_TOO_LARGE, KIND_SERVER_ERROR,
+    KIND_TIMEOUT, PROVIDER_CODE_CONTEXT_LENGTH, TEXT_EVENT_STREAM,
+};
 
 /// Metric-label values for the `disposition` dimension on `UPSTREAM_FAILURES_TOTAL` and the
 /// `reason` dimension on `FAILOVERS_TOTAL`.
@@ -172,55 +171,6 @@ pub const DISPOSITION_TRANSIENT: &str =
 /// Bounded `pool` metric-label sentinel used for every pre-routing failure (malformed body,
 /// unresolved model, governance rejection) so the label space stays finite (metrics.rs).
 pub const POOL_LABEL_UNRESOLVED: &str = "unresolved";
-
-/// Provider error-code token emitted when a request exceeds the model's context-window limit.
-/// Returned by `client_fault_kind` for `StatusClass::ContextLength` and drives the per-protocol
-/// writer to emit the native context-length error category.
-pub const PROVIDER_CODE_CONTEXT_LENGTH: &str = "context_length_exceeded";
-
-/// Unknown/foreign egress protocol default `User-Agent`: a generic-but-present UA still beats
-/// sending none. Lives here (not `pub(crate)` in core) so a codec-less protocol declaration in a
-/// plane crate (`busbar-mcp`) can state it as its `ProtocolDecl::egress_user_agent` default — an MCP
-/// registration has no writer, so its promoted UA fact is this trait default, and the plane must be
-/// able to name it without reaching into `busbar-core`. Core's `proxy::egress` re-exports it for its
-/// own resolver fallback and the per-protocol writers.
-pub const EGRESS_UA_DEFAULT: &str = "okhttp/4.12.0";
-
-// ── Canonical error-KIND tokens the forward layer produces (`cross_protocol_error_kind`) and passes
-//    to `ingress_error` as the `kind` argument — the protocol-agnostic discriminant each per-protocol
-//    writer maps to its native error category. Relocated DOWN from `busbar-core`'s `proxy` so the
-//    `busbar-llm` dialect writers name them without reaching into `busbar-core`; core's `proxy`
-//    re-exports each at its historical `crate::proxy::KIND_*` path. The values shared with the
-//    OpenAI-family vocabulary alias their canonical home in [`crate::proto`]; the two forward-specific
-//    tokens (`overloaded`, `timeout`) are defined here.
-/// Anthropic-vocabulary/agnostic forward kind for a generic upstream/API failure.
-pub const KIND_API_ERROR: &str = crate::proto::ERR_TYPE_API_ERROR;
-/// Bare `overloaded` — DELIBERATELY distinct from `proto::ERR_TYPE_OVERLOADED` ("overloaded_error",
-/// the Anthropic wire spelling): this is busbar's own agnostic kind for a relayed upstream 503.
-pub const KIND_OVERLOADED: &str = "overloaded";
-/// Bare `timeout` — distinct from the Anthropic wire's `timeout_error` spelling.
-pub const KIND_TIMEOUT: &str = "timeout";
-/// Transient upstream-failure forward kind (aliases the OpenAI `server_error` type).
-pub const KIND_SERVER_ERROR: &str = crate::proto::ERR_TYPE_SERVER_ERROR;
-
-// ── The remaining agnostic error-KIND tokens. Relocated DOWN from `busbar-core`'s `proxy` so the
-//    `busbar-llm` dialect writers name them without reaching into `busbar-core`; core's `proxy`
-//    re-exports each at its historical `crate::proxy::KIND_*` path. Each aliases its canonical home in
-//    [`crate::proto`] so the spelling has ONE definition and cannot drift.
-/// Caller-authentication failure forward kind (aliases the OpenAI `authentication_error` type).
-pub const KIND_AUTHENTICATION: &str = crate::proto::ERR_TYPE_AUTHENTICATION;
-/// Caller-permission failure forward kind (aliases the OpenAI `permission_error` type).
-pub const KIND_PERMISSION: &str = crate::proto::ERR_TYPE_PERMISSION;
-/// Rate-limit forward kind (aliases the OpenAI `rate_limit_error` type).
-pub const KIND_RATE_LIMIT: &str = crate::proto::ERR_TYPE_RATE_LIMIT;
-/// Malformed/invalid-request forward kind (aliases the OpenAI `invalid_request_error` type).
-pub const KIND_INVALID_REQUEST: &str = crate::proto::ERR_TYPE_INVALID_REQUEST;
-/// Unknown-model / not-found forward kind (aliases the OpenAI `not_found_error` type).
-pub const KIND_NOT_FOUND: &str = crate::proto::ERR_TYPE_NOT_FOUND;
-/// Quota-exhausted forward kind (aliases the OpenAI `insufficient_quota` type).
-pub const KIND_INSUFFICIENT_QUOTA: &str = crate::proto::ERR_TYPE_INSUFFICIENT_QUOTA;
-/// Oversized-request forward kind (aliases the OpenAI `request_too_large` type).
-pub const KIND_REQUEST_TOO_LARGE: &str = crate::proto::ERR_TYPE_REQUEST_TOO_LARGE;
 
 // ── Network-transient `err_type` values passed to `record_transient_in`. Distinct from the error-KIND
 //    tokens above: they label the *category* of network failure recorded in the breaker store, not the
@@ -240,8 +190,6 @@ pub const ERR_DEGRADED_NON2XX: &str = "degraded-non2xx";
 /// A single attempt's budget-clamped transport timeout fired (retryable within the request).
 pub const DISPOSITION_ATTEMPT_TIMEOUT: &str = "attempt_timeout";
 pub const DISPOSITION_HARD_DOWN: &str = busbar_contract::upstream::Disposition::HardDown.label();
-pub const DISPOSITION_CONTEXT_LENGTH: &str =
-    busbar_contract::upstream::Disposition::ContextLength.label();
 
 // ── The two `x-busbar-*` TRANSPARENCY response-header NAMES stamped when a non-default routing policy
 //    chose the target lane, the operator opt-in gate, and the per-request upstream-RTT task-local the

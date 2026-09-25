@@ -57,36 +57,10 @@ pub fn classify(sig: &CanonicalSignal) -> Disposition {
     sig.class.disposition()
 }
 
-/// Raw upstream error extracted from HTTP response (Stage 1a output).
-#[derive(Debug, Clone)]
-pub struct RawUpstreamError {
-    pub http_status: u16,
-    /// Provider-specific error *code* (e.g. a numeric `code` field), checked against `error_map`.
-    pub provider_code: Option<String>,
-    /// Provider-specific structured error *type* (e.g. a `type`/`error.type` string), checked
-    /// against `error_map` as a second signal when the code doesn't match.
-    pub structured_type: Option<String>,
-    /// Upstream `Retry-After` header value in whole seconds, when present. The per-protocol
-    /// `extract_error` methods only see the body (no headers), so the forwarding layer — which has
-    /// the response headers — parses and sets this after `extract_error` returns. `normalize_raw_error`
-    /// then propagates it into `CanonicalSignal.retry_after` so the cooldown floor is honored.
-    pub retry_after_secs: Option<u64>,
-}
-
-impl RawUpstreamError {
-    /// THE STATUS ALONE, claiming no provider vocabulary — what one outbound attempt reports when
-    /// nothing on the path could read its upstream's error shape. It is the most restrictive USEFUL
-    /// answer rather than the most restrictive possible one: `classify` still places the failure
-    /// from the status, which is strictly better than a non-2xx the breaker never hears about.
-    pub fn from_status(status: u16) -> Self {
-        Self {
-            http_status: status,
-            provider_code: None,
-            structured_type: None,
-            retry_after_secs: None,
-        }
-    }
-}
+/// The raw upstream error a dialect reads off the body and the canonical signal the classifier
+/// places it in. SHAPES: defined in `busbar_contract::upstream` (DECISIONS #83, SD-1 of the #83a
+/// split) and re-exported here under their historical paths.
+pub use busbar_contract::upstream::{CanonicalSignal, RawUpstreamError};
 
 /// Parse a `Retry-After` header value. RFC 9110 §10.2.3 defines the field as
 /// `delay-seconds / HTTP-date`; BOTH forms are normative and providers send both. Parsing only the
@@ -223,15 +197,6 @@ pub fn normalize_raw_error(
         provider_signal,
         retry_after: raw.retry_after_secs,
     }
-}
-
-/// Canonical signal emitted by protocol normalizers.
-/// Stage 1 output → Stage 2 input.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CanonicalSignal {
-    pub class: StatusClass,
-    pub provider_signal: Option<String>,
-    pub retry_after: Option<u64>,
 }
 
 #[cfg(test)]
