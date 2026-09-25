@@ -355,7 +355,7 @@ counts can trend to zero at their own pace."""
 # item 376 (Q11/Q32, owner-signed 2026-09-24): same needle repair as ports-only above, pinned at
 # TODAY's measurement on the committed tree (HEAD b091b4e83). Downward only from here.
 [rules.ports-only-tests.max_per_crate]
-busbar-llm = 1045
+busbar-llm = 1002
 busbar-mcp = 199
 busbar-a2a = 98
 busbar-voice = 43
