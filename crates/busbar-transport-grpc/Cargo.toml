@@ -18,8 +18,12 @@ busbar-contract = { path = "../busbar-contract" }
 # socket of its own. `src/mount.rs` is written against `busbar_transport_http::mount` and says so,
 # so this edge is real and shipped — it is the one transport-to-transport edge this crate keeps, and
 # whether it should exist at all is the open question in DECISIONS #40's dep wall, not a thing a
-# manifest edit settles. `busbar-transport-tcp` is NOT here: its only mention in the crate is
-# `src/tests/battery.rs`, and it has moved to `[dev-dependencies]` accordingly.
+# manifest edit settles. `busbar-transport-tcp` is NOT here, and is not in `[dev-dependencies]`
+# either: naming a sibling transport crate even as a dev-dependency links that crate's whole
+# SHIPPED closure into this one's `cargo test` binary (`kind-isolation:closure`'s
+# `closure-test-reach` finding). The battery's dial-only lower layer
+# (`src/tests/battery.rs::RawSocketDialer`) opens a real socket straight off `tokio`, already an
+# ordinary dependency below, instead.
 busbar-transport-http = { path = "../busbar-transport-http" }
 tokio = { workspace = true, features = ["rt", "macros", "io-util", "sync", "time"] }
 # `tonic` here is used ONLY for its codec/status/streaming machinery (`tonic::codec::Codec`,
@@ -45,8 +49,6 @@ futures = { workspace = true }
 # fixture implementor of the SEALED `KernelSeal` trait; this crate's test harnesses used to
 # forge their own. Dev-only and feature-gated, so it is absent from every release build.
 busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
-# The socket the battery opens under the stack — test-time only; see the note above.
-busbar-transport-tcp = { path = "../busbar-transport-tcp" }
 # `test-util` is dev-only (this list is `[dev-dependencies]`), so `start_paused` never reaches a
 # release build: it lets item 146's stalled-preface cases prove the budget by letting the runtime
 # auto-advance virtual time to it, rather than the test suite actually waiting ten real seconds.

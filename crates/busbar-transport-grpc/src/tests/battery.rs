@@ -5,13 +5,22 @@
 //! the answer), multiplexed streams without cross-talk, K writers, honest terminal status, and the
 //! transport-meta declarations.
 
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::StreamExt;
 
 use busbar_contract::transport::registry::status_ns;
-use busbar_contract::transport::wire::{TransportError, WireStatus, WireStatusClass};
-use busbar_contract::{ScratchBytes, StreamId, Transport};
+use busbar_contract::transport::wire::{
+    ArrivalRecord, CloseReason, Conn, ConnHandle, Listener, RawStream, TransportError,
+    WireStatus, WireStatusClass,
+};
+use busbar_contract::{
+    Fut, Kind, Plugin, Refusal, ScratchBytes, StreamId, Transport, TransportConfigView,
+    TransportKeyHandle, VerifiedDestination,
+};
 
 use crate::GrpcTransport;
 
@@ -22,11 +31,173 @@ fn server_transport() -> GrpcTransport {
     ))
 }
 
-/// A `grpc` transport standing on `tcp`, which is what carries a dialled one.
+/// A dial-only, raw-socket lower layer, standing in for `busbar-transport-tcp` in this battery.
+///
+/// `grpc` is a plugin-kind crate (`kind-isolation:closure`, DECISIONS #40): naming a sibling
+/// transport crate — even under `[dev-dependencies]` — links that crate's whole SHIPPED closure
+/// into this one's `cargo test` binary (the `closure-test-reach` finding). `client_transport()`
+/// only ever DIALS, and dialling is one `TcpStream::connect` plus handing the socket up — the same
+/// handful of lines `busbar-transport-tcp`'s own `dial`/`detach` are, minus the listener registry
+/// and the config-driven bind this battery never exercises on the dial side. Built directly on
+/// `tokio`, already an ordinary dependency of this crate, so no workspace-crate edge is added, and
+/// every byte still crosses a real socket: this is not a fake, only a narrower one.
+struct RawSocketDialer {
+    conns: Mutex<HashMap<u64, tokio::net::TcpStream>>,
+    next_id: AtomicU64,
+}
+
+impl RawSocketDialer {
+    fn new() -> Self {
+        Self {
+            conns: Mutex::new(HashMap::new()),
+            next_id: AtomicU64::new(0),
+        }
+    }
+}
+
+struct RawSocketConnHandle {
+    id: u64,
+    peer: String,
+}
+
+impl ConnHandle for RawSocketConnHandle {
+    fn id(&self) -> u64 {
+        self.id
+    }
+    fn peer(&self) -> String {
+        self.peer.clone()
+    }
+}
+
+impl Plugin for RawSocketDialer {
+    fn key(&self) -> &'static str {
+        "tcp"
+    }
+    fn kind(&self) -> Kind {
+        Kind::Transport
+    }
+    fn abi(&self) -> busbar_contract::transport::AbiVersion {
+        busbar_contract::transport::registry::TRANSPORT_ABI
+    }
+}
+
+impl Transport for RawSocketDialer {
+    fn arrival(&self, conn: &Conn) -> ArrivalRecord {
+        ArrivalRecord {
+            source: conn.peer(),
+            port: 0,
+            alpn: None,
+            sni: None,
+            peer_cert: None,
+            transport_chain: vec!["tcp"],
+        }
+    }
+
+    fn listen<'a>(
+        &'a self,
+        _cfg: &'a dyn TransportConfigView,
+        _keys: &'a TransportKeyHandle,
+    ) -> Fut<'a, Listener> {
+        Box::pin(async move { Err(TransportError::HandoffMismatch) })
+    }
+
+    fn accept<'a>(&'a self, _l: &'a Listener) -> Fut<'a, Conn> {
+        Box::pin(async move { Err(TransportError::HandoffMismatch) })
+    }
+
+    fn dial<'a>(
+        &'a self,
+        dest: &'a VerifiedDestination,
+        _keys: &'a TransportKeyHandle,
+    ) -> Fut<'a, Conn> {
+        Box::pin(async move {
+            let authority = match dest.facts() {
+                busbar_contract::DestinationFacts::Upstream { address, .. } => {
+                    address.authority().ok_or(TransportError::AddressRefused)?
+                }
+                _ => return Err(TransportError::AddressRefused),
+            };
+            let addr: std::net::SocketAddr = authority
+                .parse()
+                .map_err(|_| TransportError::AddressRefused)?;
+            let stream = tokio::net::TcpStream::connect(addr)
+                .await
+                .map_err(|_| TransportError::AddressRefused)?;
+            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+            self.conns.lock().unwrap().insert(id, stream);
+            Ok(Conn::new(Arc::new(RawSocketConnHandle {
+                id,
+                peer: addr.to_string(),
+            })))
+        })
+    }
+
+    fn frames(
+        &self,
+        _conn: Conn,
+    ) -> std::pin::Pin<
+        Box<dyn futures::Stream<Item = Result<(StreamId, busbar_contract::Frame), TransportError>> + Send>,
+    > {
+        Box::pin(futures::stream::empty())
+    }
+
+    fn write<'a>(
+        &'a self,
+        _conn: &'a Conn,
+        _stream: StreamId,
+        _bytes: ScratchBytes<'a>,
+    ) -> Fut<'a, usize> {
+        Box::pin(async move { Err(TransportError::HandoffMismatch) })
+    }
+
+    fn encode_envelope<'a>(
+        &self,
+        _fields: &[(&str, &[u8])],
+        _body: &[u8],
+        _arena: &'a dyn busbar_contract::bounded::PlaneAlloc,
+    ) -> Result<busbar_contract::bounded::ScratchBytes<'a>, busbar_contract::wire::Encode> {
+        Err(busbar_contract::wire::Encode::ScratchExhausted)
+    }
+
+    fn adopt<'a>(
+        &'a self,
+        _from: &'a dyn Transport,
+        _conn: Conn,
+        _keys: &'a TransportKeyHandle,
+    ) -> Fut<'a, Conn> {
+        Box::pin(async move { Err(TransportError::HandoffMismatch) })
+    }
+
+    fn detach(&self, conn: &Conn) -> Option<RawStream> {
+        let stream = self.conns.lock().unwrap().remove(&conn.id())?;
+        Some(RawStream::new(
+            "tcp",
+            conn.peer(),
+            Box::new(tokio_util::compat::TokioAsyncReadCompatExt::compat(stream)),
+        ))
+    }
+
+    fn composed_over(&self) -> Option<&'static str> {
+        None
+    }
+
+    fn close(&self, _conn: Conn, _reason: CloseReason) {}
+
+    fn unit0_refusal<'a>(
+        &'a self,
+        _conn: Conn,
+        _stream: Option<StreamId>,
+        _refusal: &'a Refusal,
+        _bytes: ScratchBytes<'a>,
+    ) -> Fut<'a, ()> {
+        Box::pin(async move { Err(TransportError::HandoffMismatch) })
+    }
+}
+
+/// A `grpc` transport standing on a real dialled socket — [`RawSocketDialer`], not
+/// `busbar-transport-tcp` (see its own doc comment for why).
 fn client_transport() -> GrpcTransport {
-    GrpcTransport::over(std::sync::Arc::new(
-        busbar_transport_tcp::TcpTransport::new(),
-    ))
+    GrpcTransport::over(std::sync::Arc::new(RawSocketDialer::new()))
 }
 
 /// A bind address, for the layer below.
