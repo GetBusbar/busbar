@@ -212,7 +212,11 @@ fn register_protocols() {
 /// lands in its own slot regardless of the table's order. Then the two unconditional seams, then
 /// every root unit's seal.
 fn register_planes() {
-    root::linked::register_planes(&LINKED, root::linked::dropped_planes_from_config());
+    // The configured `plugins.dir`, scanned once: its planes join the plane axis here and its export
+    // modules the export axis just below — the same entries a linked plugin registers through.
+    let dropped = root::linked::dropped_from_config();
+    root::linked::register_planes(&LINKED, root::linked::dropped_planes_of(dropped));
+    root::linked::register_exports(dropped);
 
     // THE AUTHORIZATION-SERVER PLANE'S SEAM, registered UNCONDITIONALLY (no feature flag — see the
     // manifest note on the `busbar-oauth2` dependency), before any config loads. Mirrors
@@ -724,6 +728,10 @@ async fn run(data_workers: usize) {
     // build_app_from_config — the one construction path).
     let mut cfg = config::resolve(&deploy, &defs)
         .unwrap_or_else(|errs| die(format!("config errors:\n  - {}", errs.join("\n  - "))));
+    // THE EXPORT AXIS'S SINKS, opened once — before the first app is built, so the routes they
+    // declare are in the boot route table (restart-to-apply, as every built-in PUSH sink is). A
+    // configured sink that will not open refuses the boot.
+    export::plugin::open(&cfg.export).unwrap_or_else(|e| die(format!("config errors:\n  - {e}")));
     // The BASE hook + group names (config-defined, pre-overlay): the admin API refuses to
     // PUT-replace / DELETE one (edit config.yaml — the overlay can't durably shadow file config).
     let base_hook_names: std::collections::HashSet<String> = cfg.hooks.keys().cloned().collect();

@@ -164,11 +164,13 @@ async fn delivery_failure_masks_userinfo() {
 fn build_request_log_shape() {
     let p = crate::export::build_request_log(
         test_logs_projection(),
-        1_700_000_000,
-        "acme",
-        "prod",
-        "ok",
-        42,
+        &crate::export::RequestLogFacts {
+            ts: 1_700_000_000,
+            ingress_protocol: "acme",
+            pool: "prod",
+            outcome: "ok",
+            latency_ms: 42,
+        },
     );
     assert_eq!(p["ts"], 1_700_000_000_u64);
     assert_eq!(p["ingress_protocol"], "acme");

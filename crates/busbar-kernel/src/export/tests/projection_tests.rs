@@ -203,6 +203,7 @@ fn omitting_a_pinned_field_is_a_loud_error_with_the_reason() {
     let proj = resolve_projection(
         "chain",
         "some-event-sink",
+        None,
         Some(&["events".to_string()]),
         Some(&[
             "seq".to_string(),
@@ -226,6 +227,7 @@ fn fields_override_replaces_the_default_set_rather_than_adding_to_it() {
     let proj = resolve_projection(
         "chain",
         "some-event-sink",
+        None,
         Some(&["events".to_string()]),
         Some(&[
             "seq".to_string(),
@@ -271,6 +273,7 @@ fn field_outside_the_subscribed_streams_is_a_loud_error() {
     resolve_projection(
         "chain",
         "some-event-sink",
+        None,
         Some(&["events".to_string()]),
         Some(&[
             "seq".into(),
@@ -298,6 +301,7 @@ fn projected_record_cannot_carry_an_ungranted_field() {
     let proj = resolve_projection(
         "chain",
         "some-event-sink",
+        None,
         Some(&["events".to_string()]),
         Some(&["seq".into(), "ts".into(), "prev_hash".into(), "kind".into()]),
         false,
@@ -334,6 +338,7 @@ fn a_grant_on_one_stream_does_not_leak_into_another() {
     let proj = resolve_projection(
         "chain",
         "some-event-sink",
+        None,
         Some(&["events".to_string()]),
         None,
         false,
@@ -383,7 +388,14 @@ fn projection_union_is_the_compute_gate() {
 fn produced_logs_fields_match_the_request_log_producer() {
     // A projection granting EVERY documented logs field: whatever the producer writes, gets through.
     let all_logs = Projection::for_test(&[ExportStream::Logs], ExportStream::Logs.default_fields());
-    let payload = crate::export::build_request_log(all_logs, 1, "acme", "p", "ok", 5);
+    let facts = crate::export::RequestLogFacts {
+        ts: 1,
+        ingress_protocol: "acme",
+        pool: "p",
+        outcome: "ok",
+        latency_ms: 5,
+    };
+    let payload = crate::export::build_request_log(all_logs, &facts);
     let mut written: Vec<&str> = payload
         .as_object()
         .expect("an object")

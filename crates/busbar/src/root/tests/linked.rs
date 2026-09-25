@@ -607,3 +607,68 @@ fn a_linked_and_a_dropped_in_plane_serve_one_request_identically() {
         );
     }
 }
+
+/// A `kind: export` row whose name or alias spells a built-in export module is refused before the
+/// export axis is installed: every `export:` instance naming it would reach the built-in, so the
+/// plugin would sit on the axis unreachable, silently. A row spelling neither is admitted.
+#[test]
+fn an_export_row_spelling_a_built_in_module_is_refused() {
+    let registry_of = |tag: &str, name: &str, alias: &str| {
+        let dir = std::env::temp_dir().join(format!(
+            "busbar-root-export-shadow-{tag}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = b"not a library";
+        let release = SigningKey::from_bytes(&[7u8; 32]);
+        let manifest = Manifest {
+            name: name.into(),
+            alias: alias.into(),
+            kind: "export".into(),
+            version: "1.6.0".into(),
+            publisher: "busbar".into(),
+            abi_version: busbar_plugin_loader::supported_abi("export")[1],
+            sha256: String::new(),
+            signature: String::new(),
+            description: String::new(),
+            homepage: String::new(),
+            license: String::new(),
+            needs: Default::default(),
+            settings_schema: None,
+            schema_derived: false,
+            host: None,
+        };
+        let signed = sign(&release, manifest, lib);
+        let tarball = busbar_plugin_loader::tarball::package(&signed, "libexport.so", lib).unwrap();
+        std::fs::write(dir.join("export.tar.gz"), tarball).unwrap();
+        let policy = TrustPolicy {
+            first_party_key: Some(release.verifying_key()),
+            binary_version: "1.6.0".into(),
+            first_party_floors: Default::default(),
+            first_party_high_water: Default::default(),
+            publishers: Default::default(),
+            allow_unsigned: false,
+            allow_third_party: false,
+            min_versions: Default::default(),
+        };
+        let registry = busbar_plugin_loader::scan_and_validate(&dir, &policy).expect("the scan");
+        let _ = std::fs::remove_dir_all(&dir);
+        registry
+    };
+    for (tag, name, alias) in [
+        ("name", "prometheus", "k9-prom"),
+        ("alias", "k9-file", "request-log-file"),
+    ] {
+        assert_eq!(
+            shadowed_export(&registry_of(tag, name, alias)),
+            Err(format!(
+                "export plugin '{name}' spells a built-in export module"
+            )),
+        );
+    }
+    assert_eq!(
+        shadowed_export(&registry_of("clear", "k9-tail", "k9-tail")),
+        Ok(())
+    );
+}

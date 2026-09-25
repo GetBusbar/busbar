@@ -445,39 +445,86 @@ pub fn dropped_planes(
     registry.open_planes()
 }
 
-/// THE PLANES DROPPED INTO THE CONFIGURED `plugins.dir`, read before the plane axis is installed —
-/// so before the configuration is parsed, which needs that axis. Only the kernel-owned `plugins:`
-/// block is read, off the same file and environment interpolation the boot load uses; the trust
-/// policy and the persisted first-party floors are resolved as the preflight resolves them. No
-/// `plugins:` block, `enabled: false`, or no readable file: no planes, and the directory is not read.
-pub fn dropped_planes_from_config() -> Vec<DynPlane> {
+/// THE PLUGINS DROPPED INTO THE CONFIGURED `plugins.dir`, scanned ONCE before any axis is installed —
+/// so before the configuration is parsed, which needs those axes — and kept for the process, whose
+/// dropped-in planes and export modules are opened from it. Only the kernel-owned `plugins:` block is
+/// read, off the same file and environment interpolation the boot load uses; the trust policy and
+/// the persisted first-party floors are resolved as the preflight resolves them. No `plugins:`
+/// block, `enabled: false`, or no readable file: `None`, and the directory is not read. A scan the
+/// loader refuses is `None` here too — the plugins preflight reads the same directory under the same
+/// policy later in boot and refuses it there with every problem named.
+pub fn dropped_from_config() -> Option<&'static busbar_plugin_loader::PluginRegistry> {
     let path =
         crate::root::cli::resolve_config_path(crate::root::cli::config_path_flag().as_deref());
-    let plugins = std::fs::read_to_string(path).ok().and_then(|raw| {
-        let text = busbar_kernel::config::interpolate_env_with(
-            &raw,
-            busbar_kernel::config::EnvSubst::Lenient,
-            &mut Vec::new(),
-        )
-        .ok()?;
-        let doc: serde_yaml::Value = serde_yaml::from_str(&text).ok()?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    let text = busbar_kernel::config::interpolate_env_with(
+        &raw,
+        busbar_kernel::config::EnvSubst::Lenient,
+        &mut Vec::new(),
+    )
+    .ok()?;
+    let doc: serde_yaml::Value = serde_yaml::from_str(&text).ok()?;
+    let plugins =
         serde_yaml::from_value::<busbar_kernel::config::PluginsCfg>(doc.get("plugins")?.clone())
             .ok()
-    });
-    let Some(plugins) = plugins.filter(|p| p.enabled) else {
-        return Vec::new();
-    };
-    let Ok(mut policy) = plugins.to_policy() else {
-        return Vec::new();
-    };
+            .filter(|p| p.enabled)?;
+    let mut policy = plugins.to_policy().ok()?;
     let data_dir = busbar_kernel::preflight::fleet_data_dir();
     policy.first_party_high_water = busbar_plugin_loader::HighWaterMarks::load(data_dir.as_deref())
         .0
         .marks();
-    dropped_planes(std::path::Path::new(&plugins.dir), &policy).unwrap_or_else(|refusal| {
+    let registry =
+        busbar_plugin_loader::scan_and_validate(std::path::Path::new(&plugins.dir), &policy)
+            .ok()?;
+    Some(Box::leak(Box::new(registry)))
+}
+
+/// THE PLANES DROPPED INTO `dropped` (see [`dropped_from_config`]): every `kind: plane` plugin it
+/// admitted, loaded over the HOT-tier ABI — a trusted plane that will not LOAD refuses the boot,
+/// as a linked plane's would.
+pub fn dropped_planes_of(dropped: Option<&busbar_plugin_loader::PluginRegistry>) -> Vec<DynPlane> {
+    dropped
+        .map_or(Ok(Vec::new()), |registry| registry.open_planes())
+        .unwrap_or_else(|refusal| {
+            eprintln!("busbar: {refusal}");
+            std::process::exit(2);
+        })
+}
+
+/// THE EXPORT AXIS: the registry an `export:` instance's `module:` resolves against — every
+/// `kind: export` row the plugin registry's one registration admitted, dropped in here (and, as a
+/// linked export crate lands, linked through `PluginRegistry::link`, the same admission) — installed
+/// once, before the configuration is resolved (`busbar_kernel::export::plugin::install`). A row the
+/// axis refuses (one spelling a built-in's module name) refuses the boot before any listener binds.
+pub fn register_exports(dropped: Option<&'static busbar_plugin_loader::PluginRegistry>) {
+    let Some(registry) = dropped else {
+        return;
+    };
+    if let Err(refusal) = shadowed_export(registry) {
         eprintln!("busbar: {refusal}");
         std::process::exit(2);
-    })
+    }
+    busbar_kernel::export::plugin::install(registry);
+}
+
+/// A `kind: export` row spelling a built-in export module's name — as its name or its alias — is
+/// refused: every instance naming it would reach the built-in, and the plugin would sit on the axis
+/// unreachable, silently.
+pub fn shadowed_export(registry: &busbar_plugin_loader::PluginRegistry) -> Result<(), String> {
+    let built_in = busbar_kernel::config::EXPORT_MODULES;
+    let rows = registry.linked().iter().chain(registry.loadable());
+    let shadows = |p: &&busbar_plugin_loader::LoadablePlugin| {
+        p.manifest.kind == "export"
+            && (built_in.contains(&p.manifest.name.as_str())
+                || built_in.contains(&p.manifest.alias.as_str()))
+    };
+    match rows.into_iter().find(shadows) {
+        Some(p) => Err(format!(
+            "export plugin '{}' spells a built-in export module",
+            p.manifest.name
+        )),
+        None => Ok(()),
+    }
 }
 
 /// THE DIAGNOSTICS AXIS: every entry's owned diagnostics, installed once.

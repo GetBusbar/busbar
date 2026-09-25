@@ -232,16 +232,6 @@ why       = "Of the registry's open_* kinds, open_auth/open_hook/open_secret/ope
 unshipped = true
 switch    = "STRIKE THIS ROW in the commit that calls open_plane from the composition root's plugin wiring. Already described at docs/design/BUSBAR-1.6.0.md:1627 — this row is that sentence made machine-readable."
 
-[[capability]]
-id        = "export-plugin-open"
-built     = "crates/plugin-loader/src/registry.rs"
-symbol    = "open_export"
-construct = [".open_export("]
-scope     = ["crates"]
-why       = "The kind: export plugin open has zero callers anywhere in the tree, not even a test, so an export plugin cannot be loaded by any node. Described in docs/design/1.6.0-MAP.md section 6 and never in a file a machine reads."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that gives open_export a production caller, or delete the kind if export is not shipping in 1.6.0."
-
 # MID-LOG CORRUPTION — row `wal-corruption-verdict` STRUCK 2026-09-24 by owner ruling:
 # `recover_and_truncate` now branches on the scan's verdict (`.was_torn(`): a torn tail is cut
 # silently; a Corrupt one has its damaged remainder copied and synced to

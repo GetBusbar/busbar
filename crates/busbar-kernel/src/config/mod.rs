@@ -1798,6 +1798,24 @@ pub struct ExportCfg {
     pub request_log_files: Vec<FileSettings>,
     /// The `otlp` instance's settings, if one is configured. `None` ⇒ no tracer/span export.
     pub otlp: Option<OtlpSettings>,
+    /// Every instance whose `module:` names an export module registered on the EXPORT AXIS
+    /// ([`crate::export::plugin::register_module`]) — a plugin sink, compiled in or dropped in — in
+    /// config order. Opened once at boot ([`crate::export::plugin::open`]).
+    pub plugins: Vec<PluginExportSettings>,
+}
+
+/// One `export:` instance served by a module on the export axis: its name, its definition as the
+/// operator wrote it (the `settings:` bag is the plugin's to read), and its projection resolved at
+/// CONFIG time. That projection is provisional — the sink's declared streams are known only once it
+/// is opened, where the projection is resolved again against them — and it is what the union's
+/// compute gate reads.
+#[derive(Debug, Clone)]
+pub struct PluginExportSettings {
+    /// The instance name (`export.<name>`).
+    pub name: String,
+    /// The instance's definition.
+    pub def: ExportDefCfg,
+    pub(crate) projection: crate::export::projection::Projection,
 }
 
 impl ExportCfg {
@@ -1813,7 +1831,8 @@ impl ExportCfg {
                 .map(|s| &s.projection)
                 .chain(self.request_log_webhooks.iter().map(|s| &s.projection))
                 .chain(self.request_log_files.iter().map(|s| &s.projection))
-                .chain(self.otlp.iter().map(|s| &s.projection)),
+                .chain(self.otlp.iter().map(|s| &s.projection))
+                .chain(self.plugins.iter().map(|s| &s.projection)),
         )
     }
 }
@@ -1951,7 +1970,8 @@ pub struct ExportAuthHeader {
 /// the same posture `resolve` takes everywhere else.
 ///
 /// Enforced here:
-/// - an unknown `module:` is a boot error naming the four built-ins (never a silently-ignored sink);
+/// - a `module:` that is neither a built-in nor registered on the export axis is a boot error naming
+///   the four built-ins (never a silently-ignored sink);
 /// - a bad/typo'd key inside `settings:` is a boot error (each settings struct is
 ///   `deny_unknown_fields`, so the opaque bag is only opaque to the OUTER layer);
 /// - a SECOND `prometheus` or `otlp` instance is a boot error (see [`ExportCfg`] — those two are
@@ -1971,6 +1991,7 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
         let projection = crate::export::projection::resolve_projection(
             name,
             def.module.trim(),
+            crate::export::projection::module_streams(def.module.trim()),
             def.streams.as_deref(),
             def.fields.as_deref(),
             def.durable,
@@ -2030,6 +2051,14 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
                 }
                 otlp_owner = Some(name);
                 out.otlp = typed!(OtlpSettings);
+            }
+            // THE EXPORT AXIS: a module some compiled-in or dropped-in export plugin registered.
+            other if crate::export::plugin::registered(other) => {
+                out.plugins.push(PluginExportSettings {
+                    name: name.clone(),
+                    def: def.clone(),
+                    projection,
+                })
             }
             other => errors.push(format!(
                 "export.{name}.module: unknown exporter '{other}'; the built-in export modules are \

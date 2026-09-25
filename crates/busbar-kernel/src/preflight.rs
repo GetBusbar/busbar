@@ -434,56 +434,15 @@ pub fn plugins_preflight(
         }
     }
 
-    // 7. PLUGIN HTTP ROUTE COLLISION CHECK — MANIFEST-LEVEL, nothing dlopened. Walk every
-    // loadable export/hook plugin's DECLARED routes in the SAME deterministic scan order the registry
-    // produced, namespace-confine each, and fail LOUD naming the owning plugin on the first
-    // {path, method} collision — e.g. `plugin "datadog" cannot register GET /metrics — already
-    // registered by "prometheus"`. The IDENTICAL check backs boot and `--validate` (both call this
-    // preflight), and the SAME confinement + first-to-claim logic backs the live table built at App
-    // construction (`plugin_routes::build_route_table`), so the manifest check and what actually mounts
-    // cannot diverge. Route declarations are read straight from each signed manifest; a plugin that
-    // declares none contributes nothing (today's manifests carry no routes, so the set is empty until
-    // the export/hook route-manifest field lands — the wiring is here so that is a data change, not a
-    // control-flow one).
-    let route_owners: Vec<(String, crate::plugin_routes::RouteKind)> = registry
-        .loadable()
-        .iter()
-        .filter_map(|p| match p.manifest.kind.as_str() {
-            "export" => Some((
-                p.manifest.name.clone(),
-                crate::plugin_routes::RouteKind::Export,
-            )),
-            "hook" => Some((
-                p.manifest.name.clone(),
-                crate::plugin_routes::RouteKind::Hook,
-            )),
-            _ => None,
-        })
-        .collect();
-    let mut route_decls: Vec<(
-        String,
-        crate::plugin_routes::RouteKind,
-        busbar_plugin_loader::Route,
-    )> = route_owners
-        .into_iter()
-        .flat_map(|(name, kind)| {
-            // A plugin's DECLARED routes are read straight from its signed manifest. The manifest
-            // route field is not yet defined, so this yields nothing today; when it lands, map each
-            // declared route to `(name, kind, route)` HERE — the confinement + collision logic is
-            // already wired and tested.
-            Vec::<busbar_plugin_loader::Route>::new()
-                .into_iter()
-                .map(move |r| (name.clone(), kind, r))
-        })
-        .collect();
-    // The BUILT-IN exporters (`crate::export`) also claim routes (the `prometheus` exporter's
-    // `GET /metrics`). Prepend them in the SAME collision set so a loaded third-party export/hook
-    // plugin that tries to claim a path a built-in already owns fails LOUD at `--validate`/boot, e.g.
-    // `plugin "datadog" cannot register GET /metrics — already registered by "prometheus"`.
-    let mut built_in = crate::export::route_owners(export_cfg);
-    built_in.append(&mut route_decls);
-    let route_decls = built_in;
-    crate::plugin_routes::preflight_route_collisions(&route_decls)
+    // 7. PLUGIN HTTP ROUTE COLLISION CHECK. Every route the export: block's sinks declare — the
+    // built-in `prometheus` exporter's `GET /metrics` and every export-axis sink opened at boot
+    // (`crate::export::plugin::open`, which runs before the first app is built) — namespace-confined
+    // and collision-checked by the SAME `build_route_table` the live table is built with, so a sink
+    // claiming a path another already owns fails LOUD here, naming both: e.g. `plugin "datadog"
+    // cannot register GET /metrics — already registered by "prometheus"`. The manifest-only
+    // mirror this replaced read routes from a signed-manifest field that was never defined, so it
+    // checked the built-in set alone and could not collide.
+    crate::plugin_routes::build_route_table(crate::export::route_decls(export_cfg))
         .map_err(|e| format!("plugin route registration conflict: {e}"))?;
 
     Ok(registry)

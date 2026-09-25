@@ -31,7 +31,7 @@ impl PluginHttpDispatch for PrometheusExport {
     /// via `handle_http_with_app` below). Renders the registry without a fresh gauge refresh; see
     /// [`render_or_refuse`] for why an uninstalled recorder is refused rather than rendered empty.
     fn handle_http(&self, _req: &EndpointRequest) -> EndpointResponse {
-        render_or_refuse()
+        render_or_refuse(None)
     }
 
     /// The production arm: refresh the scrape-time gauges from the CURRENT `App` snapshot, then render
@@ -43,13 +43,7 @@ impl PluginHttpDispatch for PrometheusExport {
         app: &crate::state::App,
         _req: &EndpointRequest,
     ) -> EndpointResponse {
-        // Refresh (and render) ONLY once the recorder is installed — see `render_or_refuse` for why
-        // an uninstalled recorder must REFUSE rather than render an empty gauge-less exposition.
-        if !crate::metrics::recorder_installed() {
-            return refused();
-        }
-        crate::metrics::refresh_scrape_gauges(app);
-        ok_exposition(crate::metrics::render())
+        render_or_refuse(Some(app))
     }
 }
 
@@ -67,9 +61,17 @@ impl PluginHttpDispatch for PrometheusExport {
 /// would reasonably read that as "the endpoint has nothing to say" rather than "not ready yet, retry".
 /// Refusing makes the two states distinguishable on the wire, matching the module contract that a
 /// scrape is either FULL or REFUSED, never an empty success.
-fn render_or_refuse() -> EndpointResponse {
+///
+/// With the live `app` (the production arm), refresh the scrape-time gauges from it and fold every
+/// export-axis sink's `status` report first — both ONLY once the recorder is installed, so an
+/// uninstalled recorder refuses rather than rendering an empty gauge-less exposition.
+fn render_or_refuse(app: Option<&crate::state::App>) -> EndpointResponse {
     if !crate::metrics::recorder_installed() {
         return refused();
+    }
+    if let Some(app) = app {
+        crate::metrics::refresh_scrape_gauges(app);
+        super::plugin::status();
     }
     ok_exposition(crate::metrics::render())
 }
@@ -100,22 +102,6 @@ pub(crate) fn route_decl(cfg: &crate::config::ExportCfg) -> Option<RouteDecl> {
             auth: RouteAuth::Key,
         },
         dispatch: Arc::new(PrometheusExport),
-    })
-}
-
-/// The manifest-level `(owner, kind, route)` tuple for the collision preflight (`--validate` / boot),
-/// mirroring [`route_decl`] WITHOUT the live dispatcher so the two cannot diverge.
-pub(crate) fn route_owner(cfg: &crate::config::ExportCfg) -> Option<(String, RouteKind, Route)> {
-    cfg.prometheus.as_ref().map(|_| {
-        (
-            "prometheus".to_string(),
-            RouteKind::Export,
-            Route {
-                path: METRICS_PATH.to_string(),
-                method: RouteMethod::Get,
-                auth: RouteAuth::Key,
-            },
-        )
     })
 }
 

@@ -190,8 +190,9 @@ impl Projection {
         self.wants_stream(stream) && self.fields & (1u64 << field.bit()) != 0
     }
 
-    /// Nothing subscribed — the zero-cost default generation (no `export:` block at all).
-    #[inline]
+    /// Nothing subscribed — the zero-cost default generation (no `export:` block at all). Read by
+    /// the tests only.
+    #[cfg(test)]
     pub(crate) fn is_empty(self) -> bool {
         self.streams == 0
     }
@@ -206,8 +207,9 @@ impl Projection {
         }
     }
 
-    /// The granted fields of `stream`, in the frozen catalog order — for diagnostics and tests.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// The granted fields of `stream`, in the frozen catalog order — what the tests read a
+    /// projection back through (nothing in the shipped binary does).
+    #[cfg(test)]
     pub(crate) fn granted_fields(self, stream: ExportStream) -> Vec<ExportField> {
         ExportField::ALL
             .iter()
@@ -254,9 +256,8 @@ impl ProjectionUnion {
         self.0.wants_stream(stream)
     }
 
-    /// Nothing subscribed anywhere — the zero-cost default.
-    #[inline]
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Nothing subscribed anywhere — the zero-cost default (read by the tests only).
+    #[cfg(test)]
     pub(crate) fn is_empty(self) -> bool {
         self.0.is_empty()
     }
@@ -324,7 +325,8 @@ impl ProjectedRecord {
 /// accumulating every problem into `errors` (never short-circuiting, so `--validate` reports the
 /// whole config at once — the posture `resolve_export` takes everywhere else).
 ///
-/// `name` is the instance name and `module` its `module:` value, both only for diagnostics.
+/// `name` is the instance name and `module` its `module:` value, both only for diagnostics;
+/// `module_carries` is the streams that module can carry (`None` ⇒ not yet known, no carry check).
 /// `streams`/`fields` are the RAW operator tokens: parsing happens here so every diagnostic is ours
 /// (serde's "unknown variant" could not say that `audit` was REMOVED and why).
 ///
@@ -333,6 +335,7 @@ impl ProjectedRecord {
 pub(crate) fn resolve_projection(
     name: &str,
     module: &str,
+    module_carries: Option<&[ExportStream]>,
     stream_tokens: Option<&[String]>,
     fields: Option<&[String]>,
     durable: bool,
@@ -353,13 +356,14 @@ pub(crate) fn resolve_projection(
     }
 
     // ── streams: ────────────────────────────────────────────────────────────────────────────────
-    let module_carries = module_streams(module);
     let subscribed: Vec<ExportStream> = match stream_tokens {
         None => {
             // Absent ⇒ the module's own streams. NOT "nothing": an instance that subscribed to
             // nothing would be a sink that validates and receives nothing, which is the shape this
-            // whole module exists to refuse.
-            module_carries.unwrap_or(&[]).to_vec()
+            // whole module exists to refuse. A module whose streams are not yet known (an export-axis
+            // module before its sink is opened and asked) provisionally takes every produced stream;
+            // the open resolves it again against what the sink declares.
+            module_carries.unwrap_or(PRODUCED_STREAMS).to_vec()
         }
         Some([]) => {
             errors.push(format!(
