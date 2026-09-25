@@ -598,6 +598,11 @@ moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
   An unknown section is still refused in 1.5.5's sentence, with the longer list:
   "expected `groups`, `hooks`, `root`, `plugin_versions`, `identity-providers`, or `export`"
   (`tools` and `agents` join the list when their plane is configured). **Migration:** none.
+- 1.6.0 Added: a rate-card entry takes a `units:` map that prices each billable class a plane declares beyond the four `*_utok` token tiers.
+  A rate card must configure every billable class its plane declares, so a 1.5.5 card adds
+  `units: { search_units: 0 }` (0 keeps search free). A rate-card entry with a key busbar does not
+  know is still refused in 1.5.5's sentence, with `units` now among the expected fields. Money stays
+  unitless: a `currency` key is refused, as in 1.5.5.
 - **Two 64-bit ARM Linux builds, and the default one got faster.** The default arm64 artifacts
   (the `busbar-aarch64-unknown-linux-gnu.tar.gz` download and the multi-arch image's `linux/arm64`
   entry) now target ARMv8.1+, using the CPU's native atomic instructions instead of the baseline's
