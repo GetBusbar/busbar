@@ -225,7 +225,7 @@ fn dial_bound_resolution_pinned_undivided_sharded_divided() {
         tunnel::CONNECTS_PER_AUTHORITY_GLOBAL
     );
     let sharded =
-        build_client(&EngineSpec::pooled_webpki(4, 300, false, false)).expect("llm build");
+        build_client(&EngineSpec::pooled_webpki(4, 300, false, false)).expect("pooled build");
     assert_eq!(sharded.dial_bound_for_tests(), dial_bound_for(None));
 }
 
