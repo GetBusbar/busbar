@@ -5958,9 +5958,10 @@ fn test_malformed_media_type_warns_and_falls_back_to_png() {
     );
 }
 
-/// A cross-protocol IR carrying a JSON-schema `response_format` reaching the Bedrock egress projects
-/// onto Converse's native `outputConfig.textFormat` (BED-08) — the schema as a JSON STRING, per the
-/// service model — and the wire carries NO foreign `response_format` key (it would 400 upstream).
+/// A cross-protocol IR carrying a JSON-schema `response_format` reaching a Bedrock lane that declares
+/// native structured outputs projects onto Converse's native `outputConfig.textFormat` (BED-08) — the
+/// schema as a JSON STRING, per the service model — and the wire carries NO foreign
+/// `response_format` key (it would 400 upstream). A lane that does not declare them sends neither.
 #[test]
 fn test_write_request_response_format_projects_output_config() {
     let writer = BedrockWriter;
@@ -6013,7 +6014,16 @@ fn test_write_request_response_format_projects_output_config() {
         system_role: None,
         output_modalities: None,
     };
-    let out = writer.write_request(&req);
+    let default_lane = writer.write_request(&req);
+    assert!(default_lane.get("outputConfig").is_none(), "{default_lane}");
+    let out = writer.write_request_for_lane(
+        &req,
+        "anthropic.claude-opus-4-7",
+        &LaneCaps {
+            native_structured_output: true,
+            ..Default::default()
+        },
+    );
     let wire = serde_json::to_string(&out).unwrap();
     assert!(
         !wire.contains("response_format"),

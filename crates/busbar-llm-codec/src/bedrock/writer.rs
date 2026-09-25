@@ -185,36 +185,48 @@ impl ProtocolWriter for BedrockWriter {
     }
 
     fn dropped_egress_controls(&self, req: &crate::ir::IrRequest) -> Vec<&'static str> {
-        // Mirrors the two `write_request` warns: Bedrock Converse has no native `response_format`
-        // field, and no "do NOT call a tool" (`IrToolChoice::None`) directive — a cross-protocol
-        // request carrying either has that control dropped on egress.
+        self.dropped_egress_controls_for_lane(req, &LaneCaps::default())
+    }
+
+    fn dropped_egress_controls_for_lane(
+        &self,
+        req: &crate::ir::IrRequest,
+        caps: &LaneCaps,
+    ) -> Vec<&'static str> {
+        // Mirrors the `write_request` warns: every control this writer drops for this lane.
         let mut dropped = Vec::new();
-        // BED-08: a JSON-schema directive projects onto `outputConfig.textFormat`; only the forms
-        // Converse's `json_schema`-only enum cannot express are dropped.
-        if req
-            .response_format
-            .as_ref()
-            .is_some_and(|rf| super::write_bedrock_text_format(rf).is_none())
-        {
+        // BED-08: a JSON-schema directive projects onto `outputConfig.textFormat` on a lane that
+        // declares native structured outputs; any other directive, and every directive on a lane
+        // that does not declare them, is dropped.
+        if req.response_format.as_ref().is_some_and(|rf| {
+            !caps.native_structured_output || super::write_bedrock_text_format(rf).is_none()
+        }) {
             dropped.push("response_format");
         }
         if matches!(req.tool_choice, Some(crate::ir::IrToolChoice::None)) {
             dropped.push("tool_choice=none");
         }
+        dropped.extend(bedrock_unrepresentable_slots(req));
         dropped
     }
 
-    /// BED-06 family gate. The reasoning ask is written as `additionalModelRequestFields.thinking`,
-    /// which is CLAUDE's spelling; another Converse family (Amazon Nova's `reasoningConfig`, and
-    /// others) rejects or ignores it. The model id is the only place the family is visible — the
-    /// Converse body carries none — so a cross-protocol ask reaches the wire only when the lane
-    /// model names Claude (`anthropic.` / `claude`, which covers the bare model id, the regional
-    /// and global inference profiles and their ARNs). Any other model, including an opaque
-    /// application-inference-profile ARN, has the ask dropped with a warn rather than risk a 400.
-    fn write_request_for_model(
+    /// The production write: the lane's wire `model` gates the Claude-only spellings, and its
+    /// declared [`LaneCaps`] choose the reasoning and structured-output forms (see
+    /// `write_request_with`).
+    ///
+    /// BED-06 family gate. The reasoning ask is written into `additionalModelRequestFields` in
+    /// CLAUDE's spelling (`thinking`, `output_config.effort`); another Converse family (Amazon Nova's
+    /// `reasoningConfig`, and others) rejects or ignores it. The model id is the only place the
+    /// family is visible — the Converse body carries none — so a cross-protocol ask reaches the wire
+    /// only when the lane model names Claude (`anthropic.` / `claude`, which covers the bare model
+    /// id, the regional and global inference profiles and their ARNs). Any other model, including an
+    /// opaque application-inference-profile ARN, has the ask dropped with a warn rather than risk a
+    /// 400.
+    fn write_request_for_lane(
         &self,
         req: &crate::ir::IrRequest,
         model: &str,
+        caps: &LaneCaps,
     ) -> serde_json::Value {
         if req.reasoning.is_some() && !bedrock_model_is_claude(model) {
             tracing::warn!(
@@ -224,12 +236,550 @@ impl ProtocolWriter for BedrockWriter {
             );
             let mut without = req.clone();
             without.reasoning = None;
-            return self.write_request(&without);
+            return self.write_request_with(&without, caps);
         }
-        self.write_request(req)
+        self.write_request_with(req, caps)
+    }
+
+    fn write_request_for_model(
+        &self,
+        req: &crate::ir::IrRequest,
+        model: &str,
+    ) -> serde_json::Value {
+        self.write_request_for_lane(req, model, &LaneCaps::default())
     }
 
     fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value {
+        self.write_request_with(req, &LaneCaps::default())
+    }
+
+    fn write_response_event(&self, ev: &IrStreamEvent) -> Option<(String, serde_json::Value)> {
+        match ev {
+            IrStreamEvent::MessageStart { .. } => Some((
+                ET_MESSAGE_START.to_string(),
+                serde_json::json!({ "role": "assistant" }),
+            )),
+
+            IrStreamEvent::BlockStart {
+                index,
+                block,
+                refusal: _,
+            } => match block {
+                // A TEXT block has NO `contentBlockStart` on the AWS Bedrock ConverseStream wire.
+                // `ContentBlockStart$start` is a UNION whose members are `toolUse` (plus
+                // `image`/`toolResult` in newer API revisions) — there is NO text member (AWS
+                // Bedrock Runtime API reference, ContentBlockStart). A real ConverseStream therefore
+                // opens a text block IMPLICITLY with its first `contentBlockDelta` carrying `text` and
+                // closes it with `contentBlockStop`; the reader mirrors this (it lazily opens a Text
+                // block on the first text delta). Emitting an empty `start: {}` frame here was an
+                // off-spec frame no native endpoint sends — a detectable proxy tell. Still
+                // `mark_block_open` so the matching `BlockStop` emits the (spec-required)
+                // `contentBlockStop`, but emit NO start frame.
+                crate::ir::IrBlockMeta::Text => {
+                    self.mark_block_open(*index);
+                    None
+                }
+                crate::ir::IrBlockMeta::ToolUse { id, name } => {
+                    self.mark_block_open(*index);
+                    Some((
+                        ET_CONTENT_BLOCK_START.to_string(),
+                        serde_json::json!({
+                            "contentBlockIndex": index,
+                            "start": { "toolUse": { "toolUseId": id, "name": name } }
+                        }),
+                    ))
+                }
+                // A reasoning (extended-thinking) block has NO `contentBlockStart` either.
+                // `ContentBlockStart$start` models ONLY `toolUse` (no `reasoningContent` member —
+                // AWS Bedrock Runtime API reference, ContentBlockStart). Reasoning is streamed
+                // ENTIRELY through `contentBlockDelta.delta.reasoningContent` — the
+                // `ReasoningContentBlockDelta` union (`text` / `signature` / `redactedContent`) — and
+                // closed with `contentBlockStop`; the reader mirrors this (it lazily opens a Thinking
+                // block on the first `reasoningContent` delta). Emitting a
+                // `start.reasoningContent` frame was off-spec — a detectable proxy tell. Still
+                // `mark_block_open` so the matching `BlockStop` emits `contentBlockStop`, but emit NO
+                // start frame. (Image likewise has no streaming-start projection on Bedrock, so it
+                // stays None — but is NOT marked open, so it emits no orphan stop either.)
+                // Plaintext AND redacted reasoning: Bedrock streams BOTH through
+                // `contentBlockDelta.reasoningContent` (plaintext `text`/`signature`, or opaque
+                // `redactedContent`) with NO dedicated `contentBlockStart`. So a `RedactedThinking`
+                // start behaves exactly like a `Thinking` start — emit no start frame but STILL
+                // `mark_block_open` so the matching `BlockStop` emits `contentBlockStop`; the opaque
+                // bytes ride the following `RedactedReasoningDelta`, re-emitted under `redactedContent`.
+                crate::ir::IrBlockMeta::Thinking | crate::ir::IrBlockMeta::RedactedThinking => {
+                    self.mark_block_open(*index);
+                    None
+                }
+                crate::ir::IrBlockMeta::Image => None,
+            },
+
+            IrStreamEvent::BlockDelta { index, delta } => match delta {
+                crate::ir::IrDelta::TextDelta(text) => Some((
+                    ET_CONTENT_BLOCK_DELTA.to_string(),
+                    serde_json::json!({
+                        "contentBlockIndex": index,
+                        "delta": { "text": text }
+                    }),
+                )),
+
+                crate::ir::IrDelta::InputJsonDelta(json_str) => Some((
+                    ET_CONTENT_BLOCK_DELTA.to_string(),
+                    serde_json::json!({
+                        "contentBlockIndex": index,
+                        "delta": { "toolUse": { "input": json_str } }
+                    }),
+                )),
+
+                // Streamed extended-thinking. The Bedrock `ReasoningContentBlockDelta` union carries
+                // EITHER a `text` (plaintext reasoning) OR a `signature` (the opaque reasoning token)
+                // OR a `redactedContent` (opaque encrypted bytes) per frame — each IR delta maps to
+                // exactly ONE ConverseStream frame, so the single-frame-per-event constraint holds.
+                // This is the streaming inverse of `bedrock_reasoning_block`'s buffered logic.
+                crate::ir::IrDelta::ThinkingDelta(text) => Some((
+                    ET_CONTENT_BLOCK_DELTA.to_string(),
+                    serde_json::json!({
+                        "contentBlockIndex": index,
+                        "delta": { "reasoningContent": { "text": text } }
+                    }),
+                )),
+
+                // A genuine reasoning signature token re-emits under `signature`.
+                crate::ir::IrDelta::SignatureDelta(sig) => Some((
+                    ET_CONTENT_BLOCK_DELTA.to_string(),
+                    serde_json::json!({
+                        "contentBlockIndex": index,
+                        "delta": { "reasoningContent": { "signature": sig } }
+                    }),
+                )),
+                // A streamed redacted-reasoning delta re-emits the opaque bytes under `redactedContent`
+                // (never as a plaintext `signature`) — the streaming inverse of `bedrock_reasoning_block`.
+                crate::ir::IrDelta::RedactedReasoningDelta(redacted) => Some((
+                    ET_CONTENT_BLOCK_DELTA.to_string(),
+                    serde_json::json!({
+                        "contentBlockIndex": index,
+                        "delta": { "reasoningContent": { "redactedContent": redacted } }
+                    }),
+                )),
+                // Streamed grounding citations. Bedrock ConverseStream's `ContentBlockDelta` union
+                // DOES have a `citation` member (a `CitationsDelta` with the same
+                // `{title, sourceContent, location}` field set as the buffered `Citation`), arriving
+                // interleaved with `text` deltas at the SAME `contentBlockIndex` — so this arm used to
+                // suppress a frame the protocol defines, and the SAME request against the SAME backend
+                // returned sources at `stream: false` and none at `stream: true`. Nothing about the
+                // request explained that difference to the caller.
+                //
+                // A native `citation` delta carries ONE citation, so this SINGLE-frame arm frames the
+                // FIRST of the batch; `write_response_events` is what walks a multi-citation delta,
+                // re-entering here once per citation. A caller reaching this method directly (a
+                // stream driven outside the framing seam's `max_citations_per_delta` fan-out)
+                // therefore still gets a well-formed frame rather than a dropped or malformed one.
+                crate::ir::IrDelta::CitationsDelta(cits) => {
+                    let c = cits.first()?;
+                    match super::write_bedrock_citation(c) {
+                        Some(citation) => Some((
+                            ET_CONTENT_BLOCK_DELTA.to_string(),
+                            serde_json::json!({
+                                "contentBlockIndex": index,
+                                "delta": { "citation": citation }
+                            }),
+                        )),
+                        // Every neutral field was empty, so there is no member to put in the union
+                        // and an empty `{}` would be a malformed frame. Drop it, but say so.
+                        None => {
+                            tracing::warn!(
+                                "dropping a streamed citation on a bedrock egress: it carried no \
+                                 title, url, quoted text or resolvable character location, so there \
+                                 is no populated member for the Converse `citation` delta union"
+                            );
+                            None
+                        }
+                    }
+                }
+                // Bedrock Converse has no logprobs shape; dropped.
+                crate::ir::IrDelta::LogprobsDelta(_) => None,
+            },
+
+            // An untracked index is a block whose start had no Bedrock projection (Image); closing
+            // it would orphan a `contentBlockStop` a real client never saw a start for.
+            IrStreamEvent::BlockStop { index } => {
+                if self.take_block_open(*index) {
+                    Some((
+                        ET_CONTENT_BLOCK_STOP.to_string(),
+                        serde_json::json!({ "contentBlockIndex": index }),
+                    ))
+                } else {
+                    None
+                }
+            }
+
+            // The native Bedrock ConverseStream wire carries `stopReason` in a `messageStop` frame
+            // and token `usage` in a SEPARATE `metadata` frame that FOLLOWS it. The IR, however,
+            // carries ONE combined `MessageDelta{stop_reason, usage}` (the reader collapses the two
+            // native frames into one so a cross-protocol ingress sees a single `message_delta`/usage
+            // event). A single `(event_type, json)` return cannot emit two frames, so the two-frame
+            // FAN-OUT for a Bedrock INGRESS lives in `StreamTranslate::translate_event` (proto/mod.rs),
+            // which splits a combined delta into a stop-only delta (→ here, `messageStop`) and a
+            // usage-only delta (→ here, `metadata`) before calling this writer, and injects the real
+            // `metrics.latencyMs` onto the `metadata` frame.
+            //
+            // This arm therefore maps each (already-split) MessageDelta to its single native frame:
+            //   - stop_reason = Some(...)  → `messageStop` (the stop discriminant; usage ignored)
+            //   - stop_reason = None       → `metadata` carrying the real token usage (no `metrics`
+            //                                here — the StreamTranslate fan-out adds it with the real
+            //                                elapsed wall-clock, or omits it when timing is absent;
+            //                                fabricating a `latencyMs: 0` was itself a detectable tell).
+            // Bedrock has no stop_sequence field in its stream, so `stop_sequence` is ignored here.
+            // IR-16 (BED-10): a context-window stop detail is written as Converse's own
+            // `model_context_window_exceeded`.
+            IrStreamEvent::MessageDelta {
+                stop_reason,
+                usage,
+                stop_sequence: _,
+                stop_detail,
+            } => match stop_reason {
+                Some(reason) => Some((
+                    ET_MESSAGE_STOP.to_string(),
+                    serde_json::json!({
+                        "stopReason": stop_reason_reverse_detailed(*reason, stop_detail.as_ref())
+                    }),
+                )),
+                None => {
+                    let mut usage_obj = serde_json::Map::new();
+                    usage_obj.insert("inputTokens".to_string(), usage.input_tokens.into());
+                    usage_obj.insert("outputTokens".to_string(), usage.output_tokens.into());
+                    // Cache-inclusive and saturating — see `converse_total_tokens`.
+                    usage_obj.insert(
+                        "totalTokens".to_string(),
+                        converse_total_tokens(usage).into(),
+                    );
+                    write_cache_usage(&mut usage_obj, usage);
+                    Some((
+                        ET_METADATA.to_string(),
+                        serde_json::json!({ "usage": usage_obj }),
+                    ))
+                }
+            },
+
+            IrStreamEvent::MessageStop => None,
+
+            // A mid-stream error on the Bedrock-ingress path. The fully native representation is an
+            // AWS modeled-exception EVENT-STREAM frame (`:message-type: exception` +
+            // `:exception-type: <ExceptionName>`), which `StreamTranslate` now emits via
+            // `write_response_exception` + `eventstream::encode_exception_frame` BEFORE reaching this
+            // arm (a Bedrock-ingress stream never routes an `Error` through `write_response_event`).
+            // This arm therefore only fires if a non-eventstream consumer ever drives a Bedrock
+            // writer with an `Error` event; it falls back to a normal `event`-typed frame naming a
+            // real ConverseStream-output exception (via `bedrock_stream_exception_for`, the five-member
+            // stream union — NOT the request-level HTTP set) so the type token is still a genuine AWS
+            // stream-event name rather than the literal `"error"` or a non-stream request shape.
+            IrStreamEvent::Error(err) => {
+                let (exception_name, message) = bedrock_stream_exception_for(err);
+                Some((
+                    exception_name.to_string(),
+                    serde_json::json!({ "message": message }),
+                ))
+            }
+        }
+    }
+
+    /// A Converse `citation` delta carries ONE citation, so a delta holding several must frame as
+    /// several events at the same `contentBlockIndex` — which is exactly how a native ConverseStream
+    /// interleaves them. The framing seam splits multi-citation deltas on their way to the writer
+    /// (`max_citations_per_delta`), but it is not the only caller (the plane codec drives
+    /// `write_response_events` directly), and a batch that arrives whole here must emit all of its
+    /// citations rather than silently keep the first. Each is framed by re-entering the single-frame
+    /// arm with a one-citation delta, so that arm stays the ONE source of truth for the `citation`
+    /// delta's shape. Every other event keeps the base wrapper's one-frame behaviour.
+    fn write_response_events(&self, ev: &IrStreamEvent) -> Vec<(String, serde_json::Value)> {
+        if let IrStreamEvent::BlockDelta {
+            index,
+            delta: crate::ir::IrDelta::CitationsDelta(cits),
+        } = ev
+        {
+            if cits.len() > 1 {
+                return cits
+                    .iter()
+                    .filter_map(|c| {
+                        self.write_response_event(&IrStreamEvent::BlockDelta {
+                            index: *index,
+                            delta: crate::ir::IrDelta::CitationsDelta(vec![c.clone()]),
+                        })
+                    })
+                    .collect();
+            }
+        }
+        self.write_response_event(ev).into_iter().collect()
+    }
+
+    /// A Bedrock-ingress stream signals a mid-stream error with a MODELED-EXCEPTION event-stream
+    /// frame (`:message-type: exception`), which `StreamTranslate` emits via
+    /// `eventstream::encode_exception_frame`. This maps the IR error to that frame's
+    /// `(exception_name, message)` using `bedrock_stream_exception_for` — the FIVE-member
+    /// ConverseStream output-union (`InternalServerException`, `ModelStreamErrorException`,
+    /// `ValidationException`, `ThrottlingException`, `ServiceUnavailableException`), NOT the larger
+    /// request-level HTTP exception set — so a native AWS SDK stream decoder always recognizes the
+    /// `:exception-type` as a modeled stream event. Shares the mapping with the (fallback)
+    /// `write_response_event` Error arm so both stay consistent.
+    fn write_response_exception(
+        &self,
+        err: &busbar_substrate_values::proto::IrError,
+    ) -> Option<(String, String)> {
+        let (exception_name, message) = bedrock_stream_exception_for(err);
+        Some((exception_name.to_string(), message))
+    }
+
+    fn write_error_frame(
+        &self,
+        err: &busbar_substrate_values::proto::IrError,
+    ) -> Option<(String, serde_json::Value)> {
+        // The streaming-error seam. A Bedrock-INGRESS stream never reaches here — its mid-stream
+        // error is a modeled-exception event-stream frame emitted via `write_response_exception`
+        // before the SSE framer runs. This override exists for a non-eventstream consumer driving a
+        // Bedrock writer, and delegates to the `write_response_event` Error arm (the documented
+        // fallback) so the two stay byte-identical.
+        self.write_response_event(&IrStreamEvent::Error(err.clone()))
+    }
+
+    fn write_response(&self, resp: &crate::ir::IrResponse) -> serde_json::Value {
+        let _t = busbar_timing::timeit!("bedrock_write_response");
+        let mut content_arr: Vec<serde_json::Value> = Vec::new();
+
+        for block in &resp.content {
+            match block {
+                crate::ir::IrBlock::Text {
+                    text, citations, ..
+                } => {
+                    if text.is_empty() {
+                        continue;
+                    }
+                    // Grounding citations, in Converse's native `citationsContent` slot — the
+                    // BUFFERED twin of the `contentBlockDelta.citation` frame the streaming arm
+                    // emits. Without it a Bedrock-ingress client got sources when it asked to stream
+                    // and none when it did not, which is the same request-shape-dependent asymmetry
+                    // the streaming gap was, only inverted.
+                    //
+                    // `citationsContent` REPLACES the plain `text` member for this block (the union
+                    // carries the text INSIDE it, alongside the citations), so it is emitted only
+                    // when at least one citation actually projects — a text block with no citations
+                    // keeps the plain `{"text": …}` shape every existing consumer expects.
+                    let cits: Vec<serde_json::Value> = citations
+                        .iter()
+                        .filter_map(super::write_bedrock_citation)
+                        .collect();
+                    if cits.is_empty() {
+                        if !citations.is_empty() {
+                            tracing::warn!(
+                                dropped = citations.len(),
+                                "dropping citation(s) on a bedrock response egress: none carried a \
+                                 title, url, quoted text or resolvable character location, so there \
+                                 is no populated member for the Converse `Citation` shape"
+                            );
+                        }
+                        content_arr.push(serde_json::json!({ "text": text }));
+                    } else {
+                        content_arr.push(serde_json::json!({
+                            "citationsContent": {
+                                "content": [{ "text": text }],
+                                "citations": cits
+                            }
+                        }));
+                    }
+                }
+
+                // A model does not emit an attachment back on the Converse response surface.
+                crate::ir::IrBlock::Media { .. } => {}
+
+                crate::ir::IrBlock::ToolUse {
+                    id, name, input, ..
+                } => {
+                    content_arr.push(serde_json::json!({
+                        "toolUse": {
+                            "toolUseId": id,
+                            "name": name,
+                            "input": input
+                        }
+                    }));
+                }
+
+                crate::ir::IrBlock::Image { source, .. } => {
+                    // An assistant response CAN legitimately carry an Image block (e.g. a
+                    // cross-protocol egress whose source emitted an image in the model turn).
+                    // Bedrock Converse natively represents it as an `{"image": ...}` content block.
+                    // A source kind with no native Bedrock projection (URL / file_id) returns `None`
+                    // and is omitted with a trace by the helper, never corrupting the block.
+                    if let Some(image_block) = bedrock_image_block(source) {
+                        content_arr.push(serde_json::json!({ "image": image_block }));
+                    }
+                }
+                crate::ir::IrBlock::Json(_) => {
+                    // Structured-json content has no top-level Bedrock response shape (it is only a
+                    // tool-result content member); omit it from an assistant response turn.
+                }
+
+                crate::ir::IrBlock::Thinking {
+                    text,
+                    signature,
+                    redacted,
+                    ..
+                } => {
+                    // Re-emit the model's reasoning as a native Converse `reasoningContent` block
+                    // (the inverse of `read_response`'s reasoningContent decode), instead of silently
+                    // dropping it. A same-protocol passthrough reproduces the thinking block, and a
+                    // cross-protocol egress that carried reasoning into the IR can surface it. The
+                    // redacted-signature sentinel re-emits `redactedContent`; any other Thinking
+                    // re-emits `reasoningText`.
+                    content_arr.push(bedrock_reasoning_block(text, signature, *redacted));
+                }
+
+                // A `toolResult` is a USER-turn content block in Bedrock Converse; it has no place
+                // in an ASSISTANT response message, so it is the only genuine no-op here. Handled
+                // explicitly — no catch-all.
+                crate::ir::IrBlock::ToolResult { .. } => {}
+            }
+        }
+
+        // Bedrock Converse rejects an assistant message with an empty `content` array
+        // (ValidationException), exactly as `write_request` guards every turn. A response whose
+        // blocks were ALL non-representable here (e.g. thinking-only, or a stray toolResult) would
+        // otherwise emit `content: []`. Mirror the request-side guard with a minimal placeholder
+        // text block so the body stays valid.
+        if content_arr.is_empty() {
+            content_arr.push(serde_json::json!({ "text": "" }));
+        }
+
+        // IR-16 (BED-10): a context-window detail is Converse's own `model_context_window_exceeded`.
+        let reverse_reason = stop_reason_reverse_detailed(
+            resp.stop_reason.unwrap_or(crate::ir::IrStopReason::EndTurn),
+            resp.stop_detail.as_ref(),
+        );
+
+        // Identity emission. The native AWS Converse response body (the shape the official SDK
+        // deserializes — `output` / `stopReason` / `usage` / optional `metrics`) carries NO id or
+        // `created` field; AWS returns the request id only in the `x-amzn-RequestId` HTTP header.
+        // Injecting a synthesized `id`/`created` into the JSON body would therefore be a
+        // proxy-tell, not fidelity — so we deliberately do NOT add one. (The inverse direction — a
+        // Bedrock egress feeding an OpenAI/Anthropic ingress that DOES require a body id — is the
+        // job of that ingress writer, not this one; no Bedrock-side id synthesizer is wired into the
+        // production path, so none is shipped.) `stopReason` and `usage` (the only identity-bearing
+        // fields Bedrock emits) are reproduced exactly from the captured IR below, so a
+        // same-protocol round-trip is byte-identical.
+        let mut usage_obj = serde_json::Map::new();
+        usage_obj.insert("inputTokens".to_string(), resp.usage.input_tokens.into());
+        usage_obj.insert("outputTokens".to_string(), resp.usage.output_tokens.into());
+        // Cache-inclusive and saturating, same as the streaming `metadata` frame — see
+        // `converse_total_tokens`. This is what keeps the same-protocol round-trip promised just
+        // above byte-identical when the upstream reported cache tokens.
+        usage_obj.insert(
+            "totalTokens".to_string(),
+            converse_total_tokens(&resp.usage).into(),
+        );
+        write_cache_usage(&mut usage_obj, &resp.usage);
+
+        serde_json::json!({
+            "output": {
+                "message": {
+                    "role": "assistant",
+                    "content": content_arr
+                }
+            },
+            "stopReason": reverse_reason,
+            "usage": usage_obj
+        })
+    }
+
+    /// Native AWS Bedrock Converse error envelope. The Converse error model (REST-JSON protocol)
+    /// serializes every modeled exception as a flat body whose human-readable detail lives in a
+    /// lowercase `"message"` member, with the machine-readable exception name in `"__type"` (the
+    /// exact two fields `BedrockReader::extract_error` reads back). A native AWS SDK deserializes
+    /// the typed exception from `__type` and surfaces the text from `message`; serving the generic
+    /// `{"error":{...}}` envelope here would make a Bedrock SDK fail to decode the error. We map
+    /// busbar's generic `kind` to the closed AWS exception set via `error_kind_to_bedrock_type` so
+    /// the `__type` is always a real Converse exception name. Served as `application/json`.
+    fn write_error(&self, _status: u16, kind: &str, message: &str) -> serde_json::Value {
+        serde_json::json!({
+            "__type": error_kind_to_bedrock_type(kind),
+            "message": message,
+        })
+    }
+
+    fn attach_error_response_headers(
+        &self,
+        headers: &mut http::HeaderMap,
+        kind: &str,
+        _envelope: &serde_json::Value,
+    ) {
+        // A real AWS Bedrock runtime response ALWAYS carries `x-amzn-RequestId` (the only request-id
+        // surface the AWS SDK exposes via `*Output::request_id()`) and `x-amzn-errortype` == the body
+        // `__type`. Omitting them was distinguishable from native Bedrock and left the SDK request id
+        // empty on the most-exercised failover error surface.
+        attach_bedrock_error_headers(headers, kind);
+    }
+
+    fn new_stream_framing(&self) -> Box<dyn super::StreamFraming> {
+        // Bedrock-ingress per-stream framing: the messageStop/metadata two-frame deferral and the
+        // exactly-one-metadata invariant. Lives here, in the Bedrock module, so the agnostic
+        // translator names no Bedrock wire shape.
+        Box::<BedrockStreamFraming>::default()
+    }
+
+    fn wrap_buffered_as_stream(
+        &self,
+        ir: &crate::ir::IrResponse,
+        elapsed_ms: Option<u64>,
+    ) -> Option<Vec<u8>> {
+        // A Bedrock-ingress client that requested ConverseStream but received a buffered (non-SSE)
+        // 2xx response from the upstream must get a native binary eventstream frame sequence, not a
+        // bare `application/json` Converse body that the SDK's eventstream decoder cannot parse
+        // (hard decode failure and a deterministic proxy tell). Delegate to the module-local free fn
+        // which synthesizes the full frame sequence through this same writer — the call sites now
+        // dispatch through the vtable instead of branching on `ingress_protocol == "bedrock"`.
+        Some(bedrock_response_to_eventstream(ir, elapsed_ms))
+    }
+
+    fn inject_response_metrics(&self, value: &mut serde_json::Value, elapsed_ms: Option<u64>) {
+        // A native AWS Bedrock Converse (non-stream) response ALWAYS populates `metrics.latencyMs`
+        // (the SDK surfaces it via `ConverseOutput::metrics().latency_ms()`, and the service model
+        // marks the member required). The bedrock writer's `write_response` deliberately omits it
+        // (timing is unknown at that layer); inject the real request elapsed wall-clock here. A
+        // body that already carries a well-formed `metrics` keeps it, and the member is emitted
+        // even when timing is unavailable — the same policy as the streaming `metadata` frame.
+        super::ensure_metrics(value, elapsed_ms);
+    }
+
+    fn same_protocol_buffered_response_translator(
+        &self,
+    ) -> Option<Box<dyn busbar_substrate_values::proto::StreamTranslator>> {
+        // A Bedrock -> Bedrock non-stream response used to relay verbatim, so a Converse body whose
+        // upstream omitted `metrics` reached the client without its required member (the only
+        // Converse response busbar served that way; every cross-protocol lane injects it above).
+        // The translator buffers the body and completes it at end-of-stream.
+        Some(Box::new(super::BedrockConverseBodyTranslator::new()))
+    }
+
+    fn ingress_response_request_id(
+        &self,
+        upstream_request_id: Option<&str>,
+    ) -> Option<(&'static str, String)> {
+        // A real ConverseStream/Converse response carries `x-amzn-RequestId`. Forward the captured
+        // upstream id verbatim on a same-protocol passthrough (the streaming path captures one);
+        // synthesize otherwise (the non-stream/cross-protocol case supplies `None`). Identical to the
+        // prior inline `upstream_amzn_id.or_else(synth_amzn_request_id)` / synth-only attaches.
+        // Synthesis failure (no entropy) omits the header rather than panicking.
+        upstream_request_id
+            .map(String::from)
+            .or_else(synth_amzn_request_id)
+            .map(|id| (HDR_AMZN_REQUEST_ID, id))
+    }
+
+    fn clone_box(&self) -> Box<dyn ProtocolWriter> {
+        Box::new(self.clone())
+    }
+}
+
+impl BedrockWriter {
+    /// The request write for a lane with the declared [`LaneCaps`] (the model gate has already
+    /// run — see `write_request_for_lane`). `write_request` is this with the default capabilities.
+    fn write_request_with(&self, req: &crate::ir::IrRequest, caps: &LaneCaps) -> serde_json::Value {
         let _t = busbar_timing::timeit!("bedrock_write_request");
         let mut out = serde_json::Map::new();
 
@@ -473,11 +1023,20 @@ impl ProtocolWriter for BedrockWriter {
                                 // members the top-level content block has, so an attachment returned
                                 // BY a tool projects natively here too.
                                 crate::ir::IrBlock::Media {
-                                    kind, source, name, ..
+                                    kind,
+                                    source,
+                                    name,
+                                    citations,
+                                    context,
+                                    ..
                                 } => {
-                                    if let Some(b) =
-                                        bedrock_media_content_block(*kind, source, name.as_deref())
-                                    {
+                                    if let Some(b) = bedrock_media_content_block(
+                                        *kind,
+                                        source,
+                                        name.as_deref(),
+                                        *citations,
+                                        context.as_deref(),
+                                    ) {
                                         inner_content.push(b);
                                     }
                                 }
@@ -496,6 +1055,7 @@ impl ProtocolWriter for BedrockWriter {
                         text,
                         signature,
                         redacted,
+                        signature_origin,
                         ..
                     } => {
                         // Re-emit the assistant turn's reasoning as a native Converse
@@ -504,13 +1064,41 @@ impl ProtocolWriter for BedrockWriter {
                         // bedrock->bedrock passthrough lost the signed reasoning Bedrock requires
                         // echoed back on a follow-up turn. The redacted-signature sentinel re-emits
                         // `redactedContent`; any other Thinking re-emits `reasoningText`.
+                        // IR-18: a signature another family minted (Gemini `thoughtSignature`,
+                        // OpenAI `encrypted_content`) is a foreign blob a Bedrock model rejects, so
+                        // only a Claude or Bedrock-minted (or unknown-origin) one is sent.
+                        let foreign = matches!(
+                            signature_origin,
+                            Some(
+                                crate::ir::IrSignatureOrigin::Gemini
+                                    | crate::ir::IrSignatureOrigin::OpenAi
+                            )
+                        );
+                        if foreign && signature.is_some() {
+                            tracing::warn!(
+                                origin = ?signature_origin,
+                                "dropping a reasoning signature on Bedrock egress: another model \
+                                 family minted it"
+                            );
+                        }
+                        let signature = if foreign { &None } else { signature };
                         content_arr.push(bedrock_reasoning_block(text, signature, *redacted));
                     }
                     crate::ir::IrBlock::Media {
-                        kind, source, name, ..
+                        kind,
+                        source,
+                        name,
+                        citations,
+                        context,
+                        ..
                     } => {
-                        if let Some(b) = bedrock_media_content_block(*kind, source, name.as_deref())
-                        {
+                        if let Some(b) = bedrock_media_content_block(
+                            *kind,
+                            source,
+                            name.as_deref(),
+                            *citations,
+                            context.as_deref(),
+                        ) {
                             content_arr.push(b);
                         }
                     }
@@ -601,43 +1189,69 @@ impl ProtocolWriter for BedrockWriter {
         // typed IR. The typed fields WIN over any same-named raw entry so the structured IR remains
         // the source of truth for the values it models. `extra`'s raw `inferenceConfig` is consumed
         // here (not re-emitted by the trailing extra-merge), so there is no double-emit.
-        // BED-06: the reasoning ASK projects onto `additionalModelRequestFields.thinking`
-        // (`{type: "enabled", budget_tokens}`, the Anthropic-on-Bedrock spelling — Claude is the
-        // Converse family whose reasoning a cross-protocol caller reaches; the IR carries no model,
-        // so the family cannot be chosen per request). A raw native ask already in `extra` (a
-        // same-protocol body, `thinking` or Nova `reasoningConfig`) is authoritative and re-emitted
-        // verbatim below, so nothing is synthesized over it. Budget rules mirror the Anthropic
-        // writer: clamped to leave 1024 answer tokens under `maxTokens`, floored at the 1024
-        // minimum, and dropped with a warn when `maxTokens` has no room for it.
+        // BED-06: the reasoning ASK projects onto `additionalModelRequestFields` in the
+        // Anthropic-on-Bedrock spelling (Claude is the Converse family whose reasoning a
+        // cross-protocol caller reaches; `write_request_for_lane` strips the ask for any other
+        // family). A raw native ask already in `extra` (a same-protocol body: `thinking`,
+        // `output_config.effort` or Nova `reasoningConfig`) is authoritative and re-emitted verbatim
+        // below, so nothing is synthesized over it. The forms mirror the Anthropic writer:
+        //   * a WORD ask (or "model decides") on a lane declaring adaptive thinking
+        //     (`LaneCaps::anthropic_adaptive_thinking` — the only on-mode the newest Claude models
+        //     accept; `budget_tokens` 400s there) → `thinking: {type: "adaptive"}` plus
+        //     `output_config.effort` (no effort word is invented for "model decides");
+        //   * `Off` (IR-09) → `thinking: {type: "disabled"}`, matched BEFORE any budget projection
+        //     (which would read it as the smallest ENABLE ask);
+        //   * every other ask → `{type: "enabled", budget_tokens}`, clamped to leave 1024 answer
+        //     tokens under `maxTokens`, floored at the 1024 minimum, and dropped with a warn when
+        //     `maxTokens` has no room for it.
         let native_reasoning_present = req
             .extra
             .get("additionalModelRequestFields")
             .and_then(|v| v.as_object())
-            .is_some_and(|a| a.contains_key("thinking") || a.contains_key("reasoningConfig"));
+            .is_some_and(|a| {
+                a.contains_key("thinking")
+                    || a.contains_key("reasoningConfig")
+                    || a.get("output_config")
+                        .is_some_and(|c| c.get("effort").is_some())
+            });
         let mut thinking: Option<serde_json::Value> = None;
-        if let Some(ask) = req.reasoning.filter(|_| !native_reasoning_present) {
-            let table = req
-                .reasoning_budgets
-                .unwrap_or(crate::ir::REASONING_BUDGET_DEFAULTS);
-            let want = ask.to_budget(table);
-            let cap = req.max_tokens.map(|mt| mt.saturating_sub(1024));
-            let budget = cap.map_or(want, |c| want.min(c));
-            if budget >= 1024 {
-                if budget != want {
+        let mut effort_word: Option<&'static str> = None;
+        let mut thinking_disabled = false;
+        match req.reasoning.filter(|_| !native_reasoning_present) {
+            None => {}
+            Some(crate::ir::IrReasoningAsk::Off) => thinking_disabled = true,
+            Some(crate::ir::IrReasoningAsk::Effort(effort)) if caps.anthropic_adaptive_thinking => {
+                thinking = Some(serde_json::json!({ "type": super::THINKING_TYPE_ADAPTIVE }));
+                effort_word = Some(super::bedrock_claude_effort_word(effort));
+            }
+            Some(crate::ir::IrReasoningAsk::Dynamic) if caps.anthropic_adaptive_thinking => {
+                thinking = Some(serde_json::json!({ "type": super::THINKING_TYPE_ADAPTIVE }));
+            }
+            Some(ask) => {
+                let table = req
+                    .reasoning_budgets
+                    .unwrap_or(crate::ir::REASONING_BUDGET_DEFAULTS);
+                let want = ask.to_budget(table);
+                let cap = req.max_tokens.map(|mt| mt.saturating_sub(1024));
+                let budget = cap.map_or(want, |c| want.min(c));
+                if budget >= 1024 {
+                    if budget != want {
+                        tracing::warn!(
+                            requested_budget = want,
+                            clamped_budget = budget,
+                            max_tokens = ?req.max_tokens,
+                            "thinking budget clamped to fit under maxTokens on Bedrock egress"
+                        );
+                    }
+                    thinking =
+                        Some(serde_json::json!({"type": "enabled", "budget_tokens": budget}));
+                } else {
                     tracing::warn!(
-                        requested_budget = want,
-                        clamped_budget = budget,
                         max_tokens = ?req.max_tokens,
-                        "thinking budget clamped to fit under maxTokens on Bedrock egress"
+                        "dropping reasoning ask on Bedrock egress: maxTokens leaves no room for the \
+                         1024-token thinking minimum"
                     );
                 }
-                thinking = Some(serde_json::json!({"type": "enabled", "budget_tokens": budget}));
-            } else {
-                tracing::warn!(
-                    max_tokens = ?req.max_tokens,
-                    "dropping reasoning ask on Bedrock egress: maxTokens leaves no room for the \
-                     1024-token thinking minimum"
-                );
             }
         }
         let thinking_emitted = thinking.is_some();
@@ -721,10 +1335,27 @@ impl ProtocolWriter for BedrockWriter {
             .and_then(|v| v.as_object())
             .cloned()
             .unwrap_or_default();
+        // Whether that native form may be SENT is a lane capability
+        // (`LaneCaps::native_structured_output`, declared per provider / model in the catalog):
+        // Converse accepts `outputConfig.textFormat` only on the models AWS lists for structured
+        // outputs and rejects it on the rest (a 400 for a request that worked). A lane that does not
+        // declare it keeps the pre-structured-output form — the directive is dropped, observably,
+        // exactly as 1.5.5 did.
         if let Some(rf) = &req.response_format {
             match super::write_bedrock_text_format(rf) {
-                Some(tf) => {
+                // A same-protocol body's own raw `textFormat` (what the typed field was read
+                // from) is already in place and wins.
+                _ if output_config.contains_key("textFormat") => {}
+                Some(tf) if caps.native_structured_output => {
                     output_config.entry("textFormat").or_insert(tf);
+                }
+                Some(_) => {
+                    tracing::warn!(
+                        parameter = "response_format",
+                        "dropping response_format on Bedrock egress: the lane does not declare \
+                         native structured outputs (`native_structured_output`), and Converse \
+                         rejects `outputConfig.textFormat` on a model without them"
+                    );
                 }
                 None => {
                     tracing::warn!(
@@ -761,9 +1392,20 @@ impl ProtocolWriter for BedrockWriter {
             .and_then(|v| v.as_object())
             .cloned()
             .unwrap_or_default();
-        if !req.tools.is_empty() {
+        // IR-10: an allowed-tools subset has no Converse directive; the same constraint is
+        // expressed by OMISSION — only the listed tools are sent, and the mode rides `toolChoice`
+        // (`Auto` → `auto`, `Required` → `any`) below.
+        let sent_tools: Vec<&crate::ir::IrTool> = match &req.allowed_tools {
+            Some(allowed) => req
+                .tools
+                .iter()
+                .filter(|t| allowed.contains(&t.name))
+                .collect(),
+            None => req.tools.iter().collect(),
+        };
+        if !sent_tools.is_empty() {
             let mut tools_arr: Vec<serde_json::Value> = Vec::new();
-            for tool in &req.tools {
+            for tool in sent_tools {
                 let mut tool_spec = serde_json::Map::new();
                 tool_spec.insert("name".to_string(), serde_json::json!(tool.name));
 
@@ -887,6 +1529,21 @@ impl ProtocolWriter for BedrockWriter {
             .unwrap_or_default();
         if let Some(t) = thinking {
             additional_fields.insert("thinking".to_string(), t);
+        } else if thinking_disabled {
+            additional_fields.insert(
+                "thinking".to_string(),
+                serde_json::json!({ "type": super::THINKING_TYPE_DISABLED }),
+            );
+        }
+        if let Some(word) = effort_word {
+            // Claude's effort word rides `output_config` inside `additionalModelRequestFields`
+            // (Converse's own `outputConfig` is a different, top-level member).
+            let oc = additional_fields
+                .entry("output_config")
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(map) = oc.as_object_mut() {
+                map.insert("effort".to_string(), serde_json::json!(word));
+            }
         }
         if let Some(top_k) = req.top_k.filter(|_| {
             if thinking_emitted {
@@ -909,6 +1566,27 @@ impl ProtocolWriter for BedrockWriter {
             out.insert(
                 "additionalModelRequestFields".to_string(),
                 serde_json::Value::Object(additional_fields),
+            );
+        }
+
+        // IR-03: the typed metadata is Converse's `requestMetadata`, same keys. A same-protocol
+        // body's own raw object (in `extra`, re-emitted verbatim below) is what it was read from and
+        // wins.
+        if let Some(pairs) = req
+            .metadata
+            .as_deref()
+            .filter(|_| !req.extra.contains_key(super::FIELD_REQUEST_METADATA))
+        {
+            if let Some(m) = super::write_bedrock_request_metadata(pairs) {
+                out.insert(super::FIELD_REQUEST_METADATA.to_string(), m);
+            }
+        }
+        // The Q57 request slots with no Converse form — the same set `dropped_egress_controls`
+        // reports for the seam's audit.
+        for control in bedrock_unrepresentable_slots(req) {
+            tracing::warn!(
+                control = control,
+                "dropping a request control on Bedrock egress: Converse has no form for it"
             );
         }
 
@@ -954,525 +1632,37 @@ impl ProtocolWriter for BedrockWriter {
 
         serde_json::Value::Object(out)
     }
-
-    fn write_response_event(&self, ev: &IrStreamEvent) -> Option<(String, serde_json::Value)> {
-        match ev {
-            IrStreamEvent::MessageStart { .. } => Some((
-                ET_MESSAGE_START.to_string(),
-                serde_json::json!({ "role": "assistant" }),
-            )),
-
-            IrStreamEvent::BlockStart {
-                index,
-                block,
-                refusal: _,
-            } => match block {
-                // A TEXT block has NO `contentBlockStart` on the AWS Bedrock ConverseStream wire.
-                // `ContentBlockStart$start` is a UNION whose members are `toolUse` (plus
-                // `image`/`toolResult` in newer API revisions) — there is NO text member (AWS
-                // Bedrock Runtime API reference, ContentBlockStart). A real ConverseStream therefore
-                // opens a text block IMPLICITLY with its first `contentBlockDelta` carrying `text` and
-                // closes it with `contentBlockStop`; the reader mirrors this (it lazily opens a Text
-                // block on the first text delta). Emitting an empty `start: {}` frame here was an
-                // off-spec frame no native endpoint sends — a detectable proxy tell. Still
-                // `mark_block_open` so the matching `BlockStop` emits the (spec-required)
-                // `contentBlockStop`, but emit NO start frame.
-                crate::ir::IrBlockMeta::Text => {
-                    self.mark_block_open(*index);
-                    None
-                }
-                crate::ir::IrBlockMeta::ToolUse { id, name } => {
-                    self.mark_block_open(*index);
-                    Some((
-                        ET_CONTENT_BLOCK_START.to_string(),
-                        serde_json::json!({
-                            "contentBlockIndex": index,
-                            "start": { "toolUse": { "toolUseId": id, "name": name } }
-                        }),
-                    ))
-                }
-                // A reasoning (extended-thinking) block has NO `contentBlockStart` either.
-                // `ContentBlockStart$start` models ONLY `toolUse` (no `reasoningContent` member —
-                // AWS Bedrock Runtime API reference, ContentBlockStart). Reasoning is streamed
-                // ENTIRELY through `contentBlockDelta.delta.reasoningContent` — the
-                // `ReasoningContentBlockDelta` union (`text` / `signature` / `redactedContent`) — and
-                // closed with `contentBlockStop`; the reader mirrors this (it lazily opens a Thinking
-                // block on the first `reasoningContent` delta). Emitting a
-                // `start.reasoningContent` frame was off-spec — a detectable proxy tell. Still
-                // `mark_block_open` so the matching `BlockStop` emits `contentBlockStop`, but emit NO
-                // start frame. (Image likewise has no streaming-start projection on Bedrock, so it
-                // stays None — but is NOT marked open, so it emits no orphan stop either.)
-                // Plaintext AND redacted reasoning: Bedrock streams BOTH through
-                // `contentBlockDelta.reasoningContent` (plaintext `text`/`signature`, or opaque
-                // `redactedContent`) with NO dedicated `contentBlockStart`. So a `RedactedThinking`
-                // start behaves exactly like a `Thinking` start — emit no start frame but STILL
-                // `mark_block_open` so the matching `BlockStop` emits `contentBlockStop`; the opaque
-                // bytes ride the following `RedactedReasoningDelta`, re-emitted under `redactedContent`.
-                crate::ir::IrBlockMeta::Thinking | crate::ir::IrBlockMeta::RedactedThinking => {
-                    self.mark_block_open(*index);
-                    None
-                }
-                crate::ir::IrBlockMeta::Image => None,
-            },
-
-            IrStreamEvent::BlockDelta { index, delta } => match delta {
-                crate::ir::IrDelta::TextDelta(text) => Some((
-                    ET_CONTENT_BLOCK_DELTA.to_string(),
-                    serde_json::json!({
-                        "contentBlockIndex": index,
-                        "delta": { "text": text }
-                    }),
-                )),
-
-                crate::ir::IrDelta::InputJsonDelta(json_str) => Some((
-                    ET_CONTENT_BLOCK_DELTA.to_string(),
-                    serde_json::json!({
-                        "contentBlockIndex": index,
-                        "delta": { "toolUse": { "input": json_str } }
-                    }),
-                )),
-
-                // Streamed extended-thinking. The Bedrock `ReasoningContentBlockDelta` union carries
-                // EITHER a `text` (plaintext reasoning) OR a `signature` (the opaque reasoning token)
-                // OR a `redactedContent` (opaque encrypted bytes) per frame — each IR delta maps to
-                // exactly ONE ConverseStream frame, so the single-frame-per-event constraint holds.
-                // This is the streaming inverse of `bedrock_reasoning_block`'s buffered logic.
-                crate::ir::IrDelta::ThinkingDelta(text) => Some((
-                    ET_CONTENT_BLOCK_DELTA.to_string(),
-                    serde_json::json!({
-                        "contentBlockIndex": index,
-                        "delta": { "reasoningContent": { "text": text } }
-                    }),
-                )),
-
-                // A genuine reasoning signature token re-emits under `signature`.
-                crate::ir::IrDelta::SignatureDelta(sig) => Some((
-                    ET_CONTENT_BLOCK_DELTA.to_string(),
-                    serde_json::json!({
-                        "contentBlockIndex": index,
-                        "delta": { "reasoningContent": { "signature": sig } }
-                    }),
-                )),
-                // A streamed redacted-reasoning delta re-emits the opaque bytes under `redactedContent`
-                // (never as a plaintext `signature`) — the streaming inverse of `bedrock_reasoning_block`.
-                crate::ir::IrDelta::RedactedReasoningDelta(redacted) => Some((
-                    ET_CONTENT_BLOCK_DELTA.to_string(),
-                    serde_json::json!({
-                        "contentBlockIndex": index,
-                        "delta": { "reasoningContent": { "redactedContent": redacted } }
-                    }),
-                )),
-                // Streamed grounding citations. Bedrock ConverseStream's `ContentBlockDelta` union
-                // DOES have a `citation` member (a `CitationsDelta` with the same
-                // `{title, sourceContent, location}` field set as the buffered `Citation`), arriving
-                // interleaved with `text` deltas at the SAME `contentBlockIndex` — so this arm used to
-                // suppress a frame the protocol defines, and the SAME request against the SAME backend
-                // returned sources at `stream: false` and none at `stream: true`. Nothing about the
-                // request explained that difference to the caller.
-                //
-                // A native `citation` delta carries ONE citation, so this SINGLE-frame arm frames the
-                // FIRST of the batch; `write_response_events` is what walks a multi-citation delta,
-                // re-entering here once per citation. A caller reaching this method directly (a
-                // stream driven outside the framing seam's `max_citations_per_delta` fan-out)
-                // therefore still gets a well-formed frame rather than a dropped or malformed one.
-                crate::ir::IrDelta::CitationsDelta(cits) => {
-                    let c = cits.first()?;
-                    match super::write_bedrock_citation(c) {
-                        Some(citation) => Some((
-                            ET_CONTENT_BLOCK_DELTA.to_string(),
-                            serde_json::json!({
-                                "contentBlockIndex": index,
-                                "delta": { "citation": citation }
-                            }),
-                        )),
-                        // Every neutral field was empty, so there is no member to put in the union
-                        // and an empty `{}` would be a malformed frame. Drop it, but say so.
-                        None => {
-                            tracing::warn!(
-                                "dropping a streamed citation on a bedrock egress: it carried no \
-                                 title, url, quoted text or resolvable character location, so there \
-                                 is no populated member for the Converse `citation` delta union"
-                            );
-                            None
-                        }
-                    }
-                }
-                // Bedrock Converse has no logprobs shape; dropped.
-                crate::ir::IrDelta::LogprobsDelta(_) => None,
-            },
-
-            // An untracked index is a block whose start had no Bedrock projection (Image); closing
-            // it would orphan a `contentBlockStop` a real client never saw a start for.
-            IrStreamEvent::BlockStop { index } => {
-                if self.take_block_open(*index) {
-                    Some((
-                        ET_CONTENT_BLOCK_STOP.to_string(),
-                        serde_json::json!({ "contentBlockIndex": index }),
-                    ))
-                } else {
-                    None
-                }
-            }
-
-            // The native Bedrock ConverseStream wire carries `stopReason` in a `messageStop` frame
-            // and token `usage` in a SEPARATE `metadata` frame that FOLLOWS it. The IR, however,
-            // carries ONE combined `MessageDelta{stop_reason, usage}` (the reader collapses the two
-            // native frames into one so a cross-protocol ingress sees a single `message_delta`/usage
-            // event). A single `(event_type, json)` return cannot emit two frames, so the two-frame
-            // FAN-OUT for a Bedrock INGRESS lives in `StreamTranslate::translate_event` (proto/mod.rs),
-            // which splits a combined delta into a stop-only delta (→ here, `messageStop`) and a
-            // usage-only delta (→ here, `metadata`) before calling this writer, and injects the real
-            // `metrics.latencyMs` onto the `metadata` frame.
-            //
-            // This arm therefore maps each (already-split) MessageDelta to its single native frame:
-            //   - stop_reason = Some(...)  → `messageStop` (the stop discriminant; usage ignored)
-            //   - stop_reason = None       → `metadata` carrying the real token usage (no `metrics`
-            //                                here — the StreamTranslate fan-out adds it with the real
-            //                                elapsed wall-clock, or omits it when timing is absent;
-            //                                fabricating a `latencyMs: 0` was itself a detectable tell).
-            // Bedrock has no stop_sequence field in its stream, so `stop_sequence` is ignored here.
-            IrStreamEvent::MessageDelta {
-                stop_reason,
-                usage,
-                stop_sequence: _,
-                stop_detail: _,
-            } => match stop_reason {
-                Some(reason) => Some((
-                    ET_MESSAGE_STOP.to_string(),
-                    serde_json::json!({ "stopReason": stop_reason_reverse(*reason) }),
-                )),
-                None => {
-                    let mut usage_obj = serde_json::Map::new();
-                    usage_obj.insert("inputTokens".to_string(), usage.input_tokens.into());
-                    usage_obj.insert("outputTokens".to_string(), usage.output_tokens.into());
-                    // Cache-inclusive and saturating — see `converse_total_tokens`.
-                    usage_obj.insert(
-                        "totalTokens".to_string(),
-                        converse_total_tokens(usage).into(),
-                    );
-                    write_cache_usage(&mut usage_obj, usage);
-                    Some((
-                        ET_METADATA.to_string(),
-                        serde_json::json!({ "usage": usage_obj }),
-                    ))
-                }
-            },
-
-            IrStreamEvent::MessageStop => None,
-
-            // A mid-stream error on the Bedrock-ingress path. The fully native representation is an
-            // AWS modeled-exception EVENT-STREAM frame (`:message-type: exception` +
-            // `:exception-type: <ExceptionName>`), which `StreamTranslate` now emits via
-            // `write_response_exception` + `eventstream::encode_exception_frame` BEFORE reaching this
-            // arm (a Bedrock-ingress stream never routes an `Error` through `write_response_event`).
-            // This arm therefore only fires if a non-eventstream consumer ever drives a Bedrock
-            // writer with an `Error` event; it falls back to a normal `event`-typed frame naming a
-            // real ConverseStream-output exception (via `bedrock_stream_exception_for`, the five-member
-            // stream union — NOT the request-level HTTP set) so the type token is still a genuine AWS
-            // stream-event name rather than the literal `"error"` or a non-stream request shape.
-            IrStreamEvent::Error(err) => {
-                let (exception_name, message) = bedrock_stream_exception_for(err);
-                Some((
-                    exception_name.to_string(),
-                    serde_json::json!({ "message": message }),
-                ))
-            }
-        }
-    }
-
-    /// A Converse `citation` delta carries ONE citation, so a delta holding several must frame as
-    /// several events at the same `contentBlockIndex` — which is exactly how a native ConverseStream
-    /// interleaves them. The framing seam splits multi-citation deltas on their way to the writer
-    /// (`max_citations_per_delta`), but it is not the only caller (the plane codec drives
-    /// `write_response_events` directly), and a batch that arrives whole here must emit all of its
-    /// citations rather than silently keep the first. Each is framed by re-entering the single-frame
-    /// arm with a one-citation delta, so that arm stays the ONE source of truth for the `citation`
-    /// delta's shape. Every other event keeps the base wrapper's one-frame behaviour.
-    fn write_response_events(&self, ev: &IrStreamEvent) -> Vec<(String, serde_json::Value)> {
-        if let IrStreamEvent::BlockDelta {
-            index,
-            delta: crate::ir::IrDelta::CitationsDelta(cits),
-        } = ev
-        {
-            if cits.len() > 1 {
-                return cits
-                    .iter()
-                    .filter_map(|c| {
-                        self.write_response_event(&IrStreamEvent::BlockDelta {
-                            index: *index,
-                            delta: crate::ir::IrDelta::CitationsDelta(vec![c.clone()]),
-                        })
-                    })
-                    .collect();
-            }
-        }
-        self.write_response_event(ev).into_iter().collect()
-    }
-
-    /// A Bedrock-ingress stream signals a mid-stream error with a MODELED-EXCEPTION event-stream
-    /// frame (`:message-type: exception`), which `StreamTranslate` emits via
-    /// `eventstream::encode_exception_frame`. This maps the IR error to that frame's
-    /// `(exception_name, message)` using `bedrock_stream_exception_for` — the FIVE-member
-    /// ConverseStream output-union (`InternalServerException`, `ModelStreamErrorException`,
-    /// `ValidationException`, `ThrottlingException`, `ServiceUnavailableException`), NOT the larger
-    /// request-level HTTP exception set — so a native AWS SDK stream decoder always recognizes the
-    /// `:exception-type` as a modeled stream event. Shares the mapping with the (fallback)
-    /// `write_response_event` Error arm so both stay consistent.
-    fn write_response_exception(
-        &self,
-        err: &busbar_substrate_values::proto::IrError,
-    ) -> Option<(String, String)> {
-        let (exception_name, message) = bedrock_stream_exception_for(err);
-        Some((exception_name.to_string(), message))
-    }
-
-    fn write_error_frame(
-        &self,
-        err: &busbar_substrate_values::proto::IrError,
-    ) -> Option<(String, serde_json::Value)> {
-        // The streaming-error seam. A Bedrock-INGRESS stream never reaches here — its mid-stream
-        // error is a modeled-exception event-stream frame emitted via `write_response_exception`
-        // before the SSE framer runs. This override exists for a non-eventstream consumer driving a
-        // Bedrock writer, and delegates to the `write_response_event` Error arm (the documented
-        // fallback) so the two stay byte-identical.
-        self.write_response_event(&IrStreamEvent::Error(err.clone()))
-    }
-
-    fn write_response(&self, resp: &crate::ir::IrResponse) -> serde_json::Value {
-        let _t = busbar_timing::timeit!("bedrock_write_response");
-        let mut content_arr: Vec<serde_json::Value> = Vec::new();
-
-        for block in &resp.content {
-            match block {
-                crate::ir::IrBlock::Text {
-                    text, citations, ..
-                } => {
-                    if text.is_empty() {
-                        continue;
-                    }
-                    // Grounding citations, in Converse's native `citationsContent` slot — the
-                    // BUFFERED twin of the `contentBlockDelta.citation` frame the streaming arm
-                    // emits. Without it a Bedrock-ingress client got sources when it asked to stream
-                    // and none when it did not, which is the same request-shape-dependent asymmetry
-                    // the streaming gap was, only inverted.
-                    //
-                    // `citationsContent` REPLACES the plain `text` member for this block (the union
-                    // carries the text INSIDE it, alongside the citations), so it is emitted only
-                    // when at least one citation actually projects — a text block with no citations
-                    // keeps the plain `{"text": …}` shape every existing consumer expects.
-                    let cits: Vec<serde_json::Value> = citations
-                        .iter()
-                        .filter_map(super::write_bedrock_citation)
-                        .collect();
-                    if cits.is_empty() {
-                        if !citations.is_empty() {
-                            tracing::warn!(
-                                dropped = citations.len(),
-                                "dropping citation(s) on a bedrock response egress: none carried a \
-                                 title, url, quoted text or resolvable character location, so there \
-                                 is no populated member for the Converse `Citation` shape"
-                            );
-                        }
-                        content_arr.push(serde_json::json!({ "text": text }));
-                    } else {
-                        content_arr.push(serde_json::json!({
-                            "citationsContent": {
-                                "content": [{ "text": text }],
-                                "citations": cits
-                            }
-                        }));
-                    }
-                }
-
-                // A model does not emit an attachment back on the Converse response surface.
-                crate::ir::IrBlock::Media { .. } => {}
-
-                crate::ir::IrBlock::ToolUse {
-                    id, name, input, ..
-                } => {
-                    content_arr.push(serde_json::json!({
-                        "toolUse": {
-                            "toolUseId": id,
-                            "name": name,
-                            "input": input
-                        }
-                    }));
-                }
-
-                crate::ir::IrBlock::Image { source, .. } => {
-                    // An assistant response CAN legitimately carry an Image block (e.g. a
-                    // cross-protocol egress whose source emitted an image in the model turn).
-                    // Bedrock Converse natively represents it as an `{"image": ...}` content block.
-                    // A source kind with no native Bedrock projection (URL / file_id) returns `None`
-                    // and is omitted with a trace by the helper, never corrupting the block.
-                    if let Some(image_block) = bedrock_image_block(source) {
-                        content_arr.push(serde_json::json!({ "image": image_block }));
-                    }
-                }
-                crate::ir::IrBlock::Json(_) => {
-                    // Structured-json content has no top-level Bedrock response shape (it is only a
-                    // tool-result content member); omit it from an assistant response turn.
-                }
-
-                crate::ir::IrBlock::Thinking {
-                    text,
-                    signature,
-                    redacted,
-                    ..
-                } => {
-                    // Re-emit the model's reasoning as a native Converse `reasoningContent` block
-                    // (the inverse of `read_response`'s reasoningContent decode), instead of silently
-                    // dropping it. A same-protocol passthrough reproduces the thinking block, and a
-                    // cross-protocol egress that carried reasoning into the IR can surface it. The
-                    // redacted-signature sentinel re-emits `redactedContent`; any other Thinking
-                    // re-emits `reasoningText`.
-                    content_arr.push(bedrock_reasoning_block(text, signature, *redacted));
-                }
-
-                // A `toolResult` is a USER-turn content block in Bedrock Converse; it has no place
-                // in an ASSISTANT response message, so it is the only genuine no-op here. Handled
-                // explicitly — no catch-all.
-                crate::ir::IrBlock::ToolResult { .. } => {}
-            }
-        }
-
-        // Bedrock Converse rejects an assistant message with an empty `content` array
-        // (ValidationException), exactly as `write_request` guards every turn. A response whose
-        // blocks were ALL non-representable here (e.g. thinking-only, or a stray toolResult) would
-        // otherwise emit `content: []`. Mirror the request-side guard with a minimal placeholder
-        // text block so the body stays valid.
-        if content_arr.is_empty() {
-            content_arr.push(serde_json::json!({ "text": "" }));
-        }
-
-        let reverse_reason =
-            stop_reason_reverse(resp.stop_reason.unwrap_or(crate::ir::IrStopReason::EndTurn));
-
-        // Identity emission. The native AWS Converse response body (the shape the official SDK
-        // deserializes — `output` / `stopReason` / `usage` / optional `metrics`) carries NO id or
-        // `created` field; AWS returns the request id only in the `x-amzn-RequestId` HTTP header.
-        // Injecting a synthesized `id`/`created` into the JSON body would therefore be a
-        // proxy-tell, not fidelity — so we deliberately do NOT add one. (The inverse direction — a
-        // Bedrock egress feeding an OpenAI/Anthropic ingress that DOES require a body id — is the
-        // job of that ingress writer, not this one; no Bedrock-side id synthesizer is wired into the
-        // production path, so none is shipped.) `stopReason` and `usage` (the only identity-bearing
-        // fields Bedrock emits) are reproduced exactly from the captured IR below, so a
-        // same-protocol round-trip is byte-identical.
-        let mut usage_obj = serde_json::Map::new();
-        usage_obj.insert("inputTokens".to_string(), resp.usage.input_tokens.into());
-        usage_obj.insert("outputTokens".to_string(), resp.usage.output_tokens.into());
-        // Cache-inclusive and saturating, same as the streaming `metadata` frame — see
-        // `converse_total_tokens`. This is what keeps the same-protocol round-trip promised just
-        // above byte-identical when the upstream reported cache tokens.
-        usage_obj.insert(
-            "totalTokens".to_string(),
-            converse_total_tokens(&resp.usage).into(),
-        );
-        write_cache_usage(&mut usage_obj, &resp.usage);
-
-        serde_json::json!({
-            "output": {
-                "message": {
-                    "role": "assistant",
-                    "content": content_arr
-                }
-            },
-            "stopReason": reverse_reason,
-            "usage": usage_obj
-        })
-    }
-
-    /// Native AWS Bedrock Converse error envelope. The Converse error model (REST-JSON protocol)
-    /// serializes every modeled exception as a flat body whose human-readable detail lives in a
-    /// lowercase `"message"` member, with the machine-readable exception name in `"__type"` (the
-    /// exact two fields `BedrockReader::extract_error` reads back). A native AWS SDK deserializes
-    /// the typed exception from `__type` and surfaces the text from `message`; serving the generic
-    /// `{"error":{...}}` envelope here would make a Bedrock SDK fail to decode the error. We map
-    /// busbar's generic `kind` to the closed AWS exception set via `error_kind_to_bedrock_type` so
-    /// the `__type` is always a real Converse exception name. Served as `application/json`.
-    fn write_error(&self, _status: u16, kind: &str, message: &str) -> serde_json::Value {
-        serde_json::json!({
-            "__type": error_kind_to_bedrock_type(kind),
-            "message": message,
-        })
-    }
-
-    fn attach_error_response_headers(
-        &self,
-        headers: &mut http::HeaderMap,
-        kind: &str,
-        _envelope: &serde_json::Value,
-    ) {
-        // A real AWS Bedrock runtime response ALWAYS carries `x-amzn-RequestId` (the only request-id
-        // surface the AWS SDK exposes via `*Output::request_id()`) and `x-amzn-errortype` == the body
-        // `__type`. Omitting them was distinguishable from native Bedrock and left the SDK request id
-        // empty on the most-exercised failover error surface.
-        attach_bedrock_error_headers(headers, kind);
-    }
-
-    fn new_stream_framing(&self) -> Box<dyn super::StreamFraming> {
-        // Bedrock-ingress per-stream framing: the messageStop/metadata two-frame deferral and the
-        // exactly-one-metadata invariant. Lives here, in the Bedrock module, so the agnostic
-        // translator names no Bedrock wire shape.
-        Box::<BedrockStreamFraming>::default()
-    }
-
-    fn wrap_buffered_as_stream(
-        &self,
-        ir: &crate::ir::IrResponse,
-        elapsed_ms: Option<u64>,
-    ) -> Option<Vec<u8>> {
-        // A Bedrock-ingress client that requested ConverseStream but received a buffered (non-SSE)
-        // 2xx response from the upstream must get a native binary eventstream frame sequence, not a
-        // bare `application/json` Converse body that the SDK's eventstream decoder cannot parse
-        // (hard decode failure and a deterministic proxy tell). Delegate to the module-local free fn
-        // which synthesizes the full frame sequence through this same writer — the call sites now
-        // dispatch through the vtable instead of branching on `ingress_protocol == "bedrock"`.
-        Some(bedrock_response_to_eventstream(ir, elapsed_ms))
-    }
-
-    fn inject_response_metrics(&self, value: &mut serde_json::Value, elapsed_ms: Option<u64>) {
-        // A native AWS Bedrock Converse (non-stream) response ALWAYS populates `metrics.latencyMs`
-        // (the SDK surfaces it via `ConverseOutput::metrics().latency_ms()`, and the service model
-        // marks the member required). The bedrock writer's `write_response` deliberately omits it
-        // (timing is unknown at that layer); inject the real request elapsed wall-clock here. A
-        // body that already carries a well-formed `metrics` keeps it, and the member is emitted
-        // even when timing is unavailable — the same policy as the streaming `metadata` frame.
-        super::ensure_metrics(value, elapsed_ms);
-    }
-
-    fn same_protocol_buffered_response_translator(
-        &self,
-    ) -> Option<Box<dyn busbar_substrate_values::proto::StreamTranslator>> {
-        // A Bedrock -> Bedrock non-stream response used to relay verbatim, so a Converse body whose
-        // upstream omitted `metrics` reached the client without its required member (the only
-        // Converse response busbar served that way; every cross-protocol lane injects it above).
-        // The translator buffers the body and completes it at end-of-stream.
-        Some(Box::new(super::BedrockConverseBodyTranslator::new()))
-    }
-
-    fn ingress_response_request_id(
-        &self,
-        upstream_request_id: Option<&str>,
-    ) -> Option<(&'static str, String)> {
-        // A real ConverseStream/Converse response carries `x-amzn-RequestId`. Forward the captured
-        // upstream id verbatim on a same-protocol passthrough (the streaming path captures one);
-        // synthesize otherwise (the non-stream/cross-protocol case supplies `None`). Identical to the
-        // prior inline `upstream_amzn_id.or_else(synth_amzn_request_id)` / synth-only attaches.
-        // Synthesis failure (no entropy) omits the header rather than panicking.
-        upstream_request_id
-            .map(String::from)
-            .or_else(synth_amzn_request_id)
-            .map(|id| (HDR_AMZN_REQUEST_ID, id))
-    }
-
-    fn clone_box(&self) -> Box<dyn ProtocolWriter> {
-        Box::new(self.clone())
-    }
 }
 
-/// Whether a Bedrock lane model id names a Claude model (see `write_request_for_model`).
-fn bedrock_model_is_claude(model: &str) -> bool {
-    let m = model.to_ascii_lowercase();
-    m.contains("anthropic.") || m.contains("claude")
+/// The typed request slots (Q57) a Converse body has no member for — each is dropped with a warn by
+/// `write_request` and reported by `dropped_egress_controls`, so the seam audits the degradation:
+/// `store`, `safety_identifier`, `prompt_cache_key`, `verbosity`, `service_tier` (the IR-04 contract
+/// names no Converse spelling), a non-text output modality (Converse answers in text), and every
+/// provider-hosted tool kind (Converse has no hosted web search / code execution / web fetch).
+fn bedrock_unrepresentable_slots(req: &crate::ir::IrRequest) -> Vec<&'static str> {
+    let mut dropped = Vec::new();
+    if req.service_tier.is_some() {
+        dropped.push("service_tier");
+    }
+    if req.store.is_some() {
+        dropped.push("store");
+    }
+    if req.safety_identifier.is_some() {
+        dropped.push("safety_identifier");
+    }
+    if req.prompt_cache_key.is_some() {
+        dropped.push("prompt_cache_key");
+    }
+    if req.verbosity.is_some() {
+        dropped.push("verbosity");
+    }
+    if req
+        .output_modalities
+        .as_ref()
+        .is_some_and(|m| m.iter().any(|m| *m != crate::ir::IrModality::Text))
+    {
+        dropped.push("output_modalities");
+    }
+    dropped.extend(req.hosted_tools.iter().map(|h| h.kind_str()));
+    dropped
 }

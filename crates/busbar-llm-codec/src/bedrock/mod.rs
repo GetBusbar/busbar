@@ -631,13 +631,30 @@ fn bedrock_media_block(
             value: source.cloned().unwrap_or_else(|| serde_json::json!({})),
         },
     };
+    // IR-12: a Converse `DocumentBlock` carries the same two attachment controls Anthropic's
+    // document block does — `citations: {enabled}` and a free-text `context`. `VideoBlock` has
+    // neither, so they are read off a document only.
+    let (citations, context) = if kind == crate::ir::IrMediaKind::Document {
+        (
+            value
+                .get("citations")
+                .and_then(|c| c.get("enabled"))
+                .and_then(|e| e.as_bool()),
+            value
+                .get("context")
+                .and_then(|c| c.as_str())
+                .map(String::from),
+        )
+    } else {
+        (None, None)
+    };
     crate::ir::IrBlock::Media {
         kind,
         source: ir_source,
         name,
         cache_control: None,
-        citations: None,
-        context: None,
+        citations,
+        context,
     }
 }
 
@@ -707,6 +724,8 @@ fn bedrock_media_content_block(
     kind: crate::ir::IrMediaKind,
     source: &crate::ir::IrImageSource,
     name: Option<&str>,
+    citations: Option<bool>,
+    context: Option<&str>,
 ) -> Option<serde_json::Value> {
     let (wire_key, format) = match kind {
         crate::ir::IrMediaKind::Document => ("document", bedrock_document_format(source)?),
@@ -748,6 +767,25 @@ fn bedrock_media_content_block(
         block.insert("name".to_string(), serde_json::json!(n));
     }
     block.insert("source".to_string(), wire_source);
+    // IR-12: the document's citation switch and context ride Converse's `DocumentBlock` natively.
+    // A `VideoBlock` has no such members, so on a video they are dropped (with a warn when set).
+    if kind == crate::ir::IrMediaKind::Document {
+        if let Some(c) = context {
+            block.insert("context".to_string(), serde_json::json!(c));
+        }
+        if let Some(enabled) = citations {
+            block.insert(
+                "citations".to_string(),
+                serde_json::json!({ "enabled": enabled }),
+            );
+        }
+    } else if citations.is_some() || context.is_some() {
+        tracing::warn!(
+            media_kind = kind.as_str(),
+            "dropping attachment citations/context on Bedrock egress: Converse carries them on a \
+             document block only"
+        );
+    }
     Some(serde_json::json!({ wire_key: serde_json::Value::Object(block) }))
 }
 
@@ -1038,30 +1076,72 @@ fn read_bedrock_citations_content(v: &serde_json::Value) -> crate::ir::IrBlock {
 }
 
 /// Read a native reasoning ASK off a Converse `additionalModelRequestFields` object (BED-06). Two
-/// model-family spellings ride there: Anthropic-on-Bedrock `thinking: {type: "enabled",
-/// budget_tokens: N}` → `Budget(N)`, and Amazon Nova `reasoningConfig: {type: "enabled",
-/// maxReasoningEffort: "low"|"medium"|"high"}` → `Effort`. Anything else (disabled, malformed) is no
-/// ask, exactly as the Anthropic reader treats its own `thinking`.
+/// model-family spellings ride there:
+///   * Anthropic-on-Bedrock `thinking`, read exactly as the Anthropic reader reads its own:
+///     `{type: "enabled", budget_tokens: N}` → `Budget(N)`; `{type: "adaptive"}` → `Effort(<the
+///     output_config.effort word>)` when one is given, else `Dynamic`; no `thinking` but an
+///     `output_config.effort` word → `Effort(word)`; `{type: "disabled"}` → `Off` (IR-09).
+///   * Amazon Nova `reasoningConfig: {type: "enabled", maxReasoningEffort: "low"|"medium"|"high"}`
+///     → `Effort`, and `{type: "disabled"}` → `Off`.
+///
+/// Anything else (malformed, an unknown type) is no ask.
 fn read_bedrock_reasoning_ask(
     amrf: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> Option<crate::ir::IrReasoningAsk> {
+    use crate::ir::IrReasoningAsk as Ask;
     let amrf = amrf?;
-    let enabled = |v: &serde_json::Value| v.get("type").and_then(|t| t.as_str()) == Some("enabled");
-    if let Some(budget) = amrf
-        .get("thinking")
-        .filter(|t| enabled(t))
-        .and_then(|t| t.get("budget_tokens"))
-        .and_then(|v| v.as_u64())
-        .and_then(|v| u32::try_from(v).ok())
-    {
-        return Some(crate::ir::IrReasoningAsk::Budget(budget));
-    }
-    amrf.get("reasoningConfig")
-        .filter(|r| enabled(r))
-        .and_then(|r| r.get("maxReasoningEffort"))
+    let type_of = |v: &serde_json::Value| v.get("type").and_then(|t| t.as_str()).map(String::from);
+    let effort = amrf
+        .get("output_config")
+        .and_then(|c| c.get("effort"))
         .and_then(|e| e.as_str())
-        .and_then(crate::ir::IrReasoningEffort::parse)
-        .map(crate::ir::IrReasoningAsk::Effort)
+        .and_then(read_bedrock_claude_effort_word);
+    if let Some(thinking) = amrf.get("thinking") {
+        return match type_of(thinking).as_deref() {
+            Some("enabled") => thinking
+                .get("budget_tokens")
+                .and_then(|v| v.as_u64())
+                .and_then(|v| u32::try_from(v).ok())
+                .map(Ask::Budget),
+            Some(THINKING_TYPE_ADAPTIVE) => Some(effort.map(Ask::Effort).unwrap_or(Ask::Dynamic)),
+            Some(THINKING_TYPE_DISABLED) => Some(Ask::Off),
+            _ => None,
+        };
+    }
+    if let Some(rc) = amrf.get("reasoningConfig") {
+        return match type_of(rc).as_deref() {
+            Some("enabled") => rc
+                .get("maxReasoningEffort")
+                .and_then(|e| e.as_str())
+                .and_then(crate::ir::IrReasoningEffort::parse)
+                .map(Ask::Effort),
+            Some(THINKING_TYPE_DISABLED) => Some(Ask::Off),
+            _ => None,
+        };
+    }
+    effort.map(Ask::Effort)
+}
+
+/// Claude's adaptive-thinking `thinking.type` (Anthropic-on-Bedrock spells it as Anthropic does).
+const THINKING_TYPE_ADAPTIVE: &str = "adaptive";
+/// Reasoning explicitly switched off (Claude `thinking.type`, Nova `reasoningConfig.type`).
+const THINKING_TYPE_DISABLED: &str = "disabled";
+
+/// Claude `output_config.effort` word (Anthropic-on-Bedrock) → IR effort. The Claude scale is
+/// `low` / `medium` / `high` / `xhigh` / `max` (IR-09 carries all five).
+fn read_bedrock_claude_effort_word(word: &str) -> Option<crate::ir::IrReasoningEffort> {
+    match word {
+        "minimal" => None,
+        other => crate::ir::IrReasoningEffort::parse_extended(other),
+    }
+}
+
+/// IR effort → Claude `output_config.effort` word. Claude has no `minimal`; the nearest is `low`.
+fn bedrock_claude_effort_word(effort: crate::ir::IrReasoningEffort) -> &'static str {
+    match effort {
+        crate::ir::IrReasoningEffort::Minimal => "low",
+        other => other.as_str(),
+    }
 }
 
 /// Read Converse's native structured-output directive, `outputConfig.textFormat` (`{type:
@@ -1423,11 +1503,131 @@ fn stop_reason_map(ward: &str) -> crate::ir::IrStopReason {
         // BED-10: generation ended because the model's CONTEXT WINDOW filled — output was cut off by
         // a token limit, which is what `MaxTokens` means to every client dialect (a dedicated
         // context-window reason needs the IR-16 slot).
-        "model_context_window_exceeded" => S::MaxTokens,
+        STOP_MODEL_CONTEXT_WINDOW_EXCEEDED => S::MaxTokens,
         // BED-10: the model produced output Bedrock could not parse (text or a tool call) — an
         // error termination, not a natural end.
         "malformed_model_output" | "malformed_tool_use" => S::Error,
         _ => S::Other,
+    }
+}
+
+/// Whether a Bedrock model id names a Claude model: `anthropic.` / `claude`, which covers the bare
+/// model id, the regional and global inference profiles and their ARNs. The Converse body carries no
+/// model family, so the id is the only place it is visible (see `write_request_for_lane`).
+fn bedrock_model_is_claude(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    m.contains("anthropic.") || m.contains("claude")
+}
+
+/// Which family minted the reasoning signatures of a Bedrock conversation addressed to `model`
+/// (IR-18). Claude → `Anthropic` (Claude on Bedrock mints Anthropic signatures). A model id that
+/// visibly names another provider (`<provider>.<model>`, optionally behind a geographic inference
+/// profile prefix or an ARN) → `BedrockOther`. Anything the id does not reveal — no model, a
+/// busbar alias, an opaque application-inference-profile ARN — is `None` (unknown: every writer
+/// keeps its pre-slot behaviour), never a guess.
+fn bedrock_signature_origin(model: Option<&str>) -> Option<crate::ir::IrSignatureOrigin> {
+    let model = model?;
+    if bedrock_model_is_claude(model) {
+        return Some(crate::ir::IrSignatureOrigin::Anthropic);
+    }
+    let id = model
+        .rsplit('/')
+        .next()
+        .unwrap_or(model)
+        .to_ascii_lowercase();
+    let mut parts = id.split('.');
+    let first = parts.next().unwrap_or("");
+    let provider = match first {
+        "us" | "eu" | "apac" | "global" | "us-gov" | "jp" | "au" | "ca" => parts.next(),
+        _ => Some(first),
+    }?;
+    let names_provider = parts.next().is_some_and(|rest| !rest.is_empty())
+        && !provider.is_empty()
+        && provider
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+    names_provider.then_some(crate::ir::IrSignatureOrigin::BedrockOther)
+}
+
+/// Converse `requestMetadata` (string → string, filters the caller's invocation logs) → the typed
+/// [`crate::ir::IrRequest::metadata`] (IR-03). A non-string value is not a member Converse defines
+/// and is skipped. The raw object still rides `extra`, so a same-protocol hop re-emits it verbatim.
+fn read_bedrock_request_metadata(
+    body: &serde_json::Map<String, serde_json::Value>,
+) -> Option<Vec<(String, String)>> {
+    let m = body.get(FIELD_REQUEST_METADATA)?.as_object()?;
+    Some(
+        m.iter()
+            .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string())))
+            .collect(),
+    )
+}
+
+/// Converse's request-metadata member.
+const FIELD_REQUEST_METADATA: &str = "requestMetadata";
+/// Converse caps `requestMetadata` at 16 entries.
+const REQUEST_METADATA_MAX_ENTRIES: usize = 16;
+
+/// Whether `s` fits a Converse `requestMetadata` key/value: `min..=256` characters, each in
+/// `[a-zA-Z0-9\s:_@$#=/+,-.]` (the service model's pattern). OpenAI metadata allows 512-character
+/// values and any character, so a cross-protocol entry can fall outside it.
+fn bedrock_request_metadata_fits(s: &str, min: usize) -> bool {
+    let n = s.chars().count();
+    (min..=256).contains(&n)
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c.is_whitespace() || ":_@$#=/+,-.".contains(c))
+}
+
+/// The typed [`crate::ir::IrRequest::metadata`] → Converse `requestMetadata` (IR-03), same keys.
+/// An entry Converse would reject (the pattern / length above, or past the 16-entry cap) is dropped
+/// with a warn and the rest are kept — one bad entry must not cost the request a 400. `None` when
+/// nothing is left to write.
+fn write_bedrock_request_metadata(pairs: &[(String, String)]) -> Option<serde_json::Value> {
+    let mut out = serde_json::Map::new();
+    for (k, v) in pairs {
+        if !bedrock_request_metadata_fits(k, 1) || !bedrock_request_metadata_fits(v, 0) {
+            tracing::warn!(
+                key = %k,
+                "dropping a metadata entry on Bedrock egress: Converse requestMetadata keys and \
+                 values are at most 256 characters of [a-zA-Z0-9 whitespace :_@$#=/+,-.]"
+            );
+            continue;
+        }
+        if out.len() == REQUEST_METADATA_MAX_ENTRIES && !out.contains_key(k) {
+            tracing::warn!(
+                key = %k,
+                "dropping a metadata entry on Bedrock egress: Converse requestMetadata holds at \
+                 most 16 entries"
+            );
+            continue;
+        }
+        out.insert(k.clone(), serde_json::json!(v));
+    }
+    (!out.is_empty()).then_some(serde_json::Value::Object(out))
+}
+
+/// The refinement a Bedrock stopReason states beyond its coarse IR reason (IR-16, BED-10):
+/// `model_context_window_exceeded` is `MaxTokens` (the coarse reason `stop_reason_map` gives) PLUS
+/// [`crate::ir::IrStopDetail::ContextWindowExceeded`], so a dialect that names the refinement
+/// (Anthropic) receives it exactly. Every other stopReason states no detail.
+fn stop_detail_map(ward: &str) -> Option<crate::ir::IrStopDetail> {
+    (ward == STOP_MODEL_CONTEXT_WINDOW_EXCEEDED)
+        .then_some(crate::ir::IrStopDetail::ContextWindowExceeded)
+}
+
+/// Converse's `model_context_window_exceeded` stopReason (IR-16, BED-10).
+const STOP_MODEL_CONTEXT_WINDOW_EXCEEDED: &str = "model_context_window_exceeded";
+
+/// Canonical IR stop_reason (plus its [`crate::ir::IrStopDetail`]) → Bedrock stopReason. A
+/// context-window detail is written as Converse's own `model_context_window_exceeded` (IR-16,
+/// BED-10); every other detail has no Converse spelling, so the coarse reason is written.
+fn stop_reason_reverse_detailed(
+    canonical: crate::ir::IrStopReason,
+    detail: Option<&crate::ir::IrStopDetail>,
+) -> &'static str {
+    match detail {
+        Some(crate::ir::IrStopDetail::ContextWindowExceeded) => STOP_MODEL_CONTEXT_WINDOW_EXCEEDED,
+        _ => stop_reason_reverse(canonical),
     }
 }
 
@@ -2035,7 +2235,9 @@ pub fn bedrock_response_to_eventstream(
                 detail: crate::ir::IrUsageDetail::default(),
             },
             stop_sequence: None,
-            stop_detail: None,
+            // IR-16: the refinement rides the stop-bearing frame, so a buffered context-window stop
+            // synthesizes the same `messageStop` a streamed one does (buffered == stream).
+            stop_detail: ir.stop_detail.clone(),
         },
         &mut out,
     );
@@ -2281,3 +2483,9 @@ mod ir_mapping_tests;
 #[cfg(test)]
 #[path = "tests/ir_mapping_structured_tests.rs"]
 mod ir_mapping_structured_tests;
+
+/// IR mapping Q57 round 2 — the typed IR slots and the lane capabilities (BED-10, IR-03/10/11/12/18,
+/// IR-09, LaneCaps).
+#[cfg(test)]
+#[path = "tests/ir_slot_wiring_tests.rs"]
+mod ir_slot_wiring_tests;

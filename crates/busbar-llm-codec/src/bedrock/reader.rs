@@ -238,6 +238,11 @@ impl ProtocolReader for BedrockReader {
         // `content` array (there is no `document`/`video` in the Converse `system` array).
         let mut message_doc_video: Vec<serde_json::Value> = Vec::new();
 
+        // IR-18: the family that minted this conversation's reasoning signatures, from the model id
+        // the ingress placed in the body (`None` when the id does not reveal it).
+        let signature_origin_here =
+            bedrock_signature_origin(obj.get("model").and_then(|m| m.as_str()));
+
         let mut system_blocks: Vec<crate::ir::IrBlock> = Vec::new();
         if let Some(system_arr) = obj.get("system").and_then(|s| s.as_array()) {
             for (idx, sys_val) in system_arr.iter().enumerate() {
@@ -464,7 +469,17 @@ impl ProtocolReader for BedrockReader {
                             // `redacted` is a typed flag the reader sets only on a genuine native
                             // `redactedContent` member, so a client cannot forge a redacted block via a
                             // `reasoningText.signature` — no ingress scrub needed.
-                            if let Some(block) = read_bedrock_reasoning_block(reasoning) {
+                            if let Some(mut block) = read_bedrock_reasoning_block(reasoning) {
+                                // IR-18: who minted the signature is visible only through the
+                                // conversation's model id (the ingress puts it in the body).
+                                if let crate::ir::IrBlock::Thinking {
+                                    signature: Some(_),
+                                    signature_origin,
+                                    ..
+                                } = &mut block
+                                {
+                                    *signature_origin = signature_origin_here;
+                                }
                                 msg_content.push(block);
                             }
                         } else if let Some(cc) = content_val.get("citationsContent") {
@@ -802,8 +817,10 @@ impl ProtocolReader for BedrockReader {
             seed: None,
             n: None,
             response_format,
+            // IR-03: `requestMetadata` crosses as the typed metadata (the raw object stays in
+            // `extra` for the same-protocol re-emission).
+            metadata: read_bedrock_request_metadata(obj),
             extra,
-            metadata: None,
             service_tier: None,
             store: None,
             safety_identifier: None,
@@ -1431,6 +1448,12 @@ impl ProtocolReader for BedrockReader {
             .get("stopReason")
             .and_then(|s| s.as_str())
             .map(stop_reason_map);
+        // IR-16 (BED-10): the refinement beside the coarse reason (`model_context_window_exceeded`
+        // is `MaxTokens` + `ContextWindowExceeded`).
+        let stop_detail = obj
+            .get("stopReason")
+            .and_then(|s| s.as_str())
+            .and_then(stop_detail_map);
 
         // Treat an absent `usage` object leniently, mirroring the streaming path
         // (`read_response_events` defaults each token field to 0 when `metadata` carries no usage):
@@ -1485,7 +1508,7 @@ impl ProtocolReader for BedrockReader {
                 .map(String::from),
 
             request_echo: None,
-            stop_detail: None,
+            stop_detail,
         })
     }
 

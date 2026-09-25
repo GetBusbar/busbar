@@ -111,10 +111,15 @@ fn bed08_output_config_and_tool_strict_map_both_ways() {
         back["toolConfig"]["tools"][0]["toolSpec"]["strict"], true,
         "{back}"
     );
-    // Cross-protocol: the typed directive is projected from the IR alone.
+    // Cross-protocol: the typed directive is projected from the IR alone, on a lane that declares
+    // native structured outputs.
     let mut cross = ir.clone();
     cross.extra.clear();
-    let out = writer().write_request(&cross);
+    let native = LaneCaps {
+        native_structured_output: true,
+        ..Default::default()
+    };
+    let out = writer().write_request_for_lane(&cross, "anthropic.claude-opus-4-7", &native);
     assert_eq!(
         out["outputConfig"]["textFormat"]["type"], "json_schema",
         "{out}"
@@ -123,7 +128,21 @@ fn bed08_output_config_and_tool_strict_map_both_ways() {
         out["outputConfig"]["textFormat"]["structure"]["jsonSchema"]["name"], "extract",
         "{out}"
     );
-    assert!(writer().dropped_egress_controls(&cross).is_empty());
+    assert!(writer()
+        .dropped_egress_controls_for_lane(&cross, &native)
+        .is_empty());
+    // A lane that does not declare them drops the directive (the pre-structured-output form) and
+    // says so; per-tool strict still rides.
+    let out = writer().write_request(&cross);
+    assert!(out.get("outputConfig").is_none(), "{out}");
+    assert_eq!(
+        out["toolConfig"]["tools"][0]["toolSpec"]["strict"], true,
+        "{out}"
+    );
+    assert_eq!(
+        writer().dropped_egress_controls(&cross),
+        vec!["response_format"]
+    );
 }
 
 /// A fresh writer per use (the const constructor carries per-stream state).
