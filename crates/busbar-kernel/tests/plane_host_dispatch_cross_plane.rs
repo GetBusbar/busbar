@@ -2,17 +2,16 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! CROSS-PLANE `entitlement_check` SCOPE-KIND BIJECTION TEST, relocated here from
-//! `src/plane_host/tests/dispatch_tests.rs` (the "fix the 38" pass after the A6/HostCtx
-//! dev-dependency-cycle cleanup): `scope_kind_at(1)` is the FIRST installed plane's own declared
-//! scope kind (`crate::plane::registry::scope_kind_at`'s doc) — asserting it equals `"mcp_server"`
-//! is a claim about the REAL `busbar_mcp` plane's declared vocabulary, which `cargo xtask gate
-//! construction`'s `neutral-no-dialect` rule (ceiling 0) forbids `busbar-kernel` itself from faking
-//! under a synthetic `#[cfg(test)]` decl. `busbar_kernel::plane_host::dispatch::entitlement_check`
-//! stays `pub(crate)` (widening it to plain `pub` trips clippy's `not_unsafe_ptr_arg_deref` — see its
-//! doc), so this drives the REAL wired fn through the PUBLIC `PlaneHostVtable::entitlement_check`
-//! field `with_dispatch_scope` hands back — the same seam a real plane calls through. Every OTHER
-//! test in `dispatch_tests.rs` (nested_dispatch, workhandle open/resume, the pool-grant entitlement
-//! checks, gate_scan) names no real plane's scope-kind vocabulary and stays there.
+//! `src/plane_host/tests/dispatch_tests.rs`: which kind sits at which ABI scope-kind index is a claim
+//! about the REAL roster's declared vocabulary, so it runs over the planes this binary links (the
+//! test-linked table, `tests/linked/mod.rs`) and reads every kind back from the plane's own
+//! declaration — spelling none. `busbar_kernel::plane_host::dispatch::entitlement_check` stays
+//! `pub(crate)` (widening it trips clippy's `not_unsafe_ptr_arg_deref` — see its doc), so this drives
+//! the REAL wired fn through the PUBLIC `PlaneHostVtable::entitlement_check` field
+//! `with_dispatch_scope` hands back — the same seam a real plane calls through. Every OTHER test in
+//! `dispatch_tests.rs` names no real plane's scope-kind vocabulary and stays there.
+
+mod linked;
 
 use busbar_kernel::governance::{GovState, MemoryStore};
 use busbar_kernel::plane_host::with_dispatch_scope;
@@ -21,9 +20,7 @@ use busbar_plugin::hot::{CallerRef, TargetRef, POD_VERSION};
 use std::sync::Arc;
 
 fn register_planes() {
-    busbar_llm::testkit::install_test_seams();
-    busbar_mcp::testkit::install_test_seams();
-    busbar_a2a::testkit::install_test_seams();
+    linked::install();
 }
 
 fn caller_ref(id: &[u8], scope: u32) -> CallerRef {
@@ -77,39 +74,62 @@ fn app_with_key(key: &busbar_api::VirtualKey) -> Arc<busbar_kernel::state::App> 
 }
 
 /// The vice-versa of the cross-kind fail-closed proof (`entitlement_check_denies_a_target_outside_the_grant`,
-/// which stayed local — it only asserts a DENIAL, true regardless of what scope_kind 1 resolves to): a
-/// key scoped to an `mcp_server` grant does NOT satisfy a `pool` (scope_kind 0) target, AND the grant
-/// DOES cover the matching mcp_server target first — proving scope_kind 1 genuinely resolves to
-/// `"mcp_server"` over the real roster, not merely failing to resolve to anything. This pins the
-/// scope-kind index bijection — `mcp_server` is index 1, `pool` is index 0 — so the two kinds never
-/// alias each other.
+/// which stayed local — it only asserts a DENIAL, true regardless of what a scope-kind index resolves
+/// to), driven for EVERY scope kind a linked plane declares beyond the neutral base `pool`: a key
+/// scoped to that kind's grant DOES cover the matching target at the kind's ABI index — proving the
+/// index genuinely resolves to that kind over the real roster, not merely failing to resolve to
+/// anything — and does NOT satisfy a `pool` (index 0) target of the same value. This pins the
+/// scope-kind index bijection (`scope_kind_index` and `scope_kind_at` are inverses, and no plane
+/// kind aliases the base kind) without spelling any plane's vocabulary: each kind is read back from
+/// the plane's own declaration.
 #[test]
-fn entitlement_check_mcp_server_grant_does_not_cover_a_pool() {
+fn entitlement_check_a_plane_kind_grant_does_not_cover_a_pool() {
+    use busbar_kernel::plane::registry::{scope_kind_at, scope_kind_index};
     register_planes();
-    let key = scoped_key(
-        "k-1",
-        Some(vec![busbar_api::ScopeRef {
-            kind: "mcp_server".to_string(),
-            value: "fast".to_string(),
-        }]),
+    let pool_idx = scope_kind_index("pool").expect("the neutral base kind always has an index");
+    assert_eq!(pool_idx, 0, "the neutral base kind is index 0");
+    let kinds: Vec<&'static str> = linked::planes()
+        .iter()
+        .flat_map(|d| d.scope_kinds.iter().copied())
+        .filter(|k| *k != "pool")
+        .collect();
+    assert!(
+        !kinds.is_empty(),
+        "the test-linked roster declares at least one plane scope kind beyond `pool`"
     );
-    let app = app_with_key(&key);
-    with_dispatch_scope(&app, |host, vt| {
-        let entitlement_check = vt
-            .entitlement_check
-            .expect("the host vtable always wires entitlement_check");
-        let caller = caller_ref(b"k-1", 0);
-        // The grant DOES cover the matching mcp_server target (sanity: the grant is live).
-        let server = target_ref(b"fast", 1); // scope_kind 1 = "mcp_server"
-        assert!(
-            entitlement_check(host, &caller, &server),
-            "the key's mcp_server grant covers `fast` → entitled"
+    for kind in kinds {
+        let idx = scope_kind_index(kind).expect("a declared kind has an ABI index");
+        assert_ne!(idx, pool_idx, "`{kind}` must not alias the base kind");
+        assert_eq!(
+            scope_kind_at(idx),
+            Some(kind),
+            "index {idx} resolves back to `{kind}`"
         );
-        // …but it must NOT cover a `pool` target of the same value.
-        let pool = target_ref(b"fast", 0); // scope_kind 0 = "pool"
-        assert!(
-            !entitlement_check(host, &caller, &pool),
-            "an `mcp_server` grant must NOT cover a `pool` target"
+        let key = scoped_key(
+            "k-1",
+            Some(vec![busbar_api::ScopeRef {
+                kind: kind.to_string(),
+                value: "fast".to_string(),
+            }]),
         );
-    });
+        let app = app_with_key(&key);
+        with_dispatch_scope(&app, |host, vt| {
+            let entitlement_check = vt
+                .entitlement_check
+                .expect("the host vtable always wires entitlement_check");
+            let caller = caller_ref(b"k-1", 0);
+            // The grant DOES cover the matching target of its own kind (sanity: the grant is live).
+            let target = target_ref(b"fast", idx);
+            assert!(
+                entitlement_check(host, &caller, &target),
+                "the key's `{kind}` grant covers `fast` at index {idx} → entitled"
+            );
+            // …but it must NOT cover a `pool` target of the same value.
+            let pool = target_ref(b"fast", pool_idx);
+            assert!(
+                !entitlement_check(host, &caller, &pool),
+                "a `{kind}` grant must NOT cover a `pool` target"
+            );
+        });
+    }
 }
