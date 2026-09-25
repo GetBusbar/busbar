@@ -5,8 +5,8 @@
 //! in-tree ABI-crossing coverage for the `kind: secret` seam (the secret-seam analogue of
 //! `busbar-hook-test-plugin`). It also doubles as the reference implementation `docs/plugins.md`'s
 //! secret-plugin example is written against, so that example cannot silently drift from the real
-//! [`busbar_api::SecretModule`] trait shape (`resolve(&self, settings: &Map<String, Value>) ->
-//! SecretResult<Vec<u8>>`).
+//! [`busbar_contract::secret::SecretModule`] trait shape (`resolve(&self, settings: &Map<String,
+//! Value>) -> SecretResult<Vec<u8>>`).
 //!
 //! It does NO network and NO real secret-store work: it resolves against a fixed in-memory map baked
 //! in at `open` time from its config JSON, keyed by `settings.key`. Config JSON (the secret module's
@@ -18,7 +18,7 @@
 //! "db-password"}` to look up that entry. Fail-closed throughout: an unknown key, a missing/
 //! non-string `key` field, or malformed open-time config JSON is an `Err`, never an empty `Ok`.
 
-use busbar_api::{SecretError, SecretModule, SecretResult};
+use busbar_contract::secret::{SecretModule, SecretModuleError, SecretResult};
 use serde::Deserialize;
 
 /// The plugin's opaque open-time config: the whole map this instance resolves against.
@@ -41,13 +41,17 @@ impl SecretModule for ExampleSecret {
             .get("key")
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
-                SecretError::invalid("missing or non-string `key` in secret reference settings")
+                SecretModuleError::invalid(
+                    "missing or non-string `key` in secret reference settings",
+                )
             })?;
         self.map
             .get(key)
             .map(|v| v.clone().into_bytes())
             .ok_or_else(|| {
-                SecretError::not_found(format!("no entry named {key:?} in the example secret map"))
+                SecretModuleError::not_found(format!(
+                    "no entry named {key:?} in the example secret map"
+                ))
             })
     }
 }
