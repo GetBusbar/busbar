@@ -812,7 +812,9 @@ kernel_crate = "busbar-kernel"
 # budget-book read fix). Pinned at the measurement, no slack. It RATCHETS DOWN when item 142's
 # breaker fold lands (store/in_memory/breaker.rs, ~580 code lines), which takes the kernel back
 # under 51439; that commit lowers this figure to what it then measures.
-kernel_ceiling = 51742
+# ── LOWERED 51742 -> 51049 by `--write` on the committed fold (ddadb26bb): the in-memory store's
+# state machine left the kernel for busbar-kernel-breaker. Downward only.
+kernel_ceiling = 51049
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
@@ -2043,32 +2045,32 @@ scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
 # deleted crate; busbar_substrate's root reach was already fully retired). 17 (busbar_llm,
 # unchanged) + 5 + 3 + 12 = 37, the same root reach, now counted instead of a false zero. Pinned at
 # TODAY's measurement on the committed tree (HEAD b091b4e83). Downward only from here.
-ceiling = 20
+ceiling = 15
 
 [rules.legacy-reach.prefixes.busbar_llm]
 prefix = "busbar_llm::"
 # The plane's own unit modules are where the rebuilt steps live; they are not legacy engine reach.
 exclude = ["busbar_llm::unit"]
 because = "the llm engine's non-unit paths: arrival parsing, proto codecs, the stream translator"
-figure = 11
+figure = 10
 
 [rules.legacy-reach.prefixes.busbar_mcp]
 prefix = "busbar_mcp::"
 exclude = []
 because = "item 381 (Q11/Q32): the retiring mcp engine, the root still names by prefix"
-figure = 1
+figure = 0
 
 [rules.legacy-reach.prefixes.busbar_a2a]
 prefix = "busbar_a2a::"
 exclude = []
 because = "item 381 (Q11/Q32): the retiring a2a engine, the root still names by prefix"
-figure = 1
+figure = 0
 
 [rules.legacy-reach.prefixes.busbar_voice]
 prefix = "busbar_voice::"
 exclude = []
 because = "item 381 (Q11/Q32): the retiring voice engine, the root still names by prefix"
-figure = 7
+figure = 5
 
 # ── 31. no-test-doubles-in-production ────────────────────────────────────────────────────────────
 [rules.no-test-doubles-in-production]
