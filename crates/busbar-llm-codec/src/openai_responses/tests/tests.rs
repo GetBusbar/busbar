@@ -7336,9 +7336,12 @@ fn responses_output_text_annotations_read_into_ir_citations() {
     let c = &citations[0];
     assert_eq!(c.url.as_deref(), Some("https://example.com/r"));
     assert_eq!(c.title.as_deref(), Some("Responses Source"));
-    assert!(
-        c.start_index.is_none() && c.end_index.is_none(),
-        "offsets must stay None until the byte-vs-character unit is established: {c:?}"
+    // SHR-01 (IR mapping Q57): OpenAI documents both offsets as CHARACTER indices into the
+    // message — the IR's unit — so they carry unconverted.
+    assert_eq!(
+        (c.start_index, c.end_index),
+        (Some(7), Some(20)),
+        "the url_citation span must carry: {c:?}"
     );
 }
 
