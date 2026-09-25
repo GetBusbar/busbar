@@ -1263,7 +1263,7 @@ of the kinds that today have gate rules but no implementor of their `busbar-cont
   `unpriced`, `recovered`, `voided`, `late_accrual`, `unposted`, `encode_failure_reversal`,
   `attempt_abandoned`, `replayed`, `in_flight`, `overdraft`, `stale_slice`, `stale_policy`,
   `session_facts_exhausted`, `restricted_empty`, `post_meter_amendment`, `fan_out_partial`, `handshake`, `discard`.
-- **Admin**: cells derived from the tag's HANDLERS (66 operations; `openapi.json` under-specifies the wire — no `security`, no `Idempotency-Key`, `201` vs `200`, the `Error` enum — and is pinned only as the served blob, PB-75) under `single`,
+- **Admin**: cells derived from the tag's HANDLERS (66 operations; `openapi.json` under-specifies the wire — no `security`, no `Idempotency-Key`, `201` vs `200`, the `Error` enum — and is pinned as the ONE generated document, served filtered to the configured planes, PB-75) under `single`,
   byte-identical, including body replay across two nodes at t = 500 s (same node: byte-identical replay; a second node MINTS TWICE, as 1.5.5) and t = 700 s (TTL expired: a fresh mint, compared after the minted-secret normalization); the 15 dev-tree
   additions have their own cells; the operator-key ceremony cell ("1.5.5 config, no operator key: boots;
   `commit_upgrade` refused; `set_operator_key` then `commit_upgrade` succeeds"). **Boot**: one cell per
