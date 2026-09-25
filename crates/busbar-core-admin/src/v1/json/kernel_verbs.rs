@@ -364,6 +364,10 @@ pub(crate) struct AdjustReq {
     now: BTreeMap<String, String>,
     /// Why. Required and non-blank.
     reason: String,
+    /// The pool the corrected unit was dispatched through. Required, and it must name a pool this
+    /// node has configured: a pool-scoped group budget for that pool takes the correction as well
+    /// as the group-wide budgets do.
+    pool: String,
 }
 
 /// `POST /adjust`'s answer: the sealed amendment's position and digest and the counts the unit now
@@ -383,6 +387,8 @@ pub(crate) struct AdjustView {
     /// The instant, in milliseconds, whose rate card the counts price at (read from the book;
     /// a correction never moves it).
     card_epoch_ms: u64,
+    /// The pool the correction names.
+    pool: String,
     /// The corrected counts per class, as decimal TEXT.
     now: BTreeMap<String, String>,
 }
@@ -617,7 +623,9 @@ fn doc_for(
             description: "Takes counts, never a money figure: what a recorded unit costs stays a \
                           read-time view of its counts at its own card epoch. The principal, lane, \
                           card epoch and what the counts WERE are read from the book by the digest \
-                          `amends` names, never from the body. The correction is sealed on the node \
+                          `amends` names, never from the body. The body names the pool the unit \
+                          was dispatched through, so a pool-scoped group budget for that pool \
+                          takes the correction too. The correction is sealed on the node \
                           amendment journal."
                 .to_string(),
             success: Success::Json(
@@ -632,7 +640,8 @@ fn doc_for(
                     format!(
                         "`invalid_request`: malformed body, a blank `amends` or `reason`, an \
                          empty `now`, a count that is not an exact decimal, a count below zero, \
-                         a scope below `full`, or {BODY_UNREADABLE}"
+                         a missing or blank `pool` or one naming no configured pool (the message \
+                         says which), a scope below `full`, or {BODY_UNREADABLE}"
                     ),
                 ),
                 gated_403(),

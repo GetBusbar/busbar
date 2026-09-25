@@ -11,10 +11,15 @@
 //! counts, never from the body, so a correction cannot misstate what it corrects — and hands both
 //! to the kernel half.
 //!
+//! The body NAMES THE POOL the corrected unit was dispatched through (owner ruling Q64/Q67), so a
+//! pool-scoped group budget takes the correction too. It is required and must name a pool this node
+//! has configured; a missing or unknown pool is a `400` that says which, and seals nothing.
+//!
 //! Money stays a read-time view (#71): what a recorded unit costs is the one function
 //! (`cost::price_exact`) over the counts it stands at NOW
 //! ([`busbar_kernel::audit::amend::counts_now`]) at its own card epoch. Nothing here prices.
 
+use super::AdminAnswer;
 use crate::root::durability::{Durability, Posting, PostingKind, RecordEra};
 use busbar_contract::count::Count;
 use busbar_core_admin::GovernanceError;
@@ -75,21 +80,23 @@ pub fn recorded_in(durability: &Durability, amends: &str) -> Option<RecordedCoun
 /// seals it on the node amendment journal.
 ///
 /// The body is `{ "amends": "<journal digest>", "now": { "<class>": "<decimal count>", … },
-/// "reason": "…" }`. Counts are decimal TEXT (#81) and never a money figure (owner ruling Q9). The
+/// "reason": "…", "pool": "<pool name>" }`. Counts are decimal TEXT (#81) and never a money figure (owner ruling Q9). The
 /// principal, lane, card epoch and what the counts WERE come from the book (`recorded`), never the
 /// body. `scope` is the scope the caller was admitted under; the verbs unit admits `adjust` at
 /// `full` only, and the kernel half checks it again.
 ///
 /// Refusals are client-safe: a malformed body, a count that is not an exact decimal, a count below
 /// zero, a blank reason or a scope below `full` is `Validation` (400); an entry the book does not
-/// hold is `NotFound`. The answer names the sealed amendment's position and digest and the counts
-/// it now stands at.
+/// hold is `NotFound`. A missing `pool`, or one `pool_known` does not know, answers `400
+/// invalid_request` whose message names the fault (Q64/Q67). The answer names the sealed
+/// amendment's position and digest, the pool, and the counts it now stands at.
 pub(crate) fn adjust_effect(
     body: &[u8],
     scope: busbar_contract::authz::Scope,
     authorised_by: &str,
+    pool_known: &dyn Fn(&str) -> bool,
     recorded: impl FnOnce(&str) -> Option<RecordedCounts>,
-) -> Result<Vec<u8>, GovernanceError> {
+) -> Result<AdminAnswer, GovernanceError> {
     let doc: serde_json::Value =
         serde_json::from_slice(body).map_err(|_| GovernanceError::Validation)?;
     let obj = doc.as_object().ok_or(GovernanceError::Validation)?;
@@ -101,6 +108,16 @@ pub(crate) fn adjust_effect(
     };
     let amends = text("amends")?;
     let reason = text("reason")?;
+    let Ok(pool) = text("pool") else {
+        return Ok(refused(
+            "`pool` is required: name the pool the corrected unit was dispatched through",
+        ));
+    };
+    if !pool_known(pool) {
+        return Ok(refused(&format!(
+            "`pool` names `{pool}`, which is not a configured pool"
+        )));
+    }
     let mut now = ClassCounts::new();
     for (class, count) in obj
         .get("now")
@@ -124,6 +141,7 @@ pub(crate) fn adjust_effect(
             now,
             authorised_by,
             reason,
+            pool: Some(pool),
         },
     )
     .map_err(|e| match e {
@@ -143,7 +161,20 @@ pub(crate) fn adjust_effect(
         "amends": adj.amends_hash,
         "lane": adj.lane,
         "card_epoch_ms": adj.card_epoch_ms,
+        "pool": adj.pool,
         "now": counts,
     }))
+    .map(super::json_answer)
     .map_err(|_| GovernanceError::Store)
+}
+
+/// The `400 invalid_request` a correction naming no configured pool gets, in the admin envelope,
+/// with a message that says what to fix.
+fn refused(message: &str) -> AdminAnswer {
+    AdminAnswer {
+        status: 400,
+        headers: vec![("content-type".to_string(), "application/json".to_string())],
+        body: busbar_core_admin::admin_codec::refusal::envelope_of("invalid_request", message)
+            .into_bytes(),
+    }
 }

@@ -89,6 +89,10 @@
             "description": "The corrected count per billable class, each an exact non-negative decimal integer as TEXT.\nAt least one class.",
             "type": "object"
           },
+          "pool": {
+            "description": "The pool the corrected unit was dispatched through. Required, and it must name a pool this\nnode has configured: a pool-scoped group budget for that pool takes the correction as well\nas the group-wide budgets do.",
+            "type": "string"
+          },
           "reason": {
             "description": "Why. Required and non-blank.",
             "type": "string"
@@ -97,7 +101,8 @@
         "required": [
           "amends",
           "now",
-          "reason"
+          "reason",
+          "pool"
         ],
         "type": "object"
       },
@@ -129,6 +134,10 @@
             "description": "The corrected counts per class, as decimal TEXT.",
             "type": "object"
           },
+          "pool": {
+            "description": "The pool the correction names.",
+            "type": "string"
+          },
           "seq": {
             "description": "The amendment's position on the node amendment journal.",
             "format": "uint64",
@@ -142,6 +151,7 @@
           "amends",
           "lane",
           "card_epoch_ms",
+          "pool",
           "now"
         ],
         "type": "object"
@@ -3862,7 +3872,7 @@
   "paths": {
     "/api/v1/admin/adjust": {
       "post": {
-        "description": "Takes counts, never a money figure: what a recorded unit costs stays a read-time view of its counts at its own card epoch. The principal, lane, card epoch and what the counts WERE are read from the book by the digest `amends` names, never from the body. The correction is sealed on the node amendment journal.",
+        "description": "Takes counts, never a money figure: what a recorded unit costs stays a read-time view of its counts at its own card epoch. The principal, lane, card epoch and what the counts WERE are read from the book by the digest `amends` names, never from the body. The body names the pool the unit was dispatched through, so a pool-scoped group budget for that pool takes the correction too. The correction is sealed on the node amendment journal.",
         "operationId": "PostAdjust",
         "requestBody": {
           "content": {
@@ -3893,7 +3903,7 @@
                 }
               }
             },
-            "description": "`invalid_request`: malformed body, a blank `amends` or `reason`, an empty `now`, a count that is not an exact decimal, a count below zero, a scope below `full`, or a request body that could not be read to the operator's size cap"
+            "description": "`invalid_request`: malformed body, a blank `amends` or `reason`, an empty `now`, a count that is not an exact decimal, a count below zero, a missing or blank `pool` or one naming no configured pool (the message says which), a scope below `full`, or a request body that could not be read to the operator's size cap"
           },
           "401": {
             "content": {

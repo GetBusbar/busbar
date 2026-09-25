@@ -1352,7 +1352,126 @@ fn an_adjust_moves_the_key_group_and_metrics_reads_of_the_budget_book() {
         now: counts(800_000),
         authorised_by: "root",
         reason: "duplicate charge on a retried request",
+        pool: None,
     };
     correct_counts(Scope::Full, &counts(1_000_000), correction).expect("root correction seals");
     assert_eq!(read(&g), (200, 800_000, 200, 800_000), "as corrected");
+}
+
+/// Q64/Q67 fixture: group `group` with a group-wide day budget and a day budget scoped to each of
+/// `pool-a` and `pool-b`; key `id` served 1,000,000 input units through EACH pool at 2.5 micro-units
+/// (250 cents a pool, 500 group-wide). `adjust(pool)` corrects the pool-a unit to 800,000.
+fn q64_two_pools(
+    id: &'static str,
+    group: &'static str,
+) -> (GovState, CostModel, VirtualKey, u64, impl Fn(Option<&str>)) {
+    use crate::audit::amend::{correct_counts, ClassCounts, CountCorrection};
+    use busbar_api::UNIT_INPUT;
+    use busbar_kernel_ledger::cost::whole;
+    let g = gov();
+    let limits = vec![
+        limit(LimitMetric::Budget, 100_000, Some(LimitWindow::Day)),
+        pooled(LimitMetric::Budget, 100_000, LimitWindow::Day, "pool-a"),
+        pooled(LimitMetric::Budget, 100_000, LimitWindow::Day, "pool-b"),
+    ];
+    let cm = model_with_card(
+        &[(group, group_cfg(None, true, limits))],
+        0,
+        &[("m", 2.5, 0.0)],
+    );
+    let k = key(id, Some(group));
+    g.store.put_key(&k).expect("key persists");
+    let now = crate::store::now();
+    g.record_usage(&cm, &k, "pool-a", "m", &toks(1_000_000, 0), now);
+    g.record_usage(&cm, &k, "pool-b", "m", &toks(1_000_000, 0), now);
+    let adjust = move |pool: Option<&str>| {
+        let counts = |n: u64| ClassCounts::from([(UNIT_INPUT.to_string(), whole(n))]);
+        let correction = CountCorrection {
+            amends: id,
+            principal: Some(id),
+            lane: "m",
+            card_epoch_ms: now * 1_000,
+            now: counts(800_000),
+            authorised_by: "root",
+            reason: "duplicate charge on a retried request",
+            pool,
+        };
+        let recorded = counts(1_000_000);
+        correct_counts(busbar_contract::authz::Scope::Full, &recorded, correction)
+            .expect("root correction seals");
+    };
+    (g, cm, k, now, adjust)
+}
+
+/// Q64/Q67 read: the key's usage (what `GET /admin/usage` agrees with, Q51) and, per bucket
+/// (group-wide, pool-a, pool-b), the `/groups` usage spend and the `/metrics` bucket token gauge.
+fn q64_read(
+    g: &GovState,
+    cm: &CostModel,
+    k: &VirtualKey,
+    group: &str,
+    now: u64,
+) -> [(i64, u64); 4] {
+    let key = g.usage_for(cm, &k.id, now).unwrap().unwrap();
+    let bucket = |suffix: &str| {
+        let id = format!("group:{group}@day{suffix}");
+        let spend = (g.derived_bucket_usage(cm, &id, "day", true, now))
+            .unwrap()
+            .spend_cents;
+        let gauge = g.bucket_model_tokens(cm, &id, "day", now);
+        (spend, gauge[0].1[busbar_api::UNIT_INPUT])
+    };
+    [
+        (key.spend_cents, key.tokens),
+        bucket(""),
+        bucket("#pool:pool-a"),
+        bucket("#pool:pool-b"),
+    ]
+}
+
+/// Q64/Q67 (OWNER RULING): an adjust NAMING A POOL moves that pool's scoped bucket as well as the
+/// group-wide one, so its `/groups` usage and `/metrics` gauges agree with `GET /admin/usage` after
+/// the adjust; another pool's scoped bucket is untouched. 1,000,000 → 800,000 input units at 2.5
+/// micro-units on the pool-a unit: key 500 → 450 cents (2,000,000 → 1,800,000 units), group-wide
+/// 500 → 450, pool-a 250 → 200 cents and 1,000,000 → 800,000 units, pool-b stays 250 / 1,000,000.
+/// Before the fix the pool-a bucket still read 250 / 1,000,000 after the adjust.
+#[test]
+fn a_pooled_adjust_moves_its_own_pool_bucket_and_no_other() {
+    let (g, cm, k, now, adjust) = q64_two_pools("vk_q64_pooled", "q64p");
+    let read = || q64_read(&g, &cm, &k, "q64p", now);
+    let recorded = [
+        (500, 2_000_000),
+        (500, 2_000_000),
+        (250, 1_000_000),
+        (250, 1_000_000),
+    ];
+    assert_eq!(read(), recorded, "as recorded");
+    adjust(Some("pool-a"));
+    assert_eq!(
+        read(),
+        [
+            (450, 1_800_000),
+            (450, 1_800_000),
+            (200, 800_000),
+            (250, 1_000_000),
+        ],
+        "as corrected: pool-a follows the key, pool-b is untouched"
+    );
+}
+
+/// Q64/Q67: an adjust SEALED BEFORE the pool was recorded names none, and it reads exactly as it
+/// did: the key and the group-wide bucket take it, and neither pool-scoped bucket does.
+#[test]
+fn an_unscoped_sealed_adjust_reads_as_it_always_did() {
+    let (g, cm, k, now, adjust) = q64_two_pools("vk_q64_unscoped", "q64u");
+    adjust(None);
+    assert_eq!(
+        q64_read(&g, &cm, &k, "q64u", now),
+        [
+            (450, 1_800_000),
+            (450, 1_800_000),
+            (250, 1_000_000),
+            (250, 1_000_000),
+        ],
+    );
 }

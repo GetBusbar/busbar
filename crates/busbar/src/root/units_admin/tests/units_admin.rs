@@ -4999,6 +4999,7 @@ fn an_adjusting_binding(book: &crate::root::durability::NodeBook) -> AdminBindin
             legacy,
         )))
         .with_posture_view(Arc::new(CeremonyRun))
+        .with_pools(Arc::new(|pool| pool == "pool-a"))
 }
 
 /// What the recorded unit costs at its card epoch over the counts the node journal stands it at
@@ -5067,6 +5068,7 @@ fn an_admin_adjust_corrects_a_recorded_units_counts_and_its_money_follows() {
             "amends": digest,
             "now": { "input": "800" },
             "reason": "a retried request was metered twice",
+            "pool": "pool-a",
         }),
     )
     .expect("a root correction with a reason and a non-negative count is admitted");
@@ -5075,6 +5077,7 @@ fn an_admin_adjust_corrects_a_recorded_units_counts_and_its_money_follows() {
     assert_eq!(body["amends"], serde_json::json!(digest));
     assert_eq!(body["now"]["input"], serde_json::json!("800"));
     assert_eq!(body["card_epoch_ms"], serde_json::json!(ADJUST_ARRIVED_MS));
+    assert_eq!(body["pool"], serde_json::json!("pool-a"));
     assert!(
         body.get("amount_nanos").is_none(),
         "the answer carries counts, never money (Q9)"
@@ -5096,6 +5099,11 @@ fn an_admin_adjust_corrects_a_recorded_units_counts_and_its_money_follows() {
         "`was` is what the book recorded"
     );
     assert_eq!(sealed[0].authorised_by, "admin");
+    assert_eq!(
+        sealed[0].pool.as_deref(),
+        Some("pool-a"),
+        "the pool is sealed (Q64/Q67)"
+    );
     assert_eq!(
         priced_now_at_two_and_a_half_micro(lane, &digest, &recorded),
         2_000_000,
@@ -5119,7 +5127,8 @@ fn a_negative_reasonless_or_non_root_adjust_is_refused_and_seals_nothing() {
     let (book, digest) = a_book_with_one_recorded_unit("vk_adjust_refusals", "adjust-404-refusals");
     let binding = an_adjusting_binding(&book);
     let adjust = |granted, now: &str, reason: serde_json::Value| {
-        let mut body = serde_json::json!({ "amends": digest, "now": { "input": now } });
+        let mut body =
+            serde_json::json!({ "amends": digest, "now": { "input": now }, "pool": "pool-a" });
         if !reason.is_null() {
             body["reason"] = reason;
         }
@@ -5151,7 +5160,9 @@ fn a_negative_reasonless_or_non_root_adjust_is_refused_and_seals_nothing() {
         adjust_through_route(
             &binding,
             VerbScope::Full,
-            serde_json::json!({ "amends": "00".repeat(32), "now": { "input": "1" }, "reason": "x" }),
+            serde_json::json!({
+                "amends": "00".repeat(32), "now": { "input": "1" }, "reason": "x", "pool": "pool-a"
+            }),
         )
         .map(|a| a.status),
         Err(ReasonCode::NoDestination),
@@ -5160,9 +5171,10 @@ fn a_negative_reasonless_or_non_root_adjust_is_refused_and_seals_nothing() {
     // The kernel half's own scope check, reached directly: below `full` corrects nothing.
     assert!(matches!(
         adjust::adjust_effect(
-            br#"{"amends":"x","now":{"input":"1"},"reason":"y"}"#,
+            br#"{"amends":"x","now":{"input":"1"},"reason":"y","pool":"pool-a"}"#,
             busbar_contract::authz::Scope::ReadOnly,
             "admin",
+            &|_| true,
             |_| binding.ledger.recorded_counts(&digest),
         ),
         Err(busbar_core_admin::GovernanceError::Validation)
@@ -5177,6 +5189,66 @@ fn a_negative_reasonless_or_non_root_adjust_is_refused_and_seals_nothing() {
             )),
         "no refused correction was sealed"
     );
+}
+
+/// Q64/Q67 (OWNER RULING): AN `adjust` MUST NAME A CONFIGURED POOL. A body with no `pool`, a blank
+/// one, or one naming a pool this node has not configured is refused `400 invalid_request` with a
+/// message that says which, end to end through the admin route, and seals nothing; the same body
+/// naming a configured pool is admitted.
+#[cfg(feature = "root-admin")]
+#[test]
+fn an_adjust_naming_no_pool_or_an_unknown_pool_is_refused_and_seals_nothing() {
+    let (book, digest) = a_book_with_one_recorded_unit("vk_adjust_pool", "adjust-q64-pool");
+    let binding = an_adjusting_binding(&book);
+    let adjust = |pool: Option<&str>| {
+        let mut body = serde_json::json!({
+            "amends": digest, "now": { "input": "800" }, "reason": "metered twice"
+        });
+        if let Some(pool) = pool {
+            body["pool"] = serde_json::json!(pool);
+        }
+        let answer = adjust_through_route(&binding, VerbScope::Full, body).expect("an answer");
+        let body: serde_json::Value = serde_json::from_slice(&answer.body).expect("JSON");
+        (
+            answer.status,
+            body["error"]["code"].clone(),
+            body["error"]["message"].clone(),
+        )
+    };
+    let sealed = || {
+        busbar_kernel::audit::amend::node_corrections()
+            .iter()
+            .filter(|a| {
+                matches!(&a.body, busbar_kernel::audit::amend::AmendBody::Adjust(adj)
+                    if adj.amends_hash == digest)
+            })
+            .count()
+    };
+    let required = serde_json::json!(
+        "`pool` is required: name the pool the corrected unit was dispatched through"
+    );
+    for missing in [None, Some(""), Some("  ")] {
+        assert_eq!(
+            adjust(missing),
+            (400, serde_json::json!("invalid_request"), required.clone()),
+            "{missing:?}"
+        );
+    }
+    assert_eq!(
+        adjust(Some("pool-z")),
+        (
+            400,
+            serde_json::json!("invalid_request"),
+            serde_json::json!("`pool` names `pool-z`, which is not a configured pool")
+        ),
+    );
+    assert_eq!(sealed(), 0, "no refused correction was sealed");
+    assert_eq!(
+        adjust(Some("pool-a")).0,
+        200,
+        "a configured pool is admitted"
+    );
+    assert_eq!(sealed(), 1);
 }
 
 /// **THE EXIT TEST FOR ITEM 271's WRITER SIDE, AT THE ROOT.** An admin idempotency cache bound to

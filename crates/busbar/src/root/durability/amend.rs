@@ -69,6 +69,11 @@ fn body(amendment: &Amendment) -> Vec<u8> {
                 }
             }
             body.text(&a.authorised_by).text(&a.reason).num(a.wall);
+            // Q64/Q67: the pool, LAST and only when named — an unscoped adjustment's record is
+            // byte-for-byte the one written before the field existed.
+            if let Some(pool) = &a.pool {
+                body.text(pool);
+            }
         }
     }
     body.finish()
@@ -128,6 +133,8 @@ fn from_record(record: &JournalRecord) -> Option<Amendment> {
                 authorised_by: body.text()?.to_string(),
                 reason: body.text()?.to_string(),
                 wall: body.num()?,
+                // Absent on a record written before Q64/Q67: that adjustment reads UNSCOPED.
+                pool: body.text().map(str::to_string),
             })
         }
     };

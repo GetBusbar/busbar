@@ -58,6 +58,7 @@ fn correction<'a>(amends: &'a str, now: ClassCounts) -> CountCorrection<'a> {
         now,
         authorised_by: "root",
         reason: "duplicate charge on a retried request",
+        pool: None,
     }
 }
 

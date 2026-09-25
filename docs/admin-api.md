@@ -139,7 +139,12 @@ ordinary numbers.
 
 `POST /api/v1/admin/adjust` corrects a recorded unit's **counts** — per billable class, as decimal
 strings — never a money figure; what the unit costs stays a read-time view of its counts at its own
-rate-card epoch. `POST /api/v1/admin/ledger/amend-rate-history` appends a correction signed by the
+rate-card epoch. The body names the **`pool`** the unit was dispatched through, and it is
+required: a pool-scoped group budget for that pool takes the correction as well as the group-wide
+budgets, so `/groups/{name}/usage` and the `/metrics` bucket gauges agree with `/admin/usage`
+afterwards. A missing pool, or one this node has not configured, is refused `400 invalid_request`
+with a message naming the fault. A correction sealed before the pool was recorded reaches the
+group-wide budgets only, as it always did. `POST /api/v1/admin/ledger/amend-rate-history` appends a correction signed by the
 fleet's operator key to the dated rate-card history. Each corrected rate's `micro_per_unit` is a
 decimal in micro-units per unit, and it must be exact to one nano-unit (a multiple of `0.001`): the
 card holds integers, and a finer figure is refused `400 invalid_request` rather than rounded into a

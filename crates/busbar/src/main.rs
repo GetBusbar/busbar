@@ -1465,6 +1465,13 @@ async fn run(data_workers: usize) {
             // structural change to the units.
             units.admin.posture =
                 std::sync::Arc::new(root::units_admin::SealedPosture::new(operator_key));
+            // Q64/Q67: an `adjust` names the pool its unit was dispatched through, checked against
+            // the pools this node has CONFIGURED — read off the live snapshot on every call, so a
+            // config apply that adds or removes a pool is what the check sees.
+            let live = std::sync::Arc::clone(&app_handle);
+            units.admin.pools = std::sync::Arc::new(move |pool: &str| {
+                busbar_kernel::governance::group_provision::pool_known(&live.load(), pool)
+            });
             // THE DEPLOYMENT'S OWN DOOR, in front of the authenticate step. Without these two lines
             // the assembly's open posture shipped: the step admitted every caller anonymously and
             // the only thing deciding was the surface mounted underneath — so a credential this node

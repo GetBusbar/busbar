@@ -24,6 +24,8 @@ const DIR: &str = "BUSBAR_TEST_AMEND_RESTART_DIR";
 const ENTRY: &str = "the-entry-a-root-correction-amends";
 const LANE_M: &str = "m";
 const HOOK: &str = "compressor";
+/// A second recorded unit, corrected with a POOL named (Q64/Q67).
+const POOLED_ENTRY: &str = "the-entry-a-pooled-correction-amends";
 
 /// 2,500 nano-units per `input` unit on [`LANE_M`].
 fn card() -> RateCard {
@@ -90,9 +92,25 @@ fn restart_phase() {
                     now: counts(800),
                     authorised_by: "root",
                     reason: "duplicate charge on a retried request",
+                    pool: None,
                 },
             )
             .expect("a root correction to a non-negative count lands");
+            correct_counts(
+                busbar_contract::authz::Scope::Full,
+                &recorded,
+                CountCorrection {
+                    amends: POOLED_ENTRY,
+                    principal: Some("pseudonym-1"),
+                    lane: LANE_M,
+                    card_epoch_ms: 1_700_000_000_000,
+                    now: counts(800),
+                    authorised_by: "root",
+                    reason: "duplicate charge on a retried request",
+                    pool: Some("pool-a"),
+                },
+            )
+            .expect("a pooled root correction lands");
             let app = busbar_kernel::test_support::TestApp::new().build();
             busbar_kernel::plane_host::engine_host(&app).hook_read(
                 HOOK,
@@ -123,6 +141,21 @@ fn restart_phase() {
                 })
                 .collect();
             assert_eq!(accesses.len(), 1, "the content access survived the restart");
+            // Q64/Q67: the pool rides the journal record; the unscoped one reads back unscoped.
+            let pools: Vec<_> = (busbar_kernel::audit::amend::node_corrections().into_iter())
+                .filter_map(|a| match a.body {
+                    AmendBody::Adjust(x) => Some((x.amends_hash, x.pool)),
+                    AmendBody::Access(_) => None,
+                })
+                .collect();
+            assert_eq!(
+                pools,
+                vec![
+                    (ENTRY.to_string(), None),
+                    (POOLED_ENTRY.to_string(), Some("pool-a".to_string()))
+                ],
+                "the pool survived the restart, and the unscoped correction stayed unscoped"
+            );
             assert_eq!(accesses[0].fields, vec!["content".to_string()]);
         }
         other => panic!("unknown phase {other}"),

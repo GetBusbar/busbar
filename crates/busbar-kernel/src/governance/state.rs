@@ -1,7 +1,7 @@
 use super::*;
 use busbar_api::{UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
 use busbar_kernel_ledger::cost::{plane_fee_lane, split_plane_lane, Money, PER_REQUEST};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 // The wall clock, by name: the admission path reads it and never reaches a store handle for it.
 use crate::store::now_ms as wall_ms;
 
@@ -1396,9 +1396,10 @@ impl GovState {
     /// **THE BUDGET BOOK'S COUNTS AS CORRECTED** (Q51, item 404, OWNER RULING Q9). An `adjust`
     /// corrects a recorded unit's COUNTS on the node amendment journal; every read of this book
     /// (key and group usage, the `/metrics` money gauges) prices `segments` only after this folds in
-    /// Σ (now − was) of each correction that lands on the bucket: its principal's own bucket, or an
-    /// UNSCOPED bucket of that key's group chain (a correction names no pool), whose window holds the
-    /// unit's card epoch. The delta lands on the unit's lane in the latest era not after the epoch.
+    /// Σ (now − was) of each correction that lands on the bucket: its principal's own bucket, or a
+    /// bucket of that key's group chain the correction's pool participates in (Q64/Q67: an unscoped
+    /// bucket always, a pool-scoped one for its own pool; a sealed correction naming no pool reaches
+    /// the unscoped buckets only), whose window holds the unit's card epoch. The delta lands on the unit's lane in the latest era not after the epoch.
     /// A correction leaving a count fractional or below zero REFUSES (`Overflow`), never clamps.
     fn corrected(
         &self,
@@ -1419,7 +1420,7 @@ impl GovState {
                     || self.store.get_key(p)?.is_some_and(|k| {
                         (cost.chain_for(&k).ok()).is_some_and(|c| {
                             c.iter()
-                                .any(|b| b.bucket_id == bucket_id && b.scope.is_none())
+                                .any(|b| b.bucket_id == bucket_id && adj.reaches(b.scope))
                         })
                     }));
             if !lands {
@@ -1439,9 +1440,7 @@ impl GovState {
                 });
                 segments.len() - 1
             });
-            let classes: std::collections::BTreeSet<&String> =
-                adj.was.keys().chain(adj.now.keys()).collect();
-            for class in classes {
+            for class in BTreeSet::from_iter(adj.was.keys().chain(adj.now.keys())) {
                 let (whole, frac) = (adj.delta(class) / 1_000_000, adj.delta(class) % 1_000_000);
                 let slot = segments[i].cur.entry(class.clone()).or_insert(0);
                 match (i128::from(*slot).checked_add(whole)).and_then(|n| u64::try_from(n).ok()) {

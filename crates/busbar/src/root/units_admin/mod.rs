@@ -902,6 +902,16 @@ fn render_audit_view(
     }
 }
 
+/// Whether a pool name is one this node has configured — the `adjust` verb's pool check (owner
+/// ruling Q64/Q67). A predicate rather than a list so a root can answer it from the LIVE
+/// configuration, which a config apply may change.
+pub type PoolKnown = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
+/// The pool check of a node no root bound a configuration to: it knows no pool.
+fn no_pools() -> PoolKnown {
+    Arc::new(|_| false)
+}
+
 /// The verbs unit's governance seam, bound to whatever executes an admin operation.
 ///
 /// Every one of the trait's methods is a delegation. `execute_legacy` is the one that carries the
@@ -940,6 +950,9 @@ pub struct CoreGovernance {
     /// refuses anything below `full` whatever the verbs unit decided. `ReadOnly` until a root says
     /// otherwise, so an unbound scope corrects nothing.
     granted: VerbScope,
+    /// Which pool names `adjust` accepts (Q64/Q67): the node's configured pools. Knows none until
+    /// a root binds them, so an unbound node refuses every correction's pool.
+    pools: PoolKnown,
 }
 
 impl CoreGovernance {
@@ -964,7 +977,15 @@ impl CoreGovernance {
                 dual_control: None,
             },
             granted: VerbScope::ReadOnly,
+            pools: no_pools(),
         }
+    }
+
+    /// Bind the pool names `adjust` accepts (Q64/Q67).
+    #[must_use]
+    pub fn pooled(mut self, pools: PoolKnown) -> Self {
+        self.pools = pools;
+        self
     }
 
     /// Bind the scope the caller was admitted under.
@@ -1075,10 +1096,11 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 VerbScope::Full => busbar_contract::authz::Scope::Full,
                 VerbScope::ReadOnly => busbar_contract::authz::Scope::ReadOnly,
             };
-            return adjust::adjust_effect(request, scope, &self.attribution.principal, |amends| {
+            let principal = &self.attribution.principal;
+            return adjust::adjust_effect(request, scope, principal, &*self.pools, |amends| {
                 self.ledger.recorded_counts(amends)
             })
-            .map(|body| json_answer(body).pack());
+            .map(|answer| answer.pack());
         }
         Ok(self.run())
     }
@@ -2350,6 +2372,10 @@ pub struct AdminBinding {
     /// `None` until a root binds one — a node with no data dir behaves exactly as it did before
     /// this seam existed.
     pub claims: Option<Arc<RootClaimJournal>>,
+    /// Which pool names an `adjust` may name (Q64/Q67): the node's CONFIGURED pools, read live.
+    /// Knows none until a root binds them, so a node composed without a configuration refuses every
+    /// correction's pool rather than accepting one it cannot check.
+    pub pools: PoolKnown,
     /// The requests currently being walked.
     pub units: AdminUnits,
 }
@@ -2481,8 +2507,16 @@ impl AdminBinding {
             posture: Arc::new(UnsealedPosture),
             amendments: None,
             claims: None,
+            pools: no_pools(),
             units: AdminUnits::new(),
         }
+    }
+
+    /// Bind the pool names an `adjust` may name to the node's configured pools (Q64/Q67).
+    #[must_use]
+    pub fn with_pools(mut self, pools: PoolKnown) -> Self {
+        self.pools = pools;
+        self
     }
 
     /// Bind the ledger views to the figures a node actually holds.
@@ -2846,7 +2880,8 @@ pub(crate) fn route(
                 dual_control: posture.map(|p| p.dual_control),
             },
         )
-        .granted(granted),
+        .granted(granted)
+        .pooled(Arc::clone(&binding.pools)),
         StoreRef(store),
         ArrivalNonce(request.at),
         PackedReplay,

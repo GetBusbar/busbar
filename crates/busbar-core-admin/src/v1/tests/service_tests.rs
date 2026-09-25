@@ -2897,6 +2897,7 @@ mod dated_rate_card_history {
                     now: ClassCounts::from([(busbar_api::UNIT_INPUT.to_string(), count(800))]),
                     authorised_by: "admin",
                     reason: "a retried request was metered twice",
+                    pool: None,
                 },
             )
             .expect("a root correction with a reason is sealed")
