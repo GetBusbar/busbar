@@ -47,18 +47,11 @@
 //! `accept_serves_the_slot_the_listener_was_provisioned_with`; this module's own tests pin it again
 //! through this module's provisioning, because this is the allocation that puts a listener in slot 1.
 
-use busbar_contract::{ConfigView, Listener, Transport, TransportConfigView, TransportError};
-#[cfg(feature = "plane-voice")]
-use busbar_transport_ws::MESSAGE_MAX_BYTES_KEY;
-
-use std::sync::Arc;
-
 use busbar_api::{SecretRef, SecretResolve};
 use busbar_contract::caps::{DurableWrite, Grant, KeyHandle, StepName, TransportKeyHandle};
 use busbar_kernel_wal::{BodyWriter, Entry, RecordClass};
 use busbar_unit_transport_key::{
-    provision_client, provision_server, AccessJournal, SecretSource, Slot, TlsConfigSink,
-    TlsLocations,
+    provision_server, AccessJournal, SecretSource, Slot, TlsConfigSink, TlsLocations,
 };
 
 /// Which listener a slot belongs to.
@@ -274,276 +267,14 @@ impl AccessJournal for BookAccessJournal<'_> {
     }
 }
 
-/// One listener's configuration, as the transport reads it.
-///
-/// A transport is handed a view rather than the deployment's configuration object, because the one
-/// thing it needs to know is where to bind and the one thing it must not be able to do is read
-/// anything else. Every other key it asks for answers `None`, which is the honest answer: this
-/// listener declares an address and nothing more.
-///
-/// The one exception is the message ceiling, named by [`MESSAGE_MAX_BYTES_KEY`]. That key is the
-/// transport crate's own constant rather than a second spelling of the same string here, because
-/// the two sides of a key are exactly where a literal drifts: the crate that asks and the root that
-/// answers.
-#[derive(Debug)]
-pub struct ListenerView {
-    bind: String,
-    /// The deployment's request-body cap, as resolved configuration carries it.
-    request_body_max_bytes: usize,
-}
-
-impl ListenerView {
-    /// A view over one bind address and the message ceiling the deployment resolved.
-    #[must_use]
-    pub fn new(bind: impl Into<String>, request_body_max_bytes: usize) -> Self {
-        ListenerView {
-            bind: bind.into(),
-            request_body_max_bytes,
-        }
-    }
-}
-
-impl ConfigView for ListenerView {
-    fn get_str(&self, _key: &str) -> Option<&str> {
-        None
-    }
-
-    fn get_int(&self, key: &str) -> Option<i64> {
-        // The one key answered, and it is answered because a transport that assembles a message
-        // before anything above it sees a byte has no other place to learn the ceiling. Every other
-        // key is still `None`: this is a limit the node states, not an opening onto configuration.
-        #[cfg(feature = "plane-voice")]
-        {
-            (key == MESSAGE_MAX_BYTES_KEY)
-                .then(|| i64::try_from(self.request_body_max_bytes).unwrap_or(i64::MAX))
-        }
-        // Without the voice plane there is no transport assembling messages, so no key is answered.
-        #[cfg(not(feature = "plane-voice"))]
-        {
-            let _ = key;
-            None
-        }
-    }
-
-    fn get_bool(&self, _key: &str) -> Option<bool> {
-        None
-    }
-}
-
-impl TransportConfigView for ListenerView {
-    fn bind(&self) -> Option<&str> {
-        Some(&self.bind)
-    }
-}
-
-/// Bind every provisioned listener on one transport.
-///
-/// The handle goes in with the address, which is the whole shape of the seam: the transport learns
-/// which slot to look its config up in and never learns anything about what is in it.
-///
-/// # Errors
-///
-/// A listener could not be bound — the address is in use, or the slot holds no usable config.
-pub async fn listen_all(
-    transport: &dyn Transport,
-    provisioned: &[ProvisionedListener],
-    request_body_max_bytes: usize,
-) -> Result<Vec<Listener>, TransportError> {
-    let mut listeners = Vec::with_capacity(provisioned.len());
-    for p in provisioned {
-        let view = ListenerView::new(&p.bind, request_body_max_bytes);
-        listeners.push(transport.listen(&view, &p.handle).await?);
-    }
-    Ok(listeners)
-}
-
-/// Provision the dial-side config a transport presents when it reaches an upstream.
-///
-/// The trust roots are the deployment's, because which authorities a node will accept upstream is
-/// a deployment's statement rather than a unit's. Nothing is read through the secret source here —
-/// a public root store is not a secret — so nothing is journaled either.
-pub fn provision_dial(
-    sink: &dyn TlsConfigSink,
-    token: &Grant<KeyHandle>,
-    role: ListenerRole,
-    fingerprint: &'static str,
-    cfg: Arc<rustls::ClientConfig>,
-) -> TransportKeyHandle {
-    let slot = Slot {
-        index: role.slot_index(),
-        fingerprint,
-    };
-    provision_client(sink, token, slot, cfg)
-}
-
-// ── the driver a listener is handed ─────────────────────────────────────────────────────────────
-
-/// WHAT RUNS A UNIT, on the root's side of the transport seam.
-///
-/// A transport that serves a plane's declared surface has to get what arrived to something that
-/// will run it, and the tree's rule decides which direction that goes: core drives plugins, and a
-/// plugin never names core. So the transport hands the arrival OVER, through
-/// `busbar_contract::transport::UnitDriver`, and this is the root's implementation of it — handed to
-/// a transport at listen, in the same breath and for the same reason as the transport key handle.
-///
-/// Everything the transport is not allowed to hold is held here: the kernel seal, the units the ten
-/// steps run against, the in-flight table, the gauge and the canary. The transport learns none of
-/// them. What it gets back is the plane's bytes, the media type the declaration named, and one word
-/// from a closed list of eight.
-///
-/// ## What this driver does NOT do yet, said plainly
-///
-/// It runs the loop and maps the ending. It does NOT yet call the plane, so the answers it returns
-/// carry no body. Two things upstream of it are missing, and neither is this file's to fix:
-///
-/// 1. **There is no per-unit arena that ships.** `busbar_contract::PlaneAlloc` is `Send + Sync` and its
-///    allocators take `&self` and hand back a slice borrowed from it; those two together have no
-///    safe implementation, and every implementor in this tree is a test double that leaks. A plane
-///    call needs one, so there is nothing to build a `Ctx` around.
-/// 2. **`ProductionUnits` answers every non-admin step with a refusal.** That is deliberate — the
-///    bodies arrive one plane at a time and admin is the one that has landed — so a unit driven
-///    here today ends at Arrival whatever the bytes were.
-///
-/// Wiring it half-built and calling it served would be the failure this whole seam exists to
-/// prevent, so it answers honestly instead: the loop really runs, the ending really is the loop's,
-/// and the body is empty because no plane was asked.
-#[cfg(feature = "root-admin")]
-pub struct LoopDriver<'n> {
-    kernel: &'n busbar_kernel::teller::Kernel,
-    units: &'n crate::root::kernel::ProductionUnits,
-    gauge: &'n busbar_kernel::slice::ConcurrencyGauge,
-    canary: &'n busbar_contract::caps::Canary,
-    next_key: std::sync::atomic::AtomicU64,
-}
-
-#[cfg(feature = "root-admin")]
-impl std::fmt::Debug for LoopDriver<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("LoopDriver")
-    }
-}
-
-#[cfg(feature = "root-admin")]
-impl<'n> LoopDriver<'n> {
-    /// Bind the driver to the node's own kernel, units, gauge and canary.
-    ///
-    /// By reference and not by value: one driver serves every connection every listener accepts, and
-    /// the counts the canary balances are node-wide. A driver that owned a copy of them would be
-    /// balancing its own books beside the node's.
-    #[must_use]
-    pub fn new(
-        kernel: &'n busbar_kernel::teller::Kernel,
-        units: &'n crate::root::kernel::ProductionUnits,
-        gauge: &'n busbar_kernel::slice::ConcurrencyGauge,
-        canary: &'n busbar_contract::caps::Canary,
-    ) -> Self {
-        Self {
-            kernel,
-            units,
-            gauge,
-            canary,
-            next_key: std::sync::atomic::AtomicU64::new(1),
-        }
-    }
-
-    /// The key of the next unit this driver will walk.
-    fn next_unit(&self) -> busbar_contract::caps::UnitKey {
-        busbar_contract::caps::UnitKey::new(
-            self.next_key
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        )
-    }
-}
-
-/// How the loop's ending reads in the eight words a transport can render.
-///
-/// THE ONE MAPPING, here and nowhere else. The loop's ending carries a step, a reason code and a
-/// posting; no wire has a field for any of the three, so the narrowing has to happen somewhere and
-/// it happens on this side of the seam — where the ending's full detail is still available to the
-/// audit record that keeps it.
-///
-/// The two credential doors stay apart, and that is the substance of this function rather than a
-/// detail of it: a caller refused at Authenticate is told its credential was not accepted, and one
-/// refused at Approve or Verify is told the credential was accepted and does not cover this.
-/// Collapsing them sends a caller with a bad token away to fix its permissions.
-#[cfg(feature = "root-admin")]
-#[must_use]
-pub fn outcome_of(ended: &busbar_kernel::teller::Ended) -> busbar_contract::transport::Outcome {
-    use busbar_contract::caps::{Outcome as Ends, ReasonCode as R, StepName as S};
-    use busbar_contract::transport::Outcome as Out;
-    match ended {
-        busbar_kernel::teller::Ended::Settled { end, .. } => match end.outcome() {
-            Ends::Completed => Out::Completed,
-            Ends::Refused(S::Authenticate, _) => Out::Unauthenticated,
-            Ends::Refused(S::Approve | S::Verify, _) => Out::Forbidden,
-            // The money and rate refusals, which a caller can act on by slowing down or by paying,
-            // and which every wire below spells with a code of its own.
-            Ends::Refused(
-                _,
-                R::RateLimited | R::OverBudget | R::OverdraftCeiling | R::GroupFrozen,
-            ) => Out::Throttled,
-            Ends::Refused(_, R::NoDestination) => Out::NotFound,
-            Ends::Refused(..) => Out::Unavailable,
-            // A step BROKE, which is the node's fault and never the caller's, whatever step it was.
-            Ends::Failed(..) => Out::Unavailable,
-            Ends::Aborted(_) => Out::Cancelled,
-            Ends::TimedOut(_) => Out::TimedOut,
-        },
-        // The node's own sweep took the hold first, so this unit will not produce an answer at all.
-        busbar_kernel::teller::Ended::AlreadySettled => Out::Unavailable,
-    }
-}
-
-#[cfg(feature = "root-admin")]
-impl busbar_contract::transport::UnitDriver for LoopDriver<'_> {
-    fn drive(
-        &self,
-        _arrival: busbar_contract::transport::Arrival<'_>,
-        _surface: &busbar_contract::transport::WireSurface,
-    ) -> busbar_contract::transport::Answer {
-        let key = self.next_unit();
-        let cell = busbar_contract::caps::HoldCell::new(busbar_contract::caps::Hold::open(
-            &self.kernel.admit_token(),
-            busbar_contract::caps::PrincipalId::new(""),
-            0,
-        ));
-        let leases = busbar_kernel::slice::LeaseCell::new();
-        let meter = busbar_kernel::teller::AccrualMeter::new();
-        let ctx = busbar_kernel::teller::UnitCtx {
-            key,
-            origin: busbar_contract::caps::OriginKind::Client,
-            session: None,
-            generation: busbar_kernel::registry::Generation::FIRST,
-            admin_listener: false,
-            kernel_verb_only: false,
-        };
-        // THE LOOP ITSELF, not an approximation of it. Whatever this driver cannot yet do above the
-        // loop, the ten steps below it are the node's own.
-        let ended = busbar_kernel::teller::run_unit(
-            self.kernel,
-            self.units,
-            &ctx,
-            busbar_kernel::teller::Run {
-                cell: &cell,
-                parent: None,
-                leases: &leases,
-                gauge: self.gauge,
-                canary: self.canary,
-                meter: &meter,
-            },
-        );
-        busbar_contract::transport::Answer::empty(outcome_of(&ended))
-    }
-}
-
 // ── the loop's dispatch seam ─────────────────────────────────────────────────────────────────────
 
 /// THE ONE SEAM A UNIT'S ROUTE STEP REACHES THE SURFACE THAT ALREADY ANSWERS IT THROUGH.
 ///
-/// Named here, beside the driver and the outcome mapping, because nothing in it is about any one
-/// plane. The argument is an [`OpClassId`](busbar_contract::ids::OpClassId), which every plane
-/// declares; the answer is the loop's own [`RouteLeg`](busbar_kernel::teller::RouteLeg), which every
-/// plane's Route step already hands back. A seam named after a plane would have been a second one
+/// Named here because nothing in it is about any one plane. The argument is an
+/// [`OpClassId`](busbar_contract::ids::OpClassId), which every plane declares; the answer is the
+/// loop's own [`RouteLeg`](busbar_kernel::teller::RouteLeg), which every plane's Route step already
+/// hands back. A seam named after a plane would have been a second one
 /// beside it the moment a second plane wanted the same thing, and the first thing to differ between
 /// the two would have been a difference nobody meant.
 ///
@@ -643,8 +374,8 @@ impl PlaneDispatch for DrivenOnce {
 /// bypassed the unit entirely and the deployment's private key was resolved somewhere the journal
 /// never saw.
 ///
-/// WHY NOTHING IS BOUND HERE, AND WHERE THAT ENDS. This boot does not call `listen_all`, and it is
-/// not an oversight: `main.rs`'s `serve_listener` binds the data and admin addresses over its own
+/// WHY NOTHING IS BOUND HERE, AND WHERE THAT ENDS. This boot binds no listener through the
+/// transport, and it is not an oversight: `main.rs`'s `serve_listener` binds the data and admin addresses over its own
 /// `busbar_core_connsec::prepare` path, so a second bind here would refuse the address and take
 /// the node down. What this function does is everything up to the bind — resolve, journal, register
 /// — so the commit that moves serving onto the root's transports is a change of who accepts, not a

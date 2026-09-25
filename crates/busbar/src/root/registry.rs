@@ -83,24 +83,12 @@
 //! composition would register, pass `check_composition` — because `composed_over()` returns `None`
 //! and the check reads a declaration — and then refuse every connection. That is why the two are
 //! built through `over` here and why the registered rows record what they were actually built over.
-//!
-//! ## One key, two compositions
-//!
-//! Seven keys register, and eight instances are built: `ws` is composed twice. It adds no
-//! encryption of its own — it upgrades whatever stream the layer below gives up — so an in-band
-//! upgrade arriving on `http` and a `wss://` dial that must stand on `tls` are two different
-//! stacks, and the transport refuses a secure target over a cleartext lower layer rather than put a
-//! plain upgrade on a wire the caller was told was encrypted. The registry seals by key and cannot
-//! hold both, so the dial-side instance is the root's own handle and
-//! [`ComposedTransports::dialer`] is where a destination's scheme picks between them.
 
 use std::sync::Arc;
 
 use busbar_contract::plane::PlaneMeta;
 use busbar_contract::transport::TransportMeta;
-use busbar_contract::{
-    check_composition, CompositionError, Plugin, Registered, Transport, UpstreamAddress,
-};
+use busbar_contract::{check_composition, CompositionError, Plugin, Registered, Transport};
 use busbar_core_admin::admin_codec::AdminPlane;
 use busbar_kernel::registry::{seal_claims, ClaimConflict, PlaneClaim, Registry, ResolvedOverlap};
 use busbar_plane_a2a::A2aPlane;
@@ -180,57 +168,13 @@ pub struct ComposedTransports {
     pub http: Arc<HttpTransport>,
     /// Server-sent events over HTTP.
     pub sse: Arc<SseTransport>,
-    /// WebSocket for ingress, built over HTTP — never over nothing. This is the instance an in-band
-    /// upgrade arrives on, and the one registered under the `ws` key.
+    /// WebSocket, built over HTTP — never over nothing.
     #[cfg(feature = "plane-voice")]
     pub ws: Arc<WsTransport>,
-    /// WebSocket for a secure dial, built over TLS — the same key, composed a second way.
-    ///
-    /// Not registered: the registry seals by key and there is one `ws` entry. This instance is the
-    /// root's own handle, reached through [`ComposedTransports::dialer`], because the composition a
-    /// `wss://` destination needs is not the composition an upgrade arrives on and one instance
-    /// cannot be both.
-    #[cfg(feature = "plane-voice")]
-    pub ws_tls: Arc<WsTransport>,
     /// gRPC, built over HTTP — never over nothing.
     pub grpc: Arc<GrpcTransport>,
     /// The process's own standard streams.
     pub stdio: Arc<StdioTransport>,
-}
-
-impl ComposedTransports {
-    /// The instance that dials a destination which named `key`, given where the dial lands.
-    ///
-    /// Every key but `ws` has one instance and this is a lookup. `ws` is the exception the registry
-    /// cannot express: the registry seals by key, so exactly one `ws` may register, but a `ws://`
-    /// upgrade arrives on `http` while a `wss://` dial is only honest over `tls` — the transport
-    /// itself refuses a secure target over a cleartext lower layer rather than downgrade it. Those
-    /// are two compositions of one key, and the choice between them is the destination's scheme,
-    /// which is a fact of the dial rather than of the registry.
-    #[must_use]
-    pub fn dialer(&self, key: &str, address: &UpstreamAddress) -> Option<Arc<dyn Transport>> {
-        #[cfg(not(feature = "plane-voice"))]
-        let _ = address;
-        #[cfg(feature = "plane-voice")]
-        let secure = address
-            .authority()
-            .is_some_and(|authority| authority.starts_with("wss://"));
-        Some(match key {
-            TcpTransport::KEY => Arc::clone(&self.tcp) as Arc<dyn Transport>,
-            TlsTransport::KEY => Arc::clone(&self.tls) as Arc<dyn Transport>,
-            HttpTransport::KEY => Arc::clone(&self.http) as Arc<dyn Transport>,
-            SseTransport::KEY => Arc::clone(&self.sse) as Arc<dyn Transport>,
-            #[cfg(feature = "plane-voice")]
-            <WsTransport as TransportMeta>::KEY if secure => {
-                Arc::clone(&self.ws_tls) as Arc<dyn Transport>
-            }
-            #[cfg(feature = "plane-voice")]
-            <WsTransport as TransportMeta>::KEY => Arc::clone(&self.ws) as Arc<dyn Transport>,
-            GrpcTransport::KEY => Arc::clone(&self.grpc) as Arc<dyn Transport>,
-            StdioTransport::KEY => Arc::clone(&self.stdio) as Arc<dyn Transport>,
-            _ => return None,
-        })
-    }
 }
 
 /// What the boot seal produced: a registry nothing may add to after it, and the claim order every
@@ -304,16 +248,6 @@ fn compose_transports(client_settings: ClientSettings) -> ComposedTransports {
         Arc::clone(&http) as Arc<dyn Transport>,
         max_message_bytes,
     ));
-    // The dial-side composition of the same key. `ws` adds no encryption of its own, so a `wss://`
-    // target is only honest when the layer below is the one that encrypts — the transport refuses
-    // the dial otherwise rather than put a cleartext upgrade on a wire the caller was told was
-    // secure. Every realtime upstream this deployment reaches is `wss`, so without this instance
-    // the refusal is the whole voice plane's answer.
-    #[cfg(feature = "plane-voice")]
-    let ws_tls = Arc::new(WsTransport::over_with_max_message_bytes(
-        Arc::clone(&tls) as Arc<dyn Transport>,
-        max_message_bytes,
-    ));
     let grpc = Arc::new(GrpcTransport::over(Arc::clone(&http) as Arc<dyn Transport>));
     let stdio = Arc::new(StdioTransport::new());
     ComposedTransports {
@@ -323,8 +257,6 @@ fn compose_transports(client_settings: ClientSettings) -> ComposedTransports {
         sse,
         #[cfg(feature = "plane-voice")]
         ws,
-        #[cfg(feature = "plane-voice")]
-        ws_tls,
         grpc,
         stdio,
     }
