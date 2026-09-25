@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! IR mapping round 3 (IR-INTEGRATE, Q57): the Responses share of items 11, 12 and 16.
+//! IR mapping: the Responses custom-tool, reasoning-`none` and summary-reasoning cases.
 use crate::proto_codec::{protocol_for, LaneCaps};
 use serde_json::json;
 

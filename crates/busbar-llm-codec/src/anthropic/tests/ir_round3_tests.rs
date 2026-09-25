@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! IR mapping round 3 (IR-INTEGRATE, Q57): the Anthropic writer's share of items 10 and 12.
+//! IR mapping: the Anthropic writer's typed-slot and lane-capability cases.
 use super::super::proto_codec::protocol_for;
 use serde_json::{json, Value};
 

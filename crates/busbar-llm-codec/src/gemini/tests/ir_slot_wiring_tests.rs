@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Q57 IR-slot wiring, round 2 (ir-slots-landed.md): the Gemini reader FILLS and the Gemini writer
+//! IR-slot wiring: the Gemini reader FILLS and the Gemini writer
 //! EMITS the typed slots its defects need. One test per defect / slot id; each drives the production
 //! reader and writer (and the cross-protocol seam, `chat_prepare_for_egress`, where the seam matters).
 

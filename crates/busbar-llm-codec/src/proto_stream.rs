@@ -290,7 +290,7 @@ impl StreamTranslate {
         // encode is a permanent corruption of the tool_use/tool_result correlation, not a cosmetic one.
         if !self.ir_already_prepared {
             self.tool_id_remap.remap_event(ingress_name, &mut ev);
-            // IR-18 (round 3 item 15): a signature the egress family minted that the client's
+            // IR-18: a signature the egress family minted that the client's
             // carrier would read as its own family's is wrapped in the busbar provenance envelope —
             // the stream half of `chat_prepare_for_ingress` (an already-prepared answer carries it).
             if let crate::ir::IrStreamEvent::BlockDelta {
@@ -1285,7 +1285,7 @@ pub fn response_to_ir_events(ir: &crate::ir::IrResponse) -> Vec<crate::ir::IrStr
                     block: if *redacted {
                         IrBlockMeta::RedactedThinking
                     } else {
-                        // IR-17 (round 3 item 16): the block's kind rides the stream start.
+                        // IR-17: the block's kind rides the stream start.
                         IrBlockMeta::Thinking { kind: *kind }
                     },
                     refusal: false,
@@ -1317,7 +1317,7 @@ pub fn response_to_ir_events(ir: &crate::ir::IrResponse) -> Vec<crate::ir::IrStr
             IrBlock::ToolResult { .. } | IrBlock::Json(_) => {}
         }
     }
-    // IR-21 (round 3 item 17): a GENERATED image / audio part (a Bedrock response `image`, a
+    // IR-21: a GENERATED image / audio part (a Bedrock response `image`, a
     // Gemini `inlineData`) streams whole as `MediaDelta` in its own block. These blocks TRAIL the
     // answer's other blocks, so a client dialect that has no streamed media (and emits no frame for
     // the block) still sees contiguous block indices.

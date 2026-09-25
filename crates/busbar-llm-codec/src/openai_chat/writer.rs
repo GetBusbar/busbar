@@ -456,7 +456,7 @@ impl ProtocolWriter for OpenAiWriter {
         //
         // `Off` (IR-09) is matched FIRST: projected through the table it would read as the smallest
         // ENABLE ask. Chat's `"none"` is accepted only by the newest reasoning models: a lane that
-        // declares it (`LaneCaps::reasoning_none`, round 3 item 12) gets `"none"`; on any other the
+        // declares it (`LaneCaps::reasoning_none`) gets `"none"`; on any other the
         // ask is omitted (a lane that is not told to reason does not). An OpenAI-origin `"none"`
         // still rides `extra` verbatim.
         if req.reasoning == Some(crate::ir::IrReasoningAsk::Off) && caps.reasoning_none {
@@ -504,7 +504,7 @@ impl ProtocolWriter for OpenAiWriter {
         // so this writer is the inverse of the reader.
         // An OpenAI-origin request that declared its tools as legacy `functions` (OAI-07) carries
         // that array verbatim in `extra`; emitting `tools` too would declare every function twice.
-        // OAI-09 (round 3 item 11): the typed custom tools, written after the function tools.
+        // OAI-09: the typed custom tools, written after the function tools.
         let custom_tools = super::slots::write_custom_tools(req);
         if (!req.tools.is_empty() || !custom_tools.is_empty())
             && !req.extra.contains_key("functions")

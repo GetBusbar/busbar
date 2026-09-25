@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Q57 IR-slot WIRING tests for the OpenAI Chat dialect (round 2): the Chat reader FILLS the typed
+//! IR-slot WIRING tests for the OpenAI Chat dialect: the Chat reader FILLS the typed
 //! slots of ir-slots-landed.md and the Chat writer EMITS them, buffered and streamed. Requests go
 //! through the production cross-protocol seam (`chat_prepare_for_egress`, which clears `extra`), so
 //! a member that only rode `extra` before is proven to cross in its typed slot.

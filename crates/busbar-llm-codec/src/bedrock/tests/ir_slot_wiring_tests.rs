@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! IR MAPPING round 2 (owner directive Q57): the Bedrock reader FILLS and the Bedrock writer EMITS
+//! IR MAPPING: the Bedrock reader FILLS and the Bedrock writer EMITS
 //! the typed IR slots the Converse wire has a member for (`ir-slots-landed.md`), and the writer
 //! reads the lane capabilities (`LaneCaps`) the way the Anthropic writer does. One test per
 //! defect / slot id; each drives the real reader → seam → writer path on a real body.

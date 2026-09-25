@@ -823,7 +823,7 @@ impl ProtocolReader for BedrockReader {
             // `extra` for the same-protocol re-emission).
             metadata: read_bedrock_request_metadata(obj),
             extra,
-            // BED-14 / IR-04 (round 3 item 14): Converse `serviceTier: {type}` (priority / default /
+            // BED-14 / IR-04: Converse `serviceTier: {type}` (priority / default /
             // flex); `reserved` has no IR tier and rides `extra` only.
             service_tier: super::read_bedrock_service_tier(obj),
             store: None,

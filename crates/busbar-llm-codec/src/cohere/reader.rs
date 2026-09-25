@@ -420,7 +420,7 @@ impl ProtocolReader for CohereReader {
                             {
                                 *citations = cits;
                             } else {
-                                // COH-17 request side (round 3 item 13): a grounded turn with no
+                                // COH-17 request side: a grounded turn with no
                                 // text part carries its citations on an EMPTY text block, as the
                                 // response reader does; a writer whose dialect rejects empty text
                                 // (Anthropic, Bedrock, Gemini) omits that carrier block.

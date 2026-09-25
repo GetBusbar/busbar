@@ -1403,7 +1403,7 @@ fn q64_two_pools(
     (g, cm, k, now, adjust)
 }
 
-/// Q64/Q67 read: the key's usage (what `GET /admin/usage` agrees with, Q51) and, per bucket
+/// The usage read: the key's usage (what `GET /admin/usage` agrees with) and, per bucket
 /// (group-wide, pool-a, pool-b), the `/groups` usage spend and the `/metrics` bucket token gauge.
 fn q64_read(
     g: &GovState,

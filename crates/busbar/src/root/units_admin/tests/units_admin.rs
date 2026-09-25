@@ -5080,7 +5080,7 @@ fn an_admin_adjust_corrects_a_recorded_units_counts_and_its_money_follows() {
     assert_eq!(body["pool"], serde_json::json!("pool-a"));
     assert!(
         body.get("amount_nanos").is_none(),
-        "the answer carries counts, never money (Q9)"
+        "the answer carries counts, never money"
     );
 
     let sealed: Vec<_> = busbar_kernel::audit::amend::node_corrections()

@@ -93,7 +93,7 @@ pub(super) fn write_bedrock_citation(c: &crate::ir::IrCitation) -> Option<serde_
                  union and this citation's `documentChar` member already fills it"
             );
         } else {
-            // BED-14 (round 3 item 14): `domain` beside the url when the IR carries it.
+            // BED-14: `domain` beside the url when the IR carries it.
             let mut web = serde_json::Map::new();
             web.insert("url".to_string(), serde_json::json!(u));
             if let Some(d) = c.domain.as_deref().filter(|d| !d.is_empty()) {
@@ -178,7 +178,7 @@ pub(super) fn read_bedrock_citation(c: &serde_json::Value) -> crate::ir::IrCitat
                 .collect()
         })
         .unwrap_or_default();
-    // BED-14 (round 3 item 14): the `web` location's `domain` member rides IrCitation.domain.
+    // BED-14: the `web` location's `domain` member rides IrCitation.domain.
     let domain = member("web")
         .and_then(|m| m.get("domain"))
         .and_then(|d| d.as_str())

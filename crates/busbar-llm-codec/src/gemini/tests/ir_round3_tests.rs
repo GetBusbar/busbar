@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! IR mapping round 3 (IR-INTEGRATE, Q57): the Gemini share of items 17 and 18.
+//! IR mapping: the Gemini streamed generated media and block-relative streamed citations.
 use crate::ir::{IrDelta, IrStreamEvent, StreamDecodeState};
 use crate::proto_codec::protocol_for;
 use serde_json::json;

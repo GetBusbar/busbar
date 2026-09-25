@@ -762,7 +762,7 @@ impl IrBlock {
     /// the content". Note it does not coincide with "`text` is safe to read": when this returns
     /// true, `text` is either empty (Responses) or the ciphertext ITSELF (Anthropic/Bedrock), so a
     /// consumer must check this BEFORE touching `text`, never after.
-    /// COH-17 (round 3 item 13): an EMPTY text block that exists only to carry citations (a
+    /// COH-17: an EMPTY text block that exists only to carry citations (a
     /// grounded turn with no text part). A writer whose dialect rejects an empty text block
     /// (Anthropic, Bedrock, Gemini) omits it; the citations have no text to anchor to there.
     pub fn is_citation_carrier(&self) -> bool {
@@ -985,7 +985,7 @@ pub struct IrCitation {
     /// `citationSources[]` entry here so a same-protocol Gemini path could re-emit it faithfully.
     /// `None` for a citation synthesized purely from neutral fields.
     pub raw: Option<Value>,
-    /// BED-14 (round 3 item 14): the web source's domain — the Converse `web` citation location's
+    /// BED-14: the web source's domain — the Converse `web` citation location's
     /// `domain` member (`{url, domain}`). Only Bedrock carries it natively; `None` elsewhere.
     pub domain: Option<String>,
 }
@@ -1295,7 +1295,7 @@ impl IrUsage {
 #[derive(Debug, Clone, PartialEq)]
 pub enum IrBlockMeta {
     Text,
-    /// A plaintext reasoning block. `kind` (IR-17, round 3 item 16) says whether its text is the
+    /// A plaintext reasoning block. `kind` (IR-17) says whether its text is the
     /// full reasoning or a summary of it — the stream counterpart of `IrBlock::Thinking.kind`, so a
     /// Responses writer puts a summary back into `summary[]` on the stream as it does buffered.
     /// `None` == unknown (the pre-slot behaviour).
@@ -1356,7 +1356,7 @@ pub enum IrDelta {
     /// `logprobsResult`. Writers that model streaming logprobs (OpenAI, Gemini) re-emit natively;
     /// protocols with no shape for it simply don't emit it.
     LogprobsDelta(Vec<IrTokenLogprob>),
-    /// IR-21 (GEM-17 stream, round 3 item 17): a whole GENERATED media part — an
+    /// IR-21 (GEM-17 stream): a whole GENERATED media part — an
     /// [`IrBlock::Image`] or [`IrBlock::Media`] — carried on the stream as the one delta of the
     /// block opened by `BlockStart { block: IrBlockMeta::Image }`. Generated media is not
     /// incremental, so the block rides whole. The buffered-to-stream synthesis emits it (after the
@@ -1476,7 +1476,7 @@ pub struct StreamDecodeState {
     /// reader appends each text delta here and converts a citation's offsets against it. Empty for
     /// every other reader.
     pub streamed_text: String,
-    /// GEM-16 (round 3 item 18): the CHARACTER offset into [`Self::streamed_text`] where the
+    /// GEM-16: the CHARACTER offset into [`Self::streamed_text`] where the
     /// current text block began. IR citation offsets are relative to the text block they annotate,
     /// so a citation on a later text block (text -> tool -> text) is shifted by this. 0 for the
     /// first text block (and for every other reader).
@@ -1686,7 +1686,7 @@ pub enum IrHostedTool {
     WebSearch(IrWebSearch),
     CodeExecution,
     WebFetch(IrWebFetch),
-    /// OAI-09 (round 3 item 11): an OpenAI CUSTOM tool — free-text input, optionally constrained by
+    /// OAI-09: an OpenAI CUSTOM tool — free-text input, optionally constrained by
     /// a grammar — which OpenAI Chat and Responses both offer and no other dialect has.
     Custom(IrCustomTool),
 }

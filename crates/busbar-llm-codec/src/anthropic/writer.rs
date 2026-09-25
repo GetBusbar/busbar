@@ -417,8 +417,8 @@ impl ProtocolWriter for AnthropicWriter {
             // Reasoning switched OFF (IR-09, ANT-09) — matched FIRST: `to_budget` would read it as a
             // zero budget and drop it, losing the caller's "off" on a reasoning-by-default model.
             // Not an emitted thinking ask, so the sampling knobs below stay.
-            // A lane whose model cannot switch thinking off (`LaneCaps::thinking_always_on`,
-            // round 3 item 12) rejects `{type:"disabled"}`: the ask is omitted with a warn and the
+            // A lane whose model cannot switch thinking off (`LaneCaps::thinking_always_on`)
+            // rejects `{type:"disabled"}`: the ask is omitted with a warn and the
             // model thinks at its default.
             Some(crate::ir::IrReasoningAsk::Off) if caps.thinking_always_on => {
                 tracing::warn!(

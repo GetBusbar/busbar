@@ -271,7 +271,7 @@ const EVT_REASONING_TEXT_DELTA: &str = "response.reasoning_text.delta";
 // part): carries the COMPLETE assembled reasoning text and precedes the reasoning item's
 // `output_item.done`.
 const EVT_REASONING_TEXT_DONE: &str = "response.reasoning_text.done";
-// IR-17 (round 3 item 16): a SUMMARY reasoning block streams as one `summary_text` part —
+// IR-17: a SUMMARY reasoning block streams as one `summary_text` part —
 // `reasoning_summary_part.added`, `reasoning_summary_text.delta` runs, then
 // `reasoning_summary_text.done` and `reasoning_summary_part.done` before the item's `output_item.done`.
 const EVT_REASONING_SUMMARY_PART_ADDED: &str = "response.reasoning_summary_part.added";
@@ -1495,7 +1495,7 @@ pub struct ResponsesWriter {
     /// THIS index, and so a reasoning BlockStop is never mistaken for a text/tool close. Per-stream
     /// INSTANCE state for the same reason as the other open-index sets; a poisoned lock degrades safely.
     open_reasoning_indices: std::sync::Mutex<std::collections::BTreeSet<usize>>,
-    /// IR-17 (round 3 item 16): the open reasoning items whose Thinking block is a SUMMARY. Their
+    /// IR-17: the open reasoning items whose Thinking block is a SUMMARY. Their
     /// text streams as `reasoning_summary_text` and lands in the item's `summary[]` (the buffered
     /// `insert_reasoning_text` shape); every other reasoning item keeps `content[]`.
     summary_reasoning_indices: std::sync::Mutex<std::collections::BTreeSet<usize>>,
@@ -2271,7 +2271,7 @@ mod annotation_stream_tests;
 #[path = "tests/ir_mapping_tests.rs"]
 mod ir_mapping_tests;
 
-// IR mapping round 2 (Q57): the typed IR slots the Responses reader fills and writer emits
+// IR mapping: the typed IR slots the Responses reader fills and writer emits
 // (ir-slots-landed.md) — RSP-13/15, SHR-03, IR-02/03..08/10/11/14/17/18.
 #[cfg(test)]
 #[path = "tests/ir_slot_wiring_tests.rs"]

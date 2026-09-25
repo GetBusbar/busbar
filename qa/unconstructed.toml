@@ -318,7 +318,7 @@ switch    = "STRIKE THIS ROW when a production path builds a multi-currency card
 # gates, sealed a `rejected` audit row and then reached a surface with no handler, which answered
 # `404`. The ruling: a verb whose effect is not bound is NOT SERVED. `verb::effect_bound` answers
 # `false` for each, so the mount hands it to the surface's fallback (the unmounted 404, byte for
-# byte, no audit row) and the generated document does not describe it. Binding them is Phase 4 work.
+# byte, no audit row) and the generated document does not describe it. They stay unbound until each is given a binding.
 #
 # The anchor is the one generic check the binding must extend (`effect_bound` in
 # `crates/busbar-core-admin/src/verb.rs`); the needle is the effect function's call, named as the two

@@ -1348,7 +1348,7 @@ fn bedrock_signature_origin(model: Option<&str>) -> Option<crate::ir::IrSignatur
     names_provider.then_some(crate::ir::IrSignatureOrigin::BedrockOther)
 }
 
-/// Converse request member for the processing tier (IR-04, round 3 item 14).
+/// Converse request member for the processing tier (IR-04).
 const FIELD_SERVICE_TIER: &str = "serviceTier";
 
 /// Converse `serviceTier: {type}` → the IR tier: `priority` → Priority, `default` → Default,
@@ -2311,7 +2311,7 @@ mod ir_mapping_tests;
 #[path = "tests/ir_mapping_structured_tests.rs"]
 mod ir_mapping_structured_tests;
 
-/// IR mapping Q57 round 2 — the typed IR slots and the lane capabilities (BED-10, IR-03/10/11/12/18,
+/// IR mapping — the typed IR slots and the lane capabilities (BED-10, IR-03/10/11/12/18,
 /// IR-09, LaneCaps).
 #[cfg(test)]
 #[path = "tests/ir_slot_wiring_tests.rs"]

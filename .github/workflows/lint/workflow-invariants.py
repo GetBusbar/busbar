@@ -648,7 +648,7 @@ def _fn_body(text, name):
 
 
 def c_q39(tree):
-    """(Q39) every getbusbar.com fetch in CI sends X-Busbar-Verify via site_curl, scoped, never empty."""
+    """every getbusbar.com fetch in CI sends X-Busbar-Verify via site_curl, scoped, never empty."""
     bad = []
     helper = tree.get(SITE_CURL)
     if helper is None:
@@ -734,7 +734,7 @@ def c_q39(tree):
     return bad
 
 
-FORK_NOT_RUN = "not-run: fork PR has no SITE_VERIFY_TOKEN (Q39)"
+FORK_NOT_RUN = "not-run: fork PR has no SITE_VERIFY_TOKEN"
 SITE_ROWS = ("install:script-live", "install:no-api-github", "install:e2e", "site:download-page")
 
 

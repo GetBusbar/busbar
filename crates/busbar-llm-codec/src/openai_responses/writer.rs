@@ -626,7 +626,7 @@ impl ProtocolWriter for ResponsesWriter {
         //
         // `Off` (IR-09) is matched FIRST: projected through the table it would read as the smallest
         // ENABLE ask. `effort: "none"` is accepted only by the newest OpenAI reasoning models: a
-        // lane that declares it (`LaneCaps::reasoning_none`, round 3 item 12) gets it; on any other
+        // lane that declares it (`LaneCaps::reasoning_none`) gets it; on any other
         // the ask is omitted (with a warn). A Responses-origin `"none"` still rides `extra`
         // verbatim on a same-protocol write.
         if req.reasoning == Some(crate::ir::IrReasoningAsk::Off) {
@@ -931,7 +931,7 @@ impl ProtocolWriter for ResponsesWriter {
                         return Vec::new();
                     }
                     let item_id = self.item_id_for(ITEM_ID_PREFIX_RS, *index);
-                    // IR-17 (round 3 item 16): a SUMMARY block opens the item with its one
+                    // IR-17: a SUMMARY block opens the item with its one
                     // `summary_text` part (no `content[]`, as the buffered item has none); every
                     // other block keeps the pre-slot `reasoning_text` shape.
                     if *kind == Some(crate::ir::IrThinkingKind::Summary) {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! IR mapping round 3 (IR-INTEGRATE, Q57): the Cohere share of item 13 (COH-17 request side).
+//! IR mapping: the Cohere request-side citation carrier (COH-17).
 use crate::proto_codec::protocol_for;
 use serde_json::json;
 

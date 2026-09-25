@@ -1240,8 +1240,8 @@ impl BedrockWriter {
         let mut thinking_disabled = false;
         match req.reasoning.filter(|_| !native_reasoning_present) {
             None => {}
-            // A lane whose Claude model cannot switch thinking off (`LaneCaps::thinking_always_on`,
-            // round 3 item 12) rejects `{type:"disabled"}`: omitted with a warn.
+            // A lane whose Claude model cannot switch thinking off (`LaneCaps::thinking_always_on`)
+            // rejects `{type:"disabled"}`: omitted with a warn.
             Some(crate::ir::IrReasoningAsk::Off) if caps.thinking_always_on => {
                 tracing::warn!(
                     "omitting reasoning OFF on Bedrock egress: this lane's model cannot switch \
@@ -1610,7 +1610,7 @@ impl BedrockWriter {
                 out.insert(super::FIELD_REQUEST_METADATA.to_string(), m);
             }
         }
-        // BED-14 / IR-04 (round 3 item 14): the tier is Converse's `serviceTier: {type}`. A
+        // BED-14 / IR-04: the tier is Converse's `serviceTier: {type}`. A
         // same-protocol body's own raw member (in `extra`) wins.
         if let Some(word) = req
             .service_tier
@@ -1675,7 +1675,7 @@ impl BedrockWriter {
     }
 }
 
-/// The typed request slots (Q57) a Converse body has no member for — each is dropped with a warn by
+/// The typed request slots a Converse body has no member for — each is dropped with a warn by
 /// `write_request` and reported by `dropped_egress_controls`, so the seam audits the degradation:
 /// `store`, `safety_identifier`, `prompt_cache_key`, `verbosity`, a `service_tier` Converse has no
 /// `serviceTier.type` word for (Auto, Scale), a non-text output modality (Converse answers in text), and every

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! IR mapping round 3 (IR-INTEGRATE, Q57): the Bedrock share of items 12 and 14.
+//! IR mapping: the Bedrock lane-capability and service-tier cases.
 use crate::proto_codec::{protocol_for, LaneCaps};
 use serde_json::json;
 

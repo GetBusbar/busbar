@@ -153,7 +153,7 @@ pub(super) fn write_slot_members(req: &IrRequest) -> serde_json::Map<String, ser
     out
 }
 
-/// OAI-09 (round 3 item 11): a Chat `{"type":"custom","custom":{name, description?, format?}}`
+/// OAI-09: a Chat `{"type":"custom","custom":{name, description?, format?}}`
 /// tool → the typed custom hosted tool; `None` for any other tool, or a custom tool carrying a
 /// member the IR cannot hold (it stays the raw same-protocol tool).
 pub(super) fn read_custom_tool(tool: &serde_json::Value) -> Option<IrHostedTool> {

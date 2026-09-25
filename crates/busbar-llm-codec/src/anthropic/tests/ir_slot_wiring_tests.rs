@@ -1,4 +1,4 @@
-//! Q57 IR SLOT WIRING (round 2): the Anthropic reader FILLS and the Anthropic writer EMITS every
+//! IR SLOT WIRING: the Anthropic reader FILLS and the Anthropic writer EMITS every
 //! typed IR slot `ir-slots-landed.md` lists Anthropic under — IR-09 (ANT-09), IR-16 (ANT-11), IR-11
 //! (ANT-13), IR-02 refusal category, IR-04, IR-10, IR-12, IR-18 and the "N" slots. Each probe runs
 //! the production step list (reader → `chat_prepare_for_egress` / `chat_prepare_for_ingress` →

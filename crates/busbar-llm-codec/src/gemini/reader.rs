@@ -410,7 +410,7 @@ impl ProtocolReader for GeminiReader {
                             // response writer relays it), which it echoes back. Stamping it Gemini
                             // would make the foreign backend's writer drop its own signature on the
                             // next turn. A Gemini BACKEND's response is stamped (`read_response`).
-                            // IR-18 (round 3 items 15/19): busbar's provenance envelope — a
+                            // IR-18: busbar's provenance envelope — a
                             // foreign signature this client was handed wrapped — restores the
                             // original bytes and their origin; a bare signature stays unknown.
                             let (signature, signature_origin) =
@@ -1235,7 +1235,7 @@ impl ProtocolReader for GeminiReader {
             // the first citation once per chunk. A shorter-than-watermark list (an upstream that
             // resets rather than accumulates) yields an empty tail and no delta, never a panic.
             let all_citations = read_gemini_citations(candidate, Some(&state.streamed_text));
-            // GEM-16 (round 3 item 18): the converted offsets index the WHOLE streamed answer; the
+            // GEM-16: the converted offsets index the WHOLE streamed answer; the
             // IR's index the text block the citation annotates, so shift by where that block began.
             let block_start = i64::try_from(state.text_block_start).unwrap_or(i64::MAX);
             let citations: Vec<crate::ir::IrCitation> = all_citations

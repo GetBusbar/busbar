@@ -1087,7 +1087,7 @@ impl ProtocolWriter for GeminiWriter {
                 // A streamed redacted-reasoning delta (opaque encrypted bytes) has no Gemini analog —
                 // drop it rather than emit a non-native part.
                 crate::ir::IrDelta::RedactedReasoningDelta(_) => None,
-                // IR-21 (round 3 item 17): a generated image / audio part re-emits as the Gemini
+                // IR-21: a generated image / audio part re-emits as the Gemini
                 // `inlineData` / `fileData` part the buffered writer uses.
                 crate::ir::IrDelta::MediaDelta(block) => {
                     super::write_gemini_media_part(block).map(|part| {
