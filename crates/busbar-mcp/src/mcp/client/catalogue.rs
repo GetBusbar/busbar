@@ -179,7 +179,7 @@ impl TransportPin {
     /// registration whose live peer stops matching now DEMOTES to `Quarantined` and stops serving,
     /// where it previously never could because the "observation" fed in was the declared pin
     /// comparing against itself.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "test-support"))]
     pub(crate) fn of(mechanism: crate::mcp::config::McpPinMechanism, value: &str) -> Self {
         Self::declared(mechanism.token(), value)
     }
