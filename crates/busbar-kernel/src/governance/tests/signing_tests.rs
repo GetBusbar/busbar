@@ -38,10 +38,10 @@ fn audience_bound_token_is_rejected_on_the_plain_verify_path() {
     // Hand-craft the payload (TokenClaims + the audience claim) and sign it with the real
     // signer key, exactly as an AS mint will.
     let payload = serde_json::to_vec(&serde_json::json!({
-        "sub": "vk_mcp",
+        "sub": "vk_audience",
         "exp": 2000u64,
         "kid": DEFAULT_KID,
-        "a": "https://busbar.example.com/mcp"
+        "a": "https://busbar.example.com/ingress"
     }))
     .unwrap();
     let sig: Signature = s.key.sign(&payload);
@@ -63,16 +63,16 @@ fn audience_bound_token_is_rejected_on_the_plain_verify_path() {
 fn audience_matrix_is_fail_closed() {
     let s = signer();
     let v = verifier(&s);
-    let mcp = "https://busbar.example.com/mcp";
+    let aud = "https://busbar.example.com/ingress";
     let plain = s.mint("vk_abc", 2000, None);
-    let bound = s.mint_for_audience("vk_abc", 2000, None, mcp, Some("client-1"));
+    let bound = s.mint_for_audience("vk_abc", 2000, None, aud, Some("client-1"));
 
     // Accept arms.
     assert!(v.verify(&plain, 1000, None).is_ok(), "plain on plain");
     let claims = v
-        .verify(&bound, 1000, Some(mcp))
+        .verify(&bound, 1000, Some(aud))
         .expect("matching audience on the audience-checked plane");
-    assert_eq!(claims.aud.as_deref(), Some(mcp));
+    assert_eq!(claims.aud.as_deref(), Some(aud));
     assert_eq!(claims.cid.as_deref(), Some("client-1"));
 
     // Reject arms.
@@ -82,12 +82,12 @@ fn audience_matrix_is_fail_closed() {
         "audience-bound token on the plain data plane"
     );
     assert_eq!(
-        v.verify(&plain, 1000, Some(mcp)),
+        v.verify(&plain, 1000, Some(aud)),
         Err(VerifyError::AudienceMismatch),
         "plain token on an audience-checked ingress"
     );
     assert_eq!(
-        v.verify(&bound, 1000, Some("https://other.example.com/mcp")),
+        v.verify(&bound, 1000, Some("https://other.example.com/ingress")),
         Err(VerifyError::AudienceMismatch),
         "different audience URI"
     );
@@ -219,7 +219,10 @@ fn signer_debug_redacts_key() {
 /// These vectors were captured from the implementation as it stood BEFORE the function moved out of
 /// the A2A plane into governance, and independently reproduced as
 /// `SHA-256("busbar/subkey/v1" ‖ secret ‖ domain)` outside this codebase — so they pin the
-/// construction, not merely whatever the current code happens to emit.
+/// construction, not merely whatever the current code happens to emit. The two vectors over
+/// `example-plane/artifact-signing/v1` stand in the neutral kernel for a plane's own domain; they
+/// were derived by that same independent SHA-256 reproduction, which also reproduces every other
+/// vector here byte for byte. A plane pins the bytes for ITS OWN domain in its own crate.
 ///
 /// If one of these fails, do NOT re-baseline it. The context string is versioned precisely so that
 /// an intended change to the derivation is spelled as a new version, leaving these vectors intact.
@@ -233,13 +236,13 @@ fn subkey_seed_derives_the_exact_pinned_bytes() {
         ),
         (
             [0u8; 32],
-            "a2a/agent-card-signing/v1",
-            "0bf68ad180162cd1cef2d93c0714a0bbc8584f6039fb39a4690589d11e82ecb5",
+            "example-plane/artifact-signing/v1",
+            "3cf3dfab725d686c8ac91dd7361d5ff5183344693a20487d1ebe653b6ae7a72d",
         ),
         (
             [7u8; 32],
-            "a2a/agent-card-signing/v1",
-            "9e3cc179e80446fc289701e3f0996a2305eedf7747bc082053f417f22bfbc14b",
+            "example-plane/artifact-signing/v1",
+            "9d170779b08994af289bd84634a3151cf69a1e39b370900ed165c612522c7894",
         ),
         (
             [7u8; 32],
@@ -279,13 +282,13 @@ fn subkey_seed_derives_the_exact_pinned_bytes() {
 fn derived_subkey_seed_is_the_free_function_over_the_root_secret() {
     let s = signer(); // secret [7u8; 32]
     assert_eq!(
-        hex::encode(s.derived_subkey_seed("a2a/agent-card-signing/v1")),
-        "9e3cc179e80446fc289701e3f0996a2305eedf7747bc082053f417f22bfbc14b",
-        "the A2A card key derived off this signer must be byte-identical across the move"
+        hex::encode(s.derived_subkey_seed("example-plane/artifact-signing/v1")),
+        "9d170779b08994af289bd84634a3151cf69a1e39b370900ed165c612522c7894",
+        "a plane subkey derived off this signer must be byte-identical across the move"
     );
     assert_eq!(
-        s.derived_subkey_seed("a2a/agent-card-signing/v1"),
-        subkey_seed(&s.secret_bytes(), "a2a/agent-card-signing/v1"),
+        s.derived_subkey_seed("example-plane/artifact-signing/v1"),
+        subkey_seed(&s.secret_bytes(), "example-plane/artifact-signing/v1"),
         "the method must be exactly the free function over the root secret, with no second path"
     );
 }

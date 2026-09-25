@@ -66,15 +66,15 @@ struct FrozenTailDigest {
 // and the frozen `content` is the exact suffix that digest feeds on, so restoring these through core's
 // neutral seam RECOMPUTES the same `hash` byte-identically. A drift in either the framing or the digest
 // breaks the recompute and this test goes RED.
-const MCP_1: &[u8] = br#"{"seq":1,"prev_hash":"","hash":"f1e8c2ec47e8199499663f3e08272d67b96ed4d56bddc8fa9e9371352e5ba718","content":[0,0,0,0,0,0,0,8,0,0,0,0,101,83,241,0,0,0,0,0,0,0,0,3,115,114,118,0,0,0,0,0,0,0,8,115,114,118,95,116,111,111,108,0,0,0,0,0,0,0,10,100,105,115,112,97,116,99,104,101,100,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,97,98,99,49,50,51,0,0,0,0,0,0,0,8,0,0,0,0,0,0,0,7]}"#;
-const MCP_2: &[u8] = br#"{"seq":2,"prev_hash":"f1e8c2ec47e8199499663f3e08272d67b96ed4d56bddc8fa9e9371352e5ba718","hash":"721c70456695c90b0085e3ef0170d413a6fa3a1e0ebb65eb02730ab6597ef47a","content":[0,0,0,0,0,0,0,8,0,0,0,0,101,83,241,60,0,0,0,0,0,0,0,3,115,114,118,0,0,0,0,0,0,0,9,115,114,118,95,111,116,104,101,114,0,0,0,0,0,0,0,7,114,101,102,117,115,101,100,0,0,0,0,0,0,0,11,110,111,116,95,103,114,97,110,116,101,100,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,0,0,0,0,0,0,0,7]}"#;
+const CALL_1: &[u8] = br#"{"seq":1,"prev_hash":"","hash":"f1e8c2ec47e8199499663f3e08272d67b96ed4d56bddc8fa9e9371352e5ba718","content":[0,0,0,0,0,0,0,8,0,0,0,0,101,83,241,0,0,0,0,0,0,0,0,3,115,114,118,0,0,0,0,0,0,0,8,115,114,118,95,116,111,111,108,0,0,0,0,0,0,0,10,100,105,115,112,97,116,99,104,101,100,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,97,98,99,49,50,51,0,0,0,0,0,0,0,8,0,0,0,0,0,0,0,7]}"#;
+const CALL_2: &[u8] = br#"{"seq":2,"prev_hash":"f1e8c2ec47e8199499663f3e08272d67b96ed4d56bddc8fa9e9371352e5ba718","hash":"721c70456695c90b0085e3ef0170d413a6fa3a1e0ebb65eb02730ab6597ef47a","content":[0,0,0,0,0,0,0,8,0,0,0,0,101,83,241,60,0,0,0,0,0,0,0,3,115,114,118,0,0,0,0,0,0,0,9,115,114,118,95,111,116,104,101,114,0,0,0,0,0,0,0,7,114,101,102,117,115,101,100,0,0,0,0,0,0,0,11,110,111,116,95,103,114,97,110,116,101,100,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,0,0,0,0,0,0,0,7]}"#;
 
 const AD_1: &[u8] = br#"{"seq":1,"ts":1700000000,"action":"hook.register","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"","hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa"}"#;
 const AD_2: &[u8] = br#"{"seq":2,"ts":1700000060,"action":"hook.delete","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa","hash":"33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264"}"#;
 
 // The frozen hashes named explicitly, so a diff of this file shows WHICH digest a change perturbed
 // rather than only "some bytes moved". They are the tail links of each two-record chain.
-const MCP_TAIL_HASH: &str = "721c70456695c90b0085e3ef0170d413a6fa3a1e0ebb65eb02730ab6597ef47a";
+const CALL_TAIL_HASH: &str = "721c70456695c90b0085e3ef0170d413a6fa3a1e0ebb65eb02730ab6597ef47a";
 const AD_TAIL_HASH: &str = "33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264";
 
 // ── A FROZEN-BYTES PLANE STORE ──────────────────────────────────────────────────────────────────
@@ -169,22 +169,22 @@ impl PlaneStore for FrozenStore {
 /// MCP per-call chain (LengthPrefixed, scope-in-digest): the frozen opaque bodies restore through the
 /// REAL boot path and verify byte-identically — zero chain breaks — with the tail hash intact.
 #[test]
-fn mcp_call_chain_boot_verifies_from_frozen_bytes() {
+fn per_call_chain_boot_verifies_from_frozen_bytes() {
     let mut store = FrozenStore::new();
-    store.put(KIND_CALL, Some("vk_alice"), MCP_1);
-    store.put(KIND_CALL, Some("vk_alice"), MCP_2);
+    store.put(KIND_CALL, Some("vk_alice"), CALL_1);
+    store.put(KIND_CALL, Some("vk_alice"), CALL_2);
 
     // The chain position cache is host-side now: register a fresh isolated stream and host-drive the
     // rehydrate. The FROZEN BYTES/HASHES above are unchanged — only the scaffolding that replays them
     // through the durable seam changed. The rehydrate SEEDS positions from the store passed here (the
     // frozen bytes), so the throwaway app the harness registers against is immaterial to the digests.
     let h = crate::calllog::CallTestHarness::over(std::sync::Arc::new(
-        busbar_store_memory::MemoryStore::new(),
+        crate::governance::MemoryStore::new(),
     ));
     let restored = h.restore_from_store(&store).expect("store read");
     assert!(
         restored.chain_breaks.is_empty(),
-        "a persisted MCP chain reported TAMPERED means the digest drifted: {:?}",
+        "a persisted length-prefixed per-call chain reported TAMPERED means the digest drifted: {:?}",
         restored.chain_breaks
     );
     assert_eq!(restored.principals, 1);
@@ -192,8 +192,8 @@ fn mcp_call_chain_boot_verifies_from_frozen_bytes() {
     assert_eq!(restored.empty_chains, 0);
 
     // And the tail hash the pre-cleave build wrote is exactly what the frozen bytes still carry.
-    let tail: FrozenTailDigest = decode(MCP_2).unwrap();
-    assert_eq!(tail.hash, MCP_TAIL_HASH);
+    let tail: FrozenTailDigest = decode(CALL_2).unwrap();
+    assert_eq!(tail.hash, CALL_TAIL_HASH);
 }
 
 // The A2A per-task provenance chain's frozen byte-layout golden RELOCATED to `busbar-a2a` with the
@@ -218,7 +218,7 @@ fn admin_audit_chain_boot_verifies_from_frozen_bytes() {
     // through the durable seam changed. The restore SEEDS positions from the store passed here (the
     // frozen bytes), so the throwaway app the harness registers against is immaterial to the digests.
     let h = crate::plane::auditlog::AuditTestHarness::over(std::sync::Arc::new(
-        busbar_store_memory::MemoryStore::new(),
+        crate::governance::MemoryStore::new(),
     ));
     let restored = h.restore_from_store(&store).expect("store read");
     assert!(
