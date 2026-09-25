@@ -179,7 +179,8 @@ OPERATION_EXCLUDE="crates/api/src/operation.rs"
 #               where it points, so it goes. A bare `responses` appearing under the kernel's admin
 #               now TRIPS, which is the correct answer: put the row back with the diff that needs it.
 #   anthropic : the frozen `DEFAULT_PROTOCOL = "anthropic"` providers.yaml config-grammar default —
-#               its own comment declares it frozen-wire. Pinned to that declaration's own text.
+#               its own comment declares it frozen-wire. Pinned to that declaration's own text, at
+#               its home beside the other `providers:` shapes (architect ruling PROVIDERS-MOVE).
 #   mcp       : THE TWO `mcp|crates/busbar-kernel/src/config/mod.rs` ROWS ARE DELETED (item 2). They
 #               excused the `mcp: McpEndpointSection` field and the `deploy.mcp.0` read as a "frozen"
 #               deploy key, and that claim is false: v1.5.3 and v1.5.5 both ship a 26-field DeployCfg
@@ -187,7 +188,7 @@ OPERATION_EXCLUDE="crates/api/src/operation.rs"
 #               key is 1.6.0-additive, so both lines now REPORT as the core-names-a-plane debt they are.
 ALLOWLIST="responses|crates/busbar-mcp/src/|
 responses|crates/busbar-a2a/src/|
-anthropic|crates/busbar-kernel/src/config/providers.rs|DEFAULT_PROTOCOL"
+anthropic|crates/busbar-substrate-values/src/ir/providers.rs|DEFAULT_PROTOCOL"
 
 # ── THE TEST-SUPPORT MODULE PREPASS ────────────────────────────────────────────────────────────────
 # Emits the file/subtree prefixes of every brace-less `mod NAME;` whose `#[cfg(…)]` predicate NAMES
