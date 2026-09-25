@@ -2171,3 +2171,75 @@ fn a_mid_session_bad_record_is_not_reported_as_a_handshake_failure() {
         );
     }
 }
+
+/// The contract's seam (#40(b)) gives a listener and a dial their configs: the kernel side issues
+/// an OPAQUE [`TransportConfigHandle`] per slot and role, delivers it through
+/// [`TransportConfigSink`], and a real handshake completes over what landed. A handle built as the
+/// wrong type for its role registers nothing, so that slot refuses exactly as an unprovisioned one
+/// does — `KeyUnavailable`, never a half-built config.
+#[tokio::test]
+async fn the_contract_config_handle_is_what_gives_a_listener_and_a_dial_their_configs() {
+    use busbar_contract::transport::{ConfigRole, TransportConfigHandle, TransportConfigSink};
+
+    let (server_cfg, client_cfg) = self_signed();
+    let server = StdArc::new(TlsTransport::new());
+    let client = StdArc::new(TlsTransport::new());
+    let server_sink: &dyn TransportConfigSink = &*server;
+    let client_sink: &dyn TransportConfigSink = &*client;
+    server_sink.register_config(TransportConfigHandle::issue(
+        &FixtureSeal,
+        0,
+        ConfigRole::Listen,
+        server_cfg,
+    ));
+    client_sink.register_config(TransportConfigHandle::issue(
+        &FixtureSeal,
+        0,
+        ConfigRole::Dial,
+        StdArc::clone(&client_cfg),
+    ));
+    // Slot 5: a Listen handle carrying a CLIENT config — the wrong type for its role.
+    server_sink.register_config(TransportConfigHandle::issue(
+        &FixtureSeal,
+        5,
+        ConfigRole::Listen,
+        client_cfg,
+    ));
+
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    assert!(
+        matches!(
+            server.listen(&cfg, &fixture_key(5)).await,
+            Err(TransportError::KeyUnavailable)
+        ),
+        "a handle built as the wrong type for its role must leave the slot empty"
+    );
+
+    let listener = server
+        .listen(&cfg, &fixture_key(0))
+        .await
+        .expect("the Listen handle landed in slot 0");
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key(0))
+        .await
+        .expect("the Dial handle landed in slot 0 and the handshake completes");
+    let server_conn = accept_fut.await.unwrap();
+
+    let payload = b"served under a config the contract handle carried";
+    server
+        .write(&server_conn, StreamId(0), ScratchBytes::new(payload))
+        .await
+        .unwrap();
+    let mut frames = client.frames(client_conn.clone());
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), payload);
+    client.close(client_conn, CloseReason::Normal);
+    server.close(server_conn, CloseReason::Normal);
+}
