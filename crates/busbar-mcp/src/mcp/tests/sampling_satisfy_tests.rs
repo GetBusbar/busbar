@@ -28,7 +28,7 @@ use crate::mcp::test_engine::*;
 use crate::testkit::loopback_http::{MockResponse, MockServer, MockServerState};
 use crate::testkit::TestAppMcpExt;
 use axum::http::StatusCode;
-use busbar_kernel::plane::registry::{register_test_plane, PlaneDecl};
+use busbar_kernel::test_support::seam::{register_test_plane_seam, test_plane_seams};
 use std::sync::Arc;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";
@@ -36,8 +36,8 @@ const SUBJECT: &str = "busbar-own-subject-token-for-the-exchange";
 const ISSUED: &str = "downscoped-access-token-issued-by-the-as";
 /// The model the OPERATOR declares. The completion must run here and nowhere the upstream names.
 const MODEL: &str = "sampler-model";
-/// The dialect the operator's lane speaks — the LLM plane's `openai` codec, registered below the way
-/// the composition root registers it (`busbar_llm::DECLS`).
+/// The dialect the operator's lane speaks — a dialect of the test-linked fallback plane, installed by
+/// [`install_linked_planes`] the way the composition root installs it.
 const OPENAI_PROTOCOL: &str = "openai";
 
 /// The operator's policy: where a granted sampling ask runs, and both ceilings.
@@ -95,20 +95,10 @@ async fn app_with_provider(
         });
     }
     let provider = MockServer::new(state.clone()).await;
-    // The sampling completion runs a REAL upstream chat on the operator's `openai` lane, so the LLM
-    // dialect declarations AND the LLM plane must be registered the way the composition root registers
-    // them: the protocol decls give the openai codec, and the fallback plane row is what makes the LLM
-    // the process fallback plane — so `TestApp::build` seeds the data-plane runtime slot the money path
-    // reads `lanes`/`by_model` through (R3/R4 sub-phase B moved those off the flat `App.llm_runtime`
-    // field into that slot, populated only when a fallback LLM plane is registered).
-    busbar_kernel::proto::register_test_protocols(busbar_llm::DECLS);
-    register_test_plane(&LLM_PLANE);
-    // The resolved-completion synthesizer the sampling re-entry drives (`EngineHost::synthesize_
-    // completion`) — the same seam the composition root installs via `install_completion_ingress`,
-    // seeded here as a test through the neutral `set_test_completion_ingress` hook.
-    busbar_kernel::ingress::arrival::set_test_completion_ingress(
-        busbar_llm::native_ingress::synthesize_completion,
-    );
+    // The sampling completion runs a REAL upstream chat on the operator's `openai` lane, so the
+    // test-linked fallback plane is installed the way the composition root installs it (dialect
+    // declarations, plane row, completion ingress) — see `install_linked_planes`.
+    install_linked_planes();
     let app = test_app()
         .lane(MODEL, OPENAI_PROTOCOL, &provider.base_url())
         .mcp(&mcp_cfg(CANONICAL))
@@ -299,20 +289,10 @@ async fn an_ungranted_sampling_ask_is_still_refused_and_spends_nothing() {
     let provider = MockServer::new(state.clone()).await;
     // The stock registration: all grants false, nothing declared — but the pool EXISTS, so a
     // breach would have somewhere to land.
-    // The sampling completion runs a REAL upstream chat on the operator's `openai` lane, so the LLM
-    // dialect declarations AND the LLM plane must be registered the way the composition root registers
-    // them: the protocol decls give the openai codec, and the fallback plane row is what makes the LLM
-    // the process fallback plane — so `TestApp::build` seeds the data-plane runtime slot the money path
-    // reads `lanes`/`by_model` through (R3/R4 sub-phase B moved those off the flat `App.llm_runtime`
-    // field into that slot, populated only when a fallback LLM plane is registered).
-    busbar_kernel::proto::register_test_protocols(busbar_llm::DECLS);
-    register_test_plane(&LLM_PLANE);
-    // The resolved-completion synthesizer the sampling re-entry drives (`EngineHost::synthesize_
-    // completion`) — the same seam the composition root installs via `install_completion_ingress`,
-    // seeded here as a test through the neutral `set_test_completion_ingress` hook.
-    busbar_kernel::ingress::arrival::set_test_completion_ingress(
-        busbar_llm::native_ingress::synthesize_completion,
-    );
+    // The sampling completion runs a REAL upstream chat on the operator's `openai` lane, so the
+    // test-linked fallback plane is installed the way the composition root installs it (dialect
+    // declarations, plane row, completion ingress) — see `install_linked_planes`.
+    install_linked_planes();
     let app = test_app()
         .lane(MODEL, OPENAI_PROTOCOL, &provider.base_url())
         .mcp(&mcp_cfg(CANONICAL))
@@ -365,20 +345,10 @@ async fn a_granted_ask_with_no_policy_refuses_and_names_the_key() {
     cfg.grants.sampling = true;
     // NO `sampling:` — the grant admits the ask and there is nothing the operator said to answer
     // with.
-    // The sampling completion runs a REAL upstream chat on the operator's `openai` lane, so the LLM
-    // dialect declarations AND the LLM plane must be registered the way the composition root registers
-    // them: the protocol decls give the openai codec, and the fallback plane row is what makes the LLM
-    // the process fallback plane — so `TestApp::build` seeds the data-plane runtime slot the money path
-    // reads `lanes`/`by_model` through (R3/R4 sub-phase B moved those off the flat `App.llm_runtime`
-    // field into that slot, populated only when a fallback LLM plane is registered).
-    busbar_kernel::proto::register_test_protocols(busbar_llm::DECLS);
-    register_test_plane(&LLM_PLANE);
-    // The resolved-completion synthesizer the sampling re-entry drives (`EngineHost::synthesize_
-    // completion`) — the same seam the composition root installs via `install_completion_ingress`,
-    // seeded here as a test through the neutral `set_test_completion_ingress` hook.
-    busbar_kernel::ingress::arrival::set_test_completion_ingress(
-        busbar_llm::native_ingress::synthesize_completion,
-    );
+    // The sampling completion runs a REAL upstream chat on the operator's `openai` lane, so the
+    // test-linked fallback plane is installed the way the composition root installs it (dialect
+    // declarations, plane row, completion ingress) — see `install_linked_planes`.
+    install_linked_planes();
     let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", cfg)
@@ -490,7 +460,21 @@ fn the_sampling_policy_is_refused_at_boot_when_it_cannot_mean_what_it_says() {
     );
 }
 
-/// The llm plane's registry row, assembled kernel-side from its contract declaration
-/// and its behaviour table.
-static LLM_PLANE: PlaneDecl =
-    PlaneDecl::assemble(busbar_llm::PLANE_DECLARATION, busbar_llm::PLANE_HOOKS);
+// THE TEST-LINKED PLANES (SEAM-T; architect rulings "K3 intake list" / N05). The fallback plane whose
+// model lane the sampling completion runs on is linked as DATA — `[package.metadata.busbar]
+// test-linked` in Cargo.toml, emitted by build.rs as `$OUT_DIR/test_linked.rs` — so this plane's
+// source names no other plane: "a plugin tests itself; the kernel never tests or names a plugin".
+include!(concat!(env!("OUT_DIR"), "/test_linked.rs"));
+
+/// Install every test-linked plane exactly as the composition root installs it in production: its
+/// protocol declarations, its plane row (the fallback row `TestApp::build` seeds the data-plane
+/// runtime slot from) and its ingress seams, the completion synthesizer the sampling re-entry drives
+/// among them. Idempotent: every entry's install is first-wins.
+fn install_linked_planes() {
+    for entry in TEST_LINKED {
+        register_test_plane_seam(entry);
+    }
+    for seam in test_plane_seams() {
+        (seam.install)();
+    }
+}

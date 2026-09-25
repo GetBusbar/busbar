@@ -26,6 +26,12 @@ license = "Apache-2.0"
 name = "busbar_mcp"
 path = "src/lib.rs"
 
+# THE TEST-LINKED PLANES (SEAM-T): the dev-dependency plane crate `mcp/tests/sampling_satisfy_tests.rs`
+# installs (the fallback plane whose model lane a sampling completion runs on). build.rs emits
+# `$OUT_DIR/test_linked.rs` from this list, so the test's source names no other plane.
+[package.metadata.busbar]
+test-linked = ["busbar-llm"]
+
 [dependencies]
 # THE SEAL (1.6.0): busbar-core is no longer a PRODUCTION dependency of this plugin. The default
 # build compiles with NO busbar-core in its closure — every former `busbar_core::` reach is served by
@@ -144,11 +150,12 @@ test-support = [    "busbar-kernel/test-support",
 [dev-dependencies]
 serde_json = { workspace = true }
 tracing-subscriber = { workspace = true }
-# THE LLM PROTOCOL crate, dev-only: the MCP sampling suite drives a REAL upstream chat completion on
-# the operator's model (`protocol: openai`), so it must register the LLM dialect declarations the way
-# the composition root does — the codec the deleted `#[path]` witness used to net into core's test
-# binary. A dev-dep back-edge, not linked into any shipped target.
-busbar-llm = { path = "../busbar-llm" }
+# THE TEST-LINKED FALLBACK PLANE, dev-only: the MCP sampling suite drives a REAL upstream chat
+# completion on the operator's model (`protocol: openai`), so it installs this crate's
+# `testkit::TEST_SEAM` (listed in `[package.metadata.busbar] test-linked` above; build.rs emits the
+# table) the way the composition root installs the plane — `test-support` is what exports that entry.
+# A dev-dep back-edge, not linked into any shipped target.
+busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 # Test-only crates the MCP plane's own `test-support` suite names — reachable through busbar-core's
 # dev-deps under the old dual-compile, declared here now that the suite runs in this crate's own binary.
 reqwest = { workspace = true, features = ["json"] }
