@@ -14,6 +14,10 @@
 // The neutral resolved-primitives param bag a cross-protocol egress hop passes to a handle's
 // `prepare_for_egress` (all primitives — no concrete IR). Relocated from `busbar-core` at Batch C-1.
 pub mod egress_prep;
+// A provider entry's lane-capability keys (the egress writer's vocabulary): their config grammar and
+// the resolution against a lane's wire model. Relocated OUT of the kernel (architect ruling
+// LANECAPS-MOVE).
+pub mod lane_caps;
 // THE ONE PROJECTION — the family-blind seam the shared pipeline reads a request through, plus the
 // sealed neutral `IrHandle` the engine drives translation through and the four neutral operation
 // handles. Relocated from `busbar-core` at Batches C-2/C-4.

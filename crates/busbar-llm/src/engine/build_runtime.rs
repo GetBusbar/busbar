@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use busbar_kernel::config::providers::{ProviderCfg, ProviderDef, ProviderDeploy};
+pub(crate) use busbar_kernel::config::providers::{ProviderCfg, ProviderDef, ProviderDeploy};
 use busbar_kernel::plane_host::{AuthStyleInput, OnExhaustedInput, PlaneBuildInput, PlaneSlots};
 
 use busbar_kernel::egress_auth::{self, MetadataSsrfPolicy};

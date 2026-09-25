@@ -291,6 +291,12 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         // to the census (`busbar-contract` matches none of `core_roots`'s core-kind names) and reads
         // as a straight deletion.
         "crates/busbar-contract/src/config.rs".to_string(),
+        // `MaxOutputKeyCfg` / `ModelCapabilities` — a provider entry's LANE-CAPABILITY keys (the
+        // LLM plane's vocabulary). Moved VERBATIM out of `busbar-kernel/src/config/providers.rs` to
+        // the plane side (architect ruling LANECAPS-MOVE), which still declares the provider
+        // fields that carry them; a tracked SOURCE relocation exactly like `ModelCfg` above, so the
+        // snapshot does not move by a byte.
+        "crates/busbar-substrate-values/src/ir/lane_caps.rs".to_string(),
         core_file(cx, &core, "auth/mod.rs")?,
         format!("{a2a}/config.rs"),
         // `oauth_as:` — including the `default_grant` CEILING that decides what a self-registered

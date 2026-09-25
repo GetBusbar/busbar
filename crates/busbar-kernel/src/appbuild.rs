@@ -839,8 +839,17 @@ pub fn build_app_from_config(
             attempt_timeout_ms: ld.attempt_timeout_ms,
             reasoning: ld.reasoning,
             prompt_caching: ld.prompt_caching,
-            lane_caps: provider_cfg
-                .lane_caps_for(ld.upstream_model.as_deref().unwrap_or(&ld.model)),
+            // The provider entry's lane-capability keys, carried unread and resolved against the
+            // lane's wire model by `ir::lane_caps`, which owns them (architect ruling LANECAPS-MOVE).
+            lane_caps: busbar_substrate_values::ir::lane_caps::resolve_lane_caps(
+                busbar_substrate_values::ir::lane_caps::ProviderLaneCaps {
+                    max_output_key: provider_cfg.max_output_key,
+                    anthropic_adaptive_thinking: provider_cfg.anthropic_adaptive_thinking,
+                    native_structured_output: provider_cfg.native_structured_output,
+                },
+                &provider_cfg.model_capabilities,
+                ld.upstream_model.as_deref().unwrap_or(&ld.model),
+            ),
             max_concurrent: ld.max,
             limited: ld.limited,
             budget: ld.budget,
