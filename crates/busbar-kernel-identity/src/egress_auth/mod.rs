@@ -14,7 +14,11 @@
 //! ## What is in here
 //!
 //! - [`Scheme`] and [`decorate`] — the egress-auth schemes actually shipped: bearer, a static
-//!   custom header (`api-key` / `x-goog-api-key`), and per-request AWS SigV4.
+//!   custom header (`api-key` / `x-goog-api-key`), and per-request AWS SigV4 (with a temporary
+//!   credential's session token).
+//! - [`bearer_auth_headers`] and [`api_key_auth_headers`] — the two static credential header
+//!   builders, whose one legality rule ([`is_legal_header_value`]) `decorate` applies too, so a slot
+//!   substituted here and a header built here are the same bytes.
 //! - [`sigv4`] — the signer itself, verified against AWS's published worked example.
 //! - [`substitute`] — applies a decoration's [`SecretSlot`]s to an envelope exactly once each.
 //! - [`lane_cross_check`] — the post-decoration re-check: the envelope must still equal the
@@ -58,8 +62,12 @@ pub struct EgressBody<'a> {
 /// build the right decoration; there is no scheme-specific state beyond what is named here (a
 /// self-minting scheme, e.g. a future OAuth client-credentials egress, would carry its own token
 /// cache elsewhere and hand `decorate` an already-minted bearer value).
+///
+/// The lifetime is the lane's: the kernel builds a `Scheme` from the protocol's DECLARED scheme
+/// plus the lane's resolved, non-secret configuration (the access key id, the region, a session
+/// token), so none of it has to be `'static`.
 #[derive(Debug, Clone)]
-pub enum Scheme {
+pub enum Scheme<'a> {
     /// `Authorization: Bearer <key>` — a plain bearer credential in the standard header.
     Bearer,
     /// A static custom header carrying the raw key verbatim: e.g. `api-key` or
@@ -73,20 +81,74 @@ pub enum Scheme {
     /// separately, exactly like every other scheme.
     SigV4 {
         /// The non-secret AWS access key id.
-        access_key_id: &'static str,
+        access_key_id: &'a str,
         /// The AWS region the request is scoped to.
-        region: &'static str,
+        region: &'a str,
         /// The AWS service name this scheme is configured to sign for.
-        service: &'static str,
+        service: &'a str,
+        /// A temporary credential's session token, when the lane has one. It is sent as its own
+        /// header AND folded into the signed set, so the two can never disagree; a token that is
+        /// not a legal header value decorates nothing (see [`decorate`]).
+        session_token: Option<SessionToken<'a>>,
     },
 }
 
-/// Whether `s` is safe to carry as an HTTP header value: no ASCII control byte (0x00-0x1F, 0x7F).
-/// A config system that injects a stray CR/LF/NUL must not produce a request-smuggling header; the
+/// A temporary credential's session token. A newtype only so that it prints redacted: a
+/// [`Scheme`] logged with `{:?}` shows that a token is present, never the token.
+#[derive(Clone, Copy)]
+pub struct SessionToken<'a>(pub &'a str);
+
+impl std::fmt::Debug for SessionToken<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SessionToken(<redacted>)")
+    }
+}
+
+/// Whether `s` is a legal HTTP header value — byte for byte the rule the `http` crate's
+/// `HeaderValue::from_str` applies (every byte `>= 0x20` except DEL `0x7F`, plus horizontal tab),
+/// which is the rule every egress credential header builder has always been judged by. A config
+/// system that injects a stray CR/LF/NUL must not produce a request-smuggling header; the
 /// egress-auth unit omits the header entirely instead (the upstream then answers 401, exactly like
-/// every other misconfigured-credential path).
-fn is_valid_header_value(s: &str) -> bool {
-    !s.bytes().any(|b| b.is_ascii_control())
+/// every other misconfigured-credential path). Spelled here rather than borrowed so this crate takes
+/// no HTTP-stack dependency; `tests::header_value_rule_is_the_http_crate_rule` pins the table.
+pub fn is_legal_header_value(s: &str) -> bool {
+    s.bytes().all(|b| (b >= 0x20 && b != 0x7F) || b == b'\t')
+}
+
+/// The `Authorization` value for a bearer credential: the one place the scheme word and the
+/// credential are joined, shared by [`bearer_auth_headers`] and [`substitute`].
+fn token_value(key: &str) -> String {
+    format!("Bearer {key}")
+}
+
+/// The static bearer egress credential: `authorization: Bearer <key>`, or NO header when the key
+/// carries a byte that is not a legal header value (the upstream then answers 401). Header name and
+/// value, as the envelope pairs this unit speaks.
+///
+/// This is the body of the header builder the dialects shared (`proto::bearer_auth_headers`),
+/// moved to the unit that owns egress credentials so the kernel can present the credential and no
+/// plane ever holds the key. The omission is the whole policy; REPORTING it is the caller's — the
+/// kernel owns the diagnostics catalog and this crate takes no logging dependency, so an empty
+/// result for a non-empty key is the signal the caller turns into its coded diagnostic. The key
+/// itself is never logged, here or there.
+pub fn bearer_auth_headers(key: &str) -> Vec<(String, String)> {
+    if !is_legal_header_value(key) {
+        return Vec::new();
+    }
+    vec![("authorization".to_string(), token_value(key))]
+}
+
+/// The static custom-header egress credential (`api-key`, `x-goog-api-key`, …) carrying the raw key
+/// verbatim, or NO header when the key carries a byte that is not a legal header value. `header` is
+/// the lowercase header name the scheme declares.
+///
+/// The body of the shared builder `proto::api_key_auth_headers`, moved here beside
+/// [`bearer_auth_headers`]; the same omission and reporting rule applies.
+pub fn api_key_auth_headers(header: &'static str, key: &str) -> Vec<(String, String)> {
+    if !is_legal_header_value(key) {
+        return Vec::new();
+    }
+    vec![(header.to_string(), key.to_string())]
 }
 
 /// Decorate an outbound request for `scheme`, given the already-resolved `secret`. Only the
@@ -99,26 +161,30 @@ fn is_valid_header_value(s: &str) -> bool {
 /// goes on the wire is a SIGNATURE, a value derived from the secret that does not itself let anyone
 /// recover it, so it is written into `fields` directly and the decoration carries no slot.
 ///
-/// An un-encodable key (an ASCII control byte a config system may have injected) yields the
-/// no-header decoration — the upstream then answers 401, the same graceful path every dialect
-/// already takes for a malformed credential.
+/// An un-encodable key (a byte [`is_legal_header_value`] refuses) yields the no-header decoration —
+/// the upstream then answers 401, the same graceful path every dialect already takes for a
+/// malformed credential. For SigV4 the same holds for an empty access key id or secret, a session
+/// token that is not a legal header value, and an access key id that would make the
+/// `Authorization` value illegal: each decorates nothing rather than signing over a header that
+/// cannot be sent.
 pub fn decorate(
     token: &Grant<Sign>,
-    scheme: &Scheme,
+    scheme: &Scheme<'_>,
     secret: &str,
     body: &EgressBody<'_>,
 ) -> AuthDecoration {
+    let nothing = || AuthDecoration::decorate(token, Vec::new(), false, Vec::new());
     match scheme {
         Scheme::Bearer => {
-            if !is_valid_header_value(secret) {
-                return AuthDecoration::decorate(token, Vec::new(), false, Vec::new());
+            if !is_legal_header_value(secret) {
+                return nothing();
             }
             let slot = SecretSlot::declare(token, "header:authorization:token");
             AuthDecoration::decorate(token, Vec::new(), false, vec![slot])
         }
         Scheme::ApiKeyHeader { header } => {
-            if !is_valid_header_value(secret) {
-                return AuthDecoration::decorate(token, Vec::new(), false, Vec::new());
+            if !is_legal_header_value(secret) {
+                return nothing();
             }
             let slot = SecretSlot::declare(token, format!("header:{header}:raw"));
             AuthDecoration::decorate(token, Vec::new(), false, vec![slot])
@@ -127,7 +193,16 @@ pub fn decorate(
             access_key_id,
             region,
             service,
+            session_token,
         } => {
+            // Validated BEFORE signing, so the signed set and the sent set are gated by the same
+            // check: a token the wire cannot carry must not be signed over and then dropped.
+            if access_key_id.is_empty()
+                || secret.is_empty()
+                || session_token.is_some_and(|t| !is_legal_header_value(t.0))
+            {
+                return nothing();
+            }
             let (amzdate, datestamp) = sigv4::format_amz_time(body.timestamp_epoch);
             let payload_hash = sigv4::sha256_hex(body.body);
             // SET, never append. Signing is re-run per attempt over whatever envelope encoding
@@ -138,6 +213,9 @@ pub fn decorate(
             let mut headers: Vec<(String, String)> = body.envelope.to_vec();
             set_header(&mut headers, "x-amz-date", amzdate.clone());
             set_header(&mut headers, "x-amz-content-sha256", payload_hash.clone());
+            if let Some(SessionToken(t)) = session_token {
+                set_header(&mut headers, "x-amz-security-token", t.to_string());
+            }
             let (signature, signed_headers) = sigv4::sign_v4(
                 secret,
                 region,
@@ -158,16 +236,20 @@ pub fn decorate(
                 "{} Credential={access_key_id}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}",
                 sigv4::SIGV4_ALGORITHM
             );
-            AuthDecoration::decorate(
-                token,
-                vec![
-                    ("authorization".to_string(), authorization),
-                    ("x-amz-date".to_string(), amzdate),
-                    ("x-amz-content-sha256".to_string(), payload_hash),
-                ],
-                true,
-                Vec::new(),
-            )
+            // The access key id rides in this value verbatim, so it is the one input that can make
+            // it unsendable; the date and the hash are always legal.
+            if !is_legal_header_value(&authorization) {
+                return nothing();
+            }
+            let mut fields = vec![
+                ("authorization".to_string(), authorization),
+                ("x-amz-date".to_string(), amzdate),
+                ("x-amz-content-sha256".to_string(), payload_hash),
+            ];
+            if let Some(SessionToken(t)) = session_token {
+                fields.push(("x-amz-security-token".to_string(), t.to_string()));
+            }
+            AuthDecoration::decorate(token, fields, true, Vec::new())
         }
     }
 }
@@ -217,7 +299,7 @@ pub fn substitute(
             continue;
         };
         let value = match template {
-            "token" => format!("Bearer {secret}"),
+            "token" => token_value(secret),
             "raw" => secret.to_string(),
             _ => continue,
         };

@@ -21,6 +21,20 @@ fn sealed_destination() -> VerifiedDestination {
     )
 }
 
+/// The request-signing scheme of AWS's published worked example (`us-east-1`, `iam`) for an access
+/// key id (`AKIDEXAMPLE` in the example), optionally with a temporary credential's session token.
+fn example_signing_scheme(
+    access_key_id: &'static str,
+    session_token: Option<&'static str>,
+) -> Scheme<'static> {
+    Scheme::SigV4 {
+        access_key_id,
+        region: "us-east-1",
+        service: "iam",
+        session_token: session_token.map(SessionToken),
+    }
+}
+
 fn empty_body() -> EgressBody<'static> {
     EgressBody {
         method: "POST",
@@ -178,11 +192,7 @@ fn sigv4_scheme_matches_aws_worked_example_end_to_end() {
     };
     let decoration = decorate(
         &t,
-        &Scheme::SigV4 {
-            access_key_id: "AKIDEXAMPLE",
-            region: "us-east-1",
-            service: "iam",
-        },
+        &example_signing_scheme("AKIDEXAMPLE", None),
         "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
         &body,
     );
@@ -274,11 +284,7 @@ fn sigv4_scheme_matches_aws_worked_example_end_to_end() {
 #[test]
 fn sigv4_re_signing_an_already_decorated_envelope_signs_the_fields_once() {
     let t = token();
-    let scheme = Scheme::SigV4 {
-        access_key_id: "AKIDEXAMPLE",
-        region: "us-east-1",
-        service: "iam",
-    };
+    let scheme = example_signing_scheme("AKIDEXAMPLE", None);
     let secret = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
     let host = ("host".to_string(), "iam.amazonaws.com".to_string());
 
@@ -480,4 +486,212 @@ fn lane_cross_check_reads_the_sealed_destination_not_the_callers_expectation() {
     // A decoration that DROPPED the field fails closed: an envelope with no destination in it is
     // not one whose destination was checked.
     assert!(lane_cross_check(&verified, "host", &[]).is_err());
+}
+
+// ── THE MOVED HEADER BUILDERS (#83a SD-2, O7): one legality rule, two ways to present a key ──────
+
+/// Keys a config system can hand the egress path, each with whether the `http` crate's
+/// `HeaderValue::from_str` (the rule the dialects' shared builders judged a key by) admits it.
+/// Tab is the case the unit's earlier `is_ascii_control` rule refused and the wire admitted.
+const KEY_VECTORS: &[(&str, bool)] = &[
+    ("sk-test-123", true),
+    ("", true),
+    ("sk\tkey", true),
+    ("klucz-\u{142}-\u{e9}", true),
+    ("sk\r\ninjected", false),
+    ("sk\nkey", false),
+    ("sk\u{0}key", false),
+    ("sk\u{1}key", false),
+    ("sk\u{7f}key", false),
+];
+
+/// `bearer_auth_headers` presents `authorization: Bearer <key>` for every key the wire admits and
+/// omits the header for every key it refuses — and `decorate` + `substitute` over the same key
+/// writes exactly the same pairs, so the slot path and the builder path are one set of bytes.
+#[test]
+fn bearer_builder_and_decorated_slot_agree_on_every_key() {
+    let t = token();
+    for &(key, legal) in KEY_VECTORS {
+        let built = bearer_auth_headers(key);
+        let expected = if legal {
+            vec![("authorization".to_string(), format!("Bearer {key}"))]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(built, expected, "builder, key {key:?}");
+        let decorated = substitute(
+            &decorate(&t, &Scheme::Bearer, key, &empty_body()),
+            key,
+            Vec::new(),
+        );
+        assert_eq!(
+            decorated, built,
+            "decorate+substitute vs builder, key {key:?}"
+        );
+    }
+}
+
+/// The custom-header builder carries the raw key verbatim under the declared name, with the same
+/// omission rule, and agrees with the decorated slot byte for byte.
+#[test]
+fn custom_header_builder_and_decorated_slot_agree_on_every_key() {
+    let t = token();
+    for &(key, legal) in KEY_VECTORS {
+        let built = api_key_auth_headers("x-goog-api-key", key);
+        let expected = if legal {
+            vec![("x-goog-api-key".to_string(), key.to_string())]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(built, expected, "builder, key {key:?}");
+        let scheme = Scheme::ApiKeyHeader {
+            header: "x-goog-api-key",
+        };
+        let decorated = substitute(&decorate(&t, &scheme, key, &empty_body()), key, Vec::new());
+        assert_eq!(
+            decorated, built,
+            "decorate+substitute vs builder, key {key:?}"
+        );
+    }
+}
+
+/// The legality rule is the `http` crate's `HeaderValue` rule — the rule a sent header is actually
+/// held to — written out as its table over every ASCII byte: the C0 controls and DEL are refused
+/// except horizontal tab, everything else (and every non-ASCII byte) is admitted. So the unit never
+/// omits a header the wire would carry, nor builds one the wire would refuse.
+#[test]
+fn header_value_rule_is_the_http_crate_rule() {
+    for b in 0u8..=0x7F {
+        let refused = (b < 0x20 && b != b'\t') || b == 0x7F;
+        let s = format!("k{}k", b as char);
+        assert_eq!(is_legal_header_value(&s), !refused, "byte {b:#04x}");
+    }
+    for &(key, legal) in KEY_VECTORS {
+        assert_eq!(is_legal_header_value(key), legal, "key {key:?}");
+    }
+}
+
+/// A temporary credential's session token is SENT and SIGNED: it lands in the envelope as
+/// `x-amz-security-token`, it is in `SignedHeaders`, and the signature is the one `sign_v4` computes
+/// over exactly the set the dialect writer signed (`content-type`, `host`, the two `x-amz-*` fields
+/// and the token). The header set and the parameter order are written out here rather than read off
+/// `decorate`, so a dropped or transposed input disagrees.
+#[test]
+fn session_token_is_sent_and_signed_over_the_writer_header_set() {
+    let t = token();
+    let secret = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
+    let envelope = vec![
+        ("content-type".to_string(), "application/json".to_string()),
+        (
+            "host".to_string(),
+            "runtime.us-east-1.amazonaws.com".to_string(),
+        ),
+    ];
+    let body = EgressBody {
+        method: "POST",
+        canonical_uri: "/model/m/converse",
+        canonical_querystring: "",
+        envelope: &envelope,
+        body: br#"{"messages":[]}"#,
+        timestamp_epoch: 1_440_938_160,
+    };
+    let decoration = decorate(
+        &t,
+        &example_signing_scheme("AKIDEXAMPLE", Some("SESSIONTOKEN")),
+        secret,
+        &body,
+    );
+    let sent = substitute(&decoration, secret, envelope.clone());
+    let field = |name: &str| {
+        sent.iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| panic!("{name} is sent"))
+    };
+    assert_eq!(field("x-amz-security-token"), "SESSIONTOKEN");
+
+    let payload_hash = field("x-amz-content-sha256");
+    let signed_over = vec![
+        envelope[0].clone(),
+        envelope[1].clone(),
+        ("x-amz-content-sha256".to_string(), payload_hash.clone()),
+        ("x-amz-date".to_string(), "20150830T123600Z".to_string()),
+        (
+            "x-amz-security-token".to_string(),
+            "SESSIONTOKEN".to_string(),
+        ),
+    ];
+    let (signature, signed_headers) = sigv4::sign_v4(
+        secret,
+        "us-east-1",
+        "iam",
+        "POST",
+        "/model/m/converse",
+        "",
+        &signed_over,
+        &payload_hash,
+        "20150830T123600Z",
+        "20150830",
+    );
+    assert_eq!(
+        signed_headers,
+        "content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token"
+    );
+    assert_eq!(
+        field("authorization"),
+        format!(
+            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/iam/aws4_request, \
+             SignedHeaders={signed_headers}, Signature={signature}"
+        )
+    );
+}
+
+/// Every credential the dialect writer refused to sign with decorates NOTHING here: a session token
+/// the wire cannot carry (signing over it and then dropping it is a guaranteed signature mismatch),
+/// an empty secret, and an empty access key id.
+#[test]
+fn unsendable_or_incomplete_signing_credentials_decorate_nothing() {
+    let t = token();
+    let envelope = vec![("host".to_string(), "iam.amazonaws.com".to_string())];
+    let body = EgressBody {
+        method: "POST",
+        canonical_uri: "/",
+        canonical_querystring: "",
+        envelope: &envelope,
+        body: b"{}",
+        timestamp_epoch: 1_440_938_160,
+    };
+    let secret = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
+    for (scheme, secret) in [
+        (
+            example_signing_scheme("AKIDEXAMPLE", Some("TOK\r\nEN")),
+            secret,
+        ),
+        (
+            example_signing_scheme("AKIDEXAMPLE", Some("TOK\u{1}EN")),
+            secret,
+        ),
+        (example_signing_scheme("AKIDEXAMPLE", None), ""),
+    ] {
+        let decoration = decorate(&t, &scheme, secret, &body);
+        assert_eq!(
+            substitute(&decoration, secret, envelope.clone()),
+            envelope,
+            "{scheme:?} must add nothing to the envelope"
+        );
+    }
+    let no_access_key = example_signing_scheme("", None);
+    let decoration = decorate(&t, &no_access_key, secret, &body);
+    assert_eq!(substitute(&decoration, secret, envelope.clone()), envelope);
+}
+
+/// A logged scheme shows that a session token is present and never the token itself.
+#[test]
+fn a_logged_scheme_redacts_its_session_token() {
+    let printed = format!(
+        "{:?}",
+        example_signing_scheme("AKIDEXAMPLE", Some("SESSIONTOKEN"))
+    );
+    assert!(!printed.contains("SESSIONTOKEN"), "{printed}");
+    assert!(printed.contains("<redacted>"), "{printed}");
 }

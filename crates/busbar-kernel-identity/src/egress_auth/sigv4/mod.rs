@@ -186,5 +186,20 @@ pub fn sign_v4(
     (signature, signed_headers)
 }
 
+/// Split a signing lane's configured credential, `ACCESS_KEY_ID:SECRET[:SESSION_TOKEN]`, into its
+/// three parts: the non-secret access key id, the signing secret, and the optional session token
+/// (everything after the second `:`, colons included). `None` — sign nothing — when either of the
+/// first two is missing or empty, the same misconfiguration rule the dialect writer applied when it
+/// parsed this string itself.
+pub fn split_credential(raw: &str) -> Option<(&str, &str, Option<&str>)> {
+    let mut parts = raw.splitn(3, ':');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(access), Some(secret), token) if !access.is_empty() && !secret.is_empty() => {
+            Some((access, secret, token))
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests;
