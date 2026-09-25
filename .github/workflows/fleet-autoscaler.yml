@@ -254,6 +254,11 @@ jobs:
     needs: resolve
     runs-on: latchkey-small
     timeout-minutes: 30
+    # OWNER RULING Q39: the install.sh and site rows read getbusbar.com through lib.sh's
+    # http_code/fetch, which route via site_curl (scripts/release-gate/site-curl.sh) and send the
+    # Cloudflare WAF skip rule's X-Busbar-Verify header -- to getbusbar.com hosts only.
+    env:
+      SITE_VERIFY_TOKEN: ${{ secrets.SITE_VERIFY_TOKEN }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # helm:render is a hard FAIL if helm is absent (a defect in this workflow, not a release fact),
@@ -261,7 +266,18 @@ jobs:
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
         with:
           version: v3.16.2
+      # An empty token is refused HERE, by name, and the channel sweep below still runs (every
+      # non-site row is still worth recording); its getbusbar.com rows then read `no-token`, which
+      # is not a Cloudflare-block signature, so they FAIL rather than SKIP.
+      - name: "Q39: SITE_VERIFY_TOKEN is present"
+        run: |
+          if [ -z "${SITE_VERIFY_TOKEN:-}" ]; then
+            echo "::error::SITE_VERIFY_TOKEN is empty in this job, so no getbusbar.com request can carry the X-Busbar-Verify header the Q39 Cloudflare WAF skip rule matches (OWNER RULING Q39). The install.sh and site rows FAIL rather than being sent bare into the 403/429. Fix: the repo secret SITE_VERIFY_TOKEN must exist on GetBusbar/busbar and reach this job (job env maps secrets.SITE_VERIFY_TOKEN; a workflow_call caller needs secrets: inherit; a fork pull_request gets no secrets)."
+            exit 1
+          fi
+          echo "::add-mask::${SITE_VERIFY_TOKEN}"
       - name: Verify every downstream channel
+        if: ${{ !cancelled() }}
         env:
           LEDGER: ${{ runner.temp }}/ledger-channels.tsv
           VERSION: ${{ needs.resolve.outputs.version }}

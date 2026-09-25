@@ -35,6 +35,12 @@ DRIFT = WF + "/sched-llm-spec-drift.yml"
 MIRROR = WF + "/sched-ci-images-mirror.yml"
 TARGETS = ".github/release-targets.json"
 REQUIRED_DOC = ".github/required-status-checks.md"
+# OWNER RULING Q39: the one site_curl definition, and the release-gate scripts that read the site.
+RG = "scripts/release-gate"
+SITE_CURL = RG + "/site-curl.sh"
+LIB = RG + "/lib.sh"
+CHANNELS = RG + "/channel-checks.sh"
+FLEET = WF + "/fleet-autoscaler.yml"
 # The workflow files this slot owns and holds to the shell-shape invariants (352, 343, 356, 358).
 OWNED = [CI, VD, RS, KP, DRIFT]
 
@@ -93,6 +99,12 @@ def load_tree(root):
         if os.path.exists(p):
             with open(p, encoding="utf-8") as f:
                 tree[rel] = f.read()
+    rg = os.path.join(root, RG)
+    if os.path.isdir(rg):
+        for rel in sorted(os.listdir(rg)):
+            if rel.endswith(".sh"):
+                with open(os.path.join(rg, rel), encoding="utf-8") as f:
+                    tree[RG + "/" + rel] = f.read()
     tree["@audit-ledger-exists"] = os.path.exists(os.path.join(root, "qa/audit-ledger.json"))
     return tree
 
@@ -584,6 +596,143 @@ def c_owed_gate_all(tree):
     return bad
 
 
+# A getbusbar.com host (the apex or any subdomain: docs., api., ...), and a curl/wget that is NOT
+# site_curl. `_` counts as a word character, so `site_curl` never matches the bare form.
+_SITE_URL = re.compile(r"(?i)(?<![\w.-])(?:[a-z0-9-]+\.)*getbusbar\.com(?![\w-])")
+_BARE_FETCH = re.compile(r"(?<![\w./-])(curl|wget)(?=\s|$)")
+_SITE_SRC = '. "$RUNNER_TEMP/site-curl.sh"'
+_SITE_WRITER = re.compile(r'^(\s*)cat > "\$RUNNER_TEMP/site-curl\.sh" <<\'SH\'\s*$')
+
+
+def _logical(pairs):
+    """Join backslash-continued shell lines: [(first_line_no, text)], comments dropped."""
+    out, cur, at = [], "", None
+    for n, raw in pairs:
+        t = raw.strip()
+        if not cur and (not t or t.startswith("#")):
+            continue
+        if at is None:
+            at = n
+        if t.endswith("\\"):
+            cur += t[:-1] + " "
+            continue
+        out.append((at, cur + t))
+        cur, at = "", None
+    if cur:
+        out.append((at, cur))
+    return out
+
+
+def _code(t):
+    """Drop a trailing `  # comment` (whitespace, #, whitespace): prose, not a command."""
+    return re.sub(r"\s#\s.*$", "", t)
+
+
+def _bare_site_fetches(rel, pairs):
+    bad = []
+    for n, t in _logical((n, _code(x)) for n, x in pairs):
+        # a MESSAGE naming the documented one-liner is not a fetch: skip echo/record/string lines and
+        # drop \`...\` spans (the `curl -fsSL https://getbusbar.com/install.sh | sh` quoted to users)
+        if re.match(r"""^(\{\s*)?(echo|printf|record|declared)\b|^["']""", t):
+            continue
+        t = re.sub(r"\\`.*?\\`", "", t)
+        if _SITE_URL.search(t) and _BARE_FETCH.search(t):
+            bad.append("%s:%d a getbusbar.com fetch WITHOUT the X-Busbar-Verify header (bare curl/wget, "
+                       "not site_curl) -- Cloudflare answers it 403/429: `%s`" % (rel, n, t[:90]))
+    return bad
+
+
+def _fn_body(text, name):
+    m = re.search(r"^%s\(\) \{.*?^\}" % re.escape(name), text, re.M | re.S)
+    return m.group(0) if m else ""
+
+
+def c_q39(tree):
+    """(Q39) every getbusbar.com fetch in CI sends X-Busbar-Verify via site_curl, scoped, never empty."""
+    bad = []
+    helper = tree.get(SITE_CURL)
+    if helper is None:
+        return ["%s: missing -- the one site_curl definition (OWNER RULING Q39)" % SITE_CURL]
+    if "X-Busbar-Verify: %s" not in helper or "getbusbar.com|*.getbusbar.com)" not in helper:
+        bad.append("%s: no longer sends `X-Busbar-Verify` scoped to getbusbar.com hosts" % SITE_CURL)
+    # 1. no workflow run body and no release-gate script fetches getbusbar.com bare
+    wfs = sorted(k for k in tree if k.startswith(WF + "/") and k.endswith((".yml", ".yaml")))
+    for rel in wfs:
+        for start, body, _ in run_blocks(lines(tree, rel)):
+            bad += _bare_site_fetches(rel, [(start + i + 1, b) for i, b in enumerate(body)])
+            if re.search(r"\$\{\{\s*secrets\.SITE_VERIFY_TOKEN\s*\}\}", "\n".join(body)):
+                bad.append("%s:%d SITE_VERIFY_TOKEN spliced into script text -- pass it as env" % (rel, start))
+    for rel in sorted(k for k in tree if k.startswith(RG + "/") and k.endswith(".sh")):
+        bad += _bare_site_fetches(rel, list(enumerate(tree[rel].split("\n"), 1)))
+    # 2. lib.sh's two site readers go through site_curl, which lib.sh sources
+    lib = tree.get(LIB, "")
+    for fn, want in (("http_code", "site_curl "), ("fetch", 'site_curl "${CURL_OPTS[@]}"')):
+        body = "\n".join(_code(x) for x in _fn_body(lib, fn).split("\n"))
+        if want not in body or _BARE_FETCH.search(body):
+            bad.append("%s: %s() does not fetch through `%s` -- the site rows go out bare" % (LIB, fn, want.strip()))
+    if not re.search(r'^\. "\$\(dirname "\$\{BASH_SOURCE\[0\]\}"\)/site-curl\.sh"', lib, re.M):
+        bad.append("%s: does not source site-curl.sh" % LIB)
+    # 3. every job that reads the site: the token as job env, an empty-token refusal, a mask; and in
+    #    a job with no checkout, a VERBATIM heredoc copy of site-curl.sh that every user sources
+    site_jobs = 0
+    for rel in wfs:
+        ls = lines(tree, rel)
+        for job, js, je in job_spans(ls):
+            blocks = [(st, b) for st, b, _ in run_blocks(ls) if js < st <= je]
+            text = "\n".join("\n".join(b) for _, b in blocks)
+            if "site_curl" not in text and "release-gate/channel-checks.sh" not in text:
+                continue
+            site_jobs += 1
+            where = "%s job `%s`" % (rel, job)
+            steps_at = next((q for q in range(js, je) if re.match(r"^    steps:\s*$", ls[q])), je)
+            if not any(re.match(r"^      SITE_VERIFY_TOKEN: \$\{\{ secrets\.SITE_VERIFY_TOKEN \}\}", ls[q])
+                       for q in range(js, steps_at)):
+                bad.append("%s reads getbusbar.com but has no job env "
+                           "`SITE_VERIFY_TOKEN: ${{ secrets.SITE_VERIFY_TOKEN }}`" % where)
+            refuses = False
+            for _, b in blocks:
+                bt = [x.strip() for x in b]
+                for i, x in enumerate(bt):
+                    if x == 'if [ -z "${SITE_VERIFY_TOKEN:-}" ]; then':
+                        arm = bt[i + 1:i + 4]
+                        if (any(y.startswith('echo "::error::') and "SITE_VERIFY_TOKEN" in y and "Q39" in y
+                                for y in arm) and "exit 1" in arm):
+                            refuses = True
+            if not refuses:
+                bad.append("%s: no step fails with an ::error:: naming SITE_VERIFY_TOKEN and Q39 when the "
+                           "token is empty -- the site checks would go out bare, silently" % where)
+            if 'echo "::add-mask::${SITE_VERIFY_TOKEN}"' not in text:
+                bad.append("%s: SITE_VERIFY_TOKEN is never ::add-mask::ed" % where)
+            if "site_curl" not in text:
+                continue  # sources lib.sh from a checkout; the lib.sh leg above covers it
+            copies = 0
+            for st, b in blocks:
+                for i, x in enumerate(b):
+                    m = _SITE_WRITER.match(x)
+                    if not m:
+                        continue
+                    copies += 1
+                    ind, got = len(m.group(1)), []
+                    for y in b[i + 1:]:
+                        if y.strip() == "SH":
+                            break
+                        got.append(y[ind:] if y.strip() else "")
+                    if "\n".join(got) != helper.rstrip("\n"):
+                        bad.append("%s:%d the site_curl heredoc is not a verbatim copy of %s"
+                                   % (rel, st + i + 1, SITE_CURL))
+                uses = any("site_curl " in y and not y.strip().startswith("#")
+                           and "site_curl()" not in y for y in b)
+                if uses and not any(_SITE_WRITER.match(y) for y in b) and not any(
+                        y.strip().startswith(_SITE_SRC) for y in b):
+                    bad.append("%s:%d a step calls site_curl without sourcing %s" % (rel, st, _SITE_SRC))
+            if copies != 1:
+                bad.append("%s writes the site_curl helper %d times (want exactly 1)" % (where, copies))
+    if site_jobs < 3:
+        bad.append("found only %d jobs reading getbusbar.com (floor 3: pointers, verify-site, the release "
+                   "gate's channels) -- the reader is broken" % site_jobs)
+    return bad
+
+
 def c_owed_ci_calls(tree):
     """(a) + 15.5: ci.yml runs every bare-script selftest this directory owes."""
     ex = [t for _, t in executed_lines(tree, CI)]
@@ -595,7 +744,7 @@ CHECKS = [
     ("340", c340), ("341", c341), ("342", c342), ("343", c343), ("352", c352), ("353", c353),
     ("356", c356), ("357", c357), ("358", c358), ("361", c361), ("owed-b", c_owed_keep_scope),
     ("owed-c", c_owed_drift), ("owed-a", c_owed_ci_calls), ("owed-w04", c_owed_consumer_state),
-    ("owed-d", c_owed_gate_all),
+    ("owed-d", c_owed_gate_all), ("q39", c_q39),
 ]
 
 
@@ -679,6 +828,25 @@ PLANTS = [
      _sub(CI, "        run: cargo xtask gate --all\n", "        run: cargo xtask gate --all || true\n")),
     ("owed-d", "gate --all wired nowhere",
      _sub(CI, "        run: cargo xtask gate --all\n", "        run: cargo xtask gate structure-lint\n")),
+    ("q39", "a bare `curl https://getbusbar.com` in verify-site's (k)",
+     _sub(VD, 'body="$(site_curl -sS -m 30', 'body="$(curl -sS -m 30')),
+    ("q39", "a bare curl to a getbusbar.com subdomain in a release-gate script",
+     _sub(CHANNELS, 'INSTALL_URL="https://getbusbar.com/install.sh"\n',
+          'INSTALL_URL="https://getbusbar.com/install.sh"\ncurl -fsS https://docs.getbusbar.com/ >/dev/null\n')),
+    ("q39", "lib.sh's fetch() back on bare curl",
+     _sub(LIB, 'site_curl "${CURL_OPTS[@]}" "$1"', 'curl "${CURL_OPTS[@]}" "$1"')),
+    ("q39", "the SITE_VERIFY_TOKEN job env dropped from verify-site",
+     _sub(VD, "      STAGE: ${{ inputs.stage || 'public' }}\n      SITE_VERIFY_TOKEN:",
+          "      STAGE: ${{ inputs.stage || 'public' }}\n      NOT_THE_TOKEN:")),
+    ("q39", "the empty-token refusal exiting 0 in the release gate's channels job",
+     _sub(FLEET, 'a fork pull_request gets no secrets)."\n            exit 1', 'a fork pull_request gets no secrets)."\n            exit 0')),
+    ("q39", "the secret spliced into script text",
+     _sub(VD, 'echo "::add-mask::${SITE_VERIFY_TOKEN}"', 'echo "::add-mask::${{ secrets.SITE_VERIFY_TOKEN }}"')),
+    ("q39", "a heredoc copy of site_curl drifted from site-curl.sh",
+     _sub(VD, "          SITE_CURL_NO_TOKEN=125\n", "          SITE_CURL_NO_TOKEN=0\n")),
+    ("q39", "(k) calling site_curl without sourcing the helper",
+     _sub(VD, '          . "$RUNNER_TEMP/site-curl.sh"  # OWNER RULING Q39: site_curl, written by the Q39 step above\n          fail=0\n          # These back',
+          '          fail=0\n          # These back')),
     ("owed-a", "the prove-remote selftest unwired",
      _sub(CI, "        run: ./scripts/prove-remote.sh --selftest\n", "        run: 'true'\n")),
 ]

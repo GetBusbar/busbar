@@ -280,13 +280,27 @@ retry() {
 # does not fail, it hangs, and a hang is the one outcome that is neither red nor green.
 CURL_OPTS=(--fail --silent --show-error --location --max-time 45 --retry 0)
 
+# OWNER RULING Q39: every getbusbar.com request carries X-Busbar-Verify (the Cloudflare WAF skip
+# rule's header), and ONLY getbusbar.com requests do -- site_curl scopes it by host and is plain
+# curl for everything else. http_code/fetch are the only way a check reads the site, so routing them
+# through site_curl covers every getbusbar.com row. An empty SITE_VERIFY_TOKEN is reported as the
+# code `no-token`, which is NOT a Cloudflare-block signature, so the row FAILs instead of SKIPping.
+# shellcheck source=scripts/release-gate/site-curl.sh
+. "$(dirname "${BASH_SOURCE[0]}")/site-curl.sh"
+
 http_code() {  # http_code <url> [extra curl args...]
-  local url="$1"; shift
-  curl --silent --show-error --location --max-time 45 -o /dev/null -w '%{http_code}' "$@" "$url" 2>/dev/null || echo 000
+  local url="$1" rc=0; shift
+  site_curl --silent --show-error --location --max-time 45 -o /dev/null -w '%{http_code}' "$@" "$url" 2>/dev/null || rc=$?
+  if [ "$rc" = "$SITE_CURL_NO_TOKEN" ]; then
+    echo "::error::${url} was NOT fetched: SITE_VERIFY_TOKEN is empty, so it cannot carry the X-Busbar-Verify header the Q39 Cloudflare WAF skip rule matches (OWNER RULING Q39)." >&2
+    echo no-token
+  elif [ "$rc" != 0 ]; then
+    echo 000
+  fi
 }
 
 fetch() {  # fetch <url> -> body on stdout, non-zero on any non-2xx
-  curl "${CURL_OPTS[@]}" "$1"
+  site_curl "${CURL_OPTS[@]}" "$1"
 }
 
 # CLOUDFLARE, NAMED RATHER THAN GUESSED AT.
