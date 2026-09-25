@@ -81,8 +81,14 @@ plane-a2a = ["busbar-kernel/plane-a2a"]
 test-support = ["busbar-kernel/test-support"]
 # The openapi-schema derive: the moved admin-view types derive `schemars::JsonSchema` under this
 # feature, mirroring busbar-kernel/busbar-a2a. Forwards to busbar-kernel/openapi-schema so the shared
-# schema surface resolves in lock-step.
-openapi-schema = ["dep:schemars", "busbar-kernel/openapi-schema"]
+# schema surface resolves in lock-step. It ALSO forwards to the three dev-dependency planes'
+# `openapi-schema` (a dev-dep feature only applies to test builds; it never links a plane into the
+# library): the openapi tests assemble the document from the linked plane decls, and a plane built
+# without its own feature contributes its paths but not its `openapi_schemas`, so the a2a/mcp trust
+# verbs lose their typed bodies. The binary forwards the same four; without this, `cargo test -p
+# busbar-core-admin --features openapi-schema` run alone generated a different document than CI's
+# combined `-p busbar -p busbar-kernel -p busbar-core-admin` run, where feature unification hid it.
+openapi-schema = ["dep:schemars", "busbar-kernel/openapi-schema", "busbar-llm/openapi-schema", "busbar-mcp/openapi-schema", "busbar-a2a/openapi-schema"]
 
 [dev-dependencies]
 busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["test-support", "auth-admin-tokens", "plane-mcp", "plane-a2a"] }
