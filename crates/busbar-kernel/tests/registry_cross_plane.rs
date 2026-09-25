@@ -5,12 +5,15 @@
 //! declaration core has never heard of through the SAME functions production folds the built-ins
 //! through, and showing the difference reaches a production refusal.
 //!
-//! Relocated here VERBATIM from `src/plane/tests/registry_tests.rs` (the A6/HostCtx
-//! dev-dependency-cycle cleanup): `builtin_plane_decls()` below is the local analogue of the old
-//! `TEST_BUILTIN_PLANE_DECLS` — it names the REAL `busbar_llm`/`busbar_mcp`/`busbar_a2a`
-//! `PLANE_DECL`s, which only type-checks (as `&'static busbar_kernel::plane::registry::PlaneDecl`)
-//! with ONE `busbar_kernel` in the graph, never the two copies busbar-kernel's own `#[cfg(test)]`
-//! dev-dependency back-edge produced. `busbar_kernel::plane::registry::builtin_plane_decls()` itself
+//! Relocated here from `src/plane/tests/registry_tests.rs` (the A6/HostCtx dev-dependency-cycle
+//! cleanup): `builtin_plane_decls()` below is the local analogue of the old
+//! `TEST_BUILTIN_PLANE_DECLS` — the REAL linked planes' registry rows, which only type-check (as
+//! `&'static busbar_kernel::plane::registry::PlaneDecl`) with ONE `busbar_kernel` in the graph. The
+//! planes come from the test-linked table (`tests/linked/mod.rs`; K3, architect ruling N02): this
+//! file names no plane crate and spells no plane key — it addresses a plane by what it declares
+//! (the section it owns, the fallback flag), and each plane pins its own literal identity in its own
+//! crate. The runtime objects `build_dispatch` folds are built CONFIG-DRIVEN, through the kernel's
+//! own `deploy_from_yaml_str` → `resolve` → each plane's `build` hook, exactly as `appbuild` does. `busbar_kernel::plane::registry::builtin_plane_decls()` itself
 //! is now UNCONDITIONALLY the empty production set (its old `#[cfg(test)]` branch, which returned
 //! this exact array, is gone) — see that fn's doc for the full rationale. A handful of `pub(crate)`
 //! fns this file drives directly (`config_sections_from`, `fallback_key`, `plane_keys`, `plane_decl`,
@@ -23,30 +26,38 @@
 //! singleton can be initialised once per test binary, which would leave the fold's order and skip
 //! rules provable only by booting binaries.
 
+mod linked;
+
+use busbar_kernel::config::{deploy_from_yaml_str, resolve, RootCfg};
 use busbar_kernel::plane::config::{config_sections_from, refuse_cross_plane_reference};
 use busbar_kernel::plane::registry::{
-    build_dispatch, install_planes, merged_boot_plane_decls, plane_decl_for, PlaneDecl,
+    build_dispatch, install_planes, merged_boot_plane_decls, plane_decl_for, BuildCtx, PlaneDecl,
     PlaneDeclaration,
 };
 use std::any::Any;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
-/// THE SHIPPED `[llm, mcp, a2a]` PROCESS PLANE LIST for this integration target — the local
-/// analogue of the removed `TEST_BUILTIN_PLANE_DECLS`. Names the three plane crates' public
-/// `PLANE_DECL`s across the honest crate boundary; only type-checks with ONE `busbar_kernel` in the
-/// graph, which is exactly what this target gives.
+/// THE LINKED PROCESS PLANE LIST for this integration target — the local analogue of the removed
+/// `TEST_BUILTIN_PLANE_DECLS`: every test-linked plane's registry row, in the registry's canonical
+/// order.
 fn builtin_plane_decls() -> &'static [&'static PlaneDecl] {
-    static DECLS: &[&PlaneDecl] = &[&LLM_PLANE, &MCP_PLANE, &A2A_PLANE];
-    DECLS
+    linked::planes()
 }
 
-/// Register the real `[llm, mcp, a2a]` roster in the PROCESS registry (idempotent, first-wins) — for
-/// the handful of tests below that resolve through `plane_decl_for`/`scope_kind_index` (the process
-/// `plane_decls()` fold), not just the local `builtin_plane_decls()` array above.
+/// Register the linked roster in the PROCESS registry (idempotent, first-wins) — for the tests below
+/// that resolve through `plane_decl_for`/`scope_kind_index` (the process `plane_decls()` fold).
 fn register_planes() {
-    busbar_llm::testkit::install_test_seams();
-    busbar_mcp::testkit::install_test_seams();
-    busbar_a2a::testkit::install_test_seams();
+    linked::install();
+}
+
+/// The canonical plane order, spelled by the sections each plane declares (never by key): the
+/// fallback plane's `pools:`, then the `tools:` plane, then the `agents:` plane.
+fn canonical_keys() -> Vec<&'static str> {
+    ["pools", "tools", "agents"]
+        .iter()
+        .map(|s| linked::owning(s).key)
+        .collect()
 }
 
 /// A PLANE BUSBAR DOES NOT HAVE. Nothing in core names it, nothing in core has an enum variant for
@@ -143,12 +154,14 @@ fn an_installed_plane_reaches_the_cross_plane_refusal() {
 #[test]
 fn installed_planes_fold_ahead_and_the_builtin_order_is_unchanged() {
     let keys: Vec<&str> = installed().iter().map(|d| d.key).collect();
-    assert_eq!(keys, vec!["llm", "mcp", "a2a", "widget"]);
+    let mut want = canonical_keys();
+    want.push("widget");
+    assert_eq!(keys, want);
 
     let builtin_keys: Vec<&str> = builtin_plane_decls().iter().map(|d| d.key).collect();
     assert_eq!(
         builtin_keys,
-        vec!["llm", "mcp", "a2a"],
+        canonical_keys(),
         "the layering order Plane::ALL has always reported"
     );
     assert_eq!(
@@ -183,63 +196,30 @@ fn installed_planes_fold_ahead_and_the_builtin_order_is_unchanged() {
 /// crate's own copy. The FIRST (installed) copy wins and the list does not grow.
 #[test]
 fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
-    static A2A_FROM_THE_CRATE: PlaneDecl = PlaneDecl {
-        declaration: PlaneDeclaration {
-            key: "a2a",
-            fallback: false,
-            config_section: "agents",
-            scope_kinds: &["agent"],
-            subject_noun: "fronted agent",
-            admin_noun: "fronted-agent",
-            audit_kind: "a2a_agent",
-            card_signing_domain: None,
-            card_kid_prefix: None,
-            owned_config_sections: &[],
-            billable_classes: &[],
-            fee_units: &[],
-        },
-        wire_format_names: || &["jsonrpc"],
-        claims: |_| Vec::new(),
-        admission: |_| None,
-        build: |_| None,
-        routes: None,
-        admin_routes: None,
-        openapi: None,
-        hydrate: None,
-        start: None,
-        config_validate: None,
-        named_def_list: None,
-        named_def_get: None,
-        registry_contains: None,
-        reresolve_gates: None,
-        openapi_schemas: None,
-        on_swap: None,
-        parse_section: None,
-        parse_endpoint: None,
-        lower_endpoint: None,
-        build_runtime: None,
-        viewer: None,
-        retain_verify_gates: None,
-        default_section: None,
-        resolve_provider: None,
-    };
+    // A second, INSTALLED copy of the `agents:` plane's row: the same declared facts under the same
+    // key, but its own static (so pointer identity tells the two copies apart).
+    let agents = linked::owning("agents");
+    let from_the_crate: &'static PlaneDecl = Box::leak(Box::new(PlaneDecl {
+        declaration: agents.declaration,
+        ..WIDGET_PLANE
+    }));
 
-    let folded = merged_boot_plane_decls(&[&A2A_FROM_THE_CRATE], builtin_plane_decls());
+    let folded = merged_boot_plane_decls(&[from_the_crate], builtin_plane_decls());
     let keys: Vec<&str> = folded.iter().map(|d| d.key).collect();
     assert_eq!(
         keys,
-        vec!["llm", "mcp", "a2a"],
-        "one entry per key: the built-in a2a row is skipped, not duplicated — and the survivors are \
-         normalised to canonical layering order"
+        canonical_keys(),
+        "one entry per key: the built-in `agents:` row is skipped, not duplicated — and the \
+         survivors are normalised to canonical layering order"
     );
-    // The a2a entry lands in its CANONICAL slot (not the head), and it is the INSTALLED copy that
+    // The entry lands in its CANONICAL slot (not the head), and it is the INSTALLED copy that
     // survived the dedup, not the built-in one.
-    let a2a_entry = folded
+    let entry = folded
         .iter()
-        .find(|d| d.key == "a2a")
-        .expect("the folded set has an a2a entry");
+        .find(|d| d.key == agents.key)
+        .expect("the folded set has the `agents:` plane's entry");
     assert!(
-        std::ptr::eq(*a2a_entry, &A2A_FROM_THE_CRATE),
+        std::ptr::eq(*entry, from_the_crate),
         "the installed copy is the one that survives"
     );
     // And the grammar does not gain a duplicate section from the doubled registration.
@@ -260,13 +240,10 @@ fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
 /// `#[cfg(test)]` built-ins (which no longer exist) — same assertion, explicit registration instead
 /// of ambient seeding.
 ///
-/// NOT `std::ptr::eq`, unlike the original: a registry row is ASSEMBLED kernel-side from a plane's
-/// contract `PLANE_DECLARATION` and its `PLANE_HOOKS`, and every assembler owns its own `static` —
-/// so `busbar_llm::testkit::install_test_seams()`'s row and this file's `builtin_plane_decls()`
-/// array are two byte-identical but NEVER pointer-equal rows — a fact about where a row is
-/// assembled, not about whether the by-key indirection reads the SAME declared facts (which
-/// is the actual property under test, checked below field-by-field exactly as the original did for
-/// the rest of the function).
+/// Checked field-by-field (a registry row is ASSEMBLED kernel-side from a plane's contract
+/// declaration and its hooks, so the property under test is that the by-key indirection reads the
+/// SAME declared facts). The literal values each plane publishes (`mcp_server`, `fronted agent`, …)
+/// are pinned by the plane that declares them, in its own crate.
 #[test]
 fn every_plane_key_answers_from_its_declaration() {
     register_planes();
@@ -282,37 +259,27 @@ fn every_plane_key_answers_from_its_declaration() {
             (decl.wire_format_names)()
         );
     }
-    // The values themselves are unchanged by the rewiring — the operator-visible strings that
-    // metrics, audit records and grants are keyed by.
-    assert_eq!(busbar_kernel::plane::fallback_key(), "llm");
-    assert_eq!(
-        busbar_kernel::plane::plane_decl("mcp").audit_kind,
-        "mcp_server"
-    );
-    assert_eq!(
-        busbar_kernel::plane::plane_decl("a2a").audit_kind,
-        "a2a_agent"
-    );
-    assert_eq!(
-        busbar_kernel::plane::plane_decl("a2a").subject_noun,
-        "fronted agent"
-    );
-    assert_eq!(
-        busbar_kernel::plane::plane_decl("mcp").scope_kinds,
-        &["mcp_server", "mcp_tool"]
-    );
+    // The by-key surfaces answer exactly what each linked plane declares — the operator-visible
+    // strings that metrics, audit records and grants are keyed by.
+    assert_eq!(busbar_kernel::plane::fallback_key(), linked::fallback().key);
+    for decl in builtin_plane_decls() {
+        let by_key = busbar_kernel::plane::plane_decl(decl.key);
+        assert_eq!(by_key.audit_kind, decl.audit_kind);
+        assert_eq!(by_key.subject_noun, decl.subject_noun);
+        assert_eq!(by_key.scope_kinds, decl.scope_kinds);
+    }
 }
 
 /// THE LLM PLANE'S WIRE-FORMAT LIST IS STILL READ OFF THE LIVE PROTOCOL REGISTRY, through the decl's
 /// function pointer. This is the join between the two registries, and it is what keeps the
 /// superset-IR rule a RULE: a seventh dialect moves this list with nothing edited on the plane axis.
 #[test]
-fn the_llm_decl_reads_the_protocol_registry() {
-    busbar_llm::testkit::install_test_seams();
+fn the_fallback_decl_reads_the_protocol_registry() {
+    linked::install();
     assert_eq!(
         busbar_kernel::plane::wire_format_names(busbar_kernel::plane::fallback_key()),
         busbar_kernel::proto::known_protocols(),
-        "the LLM plane's dialects are the registered protocols, not a literal"
+        "the fallback plane's dialects are the registered protocols, not a literal"
     );
     assert!(
         busbar_kernel::plane::wire_formats(busbar_kernel::plane::fallback_key()) > 1,
@@ -526,7 +493,7 @@ fn dup_claim_guard_admits_streams_alone_and_refuses_a_streams_collision() {
         &[&ONE_CLAIMS_STREAMS],
         busbar_kernel::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
     )
-    .expect("`streams` is not core-owned and has one claimant — the voice claim must be admitted");
+    .expect("`streams` is not core-owned and has one claimant — the lone claim must be admitted");
     // A SECOND claimant of `streams` is refused by construction, naming both planes and the section.
     let err = busbar_kernel::plane::registry::check_owned_config_claims(
         &[&ONE_CLAIMS_STREAMS, &TWO_CLAIMS_STREAMS],
@@ -571,54 +538,52 @@ fn dup_claim_guard_passes_for_the_shipped_registry() {
 // production has rather than one a fixture invented.
 // ---------------------------------------------------------------------------------------------
 
-/// A REAL MCP resource, mounting `/mcp` and binding its canonical URI as the audience.
-fn mcp_slot() -> busbar_mcp::mcp::McpResource {
-    busbar_mcp::mcp::McpResource::from_cfg(&busbar_mcp::mcp::McpCfg {
-        canonical_uri: "https://gw.example.com/mcp".to_string(),
-        authorization_servers: vec!["https://login.example.com".to_string()],
-        ..Default::default()
-    })
-    .expect("a well-formed mcp resource")
+/// A deployment's configuration, lowered by the kernel's own entry points (`deploy_from_yaml_str` →
+/// `resolve`), exactly as boot and `--validate` lower it.
+fn resolved(yaml: &str) -> RootCfg {
+    register_planes();
+    let deploy = deploy_from_yaml_str(yaml).expect("the fixture configuration parses");
+    resolve(&deploy, &HashMap::new()).unwrap_or_else(|e| panic!("the fixture resolves: {e:?}"))
 }
 
-/// A REAL A2A plane WITH a receiving side (a `public_url`), so `admission()` is `Some` and the plane
-/// mounts both `/a2a` and the gRPC service path.
-fn a2a_slot_receiving() -> std::sync::Arc<busbar_a2a::a2a::plane::A2aPlane> {
-    use busbar_a2a::a2a::config::{AgentDefCfg, AgentPinCfg, AgentsCfg, PinMechanism};
-    let mut cfg = AgentsCfg::default();
-    cfg.agents.insert(
-        "planner".to_string(),
-        AgentDefCfg {
-            url: "https://agent.example/planner".to_string(),
-            pin: AgentPinCfg {
-                mechanism: PinMechanism::Unpinned,
-                key: None,
-                fingerprint: None,
-            },
-            reverify_ttl: None,
-            recovery_backoff: None,
-            protocol_version: None,
-            allow_private: false,
-            upstream_credentials: None,
-            upstream_credential: None,
-            egress_scopes: Vec::new(),
-            client_identity: None,
-            hooks: Vec::new(),
-        },
-    );
-    busbar_a2a::a2a::plane::A2aPlane::from_config(&cfg, Some("https://busbar.example"))
-        .expect("a receiving a2a plane")
+/// A RECEIVING deployment: a `public_url`, the `tools:` plane's endpoint door (the section it owns
+/// beside `tools:`, read off its declaration) and one `agents:` entry — so every mountable linked
+/// plane has a door and binds an audience.
+fn receiving_cfg() -> RootCfg {
+    let door = linked::door_section(linked::owning("tools"));
+    resolved(&format!(
+        "providers: {{}}\nmodels: {{}}\npublic_url: \"https://busbar.example\"\n\
+         {door}:\n  canonical_uri: \"https://gw.example.com/door\"\n  \
+         authorization_servers: [\"https://login.example.com\"]\n\
+         agents:\n  planner:\n    url: \"https://agent.example/planner\"\n    \
+         pin: {{ mechanism: unpinned }}\n"
+    ))
 }
 
-/// The MCP + A2A slot map a boot hands `build_dispatch`, keyed by plane key.
-fn builtin_slots<'a>(
-    mcp: &'a busbar_mcp::mcp::McpResource,
-    a2a: &'a busbar_a2a::a2a::plane::A2aPlane,
+/// THE PLANE SLOT MAP a boot builds for `cfg` — every linked plane's runtime object from its OWN
+/// decl's `build` hook over the SAME `BuildCtx` `appbuild` hands it, filtered by LAW 7 (an
+/// unconfigured plane builds no slot). Names no plane type.
+fn built_slots(cfg: &RootCfg) -> BTreeMap<&'static str, Arc<dyn Any + Send + Sync>> {
+    builtin_plane_decls()
+        .iter()
+        .filter(|decl| decl.fallback || cfg.plane_sections.contains(decl.config_section))
+        .filter_map(|decl| {
+            let ctx = BuildCtx {
+                endpoint_slot: cfg.endpoint_resources.get(decl.config_section).cloned(),
+                agent_defs: cfg.agent_defs.as_any(),
+                public_url: cfg.public_url.as_deref(),
+                prior: None,
+            };
+            (decl.build)(&ctx).map(|obj| (decl.key, obj))
+        })
+        .collect()
+}
+
+/// The borrowed slot map `build_dispatch` takes.
+fn slot_refs<'a>(
+    slots: &'a BTreeMap<&'static str, Arc<dyn Any + Send + Sync>>,
 ) -> BTreeMap<&'static str, &'a dyn Any> {
-    let mut slots: BTreeMap<&'static str, &dyn Any> = BTreeMap::new();
-    slots.insert("mcp", mcp);
-    slots.insert("a2a", a2a);
-    slots
+    slots.iter().map(|(k, v)| (*k, &**v as &dyn Any)).collect()
 }
 
 /// **RATCHET R1 — every declared path is claimed, and every claimed path is audience-checked.**
@@ -635,17 +600,31 @@ fn builtin_slots<'a>(
 /// answers, the exact audience-less door the ratchet forbids.
 #[test]
 fn r1_every_declared_path_resolves_an_admission() {
-    let mcp = mcp_slot();
-    let a2a = a2a_slot_receiving();
-    let slots = builtin_slots(&mcp, &a2a);
+    let owned = built_slots(&receiving_cfg());
+    let slots = slot_refs(&owned);
     let dispatch =
         build_dispatch(builtin_plane_decls(), &slots).expect("the dispatch table builds");
 
+    let mut claimed = 0;
     for decl in builtin_plane_decls() {
         let Some(slot) = slots.get(decl.key).copied() else {
             continue;
         };
-        for (path, _wire) in (decl.claims)(slot) {
+        let claims = (decl.claims)(slot);
+        claimed += claims.len();
+        // A plane with SEVERAL doors (a second binding whose path a client derives and cannot be
+        // pointed off of) resolves the ONE audience its card publishes on every one of them — the
+        // property that would vanish the moment a second claim were dropped.
+        let audiences: Vec<_> = claims
+            .iter()
+            .map(|(path, _)| dispatch.admission_for(&format!("{path}/probe")))
+            .collect();
+        assert!(
+            audiences.windows(2).all(|w| w[0] == w[1]),
+            "plane `{}`: its doors resolve different audiences: {claims:?}",
+            decl.key
+        );
+        for (path, _wire) in claims {
             // A claim's own path, and a path beneath it, both inherit the plane's audience.
             assert!(
                 dispatch.admission_for(&path).is_some(),
@@ -661,18 +640,14 @@ fn r1_every_declared_path_resolves_an_admission() {
         }
     }
 
-    // The A2A gRPC SECOND claim specifically: it resolves the SAME audience as the canonical `/a2a`
-    // mount, which is the property that would vanish the moment the second claim were dropped.
-    let grpc = dispatch.admission_for("/lf.a2a.v1.A2AService/SendMessage");
+    // The receiving deployment mounts the `agents:` plane's two doors and the `tools:` plane's one.
+    let multi = linked::owning("agents");
+    let multi_claims = (multi.claims)(slots[multi.key]);
     assert!(
-        grpc.is_some(),
-        "the gRPC service path must be audience-checked, not left open"
+        multi_claims.len() >= 2,
+        "the multi-binding plane claims every binding's door: {multi_claims:?}"
     );
-    assert_eq!(
-        grpc,
-        dispatch.admission_for("/a2a/agents/planner"),
-        "both A2A bindings resolve the one audience the plane's card publishes"
-    );
+    assert!(claimed >= 3, "every mountable plane claimed its doors");
 }
 
 /// **RATCHET R2 — a mounted plane must bind an admission, or boot refuses.**
@@ -964,9 +939,8 @@ fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
 /// (a colliding widget in the mount set) and this fails on the scope-kind dedup.
 #[test]
 fn r3_no_vocabulary_collision_across_the_mounted_set() {
-    let mcp = mcp_slot();
-    let a2a = a2a_slot_receiving();
-    let slots = builtin_slots(&mcp, &a2a);
+    let owned = built_slots(&receiving_cfg());
+    let slots = slot_refs(&owned);
     let dispatch =
         build_dispatch(builtin_plane_decls(), &slots).expect("the dispatch table builds");
 
@@ -999,10 +973,12 @@ fn r3_no_vocabulary_collision_across_the_mounted_set() {
         "audit kinds collide across the mounted set: {audit_kinds:?}"
     );
 
-    // The mounted set is exactly the two non-fallback planes this boot configured.
+    // The mounted set is exactly the non-fallback planes this boot configured.
     let mut keys = mounted_keys;
     keys.sort_unstable();
-    assert_eq!(keys, vec!["a2a", "mcp"]);
+    let mut want = vec![linked::owning("tools").key, linked::owning("agents").key];
+    want.sort_unstable();
+    assert_eq!(keys, want);
 }
 
 /// The registry-driven fold reproduces the OLD hardcoded blocks BYTE-FOR-BEHAVIOUR: the same paths
@@ -1010,25 +986,32 @@ fn r3_no_vocabulary_collision_across_the_mounted_set() {
 /// `mount`/`admit` API and by `build_dispatch` through the decls, must be equal.
 #[test]
 fn build_dispatch_matches_the_hand_mounted_table() {
-    let mcp = mcp_slot();
-    let a2a = a2a_slot_receiving();
-    let slots = builtin_slots(&mcp, &a2a);
+    let owned = built_slots(&receiving_cfg());
+    let slots = slot_refs(&owned);
     let built = build_dispatch(builtin_plane_decls(), &slots).expect("dispatch builds");
 
-    let hand = busbar_kernel::plane::PlaneDispatch::default()
-        .mount("mcp", mcp.mount_path(), busbar_kernel::plane::WIRE_JSONRPC)
-        .admit("mcp", mcp.admission())
-        .mount(
-            "a2a",
-            busbar_a2a::a2a::serve::MOUNT_PATH,
-            busbar_kernel::plane::WIRE_JSONRPC,
-        )
-        .mount(
-            "a2a",
-            busbar_a2a::a2a::serve::GRPC_MOUNT_PATH,
-            busbar_kernel::plane::WIRE_GRPC,
-        )
-        .admit("a2a", a2a.admission().expect("receiving side"));
+    // By hand, through the public `mount`/`admit` API, from each configured plane's OWN object: its
+    // claimed doors and its admission.
+    let mut hand = busbar_kernel::plane::PlaneDispatch::default();
+    let mut mounted = 0;
+    for decl in builtin_plane_decls() {
+        let Some(slot) = slots.get(decl.key).copied() else {
+            continue;
+        };
+        let claims = (decl.claims)(slot);
+        if claims.is_empty() {
+            continue;
+        }
+        for (path, wire) in claims {
+            hand = hand.mount(decl.key, &path, wire);
+            mounted += 1;
+        }
+        hand = hand.admit(
+            decl.key,
+            (decl.admission)(slot).expect("a mounted plane binds an admission"),
+        );
+    }
+    assert!(mounted >= 3, "the receiving deployment mounts every door");
 
     assert_eq!(
         built, hand,
@@ -1036,46 +1019,35 @@ fn build_dispatch_matches_the_hand_mounted_table() {
     );
 }
 
-/// A DELEGATION-ONLY A2A plane (no `public_url`) mounts nothing and binds no audience — so it is NOT
-/// refused by R2 (it claims no path) and its paths stay unclaimed. Byte-identical to the old
-/// `a2a_plane.admission().is_some()` gate on the hardcoded block.
+/// A DELEGATION-ONLY `agents:` plane (no `public_url`) mounts nothing and binds no audience — so it
+/// is NOT refused by R2 (it claims no path) and its paths stay unclaimed. Byte-identical to the old
+/// `admission().is_some()` gate on the hardcoded block.
 #[test]
-fn a_delegation_only_a2a_plane_mounts_nothing() {
-    use busbar_a2a::a2a::config::{AgentDefCfg, AgentPinCfg, AgentsCfg, PinMechanism};
-    let mut cfg = AgentsCfg::default();
-    cfg.agents.insert(
-        "planner".to_string(),
-        AgentDefCfg {
-            url: "https://agent.example/planner".to_string(),
-            pin: AgentPinCfg {
-                mechanism: PinMechanism::Unpinned,
-                key: None,
-                fingerprint: None,
-            },
-            reverify_ttl: None,
-            recovery_backoff: None,
-            protocol_version: None,
-            allow_private: false,
-            upstream_credentials: None,
-            upstream_credential: None,
-            egress_scopes: Vec::new(),
-            client_identity: None,
-            hooks: Vec::new(),
-        },
+fn a_delegation_only_multi_binding_plane_mounts_nothing() {
+    let cfg = resolved(
+        "providers: {}\nmodels: {}\n\
+         agents:\n  planner:\n    url: \"https://agent.example/planner\"\n    \
+         pin: { mechanism: unpinned }\n",
     );
-    // No public_url ⇒ no receiving side ⇒ admission() is None.
-    let a2a =
-        busbar_a2a::a2a::plane::A2aPlane::from_config(&cfg, None).expect("a delegating plane");
-    assert!(a2a.admission().is_none());
+    let agents = linked::owning("agents");
+    // No public_url ⇒ no receiving side ⇒ the plane's admission is None.
+    let owned = built_slots(&cfg);
+    let slot = owned
+        .get(agents.key)
+        .map(|v| &**v as &dyn Any)
+        .expect("the configured `agents:` plane builds its object");
+    assert!((agents.admission)(slot).is_none());
 
     let mut slots: BTreeMap<&'static str, &dyn Any> = BTreeMap::new();
-    slots.insert("a2a", a2a.as_ref());
+    slots.insert(agents.key, slot);
     let dispatch = build_dispatch(builtin_plane_decls(), &slots).expect("no path, no refusal");
     assert!(
         dispatch.mounted_keys().is_empty(),
         "a delegation-only deployment claims no path"
     );
-    assert!(dispatch.admission_for("/a2a").is_none());
+    assert!(dispatch
+        .admission_for(&format!("/{}", agents.key))
+        .is_none());
 }
 
 /// THE OpenAPI NON-VACUITY FLOOR. A silently-empty OpenAPI contribution reads to the drift guard as
@@ -1085,7 +1057,7 @@ fn a_delegation_only_a2a_plane_mounts_nothing() {
 /// from the SAME decl the router mounts from, so the document cannot omit a verb the surface serves.
 ///
 /// Watched RED with a stubbed empty contributor (a decl whose `admin_routes` is `Some` but whose
-/// `openapi` returns an empty object): the floor fires. The real MCP and A2A decls pass it.
+/// `openapi` returns an empty object): the floor fires. The real linked decls pass it.
 #[test]
 fn a_plane_with_admin_verbs_documents_at_least_one_openapi_path() {
     for decl in builtin_plane_decls() {
@@ -1108,27 +1080,3 @@ fn a_plane_with_admin_verbs_documents_at_least_one_openapi_path() {
         );
     }
 }
-
-/// The llm plane's registry row, assembled kernel-side from its contract declaration
-/// and its behaviour table.
-static LLM_PLANE: busbar_kernel::plane::registry::PlaneDecl =
-    busbar_kernel::plane::registry::PlaneDecl::assemble(
-        busbar_llm::PLANE_DECLARATION,
-        busbar_llm::PLANE_HOOKS,
-    );
-
-/// The mcp plane's registry row, assembled kernel-side from its contract declaration
-/// and its behaviour table.
-static MCP_PLANE: busbar_kernel::plane::registry::PlaneDecl =
-    busbar_kernel::plane::registry::PlaneDecl::assemble(
-        busbar_mcp::PLANE_DECLARATION,
-        busbar_mcp::PLANE_HOOKS,
-    );
-
-/// The a2a plane's registry row, assembled kernel-side from its contract declaration
-/// and its behaviour table.
-static A2A_PLANE: busbar_kernel::plane::registry::PlaneDecl =
-    busbar_kernel::plane::registry::PlaneDecl::assemble(
-        busbar_a2a::PLANE_DECLARATION,
-        busbar_a2a::PLANE_HOOKS,
-    );

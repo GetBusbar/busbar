@@ -79,3 +79,32 @@ fn the_mcp_decl_is_the_neutral_row_but_for_its_handler_and_verbs() {
     assert!(d.vendor_response_metadata.is_none());
     assert!(d.list_models_fingerprint_headers.is_empty());
 }
+
+/// THE PLANE'S OPERATOR-VISIBLE IDENTITY, pinned as LITERALS by the plane that declares it: the key
+/// metrics, logs and record prefixes carry, the audit resource kind every recorded action word is
+/// built from (`mcp_server.connect`), the grant kinds, and the ONE wire format its three transports
+/// carry (so the plane has earned no superset IR). Moved here from busbar-kernel's
+/// `registry_cross_plane.rs` / `plane_dispatch_cross_plane.rs` (K3; architect ruling N02): the kernel
+/// now asserts its by-key surfaces answer whatever each linked plane declares, and each plane pins
+/// what it declares.
+#[test]
+fn the_plane_declares_its_published_identity_and_one_wire_format() {
+    let d = &crate::PLANE_DECLARATION;
+    assert_eq!(d.key, "mcp");
+    assert!(!d.fallback, "a mounted plane, never the catch-all");
+    assert_eq!(d.config_section, "tools");
+    assert_eq!(d.owned_config_sections, &["mcp"]);
+    assert_eq!(d.audit_kind, "mcp_server");
+    assert_eq!(
+        format!("{}.connect", d.audit_kind),
+        "mcp_server.connect",
+        "the connect action word is a published audit string and may not change shape"
+    );
+    assert_eq!(d.scope_kinds, &["mcp_server", "mcp_tool"]);
+    assert_eq!(d.subject_noun, "MCP server");
+    assert_eq!(
+        (crate::PLANE_HOOKS.wire_format_names)(),
+        &[busbar_contract::transport::transport::plane::WIRE_JSONRPC],
+        "three transports, ONE wire format"
+    );
+}

@@ -882,3 +882,53 @@ fn every_published_interface_declares_a_version_the_ingress_actually_admits() {
         );
     }
 }
+
+/// THE PLANE'S OPERATOR-VISIBLE IDENTITY AND ITS TWO DOORS, pinned as LITERALS by the plane that
+/// declares them. Moved here from busbar-kernel's `registry_cross_plane.rs` /
+/// `plane_dispatch_cross_plane.rs` (K3; architect ruling N02): the kernel now asserts its by-key
+/// surfaces and its dispatch fold answer whatever each linked plane declares, and each plane pins
+/// what it declares — its key, audit kind (`a2a_agent.connect` / `.approve` are published audit
+/// strings), subject noun, its three bindings, and that each door it claims speaks a wire format it
+/// declares.
+#[test]
+fn the_plane_declares_its_published_identity_and_its_claims_speak_its_wire_formats() {
+    use busbar_contract::transport::transport::plane::{WIRE_GRPC, WIRE_HTTP_JSON, WIRE_JSONRPC};
+    let d = &crate::PLANE_DECLARATION;
+    assert_eq!(d.key, "a2a");
+    assert!(!d.fallback, "a mounted plane, never the catch-all");
+    assert_eq!(d.config_section, "agents");
+    assert_eq!(d.audit_kind, "a2a_agent");
+    assert_eq!(format!("{}.connect", d.audit_kind), "a2a_agent.connect");
+    assert_eq!(format!("{}.approve", d.audit_kind), "a2a_agent.approve");
+    assert_eq!(d.subject_noun, "fronted agent");
+    assert_eq!(d.scope_kinds, &["agent"]);
+    let wires = (crate::PLANE_HOOKS.wire_format_names)();
+    assert_eq!(wires, &[WIRE_JSONRPC, WIRE_HTTP_JSON, WIRE_GRPC]);
+
+    // A RECEIVING plane (a public URL) claims exactly its two doors, each in a declared wire format.
+    let agents: crate::a2a::config::AgentsCfg = serde_yaml::from_str(
+        "planner:\n  url: \"https://agent.example/planner\"\n  pin: { mechanism: unpinned }\n",
+    )
+    .expect("a minimal agent");
+    let receiving =
+        crate::a2a::plane::A2aPlane::from_config(&agents, Some(PUBLIC)).expect("a receiving plane");
+    let claims = (crate::PLANE_HOOKS.claims)(receiving.as_ref());
+    assert_eq!(
+        claims,
+        vec![
+            (crate::a2a::serve::MOUNT_PATH.to_string(), WIRE_JSONRPC),
+            (crate::a2a::serve::GRPC_MOUNT_PATH.to_string(), WIRE_GRPC),
+        ]
+    );
+    for (path, wire) in &claims {
+        assert!(
+            wires.contains(wire),
+            "mounted at {path} speaking `{wire}`, which the plane does not declare: {wires:?}"
+        );
+    }
+    // A DELEGATION-ONLY plane (no public URL) claims nothing and binds no audience.
+    let delegating =
+        crate::a2a::plane::A2aPlane::from_config(&agents, None).expect("a delegating plane");
+    assert!((crate::PLANE_HOOKS.claims)(delegating.as_ref()).is_empty());
+    assert!(delegating.admission().is_none());
+}
