@@ -2039,3 +2039,8 @@ mod store_conformance_tests;
 #[cfg(test)]
 #[path = "tests/secret_conformance_tests.rs"]
 mod secret_conformance_tests;
+
+/// `kind: auth` through both doors: one row, one module — the auth kind's first both-ways witness.
+#[cfg(test)]
+#[path = "tests/auth_conformance_tests.rs"]
+mod auth_conformance_tests;

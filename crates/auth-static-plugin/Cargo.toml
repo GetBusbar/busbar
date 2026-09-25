@@ -16,12 +16,12 @@ license = "Apache-2.0"
 # two both-ways witnesses in the tree (`plugin-loader/src/tests/{plane,export}_conformance_tests.rs`);
 # this crate was the one fixture that could not, being cdylib-only.
 #
-# ADDING THE ARTIFACT IS NOT THE WITNESS. `open` below is still private and there is no
-# `dispatch_compiled_in` twin of the `busbar_call` symbol `export_auth_plugin!` emits, so nothing
-# can yet drive the compiled-in door. The blocking piece is upstream of this crate:
-# `busbar_plugin_sdk::dispatch_export_enveloped` is the ONLY enveloped dispatch the SDK has (#85
-# covered `export` and no other kind), and the envelope is what makes "observationally identical"
-# testable at all. See the report in the commit that added this comment.
+# ADDING THE ARTIFACT IS NOT THE WITNESS — the witness is
+# `plugin-loader/src/tests/auth_conformance_tests.rs` (K5). The compiled-in door is reached through
+# the `rlib`'s `BUSBAR_COLD_ENTRY` (the same boundary functions `export_auth_plugin!` exports from the
+# `cdylib`), registered by `PluginRegistry::link`; the dropped-in door is the `cdylib` signed into
+# `plugins/`. Both rows and both opened modules' answers must be byte-identical. `open` stays private:
+# the linked door drives the boundary, not the Rust constructor behind it.
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
