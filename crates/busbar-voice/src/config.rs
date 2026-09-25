@@ -198,7 +198,7 @@ pub fn configured_session_model() -> Option<String> {
     configured().session.model
 }
 
-/// PLANE_DECL.parse_section — deserialize `streams:` through the plane's own typed shape, boxed as the
+/// PLANE_HOOKS.parse_section — deserialize `streams:` through the plane's own typed shape, boxed as the
 /// neutral [`busbar_kernel::plane::config::PlaneCfg`]. Mirror of `mcp_parse_section` /
 /// `a2a_parse_section`. UNCONDITIONAL (outside the `runtime` gate): config parse/validate is needed
 /// even in the skeleton/no-`runtime` build.
@@ -215,7 +215,7 @@ pub fn streams_parse_section(
     Ok(Box::new(parsed) as Box<dyn busbar_kernel::plane::config::PlaneCfg>)
 }
 
-/// PLANE_DECL.default_section — the empty `streams:` (mirror of `mcp_default_section` /
+/// PLANE_HOOKS.default_section — the empty `streams:` (mirror of `mcp_default_section` /
 /// `a2a_default_section`), so an ABSENT `streams:` decodes byte-identically to the plane's own
 /// [`StreamsCfg::default`].
 pub fn streams_default_section() -> Box<dyn busbar_kernel::plane::config::PlaneCfg> {

@@ -132,7 +132,7 @@ fn resolve_provider_hook_and_core_fallback_agree() {
         .insert("1302".to_string(), "rate_limit".to_string());
     let deploy_cfg = provider_deploy("ZAI_KEY");
 
-    let hook = busbar_llm::PLANE_DECL
+    let hook = busbar_llm::PLANE_HOOKS
         .resolve_provider
         .expect("the LLM plane declares `resolve_provider`");
     let via_hook = hook(&def, &deploy_cfg);

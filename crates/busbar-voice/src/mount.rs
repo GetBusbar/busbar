@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE VOICE PLANE'S DATA-ROUTE MOUNT (behind the `runtime` feature) — the structural surface that
-//! turns `PLANE_DECL`'s `routes` / `claims` / `admission` / `build` hooks from `None`/empty into the
+//! turns `PLANE_HOOKS`' `routes` / `claims` / `admission` / `build` hooks from `None`/empty into the
 //! plane's real ingress door.
 //!
 //! ## The two slots, and which one this is
@@ -84,7 +84,7 @@ pub(crate) const SESSION_AUDIT_ACTION: &str = "voice.session.open";
 const GATE_CONTAINER: &str = "streams";
 
 /// THE SCOPE KIND a key must hold to open a live session — the plane's one declared scope kind (see
-/// `PLANE_DECL.scope_kinds`). Named once here, so the vocabulary an operator writes in
+/// `PLANE_DECLARATION.scope_kinds`). Named once here, so the vocabulary an operator writes in
 /// `allowed_scopes: [{ kind: session, value: … }]` and the vocabulary the door demands cannot drift.
 const SESSION_SCOPE_KIND: &str = "session";
 
@@ -571,7 +571,7 @@ pub fn voice_routes(slot: &dyn Any) -> Vec<PlaneRouteSpec> {
 #[must_use]
 pub fn voice_ws_arrivals() -> Vec<WsArrivalSpec> {
     use busbar_plugin::cold::endpoint::RouteAuth;
-    let key = crate::PLANE_DECL.key;
+    let key = crate::PLANE_DECLARATION.key;
     vec![
         WsArrivalSpec {
             path: SIDEBAND_PATH.to_string(),
@@ -799,7 +799,7 @@ async fn hook_gate(
     now: u64,
     cfg: &SessionConfig,
 ) -> Result<(), Box<axum::response::Response>> {
-    if !host.gate_attached(crate::PLANE_DECL.key, GATE_CONTAINER) {
+    if !host.gate_attached(crate::PLANE_DECLARATION.key, GATE_CONTAINER) {
         return Ok(());
     }
     // Serialized ONCE for the seam (only past the presence check). The host re-selects the gate set by
@@ -811,7 +811,7 @@ async fn hook_gate(
     let host = Arc::clone(host);
     let outcome = tokio::task::spawn_blocking(move || {
         host.gate_decide(
-            crate::PLANE_DECL.key,
+            crate::PLANE_DECLARATION.key,
             GATE_CONTAINER,
             now,
             SESSION_OPEN_METHOD,
@@ -910,7 +910,7 @@ async fn hook_tap(
     now: u64,
     cfg: &SessionConfig,
 ) -> Result<Option<SessionConfig>, Box<axum::response::Response>> {
-    if !host.tap_attached(crate::PLANE_DECL.key, GATE_CONTAINER) {
+    if !host.tap_attached(crate::PLANE_DECLARATION.key, GATE_CONTAINER) {
         return Ok(None);
     }
     let args_json = serde_json::to_vec(cfg).unwrap_or_default();
@@ -920,7 +920,7 @@ async fn hook_tap(
     let hook_host = Arc::clone(host);
     let verdict = tokio::task::spawn_blocking(move || {
         hook_host.transform_over(
-            crate::PLANE_DECL.key,
+            crate::PLANE_DECLARATION.key,
             GATE_CONTAINER,
             now,
             SESSION_OPEN_METHOD,

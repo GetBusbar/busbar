@@ -62,7 +62,7 @@
 // invisible, including in the modules a request now goes through; per-file, a new gap in a mounted
 // module is a warning again, and the file that still has one has to say why.
 
-use busbar_kernel::plane::registry::{BillableClass, PER_REQUEST};
+use busbar_contract::plane::{BillableClass, PER_REQUEST};
 
 /// THE A2A PLANE'S VOCABULARY DECLARATION, beside the code it describes. Folded into
 /// `plane::registry::BUILTIN_PLANE_DECLS`; every field replaces one arm of a `Plane::A2a` `match`.
@@ -71,8 +71,8 @@ use busbar_kernel::plane::registry::{BillableClass, PER_REQUEST};
 /// the JSON-RPC envelope (which a door refusal is shaped in), HTTP+JSON, and the gRPC service.
 /// `serve::servable_bindings` reads this list to decide what a served card may advertise, and its
 /// length (> 1) is what earns this plane a superset IR and denies it a `sole_wire_format`.
-pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
-    busbar_kernel::plane::registry::PlaneDecl {
+pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
+    busbar_contract::plane::PlaneDeclaration {
         // THE KEY IS THE CODEC'S OWN, named once on the pure side of the split so this declaration
         // and the contract plane in `busbar-plane-a2a` cannot drift apart.
         key: busbar_plane_a2a::PLANE_KEY,
@@ -83,6 +83,26 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         subject_noun: "fronted agent",
         admin_noun: "agent",
         audit_kind: "a2a_agent",
+        card_signing_domain: Some(crate::a2a::sign::CARD_SIGNING_DOMAIN),
+        card_kid_prefix: Some(crate::a2a::sign::CARD_KID_PREFIX),
+        // config-seam stage 1: the registry starts EMPTY — nothing has moved out of core yet.
+        owned_config_sections: &[],
+        // The class the plane crate declares (`busbar_plane_a2a::meta`), by its own symbol.
+        billable_classes: &[BillableClass {
+            class: busbar_plane_a2a::meta::CLASS_BYTES.as_str(),
+            family: "byte",
+        }],
+        // The fee unit this plane counts: one per hop, admitted under its plane-qualified pool. It
+        // opens no session account, so `agents.fees.per_session` would charge nothing — refused.
+        fee_units: &[PER_REQUEST],
+    };
+
+/// THE PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed over BESIDE
+/// [`PLANE_DECLARATION`] and joined to it kernel-side (`PlaneDecl::assemble`). The registration item
+/// is the declaration, which names no kernel type; this table is typed by kernel seams and stays on
+/// the kernel side of every fold.
+pub const PLANE_HOOKS: busbar_kernel::plane::registry::PlaneHooks =
+    busbar_kernel::plane::registry::PlaneHooks {
         wire_format_names: || {
             &[
                 busbar_kernel::plane::WIRE_JSONRPC,
@@ -157,14 +177,14 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         admin_routes: Some(admin_routes),
         openapi: Some(openapi_fragment),
         config_validate: Some(a2a_config_validate),
-        card_signing_domain: Some(crate::a2a::sign::CARD_SIGNING_DOMAIN),
-        card_kid_prefix: Some(crate::a2a::sign::CARD_KID_PREFIX),
         named_def_list: Some(crate::a2a::admin_view::list),
         named_def_get: Some(crate::a2a::admin_view::get),
         registry_contains: Some(crate::a2a::admin_view::contains),
         reresolve_gates: Some(crate::a2a::admin_view::reresolve_gates),
         #[cfg(feature = "openapi-schema")]
         openapi_schemas: Some(crate::a2a::admin_view::openapi_schemas),
+        #[cfg(not(feature = "openapi-schema"))]
+        openapi_schemas: None,
         hydrate: Some(a2a_hydrate),
         start: Some(a2a_start),
         parse_section: Some(a2a_parse_section),
@@ -174,16 +194,6 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         viewer: None,
         retain_verify_gates: Some(a2a_retain_verify_gates),
         default_section: Some(a2a_default_section),
-        // config-seam stage 1: the registry starts EMPTY — nothing has moved out of core yet.
-        owned_config_sections: &[],
-        // The class the plane crate declares (`busbar_plane_a2a::meta`), by its own symbol.
-        billable_classes: &[BillableClass {
-            class: busbar_plane_a2a::meta::CLASS_BYTES.as_str(),
-            family: "byte",
-        }],
-        // The fee unit this plane counts: one per hop, admitted under its plane-qualified pool. It
-        // opens no session account, so `agents.fees.per_session` would charge nothing — refused.
-        fee_units: &[PER_REQUEST],
         resolve_provider: None,
         // NOTHING TO CARRY ACROSS A SWAP. The A2A plane's runtime object (`A2aPlane`) is rebuilt from
         // `agents:`/`public_url` on every apply, and its durable task table is restored at boot
@@ -251,7 +261,7 @@ fn a2a_retain_verify_gates(slots: &dyn busbar_kernel::plane_host::PlaneSlots) {
 pub(crate) fn runtime_off_slots(
     slots: &dyn busbar_kernel::plane_host::PlaneSlots,
 ) -> Option<&crate::a2a::plane::A2aPlane> {
-    slots.plane_slot(PLANE_DECL.key).map(|slot| {
+    slots.plane_slot(PLANE_DECLARATION.key).map(|slot| {
         slot.downcast_ref::<crate::a2a::plane::A2aPlane>()
             .expect("the a2a plane's dispatch slot is an A2aPlane")
     })
@@ -270,7 +280,7 @@ pub(crate) fn carried_a2a_gates(
     std::sync::Arc<std::sync::OnceLock<std::sync::Arc<crate::a2a::transport::LiveCardFetch>>>,
 ) {
     match prior
-        .and_then(|s| s.plane_slot(PLANE_DECL.key))
+        .and_then(|s| s.plane_slot(PLANE_DECLARATION.key))
         .and_then(|slot| slot.clone().downcast::<crate::a2a::plane::A2aPlane>().ok())
     {
         Some(plane) => (plane.verify_arc(), plane.cards_arc()),
@@ -287,7 +297,7 @@ pub(crate) fn carried_a2a_gates(
 /// `Arc<dyn Any>` slot and names no `crate::a2a` type. `None` exactly when `agents:` is not
 /// configured this generation (the plane contributed no slot — the same absence the deleted
 /// `App::a2a: None` used to encode). The downcast never fails: the a2a slot is always an `A2aPlane`
-/// (`PLANE_DECL::build`). The exact byte-analog of `crate::mcp::resource`; A2A carries ONE object,
+/// (`PLANE_HOOKS.build`). The exact byte-analog of `crate::mcp::resource`; A2A carries ONE object,
 /// so this single accessor is its whole runtime seam.
 ///
 /// TEST-ONLY: every production reader reaches the runtime through the neutral host seam
@@ -297,7 +307,7 @@ pub(crate) fn carried_a2a_gates(
 pub fn runtime(
     app: &dyn busbar_kernel::plane_host::PlaneSlots,
 ) -> Option<&crate::a2a::plane::A2aPlane> {
-    app.plane_slot(PLANE_DECL.key).map(|slot| {
+    app.plane_slot(PLANE_DECLARATION.key).map(|slot| {
         slot.downcast_ref::<crate::a2a::plane::A2aPlane>()
             .expect("the a2a plane's dispatch slot is an A2aPlane")
     })
@@ -317,7 +327,7 @@ pub fn runtime(
 pub(crate) fn runtime_arc(
     app: &dyn busbar_kernel::plane_host::PlaneSlots,
 ) -> Option<std::sync::Arc<crate::a2a::plane::A2aPlane>> {
-    app.plane_slot(PLANE_DECL.key).map(|slot| {
+    app.plane_slot(PLANE_DECLARATION.key).map(|slot| {
         slot.clone()
             .downcast::<crate::a2a::plane::A2aPlane>()
             .expect("the a2a plane's dispatch slot is an A2aPlane")
@@ -332,7 +342,7 @@ pub(crate) fn runtime_arc(
 pub(crate) fn runtime_arc_of(
     host: &std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
 ) -> Option<std::sync::Arc<crate::a2a::plane::A2aPlane>> {
-    host.plane_slot(PLANE_DECL.key).map(|slot| {
+    host.plane_slot(PLANE_DECLARATION.key).map(|slot| {
         slot.downcast::<crate::a2a::plane::A2aPlane>()
             .expect("the a2a plane's dispatch slot is an A2aPlane")
     })

@@ -2718,8 +2718,7 @@ fn next_frame_after(usage: TurnUsage) -> Outcome {
 fn a_voice_tokens_cap_counts_audio_tokens_and_refuses_the_next_frame() {
     // The node reads the installed planes' token classes at construction, as boot does after
     // `install_planes`.
-    let _reg =
-        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&busbar_voice::PLANE_DECL]);
+    let _reg = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&VOICE_PLANE]);
     assert_eq!(
         next_frame_after(TurnUsage {
             audio_tokens_in: 60,
@@ -2739,8 +2738,7 @@ fn a_voice_tokens_cap_counts_audio_tokens_and_refuses_the_next_frame() {
 #[cfg(feature = "plane-voice")]
 #[test]
 fn a_voice_tokens_cap_never_counts_audio_seconds() {
-    let _reg =
-        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&busbar_voice::PLANE_DECL]);
+    let _reg = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&VOICE_PLANE]);
     assert_eq!(
         next_frame_after(TurnUsage {
             audio_tokens_in: 60,
@@ -2780,9 +2778,8 @@ mod plane_units {
     /// The node's card map exactly as boot composes it: the config text, core lifting
     /// `streams.rate_card` off the section, and `resolve` composing it beside the flat llm card.
     fn composed(yaml: &str) -> Option<BTreeMap<String, busbar_kernel::config::RateEntryCfg>> {
-        let _reg = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
-            &busbar_voice::PLANE_DECL,
-        ]);
+        let _reg =
+            busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&super::VOICE_PLANE]);
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&format!(
             "providers: {{}}\nmodels: {{}}\npools: {{}}\n{yaml}"
         ))
@@ -3051,3 +3048,12 @@ mod plane_units {
         );
     }
 }
+
+/// The voice plane's registry row, assembled kernel-side from its contract declaration
+/// and its behaviour table.
+#[cfg(feature = "plane-voice")]
+static VOICE_PLANE: busbar_kernel::plane::registry::PlaneDecl =
+    busbar_kernel::plane::registry::PlaneDecl::assemble(
+        busbar_voice::PLANE_DECLARATION,
+        busbar_voice::PLANE_HOOKS,
+    );

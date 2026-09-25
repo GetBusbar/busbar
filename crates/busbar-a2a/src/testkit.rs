@@ -48,7 +48,7 @@ mod envelope_boot;
 #[path = "a2a/tests/engine_boot.rs"]
 pub(crate) mod engine_boot;
 
-/// The A2A plane's scratch key — the same string as `PLANE_DECL.key`.
+/// The A2A plane's scratch key — the same string as `PLANE_DECLARATION.key`.
 const SCRATCH_KEY: &str = "a2a";
 
 /// INSTALL THE A2A CROSS-PLANE TEST SEAMS the composition root (`main`) installs in production — the
@@ -66,7 +66,7 @@ pub fn install_test_seams() {
     envelope_boot::install();
     // Register the A2A plane in the process registry too (config sections / cross-plane refusal), the
     // same thing the finalizer does for plane-building tests.
-    busbar_kernel::plane::registry::register_test_plane(&crate::PLANE_DECL);
+    busbar_kernel::plane::registry::register_test_plane(&PLANE_ROW);
 }
 
 /// The A2A plane's accumulated fixture state, mutated across the fluent chain and consumed once by
@@ -90,12 +90,15 @@ fn scratch(app: &mut dyn TestAppSeam) -> &mut A2aScratch {
 /// core's neutral seams. Mirrors what busbar-core's `TestApp::build`/`build_a2a_plane_runtime` did.
 fn finalize(app: &mut dyn TestAppSeam) {
     // Register this plane in the process registry the way production's composition root does.
-    busbar_kernel::plane::registry::register_test_plane(&crate::PLANE_DECL);
+    busbar_kernel::plane::registry::register_test_plane(&PLANE_ROW);
     let scratch = app.take_plane_scratch::<A2aScratch>(SCRATCH_KEY);
 
     // Always carry the type-erased `agents:` handle onto the App (production fidelity; no test-path
     // consumer downcasts it — the plane reads its `AgentsCfg` off its runtime object).
-    app.set_plane_defs_any(crate::PLANE_DECL.key, Arc::new(scratch.agent_defs.clone()));
+    app.set_plane_defs_any(
+        crate::PLANE_DECLARATION.key,
+        Arc::new(scratch.agent_defs.clone()),
+    );
 
     // The per-agent hook SPECS as neutral strings — core resolves the gates like production does.
     let containers: Vec<(String, Vec<String>)> = scratch
@@ -105,7 +108,7 @@ fn finalize(app: &mut dyn TestAppSeam) {
         .map(|(n, d)| (n.clone(), d.hooks.clone()))
         .collect();
     app.set_container_hooks(
-        crate::PLANE_DECL.key,
+        crate::PLANE_DECLARATION.key,
         containers,
         scratch.agent_defs.all_agent_hooks.clone(),
     );
@@ -113,25 +116,25 @@ fn finalize(app: &mut dyn TestAppSeam) {
     // THE A2A RUNTIME, when a receiving side is configured. MIRROR production's `a2a_start` hook:
     // stamp busbar's PUBLIC card-issuer key (off governance, via the neutral getter) onto the plane.
     if let Some(plane) = A2aPlane::from_config(&scratch.agent_defs, app.configured_public_url()) {
-        if let Some(issuer) = app.card_issuer(crate::PLANE_DECL.key) {
+        if let Some(issuer) = app.card_issuer(crate::PLANE_DECLARATION.key) {
             plane.set_card_issuer(issuer);
         }
         let admission = plane.admission();
-        app.install_plane_runtime(crate::PLANE_DECL.key, plane);
+        app.install_plane_runtime(crate::PLANE_DECLARATION.key, plane);
         // Mount the JSON-RPC front door AND the gRPC path (a claimed path is where the RFC 8707
         // audience is found), and wire the admission when the plane claims/admits anything.
         app.mount_plane(
-            crate::PLANE_DECL.key,
+            crate::PLANE_DECLARATION.key,
             crate::a2a::serve::MOUNT_PATH,
             busbar_kernel::plane::WIRE_JSONRPC,
         );
         app.mount_plane(
-            crate::PLANE_DECL.key,
+            crate::PLANE_DECLARATION.key,
             crate::a2a::serve::GRPC_MOUNT_PATH,
             busbar_kernel::plane::WIRE_GRPC,
         );
         if let Some(admission) = admission {
-            app.admit_plane(crate::PLANE_DECL.key, admission);
+            app.admit_plane(crate::PLANE_DECLARATION.key, admission);
         }
     }
 }
@@ -229,3 +232,11 @@ const ERROR_SURFACE_DRIVER: Option<ErrorSurfaceDriver> =
     Some(|| Box::pin(crate::a2a::verbs::adminverbs_tests::drive_a2a_verb_errors()));
 #[cfg(not(feature = "auth-admin-tokens"))]
 const ERROR_SURFACE_DRIVER: Option<ErrorSurfaceDriver> = None;
+
+/// This plane's registry row, assembled kernel-side from its contract declaration
+/// and its behaviour table.
+static PLANE_ROW: busbar_kernel::plane::registry::PlaneDecl =
+    busbar_kernel::plane::registry::PlaneDecl::assemble(
+        crate::PLANE_DECLARATION,
+        crate::PLANE_HOOKS,
+    );

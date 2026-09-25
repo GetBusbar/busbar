@@ -247,17 +247,17 @@ fn the_five_ingress_doors_mount_audience_checked_across_the_http_and_ws_seams() 
             (
                 "/v1/realtime/sideband/{call_id}".to_string(),
                 RouteAuth::Key,
-                crate::PLANE_DECL.key
+                crate::PLANE_DECLARATION.key
             ),
             (
                 "/v1/realtime/telephony/{call_id}".to_string(),
                 RouteAuth::Key,
-                crate::PLANE_DECL.key
+                crate::PLANE_DECLARATION.key
             ),
             (
                 "/v1/realtime/gemini/{call_id}".to_string(),
                 RouteAuth::Key,
-                crate::PLANE_DECL.key
+                crate::PLANE_DECLARATION.key
             ),
         ],
         "the THREE WS-accept doors declare through the neutral seam, RouteAuth::Key under the plane's key"
@@ -529,11 +529,11 @@ fn redaction_leaves_a_message_that_carries_no_query_credential_alone() {
 /// holds when no class is a subset of another. The upstream `cached_tokens` figure both duplex
 /// dialects report is a SUBSET of the input token classes (nested inside
 /// `input_token_details`/`promptTokensDetails`, never a sibling count), so it must not appear in
-/// `PLANE_DECL.billable_classes` — a streams card that priced it too would double-bill the same
+/// `PLANE_DECLARATION.billable_classes` — a streams card that priced it too would double-bill the same
 /// cached input. This asserts the declared list excludes it and stays pairwise distinct.
 #[test]
 fn billable_classes_are_pairwise_disjoint_and_exclude_cached_tokens() {
-    let classes: Vec<&str> = crate::PLANE_DECL
+    let classes: Vec<&str> = crate::PLANE_DECLARATION
         .billable_classes
         .iter()
         .map(|c| c.class)

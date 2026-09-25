@@ -20,7 +20,7 @@ use busbar_kernel::plane_host::SessionScope;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-/// The durable-audit kind stamped on a voice session's records — matches `PLANE_DECL.audit_kind`.
+/// The durable-audit kind stamped on a voice session's records — matches `PLANE_DECLARATION.audit_kind`.
 const VOICE_SESSION_KIND: &str = "voice_session";
 
 /// Retain a live session for an hour of idle, an hour past terminal, and cap the working set — plain,
@@ -244,7 +244,7 @@ impl SessionHandle {
 }
 
 /// BOOT-REHYDRATE the durable `voice_session` working-set from `store` into `engine` — the
-/// [`crate::PLANE_DECL`] `hydrate` step, mirroring the A2A task-set restore. Reads every persisted
+/// [`crate::PLANE_HOOKS`] `hydrate` step, mirroring the A2A task-set restore. Reads every persisted
 /// `voice_session` row through the neutral [`DurableHandleEngine::rehydrate`] seam and, per row:
 /// installs an ACTIVE session back into the working set, counts (and leaves) a TERMINAL one, and counts
 /// (and skips) a row whose durable body cannot be decoded — so one unreadable row never aborts the

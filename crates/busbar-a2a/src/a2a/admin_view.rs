@@ -116,7 +116,7 @@ pub(crate) fn reresolve_gates(next: &mut dyn busbar_kernel::plane_host::Containe
     // `AgentsCfg`, byte-identical to the old `agent_cfg(app).clone()` on the default registry.
     // Byte-identical to the old inline `next.a2a_agent_gates = resolve_container_gates(...)`.
     let agents = next
-        .plane_slot(crate::a2a::PLANE_DECL.key)
+        .plane_slot(crate::a2a::PLANE_DECLARATION.key)
         .and_then(|slot| slot.clone().downcast::<crate::a2a::plane::A2aPlane>().ok())
         .map(|plane| plane.agent_defs().clone())
         .unwrap_or_default();
@@ -125,5 +125,9 @@ pub(crate) fn reresolve_gates(next: &mut dyn busbar_kernel::plane_host::Containe
         .iter()
         .map(|(n, d)| (n.as_str(), d.hooks.as_slice()))
         .collect();
-    next.reresolve_container_gates(crate::PLANE_DECL.key, &containers, &agents.all_agent_hooks);
+    next.reresolve_container_gates(
+        crate::PLANE_DECLARATION.key,
+        &containers,
+        &agents.all_agent_hooks,
+    );
 }

@@ -1146,7 +1146,7 @@ fn no_configured_directory_still_opens_nothing_and_writes_nothing() {
 /// ITEMS 244, 247, 259 — THREE DOC CLAIMS IN `main.rs` THAT THE CODE BESIDE THEM CONTRADICTED.
 ///
 /// Read off the source, because each claim is prose and the code that falsifies it sits in the same
-/// file: `register_planes` pushes `busbar_a2a::PLANE_DECL` (so "A2A is still built into core ... not
+/// file: `register_planes` pushes `busbar_a2a::PLANE_DECLARATION` (so "A2A is still built into core ... not
 /// pushed here yet" was false); `main()`/`run()` call into `root::` throughout (so "Nothing in
 /// `main()` calls into it yet" was false); and only the LLM plane binds the boot book here while the
 /// admin views share it (so "Every plane's exit arm settles onto it" was false for mcp/a2a/voice).
@@ -1155,7 +1155,8 @@ fn main_rs_doc_claims_match_the_code_beside_them() {
     const MAIN: &str = include_str!("../main.rs");
 
     // 244: the A2A plane IS pushed by `register_planes`, so its doc may not say otherwise.
-    assert!(MAIN.contains("installed.push(&busbar_a2a::PLANE_DECL);"));
+    assert!(MAIN
+        .contains("installed.push(row!(busbar_a2a::PLANE_DECLARATION, busbar_a2a::PLANE_HOOKS));"));
     assert!(
         !MAIN.contains("is not pushed here yet"),
         "register_planes' doc says A2A is not pushed, and the function pushes it"

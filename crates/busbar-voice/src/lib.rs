@@ -3,8 +3,8 @@
 
 //! busbar-voice — the DUPLEX / LIVE-VOICE plane (Plane 4), as ONE plugin crate.
 //!
-//! WHAT THIS CRATE HOLDS. The plane's DECLARATIONS — [`PLANE_DECL`] (a
-//! [`busbar_kernel::plane::registry::PlaneDecl`]) and [`DECLS`] (a
+//! WHAT THIS CRATE HOLDS. The plane's DECLARATIONS — [`PLANE_DECLARATION`] (a contract
+//! [`busbar_contract::plane::PlaneDeclaration`], joined kernel-side to [`PLANE_HOOKS`]) and [`DECLS`] (a
 //! [`busbar_kernel::proto::ProtocolDecl`] with `codec: None`) — plus the plane's OWN four-layer
 //! duplex/session IR ([`ir`]) and BOTH dialect codecs (OpenAI Realtime + Gemini Live). The live pump,
 //! reader/writer bodies, and session store are implemented in [`runtime`] behind the `runtime` feature
@@ -12,15 +12,15 @@
 //!
 //! BOOT-MOUNTING HAS LANDED — this paragraph used to say it was separate, tracked work, and that is
 //! no longer true. `plane-voice` is IN the binary's `default` feature set, and the composition root
-//! installs this crate at four sites: `register_planes` pushes [`PLANE_DECL`] into the plane axis,
+//! installs this crate at four sites: `register_planes` pushes [`PLANE_DECLARATION`] into the plane axis,
 //! `register_diagnostics` extends with [`DIAGNOSTICS`], `register_ws_arrivals` installs
 //! `mount::voice_ws_arrivals()`, and `mount_root_voice` calls `mount::install_governed_calls`. The
-//! shipped binary therefore serves this plane; see [`PLANE_DECL`].
+//! shipped binary therefore serves this plane; see [`PLANE_DECLARATION`].
 //!
 //! ONE PLUGIN PER PROTOCOL, the same rule `busbar-mcp` / `busbar-a2a` state: nothing in `busbar-core`
 //! names this crate. Everything the plane consumes from the engine comes through the neutral
 //! `busbar-substrate` surface (+ `busbar-api`); the `busbar` BINARY — the composition root — is what
-//! links it and hands [`PLANE_DECL`] / [`DECLS`] to the registry installers at boot. The neutral crates
+//! links it and hands [`PLANE_DECLARATION`] / [`DECLS`] to the registry installers at boot. The neutral crates
 //! do NOT change to accept it, and the crate is strong-form DELETABLE (`git rm -r crates/busbar-voice`
 //! leaves the neutral crates compiling) — proven by `scripts/plane-delete-test.sh voice`.
 //!
@@ -68,11 +68,11 @@ pub mod runtime;
 #[cfg(feature = "runtime")]
 pub mod topology;
 
-/// THE DATA-ROUTE MOUNT — the voice plane's `PLANE_DECL` `routes` / `claims` / `admission` / `build`
+/// THE DATA-ROUTE MOUNT — the voice plane's `PLANE_HOOKS` `routes` / `claims` / `admission` / `build`
 /// hooks and the neutral handlers behind them (see [`mount`]). Behind the `runtime` feature because the
 /// route handlers open governed sessions through the T2 topologies (`crate::topology`, itself
 /// runtime-gated); the default feature-off build mounts nothing and keeps the byte-unchanged
-/// `PLANE_DECL` (the hooks stay empty/`None`, wired through the [`VOICE_CLAIMS`] / [`VOICE_ADMISSION`] /
+/// `PLANE_HOOKS` (the hooks stay empty/`None`, wired through the [`VOICE_CLAIMS`] / [`VOICE_ADMISSION`] /
 /// [`VOICE_BUILD`] / [`VOICE_ROUTES`] cfg-split consts, exactly as [`VOICE_BUILD_RUNTIME`] is).
 #[cfg(feature = "runtime")]
 pub mod mount;
@@ -85,9 +85,9 @@ pub mod mount;
 #[cfg(all(feature = "runtime", any(test, feature = "test-support")))]
 pub mod testkit;
 
-/// THE `PLANE_DECL.build_runtime` VALUE — wired to the real runtime constructor
+/// THE `PLANE_HOOKS.build_runtime` VALUE — wired to the real runtime constructor
 /// ([`runtime::build_runtime`]) behind the `runtime` feature, `None` when the feature is off so the
-/// default `PLANE_DECL` is byte-unchanged. Split by `cfg` because the
+/// default `PLANE_HOOKS` is byte-unchanged. Split by `cfg` because the
 /// `runtime` module (and its constructor) only exist behind the feature.
 // `type_complexity`: this fn-pointer is the mirror of the frozen `PlaneDecl::build_runtime` field type
 // (`busbar_kernel::plane::registry`), which carries the SAME `#[allow(clippy::type_complexity)]` — the
@@ -110,13 +110,13 @@ const VOICE_BUILD_RUNTIME: Option<
 > = None;
 
 // ── THE DATA-ROUTE MOUNT HOOKS — cfg-split exactly as `VOICE_BUILD_RUNTIME`, so the default
-// (feature-off) `PLANE_DECL` is BYTE-UNCHANGED (claims empty, admits no one, builds no slot, mounts no
+// (feature-off) `PLANE_HOOKS` is BYTE-UNCHANGED (claims empty, admits no one, builds no slot, mounts no
 // route) and the `runtime` build wires the real neutral hooks in `crate::mount`. Route-mounting the
 // pump needs the T2 topologies (runtime-gated) to open governed sessions, so these arm in lock-step
 // with the runtime — a plane installed at boot (only under `plane-voice`, which turns on
 // `busbar-voice/runtime`) both mounts and admits, keeping the ratchet's "mounted ⇒ admitted" true.
 
-/// `PLANE_DECL.build` — construct the per-generation dispatch slot from `public_url` (the audience),
+/// `PLANE_HOOKS.build` — construct the per-generation dispatch slot from `public_url` (the audience),
 /// `crate::mount::voice_build` with the feature on; `|_| None` (no slot) with it off.
 #[cfg(feature = "runtime")]
 const VOICE_BUILD: fn(
@@ -127,13 +127,13 @@ const VOICE_BUILD: fn(
     &busbar_kernel::plane::registry::BuildCtx,
 ) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> = |_ctx| None;
 
-/// `PLANE_DECL.claims` — the one audience-checked base the plane answers on, or nothing off-feature.
+/// `PLANE_HOOKS.claims` — the one audience-checked base the plane answers on, or nothing off-feature.
 #[cfg(feature = "runtime")]
 const VOICE_CLAIMS: fn(&dyn std::any::Any) -> Vec<(String, &'static str)> = mount::voice_claims;
 #[cfg(not(feature = "runtime"))]
 const VOICE_CLAIMS: fn(&dyn std::any::Any) -> Vec<(String, &'static str)> = |_slot| Vec::new();
 
-/// `PLANE_DECL.admission` — the RFC 8707 audience bound from `public_url`, or `None` off-feature.
+/// `PLANE_HOOKS.admission` — the RFC 8707 audience bound from `public_url`, or `None` off-feature.
 #[cfg(feature = "runtime")]
 const VOICE_ADMISSION: fn(&dyn std::any::Any) -> Option<busbar_kernel::plane::PlaneAdmission> =
     mount::voice_admission;
@@ -141,7 +141,7 @@ const VOICE_ADMISSION: fn(&dyn std::any::Any) -> Option<busbar_kernel::plane::Pl
 const VOICE_ADMISSION: fn(&dyn std::any::Any) -> Option<busbar_kernel::plane::PlaneAdmission> =
     |_slot| None;
 
-/// `PLANE_DECL.routes` — the four neutral ingress routes, or `None` (no data path) off-feature.
+/// `PLANE_HOOKS.routes` — the four neutral ingress routes, or `None` (no data path) off-feature.
 #[cfg(feature = "runtime")]
 #[allow(clippy::type_complexity)]
 const VOICE_ROUTES: Option<
@@ -153,14 +153,14 @@ const VOICE_ROUTES: Option<
     fn(&dyn std::any::Any) -> Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
 > = None;
 
-/// `PLANE_DECL.hydrate` — boot-rehydrate the durable voice-session working-set before any listener
+/// `PLANE_HOOKS.hydrate` — boot-rehydrate the durable voice-session working-set before any listener
 /// binds ([`mount::voice_hydrate`]); `None` off-feature so the default decl is byte-unchanged.
 #[cfg(feature = "runtime")]
 const VOICE_HYDRATE: Option<busbar_kernel::plane::registry::BootHook> = Some(mount::voice_hydrate);
 #[cfg(not(feature = "runtime"))]
 const VOICE_HYDRATE: Option<busbar_kernel::plane::registry::BootHook> = None;
 
-/// `PLANE_DECL.start` — the post-listener boot step ([`mount::voice_start`]); `None` off-feature so the
+/// `PLANE_HOOKS.start` — the post-listener boot step ([`mount::voice_start`]); `None` off-feature so the
 /// default decl is byte-unchanged.
 #[cfg(feature = "runtime")]
 const VOICE_START: Option<busbar_kernel::plane::registry::BootHook> = Some(mount::voice_start);
@@ -174,7 +174,7 @@ const VOICE_START: Option<busbar_kernel::plane::registry::BootHook> = None;
 pub use busbar_voice_codec::PLANE_KEY;
 
 /// THE DIALECT NAME this plane speaks first — OpenAI's bidirectional Realtime voice API. Named once
-/// here; it is the [`DECLS`] registry key and the FIRST of the plane's [`PLANE_DECL`] wire formats.
+/// here; it is the [`DECLS`] registry key and the FIRST of the plane's [`PLANE_HOOKS`] wire formats.
 pub const OPENAI_REALTIME: &str = "openai_realtime";
 
 /// THE SECOND DIALECT this plane speaks — Google's Gemini Live `BidiGenerateContent` API. Its codec is
@@ -218,10 +218,11 @@ fn voice_egress_auth_headers(
     voice_provider_bearer(key)
 }
 
-use busbar_kernel::plane::registry::{BillableClass, PER_SESSION, TOKEN_FAMILY};
+use busbar_contract::plane::{BillableClass, PER_SESSION, TOKEN_FAMILY};
 
-/// THE VOICE PLANE'S DECLARATION — a `&'static PlaneDecl` the composition root installs at boot so the
-/// `busbar` binary names one stable path (`busbar_voice::PLANE_DECL`). It declares the plane's identity
+/// THE VOICE PLANE'S DECLARATION — contract data the composition root registers at boot, joined
+/// kernel-side to [`PLANE_HOOKS`], so the `busbar` binary names one stable path
+/// (`busbar_voice::PLANE_DECLARATION`). Together the two declare the plane's identity
 /// (key, config section, audit kind, wire formats), is INSTALLED at boot behind the `plane-voice`
 /// feature with `build_runtime` wired to the real runtime constructor, and — behind the `runtime`
 /// feature (which `plane-voice` turns on) — MOUNTS its data plane: `build` erases the dispatch slot from
@@ -232,8 +233,8 @@ use busbar_kernel::plane::registry::{BillableClass, PER_SESSION, TOKEN_FAMILY};
 /// cells are request→response codecs), so the session driver lives in the plane's own runtime
 /// (`crate::topology`) over the neutral pump, not on that field. The neutral registry unions this
 /// without naming it (the MCP/A2A precedent).
-pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
-    busbar_kernel::plane::registry::PlaneDecl {
+pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
+    busbar_contract::plane::PlaneDeclaration {
         key: "voice",
         // A MOUNTED plane, not the fallback catch-all.
         fallback: false,
@@ -250,55 +251,8 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         subject_noun: "voice session",
         admin_noun: "voice-session",
         audit_kind: "voice_session",
-        // TWO dialects ⇒ superset IR, DERIVED from this list's length (see VOICE_WIRE_FORMATS).
-        wire_format_names: || VOICE_WIRE_FORMATS,
-        // MOUNTED (behind `runtime`): the plane builds its dispatch slot from `public_url`, claims TWO
-        // audience-checked bases — `/v1/realtime` (OpenAI) and `/v1/realtime/gemini` (Gemini Live) —
-        // under the SAME bound audience, and mounts the five ingress routes across both dialects, whose
-        // handlers open governed sessions through `run_gauntlet_session` (see `crate::mount`).
-        // Off-feature these stay empty/`None` (the byte-unchanged default decl). A plane installed at
-        // boot is installed under `plane-voice` (⇒ `busbar-voice/runtime`), so it always both mounts and
-        // admits — the ratchet's "mounted ⇒ admitted" holds by construction.
-        claims: VOICE_CLAIMS,
-        admission: VOICE_ADMISSION,
-        build: VOICE_BUILD,
-        routes: VOICE_ROUTES,
-        admin_routes: None,
-        openapi: None,
-        // BOOT hooks — rehydrate the durable session working-set before the listener, then the
-        // post-listener readiness step. Wired behind `runtime` (see [`VOICE_HYDRATE`] / [`VOICE_START`]);
-        // `None` off-feature so the default decl is byte-unchanged.
-        hydrate: VOICE_HYDRATE,
-        start: VOICE_START,
-        config_validate: None,
         card_signing_domain: None,
         card_kid_prefix: None,
-        named_def_list: None,
-        named_def_get: None,
-        registry_contains: None,
-        reresolve_gates: None,
-        #[cfg(feature = "openapi-schema")]
-        openapi_schemas: None,
-        on_swap: None,
-        // config-seam: voice PARSES its owned `streams:` section through its own typed `StreamsCfg`,
-        // so `DeployCfg` names no `busbar_voice` type (the MCP `mcp_parse_section` / A2A
-        // `a2a_parse_section` pattern). UNCONDITIONAL — the hook lives outside the `runtime` gate so
-        // the default feature-off build validates `streams:` too.
-        parse_section: Some(config::streams_parse_section),
-        parse_endpoint: None,
-        lower_endpoint: None,
-        // RUNTIME HOOK — wired to the real per-generation runtime constructor behind the `runtime`
-        // feature (see [`VOICE_BUILD_RUNTIME`]); `None` when the feature is off so the default build is
-        // byte-unchanged. The DATA-plane hooks (`build` / `claims` / `admission` / `routes`) and the
-        // BOOT hooks (`hydrate` / `start`) are wired too (see [`mount`]) — all behind `runtime`.
-        build_runtime: VOICE_BUILD_RUNTIME,
-        viewer: None,
-        retain_verify_gates: None,
-        // config-seam: the empty `streams:` default, so an ABSENT section decodes byte-identically to
-        // `StreamsCfg::default()` (mirror of `a2a_default_section` / `mcp_default_section`). Without
-        // it the neutral `StreamsSection::default()` newtype would fall back to a raw capture, not the
-        // typed default.
-        default_section: Some(config::streams_default_section),
         // config-seam: voice OWNS the `streams:` grammar. `"streams"` is NOT in core's
         // `CORE_OWNED_CONCRETE_SECTIONS` (providers/models/pools/rate_card/limits), so the dup-claim
         // guard admits this claim; a second claimant of `streams` is refused by construction.
@@ -341,6 +295,60 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         // The fee unit this plane counts: one per opened session (`SessionAccount::open`). A turn never
         // passes per-request admission, so `streams.fees.per_request` would charge nothing — refused.
         fee_units: &[PER_SESSION],
+    };
+
+/// THE PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed over BESIDE
+/// [`PLANE_DECLARATION`] and joined to it kernel-side (`PlaneDecl::assemble`). The registration item
+/// is the declaration, which names no kernel type; this table is typed by kernel seams and stays on
+/// the kernel side of every fold.
+pub const PLANE_HOOKS: busbar_kernel::plane::registry::PlaneHooks =
+    busbar_kernel::plane::registry::PlaneHooks {
+        // TWO dialects ⇒ superset IR, DERIVED from this list's length (see VOICE_WIRE_FORMATS).
+        wire_format_names: || VOICE_WIRE_FORMATS,
+        // MOUNTED (behind `runtime`): the plane builds its dispatch slot from `public_url`, claims TWO
+        // audience-checked bases — `/v1/realtime` (OpenAI) and `/v1/realtime/gemini` (Gemini Live) —
+        // under the SAME bound audience, and mounts the five ingress routes across both dialects, whose
+        // handlers open governed sessions through `run_gauntlet_session` (see `crate::mount`).
+        // Off-feature these stay empty/`None` (the byte-unchanged default decl). A plane installed at
+        // boot is installed under `plane-voice` (⇒ `busbar-voice/runtime`), so it always both mounts and
+        // admits — the ratchet's "mounted ⇒ admitted" holds by construction.
+        claims: VOICE_CLAIMS,
+        admission: VOICE_ADMISSION,
+        build: VOICE_BUILD,
+        routes: VOICE_ROUTES,
+        admin_routes: None,
+        openapi: None,
+        // BOOT hooks — rehydrate the durable session working-set before the listener, then the
+        // post-listener readiness step. Wired behind `runtime` (see [`VOICE_HYDRATE`] / [`VOICE_START`]);
+        // `None` off-feature so the default decl is byte-unchanged.
+        hydrate: VOICE_HYDRATE,
+        start: VOICE_START,
+        config_validate: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        openapi_schemas: None,
+        on_swap: None,
+        // config-seam: voice PARSES its owned `streams:` section through its own typed `StreamsCfg`,
+        // so `DeployCfg` names no `busbar_voice` type (the MCP `mcp_parse_section` / A2A
+        // `a2a_parse_section` pattern). UNCONDITIONAL — the hook lives outside the `runtime` gate so
+        // the default feature-off build validates `streams:` too.
+        parse_section: Some(config::streams_parse_section),
+        parse_endpoint: None,
+        lower_endpoint: None,
+        // RUNTIME HOOK — wired to the real per-generation runtime constructor behind the `runtime`
+        // feature (see [`VOICE_BUILD_RUNTIME`]); `None` when the feature is off so the default build is
+        // byte-unchanged. The DATA-plane hooks (`build` / `claims` / `admission` / `routes`) and the
+        // BOOT hooks (`hydrate` / `start`) are wired too (see [`mount`]) — all behind `runtime`.
+        build_runtime: VOICE_BUILD_RUNTIME,
+        viewer: None,
+        retain_verify_gates: None,
+        // config-seam: the empty `streams:` default, so an ABSENT section decodes byte-identically to
+        // `StreamsCfg::default()` (mirror of `a2a_default_section` / `mcp_default_section`). Without
+        // it the neutral `StreamsSection::default()` newtype would fall back to a raw capture, not the
+        // typed default.
+        default_section: Some(config::streams_default_section),
         resolve_provider: None,
     };
 

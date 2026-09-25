@@ -1204,13 +1204,33 @@ fn an_open_class_the_present_card_does_not_price_refuses_and_absent_reads_zero()
 
 /// A plane declaring token-family classes beside a duration class — the streaming plane's shape.
 static TOKEN_FAMILY_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-    key: "token-family-plane",
-    fallback: false,
-    config_section: "streams",
-    scope_kinds: &[],
-    subject_noun: "stream",
-    admin_noun: "stream",
-    audit_kind: "stream",
+    declaration: crate::plane::registry::PlaneDeclaration {
+        key: "token-family-plane",
+        fallback: false,
+        config_section: "streams",
+        scope_kinds: &[],
+        subject_noun: "stream",
+        admin_noun: "stream",
+        audit_kind: "stream",
+        card_signing_domain: None,
+        card_kid_prefix: None,
+        owned_config_sections: &[],
+        billable_classes: &[
+            crate::plane::registry::BillableClass {
+                class: "audio_tokens_in",
+                family: crate::plane::registry::TOKEN_FAMILY,
+            },
+            crate::plane::registry::BillableClass {
+                class: "audio_tokens_out",
+                family: crate::plane::registry::TOKEN_FAMILY,
+            },
+            crate::plane::registry::BillableClass {
+                class: "audio_seconds_in",
+                family: "duration",
+            },
+        ],
+        fee_units: &[],
+    },
     wire_format_names: || &[],
     claims: |_| Vec::new(),
     admission: |_| None,
@@ -1221,13 +1241,10 @@ static TOKEN_FAMILY_PLANE: crate::plane::registry::PlaneDecl = crate::plane::reg
     hydrate: None,
     start: None,
     config_validate: None,
-    card_signing_domain: None,
-    card_kid_prefix: None,
     named_def_list: None,
     named_def_get: None,
     registry_contains: None,
     reresolve_gates: None,
-    #[cfg(feature = "openapi-schema")]
     openapi_schemas: None,
     on_swap: None,
     parse_section: None,
@@ -1237,22 +1254,6 @@ static TOKEN_FAMILY_PLANE: crate::plane::registry::PlaneDecl = crate::plane::reg
     viewer: None,
     retain_verify_gates: None,
     default_section: None,
-    owned_config_sections: &[],
-    billable_classes: &[
-        crate::plane::registry::BillableClass {
-            class: "audio_tokens_in",
-            family: crate::plane::registry::TOKEN_FAMILY,
-        },
-        crate::plane::registry::BillableClass {
-            class: "audio_tokens_out",
-            family: crate::plane::registry::TOKEN_FAMILY,
-        },
-        crate::plane::registry::BillableClass {
-            class: "audio_seconds_in",
-            family: "duration",
-        },
-    ],
-    fee_units: &[],
     resolve_provider: None,
 };
 

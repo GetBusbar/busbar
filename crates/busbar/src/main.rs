@@ -263,7 +263,7 @@ fn register_protocols() {
 
 /// REGISTER THE LINKED PLANE CRATES — the composition root's one write into the plane axis
 /// (`busbar_kernel::plane::registry::install_planes`), exactly `register_protocols`' shape on the
-/// plane axis. The MCP plane is now a crate (`busbar-mcp`), so it contributes its `&PLANE_DECL` here
+/// plane axis. The MCP plane is now a crate (`busbar-mcp`), so it contributes its declaration here
 /// under the `plane-mcp` feature; core's PRODUCTION build carries no MCP built-in row (it dual-compiles
 /// the plane back in for its own test builds only), and `merged_boot_plane_decls` folds this installed
 /// copy into its canonical slot. The LLM, A2A, voice and decision planes are pushed here the same way,
@@ -276,38 +276,55 @@ fn register_protocols() {
 fn register_planes() {
     #[allow(unused_mut)]
     let mut installed: Vec<&'static busbar_kernel::plane::registry::PlaneDecl> = Vec::new();
-    // The LLM plane, now its own crate (`busbar-llm`), contributes its `&PLANE_DECL` here behind the
+    // A plane REGISTERS its contract `PLANE_DECLARATION` — plain data, naming no kernel type — and
+    // hands its `PLANE_HOOKS` behaviour table beside it; the KERNEL joins the two into the registry
+    // row (`PlaneDecl::assemble`). One `static` per row, so the installed set is `'static`.
+    #[allow(unused_macros)]
+    macro_rules! row {
+        ($declaration:path, $hooks:path) => {{
+            static ROW: busbar_kernel::plane::registry::PlaneDecl =
+                busbar_kernel::plane::registry::PlaneDecl::assemble($declaration, $hooks);
+            &ROW
+        }};
+    }
+    // The LLM plane, now its own crate (`busbar-llm`), contributes its declaration here behind the
     // SAME `proto-llm` feature that carries its dependency edge and its protocol `DECLS` — one switch
     // for the LLM protocol and the LLM plane, never two. `merged_boot_plane_decls` normalises the
     // installed set to canonical layering order, so this lands in the `llm` slot regardless of push
     // order. A build with `proto-llm` off drops the crate edge and this line together, and core serves
     // no LLM plane (the plane-split deletion test).
     #[cfg(feature = "proto-llm")]
-    installed.push(&busbar_llm::PLANE_DECL);
+    installed.push(row!(busbar_llm::PLANE_DECLARATION, busbar_llm::PLANE_HOOKS));
     #[cfg(feature = "plane-mcp")]
-    installed.push(&busbar_mcp::PLANE_DECL);
+    installed.push(row!(busbar_mcp::PLANE_DECLARATION, busbar_mcp::PLANE_HOOKS));
     // The A2A plane, now its own crate (`busbar-a2a`, PLANE-ONLY — no PROTO_DECL). Same slot and
     // reason as the MCP row: `--validate` reads the plane list, so the axis is installed before any
     // reader. Present only under `plane-a2a`; a build with A2A compiled out pushes nothing.
     #[cfg(feature = "plane-a2a")]
-    installed.push(&busbar_a2a::PLANE_DECL);
+    installed.push(row!(busbar_a2a::PLANE_DECLARATION, busbar_a2a::PLANE_HOOKS));
     // The VOICE plane (Plane 4), now its own crate (`busbar-voice`). Same slot and reason as the A2A
     // row: `--validate` reads the plane list, so the axis is installed before any reader. Present
     // under `plane-voice`, which is IN `default` — voice ships armed (default-on + deletable, exactly
     // like plane-mcp/plane-a2a), so the shipped build installs it and claims its `streams:` section; a
     // build with voice compiled out (`--no-default-features`) pushes nothing.
     #[cfg(feature = "plane-voice")]
-    installed.push(&busbar_voice::PLANE_DECL);
+    installed.push(row!(
+        busbar_voice::PLANE_DECLARATION,
+        busbar_voice::PLANE_HOOKS
+    ));
     // THE DECISION PLANE (jev), #48's fifth. Same slot and the same reason as the rows above, and
-    // ONE difference: the `&PlaneDecl` it pushes is not the plane crate's, because that crate may
-    // not have one. `busbar-plane-decision` is a PURE plane whose manifest may name
-    // `busbar-contract` and nothing else (DECISIONS #40) and `PlaneDecl` is a `busbar-kernel` type,
-    // so the declaration is written in the composition root — `root::plane_decision`, which reads
+    // ONE difference: the declaration and hooks it pushes are not the plane crate's. Its hooks are
+    // typed by `busbar-kernel` seams and `busbar-plane-decision` is a PURE plane whose manifest may
+    // name `busbar-contract` and nothing else (DECISIONS #40), so both halves are written in the
+    // composition root — `root::plane_decision`, which reads
     // the plane's own `PlaneMeta` for its identity rather than restating it. Present under
     // `plane-decision`, which is IN `default`; a build with it off pushes nothing and drops the
     // crate edge with it.
     #[cfg(feature = "plane-decision")]
-    installed.push(&root::plane_decision::PLANE_DECL);
+    installed.push(row!(
+        root::plane_decision::PLANE_DECLARATION,
+        root::plane_decision::PLANE_HOOKS
+    ));
     busbar_kernel::plane::registry::install_planes(installed.leak());
 
     // THE DECISION PLANE, READ BACK OUT OF THE AXIS IT WAS JUST INSTALLED INTO. Every other plane
@@ -1418,7 +1435,7 @@ async fn run(data_workers: usize) {
     ))]
     if app_handle
         .load()
-        .plane_configured(&busbar_voice::PLANE_DECL)
+        .plane_configured(&busbar_voice::PLANE_DECLARATION)
     {
         provision_root_listeners(
             &sealed_root,

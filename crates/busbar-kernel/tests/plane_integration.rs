@@ -295,7 +295,7 @@ async fn a_model_plane_request_is_counted_exactly_once() {
     // testkits do for their planes), so the neutral residual-key derivation recognises `llm` as the
     // residual — otherwise the model-plane boundary would not know this request rides the residual and
     // would double-count it. Idempotent, process-wide.
-    busbar_kernel::plane::registry::register_test_plane(&busbar_llm::PLANE_DECL);
+    busbar_kernel::plane::registry::register_test_plane(&LLM_PLANE);
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "observe-residual-model",
@@ -434,7 +434,7 @@ mod metrics_scrape {
         // testkits do for their planes), so the neutral residual-key derivation recognises `llm` as the
         // residual and the model-plane traffic below stays on the v1.5.4 model family (no `plane`
         // label, one count) rather than being mistaken for a mounted plane. Idempotent, process-wide.
-        busbar_kernel::plane::registry::register_test_plane(&busbar_llm::PLANE_DECL);
+        busbar_kernel::plane::registry::register_test_plane(&crate::LLM_PLANE);
         let app = TestApp::new()
             .public_url("https://busbar.example")
             .mcp(&mcp_cfg())
@@ -929,3 +929,11 @@ async fn test_mcp_token_is_confined_to_the_mcp_plane() {
     handle.abort();
     server.shutdown().await;
 }
+
+/// The llm plane's registry row, assembled kernel-side from its contract declaration
+/// and its behaviour table.
+static LLM_PLANE: busbar_kernel::plane::registry::PlaneDecl =
+    busbar_kernel::plane::registry::PlaneDecl::assemble(
+        busbar_llm::PLANE_DECLARATION,
+        busbar_llm::PLANE_HOOKS,
+    );

@@ -1738,7 +1738,7 @@ fn probe_session_scope() -> (&'static str, String) {
 //     sends) is relayed to the client verbatim through a `SessionCore<GeminiLiveCodec>` — the EXACT
 //     codec type the mounted route's `WsArrivalSpec` closure closes over, not a stand-in.
 //
-// WAS RED: `PLANE_DECL.wire_format_names` named `gemini_live`, the codec existed and passed the
+// WAS RED: `PLANE_HOOKS.wire_format_names` named `gemini_live`, the codec existed and passed the
 // spec/cross-parity battery, but no ingress route spoke it — `voice_claims`/`voice_ws_arrivals` named
 // only the OpenAI base, so a caller had no path to reach the Gemini dialect at all.
 // ══════════════════════════════════════════════════════════════════════════════════════════════════
@@ -1796,13 +1796,13 @@ fn probe_gemini_live_route() -> (&'static str, String) {
             ),
         );
     };
-    if gemini.slot_key != busbar_voice::PLANE_DECL.key {
+    if gemini.slot_key != busbar_voice::PLANE_DECLARATION.key {
         return (
             "FAIL",
             format!(
                 "the Gemini arrival is keyed to '{}', not the plane's own slot '{}'",
                 gemini.slot_key,
-                busbar_voice::PLANE_DECL.key
+                busbar_voice::PLANE_DECLARATION.key
             ),
         );
     }

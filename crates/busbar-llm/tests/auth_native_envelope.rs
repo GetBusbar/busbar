@@ -27,7 +27,7 @@ use reqwest::StatusCode;
 /// the protocol declarations, the plane declaration, and the path / body ingress tables.
 fn install_llm_registrations() {
     busbar_kernel::proto::register_test_protocols(busbar_llm::DECLS);
-    busbar_kernel::plane::registry::register_test_plane(&busbar_llm::PLANE_DECL);
+    busbar_kernel::plane::registry::register_test_plane(&LLM_PLANE);
     busbar_kernel::ingress::arrival::set_test_path_ingress(|| busbar_llm::PATH_INGRESS);
     busbar_kernel::ingress::arrival::set_test_body_ingress(|| busbar_llm::BODY_INGRESS);
 }
@@ -821,3 +821,11 @@ async fn test_admin_prefix_is_boundary_safe() {
     handle.abort();
     server.shutdown().await;
 }
+
+/// The llm plane's registry row, assembled kernel-side from its contract declaration
+/// and its behaviour table.
+static LLM_PLANE: busbar_kernel::plane::registry::PlaneDecl =
+    busbar_kernel::plane::registry::PlaneDecl::assemble(
+        busbar_llm::PLANE_DECLARATION,
+        busbar_llm::PLANE_HOOKS,
+    );

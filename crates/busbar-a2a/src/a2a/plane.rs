@@ -220,7 +220,7 @@ impl A2aPlane {
 
     /// LOWER `agents:` INTO A RUNNING REGISTRY, CARRYING the verify-on-call gate and the boot-resolved
     /// card transports across from the prior generation's plane — the composition-root entry point
-    /// ([`super::PLANE_DECL`]'s `build`) uses this so the coalescing epochs and the boot-set transports
+    /// ([`super::PLANE_HOOKS`]' `build`) uses this so the coalescing epochs and the boot-set transports
     /// survive every config apply (fresh defaults on the first build). [`Self::from_config`] is the
     /// fresh-gate shorthand every test uses.
     pub(crate) fn from_config_carrying(

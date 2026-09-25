@@ -300,8 +300,8 @@ impl<'de> Deserialize<'de> for AgentsCfg {
         // the passthrough refusal below.
         let section = busbar_kernel::plane::config::split_section::<D, AgentDefCfg>(
             deserializer,
-            super::PLANE_DECL.config_section,
-            super::PLANE_DECL.subject_noun,
+            super::PLANE_DECLARATION.config_section,
+            super::PLANE_DECLARATION.subject_noun,
             validate_agent,
         )?;
 

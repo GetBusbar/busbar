@@ -33,14 +33,21 @@ use crate::testkit::engine_boot::engine;
 /// to another plane, never about which plane that is. Idempotent by key, registered process-wide.
 static POOLS_PLANE_STANDIN: busbar_kernel::plane::registry::PlaneDecl =
     busbar_kernel::plane::registry::PlaneDecl {
-        key: "pools_standin",
-        // Stands in for the plane that owns `pools:`.
-        fallback: true,
-        config_section: "pools",
-        scope_kinds: &["pool"],
-        subject_noun: "model pool",
-        admin_noun: "pool",
-        audit_kind: "pool_thing",
+        declaration: busbar_kernel::plane::registry::PlaneDeclaration {
+            key: "pools_standin",
+            // Stands in for the plane that owns `pools:`.
+            fallback: true,
+            config_section: "pools",
+            scope_kinds: &["pool"],
+            subject_noun: "model pool",
+            admin_noun: "pool",
+            audit_kind: "pool_thing",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[],
+            fee_units: &[],
+        },
         wire_format_names: || &["pools_standin"],
         claims: |_| Vec::new(),
         admission: |_| None,
@@ -51,13 +58,10 @@ static POOLS_PLANE_STANDIN: busbar_kernel::plane::registry::PlaneDecl =
         hydrate: None,
         start: None,
         config_validate: None,
-        card_signing_domain: None,
-        card_kid_prefix: None,
         named_def_list: None,
         named_def_get: None,
         registry_contains: None,
         reresolve_gates: None,
-        #[cfg(feature = "openapi-schema")]
         openapi_schemas: None,
         on_swap: None,
         parse_section: None,
@@ -67,9 +71,6 @@ static POOLS_PLANE_STANDIN: busbar_kernel::plane::registry::PlaneDecl =
         viewer: None,
         retain_verify_gates: None,
         default_section: None,
-        owned_config_sections: &[],
-        billable_classes: &[],
-        fee_units: &[],
         resolve_provider: None,
     };
 
@@ -511,7 +512,7 @@ fn the_admin_write_path_and_the_file_share_one_grammar() {
     ];
     // The `agents:` section, carried as its plane's declared config section — the shape the engine
     // folds into the named-map chassis from the registry, whose typed parse the admin write path runs.
-    let agents = crate::a2a::PLANE_DECL.config_section;
+    let agents = crate::a2a::PLANE_DECLARATION.config_section;
     for (what, def) in cases {
         assert!(
             engine()
@@ -531,7 +532,7 @@ fn the_admin_write_path_and_the_file_share_one_grammar() {
 #[test]
 fn the_section_is_a_first_class_member_of_the_chassis() {
     let agents = engine()
-        .named_map_section_facts(crate::a2a::PLANE_DECL.config_section)
+        .named_map_section_facts(crate::a2a::PLANE_DECLARATION.config_section)
         .expect(
             "a section missing from sections() is a section the router, the OpenAPI generator and \
              the overlay applier all silently skip",

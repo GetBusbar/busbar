@@ -119,7 +119,7 @@ pub(crate) fn build_runtime(
     // the neutral slot seam then downcast to THIS plane's own NativeRuntime.
     let prior_rt: Option<&NativeRuntime> = prior.and_then(|p| {
         p.plane_slot(busbar_kernel::plane_host::runtime_slot_key(
-            crate::PLANE_DECL.key,
+            crate::PLANE_DECLARATION.key,
         ))
         .and_then(|slot| slot.downcast_ref::<NativeRuntime>())
     });

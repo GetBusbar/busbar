@@ -1537,7 +1537,7 @@ fn test_resolve_provider_from_def() {
 
 // THE HOOK-PATH / FALLBACK-PATH EQUIVALENCE (1.6.0 pools stage-B) MOVED to
 // `tests/config_cross_plane.rs::resolve_provider_hook_and_core_fallback_agree` — it calls the REAL
-// `busbar_llm::PLANE_DECL.resolve_provider` hook, which only type-checks against core's OWN
+// `busbar_llm::PLANE_HOOKS.resolve_provider` hook, which only type-checks against core's OWN
 // `ProviderDef`/`ProviderDeploy` when there is ONE `busbar_kernel` in the graph (an integration-test
 // target), not the two copies busbar-kernel's own `#[cfg(test)]` dev-dependency back-edge onto
 // busbar-llm produces. See that file's header for the full rationale.
@@ -4051,13 +4051,20 @@ fn record_plane_section(
 /// A stub plane owning the registry section a card is authored in, whose `parse_section` records
 /// what it was handed. `"card-plane"` is its registry key: the key the card is filed under.
 static CARD_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-    key: "card-plane",
-    fallback: false,
-    config_section: "tools",
-    scope_kinds: &[],
-    subject_noun: "card thing",
-    admin_noun: "card-thing",
-    audit_kind: "card-thing",
+    declaration: crate::plane::registry::PlaneDeclaration {
+        key: "card-plane",
+        fallback: false,
+        config_section: "tools",
+        scope_kinds: &[],
+        subject_noun: "card thing",
+        admin_noun: "card-thing",
+        audit_kind: "card-thing",
+        card_signing_domain: None,
+        card_kid_prefix: None,
+        owned_config_sections: &[],
+        billable_classes: &[],
+        fee_units: &[],
+    },
     wire_format_names: || &[],
     claims: |_| Vec::new(),
     admission: |_| None,
@@ -4068,13 +4075,10 @@ static CARD_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::P
     hydrate: None,
     start: None,
     config_validate: None,
-    card_signing_domain: None,
-    card_kid_prefix: None,
     named_def_list: None,
     named_def_get: None,
     registry_contains: None,
     reresolve_gates: None,
-    #[cfg(feature = "openapi-schema")]
     openapi_schemas: None,
     on_swap: None,
     parse_section: Some(record_plane_section),
@@ -4084,9 +4088,6 @@ static CARD_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::P
     viewer: None,
     retain_verify_gates: None,
     default_section: None,
-    owned_config_sections: &[],
-    billable_classes: &[],
-    fee_units: &[],
     resolve_provider: None,
 };
 

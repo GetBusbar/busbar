@@ -6,13 +6,13 @@
 //!
 //! ## Why this file exists at all, when the other four planes have no counterpart
 //!
-//! Every other plane hands the binary a `&'static PlaneDecl` of its own — `busbar_llm::PLANE_DECL`,
-//! `busbar_mcp::PLANE_DECL`, `busbar_a2a::PLANE_DECL`, `busbar_voice::PLANE_DECL`. Each of those
-//! four lives in an IMPURE HOST crate that already path-deps `busbar-kernel`, so naming a kernel
-//! type costs it nothing. `busbar-plane-decision` has no host crate: the signed jev design makes it
+//! Every other plane hands the binary a contract `PLANE_DECLARATION` and a kernel-typed `PLANE_HOOKS`
+//! of its own — `busbar_llm::`, `busbar_mcp::`, `busbar_a2a::`, `busbar_voice::` — and the kernel
+//! joins the two (`PlaneDecl::assemble`). Each of those four lives in an IMPURE HOST crate that
+//! already path-deps `busbar-kernel`, so naming a kernel type in its hooks costs it nothing. `busbar-plane-decision` has no host crate: the signed jev design makes it
 //! ONE crate, the pure plane and its own typed `decisions:` section together, and a pure plane's
 //! manifest may name `busbar-contract` and nothing else (the dep wall, DECISIONS #40). `PlaneDecl`
-//! is a `busbar-kernel` type. The plane crate therefore CANNOT hold its own declaration — it used
+//! is a `busbar-kernel` type. The plane crate therefore CANNOT hold its own hooks — it used
 //! to, in a `src/registry.rs` nothing outside the crate ever read, and that file was deleted
 //! precisely because carrying it cost the crate a forbidden kernel edge; its own
 //! `tests/invariance.rs` is the witness that keeps the edge gone.
@@ -52,8 +52,8 @@
 //! `busbar_kernel::config::prepass`, whose key list is
 //! `["mcp", "oauth_as", "tools", "agents", "streams", "decisions"]`, and lands on
 //! `DeployCfg.decisions` — the neutral boxed carrier `busbar_kernel::plane::config::DecisionsSection`
-//! — which lowers through THIS declaration's [`PLANE_DECL`]`.parse_section` /
-//! [`PLANE_DECL`]`.default_section` hooks, exactly as `tools:`, `agents:` and `streams:` lower
+//! — which lowers through THIS plane's [`PLANE_HOOKS`]`.parse_section` /
+//! [`PLANE_HOOKS`]`.default_section` hooks, exactly as `tools:`, `agents:` and `streams:` lower
 //! through their own planes'. With those two hooks `None` the seam falls through to an UNTYPED raw
 //! capture: the section's `deny_unknown_fields` never runs, and `decisions: "hello"` parses. That is
 //! a config an operator writes that does nothing, which is worse than one that is rejected, so both
@@ -101,13 +101,14 @@ use busbar_plane_decision::DecisionPlane;
 /// plane's (`voice` / `streams`) differ for the same reason.
 pub const CONFIG_SECTION: &str = "decisions";
 
-/// THE DECISION PLANE'S REGISTRY DECLARATION — the `&'static PlaneDecl` `register_planes()`
-/// installs, and the composition root's whole knowledge of this plane.
+/// THE DECISION PLANE'S REGISTRY DECLARATION — the contract data `register_planes()` joins to
+/// [`PLANE_HOOKS`] and installs, and the composition root's whole knowledge of this plane. Plain
+/// data naming no kernel type, so it is the one half of this file the plane crate itself could hold.
 ///
 /// See the module doc for why it is written here and not in the plane crate, and for what it
 /// deliberately leaves unwired.
-pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
-    busbar_kernel::plane::registry::PlaneDecl {
+pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
+    busbar_contract::plane::PlaneDeclaration {
         // THE KEY IS THE PLANE'S OWN, read through the contract trait the plane implements, so this
         // declaration and the plane cannot drift apart.
         key: <DecisionPlane as PlaneMeta>::KEY,
@@ -122,6 +123,32 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         subject_noun: "decision provider",
         admin_noun: "decision-provider",
         audit_kind: "decision_provider",
+        // jev signs no agent card — it fronts nobody and publishes no identity document.
+        card_signing_domain: None,
+        card_kid_prefix: None,
+        // THIS PLANE OWNS `decisions:` AND NOBODY ELSE DOES. Unlike `pools`/`models`/`providers`,
+        // the section was never a concrete `DeployCfg` field — it is greenfield, post-1.5.5 — so
+        // claiming it evicts nothing from core and the dup-claim guard admits it. What the claim
+        // buys is that a SECOND claimant of `decisions` is now a boot refusal by construction, which
+        // is the whole reason the guard exists. Voice's `streams` claim is the precedent.
+        owned_config_sections: &[CONFIG_SECTION],
+        // The class the plane crate declares (`busbar_plane_decision::meta`), by its own symbol.
+        billable_classes: &[busbar_contract::plane::BillableClass {
+            class: busbar_plane_decision::meta::CLASS_DECISION.as_str(),
+            family: "decision",
+        }],
+        // The providers/models/pools merge is the LLM plane's seam; a decision provider is resolved
+        // from this plane's own section, not from the `providers:` catalog merge.
+        // No fee unit: nothing admits a decision request under this plane's key yet, so any
+        // `decisions.fees` figure would charge nothing — refused at boot.
+        fee_units: &[],
+    };
+
+/// THE DECISION PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed to
+/// `PlaneDecl::assemble` beside [`PLANE_DECLARATION`] by `register_planes()`. Typed by kernel seams,
+/// which is why it is written here and not in the plane crate.
+pub const PLANE_HOOKS: busbar_kernel::plane::registry::PlaneHooks =
+    busbar_kernel::plane::registry::PlaneHooks {
         // ONE wire format. jev is HTTP+JSON, request-line-addressed — the operation is named by the
         // verb and the path (`POST /v1/systemone`, `GET /v1/models`), never by a member inside the
         // body. A single-format plane earns no superset IR, and `Plane::has_superset_ir` stays
@@ -145,9 +172,6 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         hydrate: None,
         start: None,
         config_validate: None,
-        // jev signs no agent card — it fronts nobody and publishes no identity document.
-        card_signing_domain: None,
-        card_kid_prefix: None,
         // `decisions:` is a model-serving section (`models:` + the two reserved members), not a
         // 1.5.3 named-definition map, so the generic admin CRUD never routes here — the same shape
         // the LLM plane's `pools:` declares.
@@ -155,7 +179,6 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         named_def_get: None,
         registry_contains: None,
         reresolve_gates: None,
-        #[cfg(feature = "openapi-schema")]
         openapi_schemas: None,
         on_swap: None,
         // THE CONFIG-GRAMMAR SEAM. `decisions:` is deserialized through the plane's OWN typed
@@ -172,22 +195,6 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         // `DecisionsSection::default()` rather than falling back to the neutral raw capture — the
         // carrier's type must not depend on whether the operator wrote the block.
         default_section: Some(decisions_default_section),
-        // THIS PLANE OWNS `decisions:` AND NOBODY ELSE DOES. Unlike `pools`/`models`/`providers`,
-        // the section was never a concrete `DeployCfg` field — it is greenfield, post-1.5.5 — so
-        // claiming it evicts nothing from core and the dup-claim guard admits it. What the claim
-        // buys is that a SECOND claimant of `decisions` is now a boot refusal by construction, which
-        // is the whole reason the guard exists. Voice's `streams` claim is the precedent.
-        owned_config_sections: &[CONFIG_SECTION],
-        // The class the plane crate declares (`busbar_plane_decision::meta`), by its own symbol.
-        billable_classes: &[busbar_kernel::plane::registry::BillableClass {
-            class: busbar_plane_decision::meta::CLASS_DECISION.as_str(),
-            family: "decision",
-        }],
-        // The providers/models/pools merge is the LLM plane's seam; a decision provider is resolved
-        // from this plane's own section, not from the `providers:` catalog merge.
-        // No fee unit: nothing admits a decision request under this plane's key yet, so any
-        // `decisions.fees` figure would charge nothing — refused at boot.
-        fee_units: &[],
         resolve_provider: None,
     };
 
@@ -313,7 +320,7 @@ impl busbar_kernel::plane::config::PlaneCfg for DecisionsCfg {
     }
 }
 
-/// `PLANE_DECL.parse_section` — deserialize `decisions:` through the plane's own typed shape, boxed
+/// `PLANE_HOOKS.parse_section` — deserialize `decisions:` through the plane's own typed shape, boxed
 /// as the neutral [`busbar_kernel::plane::config::PlaneCfg`]. Mirror of `mcp_parse_section` /
 /// `a2a_parse_section` / `streams_parse_section`, with the one difference the dep wall forces: the
 /// function lives in the composition root and boxes [`DecisionsCfg`] rather than the section itself.
@@ -331,7 +338,7 @@ fn decisions_parse_section(
         .map_err(|e| format!("`{CONFIG_SECTION}:` is not valid: {e}"))
 }
 
-/// `PLANE_DECL.default_section` — the empty `decisions:`, so an ABSENT section decodes to
+/// `PLANE_HOOKS.default_section` — the empty `decisions:`, so an ABSENT section decodes to
 /// [`DecisionsSection::default`] rather than to the neutral raw capture. Mirror of
 /// `a2a_default_section` / `mcp_default_section` / `streams_default_section`.
 fn decisions_default_section() -> Box<dyn busbar_kernel::plane::config::PlaneCfg> {

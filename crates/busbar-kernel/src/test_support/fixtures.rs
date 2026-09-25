@@ -100,13 +100,20 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
 // `register_test_plane` caller.
 static NEUTRAL_FALLBACK_PLANE: crate::plane::registry::PlaneDecl =
     crate::plane::registry::PlaneDecl {
-        key: "neutral-test-fallback",
-        fallback: true,
-        config_section: "pools",
-        scope_kinds: &["pool"],
-        subject_noun: "pool",
-        admin_noun: "pool",
-        audit_kind: "pool_request",
+        declaration: crate::plane::registry::PlaneDeclaration {
+            key: "neutral-test-fallback",
+            fallback: true,
+            config_section: "pools",
+            scope_kinds: &["pool"],
+            subject_noun: "pool",
+            admin_noun: "pool",
+            audit_kind: "pool_request",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[],
+            fee_units: &[],
+        },
         wire_format_names: || &[],
         claims: |_| Vec::new(),
         admission: |_| None,
@@ -117,13 +124,10 @@ static NEUTRAL_FALLBACK_PLANE: crate::plane::registry::PlaneDecl =
         hydrate: None,
         start: None,
         config_validate: None,
-        card_signing_domain: None,
-        card_kid_prefix: None,
         named_def_list: None,
         named_def_get: None,
         registry_contains: None,
         reresolve_gates: None,
-        #[cfg(feature = "openapi-schema")]
         openapi_schemas: None,
         on_swap: None,
         parse_section: None,
@@ -133,9 +137,6 @@ static NEUTRAL_FALLBACK_PLANE: crate::plane::registry::PlaneDecl =
         viewer: None,
         retain_verify_gates: None,
         default_section: None,
-        owned_config_sections: &[],
-        billable_classes: &[],
-        fee_units: &[],
         resolve_provider: None,
     };
 

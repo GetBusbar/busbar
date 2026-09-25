@@ -61,7 +61,7 @@ pub(super) fn pool_of(
     // The neutral host seam (`a2a_agent_pool_members`) runs the SAME `.find` over `agent_pools` and
     // returns the pool's name and its members in declaration order, which is the lane order the walk
     // reads — byte-identical to the old borrow of `app.agent_pools`.
-    engine_host.plane_pool_members(crate::PLANE_DECL.key, agent_id)
+    engine_host.plane_pool_members(crate::PLANE_DECLARATION.key, agent_id)
 }
 
 /// What [`select_member`] decided for this call.

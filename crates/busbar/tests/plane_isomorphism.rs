@@ -101,13 +101,13 @@ fn repo_root() -> PathBuf {
 fn installed_decls() -> Vec<(&'static str, &'static PlaneDecl)> {
     let mut v: Vec<(&'static str, &'static PlaneDecl)> = Vec::new();
     #[cfg(feature = "proto-llm")]
-    v.push(("llm", &busbar_llm::PLANE_DECL));
+    v.push(("llm", &LLM_PLANE));
     #[cfg(feature = "plane-mcp")]
-    v.push(("mcp", &busbar_mcp::PLANE_DECL));
+    v.push(("mcp", &MCP_PLANE));
     #[cfg(feature = "plane-a2a")]
-    v.push(("a2a", &busbar_a2a::PLANE_DECL));
+    v.push(("a2a", &A2A_PLANE));
     #[cfg(feature = "plane-voice")]
-    v.push(("voice", &busbar_voice::PLANE_DECL));
+    v.push(("voice", &VOICE_PLANE));
     v
 }
 
@@ -613,3 +613,39 @@ fn selftest_a_token_reason_is_red() {
     let err = verify(&m, &ledger, &allow, &cols, 15, 1).expect_err("a token reason must be red");
     assert!(err.contains("real"), "got: {err}");
 }
+
+/// The llm plane's registry row, assembled kernel-side from its contract declaration
+/// and its behaviour table.
+#[cfg(feature = "proto-llm")]
+static LLM_PLANE: busbar_kernel::plane::registry::PlaneDecl =
+    busbar_kernel::plane::registry::PlaneDecl::assemble(
+        busbar_llm::PLANE_DECLARATION,
+        busbar_llm::PLANE_HOOKS,
+    );
+
+/// The mcp plane's registry row, assembled kernel-side from its contract declaration
+/// and its behaviour table.
+#[cfg(feature = "plane-mcp")]
+static MCP_PLANE: busbar_kernel::plane::registry::PlaneDecl =
+    busbar_kernel::plane::registry::PlaneDecl::assemble(
+        busbar_mcp::PLANE_DECLARATION,
+        busbar_mcp::PLANE_HOOKS,
+    );
+
+/// The a2a plane's registry row, assembled kernel-side from its contract declaration
+/// and its behaviour table.
+#[cfg(feature = "plane-a2a")]
+static A2A_PLANE: busbar_kernel::plane::registry::PlaneDecl =
+    busbar_kernel::plane::registry::PlaneDecl::assemble(
+        busbar_a2a::PLANE_DECLARATION,
+        busbar_a2a::PLANE_HOOKS,
+    );
+
+/// The voice plane's registry row, assembled kernel-side from its contract declaration
+/// and its behaviour table.
+#[cfg(feature = "plane-voice")]
+static VOICE_PLANE: busbar_kernel::plane::registry::PlaneDecl =
+    busbar_kernel::plane::registry::PlaneDecl::assemble(
+        busbar_voice::PLANE_DECLARATION,
+        busbar_voice::PLANE_HOOKS,
+    );

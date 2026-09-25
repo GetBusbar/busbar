@@ -27,7 +27,7 @@
 //! DEFERRED (reported, gated OFF behind `webhook-receiver`). The LIVE HTTP-route mount lives at the
 //! bottom of this file behind `#[cfg(feature = "webhook-receiver")]`. It is off by default because
 //! the operator-facing SECRET CONFIGURATION seam is not yet available to a plane: the LLM plane is
-//! the fallback catch-all (`PLANE_DECL.build` yields no dispatch slot, and there is no `webhooks:`
+//! the fallback catch-all (`PLANE_HOOKS.build` yields no dispatch slot, and there is no `webhooks:`
 //! config section to carry a per-deployment signing secret). Until that seam exists the gated route
 //! reads the secret from `BUSBAR_LLM_WEBHOOK_SECRET` and, with it unset, mounts NOTHING — so no
 //! unauthenticated endpoint is ever exposed. The parse+verify+surface logic below is complete and
@@ -297,7 +297,7 @@ const SECRET_ENV: &str = "BUSBAR_LLM_WEBHOOK_SECRET";
 #[cfg(feature = "webhook-receiver")]
 const WEBHOOK_PATH: &str = "/v1/llm/webhooks/openai";
 
-/// BUILD THE WEBHOOK PLANE ROUTE(S) — the `PLANE_DECL.routes` contribution when `webhook-receiver` is
+/// BUILD THE WEBHOOK PLANE ROUTE(S) — the `PLANE_HOOKS.routes` contribution when `webhook-receiver` is
 /// enabled. The fallback plane has no dispatch slot, so `_slot` is ignored. The signing secret is
 /// read from [`SECRET_ENV`]; with it unset an EMPTY vec is returned (mount nothing), so an operator
 /// who has not configured a secret never gets an unauthenticated endpoint. `RouteAuth::None` bypasses

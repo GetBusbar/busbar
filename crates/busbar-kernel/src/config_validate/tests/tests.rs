@@ -6035,13 +6035,20 @@ fn test_validate_refuses_per_lane_durations_past_the_runtime_horizon() {
 /// A neutral plane declaring billable classes. Every hook is a no-op: the only thing under test is
 /// the declaration the kernel reads. Registered under isolation, so no sibling test sees it.
 static CLASS_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-    key: "class-plane",
-    fallback: false,
-    config_section: "tools",
-    scope_kinds: &[],
-    subject_noun: "class thing",
-    admin_noun: "class-thing",
-    audit_kind: "class-thing",
+    declaration: crate::plane::registry::PlaneDeclaration {
+        key: "class-plane",
+        fallback: false,
+        config_section: "tools",
+        scope_kinds: &[],
+        subject_noun: "class thing",
+        admin_noun: "class-thing",
+        audit_kind: "class-thing",
+        card_signing_domain: None,
+        card_kid_prefix: None,
+        owned_config_sections: &[],
+        billable_classes: &[bc("calls", "count"), bc("bytes", "byte")],
+        fee_units: &[],
+    },
     wire_format_names: || &[],
     claims: |_| Vec::new(),
     admission: |_| None,
@@ -6052,13 +6059,10 @@ static CLASS_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::
     hydrate: None,
     start: None,
     config_validate: None,
-    card_signing_domain: None,
-    card_kid_prefix: None,
     named_def_list: None,
     named_def_get: None,
     registry_contains: None,
     reresolve_gates: None,
-    #[cfg(feature = "openapi-schema")]
     openapi_schemas: None,
     on_swap: None,
     parse_section: None,
@@ -6068,9 +6072,6 @@ static CLASS_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::
     viewer: None,
     retain_verify_gates: None,
     default_section: None,
-    owned_config_sections: &[],
-    billable_classes: &[bc("calls", "count"), bc("bytes", "byte")],
-    fee_units: &[],
     resolve_provider: None,
 };
 
@@ -6082,17 +6083,20 @@ const fn bc(class: &'static str, family: &'static str) -> crate::plane::registry
 /// The FALLBACK plane's shape: its card is the flat 1.5.5 `rate_card:` (#47), and it declares the
 /// four reserved tiers plus two open classes.
 static FLAT_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-    key: "flat-plane",
-    fallback: true,
-    config_section: "pools",
-    billable_classes: &[
-        bc("input", "token"),
-        bc("output", "token"),
-        bc("cache_read", "token"),
-        bc("cache_write", "token"),
-        bc("search_units", "count"),
-        bc("images", "count"),
-    ],
+    declaration: crate::plane::registry::PlaneDeclaration {
+        key: "flat-plane",
+        fallback: true,
+        config_section: "pools",
+        billable_classes: &[
+            bc("input", "token"),
+            bc("output", "token"),
+            bc("cache_read", "token"),
+            bc("cache_write", "token"),
+            bc("search_units", "count"),
+            bc("images", "count"),
+        ],
+        ..CLASS_PLANE.declaration
+    },
     ..CLASS_PLANE
 };
 
@@ -6194,9 +6198,12 @@ fn a_dropped_in_planes_declared_classes_are_honoured() {
         .collect();
     let dropped: &'static crate::plane::registry::PlaneDecl =
         Box::leak(Box::new(crate::plane::registry::PlaneDecl {
-            key: "dropped-plane",
-            config_section: "agents",
-            billable_classes: Box::leak(classes.into_boxed_slice()),
+            declaration: crate::plane::registry::PlaneDeclaration {
+                key: "dropped-plane",
+                config_section: "agents",
+                billable_classes: Box::leak(classes.into_boxed_slice()),
+                ..CLASS_PLANE.declaration
+            },
             ..CLASS_PLANE
         }));
     let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[dropped]);
@@ -6254,9 +6261,12 @@ fn a_fee_the_plane_does_not_count_fails_naming_it_and_the_counted_list() {
     use busbar_kernel_ledger::cost::{PlaneFees, PER_SESSION};
     let session: &'static crate::plane::registry::PlaneDecl =
         Box::leak(Box::new(crate::plane::registry::PlaneDecl {
-            key: "session-plane",
-            config_section: "streams",
-            fee_units: &[PER_SESSION],
+            declaration: crate::plane::registry::PlaneDeclaration {
+                key: "session-plane",
+                config_section: "streams",
+                fee_units: &[PER_SESSION],
+                ..CLASS_PLANE.declaration
+            },
             ..CLASS_PLANE
         }));
     let _iso =

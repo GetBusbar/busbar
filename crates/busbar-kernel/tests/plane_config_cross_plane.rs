@@ -7,7 +7,7 @@
 //! cleanup): it registers the real `busbar_llm`/`busbar_mcp`/`busbar_a2a` planes and drives their
 //! REAL config validators (`busbar_a2a::a2a::config::validate_agent`, `busbar_mcp::mcp::config::
 //! validate_server`) against core's own `config_sections()`/`refuse_cross_plane_reference` grammar —
-//! which only type-checks (`register_test_plane(&busbar_llm::PLANE_DECL)` takes core's OWN
+//! which only type-checks (`register_test_plane(&LLM_PLANE)` takes core's OWN
 //! `PlaneDecl`) with ONE `busbar_kernel` in the graph. See `plane_integration.rs`'s header for the
 //! full rationale. The other tests in `config_tests.rs`/`sections_tests.rs` name no real plane crate
 //! and stay there.
@@ -29,7 +29,7 @@ use busbar_kernel::plane::{PlaneSections, RefError};
 fn register_planes() {
     busbar_mcp::testkit::install_test_seams();
     busbar_a2a::testkit::install_test_seams();
-    busbar_kernel::plane::registry::register_test_plane(&busbar_llm::PLANE_DECL);
+    busbar_kernel::plane::registry::register_test_plane(&LLM_PLANE);
 }
 
 /// EVERY section the grammar declares is refused BY BOTH PLANES' production validators, and the two
@@ -165,3 +165,11 @@ fn server_with_hook(hook: &str) -> busbar_mcp::mcp::config::McpServerDefCfg {
     })
     .expect("the fixture entry must be present")
 }
+
+/// The llm plane's registry row, assembled kernel-side from its contract declaration
+/// and its behaviour table.
+static LLM_PLANE: busbar_kernel::plane::registry::PlaneDecl =
+    busbar_kernel::plane::registry::PlaneDecl::assemble(
+        busbar_llm::PLANE_DECLARATION,
+        busbar_llm::PLANE_HOOKS,
+    );

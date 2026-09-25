@@ -3613,7 +3613,7 @@ fn every_scripts_path_cited_in_v1_exists() {
 mod plane_fees_on_admin_usage {
     use super::*;
     use busbar_api::Store as _;
-    use busbar_kernel::plane::registry::{PlaneDecl, TestRegistryIsolation};
+    use busbar_kernel::plane::registry::{PlaneDecl, PlaneDeclaration, TestRegistryIsolation};
     use busbar_kernel_ledger::cost::{PlaneFees, PLANE_LANE_SEP};
 
     const KEY: &str = "vk_plane_fees";
@@ -3631,13 +3631,20 @@ mod plane_fees_on_admin_usage {
     macro_rules! decl {
         ($key:expr, $fallback:expr, $section:expr) => {
             PlaneDecl {
-                key: $key,
-                fallback: $fallback,
-                config_section: $section,
-                scope_kinds: &[],
-                subject_noun: $key,
-                admin_noun: $key,
-                audit_kind: $key,
+                declaration: PlaneDeclaration {
+                    key: $key,
+                    fallback: $fallback,
+                    config_section: $section,
+                    scope_kinds: &[],
+                    subject_noun: $key,
+                    admin_noun: $key,
+                    audit_kind: $key,
+                    card_signing_domain: None,
+                    card_kid_prefix: None,
+                    owned_config_sections: &[],
+                    billable_classes: &[],
+                    fee_units: &[],
+                },
                 wire_format_names: || &[],
                 claims: |_| Vec::new(),
                 admission: |_| None,
@@ -3648,13 +3655,10 @@ mod plane_fees_on_admin_usage {
                 hydrate: None,
                 start: None,
                 config_validate: None,
-                card_signing_domain: None,
-                card_kid_prefix: None,
                 named_def_list: None,
                 named_def_get: None,
                 registry_contains: None,
                 reresolve_gates: None,
-                #[cfg(feature = "openapi-schema")]
                 openapi_schemas: None,
                 on_swap: None,
                 parse_section: None,
@@ -3664,9 +3668,6 @@ mod plane_fees_on_admin_usage {
                 viewer: None,
                 retain_verify_gates: None,
                 default_section: None,
-                owned_config_sections: &[],
-                billable_classes: &[],
-                fee_units: &[],
                 resolve_provider: None,
             }
         };

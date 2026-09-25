@@ -129,7 +129,7 @@ pub mod store;
 //                    plane does not list.
 
 /// The FALLBACK plane's registry key — DERIVED from the plane registry rather than a hard-coded
-/// literal: the ONE built-in plane whose decl declares [`registry::PlaneDecl::fallback`]. Read by
+/// literal: the ONE built-in plane whose decl declares [`registry::PlaneDeclaration::fallback`]. Read by
 /// the fallback guard (`PlaneDispatch::mount`/`admit` no-op) and the fallback-plane telemetry branch
 /// so core names no dialect. The composition root (`register_planes`) installs the fallback plane
 /// before any reader runs, and core's own test binary carries it in `registry::builtin_plane_decls`,
@@ -803,13 +803,20 @@ const fn neutral_sibling_decl(
     subject_noun: &'static str,
 ) -> registry::PlaneDecl {
     registry::PlaneDecl {
-        key,
-        fallback: false,
-        config_section,
-        scope_kinds: &[],
-        subject_noun,
-        admin_noun: subject_noun,
-        audit_kind: subject_noun,
+        declaration: registry::PlaneDeclaration {
+            key,
+            fallback: false,
+            config_section,
+            scope_kinds: &[],
+            subject_noun,
+            admin_noun: subject_noun,
+            audit_kind: subject_noun,
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[],
+            fee_units: &[],
+        },
         wire_format_names: || &[],
         claims: |_| Vec::new(),
         admission: |_| None,
@@ -820,13 +827,10 @@ const fn neutral_sibling_decl(
         hydrate: None,
         start: None,
         config_validate: None,
-        card_signing_domain: None,
-        card_kid_prefix: None,
         named_def_list: None,
         named_def_get: None,
         registry_contains: None,
         reresolve_gates: None,
-        #[cfg(feature = "openapi-schema")]
         openapi_schemas: None,
         on_swap: None,
         parse_section: None,
@@ -836,9 +840,6 @@ const fn neutral_sibling_decl(
         viewer: None,
         retain_verify_gates: None,
         default_section: None,
-        owned_config_sections: &[],
-        billable_classes: &[],
-        fee_units: &[],
         resolve_provider: None,
     }
 }

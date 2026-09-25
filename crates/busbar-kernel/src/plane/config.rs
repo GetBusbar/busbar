@@ -401,7 +401,7 @@ impl<'de> serde::Deserialize<'de> for EndpointSection {
 /// EVERY TOP-LEVEL CONFIG SECTION a bare hook reference could be reaching onto, DERIVED from the two
 /// tables that declare the config grammar rather than written as a literal.
 ///
-/// [`super::registry::PlaneDecl::config_section`] over [`super::registry::plane_decls`] gives the
+/// [`super::registry::PlaneDeclaration::config_section`] over [`super::registry::plane_decls`] gives the
 /// plane sections (`pools:`, `tools:`, `agents:`, and any registered plane's own section);
 /// [`NamedMapSection::key`] over [`NamedMapSection::ALL`] gives the 1.5.3 named-definition maps
 /// (`identity-providers:`, `export:`, and the two plane sections again, which is why this
@@ -419,7 +419,7 @@ pub fn config_sections() -> Vec<&'static str> {
 /// pass a plane busbar does not have and watch its section reach this grammar with nothing written
 /// for it in core (see `plane/tests/registry_tests.rs`). [`config_sections`] passes the process
 /// [`super::registry::plane_decls`]; the plane sections come off each decl's
-/// [`super::registry::PlaneDecl::config_section`] rather than an enum `match`, which is what lets a
+/// [`super::registry::PlaneDeclaration::config_section`] rather than an enum `match`, which is what lets a
 /// registered plane's section into the hook-reference grammar.
 pub fn config_sections_from(decls: &[&'static super::registry::PlaneDecl]) -> Vec<&'static str> {
     let mut out: Vec<&'static str> = Vec::new();
@@ -466,7 +466,7 @@ pub fn validate_section_hooks(
 /// `|_, _| Ok(())`.
 ///
 /// An extracted plane crate skips this wrapper and calls the substrate split directly with its OWN
-/// `PLANE_DECL.config_section` / `subject_noun` consts — it holds no plane registry to look up.
+/// `PLANE_DECLARATION.config_section` / `subject_noun` consts — it holds no plane registry to look up.
 ///
 /// `plane_key` is normally [`super::fallback_key`]'s answer for the `pools:` section's one caller —
 /// which is the EMPTY STRING on a build with no plane registered at all (an honest "there is no
@@ -827,7 +827,7 @@ pub fn attach_list(section: &[String], own: &[String]) -> Vec<String> {
 // Relocated here from `busbar_kernel::plane::config` so an extracted plane crate reads its own section
 // without naming core: the ONE registry coupling — the `PlaneDecl` lookup that turned a plane key
 // into the section/noun WORDS — is lifted OUT into a param pair the caller supplies (a plane passes
-// its own `PLANE_DECL.config_section` / `subject_noun` consts), so this half names only `serde` +
+// its own `PLANE_DECLARATION.config_section` / `subject_noun` consts), so this half names only `serde` +
 // `indexmap` + `busbar_api::UpstreamCreds` and no registry. Core wraps it with the lookup for its own
 // callers (`config::split_section(deserializer, plane_key, validate)`), so those are unchanged.
 

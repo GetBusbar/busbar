@@ -12,7 +12,7 @@
 //! admitted. These drive the core folds over a probe plane that counts every hook it is handed: an
 //! unconfigured probe must be handed NOTHING, a configured one everything.
 
-use busbar_kernel::plane::registry::{PlaneDecl, TestRegistryIsolation};
+use busbar_kernel::plane::registry::{PlaneDecl, PlaneDeclaration, TestRegistryIsolation};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static HYDRATED: AtomicUsize = AtomicUsize::new(0);
@@ -23,13 +23,20 @@ const PROBE_SECTION: &str = "law7-probe";
 
 /// A linked plane that records every core call. Its section is `law7-probe`; nothing else names it.
 static PROBE: PlaneDecl = PlaneDecl {
-    key: "law7probe",
-    fallback: false,
-    config_section: PROBE_SECTION,
-    scope_kinds: &["law7probe"],
-    subject_noun: "probe",
-    admin_noun: "probe",
-    audit_kind: "law7probe",
+    declaration: PlaneDeclaration {
+        key: "law7probe",
+        fallback: false,
+        config_section: PROBE_SECTION,
+        scope_kinds: &["law7probe"],
+        subject_noun: "probe",
+        admin_noun: "probe",
+        audit_kind: "law7probe",
+        card_signing_domain: None,
+        card_kid_prefix: None,
+        owned_config_sections: &[],
+        billable_classes: &[],
+        fee_units: &[],
+    },
     wire_format_names: || &["law7probe"],
     claims: |_| Vec::new(),
     admission: |_| None,
@@ -49,13 +56,10 @@ static PROBE: PlaneDecl = PlaneDecl {
         Ok(())
     }),
     config_validate: None,
-    card_signing_domain: None,
-    card_kid_prefix: None,
     named_def_list: None,
     named_def_get: None,
     registry_contains: None,
     reresolve_gates: None,
-    #[cfg(feature = "openapi-schema")]
     openapi_schemas: None,
     on_swap: None,
     parse_section: None,
@@ -65,9 +69,6 @@ static PROBE: PlaneDecl = PlaneDecl {
     viewer: None,
     retain_verify_gates: None,
     default_section: None,
-    owned_config_sections: &[],
-    billable_classes: &[],
-    fee_units: &[],
     resolve_provider: None,
 };
 
@@ -117,7 +118,7 @@ fn a_configured_plane_still_hydrates_and_starts() {
 #[test]
 fn only_a_configured_plane_builds_its_slot() {
     busbar_llm::testkit::install_test_seams();
-    let _iso = TestRegistryIsolation::seeded(&[&busbar_llm::PLANE_DECL, &PROBE]);
+    let _iso = TestRegistryIsolation::seeded(&[&LLM_PLANE, &PROBE]);
     let build = |sections: &[&'static str]| {
         let mut cfg = busbar_kernel::test_support::cfg_with_provider_api_key(
             busbar_kernel::config::SecretRef::none(),
@@ -129,7 +130,7 @@ fn only_a_configured_plane_builds_its_slot() {
             BUILT.load(Ordering::SeqCst) - b0,
             app.plane_slots.contains_key(PROBE.key),
             app.plane_configured(&PROBE),
-            app.plane_configured(&busbar_llm::PLANE_DECL),
+            app.plane_configured(&LLM_PLANE),
         )
     };
     assert_eq!(
@@ -189,3 +190,11 @@ fn resolve_reads_the_configured_plane_sections_off_the_config() {
         "the `mcp:` door configures the plane that owns it"
     );
 }
+
+/// The llm plane's registry row, assembled kernel-side from its contract declaration
+/// and its behaviour table.
+static LLM_PLANE: busbar_kernel::plane::registry::PlaneDecl =
+    busbar_kernel::plane::registry::PlaneDecl::assemble(
+        busbar_llm::PLANE_DECLARATION,
+        busbar_llm::PLANE_HOOKS,
+    );

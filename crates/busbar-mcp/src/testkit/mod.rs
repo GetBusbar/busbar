@@ -30,7 +30,7 @@ use busbar_kernel::test_support::{
 };
 use std::sync::Arc;
 
-/// The MCP plane's key in `TestApp`'s scratch map — the same string as `PLANE_DECL.key`.
+/// The MCP plane's key in `TestApp`'s scratch map — the same string as `PLANE_DECLARATION.key`.
 const SCRATCH_KEY: &str = "mcp";
 
 /// INSTALL THE MCP CROSS-PLANE TEST SEAMS the composition root (`main`) installs in production: register
@@ -39,7 +39,7 @@ const SCRATCH_KEY: &str = "mcp";
 /// finalizer (every plane-building test) AND directly by MCP config/admin tests that validate documents
 /// WITHOUT building a plane (they reach the same `config_sections()` fold).
 pub fn install_test_seams() {
-    busbar_kernel::plane::registry::register_test_plane(&crate::PLANE_DECL);
+    busbar_kernel::plane::registry::register_test_plane(&PLANE_ROW);
     // Register MCP the PROTOCOL into the process registry too — the composition root installs
     // `PROTO_DECL` beside the plane in production, and core's registry must resolve `decl_for("mcp")`
     // for the cross-plane refusal / matrix fixtures. Idempotent; replaces the deleted `#[path]` witness
@@ -89,13 +89,13 @@ fn finalize(app: &mut dyn TestAppSeam) {
     if let Some(resource) = scratch.mcp {
         let mount = resource.mount_path().to_string();
         let admission = resource.admission();
-        app.install_plane_runtime(crate::PLANE_DECL.key, Arc::new(resource));
+        app.install_plane_runtime(crate::PLANE_DECLARATION.key, Arc::new(resource));
         app.mount_plane(
-            crate::PLANE_DECL.key,
+            crate::PLANE_DECLARATION.key,
             &mount,
             busbar_kernel::plane::WIRE_JSONRPC,
         );
-        app.admit_plane(crate::PLANE_DECL.key, admission);
+        app.admit_plane(crate::PLANE_DECLARATION.key, admission);
     }
 
     // THE ALWAYS-PRESENT per-generation runtime bundle, the same home production `appbuild` gives it
@@ -112,7 +112,7 @@ fn finalize(app: &mut dyn TestAppSeam) {
         verify: Default::default(),
     });
     app.install_plane_runtime(
-        busbar_kernel::plane_host::runtime_slot_key(crate::PLANE_DECL.key),
+        busbar_kernel::plane_host::runtime_slot_key(crate::PLANE_DECLARATION.key),
         runtime,
     );
 
@@ -125,7 +125,7 @@ fn finalize(app: &mut dyn TestAppSeam) {
         .map(|(n, d)| (n.clone(), d.hooks.clone()))
         .collect();
     app.set_container_hooks(
-        crate::PLANE_DECL.key,
+        crate::PLANE_DECLARATION.key,
         containers,
         scratch.tool_defs.all_server_hooks.clone(),
     );
@@ -310,3 +310,11 @@ const ERROR_SURFACE_DRIVER: Option<ErrorSurfaceDriver> =
     Some(|| Box::pin(crate::mcp::admin_view::adminverbs_tests::drive_mcp_verb_errors()));
 #[cfg(not(feature = "auth-admin-tokens"))]
 const ERROR_SURFACE_DRIVER: Option<ErrorSurfaceDriver> = None;
+
+/// This plane's registry row, assembled kernel-side from its contract declaration
+/// and its behaviour table.
+static PLANE_ROW: busbar_kernel::plane::registry::PlaneDecl =
+    busbar_kernel::plane::registry::PlaneDecl::assemble(
+        crate::PLANE_DECLARATION,
+        crate::PLANE_HOOKS,
+    );

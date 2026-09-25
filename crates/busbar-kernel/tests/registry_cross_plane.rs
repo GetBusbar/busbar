@@ -26,6 +26,7 @@
 use busbar_kernel::plane::config::{config_sections_from, refuse_cross_plane_reference};
 use busbar_kernel::plane::registry::{
     build_dispatch, install_planes, merged_boot_plane_decls, plane_decl_for, PlaneDecl,
+    PlaneDeclaration,
 };
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -35,11 +36,7 @@ use std::collections::BTreeMap;
 /// `PLANE_DECL`s across the honest crate boundary; only type-checks with ONE `busbar_kernel` in the
 /// graph, which is exactly what this target gives.
 fn builtin_plane_decls() -> &'static [&'static PlaneDecl] {
-    static DECLS: &[&PlaneDecl] = &[
-        &busbar_llm::PLANE_DECL,
-        &busbar_mcp::PLANE_DECL,
-        &busbar_a2a::PLANE_DECL,
-    ];
+    static DECLS: &[&PlaneDecl] = &[&LLM_PLANE, &MCP_PLANE, &A2A_PLANE];
     DECLS
 }
 
@@ -56,13 +53,20 @@ fn register_planes() {
 /// it, and no `match` anywhere has an arm for it — which is precisely the property under test.
 /// Stands in for the `busbar-plane-a2a` crate's own `PLANE_DECL`.
 static WIDGET_PLANE: PlaneDecl = PlaneDecl {
-    key: "widget",
-    fallback: false,
-    config_section: "widgets",
-    scope_kinds: &["widget"],
-    subject_noun: "fronted widget",
-    admin_noun: "fronted-widget",
-    audit_kind: "widget_thing",
+    declaration: PlaneDeclaration {
+        key: "widget",
+        fallback: false,
+        config_section: "widgets",
+        scope_kinds: &["widget"],
+        subject_noun: "fronted widget",
+        admin_noun: "fronted-widget",
+        audit_kind: "widget_thing",
+        card_signing_domain: None,
+        card_kid_prefix: None,
+        owned_config_sections: &[],
+        billable_classes: &[],
+        fee_units: &[],
+    },
     wire_format_names: || &["widgetrpc"],
     claims: |_| Vec::new(),
     admission: |_| None,
@@ -73,13 +77,10 @@ static WIDGET_PLANE: PlaneDecl = PlaneDecl {
     hydrate: None,
     start: None,
     config_validate: None,
-    card_signing_domain: None,
-    card_kid_prefix: None,
     named_def_list: None,
     named_def_get: None,
     registry_contains: None,
     reresolve_gates: None,
-    #[cfg(feature = "openapi-schema")]
     openapi_schemas: None,
     on_swap: None,
     parse_section: None,
@@ -89,9 +90,6 @@ static WIDGET_PLANE: PlaneDecl = PlaneDecl {
     viewer: None,
     retain_verify_gates: None,
     default_section: None,
-    owned_config_sections: &[],
-    billable_classes: &[],
-    fee_units: &[],
     resolve_provider: None,
 };
 
@@ -186,13 +184,20 @@ fn installed_planes_fold_ahead_and_the_builtin_order_is_unchanged() {
 #[test]
 fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
     static A2A_FROM_THE_CRATE: PlaneDecl = PlaneDecl {
-        key: "a2a",
-        fallback: false,
-        config_section: "agents",
-        scope_kinds: &["agent"],
-        subject_noun: "fronted agent",
-        admin_noun: "fronted-agent",
-        audit_kind: "a2a_agent",
+        declaration: PlaneDeclaration {
+            key: "a2a",
+            fallback: false,
+            config_section: "agents",
+            scope_kinds: &["agent"],
+            subject_noun: "fronted agent",
+            admin_noun: "fronted-agent",
+            audit_kind: "a2a_agent",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[],
+            fee_units: &[],
+        },
         wire_format_names: || &["jsonrpc"],
         claims: |_| Vec::new(),
         admission: |_| None,
@@ -203,13 +208,10 @@ fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
         hydrate: None,
         start: None,
         config_validate: None,
-        card_signing_domain: None,
-        card_kid_prefix: None,
         named_def_list: None,
         named_def_get: None,
         registry_contains: None,
         reresolve_gates: None,
-        #[cfg(feature = "openapi-schema")]
         openapi_schemas: None,
         on_swap: None,
         parse_section: None,
@@ -219,9 +221,6 @@ fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
         viewer: None,
         retain_verify_gates: None,
         default_section: None,
-        owned_config_sections: &[],
-        billable_classes: &[],
-        fee_units: &[],
         resolve_provider: None,
     };
 
@@ -261,11 +260,11 @@ fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
 /// `#[cfg(test)]` built-ins (which no longer exist) — same assertion, explicit registration instead
 /// of ambient seeding.
 ///
-/// NOT `std::ptr::eq`, unlike the original: `busbar_llm::PLANE_DECL` (and its siblings) is a `const`,
-/// not a `static` — every syntactic `&busbar_llm::PLANE_DECL` is its OWN rvalue-promoted temporary,
-/// so `busbar_llm::testkit::install_test_seams()`'s own `&crate::PLANE_DECL` and this file's
-/// `builtin_plane_decls()` array are two byte-identical but NEVER pointer-equal copies — a fact about
-/// `const` promotion, not about whether the by-key indirection reads the SAME declared facts (which
+/// NOT `std::ptr::eq`, unlike the original: a registry row is ASSEMBLED kernel-side from a plane's
+/// contract `PLANE_DECLARATION` and its `PLANE_HOOKS`, and every assembler owns its own `static` —
+/// so `busbar_llm::testkit::install_test_seams()`'s row and this file's `builtin_plane_decls()`
+/// array are two byte-identical but NEVER pointer-equal rows — a fact about where a row is
+/// assembled, not about whether the by-key indirection reads the SAME declared facts (which
 /// is the actual property under test, checked below field-by-field exactly as the original did for
 /// the rest of the function).
 #[test]
@@ -431,18 +430,24 @@ fn install_planes_after_first_read_panics() {
 /// A plane busbar does not have that CLAIMS one owned config section — built by functional update off
 /// [`WIDGET_PLANE`] (every field of which is `Copy`), so only the two fields under test are named.
 static ALPHA_CLAIMS_FOO: PlaneDecl = PlaneDecl {
-    key: "alpha",
-    owned_config_sections: &["foo"],
-    fee_units: &[],
+    declaration: PlaneDeclaration {
+        key: "alpha",
+        owned_config_sections: &["foo"],
+        fee_units: &[],
+        ..WIDGET_PLANE.declaration
+    },
     resolve_provider: None,
     ..WIDGET_PLANE
 };
 
 /// A DIFFERENT plane that claims the SAME section — the dup-claim collision.
 static BETA_CLAIMS_FOO: PlaneDecl = PlaneDecl {
-    key: "beta",
-    owned_config_sections: &["foo"],
-    fee_units: &[],
+    declaration: PlaneDeclaration {
+        key: "beta",
+        owned_config_sections: &["foo"],
+        fee_units: &[],
+        ..WIDGET_PLANE.declaration
+    },
     resolve_provider: None,
     ..WIDGET_PLANE
 };
@@ -450,16 +455,19 @@ static BETA_CLAIMS_FOO: PlaneDecl = PlaneDecl {
 /// A plane that claims a section core STILL owns concretely (`rate_card` is in
 /// `CORE_OWNED_CONCRETE_SECTIONS` in stage 1 — nothing has moved yet).
 static GAMMA_CLAIMS_RATE_CARD: PlaneDecl = PlaneDecl {
-    key: "gamma",
-    owned_config_sections: &["rate_card"],
-    fee_units: &[],
+    declaration: PlaneDeclaration {
+        key: "gamma",
+        owned_config_sections: &["rate_card"],
+        fee_units: &[],
+        ..WIDGET_PLANE.declaration
+    },
     resolve_provider: None,
     ..WIDGET_PLANE
 };
 
 #[test]
 fn dup_claim_guard_fires_when_two_planes_claim_the_same_section() {
-    let decls: Vec<&'static PlaneDecl> = vec![&ALPHA_CLAIMS_FOO, &BETA_CLAIMS_FOO];
+    let decls: Vec<&PlaneDeclaration> = vec![&ALPHA_CLAIMS_FOO, &BETA_CLAIMS_FOO];
     let err = busbar_kernel::plane::registry::check_owned_config_claims(
         &decls,
         busbar_kernel::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
@@ -473,7 +481,7 @@ fn dup_claim_guard_fires_when_two_planes_claim_the_same_section() {
 
 #[test]
 fn dup_claim_guard_fires_when_a_plane_claims_a_core_owned_section() {
-    let decls: Vec<&'static PlaneDecl> = vec![&GAMMA_CLAIMS_RATE_CARD];
+    let decls: Vec<&PlaneDeclaration> = vec![&GAMMA_CLAIMS_RATE_CARD];
     let err = busbar_kernel::plane::registry::check_owned_config_claims(
         &decls,
         busbar_kernel::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
@@ -489,18 +497,24 @@ fn dup_claim_guard_fires_when_a_plane_claims_a_core_owned_section() {
 /// `CORE_OWNED_CONCRETE_SECTIONS`, so a lone claimant is admitted (this is the shape a plugin
 /// declaring `streams` as its owned section will take once one exists).
 static ONE_CLAIMS_STREAMS: PlaneDecl = PlaneDecl {
-    key: "one",
-    owned_config_sections: &["streams"],
-    fee_units: &[],
+    declaration: PlaneDeclaration {
+        key: "one",
+        owned_config_sections: &["streams"],
+        fee_units: &[],
+        ..WIDGET_PLANE.declaration
+    },
     resolve_provider: None,
     ..WIDGET_PLANE
 };
 
 /// A DIFFERENT plane also claiming `streams` — the collision the guard must refuse by construction.
 static TWO_CLAIMS_STREAMS: PlaneDecl = PlaneDecl {
-    key: "two",
-    owned_config_sections: &["streams"],
-    fee_units: &[],
+    declaration: PlaneDeclaration {
+        key: "two",
+        owned_config_sections: &["streams"],
+        fee_units: &[],
+        ..WIDGET_PLANE.declaration
+    },
     resolve_provider: None,
     ..WIDGET_PLANE
 };
@@ -530,7 +544,7 @@ fn dup_claim_guard_passes_for_the_shipped_empty_registry() {
     // STAGE 1 INVARIANT: every shipped plane claims `&[]`, so the guard is a no-op over the real set.
     let decls = merged_boot_plane_decls(&[], builtin_plane_decls());
     busbar_kernel::plane::registry::check_owned_config_claims(
-        &decls,
+        &decls.iter().map(|d| &d.declaration).collect::<Vec<_>>(),
         busbar_kernel::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
     )
     .expect("stage 1 ships an EMPTY owned-config registry — no plane claims any section, so the guard must pass");
@@ -667,13 +681,20 @@ fn r1_every_declared_path_resolves_an_admission() {
 #[test]
 fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
     static MOUNTS_BUT_NEVER_ADMITS: PlaneDecl = PlaneDecl {
-        key: "widget",
-        fallback: false,
-        config_section: "widgets",
-        scope_kinds: &["widget"],
-        subject_noun: "fronted widget",
-        admin_noun: "fronted-widget",
-        audit_kind: "widget_thing",
+        declaration: PlaneDeclaration {
+            key: "widget",
+            fallback: false,
+            config_section: "widgets",
+            scope_kinds: &["widget"],
+            subject_noun: "fronted widget",
+            admin_noun: "fronted-widget",
+            audit_kind: "widget_thing",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[],
+            fee_units: &[],
+        },
         wire_format_names: || &["widgetrpc"],
         // Claims a path — but binds no audience. The shape build_dispatch must refuse.
         claims: |_| vec![("/widget".to_string(), "widgetrpc")],
@@ -685,13 +706,10 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         hydrate: None,
         start: None,
         config_validate: None,
-        card_signing_domain: None,
-        card_kid_prefix: None,
         named_def_list: None,
         named_def_get: None,
         registry_contains: None,
         reresolve_gates: None,
-        #[cfg(feature = "openapi-schema")]
         openapi_schemas: None,
         on_swap: None,
         parse_section: None,
@@ -701,9 +719,6 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         viewer: None,
         retain_verify_gates: None,
         default_section: None,
-        owned_config_sections: &[],
-        billable_classes: &[],
-        fee_units: &[],
         resolve_provider: None,
     };
     let unit = ();
@@ -723,13 +738,20 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
 
     // The CONTROL: a plane that mounts nothing (claims empty) needs no admission and does NOT refuse.
     static MOUNTS_NOTHING: PlaneDecl = PlaneDecl {
-        key: "widget",
-        fallback: false,
-        config_section: "widgets",
-        scope_kinds: &["widget"],
-        subject_noun: "fronted widget",
-        admin_noun: "fronted-widget",
-        audit_kind: "widget_thing",
+        declaration: PlaneDeclaration {
+            key: "widget",
+            fallback: false,
+            config_section: "widgets",
+            scope_kinds: &["widget"],
+            subject_noun: "fronted widget",
+            admin_noun: "fronted-widget",
+            audit_kind: "widget_thing",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[],
+            fee_units: &[],
+        },
         wire_format_names: || &["widgetrpc"],
         claims: |_| Vec::new(),
         admission: |_| None,
@@ -740,13 +762,10 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         hydrate: None,
         start: None,
         config_validate: None,
-        card_signing_domain: None,
-        card_kid_prefix: None,
         named_def_list: None,
         named_def_get: None,
         registry_contains: None,
         reresolve_gates: None,
-        #[cfg(feature = "openapi-schema")]
         openapi_schemas: None,
         on_swap: None,
         parse_section: None,
@@ -756,9 +775,6 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         viewer: None,
         retain_verify_gates: None,
         default_section: None,
-        owned_config_sections: &[],
-        billable_classes: &[],
-        fee_units: &[],
         resolve_provider: None,
     };
     let dispatch = build_dispatch(&[&MOUNTS_NOTHING], &slots)
@@ -781,13 +797,20 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
 #[test]
 fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
     static REFUSES_START: PlaneDecl = PlaneDecl {
-        key: "refuser",
-        fallback: false,
-        config_section: "refusers",
-        scope_kinds: &["refuser"],
-        subject_noun: "refuser",
-        admin_noun: "refuser",
-        audit_kind: "refuser",
+        declaration: PlaneDeclaration {
+            key: "refuser",
+            fallback: false,
+            config_section: "refusers",
+            scope_kinds: &["refuser"],
+            subject_noun: "refuser",
+            admin_noun: "refuser",
+            audit_kind: "refuser",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[],
+            fee_units: &[],
+        },
         wire_format_names: || &["refrpc"],
         claims: |_| Vec::new(),
         admission: |_| None,
@@ -798,13 +821,10 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         hydrate: None,
         start: Some(|_ctx| Err("refuser: outbound client identity did not resolve".to_string())),
         config_validate: None,
-        card_signing_domain: None,
-        card_kid_prefix: None,
         named_def_list: None,
         named_def_get: None,
         registry_contains: None,
         reresolve_gates: None,
-        #[cfg(feature = "openapi-schema")]
         openapi_schemas: None,
         on_swap: None,
         parse_section: None,
@@ -814,9 +834,6 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         viewer: None,
         retain_verify_gates: None,
         default_section: None,
-        owned_config_sections: &[],
-        billable_classes: &[],
-        fee_units: &[],
         resolve_provider: None,
     };
     let ctx = busbar_kernel::plane::registry::BootCtx::stub();
@@ -831,13 +848,20 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
     // CONTROL: a plane whose `start` returns `Ok`, and a plane with NO `start` hook (WIDGET_PLANE),
     // do not abort — the fold runs to the end and returns `Ok`.
     static STARTS_CLEAN: PlaneDecl = PlaneDecl {
-        key: "clean",
-        fallback: false,
-        config_section: "cleans",
-        scope_kinds: &["clean"],
-        subject_noun: "clean",
-        admin_noun: "clean",
-        audit_kind: "clean",
+        declaration: PlaneDeclaration {
+            key: "clean",
+            fallback: false,
+            config_section: "cleans",
+            scope_kinds: &["clean"],
+            subject_noun: "clean",
+            admin_noun: "clean",
+            audit_kind: "clean",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[],
+            fee_units: &[],
+        },
         wire_format_names: || &["cleanrpc"],
         claims: |_| Vec::new(),
         admission: |_| None,
@@ -848,13 +872,10 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         hydrate: None,
         start: Some(|_ctx| Ok(())),
         config_validate: None,
-        card_signing_domain: None,
-        card_kid_prefix: None,
         named_def_list: None,
         named_def_get: None,
         registry_contains: None,
         reresolve_gates: None,
-        #[cfg(feature = "openapi-schema")]
         openapi_schemas: None,
         on_swap: None,
         parse_section: None,
@@ -864,9 +885,6 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         viewer: None,
         retain_verify_gates: None,
         default_section: None,
-        owned_config_sections: &[],
-        billable_classes: &[],
-        fee_units: &[],
         resolve_provider: None,
     };
     busbar_kernel::boot::run_start_hooks(&[&STARTS_CLEAN, &WIDGET_PLANE], &ctx)
@@ -879,13 +897,20 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
 #[test]
 fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
     static REFUSES_HYDRATE: PlaneDecl = PlaneDecl {
-        key: "refuser",
-        fallback: false,
-        config_section: "refusers",
-        scope_kinds: &["refuser"],
-        subject_noun: "refuser",
-        admin_noun: "refuser",
-        audit_kind: "refuser",
+        declaration: PlaneDeclaration {
+            key: "refuser",
+            fallback: false,
+            config_section: "refusers",
+            scope_kinds: &["refuser"],
+            subject_noun: "refuser",
+            admin_noun: "refuser",
+            audit_kind: "refuser",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[],
+            fee_units: &[],
+        },
         wire_format_names: || &["refrpc"],
         claims: |_| Vec::new(),
         admission: |_| None,
@@ -896,13 +921,10 @@ fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
         hydrate: Some(|_ctx| Err("refuser: durable task state did not verify".to_string())),
         start: None,
         config_validate: None,
-        card_signing_domain: None,
-        card_kid_prefix: None,
         named_def_list: None,
         named_def_get: None,
         registry_contains: None,
         reresolve_gates: None,
-        #[cfg(feature = "openapi-schema")]
         openapi_schemas: None,
         on_swap: None,
         parse_section: None,
@@ -912,9 +934,6 @@ fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
         viewer: None,
         retain_verify_gates: None,
         default_section: None,
-        owned_config_sections: &[],
-        billable_classes: &[],
-        fee_units: &[],
         resolve_provider: None,
     };
     let ctx = busbar_kernel::plane::registry::BootCtx::stub();
@@ -1082,3 +1101,27 @@ fn a_plane_with_admin_verbs_documents_at_least_one_openapi_path() {
         );
     }
 }
+
+/// The llm plane's registry row, assembled kernel-side from its contract declaration
+/// and its behaviour table.
+static LLM_PLANE: busbar_kernel::plane::registry::PlaneDecl =
+    busbar_kernel::plane::registry::PlaneDecl::assemble(
+        busbar_llm::PLANE_DECLARATION,
+        busbar_llm::PLANE_HOOKS,
+    );
+
+/// The mcp plane's registry row, assembled kernel-side from its contract declaration
+/// and its behaviour table.
+static MCP_PLANE: busbar_kernel::plane::registry::PlaneDecl =
+    busbar_kernel::plane::registry::PlaneDecl::assemble(
+        busbar_mcp::PLANE_DECLARATION,
+        busbar_mcp::PLANE_HOOKS,
+    );
+
+/// The a2a plane's registry row, assembled kernel-side from its contract declaration
+/// and its behaviour table.
+static A2A_PLANE: busbar_kernel::plane::registry::PlaneDecl =
+    busbar_kernel::plane::registry::PlaneDecl::assemble(
+        busbar_a2a::PLANE_DECLARATION,
+        busbar_a2a::PLANE_HOOKS,
+    );

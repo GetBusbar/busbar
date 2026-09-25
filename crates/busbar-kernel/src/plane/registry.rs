@@ -259,7 +259,7 @@ impl BootCtx {
 ///
 /// Order is the operator-visible LAYERING order, unchanged from `Plane::ALL`.
 /// Production carries NO built-in plane rows: every plane is a plugin the composition root installs
-/// through [`install_planes`]. Naming a plane crate's `PLANE_DECL` here would be a plane-crate symbol
+/// through [`install_planes`]. Naming a plane crate's `PLANE_DECLARATION` here would be a plane-crate symbol
 /// reference in neutral source — a side channel around the ABI — so this stays empty.
 ///
 /// Core's OWN `#[cfg(test)]` unit-test binary carries NO built-in plane rows either — same as
@@ -388,7 +388,8 @@ pub fn merged_boot_plane_decls(
     // rather than silently double-declaring the grammar. A panic (not a `Result`) because a mis-wired
     // composition root is a build bug, not an operator error to recover from — same disposition as the
     // `install_planes`-twice / read-before-install asserts above.
-    if let Err(refusal) = check_owned_config_claims(&decls, CORE_OWNED_CONCRETE_SECTIONS) {
+    let declared: Vec<&PlaneDeclaration> = decls.iter().map(|d| &d.declaration).collect();
+    if let Err(refusal) = check_owned_config_claims(&declared, CORE_OWNED_CONCRETE_SECTIONS) {
         panic!("plane-owned-config dup-claim guard: {refusal}");
     }
     decls
@@ -411,7 +412,7 @@ pub const CORE_OWNED_CONCRETE_SECTIONS: &[&str] =
 /// THE OPERATOR-VISIBLE LAYERING ORDER of the planes, by key — the order `config_sections` reports
 /// and a cross-plane refusal names sections in — DERIVED FROM REGISTRATION DATA rather than a
 /// hard-coded token list. It is the order each plane key FIRST APPEARS across the built-in rows then
-/// the installed ones, deduped. The built-in rows (a plane's own `&PLANE_DECL`, `#[cfg(test)]`) fix
+/// the installed ones, deduped. The built-in rows (a plane's own registry row, `#[cfg(test)]`) fix
 /// the canonical positions under the test/test-support surface; in production the built-ins compile
 /// out and the composition root installs the planes in layering order, so the install order IS the
 /// canonical order. Core spells no specific plane's key here — the order leaves with the decls.
@@ -806,78 +807,61 @@ pub trait PlaneBootCtx {
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
-/// One billable class a plane ledgers and the unit family its count is in — the family vocabulary
-/// the plane's own meter-class declarations use (`token`, `duration`, `count`, `byte`, …).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BillableClass {
-    /// The class string the plane's raw counts are keyed by.
-    pub class: &'static str,
-    /// The unit family the class counts in.
-    pub family: &'static str,
+/// One billable class, the token family and the two fee units now live in the CONTRACT beside
+/// [`PlaneDeclaration`], because a plane states them as data; re-exported here at their old paths.
+pub use busbar_contract::plane::{check_owned_config_claims, BillableClass, PlaneDeclaration};
+pub use busbar_contract::plane::{PER_REQUEST, PER_SESSION, TOKEN_FAMILY};
+
+/// DECLARES THE PLANE BEHAVIOUR TABLE ONCE and derives both of its shapes from the one field list:
+/// [`PlaneHooks`], what a plane hands over BESIDE its contract [`PlaneDeclaration`], and
+/// [`PlaneDecl`], the row the registry holds — the declaration plus every hook, flat, so a reader
+/// names `decl.claims` and `decl.key` alike (the data through `Deref`). [`PlaneDecl::assemble`] is
+/// the one join, and it is the kernel's: a plane crate never builds a `PlaneDecl`.
+macro_rules! plane_behaviour {
+    ($($(#[$m:meta])* $f:ident: $t:ty,)*) => {
+        /// A PLANE'S BEHAVIOUR — every hook the kernel runs for it, and nothing it states about
+        /// itself (that is its contract [`PlaneDeclaration`]). Typed by kernel seams, so it stays
+        /// kernel-side; [`PlaneDecl::assemble`] folds it with the declaration into the registry row.
+        pub struct PlaneHooks { $($(#[$m])* pub $f: $t,)* }
+
+        /// THE REGISTRY ROW: a plane's contract [`PlaneDeclaration`] (read through `Deref`, so
+        /// `decl.key` is the declaration's key) and its [`PlaneHooks`], flat. Built only by
+        /// [`PlaneDecl::assemble`] or, in a test, by a literal naming both halves.
+        pub struct PlaneDecl {
+            /// The facts the plane states about itself — contract data.
+            pub declaration: PlaneDeclaration, $($(#[$m])* pub $f: $t,)*
+        }
+
+        impl PlaneDecl {
+            /// JOIN a plane's contract declaration and its behaviour into the registry row.
+            pub const fn assemble(declaration: PlaneDeclaration, hooks: PlaneHooks) -> PlaneDecl {
+                PlaneDecl { declaration, $($f: hooks.$f,)* }
+            }
+        }
+    };
 }
 
-/// The token family: every class a plane declares in it counts toward a `tokens:` cap.
-pub const TOKEN_FAMILY: &str = "token";
+/// The shape of [`PlaneDecl::openapi_schemas`]: the schema pass over the two SHARED generators and
+/// the `paths` map. With `openapi-schema` off nothing generates a document and no plane can supply
+/// one, so the type collapses to an uncallable fn and `schemars` is named nowhere.
+#[cfg(feature = "openapi-schema")]
+pub type OpenapiSchemasHook = fn(
+    &mut schemars::SchemaGenerator,
+    &mut schemars::SchemaGenerator,
+    &mut serde_json::Map<String, serde_json::Value>,
+);
+/// See the `openapi-schema` twin: uncallable, because no document is generated in this build.
+#[cfg(not(feature = "openapi-schema"))]
+pub type OpenapiSchemasHook = fn(std::convert::Infallible);
 
-/// The two fee units a plane may declare in [`PlaneDecl::fee_units`].
-pub use busbar_kernel_ledger::cost::{PER_REQUEST, PER_SESSION};
+impl std::ops::Deref for PlaneDecl {
+    type Target = PlaneDeclaration;
+    fn deref(&self) -> &PlaneDeclaration {
+        &self.declaration
+    }
+}
 
-/// EVERYTHING CORE KNOWS ABOUT A PLANE'S VOCABULARY, declared once by the plane itself.
-///
-/// Every field replaces one arm of one `match self` on `busbar_kernel::plane::Plane`. The doc on each
-/// says which strings it feeds, because these are the strings that must not agree by coincidence: two
-/// planes sharing a scope kind is how one plane's grant admits another plane's traffic, and two planes
-/// sharing an audit kind is how one plane's records start answering another plane's question.
-///
-/// The TYPE is `pub` — the composition root names it in `install_planes`' signature, and a private
-/// type cannot appear in a public one. The vocabulary/seam FIELDS are `pub` too: a plane crate built
-/// outside core constructs its own `PlaneDecl` and hands it to `install_planes`, so each field it
-/// populates is reachable. The seam types those fields name ([`BuildCtx`], [`BootHook`], the
-/// router/view/admission types) are public for the same reason.
-pub struct PlaneDecl {
-    /// The registry key, the metrics label, the log label and the audit resource prefix.
-    /// **OPERATOR-VISIBLE.** Replaces `Plane::key`'s match.
-    pub key: &'static str,
-
-    /// TRUE for the ONE built-in plane that declares itself the FALLBACK catch-all — the plane every
-    /// unclaimed path falls through to, which mounts nothing and binds no audience (the LLM plane). It
-    /// is an EXPLICIT, NEUTRAL capability a plane opts into, not an implicit "whatever is left over":
-    /// core reads the fallback plane's key OFF THIS FLAG (`busbar_kernel::plane::fallback_key`) rather
-    /// than from a hard-coded `"llm"` literal, so the fallback-guard (`PlaneDispatch::mount`/`admit`
-    /// no-op) and the model-plane telemetry branch name no dialect. At most one built-in plane sets
-    /// this; a build installs exactly one fallback (the LLM plane is unconditional).
-    pub fallback: bool,
-
-    /// The top-level `config.yaml` section whose mere EXISTENCE declares this plane. Replaces
-    /// `Plane::config_section`'s match, and it is this field that `config::config_sections_from`
-    /// folds — so a plane registered from outside core gets its section into the hook-reference grammar
-    /// with nothing written for it in core.
-    pub config_section: &'static str,
-
-    /// The `ScopeRef` kinds that grant access ON this plane. A slice because a plane may grant at
-    /// more than one granularity (MCP grants a whole server or a single tool). Replaces
-    /// `Plane::scope_kinds`' match.
-    pub scope_kinds: &'static [&'static str],
-
-    /// What ONE registration on this plane is called, in the words an operator reads back in a
-    /// `404`. Replaces `Plane::subject_noun`'s match.
-    pub subject_noun: &'static str,
-
-    /// The SINGULAR ADMIN NOUN for one registration in this plane's 1.5.3 named-definition-map
-    /// section — the word the admin API stamps into an audit ACTION (`<admin_noun>.create`), an
-    /// audit RESOURCE (`<admin_noun>:<name>`) and a validation-error subject (`a <admin_noun>
-    /// definition must be an object`). Distinct from `subject_noun` (which is the `404` prose, e.g.
-    /// `"MCP server"`): this is the hyphenated audit/path spelling, e.g. `"mcp-server"`. Read by
-    /// `config::named_map::NamedMapSection::singular` for the plane sections, so core stamps a
-    /// registered plane's noun without a hard-coded `"mcp-server"` literal. A plane with no
-    /// named-definition-map section (the LLM `pools:` plane) never has `singular` called on it, but
-    /// still carries a sensible value.
-    pub admin_noun: &'static str,
-
-    /// The audit RESOURCE KIND for a registration on this plane, and the prefix of every audit
-    /// action word the plane's verbs record. Replaces `Plane::audit_kind`'s match.
-    pub audit_kind: &'static str,
-
+plane_behaviour! {
     /// The distinct WIRE FORMATS this plane translates between, named. A FUNCTION rather than a
     /// slice for exactly one reason, and it is the reason the field is worth its indirection: the
     /// LLM plane's answer is `busbar_kernel::proto::known_protocols` — read off the live protocol
@@ -886,7 +870,7 @@ pub struct PlaneDecl {
     ///
     /// `Plane::wire_formats` and `Plane::has_superset_ir` stay DERIVED from this list's length, so
     /// the superset-IR rule remains a rule rather than a fact about today's planes.
-    pub wire_format_names: fn() -> &'static [&'static str],
+    wire_format_names: fn() -> &'static [&'static str],
 
     /// THE PATHS THIS PLANE ANSWERS ON, and the wire format each is spoken in, computed from the
     /// plane's own RUNTIME OBJECT (its app slot, type-erased as `&dyn Any`). Every `(path, wire)`
@@ -900,14 +884,14 @@ pub struct PlaneDecl {
     ///
     /// Returns the empty vec when the plane mounts nothing (a delegation-only A2A deployment, or a
     /// plane the operator did not configure — its slot is then absent and this is not called).
-    pub claims: fn(&dyn std::any::Any) -> Vec<(String, &'static str)>,
+    claims: fn(&dyn std::any::Any) -> Vec<(String, &'static str)>,
 
     /// THE ADMISSION FACTS this plane binds — the audience a token presented at its door must carry,
     /// and where a refused caller is sent to get one — computed from the same runtime object. `None`
     /// when the plane has no RECEIVING side to admit anyone to (A2A without a `public_url`); a plane
     /// that [`Self::claims`] a path but returns `None` here is refused at boot by `build_dispatch`
     /// rather than left serving an unauthenticated resource (ratchet R2).
-    pub admission: fn(&dyn std::any::Any) -> Option<super::PlaneAdmission>,
+    admission: fn(&dyn std::any::Any) -> Option<super::PlaneAdmission>,
 
     /// BUILD THE PLANE'S RUNTIME OBJECT for one config generation, type-erased as
     /// `Arc<dyn Any + Send + Sync>` — the app-state SLOT that [`Self::claims`] and [`Self::admission`]
@@ -919,7 +903,7 @@ pub struct PlaneDecl {
     /// fields the LLM data plane already reads directly, not one object) returns `None`
     /// unconditionally — it contributes no slot, exactly as [`Self::claims`] already returns nothing
     /// for it.
-    pub build: fn(&BuildCtx) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+    build: fn(&BuildCtx) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
 
     /// THE PLANE'S DATA ROUTES, described NEUTRALLY (S4a Option A) — the one seam a plane contributes
     /// its data-plane routes through, naming no core router type. From the plane's own runtime slot
@@ -935,7 +919,7 @@ pub struct PlaneDecl {
     /// `None` for a plane that answers on no data path (the LLM plane, whose endpoints are the
     /// protocol catch-all, mounted in `base_data_router` directly rather than through this seam).
     #[allow(clippy::type_complexity)]
-    pub routes: Option<fn(&dyn std::any::Any) -> Vec<crate::plane_routes::PlaneRouteSpec>>,
+    routes: Option<fn(&dyn std::any::Any) -> Vec<crate::plane_routes::PlaneRouteSpec>>,
 
     /// CONTRIBUTE THE PLANE'S ADMIN VERBS to the Admin API v1 router — the operator surface a plane
     /// adds ON TOP of the generic named-definition CRUD (MCP's `connect`/`changes`/`health`, A2A's
@@ -955,7 +939,7 @@ pub struct PlaneDecl {
     /// its VERBATIM `(method, path)`, so the auth middleware's `required_scope(method, path)` is
     /// byte-identical — the security invariant this seam preserves.
     #[allow(clippy::type_complexity)]
-    pub admin_routes: Option<fn(&dyn std::any::Any) -> Vec<crate::admin_verbs::AdminRouteSpec>>,
+    admin_routes: Option<fn(&dyn std::any::Any) -> Vec<crate::admin_verbs::AdminRouteSpec>>,
 
     /// CONTRIBUTE THE PLANE'S OpenAPI PATH FRAGMENT — a JSON object whose keys are the ABSOLUTE admin
     /// paths this plane's verbs answer on and whose values are the OpenAPI path items. Merged into the
@@ -965,7 +949,7 @@ pub struct PlaneDecl {
     // Read only by the OpenAPI generator (feature `openapi-schema`) and the non-vacuity floor test; a
     // default `--no-default-features` build has neither, so the field is genuinely unread there.
     #[cfg_attr(not(any(test, feature = "openapi-schema")), allow(dead_code))]
-    pub openapi: Option<fn() -> serde_json::Value>,
+    openapi: Option<fn() -> serde_json::Value>,
 
     /// RESTORE THIS PLANE'S DURABLE STATE, in order, BEFORE a listener is bound — the plane half of
     /// `busbar_kernel::boot::hydrate_all`. Handed a [`PlaneBootCtx`] whose store surface is `PlaneStore`
@@ -973,7 +957,7 @@ pub struct PlaneDecl {
     /// sinks and read them back but can never touch the append-only chain (invariant (a)). `None` for
     /// a plane with no durable state to restore (the LLM plane). A hook returning `Err` REFUSES BOOT:
     /// `busbar_kernel::boot::hydrate_all` propagates it with `?`, so a plane cannot half-restore and serve.
-    pub hydrate: Option<BootHook>,
+    hydrate: Option<BootHook>,
 
     /// START THIS PLANE'S BOOT-TIME WORK, AFTER the listeners are built — the plane half of
     /// `busbar_kernel::boot::start_planes`. Handed the same [`PlaneBootCtx`], now carrying the live app
@@ -983,7 +967,7 @@ pub struct PlaneDecl {
     /// only resolves and publishes its per-agent card transports. `None` for a plane that starts
     /// nothing. A hook returning `Err` REFUSES BOOT — an outbound identity that does not resolve is a
     /// startup failure, never a warning — so `busbar_kernel::boot::start_planes` propagates it with `?`.
-    pub start: Option<BootHook>,
+    start: Option<BootHook>,
 
     /// VALIDATE ONE RAW NAMED-DEFINITION DOCUMENT for this plane's config section — the write-path
     /// grammar the admin API enforces so a definition the API accepts is exactly one `config.yaml`
@@ -1003,25 +987,7 @@ pub struct PlaneDecl {
     // to call it, so the field is genuinely unread there rather than dead.
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     #[allow(clippy::type_complexity)]
-    pub config_validate: Option<fn(name: &str, def: &serde_json::Value) -> Result<(), String>>,
-
-    /// THE DOMAIN this plane derives its agent-card signing subkey under — a versioned `&'static str`
-    /// constant, NOT a fn over a signer. It is the ONLY thing the host needs to reproduce the plane's
-    /// card key: `GovState::card_sign` reads it off this decl, derives the subkey from the core token
-    /// signer (`TokenSigner::sign_with_card_subkey`) and signs HOST-side, so no signing material ever
-    /// reaches the plane (invariant (a)). `None` for every plane that does not sign cards, so
-    /// `GovState::card_issuer`/`card_sign` return `None` with the A2A plane compiled out and
-    /// `governance/state.rs` names no `crate::a2a` type.
-    #[cfg_attr(not(feature = "relay"), allow(dead_code))]
-    pub card_signing_domain: Option<&'static str>,
-
-    /// THE `kid` PREFIX this plane stamps on its card signatures, prepended to the token signer's own
-    /// `kid` so a caller can SEE that the card key is not the token key. A `&'static str` constant for
-    /// the same reason [`Self::card_signing_domain`] is: the host builds the published issuer `kid`
-    /// (`GovState::card_issuer`) from this and the token `kid` without naming the plane. `None` for
-    /// a plane that signs no cards.
-    #[cfg_attr(not(feature = "relay"), allow(dead_code))]
-    pub card_kid_prefix: Option<&'static str>,
+    config_validate: Option<fn(name: &str, def: &serde_json::Value) -> Result<(), String>>,
 
     /// PROJECT THIS PLANE'S NAMED-DEFINITION REGISTRATIONS onto the shared read view — the plane half
     /// of the generic `GET /api/v1/admin/<section>` list, so `admin::v1::service` reads a plane's
@@ -1036,7 +1002,7 @@ pub struct PlaneDecl {
     // plane compiled in nothing resolves a decl to call it, so the field is genuinely unread there.
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     #[allow(clippy::type_complexity)]
-    pub named_def_list:
+    named_def_list:
         Option<fn(&dyn crate::plane_host::PlaneSlots) -> Vec<crate::api::NamedDefView>>,
 
     /// PROJECT ONE NAMED-DEFINITION REGISTRATION by name onto the shared read view — the single-entry
@@ -1046,7 +1012,7 @@ pub struct PlaneDecl {
     /// seam as [`Self::named_def_list`].
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     #[allow(clippy::type_complexity)]
-    pub named_def_get:
+    named_def_get:
         Option<fn(&dyn crate::plane_host::PlaneSlots, &str) -> Option<crate::api::NamedDefView>>,
 
     /// IS `name` A LIVE REGISTRATION on this plane's effective snapshot — the read-side membership
@@ -1054,14 +1020,14 @@ pub struct PlaneDecl {
     /// no named-definition map.
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     #[allow(clippy::type_complexity)]
-    pub registry_contains: Option<fn(&dyn crate::plane_host::PlaneSlots, &str) -> bool>,
+    registry_contains: Option<fn(&dyn crate::plane_host::PlaneSlots, &str) -> bool>,
 
     /// RE-RESOLVE THIS PLANE'S PER-REGISTRATION HOOK GATES against the next snapshot — the plane half
     /// of the config-swap gate rebuild. Reads the plane's own registry off the `&mut App` and writes
     /// its own gate field back, so `admin::v1::service::reresolve_plane_gates` names no plane registry
     /// type. `None` for a plane with no per-registration hook gates (the LLM plane).
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
-    pub reresolve_gates: Option<fn(&mut dyn crate::plane_host::ContainerGateSink)>,
+    reresolve_gates: Option<fn(&mut dyn crate::plane_host::ContainerGateSink)>,
 
     /// ATTACH THIS PLANE'S ADMIN TRUST-VERB SCHEMAS to the OpenAPI document — the plane half of the
     /// schema pass in `busbar_kernel::admin::v1::json::handlers::openapi_doc`. Handed the SHARED response
@@ -1070,17 +1036,10 @@ pub struct PlaneDecl {
     /// fragment inserted — so `handlers` names no `crate::mcp`/`crate::a2a` view type and the document
     /// stays byte-identical. `None` for a plane with no admin verbs (the LLM plane).
     ///
-    /// Gated with `openapi-schema` because it is the only place `schemars` is named; a build without
-    /// that feature generates no document, so the field is genuinely absent rather than unused.
-    #[cfg(feature = "openapi-schema")]
-    #[allow(clippy::type_complexity)]
-    pub openapi_schemas: Option<
-        fn(
-            &mut schemars::SchemaGenerator,
-            &mut schemars::SchemaGenerator,
-            &mut serde_json::Map<String, serde_json::Value>,
-        ),
-    >,
+    /// The FIELD is unconditional and only its type ([`OpenapiSchemasHook`]) follows the
+    /// `openapi-schema` feature, so a plane that supplies `None` builds whichever crate turned the
+    /// kernel's feature on.
+    openapi_schemas: Option<OpenapiSchemasHook>,
 
     /// CARRY THIS PLANE'S ENGINE-OWNED STATE ACROSS A CONFIG SWAP — the plane half of
     /// `busbar_kernel::state::AppHandle::swap`. Run once per swap, AFTER the next snapshot is fully built
@@ -1094,7 +1053,7 @@ pub struct PlaneDecl {
     /// The erased pair is the plane's own runtime state to read and reconcile — never a `Store`, a
     /// `GovCtx`, or an `audit::Chain`. A plane whose swap-time work needs one of those is not cleanly
     /// separable through this seam.
-    pub on_swap: Option<
+    on_swap: Option<
         fn(prior: &dyn crate::plane_host::PlaneSlots, next: &dyn crate::plane_host::PlaneSlots),
     >,
 
@@ -1104,7 +1063,7 @@ pub struct PlaneDecl {
     /// `None` for a plane with no registry section (the LLM / `proto` planes).
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     #[allow(clippy::type_complexity)]
-    pub parse_section:
+    parse_section:
         Option<fn(&serde_yaml::Value) -> Result<Box<dyn crate::plane::config::PlaneCfg>, String>>,
 
     /// PARSE THIS PLANE'S TOP-LEVEL ENDPOINT block (the MCP plane's `mcp:` door) from a positionless
@@ -1113,7 +1072,7 @@ pub struct PlaneDecl {
     /// (every plane but MCP).
     #[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
     #[allow(clippy::type_complexity)]
-    pub parse_endpoint: Option<
+    parse_endpoint: Option<
         fn(&serde_yaml::Value) -> Result<Box<dyn crate::plane::config::PlaneEndpointCfg>, String>,
     >,
 
@@ -1123,7 +1082,7 @@ pub struct PlaneDecl {
     /// resolve error list verbatim. `None` for a plane with no endpoint block.
     #[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
     #[allow(clippy::type_complexity)]
-    pub lower_endpoint: Option<
+    lower_endpoint: Option<
         fn(
             &dyn crate::plane::config::PlaneEndpointCfg,
         ) -> Result<std::sync::Arc<dyn std::any::Any + Send + Sync>, String>,
@@ -1137,7 +1096,7 @@ pub struct PlaneDecl {
     /// `None` for a plane whose runtime is not carried through this seam (A2A's lives in `plane_slots`
     /// under its decl key; the LLM plane's is the many `App` fields it already reads).
     #[allow(clippy::type_complexity)]
-    pub build_runtime: Option<
+    build_runtime: Option<
         fn(
             &dyn std::any::Any,
             prior: Option<&dyn crate::plane_host::PlaneSlots>,
@@ -1156,14 +1115,14 @@ pub struct PlaneDecl {
     /// `None` for a plane whose runtime exposes no routing tables (MCP/A2A: they contribute no
     /// `EngineTablesView`); the LLM plane sets it once its `NativeRuntime` lives in `busbar-llm`.
     #[allow(clippy::type_complexity)]
-    pub viewer:
+    viewer:
         Option<fn(&(dyn std::any::Any + Send + Sync)) -> &dyn crate::plane_host::EngineTablesView>,
 
     /// PRUNE THIS PLANE'S VERIFY-ON-CALL COALESCING STATE to the subjects the freshly-built generation
     /// still fronts — the seam `appbuild` runs after building the `App`, so the carried per-subject
     /// flights/latches do not leak one dead entry per removed registration. `None` for a plane with no
     /// verify-on-call gate (the LLM / `proto` planes).
-    pub retain_verify_gates: Option<fn(&dyn crate::plane_host::PlaneSlots)>,
+    retain_verify_gates: Option<fn(&dyn crate::plane_host::PlaneSlots)>,
 
     /// THIS PLANE'S EMPTY REGISTRY SECTION, boxed as the neutral [`crate::plane::config::PlaneCfg`] —
     /// the value `DeployCfg`'s `#[serde(default)]` `tools:`/`agents:` field takes when the section is
@@ -1171,41 +1130,7 @@ pub struct PlaneDecl {
     /// `ToolsCfg::default()`) rather than a re-parse of an empty document. `None` for a plane with no
     /// registry section (the LLM / `proto` planes).
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
-    pub default_section: Option<fn() -> Box<dyn crate::plane::config::PlaneCfg>>,
-
-    /// THE PLANE-OWNED-CONFIG SEAM (1.6.0 config-seam, STAGE 1 — INFRA ONLY). The top-level
-    /// `config.yaml` sections this plane declares it OWNS the grammar for — the keys a LATER stage will
-    /// move OUT of core's concrete [`DeployCfg`] fields and into the plane crate's own typed config,
-    /// so core stops carrying that section's shape concretely.
-    ///
-    /// DISTINCT from [`Self::config_section`]: `config_section` is the ONE section whose mere existence
-    /// DECLARES the plane (`pools:`/`tools:`/`agents:`) and feeds the hook-reference grammar. This is
-    /// the (possibly several) sections whose SCHEMA the plane will own once the move lands — e.g. the
-    /// LLM plane will list `["rate_card", "limits"]` here in a later stage. A plane may own sections it
-    /// does not use to declare itself, and vice-versa.
-    ///
-    /// STAGE 1 CONTRACT: every plane declares `&[]` here — the registry starts EMPTY and NOTHING has
-    /// moved. `providers`/`models`/`pools`/`rate_card`/`limits` remain concrete `DeployCfg` fields;
-    /// config deserialization/validation/rendering is byte-identical. The only live behaviour this
-    /// field feeds in stage 1 is the DUP-CLAIM GUARD ([`check_owned_config_claims`]), which refuses a
-    /// boot where two planes claim the same section OR a plane claims a section core still owns
-    /// concretely — the invariant that makes the later section moves safe.
-    pub owned_config_sections: &'static [&'static str],
-
-    /// THE BILLABLE UNIT CLASSES THIS PLANE LEDGERS, each with the unit family it counts in — the
-    /// class strings its raw counts are keyed by and a rate card configures (a reserved
-    /// `<class>_utok` tier, or `units: { <class>: .. }`). When this plane's section carries a
-    /// `rate_card`, boot and `--validate` REFUSE the config unless the card configures every class
-    /// listed here (an explicit 0 counts). Every class in [`TOKEN_FAMILY`] counts toward a `tokens:`
-    /// cap. Pairwise disjoint: no class is a subset of another. Identical for every plane, compiled-in or registered from outside
-    /// core: the kernel reads the list and never names a class. `&[]` for a plane that bills nothing.
-    pub billable_classes: &'static [BillableClass],
-
-    /// THE FEE UNITS THIS PLANE COUNTS — `per_request` (its requests pass per-request admission)
-    /// and/or `per_session` (it opens a session account). Boot and `--validate` REFUSE a nonzero
-    /// `<config_section>.fees` key naming a unit not listed here: a fee nothing counts charges
-    /// nothing. The kernel reads the list and never names a plane. `&[]` for a plane counting none.
-    pub fee_units: &'static [&'static str],
+    default_section: Option<fn() -> Box<dyn crate::plane::config::PlaneCfg>>,
 
     /// MERGE ONE PROVIDER'S CATALOG DEFINITION (`providers.yaml`, [`crate::config::providers::ProviderDef`])
     /// WITH ITS OPERATOR DEPLOYMENT (`config.yaml`'s `providers:` entry,
@@ -1227,60 +1152,12 @@ pub struct PlaneDecl {
     /// LLM plane keeps merging providers exactly as every prior release has, rather than silently
     /// dropping configured providers out of `RootCfg::providers`.
     #[allow(clippy::type_complexity)]
-    pub resolve_provider: Option<
+    resolve_provider: Option<
         fn(
             &crate::config::providers::ProviderDef,
             &crate::config::providers::ProviderDeploy,
         ) -> crate::config::providers::ProviderCfg,
     >,
-}
-
-/// THE DUP-CLAIM GUARD for the plane-owned-config seam (1.6.0 config-seam, stage 1). Judges the
-/// [`PlaneDecl::owned_config_sections`] claims across the whole plane set against the sections core
-/// still owns CONCRETELY (`core_owned_concrete`, supplied by the caller so this stays neutral — a
-/// plain list of section-key strings, naming no plane vocabulary), returning `Ok(())` when every
-/// claim is disjoint and unique, or the FIRST refusal it finds.
-///
-/// It is a HARD ERROR — the whole point of stage 1 — if:
-/// - two planes claim the SAME section key (`plane` and `other` both own `key`): one plane's grammar
-///   would then answer for another plane's section, exactly the confusion the later moves must not
-///   introduce; or
-/// - a plane claims a key core STILL OWNS concretely (`key` ∈ `core_owned_concrete`): the section has
-///   not been moved out of `DeployCfg` yet, so a plane owning it would double-declare the grammar and
-///   the config would no longer deserialize/render byte-identically.
-///
-/// Pure (no I/O, no globals): a decl list and a reserved-key list in, a verdict out — so a test drives
-/// it directly rather than by booting a binary. Core calls it at boot from the plane fold; in stage 1
-/// every `owned_config_sections` is empty, so it is unconditionally `Ok(())` and adds no behaviour.
-pub fn check_owned_config_claims(
-    decls: &[&'static PlaneDecl],
-    core_owned_concrete: &[&'static str],
-) -> Result<(), String> {
-    // section key → the plane key that first claimed it, so a second claimant names its rival.
-    let mut claimed: std::collections::BTreeMap<&'static str, &'static str> =
-        std::collections::BTreeMap::new();
-    for decl in decls {
-        for &section in decl.owned_config_sections {
-            if core_owned_concrete.contains(&section) {
-                return Err(format!(
-                    "plane `{}` claims config section `{section}`, but core still owns it concretely: \
-                     a section must be evicted from core's `DeployCfg` in the SAME change that a plane \
-                     claims it, never before — else the grammar is declared twice and the config stops \
-                     deserializing byte-identically",
-                    decl.key
-                ));
-            }
-            if let Some(other) = claimed.insert(section, decl.key) {
-                return Err(format!(
-                    "config section `{section}` is claimed by two planes (`{other}` and `{}`): a \
-                     section is owned by exactly one plane, or one plane's grammar answers for \
-                     another's",
-                    decl.key
-                ));
-            }
-        }
-    }
-    Ok(())
 }
 
 // ── TEST-SUPPORT PLANE REGISTRATION (the neutral seam) ─────────────────────────────────────────────

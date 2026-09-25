@@ -20,15 +20,16 @@ use busbar_kernel::plane::registry::{
 /// `DeployCfg` deserialize/validate it without naming a `busbar_voice` type.
 #[test]
 fn voice_decl_owns_streams_and_wires_the_section_hooks() {
-    let d = &busbar_voice::PLANE_DECL;
+    let d = &busbar_voice::PLANE_DECLARATION;
+    let hooks = &busbar_voice::PLANE_HOOKS;
     assert_eq!(d.config_section, "streams");
     assert_eq!(d.owned_config_sections, &["streams"]);
     assert!(
-        d.parse_section.is_some(),
+        hooks.parse_section.is_some(),
         "voice must PARSE its owned `streams:` section (parse_section wired)"
     );
     assert!(
-        d.default_section.is_some(),
+        hooks.default_section.is_some(),
         "an ABSENT `streams:` must default to StreamsCfg::default() (default_section wired)"
     );
 }
@@ -38,7 +39,7 @@ fn voice_decl_owns_streams_and_wires_the_section_hooks() {
 /// which owns a second synthetic claimant against the real `CORE_OWNED_CONCRETE_SECTIONS`.)
 #[test]
 fn dup_claim_guard_admits_the_real_voice_decl() {
-    check_owned_config_claims(&[&busbar_voice::PLANE_DECL], CORE_OWNED_CONCRETE_SECTIONS).expect(
+    check_owned_config_claims(&[&busbar_voice::PLANE_DECLARATION], CORE_OWNED_CONCRETE_SECTIONS).expect(
         "`streams` ∉ core-owned and voice is the sole claimant — the real voice claim must be admitted",
     );
 }
@@ -46,10 +47,10 @@ fn dup_claim_guard_admits_the_real_voice_decl() {
 /// A synthetic SECOND plane that also claims `streams`, built by functional update off the REAL voice
 /// decl (every field but `key` copied, so it claims `streams` exactly as voice does) — the planted
 /// collision the dup-claim guard must refuse by construction.
-static RIVAL_CLAIMS_STREAMS: busbar_kernel::plane::registry::PlaneDecl =
-    busbar_kernel::plane::registry::PlaneDecl {
+static RIVAL_CLAIMS_STREAMS: busbar_contract::plane::PlaneDeclaration =
+    busbar_contract::plane::PlaneDeclaration {
         key: "rival-voice",
-        ..busbar_voice::PLANE_DECL
+        ..busbar_voice::PLANE_DECLARATION
     };
 
 /// The dup-claim guard REFUSES a planted collision: two planes claiming `streams` is a hard error that
@@ -57,7 +58,7 @@ static RIVAL_CLAIMS_STREAMS: busbar_kernel::plane::registry::PlaneDecl =
 #[test]
 fn dup_claim_guard_refuses_a_planted_streams_collision() {
     let err = check_owned_config_claims(
-        &[&busbar_voice::PLANE_DECL, &RIVAL_CLAIMS_STREAMS],
+        &[&busbar_voice::PLANE_DECLARATION, &RIVAL_CLAIMS_STREAMS],
         CORE_OWNED_CONCRETE_SECTIONS,
     )
     .expect_err("two planes claiming `streams` MUST be refused — one plane's grammar would answer for the other's");
@@ -72,7 +73,12 @@ fn dup_claim_guard_refuses_a_planted_streams_collision() {
 /// asks "what top-level sections exist") judges against.
 #[test]
 fn registering_voice_puts_streams_into_config_sections() {
-    register_test_plane(&busbar_voice::PLANE_DECL);
+    static VOICE_PLANE: busbar_kernel::plane::registry::PlaneDecl =
+        busbar_kernel::plane::registry::PlaneDecl::assemble(
+            busbar_voice::PLANE_DECLARATION,
+            busbar_voice::PLANE_HOOKS,
+        );
+    register_test_plane(&VOICE_PLANE);
     let sections = busbar_kernel::plane::config::config_sections();
     assert!(
         sections.contains(&"streams"),
@@ -96,13 +102,12 @@ fn a_plane_claiming_any_real_core_owned_section_is_refused() {
     );
     for section in CORE_OWNED_CONCRETE_SECTIONS {
         let owned: &'static [&'static str] = Box::leak(Box::new([*section]));
-        let grabber: &'static busbar_kernel::plane::registry::PlaneDecl =
-            Box::leak(Box::new(busbar_kernel::plane::registry::PlaneDecl {
-                key: "section-grabber",
-                owned_config_sections: owned,
-                ..busbar_voice::PLANE_DECL
-            }));
-        let err = check_owned_config_claims(&[grabber], CORE_OWNED_CONCRETE_SECTIONS)
+        let grabber = busbar_contract::plane::PlaneDeclaration {
+            key: "section-grabber",
+            owned_config_sections: owned,
+            ..busbar_voice::PLANE_DECLARATION
+        };
+        let err = check_owned_config_claims(&[&grabber], CORE_OWNED_CONCRETE_SECTIONS)
             .expect_err("a plane claiming a core-owned section must be refused");
         assert!(
             err.contains(section),

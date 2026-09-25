@@ -192,7 +192,7 @@ pub mod testkit;
 // binary by the codec crate's `test-support` dev edge in the manifest. Nothing in this crate names
 // it directly, so there is no re-export here.
 
-use busbar_kernel::plane::registry::{BillableClass, PER_REQUEST, TOKEN_FAMILY};
+use busbar_contract::plane::{BillableClass, PER_REQUEST, TOKEN_FAMILY};
 
 /// EVERY DIALECT THIS PLUGIN DECLARES, in the order an operator sees.
 ///
@@ -219,8 +219,8 @@ use busbar_kernel::plane::registry::{BillableClass, PER_REQUEST, TOKEN_FAMILY};
 /// type still lives in `busbar-core`, which a plane crate may not name, so `busbar-core`'s `appbuild`
 /// composes that slot through a core-local constructor rather than through this decl's `build_runtime`
 /// pointer (which stays `None`); Phase 3 relocates the type here and flips the pointer on, like MCP's.
-pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
-    busbar_kernel::plane::registry::PlaneDecl {
+pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
+    busbar_contract::plane::PlaneDeclaration {
         key: "llm",
         // THE FALLBACK CATCH-ALL — every unclaimed path falls through to the LLM plane, so core reads
         // the fallback key off this flag rather than a hard-coded `"llm"` literal.
@@ -232,51 +232,8 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         // `NamedMapSection`), so `singular` is never routed here; carried for completeness.
         admin_noun: "pool",
         audit_kind: "pool",
-        wire_format_names: busbar_kernel::proto::known_protocols,
-        // THE FALLBACK MOUNTS NOTHING — the catch-all every unclaimed path falls through to, so it
-        // claims no path and binds no audience.
-        claims: |_| Vec::new(),
-        admission: |_| None,
-        // NO DISPATCH SLOT / NO SURFACE / NO DURABLE STATE — the fallback plane claims no path, so it
-        // contributes no config-conditional dispatch resource, and it restores/reconciles nothing.
-        build: |_| None,
-        // T3 — the fallback plane MOUNTS NOTHING by default (its documented stance): `routes` stays
-        // `None` so its boot is byte-identical. The OFF-by-default `webhook-receiver` feature flips it
-        // to the inbound OpenAI Responses webhook receiver's route builder (which itself mounts nothing
-        // unless `BUSBAR_LLM_WEBHOOK_SECRET` is configured). Gated so the money-path default build is
-        // untouched; see `openai_responses_webhook.rs` for the deferred secret-config seam.
-        #[cfg(not(feature = "webhook-receiver"))]
-        routes: None,
-        #[cfg(feature = "webhook-receiver")]
-        routes: Some(crate::openai_responses_webhook::webhook_routes),
-        admin_routes: None,
-        openapi: None,
-        hydrate: None,
-        start: None,
-        config_validate: None,
         card_signing_domain: None,
         card_kid_prefix: None,
-        named_def_list: None,
-        named_def_get: None,
-        registry_contains: None,
-        reresolve_gates: None,
-        #[cfg(feature = "openapi-schema")]
-        openapi_schemas: None,
-        on_swap: None,
-        parse_section: None,
-        parse_endpoint: None,
-        lower_endpoint: None,
-        // THE PER-GENERATION RUNTIME SEAM stays `None` for the fallback plane THIS phase (R3/R4 sub-phase
-        // B). The pool/lane/failover/egress runtime IS now carried in the opaque `plane_slots` runtime
-        // slot every plane's runtime rides, and the money-path read (`App::engine_tables`) downcasts that
-        // slot once per call — but its type (core's `state::NativeRuntime`) still lives in core,
-        // and a plane crate may not name a core item, so `busbar-core`'s `appbuild` composes
-        // the slot through a core-local constructor rather than through this pointer. Phase 3 relocates
-        // the type here, at which point this becomes `Some(<this crate's build_runtime>)` like MCP's.
-        build_runtime: Some(crate::engine::build_runtime::build_runtime),
-        viewer: Some(crate::engine::build_runtime::viewer),
-        retain_verify_gates: None,
-        default_section: None,
         // config-seam stage 1: the registry starts EMPTY — nothing has moved out of core yet.
         owned_config_sections: &[],
         // THE CLASSES THIS PLANE LEDGERS (#71): the four reserved token tiers every dialect reports,
@@ -310,6 +267,56 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         // point the old inline merge ran.
         // The fee unit this plane counts: one per admitted request, priced at `per_request_fee:`.
         fee_units: &[PER_REQUEST],
+    };
+
+/// THE PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed over BESIDE
+/// [`PLANE_DECLARATION`] and joined to it kernel-side (`PlaneDecl::assemble`). The registration item
+/// is the declaration, which names no kernel type; this table is typed by kernel seams and stays on
+/// the kernel side of every fold.
+pub const PLANE_HOOKS: busbar_kernel::plane::registry::PlaneHooks =
+    busbar_kernel::plane::registry::PlaneHooks {
+        wire_format_names: busbar_kernel::proto::known_protocols,
+        // THE FALLBACK MOUNTS NOTHING — the catch-all every unclaimed path falls through to, so it
+        // claims no path and binds no audience.
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        // NO DISPATCH SLOT / NO SURFACE / NO DURABLE STATE — the fallback plane claims no path, so it
+        // contributes no config-conditional dispatch resource, and it restores/reconciles nothing.
+        build: |_| None,
+        // T3 — the fallback plane MOUNTS NOTHING by default (its documented stance): `routes` stays
+        // `None` so its boot is byte-identical. The OFF-by-default `webhook-receiver` feature flips it
+        // to the inbound OpenAI Responses webhook receiver's route builder (which itself mounts nothing
+        // unless `BUSBAR_LLM_WEBHOOK_SECRET` is configured). Gated so the money-path default build is
+        // untouched; see `openai_responses_webhook.rs` for the deferred secret-config seam.
+        #[cfg(not(feature = "webhook-receiver"))]
+        routes: None,
+        #[cfg(feature = "webhook-receiver")]
+        routes: Some(crate::openai_responses_webhook::webhook_routes),
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: None,
+        config_validate: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        openapi_schemas: None,
+        on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        // THE PER-GENERATION RUNTIME SEAM stays `None` for the fallback plane THIS phase (R3/R4 sub-phase
+        // B). The pool/lane/failover/egress runtime IS now carried in the opaque `plane_slots` runtime
+        // slot every plane's runtime rides, and the money-path read (`App::engine_tables`) downcasts that
+        // slot once per call — but its type (core's `state::NativeRuntime`) still lives in core,
+        // and a plane crate may not name a core item, so `busbar-core`'s `appbuild` composes
+        // the slot through a core-local constructor rather than through this pointer. Phase 3 relocates
+        // the type here, at which point this becomes `Some(<this crate's build_runtime>)` like MCP's.
+        build_runtime: Some(crate::engine::build_runtime::build_runtime),
+        viewer: Some(crate::engine::build_runtime::viewer),
+        retain_verify_gates: None,
+        default_section: None,
         resolve_provider: Some(crate::engine::build_runtime::resolve_provider),
     };
 
@@ -379,7 +386,7 @@ pub static BODY_INGRESS: &[(&str, busbar_kernel::ingress::arrival::BodyIngress)]
     ),
 ];
 
-/// THE READS-NOT-RESTATES GUARANTEE for the LLM `PLANE_DECL`, pinned HERE because this is the crate
+/// THE READS-NOT-RESTATES GUARANTEE for the LLM `PLANE_HOOKS`, pinned HERE because this is the crate
 /// that owns the declaration — and the only place its `wire_format_names` field and
 /// `busbar_kernel::proto::known_protocols` resolve to the SAME `busbar-core` instance, so a by-pointer
 /// identity is meaningful (core's own test binary links two core instances and cannot check it — see

@@ -40,8 +40,8 @@ pub use tools::{EchoToolExecutor, ToolExecutor};
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use std::sync::Arc;
 
-/// THE PLANE'S PER-GENERATION RUNTIME OBJECT — the type-erased slot `PLANE_DECL.build_runtime` builds
-/// (see `crate::PLANE_DECL`). It carries the process-wide dependencies a session is assembled from: the
+/// THE PLANE'S PER-GENERATION RUNTIME OBJECT — the type-erased slot `PLANE_HOOKS.build_runtime` builds
+/// (see `crate::PLANE_HOOKS`). It carries the process-wide dependencies a session is assembled from: the
 /// durable-handle engine sessions bind into and the server-side tool executor. The plane holds no
 /// pricing of its own: a session's metering is the kernel account its governed open binds. A session
 /// (either topology) is constructed FROM this object; it holds no per-session state itself.
@@ -149,9 +149,9 @@ impl VoiceRuntime {
     }
 }
 
-/// THE `PLANE_DECL.build_runtime` HOOK BODY — builds the plane's per-generation runtime object
+/// THE `PLANE_HOOKS.build_runtime` HOOK BODY — builds the plane's per-generation runtime object
 /// (type-erased as `Arc<dyn Any + Send + Sync>`), the seam the composition root composes the voice
-/// runtime slot through (see `crate::PLANE_DECL`). Wired behind the `runtime` feature; the default
+/// runtime slot through (see `crate::PLANE_HOOKS`). Wired behind the `runtime` feature; the default
 /// (feature-off) build leaves the hook `None`.
 ///
 /// WHAT IS WIRED, AND WHAT REMAINS A DEV DEFAULT. This entry reads the REAL `streams:` config (session

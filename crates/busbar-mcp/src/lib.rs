@@ -69,9 +69,10 @@ pub use record::{McpCallRecord, McpDemotionRow};
 #[cfg(feature = "test-support")]
 pub mod testkit;
 
-/// MCP'S PLANE DECLARATION — the `&'static PlaneDecl` the composition root installs at boot so the
-/// `busbar` binary names one stable path (`busbar_mcp::PLANE_DECL`). See [`mcp`] for the declaration.
-pub use mcp::PLANE_DECL;
+/// MCP'S PLANE DECLARATION — the contract data the composition root registers
+/// (`busbar_mcp::PLANE_DECLARATION`) and the behaviour table the kernel joins to it
+/// (`PLANE_HOOKS`, through `PlaneDecl::assemble`). See [`mcp`] for both.
+pub use mcp::{PLANE_DECLARATION, PLANE_HOOKS};
 
 /// MCP'S PLANE-CONTRIBUTED DIAGNOSTICS — the `&'static [&'static Diagnostic]` the composition root
 /// hands to `busbar_substrate_values::diagnostics::install_diagnostics` at boot, re-exported at the crate

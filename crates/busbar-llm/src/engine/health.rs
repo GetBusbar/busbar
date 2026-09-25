@@ -35,7 +35,7 @@ use crate::engine::NativeRuntime;
 /// case there is nothing to probe. The returned `Arc` MUST be held while the downcast borrow is live.
 fn host_runtime_slot(host: &dyn EngineHost) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
     host.plane_slot(busbar_kernel::plane_host::runtime_slot_key(
-        crate::PLANE_DECL.key,
+        crate::PLANE_DECLARATION.key,
     ))
 }
 

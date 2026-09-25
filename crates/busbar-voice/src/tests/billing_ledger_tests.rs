@@ -172,7 +172,7 @@ fn resolved(yaml: &str) -> config::RootCfg {
 /// which the card the config resolves to prices at 40.
 #[test]
 fn streams_fees_per_request_refuses_and_per_session_boots_and_charges() {
-    let _reg = TestRegistryIsolation::seeded(&[&crate::PLANE_DECL]);
+    let _reg = TestRegistryIsolation::seeded(&[&PLANE_ROW]);
     assert_eq!(
         validate(&resolved("streams:\n  fees: { per_request: 2 }\n")),
         Err(vec![
@@ -217,3 +217,11 @@ fn streams_fees_per_request_refuses_and_per_session_boots_and_charges() {
         "the session is charged 40"
     );
 }
+
+/// This plane's registry row, assembled kernel-side from its contract declaration
+/// and its behaviour table.
+static PLANE_ROW: busbar_kernel::plane::registry::PlaneDecl =
+    busbar_kernel::plane::registry::PlaneDecl::assemble(
+        crate::PLANE_DECLARATION,
+        crate::PLANE_HOOKS,
+    );

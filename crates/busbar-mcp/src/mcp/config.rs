@@ -1126,8 +1126,8 @@ impl<'de> Deserialize<'de> for ToolsCfg {
         // plane holds no plane registry to look up); byte-identical to the core wrapper's forward.
         let section = busbar_kernel::plane::config::split_section::<D, McpServerDefCfg>(
             deserializer,
-            super::PLANE_DECL.config_section,
-            super::PLANE_DECL.subject_noun,
+            super::PLANE_DECLARATION.config_section,
+            super::PLANE_DECLARATION.subject_noun,
             validate_server,
         )?;
 
@@ -1805,7 +1805,7 @@ pub fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), String> 
     #[cfg(feature = "test-support")]
     let sections = busbar_kernel::plane::config::plane_sections();
     #[cfg(not(feature = "test-support"))]
-    let sections = vec![super::PLANE_DECL.config_section];
+    let sections = vec![super::PLANE_DECLARATION.config_section];
     for hook in &def.hooks {
         busbar_kernel::plane::config::refuse_cross_plane_reference(&at, hook, &sections)?;
     }

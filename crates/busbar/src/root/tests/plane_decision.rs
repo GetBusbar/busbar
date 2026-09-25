@@ -11,24 +11,29 @@ use busbar_kernel::plane::registry::{
 };
 use busbar_plane_decision::DecisionPlane;
 
-use super::{CONFIG_SECTION, PLANE_DECL};
+use super::{CONFIG_SECTION, PLANE_DECLARATION, PLANE_HOOKS};
+
+/// The registry row `register_planes()` installs, assembled here the same way: the kernel joins the
+/// plane's contract declaration and its behaviour table.
+static PLANE_ROW: busbar_kernel::plane::registry::PlaneDecl =
+    busbar_kernel::plane::registry::PlaneDecl::assemble(PLANE_DECLARATION, PLANE_HOOKS);
 
 /// THE DRIFT THIS FILE EXISTS FOR. The registry key is written in the root and the plane answers to
 /// its own `PlaneMeta::KEY`; if the two ever stop being one value, the process registers one name
 /// and the plane is another, and nothing else in the tree compares them.
 #[test]
 fn the_declared_key_is_the_plane_s_own() {
-    assert_eq!(PLANE_DECL.key, <DecisionPlane as PlaneMeta>::KEY);
-    assert_eq!(PLANE_DECL.key, "decision");
+    assert_eq!(PLANE_DECLARATION.key, <DecisionPlane as PlaneMeta>::KEY);
+    assert_eq!(PLANE_DECLARATION.key, "decision");
 }
 
 /// The declaring SECTION is the operator's plural noun and is deliberately not the key — the same
 /// split `mcp`/`tools` and `voice`/`streams` already have.
 #[test]
 fn the_section_is_the_operator_s_noun_and_not_the_key() {
-    assert_eq!(PLANE_DECL.config_section, CONFIG_SECTION);
+    assert_eq!(PLANE_DECLARATION.config_section, CONFIG_SECTION);
     assert_eq!(CONFIG_SECTION, "decisions");
-    assert_ne!(PLANE_DECL.config_section, PLANE_DECL.key);
+    assert_ne!(PLANE_DECLARATION.config_section, PLANE_DECLARATION.key);
 }
 
 /// THE SECTION IS CLAIMABLE. `decisions:` was never a concrete `DeployCfg` field, so claiming it
@@ -37,13 +42,13 @@ fn the_section_is_the_operator_s_noun_and_not_the_key() {
 /// the real reserved list rather than a copy of it.
 #[test]
 fn the_claimed_section_is_not_one_core_still_owns() {
-    assert_eq!(PLANE_DECL.owned_config_sections, &[CONFIG_SECTION]);
+    assert_eq!(PLANE_DECLARATION.owned_config_sections, &[CONFIG_SECTION]);
     assert!(
         !CORE_OWNED_CONCRETE_SECTIONS.contains(&CONFIG_SECTION),
         "core still owns `{CONFIG_SECTION}` concretely — a plane may only claim a section in the \
          same change that evicts it"
     );
-    check_owned_config_claims(&[&PLANE_DECL], CORE_OWNED_CONCRETE_SECTIONS)
+    check_owned_config_claims(&[&PLANE_DECLARATION], CORE_OWNED_CONCRETE_SECTIONS)
         .expect("the decision plane's own claim must pass the dup-claim guard alone");
 }
 
@@ -52,7 +57,7 @@ fn the_claimed_section_is_not_one_core_still_owns() {
 /// `config_section` — so this drives the fold itself rather than asserting on the field it reads.
 #[test]
 fn registering_this_decl_puts_decisions_into_the_section_fold() {
-    let sections = busbar_kernel::plane::config::config_sections_from(&[&PLANE_DECL]);
+    let sections = busbar_kernel::plane::config::config_sections_from(&[&PLANE_ROW]);
     assert!(
         sections.contains(&CONFIG_SECTION),
         "the fold over the installed decls does not report `{CONFIG_SECTION}`: {sections:?}"
@@ -63,19 +68,19 @@ fn registering_this_decl_puts_decisions_into_the_section_fold() {
 /// order, and a plane outside the canonical set sorts to the tail — it must not be DROPPED there.
 #[test]
 fn the_boot_fold_keeps_the_decision_plane() {
-    let folded = merged_boot_plane_decls(&[&PLANE_DECL], &[]);
+    let folded = merged_boot_plane_decls(&[&PLANE_ROW], &[]);
     assert!(
-        folded.iter().any(|d| d.key == PLANE_DECL.key),
+        folded.iter().any(|d| d.key == PLANE_DECLARATION.key),
         "the boot fold dropped the decision plane"
     );
 }
 
-// `PLANE_DECL` is a `const`, so `PLANE_DECL.fallback` is known at compile time and an `assert!` on
+// `PLANE_DECLARATION` is a `const`, so `PLANE_DECLARATION.fallback` is known at compile time and an `assert!` on
 // it in a `#[test]` is dead weight (clippy: assertion has a constant value) — a `const _` check
 // keeps the exact same guarantee (this plane never sets the LLM plane's fallback flag) enforced at
 // compile time instead, which is strictly earlier than a test run would catch it.
 const _: () = assert!(
-    !PLANE_DECL.fallback,
+    !PLANE_DECLARATION.fallback,
     "the fallback catch-all is another plane's flag and exactly one plane sets it"
 );
 
@@ -85,12 +90,12 @@ const _: () = assert!(
 #[test]
 fn the_declaration_mounts_nothing_and_admits_nobody() {
     let nothing: &dyn std::any::Any = &();
-    assert!((PLANE_DECL.claims)(nothing).is_empty());
-    assert!((PLANE_DECL.admission)(nothing).is_none());
-    assert!(PLANE_DECL.routes.is_none());
-    assert!(PLANE_DECL.admin_routes.is_none());
-    assert!(PLANE_DECL.hydrate.is_none());
-    assert!(PLANE_DECL.start.is_none());
+    assert!((PLANE_HOOKS.claims)(nothing).is_empty());
+    assert!((PLANE_HOOKS.admission)(nothing).is_none());
+    assert!(PLANE_HOOKS.routes.is_none());
+    assert!(PLANE_HOOKS.admin_routes.is_none());
+    assert!(PLANE_HOOKS.hydrate.is_none());
+    assert!(PLANE_HOOKS.start.is_none());
 }
 
 /// ONE WIRE FORMAT, so the plane earns no superset IR. jev names its operation in the request line,
@@ -98,7 +103,7 @@ fn the_declaration_mounts_nothing_and_admits_nobody() {
 #[test]
 fn the_plane_declares_its_one_wire_format() {
     assert_eq!(
-        (PLANE_DECL.wire_format_names)(),
+        (PLANE_HOOKS.wire_format_names)(),
         &[busbar_kernel::plane::WIRE_HTTP_JSON]
     );
 }
@@ -119,7 +124,7 @@ fn the_plane_declares_its_one_wire_format() {
 /// install the decl. Seeded (not `empty()` + `register_test_plane`) because the serial lock is not
 /// reentrant — see `TestRegistryIsolation::seeded`.
 fn decisions_registered() -> busbar_kernel::plane::registry::TestRegistryIsolation {
-    busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&PLANE_DECL])
+    busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&PLANE_ROW])
 }
 
 /// A document whose only interesting key is `decisions:`. The three other top-level keys are the

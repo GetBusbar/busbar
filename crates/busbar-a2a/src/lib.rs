@@ -14,7 +14,7 @@
 //! for MCP: nothing about the seam changes because this plugin also carries a plane's worth of state.
 //! Everything the plane consumes from the engine comes through the neutral `busbar-substrate` surface
 //! (and `busbar-api`); nothing in `busbar-core` names this crate in production, and the `busbar` BINARY
-//! — the composition root — links it and hands [`PLANE_DECL`] to
+//! — the composition root — links it and hands [`PLANE_DECLARATION`] (with [`PLANE_HOOKS`]) to
 //! the host's plane installer at boot.
 //!
 //! A2A IS PLANE-ONLY. Unlike `busbar-mcp` (which also carries a `PROTO_DECL` on the LLM-style proto
@@ -68,9 +68,10 @@ pub use busbar_plane_a2a::PLANE_KEY;
 #[cfg(feature = "test-support")]
 pub mod testkit;
 
-/// A2A'S PLANE DECLARATION — the `&'static PlaneDecl` the composition root installs at boot so the
-/// `busbar` binary names one stable path (`busbar_a2a::PLANE_DECL`). See [`a2a`] for the declaration.
-pub use a2a::PLANE_DECL;
+/// A2A'S PLANE DECLARATION — the contract data the composition root registers
+/// (`busbar_a2a::PLANE_DECLARATION`) and the behaviour table the kernel joins to it
+/// (`PLANE_HOOKS`, through `PlaneDecl::assemble`). See [`a2a`] for both.
+pub use a2a::{PLANE_DECLARATION, PLANE_HOOKS};
 
 /// A2A'S PLANE-CONTRIBUTED DIAGNOSTICS — the `&'static [&'static Diagnostic]` the composition root
 /// hands to `busbar_substrate_values::diagnostics::install_diagnostics` at boot, re-exported at the crate

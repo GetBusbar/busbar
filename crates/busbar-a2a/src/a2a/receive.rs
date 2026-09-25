@@ -88,7 +88,7 @@ fn admission_pool(pool: &str) -> String {
 /// mount is the only place a token can have been checked against this plane's resource indicator,
 /// so it is the only place the presented credential is an A2A inbound credential.
 fn credential_kind_of(engine_host: &dyn EngineHost) -> &'static str {
-    let bound = engine_host.plane_audience_bound(crate::PLANE_DECL.key);
+    let bound = engine_host.plane_audience_bound(crate::PLANE_DECLARATION.key);
     if bound {
         CREDENTIAL_KIND_A2A_INBOUND
     } else {
@@ -1298,7 +1298,7 @@ async fn admitted(
     // EVERY VERB, not only `message/send`. A gate an operator attached to an agent is a statement
     // about that agent, and a plane that fired it for submissions but not for the task verbs would
     // be a plane where the control's scope depends on which method a caller happened to use.
-    if engine_host.gate_attached(crate::PLANE_DECL.key, &admitted.dispatch.agent_id) {
+    if engine_host.gate_attached(crate::PLANE_DECLARATION.key, &admitted.dispatch.agent_id) {
         // FIRE THE GATE THROUGH THE HOST SEAM (`plane_host::gate_decide_over`) — the twin of the MCP
         // dispatch gate, now inverted so this plane body no longer names core's hook gate directly or
         // holds the resolved `ResolvedPolicy` set (the Seam-B inversion); the host re-selects the gate
@@ -1330,7 +1330,7 @@ async fn admitted(
         // (`block_on` on a runtime worker panics). One hop per request that has an attached gate.
         let outcome = tokio::task::spawn_blocking(move || {
             host2.gate_decide(
-                crate::PLANE_DECL.key,
+                crate::PLANE_DECLARATION.key,
                 &agent,
                 request_id,
                 &tool,
@@ -1401,7 +1401,7 @@ async fn admitted(
     // gate already screened them); only the RELAYED body carries the rewrite, which is the payload the
     // upstream tool receives.
     let mut rewritten_params: Option<serde_json::Value> = None;
-    if engine_host.tap_attached(crate::PLANE_DECL.key, &admitted.dispatch.agent_id) {
+    if engine_host.tap_attached(crate::PLANE_DECLARATION.key, &admitted.dispatch.agent_id) {
         let params = envelope
             .get("params")
             .cloned()
@@ -1418,7 +1418,7 @@ async fn admitted(
         let host2 = Arc::clone(&engine_host);
         let verdict = tokio::task::spawn_blocking(move || {
             host2.transform_over(
-                crate::PLANE_DECL.key,
+                crate::PLANE_DECLARATION.key,
                 &agent,
                 request_id,
                 &tool,

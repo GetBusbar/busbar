@@ -114,15 +114,15 @@
 //! sealed with state busbar mints is the same rule that already makes busbar publish the operator's
 //! tool description rather than the upstream's — applied to the field where it matters most.
 
-use busbar_kernel::plane::registry::{BillableClass, PER_REQUEST};
+use busbar_contract::plane::{BillableClass, PER_REQUEST};
 
 /// THE MCP PLANE'S VOCABULARY DECLARATION, beside the code it describes. Folded into
 /// `plane::registry::BUILTIN_PLANE_DECLS`; every field replaces one arm of a `Plane::Mcp` `match`.
 ///
 /// `wire_format_names` is the single JSON-RPC 2.0 dialect, carried over any of three transports — a
 /// transport is not a wire format, so this list has one entry and the plane earns no superset IR.
-pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
-    busbar_kernel::plane::registry::PlaneDecl {
+pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
+    busbar_contract::plane::PlaneDeclaration {
         // THE KEY IS THE CODEC'S OWN, named once on the pure side of the split so this declaration,
         // the protocol declaration and the contract plane in `busbar-plane-mcp` cannot drift apart.
         key: busbar_plane_mcp::PLANE_KEY,
@@ -133,6 +133,32 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         subject_noun: "MCP server",
         admin_noun: "mcp-server",
         audit_kind: "mcp_server",
+        card_signing_domain: None,
+        card_kid_prefix: None,
+        // config-seam stage 1: the registry starts EMPTY — nothing has moved out of core yet.
+        owned_config_sections: &[],
+        // The classes the plane crate declares (`busbar_plane_mcp::meta`), by its own symbols.
+        billable_classes: &[
+            BillableClass {
+                class: busbar_plane_mcp::meta::CLASS_TOOL_CALLS.as_str(),
+                family: "count",
+            },
+            BillableClass {
+                class: busbar_plane_mcp::meta::CLASS_BYTES.as_str(),
+                family: "byte",
+            },
+        ],
+        // The fee unit this plane counts: one per call, admitted under its plane-qualified pool. It
+        // opens no session account, so `tools.fees.per_session` would charge nothing — refused.
+        fee_units: &[PER_REQUEST],
+    };
+
+/// THE PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed over BESIDE
+/// [`PLANE_DECLARATION`] and joined to it kernel-side (`PlaneDecl::assemble`). The registration item
+/// is the declaration, which names no kernel type; this table is typed by kernel seams and stays on
+/// the kernel side of every fold.
+pub const PLANE_HOOKS: busbar_kernel::plane::registry::PlaneHooks =
+    busbar_kernel::plane::registry::PlaneHooks {
         wire_format_names: || &[busbar_kernel::plane::WIRE_JSONRPC],
         // THE MCP DOOR, from the validated resource. One claim — the ingress mount — spoken in
         // JSON-RPC, and the audience is that resource's canonical URI. Whenever `mcp:` is configured
@@ -165,14 +191,14 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         admin_routes: Some(mcp_admin_routes),
         openapi: Some(mcp_openapi_fragment),
         config_validate: Some(mcp_config_validate),
-        card_signing_domain: None,
-        card_kid_prefix: None,
         named_def_list: Some(admin_view::list),
         named_def_get: Some(admin_view::get),
         registry_contains: Some(admin_view::contains),
         reresolve_gates: Some(admin_view::reresolve_gates),
         #[cfg(feature = "openapi-schema")]
         openapi_schemas: Some(admin_view::openapi_schemas),
+        #[cfg(not(feature = "openapi-schema"))]
+        openapi_schemas: None,
         hydrate: Some(mcp_hydrate),
         // NO START HOOK. Verify-on-call is LAZY — it re-verifies on the `tools/call` path against a
         // ≤`verify_ttl` single-flight snapshot (see `busbar_kernel::trust::verify`), so there is no background
@@ -187,22 +213,6 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         viewer: None,
         retain_verify_gates: Some(mcp_retain_verify_gates),
         default_section: Some(mcp_default_section),
-        // config-seam stage 1: the registry starts EMPTY — nothing has moved out of core yet.
-        owned_config_sections: &[],
-        // The classes the plane crate declares (`busbar_plane_mcp::meta`), by its own symbols.
-        billable_classes: &[
-            BillableClass {
-                class: busbar_plane_mcp::meta::CLASS_TOOL_CALLS.as_str(),
-                family: "count",
-            },
-            BillableClass {
-                class: busbar_plane_mcp::meta::CLASS_BYTES.as_str(),
-                family: "byte",
-            },
-        ],
-        // The fee unit this plane counts: one per call, admitted under its plane-qualified pool. It
-        // opens no session account, so `tools.fees.per_session` would charge nothing — refused.
-        fee_units: &[PER_REQUEST],
         resolve_provider: None,
     };
 
@@ -224,7 +234,7 @@ fn mcp_config_validate(name: &str, def: &serde_json::Value) -> Result<(), String
 /// an opaque `Arc<dyn Any>` slot and names no `crate::mcp` type. `None` exactly when `mcp:` is not
 /// configured this generation (the plane contributed no slot — the same absence the deleted
 /// `App::mcp: None` used to encode). The downcast never fails: the mcp slot is always an
-/// `McpResource` (`PLANE_DECL::build`).
+/// `McpResource` (`PLANE_HOOKS.build`).
 ///
 /// Takes `&impl PlaneSlots` — the neutral slot-holder seam core implements for its engine snapshot —
 /// so this plane names no concrete snapshot type. A snapshot held behind an `Arc`, a load guard or a
@@ -249,12 +259,12 @@ pub(crate) use test_app_reads::runtime;
 #[cfg_attr(not(test), allow(dead_code))]
 #[cfg(feature = "test-support")]
 mod test_app_reads {
-    use super::{McpResource, McpRuntime, PLANE_DECL};
+    use super::{McpResource, McpRuntime, PLANE_DECLARATION};
     use busbar_kernel::plane_host::PlaneSlots;
 
     /// See the module-level note: the snapshot-typed read of the config-conditional dispatch slot.
     pub fn resource<S: PlaneSlots + ?Sized>(app: &S) -> Option<&McpResource> {
-        app.plane_slot(PLANE_DECL.key).map(|slot| {
+        app.plane_slot(PLANE_DECLARATION.key).map(|slot| {
             slot.downcast_ref::<McpResource>()
                 .expect("the mcp plane's dispatch slot is an McpResource")
         })
@@ -262,12 +272,12 @@ mod test_app_reads {
 
     /// See the module-level note: the snapshot-typed read of the always-present runtime slot.
     pub fn runtime<S: PlaneSlots + ?Sized>(app: &S) -> &McpRuntime {
-        app.plane_slot(busbar_kernel::plane_host::runtime_slot_key(PLANE_DECL.key))
-            .expect(
-                "the mcp runtime slot is present on every generation the plane is compiled into",
-            )
-            .downcast_ref::<McpRuntime>()
-            .expect("the mcp runtime slot is an McpRuntime")
+        app.plane_slot(busbar_kernel::plane_host::runtime_slot_key(
+            PLANE_DECLARATION.key,
+        ))
+        .expect("the mcp runtime slot is present on every generation the plane is compiled into")
+        .downcast_ref::<McpRuntime>()
+        .expect("the mcp runtime slot is an McpRuntime")
     }
 }
 
@@ -275,11 +285,11 @@ mod test_app_reads {
 /// through the neutral [`busbar_kernel::plane_host::EngineHost::plane_slot`] seam and downcast HERE.
 /// Returns an OWNED `Arc<McpResource>` (a refcount bump of the same `Arc` `plane_slots` holds) so it
 /// outlives the call, since the borrow now comes from an owned host, not an `&App`. `None` exactly
-/// when `mcp:` is not configured this generation; the downcast never fails ([`PLANE_DECL::build`]).
+/// when `mcp:` is not configured this generation; the downcast never fails (`PLANE_HOOKS.build`).
 pub(crate) fn resource_of(
     host: &std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
 ) -> Option<std::sync::Arc<McpResource>> {
-    host.plane_slot(PLANE_DECL.key).map(|slot| {
+    host.plane_slot(PLANE_DECLARATION.key).map(|slot| {
         slot.downcast::<McpResource>()
             .expect("the mcp plane's dispatch slot is an McpResource")
     })
@@ -364,7 +374,7 @@ impl McpRuntime {
 pub(crate) fn runtime_slots(slots: &dyn busbar_kernel::plane_host::PlaneSlots) -> &McpRuntime {
     slots
         .plane_slot(busbar_kernel::plane_host::runtime_slot_key(
-            crate::PLANE_DECL.key,
+            crate::PLANE_DECLARATION.key,
         ))
         .expect("the mcp runtime slot is present on every generation the plane is compiled into")
         .downcast_ref::<McpRuntime>()
@@ -382,7 +392,7 @@ pub(crate) fn runtime_of(
     host: &std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
 ) -> std::sync::Arc<McpRuntime> {
     host.plane_slot(busbar_kernel::plane_host::runtime_slot_key(
-        crate::PLANE_DECL.key,
+        crate::PLANE_DECLARATION.key,
     ))
     .expect("the mcp runtime slot is present on every generation the plane is compiled into")
     .downcast::<McpRuntime>()
@@ -399,7 +409,7 @@ pub(crate) fn runtime_live(
     host: &std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
 ) -> std::sync::Arc<McpRuntime> {
     host.plane_slot_live(busbar_kernel::plane_host::runtime_slot_key(
-        crate::PLANE_DECL.key,
+        crate::PLANE_DECLARATION.key,
     ))
     .expect("the mcp runtime slot is present on every generation the plane is compiled into")
     .downcast::<McpRuntime>()

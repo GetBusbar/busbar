@@ -448,7 +448,7 @@ mod app_engine_ext_impl {
 // `compose_native_runtime_slot` (the core-local runtime-slot constructor `appbuild` used while
 // `NativeRuntime` still lived in core) is GONE (money-path Phase 3-4 C — THE PIVOT): the type is now
 // plane-owned and the slot is composed through the plane's own `build_runtime` fn-pointer
-// (`crate::engine::build_runtime::build_runtime`, wired into `PLANE_DECL.build_runtime`).
+// (`crate::engine::build_runtime::build_runtime`, wired into `PLANE_HOOKS.build_runtime`).
 
 /// THE PROCESS-LIFETIME EMPTY LLM RUNTIME the money-path read ([`App::llm_runtime`]) falls back to when
 /// no LLM plane contributed a slot — the featureless zero-plane binary, whose `appbuild` inserted none.
@@ -510,7 +510,7 @@ pub(crate) struct EngineTables<'a> {
 /// reads this cached `&'static str` — never re-running `format!` on the measured forward alloc path.
 fn llm_runtime_slot_key() -> &'static str {
     static KEY: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
-    KEY.get_or_init(|| busbar_kernel::plane_host::runtime_slot_key(crate::PLANE_DECL.key))
+    KEY.get_or_init(|| busbar_kernel::plane_host::runtime_slot_key(crate::PLANE_DECLARATION.key))
 }
 
 /// Resolve THIS generation's LLM data-plane [`NativeRuntime`] through the neutral host seam, OWNED (an
