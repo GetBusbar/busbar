@@ -77,8 +77,6 @@ pub mod plane_decision;
 pub mod policy;
 pub mod registry;
 pub mod transports;
-#[cfg(feature = "root-a2a")]
-pub mod units_a2a;
 #[cfg(feature = "root-admin")]
 pub mod units_admin;
 #[cfg(feature = "root-llm")]

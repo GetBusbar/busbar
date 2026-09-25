@@ -293,8 +293,8 @@ fn no_abort_the_shipped_kernel_can_raise_carries_a_money_reason() {
     }
 }
 
-/// THE CENSUS FLOOR, armed at today's measured number: ninety-four `Refusal::new(` constructions in
-/// production source. The scan this file used to run matched fifty-seven of them (item 258); a floor
+/// THE CENSUS FLOOR, armed at today's measured number: seventy-seven `Refusal::new(` constructions
+/// in production source. The scan this file used to run matched fifty-seven of them (item 258); a floor
 /// under the census is what stops a scanner regression from quietly shrinking the population every
 /// "nothing refuses with" claim below is asserted over.
 ///
@@ -308,11 +308,18 @@ fn no_abort_the_shipped_kernel_can_raise_carries_a_money_reason() {
 /// `root/units_mcp.rs` — the pre-unification mcp unit bindings no chain from `fn main()` reaches; the
 /// plane is served through the kernel-loop rider and meters inside its own `drive` — taking its four
 /// sites with it: two `HandoffMismatch` (arrival), one `DecodeFailed` and the one carried `*reason`
-/// (decode; pinned below until then). None is a money reason and none was served. The population is
-/// ninety-four since; the floor is re-armed there. A population that falls because code was DELETED
+/// (decode; pinned below until then). None is a money reason and none was served. The population was
+/// ninety-four. K2c then deleted `root/units_a2a.rs` — the pre-unification a2a unit bindings, built
+/// only at their own constructor and in their tests; the plane is served through the same rider and
+/// ledgers its payload bytes inside its own `drive` — taking its seventeen sites with it: six
+/// `NoDestination`, three `DecodeFailed`, three `ScopeDenied`, one each of `OverBudget`,
+/// `DurabilityUnavailable`, `Revoked` and `MeterDisputed`, and the one carried
+/// `refusal.kind.reason()` (pinned below until then). The `OverBudget` was a door refusal on a unit
+/// no request reached; the served admission refuses over-budget itself. The population is
+/// seventy-seven since; the floor is re-armed there. A population that falls because code was DELETED
 /// re-arms this floor in the same commit as the deletion, naming the sites; a population that falls
 /// with no deletion is the scanner regression this floor exists to catch.
-const MIN_REFUSAL_SITES: usize = 94;
+const MIN_REFUSAL_SITES: usize = 77;
 
 /// THE SITES WHOSE REASON IS CARRIED, NOT WRITTEN — pinned, file by file, at today's measurement.
 ///
@@ -329,7 +336,6 @@ const COMPUTED_REFUSAL_SITES: &[(&str, &str)] = &[
         "refusal.kind.reason()",
     ),
     ("busbar-llm/src/unit/verify.rs", "refusal.reason()"),
-    ("busbar/src/root/units_a2a.rs", "refusal.kind.reason()"),
     (
         "busbar/src/root/units_admin/mod.rs",
         "verbs_reason(refusal.reason)",
