@@ -2,7 +2,14 @@ use super::*;
 
 #[test]
 fn chat_declares_its_capabilities() {
-    let chat = CHAT;
+    // The chat cell as production resolves it — `(protocol, Chat)` through the registry, framed on
+    // HTTP — rather than a hand-built const over the plugin's handler type.
+    let chat = crate::handlers::op_for(
+        crate::proto::PROTO_OPENAI,
+        Operation::CHAT,
+        crate::transport::Transport::Http,
+    )
+    .expect("the shipped protocol serves chat");
     assert_eq!(chat.name(), "chat");
     assert!(chat.streaming(), "chat streams");
     assert!(
@@ -26,16 +33,26 @@ fn chat_declares_its_capabilities() {
 
 /// A NON-CHAT operation's failure reaches the breaker with a status attributed.
 ///
-/// The `(mcp, Invoke)` cell is the one cell in the tree with no `Lane` behind it and no chat reader
-/// to borrow: before the attributed outcome became a property of the operation codec, an outbound
+/// The Invoke cell of the one registered protocol that declares NO wire codec is the one cell in the
+/// tree with no `Lane` behind it and no chat reader to borrow: before the attributed outcome became a property of the operation codec, an outbound
 /// attempt on this cell had no way to tell the breaker anything at all, because the only route to a
 /// `RawUpstreamError` ran through `lane.protocol.reader()`. It says the status and claims no
 /// provider vocabulary — the most restrictive USEFUL answer — and that status is enough for the
 /// breaker to classify the attempt as a transient upstream failure.
 #[test]
 fn a_non_chat_operation_failure_reaches_the_breaker_with_a_status_attributed() {
-    let cell = crate::handlers::op_for("mcp", Operation::INVOKE, crate::transport::Transport::Http)
-        .expect("the (mcp, Invoke) cell is registered");
+    // Found by what makes it the subject — codec-less and serving Invoke — not by its name.
+    let codecless = crate::proto::registry::builtin_decls()
+        .iter()
+        .find(|d| d.codec.is_none() && d.verbs.contains(&Operation::INVOKE))
+        .map(|d| d.name)
+        .expect("the test binary ships a codec-less protocol that serves Invoke");
+    let cell = crate::handlers::op_for(
+        codecless,
+        Operation::INVOKE,
+        crate::transport::Transport::Http,
+    )
+    .unwrap_or_else(|| panic!("the ({codecless}, Invoke) cell is registered"));
 
     let raw = cell.extract_error(503, br#"{"jsonrpc":"2.0","error":{"code":-32000}}"#);
 

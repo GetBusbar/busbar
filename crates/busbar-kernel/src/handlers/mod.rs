@@ -124,18 +124,10 @@ mod contract_tests;
 // the `pub operation` field.
 pub use busbar_substrate_values::handlers::{frame, Op, OpDispatch};
 
-/// Chat — operation #1. A const handle to the shared chat `OperationHandler`, for core's own tests.
-/// TEST-BINARY ONLY: `ChatOperation` lives in the `busbar-llm` plugin (it names the concrete chat IR
-/// that moved there at the G6 A4b dissolve), so production core has no chat codec to name and the
-/// neutral source may not spell the plugin. The fixture is therefore DEFINED in a `tests/` file the
-/// neutral-purity lint excludes (`chat_fixture`, which names `busbar_llm::chat_handle::ChatOperation`)
-/// and re-exported here at its historical `crate::handlers::CHAT` path. Prefer [`chat`] on the request
-/// path so the `RequestHandler` actually decides the handler.
-#[cfg(test)]
-#[path = "tests/chat_fixture.rs"]
-mod chat_fixture;
-#[cfg(test)]
-pub(crate) use chat_fixture::CHAT;
+// The former `#[cfg(test)]` `CHAT` const (a hand-framed cell over the plugin's chat handler type,
+// defined in a `tests/chat_fixture.rs` that named the plugin crate) is GONE: its one reader,
+// `dispatch_tests`, resolves the same cell the way production does — [`op_for`] over the registry —
+// so core's test binary names no plugin handler type to build a chat cell.
 
 /// Resolve the chat dispatch THROUGH the registry — the same path every other operation takes:
 /// `request_handler(protocol).operation_handler(Chat)`. This is how "the RequestHandler decides which
