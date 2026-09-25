@@ -662,6 +662,90 @@ fn cohere_text_ir_index(state: &mut crate::ir::StreamDecodeState) -> usize {
     ti
 }
 
+/// First key of the reserved range a streamed `thinking` CONTENT block is recorded under in
+/// `state.open_tools` / `state.tool_ir_index`.
+///
+/// A Cohere reasoning model streams its reasoning as its OWN content block — `content-start`
+/// `{type:"thinking"}`, `content-delta {thinking}`, `content-end` — BEFORE the answer's text content
+/// block, which arrives as a second `content-start {type:"text"}`. The reader used to treat every
+/// content block as THE text block: the thinking block claimed the one text slot, its `content-end`
+/// latched `text_block_closed`, and every answer frame after it was dropped, so a reasoning model's
+/// stream reached a foreign client with no answer text at all (COH-01). A thinking block therefore
+/// takes an IR index of its own, allocated through the SAME insertion-order seam the tool calls use
+/// (`cohere_assign_tool_ir_index`), so it can never collide with the text block or a tool block.
+///
+/// The keys sit far above `MAX_TOOL_FRAME_INDEX` (every genuine tool key is clamped to it) and
+/// below `TEXT_BLOCK_SEEN_SENTINEL`, so they collide with neither. The n-th thinking block of the
+/// stream is keyed `THINKING_FRAME_BASE + n`.
+const THINKING_FRAME_BASE: usize = usize::MAX / 2;
+
+/// The IR index of the `thinking` content block that is open right now, if one is. A thinking
+/// content block is open when `thinking_block_open` is set WITHOUT `text_block_open`; the two set
+/// together mean the leading `tool-plan-delta` block, which rides the text slot instead.
+fn cohere_open_thinking_index(state: &crate::ir::StreamDecodeState) -> Option<usize> {
+    if state.thinking_block_open && !state.text_block_open {
+        state
+            .tool_ir_index
+            .range(THINKING_FRAME_BASE..)
+            .next_back()
+            .map(|(_, ir)| *ir)
+    } else {
+        None
+    }
+}
+
+/// Open a new `thinking` content block: claim its IR index and emit its `BlockStart`. `None` (and
+/// nothing emitted) only when the per-stream frame cap is reached.
+fn cohere_open_thinking_block(
+    state: &mut crate::ir::StreamDecodeState,
+    out: &mut Vec<IrStreamEvent>,
+) -> Option<usize> {
+    let seen = state.tool_ir_index.range(THINKING_FRAME_BASE..).count();
+    let index = cohere_assign_tool_ir_index(state, THINKING_FRAME_BASE.saturating_add(seen))?;
+    state.thinking_block_open = true;
+    out.push(IrStreamEvent::BlockStart {
+        index,
+        block: crate::ir::IrBlockMeta::Thinking,
+    });
+    Some(index)
+}
+
+/// Close the open `thinking` content block, if there is one.
+fn cohere_close_thinking_block(
+    state: &mut crate::ir::StreamDecodeState,
+    out: &mut Vec<IrStreamEvent>,
+) {
+    if let Some(index) = cohere_open_thinking_index(state) {
+        state.thinking_block_open = false;
+        out.push(IrStreamEvent::BlockStop { index });
+    }
+}
+
+/// Close the text slot (the answer's text block, or the leading `tool-plan-delta` block that rides
+/// it) at the index it CLAIMED, and latch it closed so a later frame cannot reopen a stopped index.
+fn cohere_close_text_slot(state: &mut crate::ir::StreamDecodeState, out: &mut Vec<IrStreamEvent>) {
+    if state.text_block_open {
+        state.text_block_open = false;
+        state.text_block_closed = true;
+        // A tool plan open in the slot closes with it.
+        state.thinking_block_open = false;
+        out.push(IrStreamEvent::BlockStop {
+            index: state.text_index.unwrap_or(0),
+        });
+    }
+}
+
+/// The `thinking` text a Cohere content object carries, when the object IS a thinking part: its
+/// `type` says so, or (a real Cohere `content-delta`, which carries no `type`) it has a `thinking`
+/// member and no `text` member.
+fn cohere_thinking_part(content: &serde_json::Value) -> Option<&str> {
+    let obj = content.as_object()?;
+    let ty = obj.get("type").and_then(|t| t.as_str());
+    let is_thinking = ty == Some("thinking")
+        || (ty.is_none() && obj.contains_key("thinking") && !obj.contains_key("text"));
+    is_thinking.then(|| obj.get("thinking").and_then(|t| t.as_str()).unwrap_or(""))
+}
+
 #[derive(Clone)]
 pub struct CohereReader;
 
@@ -840,3 +924,7 @@ mod egress_media_regression_tests;
 #[cfg(test)]
 #[path = "tests/field_carry_tests.rs"]
 mod field_carry_tests;
+
+#[cfg(test)]
+#[path = "tests/ir_mapping_tests.rs"]
+mod ir_mapping_tests;

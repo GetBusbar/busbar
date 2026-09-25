@@ -748,7 +748,72 @@ impl ProtocolReader for CohereReader {
             // leading tool-plan's tool-call-start), a later text frame must NOT reopen it. A failed
             // guard falls through to the `other` no-op arm and is dropped, keeping the egress balanced
             // (no second content_block_start / delta into a stopped index).
+            // A `thinking` content block (a Cohere reasoning model streams its reasoning this way,
+            // ahead of the answer) is its OWN block with its own IR index — see
+            // `THINKING_FRAME_BASE`. It never touches the text slot, so its `content-end` cannot
+            // latch the answer's text block closed before the answer has even started (COH-01).
+            ET_CONTENT_START
+                if data
+                    .get("delta")
+                    .and_then(|d| d.get("message"))
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.get("type"))
+                    .and_then(|t| t.as_str())
+                    == Some("thinking") =>
+            {
+                if cohere_open_thinking_index(state).is_none() {
+                    cohere_close_text_slot(state, &mut out);
+                    if let Some(index) = cohere_open_thinking_block(state, &mut out) {
+                        if let Some(text) = data
+                            .get("delta")
+                            .and_then(|d| d.get("message"))
+                            .and_then(|m| m.get("content"))
+                            .and_then(cohere_thinking_part)
+                            .filter(|s| !s.is_empty())
+                        {
+                            out.push(IrStreamEvent::BlockDelta {
+                                index,
+                                delta: crate::ir::IrDelta::ThinkingDelta(text.to_string()),
+                            });
+                        }
+                    }
+                }
+            }
+            // A `thinking` content-delta (real Cohere carries `{ "thinking": "<chunk>" }` with no
+            // `type`) streams into the open thinking block — opening one if the upstream skipped the
+            // `content-start` — never into the text block (COH-02).
+            ET_CONTENT_DELTA
+                if data
+                    .get("delta")
+                    .and_then(|d| d.get("message"))
+                    .and_then(|m| m.get("content"))
+                    .and_then(cohere_thinking_part)
+                    .is_some() =>
+            {
+                let text = data
+                    .get("delta")
+                    .and_then(|d| d.get("message"))
+                    .and_then(|m| m.get("content"))
+                    .and_then(cohere_thinking_part)
+                    .unwrap_or("");
+                let index = match cohere_open_thinking_index(state) {
+                    Some(index) => Some(index),
+                    None => {
+                        cohere_close_text_slot(state, &mut out);
+                        cohere_open_thinking_block(state, &mut out)
+                    }
+                };
+                if let Some(index) = index.filter(|_| !text.is_empty()) {
+                    out.push(IrStreamEvent::BlockDelta {
+                        index,
+                        delta: crate::ir::IrDelta::ThinkingDelta(text.to_string()),
+                    });
+                }
+            }
             ET_CONTENT_START if !state.text_block_closed => {
+                // A text block opening while a thinking block is still open (the upstream skipped
+                // its `content-end`) closes the thinking block first, so the egress stays balanced.
+                cohere_close_thinking_block(state, &mut out);
                 // The text content block claims a DYNAMIC IR index by order of first appearance
                 // (`cohere_text_ir_index`), NOT a hardcoded 0: a `tool-call-start` that arrived
                 // before any content frame already took 0, and forcing text to 0 here produced two
@@ -767,6 +832,7 @@ impl ProtocolReader for CohereReader {
                 }
             }
             ET_CONTENT_DELTA if !state.text_block_closed => {
+                cohere_close_thinking_block(state, &mut out);
                 // The text content block claims a DYNAMIC IR index by order of first appearance
                 // (`cohere_text_ir_index`) — see content-start — NOT a hardcoded 0, so a tool that
                 // opened ahead of the first content frame (and took 0) does not collide with the
@@ -851,6 +917,7 @@ impl ProtocolReader for CohereReader {
             // code relied on exactly the same exclusivity, merging plan and content into ONE text
             // block; the only thing that changes here is which kind of block the plan opens.)
             ET_TOOL_PLAN_DELTA if !state.text_block_closed => {
+                cohere_close_thinking_block(state, &mut out);
                 let plan_idx = cohere_text_ir_index(state);
                 if !state.text_block_open {
                     state.text_block_open = true;
@@ -885,11 +952,13 @@ impl ProtocolReader for CohereReader {
                 // content-end still derives its base off the persistent TEXT_BLOCK_SEEN_SENTINEL, so it
                 // cannot collide with the text index. `text_block_closed` latches here so a stray text
                 // frame after the close is dropped rather than reopening the (now stopped) index.
-                if state.text_block_open {
-                    state.text_block_open = false;
-                    state.text_block_closed = true;
-                    let ti = state.text_index.unwrap_or(0);
-                    out.push(IrStreamEvent::BlockStop { index: ti });
+                //
+                // A `content-end` that closes a THINKING content block closes only that block: the
+                // answer's text block is still to come, so the text latch must not fire (COH-01).
+                if cohere_open_thinking_index(state).is_some() {
+                    cohere_close_thinking_block(state, &mut out);
+                } else {
+                    cohere_close_text_slot(state, &mut out);
                 }
             }
             ET_MESSAGE_END => {
@@ -898,13 +967,10 @@ impl ProtocolReader for CohereReader {
                 // upstream) would leave a dangling `content_block_start` with no matching stop on an
                 // Anthropic egress (an unbalanced stream / proxy-signature tell). Force-close it here,
                 // before the terminal frames, at the index it CLAIMED — so the egress stream is always
-                // balanced regardless of upstream truncation.
-                if state.text_block_open {
-                    state.text_block_open = false;
-                    state.text_block_closed = true;
-                    let ti = state.text_index.unwrap_or(0);
-                    out.push(IrStreamEvent::BlockStop { index: ti });
-                }
+                // balanced regardless of upstream truncation. A thinking content block left open is
+                // force-closed the same way.
+                cohere_close_thinking_block(state, &mut out);
+                cohere_close_text_slot(state, &mut out);
                 let raw_finish_reason = data
                     .get("delta")
                     .and_then(|d| d.get("finish_reason"))
@@ -1045,13 +1111,10 @@ impl ProtocolReader for CohereReader {
                 // tool that took 0 ahead of the text is not mis-closed) — and clear the live flag.
                 // `state.text_index` stays recorded (mirroring `content-end`), so the persistent
                 // TEXT_BLOCK_SEEN_SENTINEL still offsets this and later tools past the text index; the
-                // tool BlockStart below therefore lands at the SAME index it did before.
-                if state.text_block_open {
-                    state.text_block_open = false;
-                    state.text_block_closed = true;
-                    let ti = state.text_index.unwrap_or(0);
-                    out.push(IrStreamEvent::BlockStop { index: ti });
-                }
+                // tool BlockStart below therefore lands at the SAME index it did before. A reasoning
+                // model's thinking block left open ahead of its tool calls is closed the same way.
+                cohere_close_thinking_block(state, &mut out);
+                cohere_close_text_slot(state, &mut out);
                 let frame_idx = clamp_frame_index(data);
                 let tc = data
                     .get("delta")
