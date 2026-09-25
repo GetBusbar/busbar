@@ -463,6 +463,7 @@ name = "busbar-auth-static-plugin"
 version = "1.5.0"
 dependencies = [
  "busbar-api",
+ "busbar-contract",
  "busbar-plugin-sdk",
  "serde",
  "serde_json",
@@ -560,7 +561,7 @@ name = "busbar-hooks-ranking"
 version = "1.6.0"
 dependencies = [
  "async-trait",
- "busbar-api",
+ "busbar-contract",
  "tokio",
 ]
 
@@ -970,7 +971,7 @@ dependencies = [
 name = "busbar-store-example-plugin"
 version = "1.5.0"
 dependencies = [
- "busbar-api",
+ "busbar-contract",
  "busbar-plugin-sdk",
  "libc",
  "serde",
@@ -981,7 +982,6 @@ dependencies = [
 name = "busbar-store-memory"
 version = "1.5.0"
 dependencies = [
- "busbar-api",
  "busbar-contract",
  "serde",
  "serde_json",
