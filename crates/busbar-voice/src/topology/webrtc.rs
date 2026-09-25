@@ -112,7 +112,7 @@ where
 {
     // GOVERN FIRST, MINT SECOND (verify-strictly-before-charge, and before any credential is issued):
     // begin_session runs the shared open-pass gauntlet gate + opens the kernel account + the durable
-    // handle. NOTHING is minted on a denied or budget-refused session — a refused open costs zero bytes,
+    // handle. NOTHING is minted on a gate- or budget-refused session — a refused open costs zero bytes,
     // zero charge, and hands the browser NO ephemeral secret. The mint runs ONLY past a clean open.
     // A sideband carrier: no downlink media relay — the browser's media path is peer-to-peer.
     let carrier = Carrier::sideband();

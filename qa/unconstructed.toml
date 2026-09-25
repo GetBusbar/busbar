@@ -215,16 +215,11 @@ switch    = "STRIKE THIS ROW in the commit that calls journal_checkpoint on a re
 
 # ─── SECURITY AND DURABILITY, from the same sweep ───────────────────────────────────────────────
 
-# A SECURITY GATE THAT RUNS ON EVERY SESSION AND CAN NEVER FIRE.
-[[capability]]
-id        = "voice-denied-destinations"
-built     = "crates/busbar-voice/src/runtime/mod.rs"
-symbol    = "with_denied_destinations"
-construct = [".with_denied_destinations("]
-scope     = ["crates"]
-why       = "destination_denied() IS consulted on the live request path and renders a 403, but denied_destinations is initialised empty, its only writer is this builder, and StreamsCfg carries no deny field — so the upstream-destination denial gate runs on every session and always answers allow."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that gives StreamsCfg (or its successor) a deny list and passes it through with_denied_destinations when the voice runtime is constructed. Until then the 403 path is unreachable by configuration."
+# STREAMING — `voice-denied-destinations` STRUCK 2026-09-25 (UC-STRIKE; standing rule Q67, revert to
+# 1.5.5, which had no plane-private destination deny-list): `with_denied_destinations`,
+# `denied_destinations`, `destination_denied` and the session gauntlet's unreachable 403 arm had no
+# production writer and are DELETED. Model access stays the key/group pool ACL at the scope step; a
+# deny-list, if the owner wants one, is a new flagged config surface on the folded streaming plane.
 
 # NO NODE CAN LOAD A PLANE PLUGIN.
 [[capability]]

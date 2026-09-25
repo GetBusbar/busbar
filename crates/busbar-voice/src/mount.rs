@@ -654,7 +654,7 @@ pub(crate) struct GovernedOpen<'a> {
 ///    byte-identical.
 /// 3. **the governed open** — [`crate::topology::begin_session`] /
 ///    [`crate::topology::telephony::begin_telephony`] runs `run_gauntlet_session`
-///    (verify-strictly-before-charge): a denied destination refuses `403` before any lease/durable open.
+///    (verify-strictly-before-charge): a gate refusal is `403` before any lease/durable open.
 /// 4. **the serving leg** — for `Mint`, the `ek_` is minted through [`HttpsTokenMinter`] over the
 ///    configured provider and returned as JSON; for `Sdp`, the offer is brokered upstream, the
 ///    `rtc_<call_id>` correlation key is stamped onto the durable row, and the answer + `Location`
@@ -1126,7 +1126,7 @@ fn sideband_pending() -> axum::response::Response {
 }
 
 /// The finished refusal for a `begin_session` / `begin_telephony` [`StartError`] — verify-before-charge
-/// at the route layer (a denied destination is `403` with zero charge).
+/// at the route layer (a gate refusal is `403` with zero charge).
 fn start_refusal(e: &StartError) -> axum::response::Response {
     match e {
         StartError::DestinationRefused => refusal(
@@ -1434,9 +1434,7 @@ where
         charged_at: now,
         started: std::time::Instant::now(),
     };
-    let gate: Box<dyn GauntletPlane> = Box::new(SessionGauntlet {
-        deny: rt.destination_denied(&destination),
-    });
+    let gate: Box<dyn GauntletPlane> = Box::new(SessionGauntlet);
     // THE METER STEP's attribution for this WS session — the presenting key each turn's usage is
     // landed on through the core seam, under THIS LEG'S OWN dialect label (K4: no longer a plane-wide
     // constant). Built from the resolved key (or `None` ungoverned) and moved into the post-upgrade

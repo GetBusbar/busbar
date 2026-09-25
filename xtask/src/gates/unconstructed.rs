@@ -157,7 +157,8 @@ pub const KNOWN_UNSHIPPED: &[&str] = &[
     // `ledger-adjusting-entries` STRUCK 2026-09-25 (#77(2)(3), Q36/Q9): the adjusting-entry code
     // is deleted; an amendment reprices as a view.
     // `money-one-function-view` STRUCK 2026-09-24 (owner ruling Q12/Q25c; item 421).
-    "voice-denied-destinations",
+    // `voice-denied-destinations` STRUCK 2026-09-25 (Q67, revert to 1.5.5): the streaming plane's
+    // unwired deny-list is deleted.
     "plane-plugin-open",
     "export-plugin-open",
     // `wal-corruption-verdict` STRUCK 2026-09-24 (owner ruling Q38): recover_and_truncate branches

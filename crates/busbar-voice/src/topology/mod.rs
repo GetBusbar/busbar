@@ -212,28 +212,19 @@ impl std::fmt::Display for StartError {
 impl std::error::Error for StartError {}
 
 /// THE VOICE PLANE's [`GauntletPlane`] for a SESSION open — its contribution to the shared open-pass
-/// gauntlet gate. `verify_destination` (stage 2, the ONE shared pre-admission check) refuses a session
-/// whose upstream `destination` (model) is on the plane's denial set, so the refusal lands BEFORE the
-/// account/durable open (zero bytes, zero charge). `drive` (the one-shot stages 4+5) is UNREACHABLE on the
-/// session path — [`run_gauntlet_session`] only runs the gate, never `drive` — so it fails closed with a
-/// neutral 500 if a future refactor ever mis-routed a session opener through the one-shot path.
-pub(crate) struct SessionGauntlet {
-    pub(crate) deny: bool,
-}
+/// gauntlet gate, which runs BEFORE the account/durable open (a refusal there costs zero bytes and
+/// zero charge). The plane keeps NO private destination policy of its own (1.5.5 had none; model
+/// access is the key/group pool ACL at the scope step), so its `verify_destination` (stage 2)
+/// proceeds; a kernel-loop session runner registered under the plane's capability key is what may
+/// refuse at this gate. `drive` (the one-shot stages 4+5) is UNREACHABLE on the session path —
+/// [`run_gauntlet_session`] only runs the gate, never `drive` — so it fails closed with a neutral 500
+/// if a future refactor ever mis-routed a session opener through the one-shot path.
+pub(crate) struct SessionGauntlet;
 
 #[async_trait::async_trait]
 impl GauntletPlane for SessionGauntlet {
     fn verify_destination(&self, _req: &GauntletRequest<'_>) -> VerifyOutcome {
-        if self.deny {
-            VerifyOutcome::Refuse(
-                axum::response::Response::builder()
-                    .status(axum::http::StatusCode::FORBIDDEN)
-                    .body(axum::body::Body::from("voice session destination denied"))
-                    .expect("static refusal response builds"),
-            )
-        } else {
-            VerifyOutcome::Proceed
-        }
+        VerifyOutcome::Proceed
     }
 
     async fn drive(self: Box<Self>, _req: GauntletRequest<'_>) -> axum::response::Response {
@@ -292,9 +283,7 @@ where
         charged_at: now,
         started: std::time::Instant::now(),
     };
-    let plane: Box<dyn GauntletPlane> = Box::new(SessionGauntlet {
-        deny: rt.destination_denied(&destination),
-    });
+    let plane: Box<dyn GauntletPlane> = Box::new(SessionGauntlet);
     // The call-site the D3 witness pins: begin_session ACTUALLY calls run_gauntlet_session here.
     run_gauntlet_session(gauntlet_req, plane).map_err(|_refusal| StartError::DestinationRefused)?;
 

@@ -50,11 +50,6 @@ pub struct VoiceRuntime {
     pub engine: Arc<DurableHandleEngine>,
     /// The server-side tool executor (the tool moat) shared across sessions.
     pub tools: Arc<dyn ToolExecutor>,
-    /// The plane's OPEN-PASS destination denial set — upstream models (destinations) a session
-    /// `begin_session` refuses at the shared gauntlet gate BEFORE any account/durable open (zero bytes,
-    /// zero charge). Empty by default (no denial policy yet); the pre-admission hook a real model
-    /// blocklist fills. Named by `session_gauntlet` through [`Self::destination_denied`].
-    pub denied_destinations: std::collections::BTreeSet<String>,
     /// THE LOCKED SESSION DEFAULTS every session opens with, read from the operator's `streams.session:`
     /// (VAD/media/tool set). Seeded from [`crate::config::StreamsCfg`] at [`build_runtime`]; the pump
     /// re-applies it server-side so a client `session.update` is reconciled against it, never trusted
@@ -76,14 +71,13 @@ pub struct VoiceRuntime {
 }
 
 impl VoiceRuntime {
-    /// Assemble a runtime object from its dependencies (no destination denial policy).
+    /// Assemble a runtime object from its dependencies.
     #[must_use]
     pub fn new(engine: Arc<DurableHandleEngine>, tools: Arc<dyn ToolExecutor>) -> Self {
         let defaults = crate::config::StreamsCfg::default();
         VoiceRuntime {
             engine,
             tools,
-            denied_destinations: std::collections::BTreeSet::new(),
             session_defaults: defaults.session,
             session_max_secs: defaults.session_max_secs,
             context_window_tokens: defaults.context_window_tokens,
@@ -103,26 +97,6 @@ impl VoiceRuntime {
         self.context_window_tokens = cfg.context_window_tokens;
         self.max_output_tokens = cfg.max_output_tokens;
         self
-    }
-
-    /// Builder: DENY the given upstream destinations (models) at the session open-pass gate. A session
-    /// naming a denied destination is refused before any account/durable open (zero bytes, zero charge).
-    #[must_use]
-    pub fn with_denied_destinations<I, S>(mut self, destinations: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        self.denied_destinations
-            .extend(destinations.into_iter().map(Into::into));
-        self
-    }
-
-    /// Whether the open-pass gate must REFUSE a session targeting `destination` (an upstream model on
-    /// the plane's denial set).
-    #[must_use]
-    pub fn destination_denied(&self, destination: &str) -> bool {
-        self.denied_destinations.contains(destination)
     }
 
     /// Bind a fresh [`SessionHandle`] for `(owner, id)` into this runtime's durable engine.
@@ -189,7 +163,7 @@ pub fn build_runtime(
 ///
 /// Everything else is SHARED with `base`, not rebuilt: the same durable-handle engine (so a session
 /// opened on one request is the same durable working set another request sees), the same tool
-/// executor, the same denial set, and the same operator session posture and ceilings.
+/// executor, and the same operator session posture and ceilings.
 #[must_use]
 pub fn build_runtime_hosted(
     base: &VoiceRuntime,
@@ -198,7 +172,6 @@ pub fn build_runtime_hosted(
     VoiceRuntime {
         engine: Arc::clone(&base.engine),
         tools: Arc::clone(&base.tools),
-        denied_destinations: base.denied_destinations.clone(),
         session_defaults: base.session_defaults.clone(),
         session_max_secs: base.session_max_secs,
         context_window_tokens: base.context_window_tokens,

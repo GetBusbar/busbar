@@ -299,38 +299,13 @@ async fn webrtc_sideband_mints_token_locks_config_and_relays_no_media() {
     assert!(attached.core.carrier().is_closed());
 }
 
-// ── D3 CALL-SITE WITNESS: begin_session runs run_gauntlet_session at the TOP (refuse ⇒ zero charge) ──
+// ── begin_session: past the open-pass gate, the budget is asked before anything opens ─────────────────
 
 #[test]
-fn begin_session_refuses_a_denied_destination_before_any_charge() {
-    // The D3 call-site witness: `begin_session` ACTUALLY calls `run_gauntlet_session` at the top, so a
-    // denied upstream destination is refused BEFORE the kernel account's budget check — the caller
-    // below has a dry chain, and the answer is still the destination refusal, not the budget one.
-    let rt = runtime().with_denied_destinations(["blocked-model"]);
-    let locked = SessionConfig {
-        model: Some("blocked-model".into()),
-        ..SessionConfig::default()
-    };
-    let started = crate::topology::begin_session(
-        &rt,
-        OpenAiRealtimeCodec,
-        "acct",
-        "call-denied",
-        Some(locked),
-        Carrier::sideband(),
-        Some(meter_capped(0)),
-        1,
-    );
-    assert!(
-        matches!(
-            started,
-            Err(crate::topology::StartError::DestinationRefused)
-        ),
-        "a denied destination is refused at the open-pass gate, before the budget is asked"
-    );
-
-    // A NON-denied destination proceeds past the gate to the budget check: a dry chain is refused
-    // there, and a chain with room opens.
+fn begin_session_asks_the_budget_past_the_gate_and_opens_only_with_room() {
+    // A session proceeds past the open-pass gate to the budget check: a dry chain is refused there,
+    // and a chain with room opens.
+    let rt = runtime();
     let ok_cfg = SessionConfig {
         model: Some("allowed-model".into()),
         ..SessionConfig::default()
@@ -419,18 +394,18 @@ impl TokenMinter for RecordingMinter {
 }
 
 /// THE ORDERING FIX: `attach` runs the gauntlet + the budget check FIRST and mints the ephemeral secret
-/// only past a clean open. A session whose destination the plane denies is refused at the gate BEFORE
-/// any mint — so the browser is handed NO `ek_` on a denied session (zero bytes, zero charge, zero
-/// credential). RED before the reorder: the mint ran before `begin_session`, so a denied session still
+/// only past a clean open. A session the open refuses (here: a dry budget chain) is refused BEFORE any
+/// mint — so the browser is handed NO `ek_` on a refused session (zero bytes, zero charge, zero
+/// credential). RED before the reorder: the mint ran before `begin_session`, so a refused session still
 /// minted a secret.
 #[tokio::test]
-async fn the_gauntlet_refuses_before_the_mint_on_a_denied_destination() {
-    let rt = runtime().with_denied_destinations(["blocked-model"]);
+async fn the_open_refuses_before_the_mint_on_a_dry_budget() {
+    let rt = runtime();
     let minter = RecordingMinter {
         minted: std::sync::atomic::AtomicBool::new(false),
     };
     let locked = SessionConfig {
-        model: Some("blocked-model".into()),
+        model: Some("allowed-model".into()),
         ..SessionConfig::default()
     };
     let r = attach(
@@ -438,7 +413,7 @@ async fn the_gauntlet_refuses_before_the_mint_on_a_denied_destination() {
         &minter,
         OpenAiRealtimeCodec,
         "acct",
-        "call-denied",
+        "call-dry",
         locked,
         Some(meter_capped(0)),
         1,
@@ -448,14 +423,14 @@ async fn the_gauntlet_refuses_before_the_mint_on_a_denied_destination() {
         matches!(
             r,
             Err(crate::topology::webrtc::AttachError::Start(
-                crate::topology::StartError::DestinationRefused
+                crate::topology::StartError::BudgetRefused
             ))
         ),
-        "a denied destination is refused at the open-pass gate, before the mint and the budget"
+        "a dry chain is refused at the open, before the mint"
     );
     assert!(
         !minter.minted.load(std::sync::atomic::Ordering::SeqCst),
-        "NOTHING mints on a refused session — the gauntlet runs before the mint"
+        "NOTHING mints on a refused session — the open runs before the mint"
     );
 }
 

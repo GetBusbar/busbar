@@ -4,7 +4,7 @@
 //! MOUNT TESTS (behind `runtime`): the voice plane's data-route mount is STRUCTURAL — the four routes
 //! MOUNT, the claim + admission BIND the plane's RFC 8707 audience from `public_url`, and a route's
 //! arrival runs the governed session-open through `run_gauntlet_session` (verify-before-charge). No
-//! live provider is called: a denied destination is refused at the gate, a clean open answers `501`
+//! live provider is called: a clean open answers `501`
 //! (governed, but the live serving leg is the deployment's to compose).
 
 use super::{
@@ -12,7 +12,7 @@ use super::{
     MOUNT_PATH,
 };
 use crate::ir::codec::OpenAiRealtimeCodec;
-// Test-support-only: the governed-open battery (`governed_open` + its denied-destination test) drives
+// Test-support-only: the governed-open battery (`governed_open` + its gauntlet-open test) drives
 // `open_governed` over `Ingress`; both are used ONLY under `#[cfg(feature = "test-support")]`, so gate
 // the imports to keep a `runtime`-without-`test-support` build (the workspace clippy default now that
 // voice ships default-on) clean.
@@ -155,14 +155,12 @@ fn slot_from_public_url(public_url: Option<&str>) -> Option<Arc<dyn std::any::An
 }
 
 /// A session runtime with no metered caller behind it — used to drive
-/// `open_governed` without any provider. `model` seeds the gauntlet destination; `deny` is the plane's
-/// open-pass denial set.
-fn runtime_for(model: &str, deny: &[&str]) -> VoiceRuntime {
+/// `open_governed` without any provider. `model` seeds the gauntlet destination.
+fn runtime_for(model: &str) -> VoiceRuntime {
     let mut rt = VoiceRuntime::new(
         Arc::new(DurableHandleEngine::new()),
         Arc::new(EchoToolExecutor),
-    )
-    .with_denied_destinations(deny.iter().copied());
+    );
     rt.session_defaults.model = Some(model.to_string());
     rt
 }
@@ -295,35 +293,15 @@ fn governed_open<'a>(
 
 #[cfg(feature = "test-support")]
 #[tokio::test]
-async fn arrival_runs_run_gauntlet_session_refusing_a_denied_destination_before_charge() {
-    // ARRIVAL runs `run_gauntlet_session`: a denied destination is REFUSED at the open-pass gate before
-    // any lease/durable open — the governed open returns the gate's `403`, proving the gate ran. This
-    // is the D3 call-site invariant at the ROUTE layer: no byte, no charge on a refused destination.
+async fn arrival_passes_the_gauntlet_and_opens_the_governed_session() {
     let host = crate::testkit::fixture_host::FixtureHost::new().into_host();
-    let denied = runtime_for("blocked-model", &["blocked-model"]);
-    // Mint is a live `open_governed` production ingress (the browser `ek_` pass); the Sideband/Telephony
-    // WS legs prove the same verify-before-charge through `ws_accept`'s destination gauntlet + the
-    // substrate `accept_gauntlet_refuse_returns_refusal_and_spawns_zero_socket_tasks` witness.
-    let refused = open_governed(governed_open(
-        &denied,
-        Arc::clone(&host),
-        Ingress::Mint,
-        "call-denied",
-    ))
-    .await;
-    assert_eq!(
-        refused.status(),
-        axum::http::StatusCode::FORBIDDEN,
-        "a denied destination is refused at the gate (run_gauntlet_session ran, verify-before-charge)"
-    );
-
-    // A non-denied destination proceeds PAST the gate and opens the governed session; with no provider
+    // A destination proceeds PAST the open-pass gate and opens the governed session; with no provider
     // configured the one-shot mint/SDP passes answer 501 (governed, uncomposed). Only Mint/Sdp route
     // through `open_governed`; the Sideband/Telephony WS legs route through `ws_accept` (the inbound
     // WS-accept seam) — their governed open + operator-gate screening is proven by
     // `hook_gate_tests::a_reject_all_operator_gate_refuses_a_ws_accept_before_the_upgrade` and their
     // route mounting by `the_five_ingress_doors_mount_audience_checked_across_the_http_and_ws_seams`.
-    let allowed = runtime_for("allowed-model", &["blocked-model"]);
+    let allowed = runtime_for("allowed-model");
     for ingress in [Ingress::Mint, Ingress::Sdp] {
         let opened = open_governed(governed_open(
             &allowed,
@@ -401,7 +379,7 @@ async fn duplex_session_runs_in_process_through_the_gauntlet_after_hydrate() {
 
     // (2) ARRIVAL: begin_telephony opens the session THROUGH `run_gauntlet_session` (verify strictly
     // before the kernel account's budget check). g711 carries no model, so the destination is unset and admitted.
-    let rt = runtime_for("", &[]);
+    let rt = runtime_for("");
     let proxy = begin_telephony(
         &rt,
         OpenAiRealtimeCodec,
