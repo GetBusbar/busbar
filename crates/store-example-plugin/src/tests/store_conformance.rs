@@ -18,7 +18,7 @@
 //!
 //! The "reaches every backend on its next dependency bump" promise in the doc above is therefore
 //! NO LONGER TRUE of this copy, and is left standing as the record of what the shared crate was for.
-//! Contract conformance for [`busbar_api::Store`] — the checks every backend must pass identically.
+//! Contract conformance for [`busbar_contract::records::RecordStore`] — the checks every backend must pass identically.
 //!
 //! These exist because an audit found the fleet disagreeing with itself: the same input produced a
 //! different outcome depending on which store an operator had deployed. `revoke_credential` on an
@@ -55,9 +55,9 @@
 //! }
 //! ```
 
-use busbar_api::{
+use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, PlaneDisposition, PlaneRecord, PlaneSelector,
-    SecretForm, Store, VirtualKey,
+    RecordStore as Store, SecretForm, VirtualKey,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
