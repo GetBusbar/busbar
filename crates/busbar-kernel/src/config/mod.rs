@@ -423,6 +423,10 @@ pub struct RootCfg {
     /// type and nothing downstream re-parses the canonical URI or re-derives the mount path. The
     /// plane's own module downcasts its entry back to its concrete resource; read it via
     /// [`RootCfg::endpoint_resource`] keyed by the plane's config section — never a per-plane field.
+    ///
+    /// A plane section the kernel carries RAW ([`DeployCfg::plane_raw`] — a plane with no typed
+    /// grammar of its own, such as one that states itself over the C ABI) is its plane's resource too,
+    /// as `(section, value)`: its plane's `build` reads it through the same `BuildCtx::endpoint_slot`.
     pub endpoint_resources:
         std::collections::HashMap<&'static str, std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     /// The VALIDATED authorization server (`oauth_as:`), or `None` when this deployment is not one.
@@ -1279,6 +1283,13 @@ pub struct DeployCfg {
     /// lifted like its card. The pools plane's fee is `per_request_fee:`.
     #[serde(skip)]
     pub plane_fees: PlaneFeesMap,
+    /// THE GENERIC CARRIER: every REGISTERED plane's declaring section that no other carrier holds
+    /// (a named one, or the generic singular one) and core does not own — lifted by the pre-pass off
+    /// the plane registry, card and fees stripped, the remainder kept RAW for the plane to read.
+    /// [`resolve`] hands each present one to its plane's `build` as its section-keyed resource. A
+    /// section no registered plane declares is still refused as an unknown field.
+    #[serde(skip)]
+    pub plane_raw: std::collections::BTreeMap<&'static str, serde_yaml::Value>,
     /// The durable store as `{ module, settings }`. Absent = the ephemeral RAM store.
     #[serde(default)]
     pub store: Option<StoreCfg>,
@@ -2699,10 +2710,16 @@ pub fn resolve(
     // neutral, section-keyed shape `RootCfg` carries in place of a per-plane field (mirroring
     // `tool_defs`/`agent_defs` beside it). The `tools:` plane owns the endpoint door, so its section
     // key is the map key; a build compiled without that plane produced no resource and inserts none.
-    let endpoint_resources: std::collections::HashMap<_, _> = lowered_endpoint
+    let mut endpoint_resources: std::collections::HashMap<_, _> = lowered_endpoint
         .map(|resource| (endpoint_section, resource))
         .into_iter()
         .collect();
+    // Each RAW-carried plane section a config writes declares its plane (LAW 7) and is that plane's
+    // resource, as `(section, value)`.
+    for (&section, value) in deploy.plane_raw.iter().filter(|(_, v)| !v.is_null()) {
+        plane_sections.insert(section);
+        endpoint_resources.insert(section, std::sync::Arc::new((section, value.clone())));
+    }
 
     // The `oauth_as:` block, validated HERE for the same reason the endpoint block is: an authorization server
     // whose issuer is malformed advertises endpoints at paths it does not serve, and every

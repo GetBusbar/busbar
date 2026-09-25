@@ -1474,38 +1474,30 @@ pub fn build_app_from_config(
         &'static str,
         Arc<dyn std::any::Any + Send + Sync>,
     > = {
-        let ctx = crate::plane::registry::BuildCtx {
-            // The `tools:` container plane's resource is TYPE-ERASED here, at the composition root,
-            // rather than inside the plane's `build` fn — so the `BuildCtx` seam carries an opaque
-            // slot and names no plane-owned resource type. It is the SAME `Arc` the plane clones into
-            // `plane_slots` and downcasts back out inside its own module, so the "one lowering, one
-            // Arc" invariant holds — the plane's own module is the only reader, through the slot.
-            // The endpoint resource is ALREADY validated and erased as `Option<Arc<dyn Any>>` by
-            // config resolution, read here through the neutral SECTION-KEYED accessor (the `tools:`
-            // plane owns the endpoint door) — so the slot is a CLONE of that one opaque `Arc`, not a
-            // re-erasure, and names no plane resource type. `None` when the block is absent or the
-            // owning plane is compiled out (resolve produced no resource then).
-            endpoint_slot: cfg
-                .endpoint_resources
-                .get(busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2])
-                .cloned(),
-            // The neutral registry section, erased as `&dyn Any` via `PlaneCfg::as_any` so `BuildCtx`
-            // names no plane-owned config type; the `agents:` container plane's `build` closure
-            // downcasts it back to its own typed config.
-            agent_defs: cfg.agent_defs.as_any(),
-            public_url: cfg.public_url.as_deref(),
-            // THE PRIOR GENERATION'S SLOTS, so a plane's `build` can CARRY accumulated coordination
-            // off its own prior runtime object across this apply (the `agents:` container plane
-            // carries its verify-on-call gate and boot-resolved card transports off its own prior
-            // runtime object) — the same neutral `&dyn PlaneSlots` a container plane's `build_runtime`
-            // receives below.
-            prior: prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
-        };
         // LAW 7: an unconfigured plane builds no slot, so it claims, admits and mounts nothing.
         crate::plane::registry::plane_decls()
             .iter()
             .filter(|decl| decl.fallback || cfg.plane_sections.contains(decl.config_section))
-            .filter_map(|decl| (decl.build)(&ctx).map(|obj| (decl.key, obj)))
+            .filter_map(|decl| {
+                let ctx = crate::plane::registry::BuildCtx {
+                    // THIS plane's own section-keyed resource, ALREADY validated and TYPE-ERASED by
+                    // config resolution: the `tools:` container plane's endpoint resource (the SAME
+                    // `Arc` it clones into `plane_slots` and downcasts inside its own module, so
+                    // "one lowering, one Arc" holds), or a raw-carried plane's `(section, value)`.
+                    // `None` when the plane's section carries none. Names no plane resource type.
+                    endpoint_slot: cfg.endpoint_resources.get(decl.config_section).cloned(),
+                    // The neutral registry section, erased as `&dyn Any` via `PlaneCfg::as_any` so
+                    // `BuildCtx` names no plane-owned config type; the `agents:` container plane's
+                    // `build` closure downcasts it back to its own typed config.
+                    agent_defs: cfg.agent_defs.as_any(),
+                    public_url: cfg.public_url.as_deref(),
+                    // THE PRIOR GENERATION'S SLOTS, so a plane's `build` can CARRY accumulated
+                    // coordination off its own prior runtime object across this apply — the same
+                    // neutral `&dyn PlaneSlots` a container plane's `build_runtime` receives below.
+                    prior: prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
+                };
+                (decl.build)(&ctx).map(|obj| (decl.key, obj))
+            })
             .collect()
     };
 

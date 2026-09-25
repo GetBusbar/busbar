@@ -678,13 +678,14 @@ pub fn build_dispatch(
 /// A2A) actually read; a future plane needing another section adds a field here rather than gaining
 /// its own parameter list, so `build`'s signature never has to change per plane.
 pub struct BuildCtx<'a> {
-    /// The MCP plane's runtime object for THIS generation, ALREADY built and TYPE-ERASED at config
-    /// resolution (`McpResource::from_cfg` ran at `RootCfg` construction) and handed across this seam
-    /// as an OPAQUE slot — so the seam names no `crate::mcp` type. The MCP plane's `build` clones this
-    /// `Arc` into `plane_slots` unchanged rather than constructing a second one; `None` exactly when
-    /// `mcp:` is absent, matching `App::mcp`'s own absence. Erasing at the composition root instead of
-    /// in the plane's `build` is what removes the one concrete-type name this struct used to carry
-    /// into the eventual MCP extraction — the neutral analogue of how the LLM dialects left core.
+    /// THIS plane's own SECTION-KEYED resource for THIS generation (`RootCfg::endpoint_resource` at
+    /// the plane's `config_section`), ALREADY built and TYPE-ERASED at config resolution and handed
+    /// across this seam as an OPAQUE slot — so the seam names no plane type. For the endpoint-door
+    /// plane it is its lowered endpoint resource, which its `build` clones into `plane_slots`
+    /// unchanged rather than constructing a second one (`None` exactly when its door block is
+    /// absent); for a plane whose section the kernel carries RAW it is `(section, value)`, the bytes
+    /// that plane's `build` hands its plugin over the ABI. `None` for a plane whose section carries
+    /// no resource.
     pub endpoint_slot: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     // The A2A registry the A2A plane's `build` lowers, TYPE-ERASED so this seam names no `crate::a2a`
     // config type — reached through `RootCfg::agent_defs`'s neutral `PlaneCfg::as_any` (`AgentsCfg`

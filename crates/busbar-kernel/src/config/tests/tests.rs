@@ -75,6 +75,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         per_request_fee: 0,
         plane_rate_cards: Default::default(),
         plane_fees: Default::default(),
+        plane_raw: Default::default(),
         store: None,
         secrets: Default::default(),
         advanced: AdvancedCfg::default(),
@@ -4007,6 +4008,73 @@ fn test_decisions_section_parses() {
         !bare.decisions.0.is_present(),
         "an omitted `decisions:` section leaves the carrier at its Default"
     );
+}
+
+/// The top-level section [`RAW_SECTION_PLANE`] declares — and does NOT own the grammar of.
+const RAW_SECTION: &str = "raw_section";
+
+/// A NEUTRAL plane declaring [`RAW_SECTION`] with no carrier of its own: not a named one, not the
+/// generic singular one (it owns no grammar), not core's — the shape of a plane that states itself
+/// over the C ABI, whose section only it can read.
+static RAW_SECTION_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
+    declaration: crate::plane::registry::PlaneDeclaration {
+        key: "neutral-test-raw",
+        fallback: false,
+        config_section: RAW_SECTION,
+        scope_kinds: &[],
+        owned_config_sections: &[],
+        ..crate::test_support::NEUTRAL_FALLBACK.declaration
+    },
+    ..crate::test_support::NEUTRAL_FALLBACK
+};
+
+/// THE GENERIC CARRIER (item 63, K7): a registered plane's declaring section that no carrier holds is
+/// lifted RAW onto `DeployCfg::plane_raw` — its core-owned `rate_card`/`fees` stripped and banked
+/// under the plane's key like any plane's — and `resolve` makes it both LAW 7's "this plane is
+/// configured" and that plane's section-keyed resource, `(section, value)`, the bytes its `build` is
+/// handed. RED before K7: the pre-pass lifted no such section, so the document was refused at the key
+/// as an unknown field.
+#[test]
+fn a_declared_section_no_carrier_holds_is_lifted_raw_for_its_plane() {
+    let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
+        crate::test_support::neutral_fallback_plane(),
+        &RAW_SECTION_PLANE,
+    ]);
+    let deploy: DeployCfg = crate::config::deploy_from_yaml_str(&format!(
+        "{RAW_SECTION}:\n  greeting: hi\n  fees: {{ per_request: 3 }}\n\
+         providers: {{}}\nmodels: {{}}\npools: {{}}\n",
+    ))
+    .expect("a section a registered plane declares must parse, whichever carrier holds it");
+    let remainder: serde_yaml::Value = serde_yaml::from_str("greeting: hi").unwrap();
+    assert_eq!(
+        deploy.plane_raw.get(RAW_SECTION),
+        Some(&remainder),
+        "the section lands raw, its core-owned `fees` lifted off it"
+    );
+    assert!(deploy.plane_fees.contains_key("neutral-test-raw"));
+
+    let root = crate::config::resolve(&deploy, &Default::default()).expect("resolves");
+    assert!(
+        root.plane_sections.contains(RAW_SECTION),
+        "LAW 7: the plane is configured"
+    );
+    let resource = root
+        .endpoint_resource(RAW_SECTION)
+        .expect("its plane's resource");
+    assert_eq!(
+        resource.downcast_ref::<(&'static str, serde_yaml::Value)>(),
+        Some(&(RAW_SECTION, remainder)),
+        "the resource is `(section, value)`"
+    );
+
+    // An absent (or null) section configures nothing and hands its plane nothing.
+    let bare = crate::config::deploy_from_yaml_str(&format!(
+        "{RAW_SECTION}: ~\nproviders: {{}}\nmodels: {{}}\npools: {{}}\n"
+    ))
+    .expect("parses");
+    let root = crate::config::resolve(&bare, &Default::default()).expect("resolves");
+    assert!(!root.plane_sections.contains(RAW_SECTION));
+    assert!(root.endpoint_resource(RAW_SECTION).is_none());
 }
 
 /// THE DELETION-GATE LEG FOR `decisions:` (Option A, S11b (c) / Q67). A section an operator wrote,
