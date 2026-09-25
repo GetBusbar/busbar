@@ -4363,8 +4363,8 @@ fn test_gemini_decode() {
     // Second message: Assistant with functionCall (ToolUse)
     assert_eq!(ir.messages[1].role, crate::ir::IrRole::Assistant);
     assert_eq!(ir.messages[1].content.len(), 1);
-    if let crate::ir::IrBlock::ToolUse {
-        id: _, name, input, ..
+    let call_id = if let crate::ir::IrBlock::ToolUse {
+        id, name, input, ..
     } = &ir.messages[1].content[0]
     {
         assert_eq!(name, "get_weather");
@@ -4372,9 +4372,10 @@ fn test_gemini_decode() {
             input.get("location").and_then(|v| v.as_str()),
             Some("San Francisco")
         );
+        id.clone()
     } else {
         panic!("expected ToolUse block in second message");
-    }
+    };
 
     // Third message: User with functionResponse (ToolResult)
     assert_eq!(ir.messages[2].role, crate::ir::IrRole::User);
@@ -4386,7 +4387,8 @@ fn test_gemini_decode() {
         ..
     } = &ir.messages[2].content[0]
     {
-        assert_eq!(tool_use_id, "get_weather");
+        // The result pairs with the call it answers (IR audit GEM-01), not the function name.
+        assert_eq!(tool_use_id, &call_id);
         assert!(!is_error);
         assert_eq!(content.len(), 1);
         if let crate::ir::IrBlock::Text { text, .. } = &content[0] {

@@ -427,3 +427,70 @@ fn gem20_late_stream_citation_annotates_the_closed_text_block() {
         .expect("citation delta");
     assert_eq!(&citation["index"], text_index, "{out}");
 }
+
+/// GEM-01: with no native ids, every tool result pairs with the call it answers — positionally,
+/// same-name parallel calls included — so Anthropic / OpenAI see no orphan `tool_result` (they used
+/// to get a synthesized id on the call and the function NAME on the result).
+#[test]
+fn gem01_tool_results_pair_with_their_calls_without_ids() {
+    let body = json!({"contents": [
+        {"role": "user", "parts": [{"text": "q"}]},
+        {"role": "model", "parts": [
+            {"functionCall": {"name": "f", "args": {"a": 1}}},
+            {"functionCall": {"name": "f", "args": {"a": 2}}},
+            {"functionCall": {"name": "g", "args": {}}}]},
+        {"role": "user", "parts": [
+            {"functionResponse": {"name": "f", "response": {"r": 1}}},
+            {"functionResponse": {"name": "g", "response": {"r": 3}}},
+            {"functionResponse": {"name": "f", "response": {"r": 2}}}]},
+        {"role": "model", "parts": [{"functionCall": {"name": "f", "args": {"a": 4}}}]},
+        {"role": "user", "parts": [{"functionResponse": {"name": "f", "response": {"r": 4}}}]}
+    ]});
+    let out = xreq("gemini", "anthropic", &body);
+    let blocks: Vec<Value> = out["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .flat_map(|m| m["content"].as_array().cloned().unwrap_or_default())
+        .collect();
+    let uses: Vec<&str> = blocks
+        .iter()
+        .filter(|b| b["type"] == "tool_use")
+        .filter_map(|b| b["id"].as_str())
+        .collect();
+    let results: Vec<&str> = blocks
+        .iter()
+        .filter(|b| b["type"] == "tool_result")
+        .filter_map(|b| b["tool_use_id"].as_str())
+        .collect();
+    assert_eq!(uses.len(), 4, "{out}");
+    assert_eq!(
+        results,
+        vec![uses[0], uses[2], uses[1], uses[3]],
+        "each result pairs with its own call: {out}"
+    );
+
+    // The same pairing reaches OpenAI's `tool_call_id`.
+    let out = xreq("gemini", "openai", &body);
+    let msgs = out["messages"].as_array().expect("messages");
+    let calls: Vec<String> = msgs
+        .iter()
+        .flat_map(|m| m["tool_calls"].as_array().cloned().unwrap_or_default())
+        .filter_map(|c| c["id"].as_str().map(str::to_string))
+        .collect();
+    let answered: Vec<String> = msgs
+        .iter()
+        .filter_map(|m| m["tool_call_id"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!(calls.len(), 4, "{out}");
+    assert_eq!(
+        answered,
+        vec![
+            calls[0].clone(),
+            calls[2].clone(),
+            calls[1].clone(),
+            calls[3].clone()
+        ],
+        "{out}"
+    );
+}

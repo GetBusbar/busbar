@@ -629,6 +629,66 @@ fn gemini_call_id(obj: &serde_json::Value) -> Option<&str> {
         .filter(|s| !s.is_empty())
 }
 
+/// Pairs each Gemini `functionResponse` in a request history with the `functionCall` it answers
+/// (IR audit GEM-01).
+///
+/// Every other dialect correlates a tool result to its call by ID, and Anthropic / OpenAI reject a
+/// history whose result names no earlier call. Gemini keys the pair by the call's native `id` when
+/// both sides carry one, and otherwise only by POSITION: the responses in a user turn answer the
+/// calls of the model turn before it, in order. The reader used to give each call a synthesized
+/// `call_<hash>` id and each result the bare function NAME, so no pair ever matched on any foreign
+/// target.
+///
+/// Resolution for one response: (1) its own `id`, when present; (2) otherwise the EARLIEST still
+/// unanswered call of the same name in the MOST RECENT model turn that has one (positional pairing
+/// for parallel same-name calls, and a stale unanswered call in an older turn never steals a newer
+/// turn's answer); (3) otherwise the name, exactly as before — a result with no call to pair with
+/// stays an orphan and is warned about.
+#[derive(Default)]
+struct GeminiCallLedger {
+    /// `(id, name, turn, answered)` for every call seen so far, in history order.
+    calls: Vec<(String, String, usize, bool)>,
+}
+
+impl GeminiCallLedger {
+    fn record_call(&mut self, id: &str, name: &str, turn: usize) {
+        self.calls
+            .push((id.to_string(), name.to_string(), turn, false));
+    }
+
+    fn pair_response(&mut self, explicit_id: Option<&str>, name: &str) -> String {
+        if let Some(id) = explicit_id {
+            if let Some(c) = self.calls.iter_mut().find(|c| !c.3 && c.0 == id) {
+                c.3 = true;
+            }
+            return id.to_string();
+        }
+        let latest_turn = self
+            .calls
+            .iter()
+            .filter(|c| !c.3 && c.1 == name)
+            .map(|c| c.2)
+            .max();
+        if let Some(turn) = latest_turn {
+            if let Some(c) = self
+                .calls
+                .iter_mut()
+                .find(|c| !c.3 && c.1 == name && c.2 == turn)
+            {
+                c.3 = true;
+                return c.0.clone();
+            }
+        }
+        tracing::warn!(
+            tool_name = %name,
+            "gemini functionResponse answers no unanswered functionCall of that name in the \
+             history; it is carried with the function name as its tool_use_id and a foreign \
+             backend sees an orphan tool result"
+        );
+        name.to_string()
+    }
+}
+
 /// Read one Gemini attachment part — `inlineData{mimeType,data}` or `fileData{fileUri,mimeType}` —
 /// into its IR block. Shared by the request reader (a user turn's attachments), the
 /// `functionResponse.parts` reader (GEM-07) and the response reader (a model's image/audio output,

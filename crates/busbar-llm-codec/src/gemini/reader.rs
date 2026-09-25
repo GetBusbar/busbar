@@ -313,6 +313,8 @@ impl ProtocolReader for GeminiReader {
         // id distinct even when two calls in the same request share a function name, so a downstream
         // Anthropic/OpenAI egress block gets a unique, non-empty `id`/`tool_use_id`.
         let mut tool_call_index: usize = 0;
+        // Pairs every functionResponse with the functionCall it answers (GEM-01); see its doc.
+        let mut call_ledger = GeminiCallLedger::default();
 
         // Handle systemInstruction (Gemini uses this for system content)
         if let Some(sys_instr) = obj.get("systemInstruction") {
@@ -341,7 +343,7 @@ impl ProtocolReader for GeminiReader {
                 provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })?;
-            for content_val in contents_arr {
+            for (turn, content_val) in contents_arr.iter().enumerate() {
                 let role_str = content_val
                     .get("role")
                     .and_then(|r| r.as_str())
@@ -364,12 +366,6 @@ impl ProtocolReader for GeminiReader {
                 };
 
                 let mut msg_content = Vec::new();
-                // Track functionResponse names seen IN THIS TURN: a result with no native `id` is
-                // correlated only by `name`, which we map to `tool_use_id`. Two such results with the
-                // same name in one turn collide into a duplicate `tool_use_id`, making cross-protocol
-                // correlation ambiguous — we only warn.
-                let mut seen_func_resp_names: std::collections::HashSet<String> =
-                    std::collections::HashSet::new();
                 // EDGE-VALIDATE the per-turn `parts` TYPE. Gemini's `Content.parts` is array-only; a
                 // PRESENT-but-wrong-typed `parts` (string/number/object) is a genuine TYPE violation
                 // the lenient projection below would silently drop into an empty turn — reject with a
@@ -443,6 +439,7 @@ impl ProtocolReader for GeminiReader {
                                 .map(str::to_string)
                                 .unwrap_or_else(|| synth_tool_call_id(tool_call_index, &name, ""));
                             tool_call_index += 1;
+                            call_ledger.record_call(&id, &name, turn);
                             // `thoughtSignature` is a sibling of `functionCall` on the `Part` object
                             // (NOT nested inside it) — same placement as the `thought:true` block's
                             // signature above. Gemini 3 requires this echoed back verbatim on the
@@ -477,28 +474,13 @@ impl ProtocolReader for GeminiReader {
                             let response_text =
                                 busbar_substrate_values::json::to_string(&response_val)
                                     .unwrap_or_else(|_| "unknown".to_string());
-                            // The result's `tool_use_id`: the response's own native `id` when
-                            // Gemini (or the client echoing it) carries one — the same id its
-                            // `functionCall` carried, so the pair survives a foreign backend (GEM-08).
-                            // Without one, the function NAME, the only other handle Gemini gives the
-                            // result side; the Gemini writer round-trips it back into
-                            // `functionResponse.name`.
-                            let tool_use_id = match gemini_call_id(func_resp) {
-                                Some(id) => id.to_string(),
-                                None => {
-                                    if !name.is_empty()
-                                        && !seen_func_resp_names.insert(name.clone())
-                                    {
-                                        tracing::warn!(
-                                            tool_name = %name,
-                                            "duplicate gemini functionResponse name in one turn yields \
-                                             a duplicate tool_use_id; cross-protocol correlation is \
-                                             ambiguous"
-                                        );
-                                    }
-                                    name.clone()
-                                }
-                            };
+                            // The result's `tool_use_id` is the id of the call it answers, so a
+                            // foreign backend pairs the two (GEM-01): the response's own native `id`
+                            // when present (GEM-08), else the positional pairing `GeminiCallLedger`
+                            // documents. The Gemini writer resolves a call id back to the function
+                            // name, so the name never needs to ride in `tool_use_id`.
+                            let tool_use_id =
+                                call_ledger.pair_response(gemini_call_id(func_resp), &name);
                             // Gemini documents `response.output` for a result and `response.error`
                             // for a failure (GEM-05): an `error` key with no `output` beside it is
                             // the failed tool call every other dialect flags `is_error`.

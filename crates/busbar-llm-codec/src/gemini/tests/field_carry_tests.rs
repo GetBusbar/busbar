@@ -369,12 +369,20 @@ fn gemini_request_content_parts_survive() {
         )),
         "parts[].functionCall name+args must reach the IR ToolUse carrier"
     );
-    // parts[].functionResponse.name / .response
+    // parts[].functionResponse.name / .response — the result carries the id of the call it
+    // answers (IR audit GEM-01), not the bare function name.
+    let call_id = model_turn
+        .iter()
+        .find_map(|b| match b {
+            crate::ir::IrBlock::ToolUse { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .expect("the model turn carries the call");
     let user_turn = &ir.messages[1].content;
     assert!(
         user_turn.iter().any(|b| matches!(
             b, crate::ir::IrBlock::ToolResult { tool_use_id, content, .. }
-            if tool_use_id == "search"
+            if tool_use_id == &call_id
                && content.iter().any(|c| matches!(c, crate::ir::IrBlock::Text { text, .. } if text.contains("\"hits\":3")))
         )),
         "parts[].functionResponse name+response must reach the IR ToolResult carrier: {user_turn:?}"
