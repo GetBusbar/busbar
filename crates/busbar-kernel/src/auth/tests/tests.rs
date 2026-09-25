@@ -630,7 +630,7 @@ fn test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_ap
 }
 
 // THE VENDOR-SHAPED AUTH-FAILURE TESTS live in the LLM plane, in `crates/busbar-llm/tests/
-// auth_native_envelope.rs` (Phase 4 batch 60, S01). They pin what each LLM dialect's registered
+// auth_native_envelope.rs`. They pin what each LLM dialect's registered
 // writer answers a bad credential with (the residual dialect a path resolves to, the per-dialect
 // envelope / status / headers / copy, the router-ingress coverage) — the plane's behaviour reached
 // through core's neutral resolver — so they run in the plane's own test target, the one binary
