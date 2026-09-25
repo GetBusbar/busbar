@@ -279,6 +279,27 @@ fn extract_impl_block(path: &Path, header: &str) -> String {
     panic!("`{header}` block never closes in {}", path.display());
 }
 
+/// The brace-balanced `impl` block opened by `header`, wherever in `crates/*/src` it lives (the
+/// [`source_files`] walk). EXACTLY ONE file may hold it: none is a panic (the plane impl the Walked
+/// assertions rely on is gone, so they would check nothing), and two is a panic (the scan cannot
+/// say which impl is the real one).
+fn impl_block_in_tree(header: &str) -> String {
+    let holders: Vec<PathBuf> = source_files()
+        .into_iter()
+        .filter(|p| {
+            std::fs::read_to_string(p)
+                .unwrap_or_else(|e| panic!("read {} failed: {e}", p.display()))
+                .contains(header)
+        })
+        .collect();
+    assert_eq!(
+        holders.len(),
+        1,
+        "`{header}` must be declared in exactly one file under crates/*/src; found {holders:?}"
+    );
+    extract_impl_block(&holders[0], header)
+}
+
 /// The body of `secret_refs`, the helpers it delegates its destructures to, AND the per-plane
 /// `PlaneCfg::secret_refs` impls the two sibling-crate sweeps now live in. Used to prove that a type
 /// CLAIMING to be `Walked` really is destructured somewhere this guard can see, so the inventory
@@ -296,31 +317,15 @@ fn secret_refs_source() -> String {
         "pub(crate) fn secret_refs(",
         "pub(crate) const SECRET_BEARING_TYPES",
     );
-    // One plane's `tools:` config moved to the `busbar-mcp` crate (Phase-B B2); its `secret_refs`
-    // impl names the `PlaneCfg` trait through its public path from there. The trait itself relocated
-    // to `busbar-substrate` (Phase-C config-seam), so the impl now spells `busbar_kernel::…` and
-    // the scan matches on that spelling.
-    let mcp = extract_impl_block(
-        &Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("busbar-mcp")
-            .join("src")
-            .join("mcp")
-            .join("config.rs"),
-        "impl busbar_kernel::plane::config::PlaneCfg for ToolsCfg",
-    );
-    // The other plane's `agents:` config moved to the `busbar-a2a` crate (the plane extraction), the
-    // same as above; its `secret_refs` impl is read from the sibling crate.
-    let a2a = extract_impl_block(
-        &Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("busbar-a2a")
-            .join("src")
-            .join("a2a")
-            .join("config.rs"),
-        "impl busbar_kernel::plane::config::PlaneCfg for AgentsCfg",
-    );
-    let body = format!("{core}\n{mcp}\n{a2a}");
+    // The `tools:` and `agents:` configs moved out to their owning plane crates (Phase-B B2 and
+    // the plane extraction); each crate's `secret_refs` impl names the `PlaneCfg` trait through its
+    // public path, which relocated to `busbar-substrate` (Phase-C config-seam), so the impl spells
+    // `busbar_kernel::…` and the scan matches on that spelling. The impl is FOUND by its header
+    // across the source tree rather than read from a spelled crate path, so this neutral test
+    // names no plane crate — and a header that moved, vanished or was duplicated is still a panic.
+    let tools = impl_block_in_tree("impl busbar_kernel::plane::config::PlaneCfg for ToolsCfg");
+    let agents = impl_block_in_tree("impl busbar_kernel::plane::config::PlaneCfg for AgentsCfg");
+    let body = format!("{core}\n{tools}\n{agents}");
     assert!(
         body.len() > 500,
         "the extracted secret_refs region is only {} bytes; the extraction is broken and the \
@@ -593,9 +598,14 @@ auth:
     let defs: std::collections::HashMap<String, crate::config::ProviderDef> = ["hosted", "local"]
         .into_iter()
         .map(|name| {
-            let def: crate::config::ProviderDef = serde_yaml::from_str(
-                "protocol: anthropic\nbase_url: \"https://api.anthropic.test\"\n",
-            )
+            let def: crate::config::ProviderDef = serde_yaml::from_str(&format!(
+                "protocol: {}\nbase_url: \"https://api.vendor-a.test\"\n",
+                crate::proto::registry::builtin_decls()
+                    .iter()
+                    .find(|d| d.codec.is_some())
+                    .map(|d| d.name)
+                    .expect("the test binary ships a codec protocol")
+            ))
             .expect("the fixture ProviderDef yaml must parse");
             (name.to_string(), def)
         })

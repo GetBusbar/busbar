@@ -82,6 +82,34 @@ fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::P
     }
 }
 
+/// The `nth` wire-codec protocol this test binary ships, read by POSITION off core's own test
+/// built-in table (the shipped install order) rather than spelled here. The validator's provider
+/// sweep asks only "is this a compiled-in codec protocol?", never which one, so a fixture needs a
+/// registered name, not a particular dialect — and the neutral kernel's tests name none.
+fn shipped_protocol(nth: usize) -> &'static str {
+    crate::proto::registry::builtin_decls()
+        .iter()
+        .filter(|d| d.codec.is_some())
+        .nth(nth)
+        .map(|d| d.name)
+        .unwrap_or_else(|| {
+            panic!(
+                "the test binary ships fewer than {} codec protocols",
+                nth + 1
+            )
+        })
+}
+
+/// The first shipped codec protocol — the one most fixtures use.
+fn proto_a() -> &'static str {
+    shipped_protocol(0)
+}
+
+/// A second, distinct shipped codec protocol.
+fn proto_b() -> &'static str {
+    shipped_protocol(1)
+}
+
 fn make_model(provider: &str, max_concurrent: usize) -> config::ModelCfg {
     // Existing callers pass a concrete cap; wrap it as `Some` now that the field is optional
     // (None = unbounded). The omitted-cap case is covered by `make_model_unbounded`.
@@ -160,7 +188,11 @@ fn test_validate_rejects_bad_protocol() {
     let bad = make_provider("nope", "https://api.example.com", "API_KEY");
     providers.insert("bad".to_string(), bad);
     // A provider on a real protocol must NOT trigger this error.
-    let ok = make_provider("anthropic", "https://api.anthropic.com", "ANTHROPIC_KEY");
+    let ok = make_provider(
+        proto_a(),
+        "https://api.vendor-a.example.com",
+        "VENDOR_A_KEY",
+    );
     providers.insert("good".to_string(), ok);
 
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
@@ -181,12 +213,13 @@ fn test_validate_rejects_bad_protocol() {
             "allowed-set list must include '{proto}'; got: {msg}"
         );
     }
-    // A real protocol ('anthropic') must not be flagged as unknown.
+    // A real (shipped) protocol must not be flagged as unknown.
+    let shipped = proto_a();
     assert!(
         !errs
             .iter()
-            .any(|e| e.contains("unknown protocol 'anthropic'")),
-        "'anthropic' is a valid protocol and must not error; got: {errs:?}"
+            .any(|e| e.contains(&format!("unknown protocol '{shipped}'"))),
+        "'{shipped}' is a valid protocol and must not error; got: {errs:?}"
     );
 }
 
@@ -197,7 +230,7 @@ fn test_error_map_invalid_class_message_lists_full_valid_set() {
     // omitted from the message even though it is a valid mapping target, so an
     // operator who saw the error could not learn it was an allowed value.
     let mut providers = HashMap::new();
-    let mut p = make_provider("anthropic", "https://api.example.com", "API_KEY");
+    let mut p = make_provider(proto_a(), "https://api.example.com", "API_KEY");
     // Replace the minimal valid map with one bad entry to force the diagnostic.
     p.error_map.clear();
     p.error_map
@@ -245,7 +278,7 @@ fn test_error_map_context_length_is_a_valid_class() {
     // `context_length` must be accepted as an error_map target without producing
     // an invalid-StatusClass error (it is a real breaker StatusClass).
     let mut providers = HashMap::new();
-    let mut p = make_provider("anthropic", "https://api.example.com", "API_KEY");
+    let mut p = make_provider(proto_a(), "https://api.example.com", "API_KEY");
     p.error_map.clear();
     p.error_map
         .insert("400".to_string(), "context_length".to_string());
@@ -266,7 +299,7 @@ fn test_validate_rejects_zero_default_max_tokens() {
     let mut providers = HashMap::new();
     providers.insert(
         "myprovider".to_string(),
-        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+        make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
     let mut models = HashMap::new();
     let mut m = make_model("myprovider", 10);
@@ -299,7 +332,7 @@ fn test_validate_rejects_zero_request_body_read_timeout() {
     let mut providers = HashMap::new();
     providers.insert(
         "myprovider".to_string(),
-        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+        make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
     let mut models = HashMap::new();
     models.insert("mymodel".to_string(), make_model("myprovider", 10));
@@ -329,7 +362,7 @@ fn test_validate_rejects_empty_upstream_model() {
     let mut providers = HashMap::new();
     providers.insert(
         "myprovider".to_string(),
-        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+        make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
     let mut models = HashMap::new();
     // Whitespace-only override → empty wire model id → must error.
@@ -359,7 +392,7 @@ fn test_validate_rejects_pool_name_equals_provider_name() {
     let mut providers = HashMap::new();
     providers.insert(
         "myprovider".to_string(),
-        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+        make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
 
     let mut models = HashMap::new();
@@ -386,7 +419,7 @@ fn test_validate_rejects_unknown_member_ref() {
     let mut providers = HashMap::new();
     providers.insert(
         "myprovider".to_string(),
-        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+        make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
 
     let models = HashMap::new();
@@ -414,7 +447,7 @@ fn test_validate_token_url_ssrf_and_scheme() {
     let build = |token_url: &str| -> Vec<String> {
         let mut providers = HashMap::new();
         let mut entra = make_provider(
-            "openai",
+            proto_b(),
             "https://myres.vendor-a.azure.example.com",
             "API_KEY",
         );
@@ -476,7 +509,7 @@ fn test_validate_conflicting_context_max_across_pools() {
         let mut providers = HashMap::new();
         providers.insert(
             "p".to_string(),
-            make_provider("openai", "https://api.example.com", "API_KEY"),
+            make_provider(proto_b(), "https://api.example.com", "API_KEY"),
         );
         let mut models = HashMap::new();
         models.insert("m".to_string(), make_model("p", 10));
@@ -516,7 +549,7 @@ fn test_validate_collects_all_errors() {
     let mut providers = HashMap::new();
     providers.insert(
         "conflict_provider".to_string(),
-        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+        make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
 
     let mut models = HashMap::new();
@@ -554,11 +587,15 @@ fn test_validate_heterogeneous_pool_is_ok() {
     // Two different protocols.
     providers.insert(
         "acme_provider".to_string(),
-        make_provider("anthropic", "https://api.acme.example.com", "ACME_KEY"),
+        make_provider(proto_a(), "https://api.acme.example.com", "ACME_KEY"),
     );
     providers.insert(
         "vendor_a_provider".to_string(),
-        make_provider("openai", "https://api.vendor-a.example.com", "VENDOR_A_KEY"),
+        make_provider(
+            proto_b(),
+            "https://api.vendor-a.example.com",
+            "VENDOR_A_KEY",
+        ),
     );
 
     let mut models = HashMap::new();
@@ -590,7 +627,7 @@ fn test_validate_valid_config_succeeds() {
     let mut providers = HashMap::new();
     providers.insert(
         "myprovider".to_string(),
-        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+        make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
 
     let mut models = HashMap::new();
@@ -696,7 +733,7 @@ fn valid_maps() -> (
     let mut providers = HashMap::new();
     providers.insert(
         "myprovider".to_string(),
-        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+        make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
     let mut models = HashMap::new();
     models.insert("mymodel".to_string(), make_model("myprovider", 10));
@@ -718,7 +755,7 @@ fn test_validate_rejects_non_https_base_url() {
         ("", "must use http or https"),
     ] {
         let mut providers = HashMap::new();
-        providers.insert("p".to_string(), make_provider("anthropic", bad, "API_KEY"));
+        providers.insert("p".to_string(), make_provider(proto_a(), bad, "API_KEY"));
         let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
         let errs = validate(&cfg)
             .unwrap_err_or_default(format!("non-https base_url '{bad}' must fail validation"));
@@ -733,7 +770,7 @@ fn test_validate_rejects_non_https_base_url() {
     providers.insert(
         "p".to_string(),
         make_provider(
-            "anthropic",
+            proto_a(),
             "http://169.254.169.254/latest/meta-data/",
             "API_KEY",
         ),
@@ -753,7 +790,7 @@ fn test_validate_accepts_https_base_url() {
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
-        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+        make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
     assert!(validate(&cfg).is_ok(), "an https base_url must validate");
@@ -764,7 +801,7 @@ fn test_validate_rejects_zero_max_concurrent() {
     let mut providers = HashMap::new();
     providers.insert(
         "myprovider".to_string(),
-        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+        make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
     let mut models = HashMap::new();
     models.insert("zeromodel".to_string(), make_model("myprovider", 0));
@@ -795,7 +832,7 @@ fn test_validate_rejects_oversized_max_concurrent() {
     let mut providers = HashMap::new();
     providers.insert(
         "myprovider".to_string(),
-        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+        make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
     let mut models = HashMap::new();
     // ONE past the exact panic precondition — the tightest possible "plausible but wrong" probe,
@@ -871,7 +908,7 @@ fn test_validate_accepts_omitted_max_concurrent() {
     let mut providers = HashMap::new();
     providers.insert(
         "myprovider".to_string(),
-        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+        make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
     let mut models = HashMap::new();
     models.insert(
@@ -909,7 +946,7 @@ fn test_validate_rejects_bad_reasoning_effort_budgets() {
         let mut providers = HashMap::new();
         providers.insert(
             "p".to_string(),
-            make_provider("anthropic", "https://api.example.com", "K"),
+            make_provider(proto_a(), "https://api.example.com", "K"),
         );
         let mut models = HashMap::new();
         models.insert("m".to_string(), make_model("p", 10));
@@ -950,7 +987,7 @@ fn test_validate_rejects_zero_attempt_timeout_ms() {
     let mut providers = HashMap::new();
     providers.insert(
         "myprovider".to_string(),
-        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+        make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
     let mut models = HashMap::new();
     let mut zero = make_model("myprovider", 10);
@@ -1000,7 +1037,7 @@ fn test_validate_rejects_zero_max_requests() {
     let mut providers = HashMap::new();
     providers.insert(
         "myprovider".to_string(),
-        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+        make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
     let mut models = HashMap::new();
     let mut zero = make_model("myprovider", 10);
@@ -1055,7 +1092,7 @@ fn test_localhost_is_allowed_by_default() {
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
-        make_provider("anthropic", "https://localhost:11434/", "API_KEY"),
+        make_provider(proto_a(), "https://localhost:11434/", "API_KEY"),
     );
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
     assert!(
@@ -1109,7 +1146,7 @@ fn test_validate_rejects_provider_named_api() {
     let mut providers = HashMap::new();
     providers.insert(
         "api".to_string(),
-        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+        make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
     let errs = validate(&cfg).expect_err("a provider named 'api' must fail validation");
@@ -1131,7 +1168,7 @@ fn test_validate_rejects_model_named_api() {
     let (mut providers, mut models, pools) = valid_maps();
     providers
         .entry("myprovider".to_string())
-        .or_insert_with(|| make_provider("anthropic", "https://api.example.com", "API_KEY"));
+        .or_insert_with(|| make_provider(proto_a(), "https://api.example.com", "API_KEY"));
     models.insert("api".to_string(), make_model("myprovider", 10));
     let cfg = make_root_cfg(providers, models, pools);
     let errs = validate(&cfg).expect_err("a model named 'api' must fail validation");
@@ -1164,7 +1201,7 @@ fn test_validate_rejects_provider_named_admin_with_legacy_message() {
     let mut providers = HashMap::new();
     providers.insert(
         "admin".to_string(),
-        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+        make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
     let errs = validate(&cfg).expect_err("a provider named 'admin' must fail validation");
@@ -1180,7 +1217,7 @@ fn test_validate_rejects_model_named_admin_with_legacy_message() {
     let (mut providers, mut models, pools) = valid_maps();
     providers
         .entry("myprovider".to_string())
-        .or_insert_with(|| make_provider("anthropic", "https://api.example.com", "API_KEY"));
+        .or_insert_with(|| make_provider(proto_a(), "https://api.example.com", "API_KEY"));
     models.insert("admin".to_string(), make_model("myprovider", 10));
     let cfg = make_root_cfg(providers, models, pools);
     let errs = validate(&cfg).expect_err("a model named 'admin' must fail validation");
@@ -1588,7 +1625,7 @@ fn test_validate_accepts_known_failover_exclusion() {
     let (mut providers, mut models, _) = valid_maps();
     providers
         .entry("myprovider".to_string())
-        .or_insert_with(|| make_provider("anthropic", "https://api.example.com", "API_KEY"));
+        .or_insert_with(|| make_provider(proto_a(), "https://api.example.com", "API_KEY"));
     models
         .entry("secondmodel".to_string())
         .or_insert_with(|| make_model("myprovider", 10));
@@ -2027,11 +2064,15 @@ fn test_validate_passthrough_warns_on_nonempty_configured_key() {
     let mut providers = HashMap::new();
     providers.insert(
         "leaky".to_string(),
-        make_provider("anthropic", "https://api.example.com", leak_env),
+        make_provider(proto_a(), "https://api.example.com", leak_env),
     );
     providers.insert(
         "vendor-b".to_string(),
-        make_provider("bedrock", "https://vendor-b.example.com", vendor_b_env),
+        make_provider(
+            shipped_protocol(3),
+            "https://vendor-b.example.com",
+            vendor_b_env,
+        ),
     );
     let mut models = HashMap::new();
     models.insert("leakymodel".to_string(), make_model("leaky", 10));
@@ -2087,7 +2128,7 @@ fn test_validate_passthrough_no_warn_when_all_keys_empty() {
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
-        make_provider("anthropic", "https://api.example.com", empty_env),
+        make_provider(proto_a(), "https://api.example.com", empty_env),
     );
     let mut models = HashMap::new();
     models.insert("m".to_string(), make_model("p", 10));
@@ -2298,7 +2339,7 @@ fn test_reject_cidr_metadata_entries() {
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
-        make_provider("openai", "https://api.vendor-a.example.com", "API_KEY"),
+        make_provider(proto_b(), "https://api.vendor-a.example.com", "API_KEY"),
     );
     let cfg = make_root_cfg_with_blocked(providers, vec!["169.254.0.0/16".to_string()]);
     let errs =
@@ -2315,7 +2356,7 @@ fn test_reject_cidr_metadata_entries() {
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
-        make_provider("openai", "https://api.vendor-a.example.com", "API_KEY"),
+        make_provider(proto_b(), "https://api.vendor-a.example.com", "API_KEY"),
     );
     let mut cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
     cfg.allow_metadata_hosts = vec!["10.0.0.0/8".to_string()];
@@ -2347,7 +2388,7 @@ fn test_reject_cidr_metadata_entries() {
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
-        make_provider("openai", "https://api.vendor-a.example.com", "API_KEY"),
+        make_provider(proto_b(), "https://api.vendor-a.example.com", "API_KEY"),
     );
     let mut cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
     cfg.blocked_metadata_hosts = vec!["169.254.169.254".to_string()];
@@ -2379,7 +2420,7 @@ fn test_global_allow_overrides_blocked_metadata_hosts() {
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
-        make_provider("openai", "https://10.77.77.77/", "API_KEY"),
+        make_provider(proto_b(), "https://10.77.77.77/", "API_KEY"),
     );
     let mut cfg = make_root_cfg_with_blocked(providers, vec!["10.77.77.77".to_string()]);
     cfg.allow_metadata_hosts = vec!["10.77.77.77".to_string()];
@@ -2408,7 +2449,7 @@ fn test_allow_all_metadata_beats_nonempty_blocked_list() {
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
-        make_provider("openai", "https://10.0.0.7/", "API_KEY"),
+        make_provider(proto_b(), "https://10.0.0.7/", "API_KEY"),
     );
     let mut cfg = make_root_cfg_with_blocked(providers, vec!["10.0.0.7".to_string()]);
     cfg.allow_all_metadata = true;
@@ -2485,7 +2526,7 @@ fn test_ssrf_blocks_backslash_authority_bypass() {
     providers.insert(
         "p".to_string(),
         make_provider(
-            "anthropic",
+            proto_a(),
             "https://169.254.169.254\\x.allowed.com",
             "API_KEY",
         ),
@@ -2526,7 +2567,7 @@ fn test_ssrf_blocks_embedded_tab_newline_bypass() {
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
-        make_provider("anthropic", "https://169.254.169\t.254", "API_KEY"),
+        make_provider(proto_a(), "https://169.254.169\t.254", "API_KEY"),
     );
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
     let errs = validate(&cfg).expect_err("embedded-tab base_url must fail validation");
@@ -2545,7 +2586,7 @@ fn test_validate_rejects_path_override_host_fusion() {
     // into the authority — base_url `https://api.example.com` + path `.evil.com/v1` connects to
     // host `api.example.com.evil.com` with the lane API key attached (credential-relay SSRF).
     let mut providers = HashMap::new();
-    let mut fused = make_provider("openai", "https://api.example.com", "API_KEY");
+    let mut fused = make_provider(proto_b(), "https://api.example.com", "API_KEY");
     fused.path = Some(".evil.com/v1/chat/completions".to_string());
     providers.insert("fused".to_string(), fused);
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
@@ -2563,7 +2604,7 @@ fn test_validate_rejects_path_override_host_fusion() {
     // rule rejects it (it does not start with '/'), and as belt-and-suspenders the composed url
     // is also an SSRF target — assert at minimum the leading-slash diagnostic fires.
     let mut providers2 = HashMap::new();
-    let mut imds = make_provider("openai", "https://api.example.com", "API_KEY");
+    let mut imds = make_provider(proto_b(), "https://api.example.com", "API_KEY");
     imds.path = Some("@169.254.169.254/latest/meta-data".to_string());
     providers2.insert("imds".to_string(), imds);
     let cfg2 = make_root_cfg(providers2, HashMap::new(), HashMap::new());
@@ -2581,7 +2622,7 @@ fn test_validate_accepts_well_formed_path_override() {
     // The shipped catalog form — a leading-slash path on a public host — must validate. Mirrors
     // the `zai-payg` provider (`base_url: .../api/paas/v4` + `path: /chat/completions`).
     let mut providers = HashMap::new();
-    let mut p = make_provider("openai", "https://api.example.com/api/paas/v4", "API_KEY");
+    let mut p = make_provider(proto_b(), "https://api.example.com/api/paas/v4", "API_KEY");
     p.path = Some("/chat/completions".to_string());
     providers.insert("ok".to_string(), p);
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
@@ -2700,7 +2741,7 @@ fn test_validate_rejects_https_internal_base_url() {
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
-        make_provider("anthropic", "https://169.254.169.254/", "API_KEY"),
+        make_provider(proto_a(), "https://169.254.169.254/", "API_KEY"),
     );
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
     let errs = validate(&cfg).expect_err("https IMDS base_url must fail validation");
@@ -3118,7 +3159,7 @@ fn test_pool_member_model_with_unresolvable_provider_is_not_unknown_model() {
     let mut providers = HashMap::new();
     providers.insert(
         "realprovider".to_string(),
-        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+        make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
 
     // `definedmodel` is a real model entry, but its provider `ghostprovider` is not configured.
@@ -3169,7 +3210,7 @@ fn test_pool_member_truly_unknown_model_still_reports_unknown_model() {
     let mut providers = HashMap::new();
     providers.insert(
         "realprovider".to_string(),
-        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+        make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
 
     let models = HashMap::new();
@@ -3202,7 +3243,7 @@ fn plugin_pool_cfg(plugin: &str) -> RootCfg {
     let mut providers = HashMap::new();
     providers.insert(
         "prov".to_string(),
-        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+        make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
     let mut models = HashMap::new();
     models.insert("m1".to_string(), make_model("prov", 4));
@@ -3241,7 +3282,7 @@ fn hooks_test_cfg() -> RootCfg {
     let mut providers = HashMap::new();
     providers.insert(
         "prov".to_string(),
-        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+        make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
     let mut models = HashMap::new();
     models.insert("m1".to_string(), make_model("prov", 4));
@@ -3398,7 +3439,7 @@ fn test_hook_reserved_name_rejected() {
         let mut providers = HashMap::new();
         providers.insert(
             "prov".to_string(),
-            make_provider("anthropic", "https://api.example.com", "API_KEY"),
+            make_provider(proto_a(), "https://api.example.com", "API_KEY"),
         );
         let mut models = HashMap::new();
         models.insert("m1".to_string(), make_model("prov", 4));
@@ -3425,7 +3466,7 @@ fn test_hook_at_most_one_default() {
     let mut providers = HashMap::new();
     providers.insert(
         "prov".to_string(),
-        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+        make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
     let mut models = HashMap::new();
     models.insert("m1".to_string(), make_model("prov", 4));
@@ -3462,7 +3503,7 @@ fn test_hook_default_on_tap_rejected() {
     let mut providers = HashMap::new();
     providers.insert(
         "prov".to_string(),
-        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+        make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
     let mut models = HashMap::new();
     models.insert("m1".to_string(), make_model("prov", 4));
@@ -3490,7 +3531,7 @@ fn test_hook_nonreserved_name_ok() {
     let mut providers = HashMap::new();
     providers.insert(
         "prov".to_string(),
-        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+        make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
     let mut models = HashMap::new();
     models.insert("m1".to_string(), make_model("prov", 4));
@@ -3553,7 +3594,7 @@ impl UnwrapErrOrDefault for Result<(), Vec<String>> {
 
 /// Build a provider whose per-provider `allow_metadata_hosts` lists the given entries.
 fn make_provider_allow_hosts(base_url: &str, hosts: &[&str]) -> config::ProviderCfg {
-    let mut p = make_provider("openai", base_url, "API_KEY");
+    let mut p = make_provider(proto_b(), base_url, "API_KEY");
     p.allow_metadata_hosts = hosts.iter().map(|s| s.to_string()).collect();
     p
 }
@@ -3578,7 +3619,7 @@ fn test_local_upstreams_allowed_by_default_no_flag() {
         let mut providers = HashMap::new();
         providers.insert(
             "local".to_string(),
-            make_provider("openai", base, "API_KEY"),
+            make_provider(proto_b(), base, "API_KEY"),
         );
         let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
         assert!(
@@ -3597,7 +3638,7 @@ fn test_scheme_rule_public_http_rejected_https_allowed() {
     let mut providers = HashMap::new();
     providers.insert(
         "pub".to_string(),
-        make_provider("openai", "http://api.example.com", "API_KEY"),
+        make_provider(proto_b(), "http://api.example.com", "API_KEY"),
     );
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
     let errs = validate(&cfg).expect_err("public http base_url must be rejected");
@@ -3610,7 +3651,7 @@ fn test_scheme_rule_public_http_rejected_https_allowed() {
     // public https → allowed; local http → allowed.
     for ok in ["https://api.example.com", "http://10.0.0.5:8000"] {
         let mut providers = HashMap::new();
-        providers.insert("p".to_string(), make_provider("openai", ok, "API_KEY"));
+        providers.insert("p".to_string(), make_provider(proto_b(), ok, "API_KEY"));
         let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
         assert!(
             validate(&cfg).is_ok(),
@@ -3651,7 +3692,7 @@ fn test_metadata_blocked_by_default_every_form() {
         );
         // And full validate() pass.
         let mut providers = HashMap::new();
-        providers.insert("p".to_string(), make_provider("openai", base, "API_KEY"));
+        providers.insert("p".to_string(), make_provider(proto_b(), base, "API_KEY"));
         let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
         let errs =
             validate(&cfg).expect_err(&format!("metadata base_url '{base}' must fail validation"));
@@ -3702,7 +3743,7 @@ fn test_per_provider_allow_metadata_hosts_is_surgical_and_scoped() {
     let mut providers = HashMap::new();
     providers.insert(
         "other".to_string(),
-        make_provider("openai", "https://169.254.169.254/", "API_KEY"),
+        make_provider(proto_b(), "https://169.254.169.254/", "API_KEY"),
     );
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
     validate(&cfg).expect_err("a provider without the override must still block IMDS");
@@ -3714,11 +3755,11 @@ fn test_global_allow_metadata_hosts_unblocks_all_providers() {
     let mut providers = HashMap::new();
     providers.insert(
         "a".to_string(),
-        make_provider("openai", "https://100.100.100.200/", "API_KEY"),
+        make_provider(proto_b(), "https://100.100.100.200/", "API_KEY"),
     );
     providers.insert(
         "b".to_string(),
-        make_provider("openai", "https://100.100.100.200/", "API_KEY"),
+        make_provider(proto_b(), "https://100.100.100.200/", "API_KEY"),
     );
     let mut cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
     cfg.allow_metadata_hosts = vec!["100.100.100.200".to_string()];
@@ -3732,7 +3773,7 @@ fn test_global_allow_metadata_hosts_unblocks_all_providers() {
     let mut providers = HashMap::new();
     providers.insert(
         "c".to_string(),
-        make_provider("openai", "https://169.254.169.254/", "API_KEY"),
+        make_provider(proto_b(), "https://169.254.169.254/", "API_KEY"),
     );
     let mut cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
     cfg.allow_metadata_hosts = vec!["100.100.100.200".to_string()];
@@ -3755,7 +3796,10 @@ fn test_allow_all_metadata_disables_guard_entirely() {
             "allow_all_metadata must unblock '{base}'"
         );
         let mut providers = HashMap::new();
-        providers.insert("meta".to_string(), make_provider("openai", base, "API_KEY"));
+        providers.insert(
+            "meta".to_string(),
+            make_provider(proto_b(), base, "API_KEY"),
+        );
         let mut cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
         cfg.allow_all_metadata = true;
         assert!(
@@ -3832,7 +3876,7 @@ fn test_blocked_metadata_hosts_extends_denylist() {
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
-        make_provider("openai", "https://10.99.99.99/", "API_KEY"),
+        make_provider(proto_b(), "https://10.99.99.99/", "API_KEY"),
     );
     let cfg = make_root_cfg_with_blocked(providers, vec!["10.99.99.99".to_string()]);
     let errs = validate(&cfg)
@@ -3868,7 +3912,7 @@ fn test_public_targets_unaffected() {
         assert!(ssrf_blocked_host(base, &[], false, &[]).is_none());
         assert!(ssrf_blocked_host(base, &[], true, &[]).is_none());
         let mut providers = HashMap::new();
-        providers.insert("p".to_string(), make_provider("openai", base, "API_KEY"));
+        providers.insert("p".to_string(), make_provider(proto_b(), base, "API_KEY"));
         let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
         assert!(
             validate(&cfg).is_ok(),
@@ -3880,7 +3924,7 @@ fn test_public_targets_unaffected() {
 #[test]
 fn test_path_override_composition_under_metadata_rules() {
     // A leading-slash path on a local http base_url validates (composed url re-checked, allowed).
-    let mut ok = make_provider("openai", "http://localhost:11434", "API_KEY");
+    let mut ok = make_provider(proto_b(), "http://localhost:11434", "API_KEY");
     ok.path = Some("/v1/chat/completions".to_string());
     let mut providers = HashMap::new();
     providers.insert("local".to_string(), ok);
@@ -3893,7 +3937,7 @@ fn test_path_override_composition_under_metadata_rules() {
 
     // A path that fuses into the authority to re-home at IMDS is rejected by the leading-slash
     // rule (and the composed url is a metadata target).
-    let mut evil = make_provider("openai", "https://api.example.com", "API_KEY");
+    let mut evil = make_provider(proto_b(), "https://api.example.com", "API_KEY");
     evil.path = Some(".169.254.169.254/latest".to_string()); // no leading slash → host fusion
     let mut providers = HashMap::new();
     providers.insert("evil".to_string(), evil);
@@ -3904,7 +3948,7 @@ fn test_path_override_composition_under_metadata_rules() {
     // metadata-ish via an allowed-by-scheme local host, path extends to nothing risky) — verify
     // the composed-url metadata recheck fires when base is a benign public host but allow_metadata
     // is off and a path cannot smuggle a host (leading slash) — so this should PASS.
-    let mut p = make_provider("openai", "https://api.example.com/api/paas/v4", "API_KEY");
+    let mut p = make_provider(proto_b(), "https://api.example.com/api/paas/v4", "API_KEY");
     p.path = Some("/chat/completions".to_string());
     let mut providers = HashMap::new();
     providers.insert("ok".to_string(), p);
@@ -3924,7 +3968,7 @@ fn cost_cfg(model_names: &[&str]) -> RootCfg {
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
-        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+        make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
     let mut models = HashMap::new();
     for name in model_names {
@@ -3951,7 +3995,7 @@ fn priced_entry() -> config::RateEntryCfg {
 /// the owning plane compiled in (a parsed registry) and one with it compiled out (a raw capture).
 fn present_tools_section() -> Box<dyn busbar_kernel::plane::config::PlaneCfg> {
     let section: crate::plane::config::ToolsSection =
-        serde_yaml::from_str("an-mcp-server:\n  url: \"https://mcp.example.com/mcp\"\n")
+        serde_yaml::from_str("a-tool-server:\n  url: \"https://tools.example.com/rpc\"\n")
             .expect("a one-registration tools section must parse");
     assert!(
         section.0.is_present(),
@@ -4880,13 +4924,14 @@ fn test_validate_secret_module_resolvability() {
 /// Resolve a DeployCfg yaml through `config::resolve` (the boot path) with a minimal catalog
 /// containing the `acme` provider def. The catalog KEY (`acme`) is an arbitrary operator-chosen
 /// provider name; the `protocol:` value inside the def must stay a REAL compiled-in protocol
-/// (the crate's own test binary links the shipped dialect set), so it is left as `anthropic`.
+/// (the crate's own test binary links the shipped dialect set), so it is read as [`proto_a`].
 fn resolve_yaml(yaml: &str) -> Result<RootCfg, Vec<String>> {
     let deploy: config::DeployCfg =
         serde_yaml::from_str(yaml).expect("the test DeployCfg yaml must parse");
-    let def: config::ProviderDef = serde_yaml::from_str(
-        "protocol: anthropic\nbase_url: https://api.acme.example.com\nerror_map:\n  \"400\": client_error\n",
-    )
+    let def: config::ProviderDef = serde_yaml::from_str(&format!(
+        "protocol: {}\nbase_url: https://api.acme.example.com\nerror_map:\n  \"400\": client_error\n",
+        proto_a()
+    ))
     .unwrap();
     let defs = HashMap::from([("acme".to_string(), def)]);
     config::resolve(&deploy, &defs)
@@ -5500,7 +5545,7 @@ fn test_key_ttl_validates_duration() {
 #[test]
 fn an_empty_protocol_set_refuses_every_provider_naming_the_build() {
     let mut errors = Vec::new();
-    super::validate_provider_protocol_with(&[], "prov-a", "anthropic", &mut errors);
+    super::validate_provider_protocol_with(&[], "prov-a", proto_a(), &mut errors);
     super::validate_provider_protocol_with(&[], "prov-b", "no-such-protocol", &mut errors);
 
     assert_eq!(
@@ -5524,14 +5569,14 @@ fn an_empty_protocol_set_refuses_every_provider_naming_the_build() {
     // The populated set still takes the unknown-protocol arm — the two refusals stay distinct.
     let mut errors = Vec::new();
     super::validate_provider_protocol_with(
-        &["anthropic", "openai_chat"],
+        &[proto_a(), "openai_chat"],
         "prov-c",
         "nope",
         &mut errors,
     );
     assert_eq!(errors.len(), 1);
     assert!(
-        errors[0].contains("must be one of: anthropic, openai_chat"),
+        errors[0].contains(&format!("must be one of: {}, openai_chat", proto_a())),
         "the populated set names the choices: {}",
         errors[0]
     );
@@ -5555,7 +5600,7 @@ fn an_empty_protocol_set_refuses_every_provider_through_the_real_sweep() {
     let mut providers = HashMap::new();
     providers.insert(
         "prov-a".to_string(),
-        make_provider("anthropic", "https://a.example.com", "KEY_A"),
+        make_provider(proto_a(), "https://a.example.com", "KEY_A"),
     );
     providers.insert(
         "prov-b".to_string(),
@@ -5568,7 +5613,7 @@ fn an_empty_protocol_set_refuses_every_provider_through_the_real_sweep() {
 
     // Every provider is refused, and refused ONCE, and the refusal names the BUILD as the cause —
     // not the provider for naming an "unknown" protocol against an empty must-be-one-of list. The
-    // named provider that IS shipped today (`anthropic`) is refused exactly like the bogus one:
+    // named provider that IS shipped today ([`proto_a`]) is refused exactly like the bogus one:
     // with no codec compiled in, no provider lane can be served, whatever it is called.
     for prov in ["prov-a", "prov-b"] {
         let hits: Vec<&String> = errors.iter().filter(|e| e.contains(prov)).collect();
@@ -5593,7 +5638,7 @@ fn an_empty_protocol_set_refuses_every_provider_through_the_real_sweep() {
     // with the choices named. Without this half, a sweep that refused everything unconditionally
     // would also satisfy the assertions above.
     let mut errors = Vec::new();
-    super::validate_providers_with(&["anthropic", "openai"], &cfg, &[], &mut errors);
+    super::validate_providers_with(&[proto_a(), proto_b()], &cfg, &[], &mut errors);
     assert!(
         !errors.iter().any(|e| e.contains("prov-a")),
         "a provider naming a compiled-in protocol validates: {errors:?}"
@@ -5601,7 +5646,7 @@ fn an_empty_protocol_set_refuses_every_provider_through_the_real_sweep() {
     let hits: Vec<&String> = errors.iter().filter(|e| e.contains("prov-b")).collect();
     assert_eq!(hits.len(), 1, "one refusal for the stranger: {hits:?}");
     assert!(
-        hits[0].contains("must be one of: anthropic, openai"),
+        hits[0].contains(&format!("must be one of: {}, {}", proto_a(), proto_b())),
         "the populated set names the choices: {}",
         hits[0]
     );
@@ -5633,7 +5678,7 @@ fn the_empty_set_the_validator_refuses_is_the_one_an_empty_registry_produces() {
     let mut providers = HashMap::new();
     providers.insert(
         "prov-a".to_string(),
-        make_provider("anthropic", "https://a.example.com", "KEY_A"),
+        make_provider(proto_a(), "https://a.example.com", "KEY_A"),
     );
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
 
@@ -5817,7 +5862,7 @@ fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
     );
 
     let mut providers = HashMap::new();
-    let mut p = make_provider("anthropic", "https://api.acme.example.com", "IGNORED");
+    let mut p = make_provider(proto_a(), "https://api.acme.example.com", "IGNORED");
     p.api_key = empty_env;
     providers.insert("acme".to_string(), p);
     let errs = validate(&make_root_cfg(providers, HashMap::new(), HashMap::new()))
@@ -5834,7 +5879,7 @@ fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
         serde_yaml::from_str("{ module: file, settings: { path: \"\" } }")
             .expect("canonical empty-path file ref deserializes");
     let mut providers = HashMap::new();
-    let mut p = make_provider("anthropic", "https://api.acme.example.com", "IGNORED");
+    let mut p = make_provider(proto_a(), "https://api.acme.example.com", "IGNORED");
     p.api_key = empty_file;
     providers.insert("acme".to_string(), p);
     let errs = validate(&make_root_cfg(providers, HashMap::new(), HashMap::new()))
@@ -5852,7 +5897,7 @@ fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
         serde_yaml::from_str("{ module: env, settings: { key: REAL_KEY } }")
             .expect("canonical non-empty env ref deserializes");
     let mut providers = HashMap::new();
-    let mut p = make_provider("anthropic", "https://api.acme.example.com", "IGNORED");
+    let mut p = make_provider(proto_a(), "https://api.acme.example.com", "IGNORED");
     p.api_key = good;
     providers.insert("acme".to_string(), p);
     let errs = validate(&make_root_cfg(providers, HashMap::new(), HashMap::new()))
@@ -5940,7 +5985,7 @@ fn test_validate_refuses_every_duration_past_the_runtime_horizon() {
 #[test]
 fn test_validate_refuses_per_lane_durations_past_the_runtime_horizon() {
     let mut providers = HashMap::new();
-    let mut provider = make_provider("anthropic", "https://api.example.com", "API_KEY");
+    let mut provider = make_provider(proto_a(), "https://api.example.com", "API_KEY");
     provider.health = Some(crate::config::providers::HealthCfg {
         mode: crate::config::providers::HealthMode::Active,
         interval_secs: Some(MAX_DURATION_SECS + 1),
