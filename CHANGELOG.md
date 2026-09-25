@@ -590,6 +590,14 @@ moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
   Every 1.5.5 operation's entry is unchanged; `info.x-busbar-marks` explains the marks. The full,
   unfiltered document is the release asset and is served at
   `GET /api/v1/admin/ledger/openapi.json`. See [the admin API guide](docs/admin-api.md).
+- 1.6.0 Added: every node's `GET /api/v1/admin/openapi.json` describes the 1.6.0 core admin verbs, each marked `x-busbar-since: 1.6.0`.
+  They are served whatever the config names, so a node running a 1.5.5 config serves 1.5.5's
+  operations plus these verbs; every 1.5.5 operation and schema member is still there with its
+  1.5.5 value. **Migration:** none; a client that reads only the operations it knows is unaffected.
+- 1.6.0 Added: the `identity-providers` and `export` overlay sections can be reset with `DELETE /api/v1/admin/overlay/{section}`.
+  An unknown section is still refused in 1.5.5's sentence, with the longer list:
+  "expected `groups`, `hooks`, `root`, `plugin_versions`, `identity-providers`, or `export`"
+  (`tools` and `agents` join the list when their plane is configured). **Migration:** none.
 - **Two 64-bit ARM Linux builds, and the default one got faster.** The default arm64 artifacts
   (the `busbar-aarch64-unknown-linux-gnu.tar.gz` download and the multi-arch image's `linux/arm64`
   entry) now target ARMv8.1+, using the CPU's native atomic instructions instead of the baseline's
@@ -717,6 +725,12 @@ moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
   identical to calling the provider directly. Cross-protocol, every modelled field arrives in the
   target's native shape, and what cannot cross is dropped with a log line naming it. See
   [the protocols guide](docs/protocols.md).
+- 1.6.0 Changed: citations a streamed Cohere or Responses upstream sends now reach the client.
+  1.5.5 dropped them from a streamed answer (Cohere grounding citations, Responses `url_citation`
+  annotations) while the buffered answer to the same request kept them. A streamed answer now
+  carries the citations the buffered one carries, in every client protocol with a citation member:
+  Anthropic, Bedrock, Gemini, Responses and Cohere. **Migration:** none; a streaming client that
+  does not read citation events is unaffected.
 
 ### Fixed
 

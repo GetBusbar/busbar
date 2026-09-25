@@ -55,16 +55,13 @@
       "kind": "additive",
       "changelog": "Admin views gained fields; none changed.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^admin\\.ops\\|(GetHooksName|GetHooks)\\|ok$|^hooks\\|admin-list$|^hooks\\|register\\|plugin-alias$|^admin\\.ops\\|DeleteOverlaySection\\|not-found$|^admin\\.ops\\|(DeleteHooksName|PatchHooksNameSettings|PutHooksName|PostHooks)\\|ok$|^admin\\.ops\\|PostHooks\\|if-match-stale$",
-      "expected_cells": 10,
+      "cells": "^admin\\.ops\\|(GetHooksName|GetHooks)\\|ok$|^hooks\\|admin-list$|^hooks\\|register\\|plugin-alias$|^admin\\.ops\\|(DeleteHooksName|PatchHooksNameSettings|PutHooksName|PostHooks)\\|ok$|^admin\\.ops\\|PostHooks\\|if-match-stale$",
+      "expected_cells": 9,
       "classes": [
         "body",
         "headers"
       ],
-      "rationale": "Hook views gain fires_at/groups/phase; the overlay-section 404 lists the new sections; openapi.json adds the mcp/a2a endpoints. Every 1.5.5 field is unchanged. SPLIT 2026-09-05 (round-3 audit): effects.readback moved out of this improvement entry into F-011r. effects.readback is now a MONEY class (diff-cells.py rates it 10: it is the proof that the write the cell made actually persisted, and as what), and the readback half is not purely additive — the hook view's always-null `at` field is REMOVED in favour of fires_at, which is a declared breaking change and needs a changelog line. KIND MOVED improvement -> additive 2026-09-08 (busbar-oracle v0.3.3): the owner ruled on 2026-09-07 that key-list and view GROWTH is a new feature and not a break, and `additive` is the kind that makes that ruling checkable — the tool now PROVES the candidate a JSON superset of the golden at every path the golden names before it forgives `body`/`headers`, so this entry can no longer forgive a 1.5.5 field that changed value or went away. DESCRIPTION_CORRECTIONS ADDED 2026-09-11 (keep-oracle-base-reds): admin.ops|DeleteOverlaySection|not-found's `/error/message` string leaf was still standing RED — the overlay-section list growing from four names to eight (the plane-extraction squash that generalized `OverlaySection::all()` over `NamedMapSection::sections()`) also reworded the sentence's lead-in from 1.5.5's \"expected `a`, `b`, ... or `d`\" to \"expected one of ...\" (the SAME convention 1.5.5's own serde-derived unknown-field messages already use elsewhere in this codebase, e.g. `config::augment_config_error`'s \"expected one of `chain`\"), so the leaf is not a byte-for-byte list-growth splice and `text_list_growth` cannot prove it. The count growing from four sections to eight is the exact, intended, CHANGELOG-named growth this entry already claims (\"the overlay-section 404 lists the sections that now exist\"); the wording-convention move onto \"expected one of\" is the same one every other unknown-key message in this tree already uses. Registered as a correction rather than reverted: reverting would put this ONE message back on the only `a, b, or c` phrasing template left in the tree.",
-      "description_corrections": [
-        "/error/message"
-      ],
+      "rationale": "Hook views gain fires_at/groups/phase; the overlay-section 404 lists the new sections; openapi.json adds the mcp/a2a endpoints. Every 1.5.5 field is unchanged. SPLIT 2026-09-05 (round-3 audit): effects.readback moved out of this improvement entry into F-011r. effects.readback is now a MONEY class (diff-cells.py rates it 10: it is the proof that the write the cell made actually persisted, and as what), and the readback half is not purely additive — the hook view's always-null `at` field is REMOVED in favour of fires_at, which is a declared breaking change and needs a changelog line. KIND MOVED improvement -> additive 2026-09-08 (busbar-oracle v0.3.3): the owner ruled on 2026-09-07 that key-list and view GROWTH is a new feature and not a break, and `additive` is the kind that makes that ruling checkable — the tool now PROVES the candidate a JSON superset of the golden at every path the golden names before it forgives `body`/`headers`, so this entry can no longer forgive a 1.5.5 field that changed value or went away. DESCRIPTION_CORRECTIONS ADDED 2026-09-11 (keep-oracle-base-reds): admin.ops|DeleteOverlaySection|not-found's `/error/message` string leaf was still standing RED — the overlay-section list growing from four names to eight (the plane-extraction squash that generalized `OverlaySection::all()` over `NamedMapSection::sections()`) also reworded the sentence's lead-in from 1.5.5's \"expected `a`, `b`, ... or `d`\" to \"expected one of ...\" (the SAME convention 1.5.5's own serde-derived unknown-field messages already use elsewhere in this codebase, e.g. `config::augment_config_error`'s \"expected one of `chain`\"), so the leaf is not a byte-for-byte list-growth splice and `text_list_growth` cannot prove it. The count growing from four sections to eight is the exact, intended, CHANGELOG-named growth this entry already claims (\"the overlay-section 404 lists the sections that now exist\"); the wording-convention move onto \"expected one of\" is the same one every other unknown-key message in this tree already uses. Registered as a correction rather than reverted: reverting would put this ONE message back on the only `a, b, or c` phrasing template left in the tree. NARROWED 2026-09-24 (owner ruling Q54 via Q61, P3A-register3): admin.ops|DeleteOverlaySection|not-found LEAVES this entry for its own owner-signed Q54 entry — the refusal is back on 1.5.5's exact sentence shape (\"expected `a`, `b`, or `c`\") with the longer list, which text_list_growth proves directly, so this entry's `/error/message` description_correction (the only leaf it named, and only on that cell) and its `expected one of` premise probe go with it. expected_cells 10 -> 9; forgives strictly less than before.",
       "premise": {
         "all": [
           {
@@ -86,10 +83,6 @@
             "cell": "admin.ops|GetHooksName|ok",
             "pointer": "/fires_at",
             "exists": true
-          },
-          {
-            "cell": "admin.ops|DeleteOverlaySection|not-found",
-            "body_contains": "expected one of `groups`, `hooks`, `root`, `plugin_versions`"
           }
         ]
       },
@@ -147,6 +140,47 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       }
+    },
+    {
+      "id": "Q54 the overlay-section refusal names the two new resettable sections in 1.5.5's sentence",
+      "kind": "additive",
+      "changelog": "1.6.0 Added: the `identity-providers` and `export` overlay sections can be reset with `DELETE /api/v1/admin/overlay/{section}`.",
+      "by": "owner (Matthew Jackson), 2026-09-24 ruling Q54 (via Q61)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-24",
+        "ruling": "Q54 as answered in Q61: keep identity-providers + export resets, 1.5.5 sentence shape with the longer list"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^admin\\.ops\\|DeleteOverlaySection\\|not-found$",
+      "expected_cells": 1,
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "text_list_growth": true,
+      "premise": {
+        "all": [
+          {
+            "cell": "admin.ops|DeleteOverlaySection|not-found",
+            "status": 400
+          },
+          {
+            "cell": "admin.ops|DeleteOverlaySection|not-found",
+            "pointer": "/error/code",
+            "equals": "invalid_request"
+          },
+          {
+            "cell": "admin.ops|DeleteOverlaySection|not-found",
+            "pointer": "/error/message",
+            "equals": "unknown overlay section `limits`: expected `groups`, `hooks`, `root`, `plugin_versions`, `identity-providers`, or `export`"
+          }
+        ]
+      },
+      "rationale": "MEASURED 2026-09-24 by P3A-register3 against a local ./bin/oracle record (pin 3519882) of b712a5763 + the Q54 message fix (busbar-core-admin handlers.rs `overlay_names_sentence`; patch /Users/matthew/Developer/tmp/busbar-run/P3A-register3-q54-handlers.patch, default all-planes build, the oracle's 1.5.5-shaped config): DELETE /api/v1/admin/overlay/limits answers 400 invalid_request with \"unknown overlay section `limits`: expected `groups`, `hooks`, `root`, `plugin_versions`, `identity-providers`, or `export`\" where 1.5.5 answered \"unknown overlay section `limits`: expected `groups`, `hooks`, `root`, or `plugin_versions`\" — the same sentence, serial comma and `or` before the last name, with the list grown by the two named-map sections a 1.5.5-shaped config serves (`tools`/`agents` join only when their plane is configured). content-length 139 -> 171 follows the body. Owner ruling Q54 (answered in Q61): keep both sections resettable (additive capability) and keep 1.5.5's sentence shape with the longer list. kind=additive with text_list_growth, so the runner proves the backtick list only GREW — every 1.5.5 name still present and every byte outside the list identical; a reworded lead-in (the interim \"expected one of …\") or a dropped name stays red. PREMISE (evaluated): the exact message — 1.5.5's four names plus exactly `identity-providers` and `export`, in 1.5.5's sentence — so a build that lists any other section, or words it any other way, withholds the entry. At b712a5763 WITHOUT the patch the premise is FALSE (the message still reads \"expected one of …\"), so the cell scores DIVERGING until the patch lands."
     },
     {
       "id": "F-018 validation wording",
@@ -594,13 +628,13 @@
       "kind": "additive",
       "changelog": "`openapi.json` describes the MCP and A2A endpoints",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^admin\\.ops\\|GetOpenapiJson\\|ok$|^crosscut\\.traps\\|openapi-info-version$|^neutrality\\|routes\\|admin-openapi-paths$",
-      "expected_cells": 3,
+      "cells": "^crosscut\\.traps\\|openapi-info-version$|^neutrality\\|routes\\|admin-openapi-paths$",
+      "expected_cells": 2,
       "classes": [
         "body",
         "headers"
       ],
-      "rationale": "PREMISE ADDED 2026-09-24 (items 119/52, Law 10, P3A-register): the document is compile-time embedded, so 'the endpoints exist' is a claim about the build and the config, not the source. The premise holds when EITHER the MCP and A2A planes answer on this build (neither `/mcp` nor `/.well-known/agent-card.json` is a 404) OR none of the three served documents advertises the `/api/v1/admin/tools` / `/api/v1/admin/agents` paths. An LLM-only build, or an all-planes build with no mcp:/agents: block, that still serves a document listing those paths makes the premise FALSE and the entry is withheld — the neutrality cell's contract ('absent mcp:/agents:/streams: sections, the document must list only the 1.5.5 admin surface') then scores DIVERGING. MEASURED on HEAD's default build with the oracle config: /mcp and the agent card are 404 and all three documents list 11 tools/agents paths — the premise is FALSE today (item 45: the admin plane paths are advertised unconditionally). PRIOR RATIONALE: openapi.json adds the mcp/a2a endpoints; every 1.5.5 path and schema is unchanged (a dedicated cell pins info.version). The document also gains a Vary header and reports the binary's true version in info.version (1.5.5 shipped a stale 1.5.4). KIND MOVED improvement -> additive 2026-09-08 (busbar-oracle v0.3.3): the owner ruled on 2026-09-07 that endpoint- and key-list GROWTH is a new feature and not a break, and `additive` makes that ruling machine-checked — the tool proves the candidate document a JSON superset of the 1.5.5 one at every path the golden names, so a 1.5.5 path or schema that CHANGED (rather than one that was added beside it) is still red under this entry. DESCRIPTION_CORRECTIONS ADDED 2026-09-11 (a later correction): admin.ops|GetOpenapiJson|ok and neutrality|routes|admin-openapi-paths were both still standing RED at `/components/schemas/HookView/description` — the plane-extraction change (a squash commit) did not just APPEND the `groups`/`phase` paragraph to the struct doc-comment schemars renders here, it also MOVED the existing `groups:`/`phase:` sentence out of its 1.5.5 position mid-paragraph so the new paragraph about the `groups` field's write/read gap could explain both together. The fields themselves (`fires_at`, `groups`, `phase`) are exactly the additive growth this entry's own changelog line already names; the description text was reworded, not merely grown, so `additive_superset`'s plain string-equality check cannot pass it without help. Registered as a correction rather than reverted, since 1.5.5's description is not being restored anywhere else and reverting the doc-comment would put the `groups:`/`phase:` sentence back in a spot that no longer matches how the struct is documented field-by-field. SECOND LEAF ADDED 2026-09-11 (a later correction): `/components/schemas/HookView/properties/at/description` was still standing RED after the first correction — a further later correction (which restored the `at` field a clean-slate commit had dropped, \"a 1.5.5 client reading this view must see this field byte-for-byte\") gave it a new, much longer doc-comment explaining why it is back and why `fires_at` is the field to read instead; 1.5.5's one-line description (\"TAP observation stage ..., or `None` for a gate\") is superseded by that, not grown beside it. The field's WIRE VALUE is unchanged (still the legacy single-stage string or null) and is not part of this correction. THIRD LEAF ADDED 2026-09-12 (a later correction): with the first two leaves corrected, the same two cells advanced past `HookView` and stood RED at `/components/schemas/NamedDefView/properties/max_admin_scope/description`. This is not plane-extraction fallout: a separate change (2026-08-08, well before this branch's base) rewrote the field's doc from 1.5.5's \"the per-provider ADMIN CEILING (`none` | `read-only` | `full`)\" to \"(`read-only` | `full`). There is no `none` token: ... a ceiling caps what a grant can reach and cannot express the absence of one\", matching that same commit's `Scope::parse_ceiling` refusal message and the dedicated test (admin::tests, PUT identity-providers with `max_admin_scope:\"none\"` now asserts 400) whose own comment states the reason: 1.5.5 accepted the API write and reported success, but the engine's ceiling parser never accepted `none`, so the config was silently unbootable at the next restart. The wire value is otherwise unchanged (`Option<String>`, omitted when unset); only the description text names the tightened, already-shipped grammar, so `additive_superset`'s plain string-equality check cannot pass it without help. FOURTH AND FIFTH LEAVES ADDED 2026-09-12 (a later correction), both traced to the plane-extraction change (the same squash commit as the first leaf) generalizing `OverlaySection::all()`/the overlay-section list from four names to eight: `/components/schemas/NamedDefView/properties/module/description` gained a paragraph explaining `module` is OMITTED (not empty-stringed) for a section with no module, `agents:` being the first such section (`crates/busbar-substrate/src/api.rs`); `/components/schemas/OverlayResetView/properties/reset/description` dropped 1.5.5's hand-written four-name list in favour of pointing at the endpoint's own path-parameter enum, exactly so this class of drift stops recurring every time a section is added (`crates/busbar-core/src/admin/v1/contract/schema.rs`). Neither changes any WIRE behavior 1.5.5 had; both are prose describing the identical additive section-list growth this entry's own changelog line already names. REMAINING LEAVES NOT CORRECTED, LEFT RED ON PURPOSE, ALL UNDER `/paths/...`: the overlay-delete endpoint's `summary` and its `400` response description both interpolate the SAME now-eight-member `overlay_section_names` list (`handlers.rs`/`taxonomy.rs`, built from `OverlaySection::all()`, the same growth as F-011's `/error/message` correction, different location) — but `description_corrections` cannot name either: `resolve_json_pointer` splits a pointer on every `/` with no JSON-Pointer `~1` escaping, so it can never resolve a leaf under a `paths` object, whose own keys (`/api/v1/admin/overlay/{section}`) are themselves full URL paths containing literal `/`. This is a busbar-oracle tool limitation (a separate product, GetBusbar/busbar-oracle), not something this register can work around. The endpoint's `409` response description gained a further, genuinely NEW leading clause, \"`conflict`: another config section still references this definition by bare name (remove the reference first)\", ahead of 1.5.5's `version_conflict` sentence — a new refusal case (cross-section reference protection on delete), not a reworded existing one. And `/components/schemas/NamedDefView`'s own `required` array independently dropped `module` (schemars marks a `skip_serializing_if`-annotated field optional in the generated schema, and `module` gained that attribute for the same `agents:`-has-no-module reason as the fourth leaf above) — a `required` array SHRINKING is not something `additive_superset`'s list rule or `description_corrections` (string leaves only) can ever pass, by design (see the function's own list-relation docstring: cand must be at least as long as golden). All four remaining leaves are almost certainly intended (the same already-changelogged mcp/a2a-section growth structurally forces `module` optional and drives the two `paths` prose leaves; a delete-time reference guard is a real safety feature), but none has a verbatim CHANGELOG line of its own, and asserting one — or opening a `kind: breaking` sibling entry with a `changelog_reason` — is an owner call this correction does not make unilaterally. Left RED for the owner; see the follow-up correction branch's handoff notes for the options (register vs. revert vs. a busbar-oracle upstream fix for the `paths`-pointer limitation). SIXTH LEAF RESOLVED AT THE ROOT 2026-09-12 (a later correction): the `required` array's `module` drop (the fifth item above) was struck by measuring 1.5.5's golden (`admin.ops|GetOpenapiJson|ok`), which shows `NamedDefView.module` as `required` and `\"type\": \"string\"` (never nullable) for EVERY entry — 1.5.5 had no named-map section whose entries carried no module, so it has no representation for one. `module`'s `#[serde(skip_serializing_if = \"String::is_empty\")]` is removed (`crates/busbar-substrate/src/api.rs`); `agents:` entries now serialize `module: \"\"` instead of omitting the key, `required` is back to `[\"name\", \"module\", \"settings_keys\"]` byte-for-byte with 1.5.5, and `openapi.json{,.gz}` are regenerated (`UPDATE_OPENAPI=1`). The FOURTH LEAF's `/components/schemas/NamedDefView/properties/module/description` text changed again (now explains ALWAYS-present/empty-stringed rather than OMITTED) but stays covered by its existing `description_corrections` entry above — the leaf is a prose difference, not a wire one. Only the `/paths/...` leaves (the overlay-delete `summary`/`400`/`409` descriptions) remain RED, for the tool limitation named above. INFO.VERSION CORRECTION + REGISTER DECISION 2026-09-15 (config-seam-work): `/info/version` is added to description_corrections — it is a plain string leaf (`1.5.4` -> the running build version) whose pointer resolve_json_pointer CAN walk (no `/` inside `info`/`version`), so the scalar version bump this entry's own changelog line already names (\"reports the binary's true version in info.version, 1.5.5 shipped a stale 1.5.4\", now also in CHANGELOG's 1.6.0 Spec-fidelity section) is forgiven at the leaf while additive_superset keeps proving the rest of the document a superset. The `/paths/...` leaves the owner deferred above are now taken via the sanctioned register option: a `kind: breaking` sibling F-011c naming exactly admin.ops|GetOpenapiJson|ok and neutrality|routes|admin-openapi-paths (the two cells that serve the overlay-delete path), classes [body, headers], with the CHANGELOG line for the grown section list + the new 409 cross-section-reference guard. F-011c blankets body/headers on all three cells (the price of the tool's `/paths`-pointer limitation: the additive superset proof no longer gates their document body — every cell that serves the full openapi document walks into the same unaddressable `/paths` leaf, so crosscut.traps|openapi-info-version could not stay additive-only; its `/info/version` scalar remains leaf-corrected here for the audit trail). The durable fix remains the upstream busbar-oracle `/paths`-pointer repair, at which point F-011c can retire back to a leaf correction.",
+      "rationale": "PREMISE ADDED 2026-09-24 (items 119/52, Law 10, P3A-register): the document is compile-time embedded, so 'the endpoints exist' is a claim about the build and the config, not the source. The premise holds when EITHER the MCP and A2A planes answer on this build (neither `/mcp` nor `/.well-known/agent-card.json` is a 404) OR none of the three served documents advertises the `/api/v1/admin/tools` / `/api/v1/admin/agents` paths. An LLM-only build, or an all-planes build with no mcp:/agents: block, that still serves a document listing those paths makes the premise FALSE and the entry is withheld — the neutrality cell's contract ('absent mcp:/agents:/streams: sections, the document must list only the 1.5.5 admin surface') then scores DIVERGING. MEASURED on HEAD's default build with the oracle config: /mcp and the agent card are 404 and all three documents list 11 tools/agents paths — the premise is FALSE today (item 45: the admin plane paths are advertised unconditionally). PRIOR RATIONALE: openapi.json adds the mcp/a2a endpoints; every 1.5.5 path and schema is unchanged (a dedicated cell pins info.version). The document also gains a Vary header and reports the binary's true version in info.version (1.5.5 shipped a stale 1.5.4). KIND MOVED improvement -> additive 2026-09-08 (busbar-oracle v0.3.3): the owner ruled on 2026-09-07 that endpoint- and key-list GROWTH is a new feature and not a break, and `additive` makes that ruling machine-checked — the tool proves the candidate document a JSON superset of the 1.5.5 one at every path the golden names, so a 1.5.5 path or schema that CHANGED (rather than one that was added beside it) is still red under this entry. DESCRIPTION_CORRECTIONS ADDED 2026-09-11 (a later correction): admin.ops|GetOpenapiJson|ok and neutrality|routes|admin-openapi-paths were both still standing RED at `/components/schemas/HookView/description` — the plane-extraction change (a squash commit) did not just APPEND the `groups`/`phase` paragraph to the struct doc-comment schemars renders here, it also MOVED the existing `groups:`/`phase:` sentence out of its 1.5.5 position mid-paragraph so the new paragraph about the `groups` field's write/read gap could explain both together. The fields themselves (`fires_at`, `groups`, `phase`) are exactly the additive growth this entry's own changelog line already names; the description text was reworded, not merely grown, so `additive_superset`'s plain string-equality check cannot pass it without help. Registered as a correction rather than reverted, since 1.5.5's description is not being restored anywhere else and reverting the doc-comment would put the `groups:`/`phase:` sentence back in a spot that no longer matches how the struct is documented field-by-field. SECOND LEAF ADDED 2026-09-11 (a later correction): `/components/schemas/HookView/properties/at/description` was still standing RED after the first correction — a further later correction (which restored the `at` field a clean-slate commit had dropped, \"a 1.5.5 client reading this view must see this field byte-for-byte\") gave it a new, much longer doc-comment explaining why it is back and why `fires_at` is the field to read instead; 1.5.5's one-line description (\"TAP observation stage ..., or `None` for a gate\") is superseded by that, not grown beside it. The field's WIRE VALUE is unchanged (still the legacy single-stage string or null) and is not part of this correction. THIRD LEAF ADDED 2026-09-12 (a later correction): with the first two leaves corrected, the same two cells advanced past `HookView` and stood RED at `/components/schemas/NamedDefView/properties/max_admin_scope/description`. This is not plane-extraction fallout: a separate change (2026-08-08, well before this branch's base) rewrote the field's doc from 1.5.5's \"the per-provider ADMIN CEILING (`none` | `read-only` | `full`)\" to \"(`read-only` | `full`). There is no `none` token: ... a ceiling caps what a grant can reach and cannot express the absence of one\", matching that same commit's `Scope::parse_ceiling` refusal message and the dedicated test (admin::tests, PUT identity-providers with `max_admin_scope:\"none\"` now asserts 400) whose own comment states the reason: 1.5.5 accepted the API write and reported success, but the engine's ceiling parser never accepted `none`, so the config was silently unbootable at the next restart. The wire value is otherwise unchanged (`Option<String>`, omitted when unset); only the description text names the tightened, already-shipped grammar, so `additive_superset`'s plain string-equality check cannot pass it without help. FOURTH AND FIFTH LEAVES ADDED 2026-09-12 (a later correction), both traced to the plane-extraction change (the same squash commit as the first leaf) generalizing `OverlaySection::all()`/the overlay-section list from four names to eight: `/components/schemas/NamedDefView/properties/module/description` gained a paragraph explaining `module` is OMITTED (not empty-stringed) for a section with no module, `agents:` being the first such section (`crates/busbar-substrate/src/api.rs`); `/components/schemas/OverlayResetView/properties/reset/description` dropped 1.5.5's hand-written four-name list in favour of pointing at the endpoint's own path-parameter enum, exactly so this class of drift stops recurring every time a section is added (`crates/busbar-core/src/admin/v1/contract/schema.rs`). Neither changes any WIRE behavior 1.5.5 had; both are prose describing the identical additive section-list growth this entry's own changelog line already names. REMAINING LEAVES NOT CORRECTED, LEFT RED ON PURPOSE, ALL UNDER `/paths/...`: the overlay-delete endpoint's `summary` and its `400` response description both interpolate the SAME now-eight-member `overlay_section_names` list (`handlers.rs`/`taxonomy.rs`, built from `OverlaySection::all()`, the same growth as F-011's `/error/message` correction, different location) — but `description_corrections` cannot name either: `resolve_json_pointer` splits a pointer on every `/` with no JSON-Pointer `~1` escaping, so it can never resolve a leaf under a `paths` object, whose own keys (`/api/v1/admin/overlay/{section}`) are themselves full URL paths containing literal `/`. This is a busbar-oracle tool limitation (a separate product, GetBusbar/busbar-oracle), not something this register can work around. The endpoint's `409` response description gained a further, genuinely NEW leading clause, \"`conflict`: another config section still references this definition by bare name (remove the reference first)\", ahead of 1.5.5's `version_conflict` sentence — a new refusal case (cross-section reference protection on delete), not a reworded existing one. And `/components/schemas/NamedDefView`'s own `required` array independently dropped `module` (schemars marks a `skip_serializing_if`-annotated field optional in the generated schema, and `module` gained that attribute for the same `agents:`-has-no-module reason as the fourth leaf above) — a `required` array SHRINKING is not something `additive_superset`'s list rule or `description_corrections` (string leaves only) can ever pass, by design (see the function's own list-relation docstring: cand must be at least as long as golden). All four remaining leaves are almost certainly intended (the same already-changelogged mcp/a2a-section growth structurally forces `module` optional and drives the two `paths` prose leaves; a delete-time reference guard is a real safety feature), but none has a verbatim CHANGELOG line of its own, and asserting one — or opening a `kind: breaking` sibling entry with a `changelog_reason` — is an owner call this correction does not make unilaterally. Left RED for the owner; see the follow-up correction branch's handoff notes for the options (register vs. revert vs. a busbar-oracle upstream fix for the `paths`-pointer limitation). SIXTH LEAF RESOLVED AT THE ROOT 2026-09-12 (a later correction): the `required` array's `module` drop (the fifth item above) was struck by measuring 1.5.5's golden (`admin.ops|GetOpenapiJson|ok`), which shows `NamedDefView.module` as `required` and `\"type\": \"string\"` (never nullable) for EVERY entry — 1.5.5 had no named-map section whose entries carried no module, so it has no representation for one. `module`'s `#[serde(skip_serializing_if = \"String::is_empty\")]` is removed (`crates/busbar-substrate/src/api.rs`); `agents:` entries now serialize `module: \"\"` instead of omitting the key, `required` is back to `[\"name\", \"module\", \"settings_keys\"]` byte-for-byte with 1.5.5, and `openapi.json{,.gz}` are regenerated (`UPDATE_OPENAPI=1`). The FOURTH LEAF's `/components/schemas/NamedDefView/properties/module/description` text changed again (now explains ALWAYS-present/empty-stringed rather than OMITTED) but stays covered by its existing `description_corrections` entry above — the leaf is a prose difference, not a wire one. Only the `/paths/...` leaves (the overlay-delete `summary`/`400`/`409` descriptions) remain RED, for the tool limitation named above. INFO.VERSION CORRECTION + REGISTER DECISION 2026-09-15 (config-seam-work): `/info/version` is added to description_corrections — it is a plain string leaf (`1.5.4` -> the running build version) whose pointer resolve_json_pointer CAN walk (no `/` inside `info`/`version`), so the scalar version bump this entry's own changelog line already names (\"reports the binary's true version in info.version, 1.5.5 shipped a stale 1.5.4\", now also in CHANGELOG's 1.6.0 Spec-fidelity section) is forgiven at the leaf while additive_superset keeps proving the rest of the document a superset. The `/paths/...` leaves the owner deferred above are now taken via the sanctioned register option: a `kind: breaking` sibling F-011c naming exactly admin.ops|GetOpenapiJson|ok and neutrality|routes|admin-openapi-paths (the two cells that serve the overlay-delete path), classes [body, headers], with the CHANGELOG line for the grown section list + the new 409 cross-section-reference guard. F-011c blankets body/headers on all three cells (the price of the tool's `/paths`-pointer limitation: the additive superset proof no longer gates their document body — every cell that serves the full openapi document walks into the same unaddressable `/paths` leaf, so crosscut.traps|openapi-info-version could not stay additive-only; its `/info/version` scalar remains leaf-corrected here for the audit trail). The durable fix remains the upstream busbar-oracle `/paths`-pointer repair, at which point F-011c can retire back to a leaf correction. NARROWED 2026-09-24 (owner ruling Q56 via Q61, P3A-register3): admin.ops|GetOpenapiJson|ok LEAVES this entry for the owner-signed Q56 entry, which judges that cell's document as a machine-checked JSON superset of 1.5.5's (kind additive) instead of this entry; expected_cells 3 -> 2; forgives strictly less than before.",
       "description_corrections": [
         "/components/schemas/HookView/description",
         "/components/schemas/HookView/properties/at/description",
@@ -686,13 +720,13 @@
       "kind": "breaking",
       "changelog": "`openapi.json`'s overlay-section `delete` endpoint documents the grown section list in its `400` response and a new `409` cross-section-reference guard (deleting a definition another config section still references by bare name is refused).",
       "by": "owner (Matthew Jackson), 2026-09-15 register decision on F-011b's deferred /paths leaves",
-      "cells": "^(admin\\.ops\\|GetOpenapiJson\\|ok|neutrality\\|routes\\|admin-openapi-paths|crosscut\\.traps\\|openapi-info-version)$",
-      "expected_cells": 3,
+      "cells": "^(neutrality\\|routes\\|admin-openapi-paths|crosscut\\.traps\\|openapi-info-version)$",
+      "expected_cells": 2,
       "classes": [
         "body",
         "headers"
       ],
-      "rationale": "PREMISE ADDED 2026-09-24 (items 119/52, P3A-register): this breaking entry blankets body/headers on the three openapi cells, so it inherits F-011b's plane guard (the MCP/A2A planes answer, or no document advertises their admin paths) — without it, this blanket was the live blindfold that forgave an unconfigured build advertising /api/v1/admin/tools*/agents* (measured ACCEPTED under this entry on HEAD). It also requires the overlay-delete 409 clause it exists to forgive to actually be present. PRIOR RATIONALE: All three cells that serve openapi.json still stand RED at one leaf additive_superset (F-011b) cannot forgive: `/paths//api/v1/admin/overlay/{section}/delete/responses/400/description` (and, once past it, the sibling `summary`/`409` prose on the same endpoint). All three interpolate the overlay-section-names list `OverlaySection::all()` grew from four to eight (handlers.rs/taxonomy.rs), and the `409` clause names a genuinely new delete-time cross-section-reference guard. Both are intended and now carry a CHANGELOG line (1.6.0 Spec-fidelity section: the overlay-delete 400 lists the grown section set and the 409 adds the reference guard). They cannot be registered as leaf `description_corrections` because busbar-oracle's resolve_json_pointer splits a pointer on every `/` and cannot address a leaf under a `paths` object whose own keys are literal URL paths (`/api/v1/admin/overlay/{section}`) — the tool limitation F-011b documents. This is F-011b's own enumerated owner option (\"a `kind: breaking` sibling entry with a `changelog_reason`\"), taken here. COST, stated plainly: breaking forgives whole classes, not leaves, so this blankets `body`/`headers` on these two cells and their document body is no longer gated by the additive superset proof — a future regression in the rest of admin.ops|GetOpenapiJson's body would be masked. That is the price of the tool's `/paths`-pointer gap; it is bounded to the non-money openapi document surface (the money path does not route through openapi.json). All three cells serve the SAME full openapi document, so every one of them additive_superset-walks into the identical unaddressable `/paths` leaf — crosscut.traps|openapi-info-version could not be kept additive-only (it is here for the `/paths` leaf, though its `/info/version` scalar stays leaf-corrected in F-011b for the audit trail); F-011b's additive proof is therefore superseded for all three. The durable fix is the upstream busbar-oracle `/paths`-pointer repair (RFC-6901 `~1` escaping in the build+resolve path convention), after which this entry retires to a leaf correction. `body` is money-rated on admin.ops (BODY_IS_CONTRACT), so this is kind=breaking with its changelog line, per the loader's money guard.",
+      "rationale": "PREMISE ADDED 2026-09-24 (items 119/52, P3A-register): this breaking entry blankets body/headers on the three openapi cells, so it inherits F-011b's plane guard (the MCP/A2A planes answer, or no document advertises their admin paths) — without it, this blanket was the live blindfold that forgave an unconfigured build advertising /api/v1/admin/tools*/agents* (measured ACCEPTED under this entry on HEAD). It also requires the overlay-delete 409 clause it exists to forgive to actually be present. PRIOR RATIONALE: All three cells that serve openapi.json still stand RED at one leaf additive_superset (F-011b) cannot forgive: `/paths//api/v1/admin/overlay/{section}/delete/responses/400/description` (and, once past it, the sibling `summary`/`409` prose on the same endpoint). All three interpolate the overlay-section-names list `OverlaySection::all()` grew from four to eight (handlers.rs/taxonomy.rs), and the `409` clause names a genuinely new delete-time cross-section-reference guard. Both are intended and now carry a CHANGELOG line (1.6.0 Spec-fidelity section: the overlay-delete 400 lists the grown section set and the 409 adds the reference guard). They cannot be registered as leaf `description_corrections` because busbar-oracle's resolve_json_pointer splits a pointer on every `/` and cannot address a leaf under a `paths` object whose own keys are literal URL paths (`/api/v1/admin/overlay/{section}`) — the tool limitation F-011b documents. This is F-011b's own enumerated owner option (\"a `kind: breaking` sibling entry with a `changelog_reason`\"), taken here. COST, stated plainly: breaking forgives whole classes, not leaves, so this blankets `body`/`headers` on these two cells and their document body is no longer gated by the additive superset proof — a future regression in the rest of admin.ops|GetOpenapiJson's body would be masked. That is the price of the tool's `/paths`-pointer gap; it is bounded to the non-money openapi document surface (the money path does not route through openapi.json). All three cells serve the SAME full openapi document, so every one of them additive_superset-walks into the identical unaddressable `/paths` leaf — crosscut.traps|openapi-info-version could not be kept additive-only (it is here for the `/paths` leaf, though its `/info/version` scalar stays leaf-corrected in F-011b for the audit trail); F-011b's additive proof is therefore superseded for all three. The durable fix is the upstream busbar-oracle `/paths`-pointer repair (RFC-6901 `~1` escaping in the build+resolve path convention), after which this entry retires to a leaf correction. `body` is money-rated on admin.ops (BODY_IS_CONTRACT), so this is kind=breaking with its changelog line, per the loader's money guard. NARROWED 2026-09-24 (owner ruling Q56 via Q61, P3A-register3): admin.ops|GetOpenapiJson|ok LEAVES this entry for the owner-signed Q56 entry, which judges that cell's document as a machine-checked JSON superset of 1.5.5's (kind additive) instead of this blanket; expected_cells 3 -> 2; forgives strictly less than before.",
       "changelog_reason": "The overlay-delete endpoint's response descriptions describe the already-changelogged section-list growth (four -> eight) and a new cross-section-reference guard; the tool cannot leaf-correct a string under a `paths` key, so the cells are owner-declared breaking instead.",
       "premise": {
         "all": [
@@ -773,6 +807,128 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       }
+    },
+    {
+      "id": "Q56 the served admin document adds the 1.6.0 core admin verbs beside every 1.5.5 operation",
+      "kind": "additive",
+      "changelog": "1.6.0 Added: every node's `GET /api/v1/admin/openapi.json` describes the 1.6.0 core admin verbs, each marked `x-busbar-since: 1.6.0`.",
+      "by": "owner (Matthew Jackson), 2026-09-24 ruling Q56 (via Q61)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-24",
+        "ruling": "Q56 as answered in Q61: accept additive — core admin verbs served on every node; owner-signed entry"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^admin\\.ops\\|GetOpenapiJson\\|ok$",
+      "expected_cells": 1,
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "description_corrections": [
+        "/components/schemas/HookView/description",
+        "/components/schemas/HookView/properties/at/description",
+        "/components/schemas/NamedDefView/properties/max_admin_scope/description",
+        "/components/schemas/NamedDefView/properties/module/description",
+        "/components/schemas/OverlayResetView/properties/reset/description",
+        "/info/version",
+        "/components/schemas/AuditEntry/description",
+        "/components/schemas/PluginSchemaView/properties/restart_required_default/description",
+        "/paths/~1api~1v1~1admin~1overlay~1{section}/delete/summary",
+        "/paths/~1api~1v1~1admin~1overlay~1{section}/delete/responses/400/description",
+        "/paths/~1api~1v1~1admin~1overlay~1{section}/delete/responses/409/description"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "admin.ops|GetOpenapiJson|ok",
+            "status": 200
+          },
+          {
+            "cell": "admin.ops|GetOpenapiJson|ok",
+            "pointer": "/paths/~1api~1v1~1admin~1adjust/post/x-busbar-since",
+            "equals": "1.6.0"
+          },
+          {
+            "cell": "admin.ops|GetOpenapiJson|ok",
+            "pointer": "/paths/~1api~1v1~1admin~1audit~1head/get/x-busbar-since",
+            "equals": "1.6.0"
+          },
+          {
+            "cell": "admin.ops|GetOpenapiJson|ok",
+            "pointer": "/paths/~1api~1v1~1admin~1audit~1keys/get/x-busbar-since",
+            "equals": "1.6.0"
+          },
+          {
+            "cell": "admin.ops|GetOpenapiJson|ok",
+            "pointer": "/paths/~1api~1v1~1admin~1audit~1range/get/x-busbar-since",
+            "equals": "1.6.0"
+          },
+          {
+            "cell": "admin.ops|GetOpenapiJson|ok",
+            "pointer": "/paths/~1api~1v1~1admin~1chain-break/post/x-busbar-since",
+            "equals": "1.6.0"
+          },
+          {
+            "cell": "admin.ops|GetOpenapiJson|ok",
+            "pointer": "/paths/~1api~1v1~1admin~1ledger~1amend-rate-history/post/x-busbar-since",
+            "equals": "1.6.0"
+          },
+          {
+            "cell": "admin.ops|GetOpenapiJson|ok",
+            "pointer": "/paths/~1api~1v1~1admin~1ledger~1checkpoints/get/x-busbar-since",
+            "equals": "1.6.0"
+          },
+          {
+            "cell": "admin.ops|GetOpenapiJson|ok",
+            "pointer": "/paths/~1api~1v1~1admin~1ledger~1migration/get/x-busbar-since",
+            "equals": "1.6.0"
+          },
+          {
+            "cell": "admin.ops|GetOpenapiJson|ok",
+            "pointer": "/paths/~1api~1v1~1admin~1ledger~1openapi.json/get/x-busbar-since",
+            "equals": "1.6.0"
+          },
+          {
+            "cell": "admin.ops|GetOpenapiJson|ok",
+            "pointer": "/paths/~1api~1v1~1admin~1ledger~1reconciliation/get/x-busbar-since",
+            "equals": "1.6.0"
+          },
+          {
+            "cell": "admin.ops|GetOpenapiJson|ok",
+            "pointer": "/paths/~1api~1v1~1admin~1ledger~1totals/get/x-busbar-since",
+            "equals": "1.6.0"
+          },
+          {
+            "cell": "admin.ops|GetOpenapiJson|ok",
+            "pointer": "/paths/~1api~1v1~1admin~1reseal-epoch-floor/post/x-busbar-since",
+            "equals": "1.6.0"
+          },
+          {
+            "cell": "admin.ops|GetOpenapiJson|ok",
+            "pointer": "/paths/~1api~1v1~1admin~1store-restore/post/x-busbar-since",
+            "equals": "1.6.0"
+          },
+          {
+            "not": {
+              "cell": "admin.ops|GetOpenapiJson|ok",
+              "pointer": "/paths/~1api~1v1~1admin~1tools",
+              "exists": true
+            }
+          },
+          {
+            "not": {
+              "cell": "admin.ops|GetOpenapiJson|ok",
+              "pointer": "/paths/~1api~1v1~1admin~1agents",
+              "exists": true
+            }
+          }
+        ]
+      },
+      "rationale": "MEASURED 2026-09-24 by P3A-register3 against a local ./bin/oracle record (pin 3519882) of b712a5763 (+ the Q54 message patch, which does not touch the document), default all-planes build, the oracle's 1.5.5-shaped config: the served document keeps all 49 of 1.5.5's paths and adds 26 core admin paths, every one marked `x-busbar-since: 1.6.0` (13 bound: adjust, audit head/keys/range, chain-break, ledger amend-rate-history/checkpoints/migration/openapi.json/reconciliation/totals, reseal-epoch-floor, store-restore; 13 marked `x-busbar-effect-bound: false`, which the architect ruling in Q56 removes from service and from the document); no `tools`/`agents` path is served. Owner ruling Q56 (answered in Q61): accept the core verbs as an additive difference every 1.6.0 node has. REPLACES F-011c's breaking blanket (and F-011b's additive coverage) on THIS cell: kind=additive, so the runner proves the candidate document a JSON superset of 1.5.5's at every leaf 1.5.5 names — a 1.5.5 operation, parameter, response or schema member that changed or went away stays red. What 1.5.5 operations gained is additive and ruled elsewhere: the `409 unpriced_class` response on the three usage reads (#42, owner-locked), the rotate `400` for an overlong id (K-1), the overlay-delete section enum's growth (Q54). The pin 3519882 runner resolves `~1`-escaped pointers, so F-011c's `/paths` prose leaves are now named leaf by leaf instead of blanketed. DESCRIPTION_CORRECTIONS (string leaves only, each already owner-signed on this cell): F-011b's six (HookView x2, NamedDefView x2, OverlayResetView reset, info.version); AuditEntry/description (Q41: the record's `scheme` frames the hash); PluginSchemaView restart_required_default/description (a Rust path renamed in prose, previously forgiven under F-011c's blanket); the overlay-delete summary, 400 and 409 descriptions (F-011c's 2026-09-15 owner decision: the grown section list and the new `conflict` guard). PREMISE (evaluated): the cell answers 200, each of the 13 bound core verbs carries `x-busbar-since: 1.6.0`, and the document advertises no `tools`/`agents` path. LIMIT: the premise grammar cannot say \"no OTHER path was added\" — the superset proof permits additions — so the 26 are enumerated here and in the CHANGELOG line, and a future unrelated addition is only caught by a reviewer reading this cell's ACCEPTED row."
     },
     {
       "id": "S-7 responses-door streams stream",
