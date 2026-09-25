@@ -31,9 +31,12 @@ use std::sync::Arc;
 
 use busbar_kernel::ingress::arrival::{BodyIngressEntry, PathIngressEntry};
 use busbar_kernel::plane::registry::PlaneDecl;
-use busbar_kernel::plane::registry::{BillableClass, PlaneDeclaration, PlaneHooks};
+use busbar_kernel::plane::registry::{BillableClass, BuildCtx, PlaneDeclaration, PlaneHooks};
+use busbar_kernel::plane::PlaneAdmission;
 use busbar_kernel::plane_host::{EngineHost, LiveHostFactory};
-use busbar_plugin_loader::{DynPlane, HotPlaneDecl};
+use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneResponse, PlaneRouteSpec};
+use busbar_plugin_loader::{DynPlane, HotHostVtable, HotPlaneDecl, RouteAuth, RouteMethod};
+use busbar_plugin_loader::{HotStatusClass as StatusClass, ServedPlane};
 
 /// A provider composition step, captured off the resolved configuration before the app is built and
 /// run once the deployment's secret resolver exists.
@@ -191,7 +194,7 @@ pub fn plane_rows(
 /// read off the decl's declaration tail (the loader refuses a decl that states none). Nothing is
 /// defaulted and nothing stands in for anything. The plane lives for the process, so every string
 /// and list here is borrowed from it or kept once, as the installed row list is. Its hooks are
-/// [`HOT_PLANE_HOOKS`].
+/// [`HOT_PLANE_HOOKS`], and the plane is recorded where their shared `build` finds it.
 pub fn hot_plane_row(plane: &'static DynPlane) -> Result<PlaneDecl, String> {
     let key = plane.name();
     if key.is_empty() || plane.section_key().is_empty() {
@@ -223,18 +226,189 @@ pub fn hot_plane_row(plane: &'static DynPlane) -> Result<PlaneDecl, String> {
             .leak(),
         fee_units: list(&stated.fee_units),
     };
+    HOT_PLANES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(plane);
     Ok(PlaneDecl::assemble(declaration, HOT_PLANE_HOOKS))
 }
 
-/// THE KERNEL HOOKS OF A HOT-LANE PLANE: the inert set (claims no path, binds no audience, builds no
-/// slot), because the kernel's request loop does not yet drive a plane through its C-ABI slots —
-/// `docs/design/1.6.0-TRACKER.md` H6 part 1. The same set for every HOT-lane plane, whichever door.
+/// Every HOT-lane plane [`hot_plane_row`] adapted, in adaptation (= install) order: where the one
+/// shared [`hot_build`] finds the plane a row is for, by the section its resource names. The first
+/// plane with a section is the one the boot fold kept (it keeps the first row of a key).
+static HOT_PLANES: std::sync::Mutex<Vec<&'static DynPlane>> = std::sync::Mutex::new(Vec::new());
+
+/// THE HOST EVERY HOT-LANE PLANE IS BUILT AGAINST: the kernel's own vtable, all 44 slots, built once
+/// and kept for the process — a built plane may hold the table it was handed at `build`, so the
+/// table outlives it (the ABI's build contract). Each dispatch is handed a table and `HostCtx` of its
+/// own, minted for it.
+static HOT_HOST: std::sync::LazyLock<HotHostVtable> =
+    std::sync::LazyLock::new(busbar_kernel::plane_host::build_plane_host_vtable);
+
+/// A HOT-lane plane's runtime slot for one config generation: the plane as built, and the door it
+/// stated through its `claims` and `admission` slots when it was built.
+struct HotSlot {
+    /// The built plane.
+    served: ServedPlane,
+    /// Each path it answers on: the method, the path, and the wire format (one the host speaks).
+    claims: Vec<(RouteMethod, String, &'static str)>,
+    /// The audience it binds, if it binds one.
+    admission: Option<PlaneAdmission>,
+}
+
+/// BUILD a HOT-lane plane's slot for this generation, over the ABI. The kernel hands a plane whose
+/// section it carries raw that section as its resource, `(section, value)`; the section names the
+/// plane. The value crosses as JSON bytes, beside the deployment's public URL, into the plane's own
+/// `build` slot (against [`HOT_HOST`]); what the built plane states through `claims` and `admission`
+/// is read once, here. A plane that will not build, or states a door the host cannot mount, gets no
+/// slot — it serves nothing this generation, and the refusal is logged, naming it.
+fn hot_build(ctx: &BuildCtx) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
+    let resource = ctx.endpoint_slot.as_deref()?;
+    let (section, value) = resource.downcast_ref::<(&'static str, serde_yaml::Value)>()?;
+    let plane = HOT_PLANES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .copied()
+        .find(|p| p.section_key() == *section)?;
+    match hot_slot(plane, value, ctx.public_url) {
+        Ok(slot) => Some(std::sync::Arc::new(slot)),
+        Err(refusal) => {
+            tracing::error!(plane = plane.name(), "{refusal}");
+            None
+        }
+    }
+}
+
+/// [`hot_build`]'s body: serve `plane` over `section`, then read and check the door it states.
+fn hot_slot(
+    plane: &'static DynPlane,
+    section: &serde_yaml::Value,
+    public_url: Option<&str>,
+) -> Result<HotSlot, String> {
+    let name = plane.name();
+    let bytes = serde_json::to_vec(section)
+        .map_err(|e| format!("plane `{name}`'s section is not representable as JSON: {e}"))?;
+    let served = plane.serve(&HOT_HOST, &bytes, public_url)?;
+    let methods = [
+        RouteMethod::Get,
+        RouteMethod::Post,
+        RouteMethod::Put,
+        RouteMethod::Patch,
+        RouteMethod::Delete,
+    ];
+    let wires = [
+        busbar_kernel::plane::WIRE_HTTP_JSON,
+        busbar_kernel::plane::WIRE_JSONRPC,
+        busbar_kernel::plane::WIRE_GRPC,
+    ];
+    let claims = served
+        .claims()?
+        .into_iter()
+        .map(|c| {
+            let method = methods.into_iter().find(|m| m.as_str() == c.method);
+            let wire = wires.into_iter().find(|w| *w == c.wire);
+            match (method, wire) {
+                (Some(method), Some(wire)) => Ok((method, c.path, wire)),
+                _ => Err(format!(
+                    "plane `{name}` claims `{} {} {}`, a method or wire format the host does not serve",
+                    c.method, c.path, c.wire
+                )),
+            }
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let admission = served
+        .admission()?
+        .map(|(audience, resource_metadata)| PlaneAdmission {
+            audience,
+            resource_metadata,
+        });
+    Ok(HotSlot {
+        served,
+        claims,
+        admission,
+    })
+}
+
+/// THE PATHS A HOT-LANE PLANE ANSWERS ON, as its `claims` slot stated them at build.
+fn hot_claims(slot: &dyn std::any::Any) -> Vec<(String, &'static str)> {
+    slot.downcast_ref::<HotSlot>().map_or_else(Vec::new, |s| {
+        s.claims
+            .iter()
+            .map(|(_, path, wire)| (path.clone(), *wire))
+            .collect()
+    })
+}
+
+/// THE AUDIENCE A HOT-LANE PLANE BINDS, as its `admission` slot stated it at build.
+fn hot_admission(slot: &dyn std::any::Any) -> Option<PlaneAdmission> {
+    slot.downcast_ref::<HotSlot>()?.admission.clone()
+}
+
+/// THE DATA ROUTES A HOT-LANE PLANE SERVES: one per claimed path, at the data-plane bar
+/// ([`RouteAuth::Key`]), each driving [`hot_dispatch`].
+fn hot_routes(slot: &dyn std::any::Any) -> Vec<PlaneRouteSpec> {
+    let Some(slot) = slot.downcast_ref::<HotSlot>() else {
+        return Vec::new();
+    };
+    slot.claims
+        .iter()
+        .map(|(method, path, _)| PlaneRouteSpec {
+            path: path.clone(),
+            method: *method,
+            auth: RouteAuth::Key,
+            handler: std::sync::Arc::new(|ctx| {
+                let response = hot_dispatch(&ctx);
+                Box::pin(async move { response })
+            }),
+        })
+        .collect()
+}
+
+/// DRIVE ONE REQUEST THROUGH A HOT-LANE PLANE: the request body is the work item's finite inbound
+/// buffer, dispatched through the plane's `dispatch` slot inside the kernel's attributed host mint
+/// (`with_borrowed_host_as`, under the plane's registry key, over this request's engine snapshot and
+/// a fresh arena) — so every host call the plane makes back is recovered, governed, metered and
+/// journalled as this plane's. The plane's reply is the response body; its status class is the
+/// response status (`Ok` 200, `Refused` 403, `Gone` 410, `Unsupported` 501, anything else 500).
+fn hot_dispatch(ctx: &PlaneReqCtx) -> PlaneResponse {
+    let slot = ctx.slot.downcast_ref::<HotSlot>();
+    let handle = ctx.engine.downcast_ref::<busbar_kernel::state::AppHandle>();
+    let (class, reply) = match (slot, handle) {
+        (Some(slot), Some(handle)) => {
+            let app = handle.load();
+            let scope = busbar_kernel::plane_host::DispatchScope::new();
+            let key = slot.served.plane().name();
+            busbar_kernel::plane_host::with_borrowed_host_as(key, &app, &scope, |host_ctx, vt| {
+                slot.served.dispatch(vt, host_ctx, &ctx.body)
+            })
+        }
+        _ => (StatusClass::Fault, Vec::new()),
+    };
+    let status = match class {
+        StatusClass::Ok => axum::http::StatusCode::OK,
+        StatusClass::Refused => axum::http::StatusCode::FORBIDDEN,
+        StatusClass::Gone => axum::http::StatusCode::GONE,
+        StatusClass::Unsupported => axum::http::StatusCode::NOT_IMPLEMENTED,
+        StatusClass::Fault => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    axum::http::Response::builder()
+        .status(status)
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from(reply))
+        .unwrap_or_default()
+}
+
+/// THE KERNEL HOOKS OF A HOT-LANE PLANE — the same set for every HOT-lane plane, whichever door it
+/// came in by: its claims, admission, build and data routes each run over the plane's C-ABI slots
+/// (the loader's [`DynPlane`] / [`ServedPlane`] against the kernel's own host vtable), and the
+/// request loop drives it through the same plane-route mount every linked plane's routes take.
 pub const HOT_PLANE_HOOKS: PlaneHooks = PlaneHooks {
     wire_format_names: || &[],
-    claims: |_| Vec::new(),
-    admission: |_| None,
-    build: |_| None,
-    routes: None,
+    claims: hot_claims,
+    admission: hot_admission,
+    build: hot_build,
+    routes: Some(hot_routes),
     admin_routes: None,
     openapi: None,
     hydrate: None,

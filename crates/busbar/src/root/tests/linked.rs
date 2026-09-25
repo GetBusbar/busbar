@@ -376,3 +376,234 @@ fn the_boot_that_does_not_hand_the_dropped_in_planes_over_diverges() {
         "a boot that drops the dropped-in planes must install a different axis"
     );
 }
+
+// ── ONE PLANE, BOTH DOORS, ONE SERVE (item 63 / TRACKER H6 part 1) ──────────────────────────────
+//
+// The rows above prove a dropped-in plane INSTALLS like its linked twin. These prove it SERVES like
+// it: each arm boots its own process (the plane axis, the host's journal and the metering book are
+// process state, exactly as they are for a deployment), installs the example plane through one door,
+// parses a config carrying its `example:` section, builds the app through the kernel's own
+// `build_app_from_config` and serves one request through the kernel's own router. What each arm
+// served — the response, the audit rows the plane journalled through the host, and the metering rows
+// the host ledgered for it — is written out and compared here.
+
+/// The arm a child process of this test binary runs ([`serve_arm`]); unset in the parent.
+const SERVE_ARM: &str = "BUSBAR_ROOT_SERVE_ARM";
+/// Where the child writes what its arm served.
+const SERVE_OUT: &str = "BUSBAR_ROOT_SERVE_OUT";
+
+/// The deployment every arm serves: a public URL (the plane's audience is derived from it) and the
+/// plane's own section, which the plane quotes back in its reply.
+const SERVE_CONFIG: &str = "public_url: https://gw.example.com\nexample:\n  greeting: hi\n  \
+                            depth: 2\nproviders: {}\nmodels: {}\npools: {}\n";
+
+/// The journal scope the example plane appends its audit rows to (the plane's own constant).
+const AUDIT_SCOPE: u32 = 0x0045_5850;
+
+/// The `#[repr(C)]` journal read query, laid out as the plane ABI publishes it (`JournalQuery`: size,
+/// version, pad, scope, pad, from_seq, limit — the layout golden pins it). The composition root
+/// links no ABI crate of its own, so it states the published layout, as any reader of the ABI may.
+#[repr(C)]
+struct JournalQuery {
+    size: u32,
+    version: u16,
+    _reserved: u16,
+    scope: u32,
+    _reserved2: u32,
+    from_seq: u64,
+    limit: u64,
+}
+
+/// The example plane's audit rows, read back through the host's own `journal_read` slot — verified
+/// chain, then `seq · prev_hash · hash · content` per row — as hex.
+fn audit_rows(app: &busbar_kernel::state::App) -> String {
+    let scope = busbar_kernel::plane_host::DispatchScope::new();
+    busbar_kernel::plane_host::with_borrowed_host(app, &scope, |host, vt| {
+        let query = JournalQuery {
+            size: core::mem::size_of::<JournalQuery>() as u32,
+            version: 0,
+            _reserved: 0,
+            scope: AUDIT_SCOPE,
+            _reserved2: 0,
+            from_seq: 0,
+            limit: 0,
+        };
+        let mut buf = vec![0u8; 1 << 16];
+        let mut written = 0usize;
+        let read = vt.journal_read.expect("the host journals");
+        let status = read(
+            host,
+            std::ptr::from_ref(&query).cast(),
+            buf.as_mut_ptr(),
+            buf.len(),
+            &mut written,
+        );
+        assert_eq!(status, StatusClass::Ok, "the host reads its journal back");
+        buf.truncate(written);
+        buf.iter().map(|b| format!("{b:02x}")).collect()
+    })
+}
+
+/// The metering rows the host ledgered this arm, flushed and read back for today's bucket.
+fn metering_rows(app: &busbar_kernel::state::App) -> Vec<String> {
+    let gov = app
+        .governance
+        .as_ref()
+        .expect("governance is always available");
+    gov.flush_metering();
+    let now = busbar_kernel::store::now_ms() / 1_000;
+    let mut rows: Vec<String> = gov
+        .metering_for(busbar_kernel::governance::metering_bucket(now))
+        .expect("the metering rows read")
+        .iter()
+        .map(|row| format!("{row:?}"))
+        .collect();
+    rows.sort();
+    rows
+}
+
+/// THE DROPPED-IN ROWS WITH THE DRIVE BYPASSED — the RED arm: the plane is installed through the
+/// dropped-in door exactly as the serving arms are, but its row carries the pre-K7 inert hooks (no
+/// claims, no admission, no build, no routes), so nothing drives it over the ABI.
+fn bypassed(rows: Vec<&'static PlaneDecl>) -> Vec<&'static PlaneDecl> {
+    const INERT: PlaneHooks = PlaneHooks {
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_| None,
+        routes: None,
+        ..HOT_PLANE_HOOKS
+    };
+    rows.into_iter()
+        .map(|row| &*Box::leak(Box::new(PlaneDecl::assemble(row.declaration, INERT))))
+        .collect()
+}
+
+/// ONE ARM, run only in a child process [`a_linked_and_a_dropped_in_plane_serve_one_request_identically`]
+/// starts; a no-op anywhere else.
+#[tokio::test]
+async fn serve_arm() {
+    let (Ok(arm), Ok(out)) = (std::env::var(SERVE_ARM), std::env::var(SERVE_OUT)) else {
+        return;
+    };
+    let dropped_in = || {
+        let lib = std::fs::read(cdylib().expect("the parent found the cdylib")).unwrap();
+        let (dir, policy) = plugins_dir(&format!("serve-{arm}"), &lib);
+        let planes = dropped_planes(&dir, &policy).expect("the signed plane loads");
+        let _ = std::fs::remove_dir_all(&dir);
+        planes
+    };
+    let rows = match arm.as_str() {
+        "linked" => plane_rows(&linked(&[], &LINKED_HOT), Vec::new()),
+        "dropped" => plane_rows(&linked(&[], &[]), dropped_in()),
+        "bypass" => plane_rows(&linked(&[], &[]), dropped_in()).map(bypassed),
+        other => panic!("unknown arm {other}"),
+    }
+    .expect("the rows fold");
+    let mut seeded = vec![busbar_kernel::test_support::neutral_fallback_plane()];
+    seeded.extend(rows);
+    let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&seeded);
+
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(SERVE_CONFIG).expect("parses");
+    let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+    let app = std::sync::Arc::new(
+        busbar_kernel::test_support::build_once(cfg, None).expect("the app builds"),
+    );
+    let router = busbar_kernel::build_router(app.clone());
+
+    use tower::ServiceExt;
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/example")
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from("{\"ping\":1}"))
+        .unwrap();
+    let response = router.oneshot(request).await.expect("the router answers");
+    let status = response.status().as_u16();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("the body reads");
+    let served = serde_json::json!({
+        "status": status,
+        "body": String::from_utf8_lossy(&body),
+        "audit": audit_rows(&app),
+        "metering": metering_rows(&app),
+    });
+    std::fs::write(out, served.to_string()).expect("the arm writes what it served");
+}
+
+/// Run [`serve_arm`] for `arm` in a fresh process of this test binary; what it served.
+fn serve_in_a_fresh_process(arm: &str) -> serde_json::Value {
+    let out = std::env::temp_dir().join(format!(
+        "busbar-root-serve-{arm}-{}.json",
+        std::process::id()
+    ));
+    let run = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+        .args(["--exact", "root::linked::tests::serve_arm"])
+        .args(["--test-threads", "1", "--nocapture"])
+        .env(SERVE_ARM, arm)
+        .env(SERVE_OUT, &out)
+        .output()
+        .expect("the test binary runs");
+    let text =
+        String::from_utf8_lossy(&run.stdout).into_owned() + &String::from_utf8_lossy(&run.stderr);
+    assert!(run.status.success(), "the {arm} arm failed:\n{text}");
+    assert!(
+        text.contains("1 passed"),
+        "the {arm} arm ran nothing:\n{text}"
+    );
+    let served = std::fs::read_to_string(&out).expect("the arm wrote what it served");
+    let _ = std::fs::remove_file(&out);
+    serde_json::from_str(&served).expect("the arm wrote JSON")
+}
+
+/// THE EXIT TEST (item 63 / TRACKER H6 part 1). The SAME plane crate, LINKED (its rlib's
+/// `PLANE_DECL`) and DROPPED IN (its cdylib, signed into `plugins/`), serves the same request through
+/// the kernel's own config parse, app build and router: byte-identical response, audit rows and
+/// metering rows. Not vacuous: the response is the plane's own (`200`, its JSON, quoting the
+/// `example:` section — which therefore crossed `build` over the ABI), the plane journalled one audit
+/// row through the host, and the host ledgered its metering.
+///
+/// And the RED arm, kept: the same dropped-in plane with its drive bypassed (the pre-K7 inert hooks)
+/// serves nothing — the request falls to the protocol fallback — and diverges on all three.
+#[test]
+fn a_linked_and_a_dropped_in_plane_serve_one_request_identically() {
+    if std::env::var_os(SERVE_ARM).is_some() || cdylib().is_none() {
+        eprintln!("skip: a child arm, or the example plane cdylib is not built");
+        return;
+    }
+    let linked = serve_in_a_fresh_process("linked");
+    let dropped = serve_in_a_fresh_process("dropped");
+    assert_eq!(
+        linked, dropped,
+        "the two doors served the same request differently"
+    );
+
+    assert_eq!(linked["status"], 200, "{linked:#}");
+    assert_eq!(
+        linked["body"], r#"{"plane":"example","bytes":10,"section":{"greeting":"hi","depth":2}}"#,
+        "the reply is the plane's own and quotes the section it was built with: {linked:#}"
+    );
+    assert_ne!(
+        linked["audit"], "",
+        "the plane journalled its audit row: {linked:#}"
+    );
+    assert!(
+        linked["audit"]
+            .as_str()
+            .is_some_and(|hex| hex.starts_with("01000000")),
+        "exactly one audit row: {linked:#}"
+    );
+    assert_eq!(
+        linked["metering"].as_array().map(Vec::len),
+        Some(1),
+        "the host ledgered the plane's metering: {linked:#}"
+    );
+
+    let bypassed = serve_in_a_fresh_process("bypass");
+    for leg in ["status", "body", "audit", "metering"] {
+        assert_ne!(
+            bypassed[leg], dropped[leg],
+            "with its drive bypassed the dropped-in plane must not serve the same {leg}"
+        );
+    }
+}

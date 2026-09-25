@@ -67,6 +67,11 @@ pub use busbar_plugin::hot::DeclStr as HotDeclStr;
 /// The HOT-lane plane declaration, re-exported for the reason the endpoint types above are: the
 /// composition root names the decl a linked plane exports through the loader, not a second edge.
 pub use busbar_plugin::hot::PlaneDecl as HotPlaneDecl;
+/// The HOT-lane host vtable, re-exported for the same reason: the composition root keeps the table a
+/// served plane is built against, and names its type through the loader.
+pub use busbar_plugin::hot::PlaneHostVtable as HotHostVtable;
+/// The status class a served plane's dispatch answers with, re-exported beside the vtable.
+pub use busbar_plugin::hot::StatusClass as HotStatusClass;
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
 pub use highwater::{HighWaterMarks, HIGH_WATER_FILE};
 pub use hook::DlopenPolicy;
