@@ -150,7 +150,8 @@ pub const KNOWN_UNSHIPPED: &[&str] = &[
     "breaker-request-budget",
     "breaker-error-map",
     "breaker-with-limits",
-    "budget-pricer-card",
+    // `budget-pricer-card` STRUCK 2026-09-25 (#43/item 104): `Pricer::with_card` deleted,
+    // superseded by `Pricer::from_card`.
     "ledger-checkpoint-seal",
     "ledger-checkpoint-journal",
     // `ledger-adjusting-entries` STRUCK 2026-09-25 (#77(2)(3), Q36/Q9): the adjusting-entry code

@@ -1256,15 +1256,29 @@ fn a_closed_session_stops_waiting_on_the_calls_it_had_open() {
 // The hold's five acts, on this plane
 // -----------------------------------------------------------------------------------------
 
+/// A pricer whose card prices the dialect at 2 / 5 micro-units per input / output unit, built whole
+/// through the one card constructor and held through [`Pricer::from_card`].
+fn a_card_pricing_the_dialect() -> Pricer {
+    use busbar_kernel_budget::price::{UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
+    use busbar_kernel_ledger::cost::{LaneClass, RateCard};
+    let rate = busbar_kernel_budget::RateNanos::from_micros_per_token(2.0, 5.0, 0.0, 0.0);
+    let lane = Dialect::OpenaiRealtime.name();
+    Pricer::from_card(RateCard::from_nano_rates(
+        [
+            (UNIT_INPUT, rate.input),
+            (UNIT_OUTPUT, rate.output),
+            (UNIT_CACHE_READ, rate.cache_read),
+            (UNIT_CACHE_WRITE, rate.cache_write),
+        ]
+        .map(|(unit, nanos)| (LaneClass::new(lane, unit), nanos)),
+        0,
+    ))
+}
+
 /// A node whose card prices the dialect, so a turn's estimate is a figure rather than a zero.
 fn priced_node(io: VoiceIo) -> VoiceNode {
     let mut node = node(io);
-    let mut rates = std::collections::BTreeMap::new();
-    rates.insert(
-        Dialect::OpenaiRealtime.name().to_string(),
-        busbar_kernel_budget::RateNanos::from_micros_per_token(2.0, 5.0, 0.0, 0.0),
-    );
-    node.pricer = Pricer::with_card(0, rates);
+    node.pricer = a_card_pricing_the_dialect();
     node
 }
 
@@ -1536,12 +1550,7 @@ fn a_paid_turns_record_names_its_principal() {
         Auth::new(AuthChain::new(Vec::new(), true)),
         AuthBindings::new(std::sync::Arc::new(OneKey) as _),
     );
-    let mut rates = std::collections::BTreeMap::new();
-    rates.insert(
-        Dialect::OpenaiRealtime.name().to_string(),
-        busbar_kernel_budget::RateNanos::from_micros_per_token(2.0, 5.0, 0.0, 0.0),
-    );
-    node.pricer = Pricer::with_card(0, rates);
+    node.pricer = a_card_pricing_the_dialect();
 
     let kernel = Kernel::new();
     let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)

@@ -116,33 +116,10 @@ impl Pricer {
         }
     }
 
-    /// A pricer with a rate card.
-    ///
-    /// The rates are ALREADY quantised nano-units ([`RateNanos::from_micros_per_token`] ran
-    /// [`busbar_kernel_ledger::cost::nano_rate`] once), so the card is built from them without a
-    /// second rounding. A negative fee is clamped by the card's constructor, exactly where the
-    /// ledger's card clamps it — a request judged at one fee and billed at another is the drift
-    /// one card rules out.
-    pub fn with_card(price_per_request_cents: i64, rates: BTreeMap<String, RateNanos>) -> Self {
-        use busbar_kernel_ledger::cost::LaneClass;
-        let card = busbar_kernel_ledger::cost::RateCard::from_nano_rates(
-            rates.iter().flat_map(|(model, r)| {
-                [
-                    (UNIT_INPUT, r.input),
-                    (UNIT_OUTPUT, r.output),
-                    (UNIT_CACHE_READ, r.cache_read),
-                    (UNIT_CACHE_WRITE, r.cache_write),
-                ]
-                .map(|(u, nanos)| (LaneClass::new(model.as_str(), u), nanos))
-            }),
-            price_per_request_cents,
-        );
-        Self { card }
-    }
-
     /// A pricer holding THE card the ledger built — `RateCard::from_config`, the one card
     /// constructor, with its quantisation, its representability refusal (item 22) and its fee
-    /// clamp. The door and the bill then hold one card rather than two copies of one.
+    /// clamp. The door and the bill then hold one card rather than two copies of one. It is the
+    /// ONLY way a pricer holds a card: a pricer never assembles a second card from its own rates.
     pub fn from_card(card: busbar_kernel_ledger::cost::RateCard) -> Self {
         Self { card }
     }

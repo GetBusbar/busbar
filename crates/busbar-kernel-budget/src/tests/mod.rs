@@ -217,8 +217,28 @@ pub(crate) fn card(fee: i64, entries: &[(&str, f64, f64)]) -> Pricer {
     if rates.is_empty() {
         Pricer::flat(fee)
     } else {
-        Pricer::with_card(fee, rates)
+        carded(fee, rates)
     }
+}
+
+/// A pricer holding a card built whole from already-quantised per-model rates, through the one
+/// card constructor the ledger owns and the one way a pricer holds a card ([`Pricer::from_card`]).
+/// The fee is handed to the card's constructor, which clamps it.
+pub(crate) fn carded(fee: i64, rates: BTreeMap<String, RateNanos>) -> Pricer {
+    use crate::price::{UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
+    use busbar_kernel_ledger::cost::{LaneClass, RateCard};
+    Pricer::from_card(RateCard::from_nano_rates(
+        rates.iter().flat_map(|(model, r)| {
+            [
+                (UNIT_INPUT, r.input),
+                (UNIT_OUTPUT, r.output),
+                (UNIT_CACHE_READ, r.cache_read),
+                (UNIT_CACHE_WRITE, r.cache_write),
+            ]
+            .map(|(u, nanos)| (LaneClass::new(model.as_str(), u), nanos))
+        }),
+        fee,
+    ))
 }
 
 /// A four-key token map; a zero count is omitted, exactly as the ledger stores it.

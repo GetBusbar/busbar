@@ -177,16 +177,10 @@ why       = "The constructor that takes explicit hard_down_cooldown and max_hono
 unshipped = true
 switch    = "STRIKE THIS ROW when the root constructs its breaker through with_limits with values read from config, or DELETE with_limits if the defaults are the decision — an unreachable constructor is not a knob."
 
-# BUDGET — the pricer the admission door uses is never given a rate card.
-[[capability]]
-id        = "budget-pricer-card"
-built     = "crates/busbar-kernel-budget/src/price.rs"
-symbol    = "with_card"
-construct = ["Pricer::with_card("]
-scope     = ["crates"]
-why       = "The only production Pricer in the tree is Pricer::flat(0) (crates/busbar/src/main.rs), which prices every model at zero and carries no fee, so busbar-kernel-budget's Door/decide path has never been driven by an operator's card on any node."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that constructs the root's Pricer from the resolved rate card instead of flat(0). NOTE FOR THE OWNER: live admission today prices through busbar_kernel::cost::CostModel, which IS card-fed — so this is the split's unfinished half, not a live mispricing."
+# BUDGET — `budget-pricer-card` STRUCK 2026-09-25 (UC-STRIKE; #43 / item 104 "one function", Q36/Q9):
+# `Pricer::with_card` had no production caller and is DELETED — it was the pre-item-123 reserved-four
+# RateNanos constructor, superseded by `Pricer::from_card` (the ledger's one card). The stub second
+# node's `Pricer::flat(0)` stays with item 245; if that door ever needs a card, it is `from_card`.
 
 # LEDGER — no node ever seals a checkpoint, so the checkpoints read is empty everywhere.
 [[capability]]
