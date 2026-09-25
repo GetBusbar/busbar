@@ -195,6 +195,7 @@ impl ProtocolWriter for GeminiWriter {
                     crate::ir::IrBlock::ToolResult {
                         tool_use_id,
                         content,
+                        is_error,
                         ..
                     } => {
                         // ToolResult → functionResponse{id?, name, response, parts?}. Resolve the
@@ -254,7 +255,17 @@ impl ProtocolWriter for GeminiWriter {
                             all.extend(json_values.iter().map(|v| (*v).clone()));
                             serde_json::Value::Array(all)
                         };
-                        let response_val: serde_json::Value = if payload.is_object() {
+                        // A FAILED tool call is Gemini's documented `response.error` (GEM-05); a
+                        // payload that already names `error` is kept as the error it states.
+                        let response_val: serde_json::Value = if *is_error {
+                            match payload {
+                                serde_json::Value::Object(o) if o.contains_key("error") => {
+                                    serde_json::Value::Object(o)
+                                }
+                                serde_json::Value::Null => serde_json::json!({ "error": {} }),
+                                other => serde_json::json!({ "error": other }),
+                            }
+                        } else if payload.is_object() {
                             payload
                         } else if payload.is_null() {
                             serde_json::json!({})

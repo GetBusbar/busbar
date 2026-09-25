@@ -168,9 +168,19 @@ fn gem04_response_json_schema_carries_to_openai() {
     );
 }
 
-/// GEM-05 (reader): a Gemini `response.error` crosses as a failed tool result.
+/// GEM-05: a failed tool call crosses as Gemini's documented `response.error`, and a Gemini
+/// `response.error` crosses as a failed tool result.
 #[test]
 fn gem05_tool_error_maps_both_ways() {
+    let body = json!({"model": "m", "max_tokens": 100, "messages": [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_1", "name": "f", "input": {}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "is_error": true, "content": "boom"}]}
+    ]});
+    let out = xreq("anthropic", "gemini", &body);
+    let fr = out["contents"][2]["parts"][0]["functionResponse"].clone();
+    assert_eq!(fr["response"], json!({"error": "boom"}), "{out}");
+
     let body = json!({"contents": [
         {"role": "model", "parts": [{"functionCall": {"id": "c1", "name": "f", "args": {}}}]},
         {"role": "user", "parts": [{"functionResponse": {"id": "c1", "name": "f", "response": {"error": "boom"}}}]}
