@@ -120,6 +120,9 @@ pub use replay::{JournalDisagreement, Recoverable};
 /// The node amendment journal bound to the chain: each sealed amendment journalled, and the node
 /// journal rebuilt from the chain at boot. A private child module, as `replay` is.
 mod amend;
+// Re-exported for its one production caller, `main`'s boot-book open, which exists only on a build
+// carrying a root leg that opens the book; the unit tests reach it through `amend` directly.
+#[cfg(any(feature = "root-admin", feature = "root-llm"))]
 pub use amend::bind_amendments;
 
 /// What the root reads out of configuration to decide the durability shape.
