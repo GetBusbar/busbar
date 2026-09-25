@@ -312,20 +312,18 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // row is what it caught: a rule claiming "a cancellation-token check precedes every `.await` in
     // the route step" that found no `.await` in scope at all, and passed on that basis.
     "hold-discipline:cancellation-before-await",
-    // SIX ROWS THAT RUN AND ARE RED ON THEIR MANIFESTS. Until item 120 the allowlist rule did not
+    // FIVE ROWS THAT RUN AND ARE RED ON THEIR MANIFESTS. Until item 120 the allowlist rule did not
     // read the `transport` kind, so these were "owed but no row was recorded — DID NOT RUN". It
     // reads it now, and every one of them FAILS for a real reason, measured: each names
-    // third-party crates no review has recorded (tokio, futures, rustls, hyper, ...), and two name
+    // third-party crates no review has recorded (tokio, futures, rustls, hyper, ...), and one names
     // a crate the rule scores as an automatic RED — `busbar-transport-tls` path-depends on
-    // `busbar-unit-transport-key` (a unit crate; #36/#40 kernel-side machinery), and `-sse` on
-    // `busbar-transport-http` (a transport). `-grpc` was the seventh: it FOLDED INTO
-    // `busbar-transport-http` (dep-wall §6.5 ruling 1), so its row has no crate left to score and
-    // its third-party deps (`tonic`, `tower`) are `-http`'s row's now. Drain: the owner reviews the
-    // third-party deps into `[rules.manifest-allowlist.reviewed_extra]` and the #40 opaque-handle
-    // work removes the tls → unit edge; each name is struck here AND in scripts/land.sh as its row
-    // goes green.
+    // `busbar-unit-transport-key` (a unit crate; #36/#40 kernel-side machinery). `-grpc` and `-sse`
+    // were the other two, each path-depending on `busbar-transport-http`: both FOLDED INTO it
+    // (dep-wall §6.5 ruling 1), so their rows have no crate left to score and grpc's third-party
+    // deps (`tonic`, `tower`) are `-http`'s row's now. Drain: the owner reviews the third-party
+    // deps into `[rules.manifest-allowlist.reviewed_extra]` and the #40 opaque-handle work removes
+    // the tls → unit edge; each name is struck here AND in scripts/land.sh as its row goes green.
     "manifest-allowlist:busbar-transport-http",
-    "manifest-allowlist:busbar-transport-sse",
     "manifest-allowlist:busbar-transport-stdio",
     "manifest-allowlist:busbar-transport-tcp",
     "manifest-allowlist:busbar-transport-tls",

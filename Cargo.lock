@@ -362,7 +362,6 @@ dependencies = [
  "busbar-store-example-plugin",
  "busbar-substrate-values",
  "busbar-transport-http",
- "busbar-transport-sse",
  "busbar-transport-stdio",
  "busbar-transport-tcp",
  "busbar-transport-tls",
@@ -1052,17 +1051,6 @@ dependencies = [
  "tonic",
  "tower",
  "webpki-roots",
-]
-
-[[package]]
-name = "busbar-transport-sse"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
- "busbar-transport-http",
- "futures",
- "memchr",
- "tokio",
 ]
 
 [[package]]

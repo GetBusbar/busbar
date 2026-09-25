@@ -103,6 +103,10 @@ pub mod mount;
 // transport under its own key (`grpc`), so the registry and boot matching see what they saw before.
 pub mod grpc;
 
+// THE SAME FOLD for SSE, which IS an HTTP response body: `sse` is composed over this crate's own
+// `HttpTransport` and registers as its own transport under its own key (`sse`), unchanged.
+pub mod sse;
+
 pub use raw::{RawMessage, RawStartLine};
 
 /// Bytes read per syscall on the ingress side, and the cap this crate scans a header prefix

@@ -5,23 +5,23 @@
 use super::*;
 // The battery drives the `Transport` surface, which now lives in the kind's own `transport.rs`
 // (`PLUGIN-TREE.md` §3) rather than in `lib.rs`; `use super::*` no longer carries its imports.
+use crate::ClientSettings;
 use busbar_contract::transport::wire::{FrameMeta, TransportError};
 use busbar_contract::{
     Frame, Plugin, ScratchBytes, StreamId, Transport, TransportConfigView, TransportKeyHandle,
 };
-use busbar_transport_http::ClientSettings;
 use futures::StreamExt;
 
-/// The seal these fixtures build kernel-side values with: the capability crate's own token.
+/// The seal these fixtures build kernel-side values with: the contract's one blessed fixture
+/// implementor of the SEALED `KernelSeal` trait (#65), dev-only and feature-gated.
 ///
 /// A fixture that declared a private type and implemented the contract's sealing trait on it was
 /// forging kernel evidence in order to test something else, and it read as if that were the
-/// ordinary way to obtain one. The ordinary way is a token the loop lends out, so the fixture uses
-/// that and the transport under test receives exactly what a deployment hands it.
-fn fixture_seal() -> busbar_contract::caps::Grant<busbar_contract::caps::KeyHandle> {
-    busbar_contract::caps::Grant::<busbar_contract::caps::KeyHandle>::mint(
-        &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
-    )
+/// ordinary way to obtain one. Minting the capability crate's own token instead named core from a
+/// transport's tests, which this crate's `tests/no_plane_names.rs` refuses since `sse` folded into
+/// it (dep-wall §6.5 ruling 1); the blessed fixture is what every other battery here uses.
+fn fixture_seal() -> busbar_contract::plugin::TestKernelSeal {
+    busbar_contract::plugin::TestKernelSeal
 }
 
 fn fixture_key() -> TransportKeyHandle {

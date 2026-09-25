@@ -1770,22 +1770,6 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "http"
 kind = "transport"
-file = "crates/busbar-transport-sse/src/lib.rs"
-count = 1
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "http"
-kind = "transport"
-file = "crates/busbar-transport-sse/src/tests/mod.rs"
-count = 1
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "http"
-kind = "transport"
 file = "crates/busbar-transport-ws/src/tests/battery.rs"
 count = 6
 category = "cross-plugin"
@@ -1803,7 +1787,7 @@ wave = "keystone / composition-root — register_planes both-ways self-registrat
 noun = "http"
 kind = "transport"
 file = "crates/busbar/src/root/registry.rs"
-count = 2
+count = 3
 category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
@@ -1843,7 +1827,7 @@ wave = "keystone / composition-root — register_planes both-ways self-registrat
 noun = "http"
 kind = "transport"
 file = "crates/busbar/tests/body_chunk_bounds.rs"
-count = 1
+count = 2
 category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
@@ -1851,7 +1835,7 @@ wave = "keystone / composition-root — register_planes both-ways self-registrat
 noun = "http"
 kind = "transport"
 file = "crates/busbar/tests/transport_composed_over_consistency.rs"
-count = 2
+count = 3
 category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
@@ -4546,14 +4530,6 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "sse"
 kind = "transport"
-file = "crates/busbar/src/root/registry.rs"
-count = 1
-category = "composition-root"
-wave = "keystone / composition-root — register_planes both-ways self-registration"
-
-[[leak]]
-noun = "sse"
-kind = "transport"
 file = "crates/busbar/src/root/tests/units_mcp.rs"
 count = 3
 category = "composition-root"
@@ -4563,22 +4539,6 @@ wave = "keystone / composition-root — register_planes both-ways self-registrat
 noun = "sse"
 kind = "transport"
 file = "crates/busbar/src/root/units_mcp.rs"
-count = 1
-category = "composition-root"
-wave = "keystone / composition-root — register_planes both-ways self-registration"
-
-[[leak]]
-noun = "sse"
-kind = "transport"
-file = "crates/busbar/tests/body_chunk_bounds.rs"
-count = 1
-category = "composition-root"
-wave = "keystone / composition-root — register_planes both-ways self-registration"
-
-[[leak]]
-noun = "sse"
-kind = "transport"
-file = "crates/busbar/tests/transport_composed_over_consistency.rs"
 count = 1
 category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
@@ -5250,7 +5210,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "streaming"
 kind = "plane"
-file = "crates/busbar-transport-sse/src/tests/mod.rs"
+file = "crates/busbar-transport-http/src/sse/tests/mod.rs"
 count = 1
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"

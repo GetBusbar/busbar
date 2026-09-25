@@ -17,7 +17,6 @@ members = [
     "crates/busbar-transport-tcp",
     "crates/busbar-transport-tls",
     "crates/busbar-transport-http",
-    "crates/busbar-transport-sse",
     "crates/busbar-kernel",
     "crates/busbar-kernel-identity",
     "crates/busbar-kernel-scope",

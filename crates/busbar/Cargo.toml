@@ -139,7 +139,6 @@ busbar-export-file = { path = "../busbar-export-file", optional = true }
 busbar-transport-tcp = { path = "../busbar-transport-tcp" }
 busbar-transport-tls = { path = "../busbar-transport-tls" }
 busbar-transport-http = { path = "../busbar-transport-http" }
-busbar-transport-sse = { path = "../busbar-transport-sse" }
 # WebSocket, and the ONE transport that is optional: it is the voice plane's edge and nothing else
 # reaches it, so a build without voice must not carry it. Non-optional, `--no-default-features` still
 # pulled `tokio-tungstenite` through this line and voice stopped being strong-form deletable — the

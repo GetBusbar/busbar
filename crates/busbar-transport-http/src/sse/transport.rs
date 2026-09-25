@@ -20,7 +20,7 @@ use busbar_contract::{
 };
 use futures::{Stream, StreamExt};
 
-use crate::{carve_complete_frames, proto, SseTransport};
+use super::{carve_complete_frames, proto, SseTransport};
 
 impl Transport for SseTransport {
     fn arrival(&self, conn: &Conn) -> ArrivalRecord {

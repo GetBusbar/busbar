@@ -75,8 +75,8 @@ fn test_feed_scan_work_is_linear_in_bytes_fed() {
 }
 
 /// All three of the spec's line terminators end a line, so all nine of their pairings end a frame —
-/// mirroring `busbar-transport-sse::proto`'s `every_spec_line_terminator_pairing_ends_a_frame` over
-/// `SseReader::feed` rather than the bare scanner. A bare-CR stream (or one mixing terminators
+/// mirroring the http transport's `sse::proto` test `every_spec_line_terminator_pairing_ends_a_frame`
+/// over `SseReader::feed` rather than the bare scanner. A bare-CR stream (or one mixing terminators
 /// across the frame boundary) must frame exactly like an LF/CRLF one.
 #[test]
 fn every_spec_line_terminator_pairing_ends_a_frame() {

@@ -97,8 +97,8 @@ use busbar_plane_mcp::McpPlane;
 #[cfg(feature = "plane-voice")]
 use busbar_plane_streaming::StreamingPlane;
 use busbar_transport_http::grpc::GrpcTransport;
+use busbar_transport_http::sse::SseTransport;
 use busbar_transport_http::{ClientSettings, HttpTransport};
-use busbar_transport_sse::SseTransport;
 use busbar_transport_stdio::StdioTransport;
 use busbar_transport_tcp::TcpTransport;
 use busbar_transport_tls::TlsTransport;

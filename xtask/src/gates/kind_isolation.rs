@@ -6615,7 +6615,7 @@ impl Gate for KindIsolationGate {
 
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-transport-sse/src/planted_plane_impl.rs",
+            "crates/busbar-transport-http/src/planted_plane_impl.rs",
             "pub struct Wire;\nimpl Plane for Wire {}\n",
         );
         report.push(prove_rows_red(
@@ -6624,7 +6624,7 @@ impl Gate for KindIsolationGate {
             "a wire implementing a plane face",
             &[ROW_FACES],
             ov,
-            &["foreign-entry", "busbar-transport-sse", "Plane"],
+            &["foreign-entry", "busbar-transport-http", "Plane"],
         ));
 
         let mut ov = Overlay::new();

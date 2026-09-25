@@ -225,7 +225,6 @@ land_construction_standing_reds() {
   reds="$(cat <<'EOF'
 hold-discipline:cancellation-before-await
 manifest-allowlist:busbar-transport-http
-manifest-allowlist:busbar-transport-sse
 manifest-allowlist:busbar-transport-stdio
 manifest-allowlist:busbar-transport-tcp
 manifest-allowlist:busbar-transport-tls

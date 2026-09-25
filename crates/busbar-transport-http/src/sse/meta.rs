@@ -9,8 +9,8 @@
 
 use busbar_contract::{Kind, Plugin, SelectorForm, TransportMeta};
 
-use crate::claims;
-use crate::SseTransport;
+use super::claims;
+use super::SseTransport;
 
 impl Plugin for SseTransport {
     fn key(&self) -> &'static str {

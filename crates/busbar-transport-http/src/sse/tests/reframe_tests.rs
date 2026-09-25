@@ -102,9 +102,9 @@ fn every_reframed_event_carries_a_field_the_inbound_carve_recognises() {
     // produces must read back as a real frame, not a comment the carve would drop.
     let bytes = reframe(&[b"log-line"], b"answer");
     let mut buf = bytes.clone();
-    let (frames, _moved) = crate::carve_complete_frames(&mut buf, 0);
+    let (frames, _moved) = crate::sse::carve_complete_frames(&mut buf, 0);
     assert_eq!(frames.len(), 2);
     for frame in &frames {
-        assert!(crate::proto::frame_carries_a_field(frame));
+        assert!(crate::sse::proto::frame_carries_a_field(frame));
     }
 }

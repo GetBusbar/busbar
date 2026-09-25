@@ -1782,7 +1782,7 @@ count = "4"
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "transport"
-count = "252"
+count = "251"
 
 [[cell]]
 crate = "busbar-timing"
@@ -1797,32 +1797,17 @@ count = "1"
 [[cell]]
 crate = "busbar-transport-http"
 kind = "contract"
-count = "192"
+count = "244"
 
 [[cell]]
 crate = "busbar-transport-http"
 kind = "plane"
-count = "102"
+count = "109"
 
 [[cell]]
 crate = "busbar-transport-http"
 kind = "transport"
-count = "251"
-
-[[cell]]
-crate = "busbar-transport-sse"
-kind = "contract"
-count = "52"
-
-[[cell]]
-crate = "busbar-transport-sse"
-kind = "plane"
-count = "7"
-
-[[cell]]
-crate = "busbar-transport-sse"
-kind = "transport"
-count = "141"
+count = "392"
 
 [[cell]]
 crate = "busbar-transport-stdio"
@@ -2193,16 +2178,6 @@ count   = "1"
 verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
 why     = "busbar names busbar-transport-http: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar"
-to      = "busbar-transport-sse"
-half    = "shipped"
-count   = "1"
-verdict = "allowed"
-cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
-why     = "busbar names busbar-transport-sse: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
@@ -2883,26 +2858,6 @@ count   = "1"
 verdict = "allowed"
 cite    = "ARCHITECTURE.md 3.4/ARCHITECTURE.md 1.4 `COMPOSES_OVER` — a wire composed over a lower wire; the root supplies the layer."
 why     = "busbar-transport-http names busbar-transport-tls: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar-transport-sse"
-to      = "busbar-contract"
-half    = "shipped"
-count   = "1"
-verdict = "allowed"
-cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
-why     = "busbar-transport-sse names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar-transport-sse"
-to      = "busbar-transport-http"
-half    = "shipped"
-count   = "1"
-verdict = "allowed"
-cite    = "ARCHITECTURE.md 3.4/ARCHITECTURE.md 1.4 `COMPOSES_OVER` — a wire composed over a lower wire; the root supplies the layer."
-why     = "busbar-transport-sse names busbar-transport-http: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
