@@ -340,6 +340,9 @@ const COHERE_FINISH_STOP_SEQUENCE: &str = "STOP_SEQUENCE";
 const COHERE_FINISH_TOOL_CALL: &str = "TOOL_CALL";
 /// Cohere v2 `finish_reason` for a max-tokens stop.
 const COHERE_FINISH_MAX_TOKENS: &str = "MAX_TOKENS";
+/// Cohere v2 `finish_reason` for a generation the upstream cut off on its own time limit — an
+/// upstream failure to finish, like `ERROR`.
+const COHERE_FINISH_TIMEOUT: &str = "TIMEOUT";
 
 // ── Cohere v2 tool_choice tokens ──────────────────────────────────────────────
 /// Cohere v2 `tool_choice` value requiring at least one tool call.
@@ -499,6 +502,11 @@ fn read_cohere_stop_reason(token: &str) -> crate::ir::IrStopReason {
         // `ERROR_TOXIC` is the content-moderation stop; generic `ERROR` is an infra failure.
         COHERE_FINISH_ERROR_TOXIC => S::Safety,
         COHERE_FINISH_ERROR => S::Error,
+        // `TIMEOUT`: the upstream stopped generating because it ran out of time — a failure to
+        // finish, not a natural stop. It used to fall to `Other`, which every writer renders as a
+        // natural end of turn, so a cut-off answer reached a foreign client as a complete one
+        // (COH-16).
+        COHERE_FINISH_TIMEOUT => S::Error,
         _ => S::Other,
     }
 }
@@ -513,14 +521,13 @@ fn read_cohere_stop_reason(token: &str) -> crate::ir::IrStopReason {
 /// EXHAUSTIVE: a reason with no Cohere analog (`refusal`, `pause_turn`, `other`) also falls back to
 /// `COMPLETE`.
 ///
-/// `S::Safety` maps to the SAME `ERROR` token as `S::Error`, deliberately: `ERROR_TOXIC` is a v1
-/// Generate-API value, not a member of v2 `/v2/chat`'s `finish_reason` enum
-/// (`COMPLETE|STOP_SEQUENCE|MAX_TOKENS|TOOL_CALL|ERROR`), and emitting it would be exactly the
-/// off-spec-token bug `IrStopReason` exists to prevent. This DOES cost a Cohere-dialect client the
-/// ability to distinguish a content-filter stop from an infra error on egress — accepted, because
-/// the v2 enum genuinely cannot express the distinction and an off-spec token a strict client
-/// rejects is strictly worse. The reader's `ERROR_TOXIC`→`S::Safety` stays asymmetric on purpose
-/// (forward-compat for a v1-dialect upstream); do not "fix" it back to match this writer arm.
+/// `S::Safety` maps to `COMPLETE` (COH-15). A safety/content-filter stop is a SERVED response — the
+/// model's answer, cut short or withheld by a filter — not an upstream failure, and v2 `/v2/chat`'s
+/// `finish_reason` enum (`COMPLETE|STOP_SEQUENCE|MAX_TOKENS|TOOL_CALL|ERROR|TIMEOUT`) has no token
+/// for it: `ERROR_TOXIC` is a v1 Generate-API value, off-spec here. It used to map to `ERROR`, which
+/// told a Cohere client its request had FAILED — an infrastructure error it might retry or alert on —
+/// when the upstream had answered. `COMPLETE` is the same projection `Refusal` (the model declining)
+/// already takes. The reader's `ERROR_TOXIC`→`S::Safety` stays for a v1-dialect upstream.
 fn write_cohere_stop_reason(reason: crate::ir::IrStopReason) -> &'static str {
     use crate::ir::IrStopReason as S;
     match reason {
@@ -528,9 +535,8 @@ fn write_cohere_stop_reason(reason: crate::ir::IrStopReason) -> &'static str {
         S::StopSequence => COHERE_FINISH_STOP_SEQUENCE,
         S::MaxTokens => COHERE_FINISH_MAX_TOKENS,
         S::ToolUse => COHERE_FINISH_TOOL_CALL,
-        S::Safety => COHERE_FINISH_ERROR,
         S::Error => COHERE_FINISH_ERROR,
-        S::Refusal | S::PauseTurn | S::Other => COHERE_FINISH_COMPLETE,
+        S::Safety | S::Refusal | S::PauseTurn | S::Other => COHERE_FINISH_COMPLETE,
     }
 }
 

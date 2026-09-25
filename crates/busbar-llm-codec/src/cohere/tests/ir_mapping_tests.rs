@@ -677,3 +677,77 @@ fn coh14_streamed_logprobs_reach_a_foreign_client() {
         .any(|v| v["choices"][0]["logprobs"]["content"][0]["token"] == json!("hello"));
     assert!(carried, "COH-14: {out}");
 }
+
+// ── COH-15 / COH-16: stop reasons ─────────────────────────────────────────────────────────────────
+
+/// COH-15: a foreign content-filter stop is a served answer; a Cohere client is told `COMPLETE`, not
+/// the `ERROR` that reads as an infrastructure failure — buffered and streamed.
+#[test]
+fn coh15_safety_stop_is_not_an_error_for_a_cohere_client() {
+    let body = json!({
+        "id": "chatcmpl-1", "object": "chat.completion", "created": 1, "model": "gpt",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "partial"},
+                     "finish_reason": "content_filter"}],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}
+    });
+    let out = translate_response("openai", "cohere", &body);
+    assert_eq!(out["finish_reason"], json!("COMPLETE"), "COH-15: {out}");
+
+    let raw = concat!(
+        "data: {\"id\":\"c\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"partial\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"id\":\"c\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"content_filter\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let out = translate_stream("openai", "cohere", raw);
+    let end = sse_data(&out)
+        .into_iter()
+        .find(|v| v["type"] == "message-end")
+        .unwrap_or_else(|| panic!("no message-end: {out}"));
+    assert_eq!(
+        end["delta"]["finish_reason"],
+        json!("COMPLETE"),
+        "COH-15: {out}"
+    );
+}
+
+/// COH-16: Cohere `TIMEOUT` is the upstream failing to finish; it reads as `Error` (it used to be
+/// `Other`, which every writer renders as a natural end of turn), and a streamed one raises the
+/// error event exactly as `ERROR` does.
+#[test]
+fn coh16_timeout_is_an_upstream_error() {
+    use crate::ir::{IrStopReason, IrStreamEvent as E};
+    let body = json!({
+        "id": "c-1", "finish_reason": "TIMEOUT",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": "part"}]},
+        "usage": {"tokens": {"input_tokens": 3, "output_tokens": 1}}
+    });
+    let ir = crate::proto_codec::protocol_for("cohere")
+        .expect("cohere")
+        .reader()
+        .read_response(&body)
+        .expect("read");
+    assert_eq!(ir.stop_reason, Some(IrStopReason::Error), "COH-16");
+    let raw: String = [
+        json!({"type":"message-start","id":"c-1","delta":{"message":{"role":"assistant"}}}),
+        json!({"type":"content-delta","index":0,"delta":{"message":{"content":{"text":"part"}}}}),
+        json!({"type":"message-end","delta":{"finish_reason":"TIMEOUT","usage":{"tokens":{"input_tokens":3,"output_tokens":1}}}}),
+    ]
+    .into_iter()
+    .map(frame)
+    .collect();
+    let evs = read_events(&raw);
+    assert!(
+        evs.iter().any(|e| matches!(e, E::Error(_))),
+        "COH-16: {evs:?}"
+    );
+    assert!(
+        evs.iter().any(|e| matches!(
+            e,
+            E::MessageDelta {
+                stop_reason: Some(IrStopReason::Error),
+                ..
+            }
+        )),
+        "COH-16: {evs:?}"
+    );
+}

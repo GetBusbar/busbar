@@ -1038,7 +1038,7 @@ impl ProtocolReader for CohereReader {
                     Some(read_cohere_stop_reason(raw_finish_reason))
                 };
 
-                // The generic infra `ERROR` is a mid-stream upstream FAILURE, but the only thing it
+                // The generic infra `ERROR` (and `TIMEOUT`, COH-16) is a mid-stream upstream FAILURE, but the only thing it
                 // produced was `IrStopReason::Error` on the terminal MessageDelta — and no
                 // cross-protocol writer has a native error token for that reason, so every one of
                 // them renders it as a SUCCESS terminator (`stop` / `end_turn`). With no
