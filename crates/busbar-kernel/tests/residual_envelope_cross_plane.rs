@@ -18,7 +18,7 @@ use busbar_kernel::test_support::{oversized_413_body, TestApp};
 /// the residual and is answered as one. The merge must not turn an unmounted plane into one that
 /// claims paths by URL shape. Driven for EVERY linked plane that mounts (the fallback plane is the
 /// residual itself); the mounted twin is
-/// `plane_integration::oversized_post_to_a_mounted_mcp_plane_is_refused_in_the_planes_own_dialect`.
+/// `plane_integration::oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dialect`.
 #[tokio::test]
 async fn an_unmounted_plane_claims_no_path_by_url_shape() {
     busbar_kernel::metrics::init();
