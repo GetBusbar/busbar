@@ -738,7 +738,6 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "busbar-llm-codec",
- "busbar-mcp",
  "busbar-plugin",
  "busbar-substrate-values",
  "busbar-timing",

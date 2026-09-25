@@ -636,3 +636,38 @@ fn the_declaration_registers_under_the_planes_key() {
 // hard-depends on `tokio`, which may not enter a pure kind's closure, so this crate spells the five
 // method names as literals). It is `src/tests/sdk_vocabulary_tests.rs` there, under the same test
 // name, and it now pins all five against the SDK rather than one — see that file.
+
+/// A SUBSCRIBE BODY PROJECTS ITS TARGET to the hook seam: a `prompt: ro` gate is shown the resource
+/// uri a `resources/subscribe` names, never an empty projection while the request forwards.
+///
+/// Moved here from busbar-llm's `hook_non_chat_projection_tests` (K3; architect ruling "K3 intake
+/// list", N06): what it proves is THIS protocol's reader — the one the hook seam resolves by the
+/// registered protocol name and operation — so this plane tests it. The llm-side seam that groups the
+/// read content into the prompt projection keeps its own tests there.
+#[test]
+fn subscribe_body_projects_its_target() {
+    use busbar_substrate_values::handlers::TranslateCodec as _;
+    busbar_substrate_values::proto::register_test_protocol(&crate::PROTO_DECL);
+    let v = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "resources/subscribe",
+        "params": {"uri": "mcp://resource/SECRET-TARGET"}
+    });
+    // The same resolution the hook seam makes: the registered protocol's handler for the operation.
+    let handler = busbar_substrate_values::handlers::request_handler(crate::PROTO_DECL.name)
+        .and_then(|rh| rh.operation_handler(Operation::SUBSCRIBE))
+        .expect("the registered protocol serves SUBSCRIBE");
+    let facts = handler
+        .read_facts_value(&v)
+        .unwrap_or_else(|_| panic!("the SUBSCRIBE reader refused this body"));
+    let shown: Vec<String> = facts
+        .content()
+        .iter()
+        .map(|item| item.screenable_text().into_owned())
+        .collect();
+    assert!(
+        shown.iter().any(|t| t.contains("SECRET-TARGET")),
+        "the subscribe target must reach the hook projection; shown: {shown:?}"
+    );
+}
