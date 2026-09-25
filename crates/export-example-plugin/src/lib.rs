@@ -39,6 +39,8 @@ struct ExampleExport {
     posted: std::sync::atomic::AtomicU64,
     /// The settings this instance was opened with, when they are a JSON object — read by the host
     /// seams' witnesses (K9a) and by nothing else; a sink with no settings behaves as it always did.
+    // settings-leak-lint: allow — NON-PROJECTION engine type: the sink's private state, with no
+    // `Serialize`, read only by the sink itself; nothing serves it on an admin read.
     settings: serde_json::Map<String, serde_json::Value>,
 }
 

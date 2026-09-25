@@ -578,6 +578,10 @@ pub enum ExportRequest {
         /// The `export:` instance name the settings belong to (for the sink's own error lines).
         instance: String,
         /// The instance's `settings:` block exactly as configured.
+        // settings-leak-lint: allow — PLUGIN ABI WIRE STRUCT, and OUTBOUND: the `validate` request
+        // the host serializes INTO the sink's `busbar_call` so the sink can judge the settings it
+        // will be opened with. It is never part of an admin response; key names alone could not
+        // be validated.
         settings: serde_json::Value,
     },
     /// `resume` — the host performed the [`HostOp`]s a `deliver` (or an earlier `resume`) answered
