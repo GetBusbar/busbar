@@ -115,6 +115,7 @@ fn write_tarball(dir: &Path, file: &str, name: &str, alias: &str, lib: &[u8]) {
         settings_schema: None,
         schema_derived: false,
         host: None,
+        declares: Default::default(),
     };
     let bytes = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
     std::fs::write(dir.join("plugins").join(file), bytes).unwrap();
@@ -292,6 +293,7 @@ fn validate_fails_on_sha_mismatch() {
         settings_schema: None,
         schema_derived: false,
         host: None,
+        declares: Default::default(),
     };
     let bytes = busbar_plugin_loader::tarball::package(&m, "lib.so", b"real bytes").unwrap();
     std::fs::write(dir.join("plugins/x.tar.gz"), bytes).unwrap();
@@ -615,6 +617,7 @@ fn validate_fails_when_store_module_resolves_to_a_non_store_plugin_kind() {
         settings_schema: None,
         schema_derived: false,
         host: None,
+        declares: Default::default(),
     };
     let bytes = busbar_plugin_loader::tarball::package(&m, "lib.so", b"real bytes").unwrap();
     std::fs::write(dir.join("plugins/x.tar.gz"), bytes).unwrap();

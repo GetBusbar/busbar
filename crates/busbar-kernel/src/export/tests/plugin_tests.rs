@@ -32,6 +32,7 @@ fn write_row(dir: &std::path::Path, name: &str, alias: &str, lib: &[u8]) {
         settings_schema: None,
         schema_derived: false,
         host: None,
+        declares: Default::default(),
     };
     let bytes = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).expect("package");
     std::fs::write(dir.join(format!("{name}.tar.gz")), bytes).expect("write the tarball");

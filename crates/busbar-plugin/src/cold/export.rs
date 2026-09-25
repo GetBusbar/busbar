@@ -68,6 +68,23 @@ use serde::{Deserialize, Serialize};
 /// when this kind's floor rises past 3 the bare arm is dead code and is deleted.
 pub const EXPORT_ABI_VERSION: u32 = 3;
 
+/// The export ABI's MINOR — the count of ADDITIVE host seams on top of [`EXPORT_ABI_VERSION`].
+///
+/// THE POLICY. [`EXPORT_ABI_VERSION`] moves only on a BREAKING payload change (a removed or
+/// renamed token, a re-tagged variant) and the loader refuses a manifest outside its supported
+/// window. This minor moves on every ADDITIVE change to what a sink and the host may say to each
+/// other — a new op, a new response variant, a new manifest declaration — and is never a refusal
+/// reason in either direction: a sink built at an older minor answers `STATUS_UNSUPPORTED` to an op
+/// it cannot decode (the host reads that as the op's documented "nothing to say" answer, the
+/// `routes`/`status` precedent) and never states a declaration it does not know, and a host at an
+/// older minor never asks the newer op. The same append-only discipline [`crate::ABI_MINOR`] holds
+/// for the HOT lane's `repr(C)` structs, applied to this kind's JSON.
+///
+/// 0: `streams` / `deliver` / `routes` / `http_endpoint` / `status` (the v3 surface).
+/// 1 (K9a S1): the FIRST-PARTY METRIC NAMESPACE — a manifest's `declares.metrics`
+///   ([`crate::cold::observe::SeriesDecl`]).
+pub const EXPORT_ABI_MINOR: u32 = 1;
+
 /// One observability stream an export sink can carry OUT of the engine — the FROZEN word-space of
 /// the export projection grammar, the same discipline as the hook phase names.
 ///

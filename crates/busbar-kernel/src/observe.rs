@@ -290,7 +290,11 @@ fn fold_metrics(plugin: &str, raw: &[serde_json::Value]) {
     // THE ONE VALIDATOR (see the module doc). Everything after this line is working with entries
     // that are already name-checked, finite, bounded and sanitized.
     for m in crate::hooks::wire::parse_status_metrics(raw) {
-        if !admits_metric_name(&m.name) {
+        // THE FIRST-PARTY NAMESPACE (K9a S1): a series the loader GRANTED this plugin at open — a
+        // first-party plugin's declared series, of its declared type — is the host's to render as
+        // declared: it may be reserved, and it carries no provenance label.
+        let granted = busbar_plugin_loader::observe::first_party_series(plugin, &m.name, &m.kind);
+        if !granted && !admits_metric_name(&m.name) {
             // Reserved first-party namespace — a plugin cannot impersonate a `busbar_*` series.
             // (The charset half is already guaranteed by the validator; naming both through one
             // predicate is what keeps the two ABI lanes answering the same question.)
@@ -306,7 +310,7 @@ fn fold_metrics(plugin: &str, raw: &[serde_json::Value]) {
             warn_cardinality_once(plugin, &m.name);
             continue;
         }
-        let labels = labels_for(plugin, &m);
+        let labels = labels_for((!granted).then_some(plugin), &m);
         match m.kind.as_str() {
             "counter" => {
                 // A COUNTER DELTA CANNOT BE NEGATIVE, and the validator does not say so — it
@@ -356,14 +360,16 @@ fn warn_cardinality_once(plugin: &str, series: &str) {
     );
 }
 
-/// The label set for one folded sample: the host's provenance label first, then the plugin's own.
+/// The label set for one folded sample: the host's provenance label first (none for a granted
+/// first-party series), then the plugin's own.
 ///
 /// A plugin label that would SHADOW the provenance one is dropped — charset validity is not
 /// uniqueness, and a duplicate label name is a parse error that costs the whole scrape rather than
 /// the one sample. Exactly the rule `hooks::scrape::render_labels` applies, and for exactly that
 /// reason.
-fn labels_for(plugin: &str, m: &crate::hooks::wire::HookMetric) -> Vec<metrics::Label> {
-    let mut labels = vec![metrics::Label::new(PLUGIN_LABEL, plugin.to_string())];
+fn labels_for(plugin: Option<&str>, m: &crate::hooks::wire::HookMetric) -> Vec<metrics::Label> {
+    let provenance = plugin.map(|p| metrics::Label::new(PLUGIN_LABEL, p.to_string()));
+    let mut labels: Vec<metrics::Label> = provenance.into_iter().collect();
     if let Some(own) = &m.labels {
         for (k, v) in own {
             if k == PLUGIN_LABEL {

@@ -115,6 +115,7 @@ fn write_tarball(dir: &Path, lib: &[u8]) {
         settings_schema: None,
         schema_derived: false,
         host: None,
+        declares: Default::default(),
     };
     let bytes = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
     std::fs::write(dir.join("plugins").join("dropped-sink.tar.gz"), bytes).unwrap();

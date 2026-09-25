@@ -134,6 +134,19 @@ impl LoadablePlugin {
             None => crate::Image::Bytes(&self.lib_bytes),
         }
     }
+
+    /// FIRST-PARTY: admitted through the LINKED door, or dropped in and signed by the busbar
+    /// release key under the trust policy — the plugins the host grants what they declare (K9a).
+    pub fn first_party(&self) -> bool {
+        self.entry.is_some()
+            || matches!(
+                self.verdict,
+                Verdict::Trusted {
+                    first_party: true,
+                    ..
+                }
+            )
+    }
 }
 
 /// The `file` a linked row reports: it has no tarball.
@@ -439,7 +452,9 @@ impl PluginRegistry {
         cfg_json: &str,
     ) -> Result<crate::export::DynExport, String> {
         let p = self.resolve_kind(name_or_alias, "export", "serve as a telemetry sink")?;
-        crate::export::load_export_image(p.image(), cfg_json, &p.manifest.name, &p.manifest.kind)
+        let (name, declares) = (&p.manifest.name, &p.manifest.declares);
+        crate::observe::grant_series(name, p.first_party(), &declares.metrics)?;
+        crate::export::load_export_image(p.image(), cfg_json, name, &p.manifest.kind)
     }
 
     /// Open a PLANE resolved by name or alias: verifies the resolved plugin's `kind` is `plane`, then

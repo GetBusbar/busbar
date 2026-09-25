@@ -547,6 +547,7 @@ fn pack(args: &[String]) -> ExitCode {
             // `false` unless `--schema-derived` is passed.
             schema_derived,
             host: None,
+            declares: Default::default(),
         };
         let lib_bytes =
             std::fs::read(&lib_path).map_err(|e| format!("cannot read --lib '{lib_path}': {e}"))?;

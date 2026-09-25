@@ -165,6 +165,7 @@ fn plugins_dir(tag: &str, lib: &[u8]) -> (std::path::PathBuf, TrustPolicy) {
         settings_schema: None,
         schema_derived: false,
         host: None,
+        declares: Default::default(),
     };
     let signed = sign(&release, manifest, lib);
     let tarball = busbar_plugin_loader::tarball::package(&signed, "libplane.so", lib).unwrap();
@@ -638,6 +639,7 @@ fn an_export_row_spelling_a_built_in_module_is_refused() {
             settings_schema: None,
             schema_derived: false,
             host: None,
+            declares: Default::default(),
         };
         let signed = sign(&release, manifest, lib);
         let tarball = busbar_plugin_loader::tarball::package(&signed, "libexport.so", lib).unwrap();
@@ -671,4 +673,48 @@ fn an_export_row_spelling_a_built_in_module_is_refused() {
         shadowed_export(&registry_of("clear", "k9-tail", "k9-tail")),
         Ok(())
     );
+}
+
+/// THE HOST'S METRIC CATALOG CANNOT DRIFT (K9a S1). Every `busbar_*` series constant the host's
+/// metric modules define is in [`HOST_SERIES`], so a first-party plugin's claim on one is refused;
+/// and a derived histogram series is the host's too. RED: drop an entry from the list and the
+/// scan names it.
+#[test]
+fn the_host_series_catalog_holds_every_series_the_host_defines() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let sources = [
+        "busbar-kernel/src/metrics/mod.rs",
+        "busbar-kernel/src/telemetry.rs",
+        "busbar-kernel/src/proxy/proxy_vocab.rs",
+        "busbar-substrate-values/src/handlers.rs",
+    ];
+    let mut defined = Vec::new();
+    for file in sources {
+        let text = std::fs::read_to_string(root.join(file)).expect("read a metric module");
+        // A `const NAME: &str =` followed (on its line or the next) by a `"busbar_…"` literal.
+        let mut pending = false;
+        for line in text.lines() {
+            let decl = line.contains("const ") && line.contains(": &str =");
+            if decl || pending {
+                if let Some(start) = line.find("\"busbar_") {
+                    let rest = &line[start + 1..];
+                    defined.push(rest[..rest.find('"').expect("closed")].to_string());
+                    pending = false;
+                    continue;
+                }
+                pending = decl && line.trim_end().ends_with('=');
+            }
+        }
+    }
+    assert!(
+        defined.len() >= HOST_SERIES.len(),
+        "the scan found {defined:?}"
+    );
+    let missing: Vec<&String> = defined.iter().filter(|n| !host_series(n)).collect();
+    assert!(
+        missing.is_empty(),
+        "host series missing from HOST_SERIES: {missing:?}"
+    );
+    assert!(host_series("busbar_request_duration_seconds_count"));
+    assert!(!host_series("busbar_example_deliveries_total"));
 }

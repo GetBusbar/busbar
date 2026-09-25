@@ -415,6 +415,36 @@ impl Observations {
     }
 }
 
+/// One metric SERIES a plugin's signed manifest DECLARES it emits (`declares.metrics[]`) — the
+/// FIRST-PARTY METRIC NAMESPACE (K9a S1).
+///
+/// A declaration is a claim the HOST grants or ignores; it never widens what an undeclared entry
+/// may do. The host grants it only to a plugin admitted through the LINKED door or dropped in and
+/// signed by the busbar release key: such a plugin may claim a reserved `busbar_*` name, and an
+/// entry it reports under a granted name, of the declared `type`, renders exactly as declared —
+/// the name as written and no `plugin=` provenance label. Every other plugin keeps the envelope's
+/// rule (the reserved prefix refused, the `plugin=` label added) whatever it declares, and a claim
+/// on a series the host itself emits is refused at open rather than merged into the host's.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct SeriesDecl {
+    /// The series name exactly as it renders (Prometheus charset).
+    pub name: String,
+    /// `counter` | `gauge` | `histogram` — the same tokens a [`PluginMetric`]'s `type` carries. An
+    /// entry of another type under this name is not the declared series and is not granted.
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
+impl SeriesDecl {
+    /// A declared series `name` of type `kind`.
+    pub fn new(name: impl Into<String>, kind: impl Into<String>) -> SeriesDecl {
+        SeriesDecl {
+            name: name.into(),
+            kind: kind.into(),
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/observe_tests.rs"]
 mod tests;

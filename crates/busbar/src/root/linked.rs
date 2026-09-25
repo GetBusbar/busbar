@@ -497,6 +497,7 @@ pub fn dropped_planes_of(dropped: Option<&busbar_plugin_loader::PluginRegistry>)
 /// once, before the configuration is resolved (`busbar_kernel::export::plugin::install`). A row the
 /// axis refuses (one spelling a built-in's module name) refuses the boot before any listener binds.
 pub fn register_exports(dropped: Option<&'static busbar_plugin_loader::PluginRegistry>) {
+    busbar_plugin_loader::observe::install_host_series(host_series);
     let Some(registry) = dropped else {
         return;
     };
@@ -505,6 +506,58 @@ pub fn register_exports(dropped: Option<&'static busbar_plugin_loader::PluginReg
         std::process::exit(2);
     }
     busbar_kernel::export::plugin::install(registry);
+}
+
+/// THE HOST'S METRIC CATALOG — every series the host itself emits, which a first-party plugin's
+/// declared series may not claim (K9a S1: a claim on one is refused at open rather than merged into
+/// the host's writes). The composition root is the one place that names it; the root's tests hold
+/// it to every `busbar_*` series constant the kernel's metric modules define, so it cannot drift.
+pub const HOST_SERIES: &[&str] = &[
+    busbar_kernel::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
+    busbar_kernel::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
+    busbar_kernel::metrics::HOOK_CONTENT_TRUNCATED_TOTAL,
+    busbar_kernel::metrics::BILLING_TRUNCATED_TOTAL,
+    busbar_kernel::metrics::JOURNAL_QUARANTINED_TOTAL,
+    busbar_kernel::metrics::REQUESTS_TOTAL,
+    busbar_kernel::metrics::BREAKER_TRIPS_TOTAL,
+    busbar_kernel::metrics::FAILOVERS_TOTAL,
+    busbar_kernel::metrics::REQUEST_DURATION_SECONDS,
+    busbar_kernel::metrics::TRANSLATIONS_TOTAL,
+    busbar_kernel::metrics::PLANE_REQUESTS_TOTAL,
+    busbar_kernel::metrics::PLANE_REQUEST_DURATION_SECONDS,
+    busbar_kernel::metrics::WEBHOOK_LOGS_DROPPED_TOTAL,
+    busbar_kernel::metrics::FILE_LOGS_DROPPED_TOTAL,
+    busbar_kernel::metrics::FILE_LOGS_ROTATED_TOTAL,
+    busbar_kernel::metrics::FILE_LOGS_ROTATE_FAILED_TOTAL,
+    busbar_kernel::metrics::ADMISSION_DENIED_TOTAL,
+    busbar_kernel::metrics::METERING_PENDING_COALESCED_TOTAL,
+    busbar_kernel::metrics::PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL,
+    busbar_kernel::metrics::PLUGIN_RESPONSE_HEADERS_REJECTED_TOTAL,
+    busbar_kernel::metrics::KEY_SPEND_CENTS,
+    busbar_kernel::metrics::KEY_TOKENS_TOTAL,
+    busbar_kernel::metrics::BUCKET_TOKENS,
+    busbar_kernel::metrics::BUCKET_SPEND_CENTS,
+    busbar_kernel::metrics::BUCKET_BUDGET_REMAINING_CENTS,
+    busbar_kernel::metrics::LANE_STATE,
+    busbar_kernel::metrics::LANE_AVAILABLE,
+    busbar_kernel::metrics::LANE_RECOVERY_HINT_MS,
+    busbar_kernel::metrics::LANE_INFLIGHT,
+    busbar_kernel::metrics::LANE_AVAILABLE_PERMITS,
+    busbar_kernel::metrics::POOL_QUEUED,
+    busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
+    busbar_kernel::telemetry::UPSTREAM_FAILURES_TOTAL,
+    busbar_substrate_values::handlers::BILLING_TAP_DECODE_FAIL_TOTAL,
+    // `proxy_vocab`'s crate-private constant, spelled here as it renders.
+    "busbar_tap_notifications_dropped_total",
+];
+
+/// Is `name` a series the host emits — one of [`HOST_SERIES`], or a histogram/summary's derived
+/// `_sum` / `_count` / `_bucket` series of one?
+pub fn host_series(name: &str) -> bool {
+    let base = ["_sum", "_count", "_bucket"]
+        .iter()
+        .find_map(|suffix| name.strip_suffix(suffix));
+    HOST_SERIES.iter().any(|s| *s == name || Some(*s) == base)
 }
 
 /// A `kind: export` row spelling a built-in export module's name — as its name or its alias — is

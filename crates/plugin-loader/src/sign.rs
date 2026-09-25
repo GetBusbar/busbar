@@ -177,6 +177,31 @@ pub struct Manifest {
     /// entirely incompatible payload contracts across host products — see [`HOST_IDENTITY`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
+    /// What the plugin DECLARES it will say to the host beyond its kind's answers (K9a, the export
+    /// kind's host seams): the metric series it emits. SIGNED like every other field, so a grant
+    /// the host makes on a declaration is made on what the publisher signed. Absent (empty) for
+    /// every manifest packed before the section existed, and skipped when empty, so their
+    /// canonical bytes — and therefore their signatures — are unchanged.
+    #[serde(default, skip_serializing_if = "Declares::is_empty")]
+    pub declares: Declares,
+}
+
+/// A manifest's `declares` section — the statements a plugin makes ABOUT ITSELF that the host
+/// grants or refuses at open, never trusts as-is (the export ABI's minor, `EXPORT_ABI_MINOR`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Declares {
+    /// The metric series the plugin emits (S1, the first-party metric namespace): granted to a
+    /// first-party plugin only — see [`busbar_plugin::cold::observe::SeriesDecl`].
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub metrics: Vec<busbar_plugin::cold::observe::SeriesDecl>,
+}
+
+impl Declares {
+    /// Nothing declared — the section is left off the wire (and out of the signed bytes).
+    pub fn is_empty(&self) -> bool {
+        self.metrics.is_empty()
+    }
 }
 
 /// The advisory declared-intent block a `kind: hook` plugin's manifest may carry (`needs:`). Each

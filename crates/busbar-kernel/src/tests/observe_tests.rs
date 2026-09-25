@@ -94,7 +94,7 @@ fn the_provenance_label_cannot_be_shadowed() {
         "labels": {"plugin": "somebody-else", "sink": "audit"}
     }))
     .expect("decode");
-    let labels = labels_for("the-real-name", &m);
+    let labels = labels_for(Some("the-real-name"), &m);
     let plugin_labels: Vec<_> = labels
         .iter()
         .filter(|l| l.key() == PLUGIN_LABEL)
@@ -114,8 +114,106 @@ fn a_plugins_own_labels_are_carried() {
         "labels": {"sink": "audit", "reason": "full"}
     }))
     .expect("decode");
-    let labels = labels_for("p", &m);
+    let labels = labels_for(Some("p"), &m);
     assert_eq!(labels.len(), 3);
+}
+
+/// A THREAD-LOCAL capture of what the fold REGISTERS — every series key it asked a recorder for,
+/// rendered `name{k=v,…}` — so the fold runs for real under `metrics::with_local_recorder` without
+/// touching the process-global recorder no unit test may install into.
+#[derive(Default)]
+struct Registered(std::sync::Mutex<Vec<String>>);
+
+impl Registered {
+    fn note(&self, key: &metrics::Key) {
+        let labels: Vec<String> = key
+            .labels()
+            .map(|l| format!("{}={}", l.key(), l.value()))
+            .collect();
+        let mut seen = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        seen.push(format!("{}{{{}}}", key.name(), labels.join(",")));
+    }
+}
+
+impl metrics::Recorder for Registered {
+    fn describe_counter(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn describe_gauge(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn describe_histogram(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn register_counter(&self, key: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Counter {
+        self.note(key);
+        metrics::Counter::noop()
+    }
+    fn register_gauge(&self, key: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Gauge {
+        self.note(key);
+        metrics::Gauge::noop()
+    }
+    fn register_histogram(
+        &self,
+        key: &metrics::Key,
+        _: &metrics::Metadata<'_>,
+    ) -> metrics::Histogram {
+        self.note(key);
+        metrics::Histogram::noop()
+    }
+}
+
+/// THE FIRST-PARTY NAMESPACE (K9a S1), end to end through the fold: a series the loader GRANTED a
+/// first-party plugin renders exactly as declared — its reserved name, no `plugin=` label — while
+/// the RED arms keep today's rule: the same name from a plugin granted nothing, an undeclared
+/// reserved name, and the declared name at a type it was not declared as are all refused, and an
+/// ordinary name from the granted plugin still carries its provenance label.
+#[test]
+fn a_granted_first_party_series_renders_as_declared_and_nothing_else_is_granted() {
+    use busbar_plugin::cold::observe::SeriesDecl;
+    let declared = [SeriesDecl::new("busbar_s1_fold_total", "counter")];
+    busbar_plugin_loader::observe::grant_series("s1-first-party", true, &declared)
+        .expect("a first-party declaration is granted");
+    busbar_plugin_loader::observe::grant_series("s1-third-party", false, &declared)
+        .expect("a third party is granted nothing and refused nothing");
+    let entry =
+        |name: &str, kind: &str| serde_json::json!({"name": name, "type": kind, "value": 1});
+    let recorder = Registered::default();
+    metrics::with_local_recorder(&recorder, || {
+        fold_metrics(
+            "s1-first-party",
+            &[
+                entry("busbar_s1_fold_total", "counter"),
+                entry("busbar_s1_undeclared_total", "counter"),
+                entry("busbar_s1_fold_total", "gauge"),
+                entry("s1_own_total", "counter"),
+            ],
+        );
+        fold_metrics(
+            "s1-third-party",
+            &[entry("busbar_s1_fold_total", "counter")],
+        );
+    });
+    let seen = recorder.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert_eq!(
+        seen,
+        vec![
+            "busbar_s1_fold_total{}".to_string(),
+            "s1_own_total{plugin=s1-first-party}".to_string(),
+        ]
+    );
 }
 
 /// THE RESERVED NAMESPACE. A plugin metric named `busbar_*` is dropped so no plugin can impersonate

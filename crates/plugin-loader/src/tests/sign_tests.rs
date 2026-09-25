@@ -28,6 +28,7 @@ fn manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
         settings_schema: None,
         schema_derived: false,
         host: None,
+        declares: Default::default(),
     }
 }
 

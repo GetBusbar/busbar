@@ -663,6 +663,7 @@ fn registry_open_plane_yields_a_plane_that_rides_the_real_host_vtable() {
         settings_schema: None,
         schema_derived: false,
         host: None,
+        declares: Default::default(),
     };
     // `sign` fills the digest AND the signature, binding the manifest to these exact bytes.
     let signed = sign(&release, manifest, &lib);

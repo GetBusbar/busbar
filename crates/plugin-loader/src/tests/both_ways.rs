@@ -57,6 +57,7 @@ pub(crate) fn statement(kind: &str, name: &str, alias: &str, abi_version: u32) -
         settings_schema: None,
         schema_derived: false,
         host: None,
+        declares: Default::default(),
     }
 }
 
@@ -90,6 +91,24 @@ pub(crate) fn linked(manifest: Manifest, entry: &'static ColdEntry) -> PluginReg
 /// THE DROPPED-IN DOOR: `lib` signed first-party under `manifest` into a fresh `plugins/` directory,
 /// and that directory scanned under the default posture that holds the release key.
 pub(crate) fn dropped(tag: &str, manifest: Manifest, lib: &[u8]) -> PluginRegistry {
+    dropped_signed(tag, manifest, lib, &SigningKey::from_bytes(&[11u8; 32]))
+}
+
+/// THE DROPPED-IN DOOR for a THIRD party: `manifest`'s publisher allowlisted under its own key,
+/// which signs it — trusted, and not first-party. The RED arm of every grant a first-party plugin
+/// earns (K9a).
+pub(crate) fn dropped_third_party(tag: &str, manifest: Manifest, lib: &[u8]) -> PluginRegistry {
+    dropped_signed(tag, manifest, lib, &SigningKey::from_bytes(&[22u8; 32]))
+}
+
+/// The dropped-in door with `signer` signing: the release key (`[11; 32]`) is the policy's
+/// first-party key, and any other signer is allowlisted as the manifest's own publisher.
+fn dropped_signed(
+    tag: &str,
+    manifest: Manifest,
+    lib: &[u8],
+    signer: &SigningKey,
+) -> PluginRegistry {
     // One directory per call: two tests of one plugin run in parallel in this binary.
     static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -100,7 +119,8 @@ pub(crate) fn dropped(tag: &str, manifest: Manifest, lib: &[u8]) -> PluginRegist
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create the plugins dir");
     let release = SigningKey::from_bytes(&[11u8; 32]);
-    let signed = sign(&release, manifest, lib);
+    let publisher = (manifest.publisher.clone(), signer.verifying_key());
+    let signed = sign(signer, manifest, lib);
     let tarball = crate::tarball::package(&signed, "libplugin.so", lib).expect("package");
     std::fs::write(dir.join(format!("{tag}.tar.gz")), tarball).expect("write the tarball");
     let policy = TrustPolicy {
@@ -108,7 +128,9 @@ pub(crate) fn dropped(tag: &str, manifest: Manifest, lib: &[u8]) -> PluginRegist
         binary_version: "1.6.0".into(),
         first_party_floors: Default::default(),
         first_party_high_water: Default::default(),
-        publishers: Default::default(),
+        publishers: std::iter::once(publisher)
+            .filter(|(_, key)| *key != release.verifying_key())
+            .collect(),
         allow_unsigned: false,
         allow_third_party: false,
         min_versions: Default::default(),

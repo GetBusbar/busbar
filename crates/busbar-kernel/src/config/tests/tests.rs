@@ -2908,6 +2908,7 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
             settings_schema: None,
             schema_derived: false,
             host: None,
+            declares: Default::default(),
         },
         artifact,
     );
@@ -2972,6 +2973,7 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
             settings_schema: None,
             schema_derived: false,
             host: None,
+            declares: Default::default(),
         },
         artifact,
     );

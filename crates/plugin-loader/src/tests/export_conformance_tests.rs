@@ -495,3 +495,94 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
 fn the_rendered_exposition_equivalence_is_owed_at_the_composition_root() {
     // Nothing to assert; this test is a landmark. It fails only if deleted, which is the point.
 }
+
+/// The series the S1 witness's sink reports its deliveries under — reserved, and declared.
+const S1_SERIES: &str = "busbar_s1_example_deliveries_total";
+
+/// A series the host itself emits, for the collision arm — installed once as this test binary's
+/// host catalog (the composition root installs the real one).
+const S1_HOST_SERIES: &str = "busbar_s1_host_owned_total";
+
+/// **K9a S1 — THE FIRST-PARTY METRIC NAMESPACE, BOTH WAYS.** The export fixture, its manifest
+/// declaring a reserved series, registered through the LINKED door and the DROPPED-IN door (signed
+/// by the release key): each open GRANTS the declared series, so the host renders it as declared
+/// (the kernel's `observe` tests render the grant), and the two doors register one row and fold the
+/// same. RED ARMS, in the same test so the grant cannot pass vacuously: the same crate dropped in by
+/// a THIRD party (allowlisted, trusted, not first-party) is granted nothing whatever it declares,
+/// and a first-party claim on a series the host emits refuses the open naming it.
+#[test]
+fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
+    use busbar_plugin::cold::observe::SeriesDecl;
+    crate::observe::install_host_series(|name| name == S1_HOST_SERIES);
+    let declaring = |name: &str, series: &str| {
+        let mut m = super::both_ways::statement(
+            "export",
+            name,
+            &format!("{name}-alias"),
+            busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+        );
+        m.declares.metrics = vec![SeriesDecl::new(series, "counter")];
+        m
+    };
+    let cfg = serde_json::json!({ "series": S1_SERIES }).to_string();
+    let _guard = crate::observe::testing::exclusive();
+    let transcript = |sink: &crate::export::DynExport| {
+        let before = crate::observe::testing::folds().len();
+        sink.deliver(ExportStream::Logs, &serde_json::json!({ "n": 1 }))
+            .expect("deliver");
+        let folds: Vec<Compared> = crate::observe::testing::folds()[before..]
+            .iter()
+            .filter(|(who, ..)| who == "s1-fixture")
+            .map(|(_, k, m, d)| (k.clone(), m.clone(), d.clone()))
+            .collect();
+        let granted = crate::observe::first_party_series("s1-fixture", S1_SERIES, "counter");
+        serde_json::json!({ "granted": granted, "folds": folds }).to_string()
+    };
+    let Some([linked, dropped]) = super::both_ways::both_doors(
+        declaring("s1-fixture", S1_SERIES),
+        |registry| {
+            registry
+                .open_export("s1-fixture-alias", &cfg)
+                .expect("a first-party declaration opens")
+        },
+        transcript,
+    ) else {
+        eprintln!("skip: the export fixture's cdylib is not built");
+        return;
+    };
+    assert!(
+        linked.1.contains(r#""granted":true"#) && linked.1.contains(S1_SERIES),
+        "the linked door grants the declared series and the sink reports under it: {}",
+        linked.1
+    );
+    assert_eq!(linked, dropped, "both doors grant and fold the same");
+
+    // RED ARM 1: a third party declaring the same kind of claim is granted nothing.
+    let (crate_snake, _) = super::both_ways::fixture("export");
+    let lib = std::fs::read(super::both_ways::cdylib(crate_snake).expect("built above"))
+        .expect("read the cdylib");
+    let mut third = declaring("s1-third-party", "busbar_s1_third_party_total");
+    third.publisher = "acme".into();
+    let registry = super::both_ways::dropped_third_party(crate_snake, third, &lib);
+    registry
+        .open_export("s1-third-party", "{}")
+        .expect("a third party opens; its declaration is simply not granted");
+    assert!(!crate::observe::first_party_series(
+        "s1-third-party",
+        "busbar_s1_third_party_total",
+        "counter"
+    ));
+
+    // RED ARM 2: a first-party claim on a host series refuses the open.
+    let registry = super::both_ways::linked(
+        declaring("s1-collides", S1_HOST_SERIES),
+        super::both_ways::fixture("export").1,
+    );
+    let refused = registry
+        .open_export("s1-collides", "{}")
+        .expect_err("a claim on a host series is refused");
+    assert!(
+        refused.contains(S1_HOST_SERIES) && refused.contains("the host itself emits"),
+        "{refused}"
+    );
+}

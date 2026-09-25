@@ -2091,27 +2091,9 @@ pub fn test_hook_env_with_schema(
     ));
     std::fs::create_dir_all(&dir).unwrap();
     for (i, alias) in aliases.iter().enumerate() {
-        let mut m = busbar_plugin_loader::sign::Manifest {
-            name: format!("busbar-hook-test-plugin-{i}"),
-            alias: alias.to_string(),
-            kind: "hook".into(),
-            version: "1.5.0".into(),
-            publisher: "acme".into(),
-            abi_version: *busbar_plugin_loader::supported_abi("hook")
-                .iter()
-                .max()
-                .unwrap(),
-            sha256: String::new(),
-            signature: String::new(),
-            description: String::new(),
-            homepage: String::new(),
-            license: String::new(),
-            needs: needs.clone(),
-            settings_schema: settings_schema.map(str::to_string),
-            schema_derived: false,
-            host: None,
-        };
-        m.sha256 = busbar_plugin_loader::sign::sha256_hex(&lib);
+        let mut m = fixture_manifest(&format!("busbar-hook-test-plugin-{i}"), alias, "hook", &lib);
+        m.needs = needs.clone();
+        m.settings_schema = settings_schema.map(str::to_string);
         let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", &lib).unwrap();
         std::fs::write(dir.join(format!("hook{i}.tar.gz")), tarball).unwrap();
     }
@@ -2172,26 +2154,8 @@ pub fn test_hook_env_with_wrong_kind_plugin(
         SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    let manifest_for = |name: &str, alias: &str, kind: &str| busbar_plugin_loader::sign::Manifest {
-        name: name.to_string(),
-        alias: alias.to_string(),
-        kind: kind.to_string(),
-        version: "1.5.0".into(),
-        publisher: "acme".into(),
-        abi_version: *busbar_plugin_loader::supported_abi(kind)
-            .iter()
-            .max()
-            .unwrap(),
-        sha256: busbar_plugin_loader::sign::sha256_hex(&lib),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-    };
+    let manifest_for =
+        |name: &str, alias: &str, kind: &str| fixture_manifest(name, alias, kind, &lib);
     let hook_tarball = busbar_plugin_loader::tarball::package(
         &manifest_for("busbar-hook-test-plugin-real", hook_alias, "hook"),
         "lib.so",
@@ -2331,3 +2295,34 @@ pub fn builtins_only_secret_resolver() -> crate::config::secret::SecretResolver 
 // re-exported here, so every caller still names them at `crate::test_support::…`.
 mod fixtures;
 pub use fixtures::*;
+
+/// The unsigned `acme` manifest the hook-plugin fixtures package `lib` under, as `name`/`alias` of
+/// `kind` at that kind's newest payload schema.
+fn fixture_manifest(
+    name: &str,
+    alias: &str,
+    kind: &str,
+    lib: &[u8],
+) -> busbar_plugin_loader::sign::Manifest {
+    busbar_plugin_loader::sign::Manifest {
+        name: name.to_string(),
+        alias: alias.to_string(),
+        kind: kind.to_string(),
+        version: "1.5.0".into(),
+        publisher: "acme".into(),
+        abi_version: *busbar_plugin_loader::supported_abi(kind)
+            .iter()
+            .max()
+            .unwrap(),
+        sha256: busbar_plugin_loader::sign::sha256_hex(lib),
+        signature: String::new(),
+        description: String::new(),
+        homepage: String::new(),
+        license: String::new(),
+        needs: Default::default(),
+        settings_schema: None,
+        schema_derived: false,
+        host: None,
+        declares: Default::default(),
+    }
+}

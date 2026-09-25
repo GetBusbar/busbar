@@ -177,6 +177,7 @@ fn install_static_auth_plugin(dir: &Path) -> bool {
         settings_schema: None,
         schema_derived: false,
         host: None,
+        declares: Default::default(),
     };
     let bytes = busbar_plugin_loader::tarball::package(&m, "lib.so", &lib).unwrap();
     std::fs::write(dir.join("plugins").join("e2e-auth-static.tar.gz"), bytes).unwrap();

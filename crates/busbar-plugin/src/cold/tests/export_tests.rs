@@ -176,6 +176,23 @@ fn export_abi_version_is_three() {
     assert_eq!(EXPORT_ABI_VERSION, 3);
 }
 
+/// THE MINOR COUNTS THE ADDITIVE HOST SEAMS (K9a) and moves with each one, while the version the
+/// loader gates on stays put — pinned so a seam cannot land without saying so.
+#[test]
+fn export_abi_minor_counts_the_host_seams() {
+    assert_eq!((EXPORT_ABI_VERSION, EXPORT_ABI_MINOR), (3, 1));
+}
+
+/// S1's declaration wire: `{"name": …, "type": …}`, the same `type` token a reported metric carries.
+#[test]
+fn a_declared_series_wire_is_pinned() {
+    let d = crate::cold::observe::SeriesDecl::new("busbar_x_total", "counter");
+    assert_eq!(
+        serde_json::to_value(&d).expect("encode"),
+        serde_json::json!({"name": "busbar_x_total", "type": "counter"})
+    );
+}
+
 /// THE ENVELOPE IS THE EXPORT RESPONSE. The wire a v3 sink answers on is the kind's response
 /// wrapped in `{ result, metrics[], diagnostics[] }` — pinned here because a plugin author in any
 /// language matches these three keys literally, so their spelling is a contract and not a detail.

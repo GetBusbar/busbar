@@ -28,6 +28,16 @@ struct ExampleExport {
     /// Batches handed to `deliver` since the last drain. `Relaxed` is right: nothing orders against
     /// this and the only reader is the drain, which is called from the same boundary call.
     delivered: std::sync::atomic::AtomicU64,
+    /// The settings this instance was opened with, when they are a JSON object — read by the host
+    /// seams' witnesses (K9a) and by nothing else; a sink with no settings behaves as it always did.
+    settings: serde_json::Map<String, serde_json::Value>,
+}
+
+impl ExampleExport {
+    /// A string setting, if the instance was opened with one under `key`.
+    fn setting(&self, key: &str) -> Option<&str> {
+        self.settings.get(key).and_then(serde_json::Value::as_str)
+    }
 }
 
 /// The series this sink reports. Deliberately OUTSIDE the reserved `busbar_` namespace, which the
@@ -58,19 +68,29 @@ impl ExportHandler for ExampleExport {
         if n == 0 {
             return Observations::none();
         }
-        Observations::none().metric(PluginMetric::counter(DELIVERED_TOTAL, n as f64))
+        // `series` names the counter instead: the FIRST-PARTY NAMESPACE witness (K9a S1) opens the
+        // sink under a reserved name its manifest declares.
+        let name = self.setting("series").unwrap_or(DELIVERED_TOTAL);
+        Observations::none().metric(PluginMetric::counter(name, n as f64))
     }
 }
 
-/// Construct the sink. No config is read; malformed JSON in `cfg` is accepted and ignored rather than
-/// a load error, since there is nothing in this plugin's config shape that could be malformed.
+/// Construct the sink. Malformed JSON in `cfg` is accepted and ignored rather than a load error;
+/// a JSON object is kept for the few settings the host seams' witnesses read (see [`ExampleExport`]).
 ///
 /// `pub` so the COMPILED-IN arm of the both-ways equivalence test can construct exactly the handler
 /// the `cdylib`'s `busbar_open` constructs. That is the whole point of the equivalence: not two
 /// similar objects built two ways, but the SAME constructor reached down two different paths. The
 /// plane kind's `["cdylib", "rlib"]` conformance fixture does the same thing for the same reason.
-pub fn open(_cfg: &str) -> Result<Box<dyn ExportHandler>, String> {
-    Ok(Box::new(ExampleExport::default()))
+pub fn open(cfg: &str) -> Result<Box<dyn ExportHandler>, String> {
+    let settings = match serde_json::from_str(cfg) {
+        Ok(serde_json::Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    };
+    Ok(Box::new(ExampleExport {
+        settings,
+        ..ExampleExport::default()
+    }))
 }
 
 busbar_plugin_sdk::export_export_plugin!(open);

@@ -98,6 +98,71 @@ pub(crate) fn fold<R>(plugin: &str, kind: &str, envelope: &Envelope<R>) {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE FIRST-PARTY METRIC NAMESPACE (K9a S1). A plugin's signed manifest DECLARES the series it
+// emits (`declares.metrics`). The loader GRANTS those declarations at open to a first-party plugin
+// — one admitted through the LINKED door, or dropped in and signed by the busbar release key — and
+// the host's observer asks [`first_party_series`] per entry: a granted entry may use a reserved
+// `busbar_*` name and renders as declared, without the `plugin=` label. Nothing is granted to any
+// other plugin, which therefore keeps the envelope's rule whatever it declares.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The granted series, by the plugin's host-assigned name. Written at open, read per fold.
+static GRANTS: std::sync::RwLock<
+    Option<std::collections::HashMap<String, Vec<busbar_plugin::cold::observe::SeriesDecl>>>,
+> = std::sync::RwLock::new(None);
+
+/// The HOST's own series — installed once by the composition root, which is the one place that
+/// names the host's metric catalog. A first-party claim on one of them is refused at open: two
+/// writers of one series is a merge nobody could read back apart.
+static HOST_SERIES: std::sync::OnceLock<fn(&str) -> bool> = std::sync::OnceLock::new();
+
+/// Install the host's series predicate. The first install wins; a later one returns `false`.
+pub fn install_host_series(is_host_series: fn(&str) -> bool) -> bool {
+    HOST_SERIES.set(is_host_series).is_ok()
+}
+
+/// Grant `plugin`'s declared series, when it is `first_party`. A claim on a series the host
+/// emits, or on one another plugin was already granted, is refused naming both; a plugin that is
+/// not first-party is granted nothing (and refused nothing — it keeps today's rule).
+pub fn grant_series(
+    plugin: &str,
+    first_party: bool,
+    declared: &[busbar_plugin::cold::observe::SeriesDecl],
+) -> Result<(), String> {
+    if !first_party || declared.is_empty() {
+        return Ok(());
+    }
+    let is_host = HOST_SERIES.get().copied().unwrap_or(|_| false);
+    let mut guard = GRANTS.write().unwrap_or_else(|e| e.into_inner());
+    let grants = guard.get_or_insert_with(Default::default);
+    for d in declared {
+        if is_host(&d.name) {
+            return Err(format!(
+                "plugin '{plugin}' declares the series '{}', which the host itself emits",
+                d.name
+            ));
+        }
+        let owner = grants.iter().find(|(p, s)| *p != plugin && s.contains(d));
+        if let Some((owner, _)) = owner {
+            return Err(format!(
+                "plugin '{plugin}' declares the series '{}', already granted to plugin '{owner}'",
+                d.name
+            ));
+        }
+    }
+    grants.insert(plugin.to_string(), declared.to_vec());
+    Ok(())
+}
+
+/// Is `name` of type `kind` a series granted to `plugin`? What the host's observer asks of each
+/// reported entry before it applies the reserved-namespace rule and the `plugin=` label.
+pub fn first_party_series(plugin: &str, name: &str, kind: &str) -> bool {
+    let guard = GRANTS.read().unwrap_or_else(|e| e.into_inner());
+    let granted = guard.as_ref().and_then(|g| g.get(plugin));
+    granted.is_some_and(|s| s.iter().any(|d| d.name == name && d.kind == kind))
+}
+
 /// THE ONE recording observer for this crate's whole test binary.
 ///
 /// It has to be one, and shared, because [`install_plugin_observer`] is deliberately a
