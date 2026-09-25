@@ -1176,9 +1176,12 @@ pub fn build_app_from_config(
         // these read identically to the former per-feature branches without naming a plane feature.
         let tools_stateful = !cfg.tool_defs.def_names().is_empty() || !cfg.tool_pools.is_empty();
         let agents_stateful = !cfg.agent_defs.def_names().is_empty() || !cfg.agent_pools.is_empty();
-        let store: Arc<dyn governance::Store> = if g.module
-            == crate::config::GOVERNANCE_STORE_MEMORY
-        {
+        // The configured store, resolved and opened on the store AXIS whichever door its row came
+        // in by (DECISIONS #2 rule (1)). A row that states itself ephemeral keeps nothing across a
+        // restart, which the operator is told before it opens.
+        let row = plugin_registry.resolve(&g.module);
+        let ephemeral = row.is_some_and(|p| p.ephemeral);
+        if ephemeral {
             diag_warn!(
                 GOVERNANCE_STORE_EPHEMERAL,
                 "store: in-memory (ephemeral) - keys, groups' usage, and ledgers reset on \
@@ -1194,19 +1197,22 @@ pub fn build_app_from_config(
             {
                 diag_warn!(STATEFUL_PLANE_EPHEMERAL_STORE, "{msg}");
             }
-            Arc::new(governance::MemoryStore::new())
-        } else {
-            // Resolve any SecretRef-typed setting (e.g. a `licenseKey`) against the secret
-            // store BEFORE the settings cross the ABI (ADR-0010). FAIL-CLOSED: an unresolvable
-            // ref refuses the store load rather than handing the plugin a dangling reference.
-            let resolved = config::secret::resolve_settings(&g.settings, secret_resolver.as_ref())
-                .map_err(|e| format!("store '{}' settings: {e}", g.module))?;
-            let cfg_json = serde_json::Value::Object(resolved).to_string();
-            match plugin_registry.open_store(&g.module, &cfg_json) {
-                Ok(s) => Arc::from(s),
-                Err(e) => return Err(format!("store '{}' plugin load failed: {e}", g.module)),
-            }
+        }
+        // Resolve any SecretRef-typed setting (e.g. a `licenseKey`) against the secret store BEFORE
+        // the settings cross the ABI (ADR-0010). FAIL-CLOSED: an unresolvable ref refuses the store
+        // load rather than handing the plugin a dangling reference. A row opened IN PROCESS is
+        // handed no settings, so it has none to resolve (the built-in store never read its own).
+        let resolved = match row.is_some_and(|p| p.in_process()) {
+            true => Default::default(),
+            false => config::secret::resolve_settings(&g.settings, secret_resolver.as_ref())
+                .map_err(|e| format!("store '{}' settings: {e}", g.module))?,
         };
+        let cfg_json = serde_json::Value::Object(resolved).to_string();
+        let store: Arc<dyn governance::Store> = Arc::from(
+            plugin_registry
+                .open_store(&g.module, &cfg_json)
+                .map_err(|e| format!("store '{}' plugin load failed: {e}", g.module))?,
+        );
         // The operator ADMIN credential: the `admin-tokens` chain entry's `token:` secret ref.
         // FAIL-CLOSED: a configured-but-unresolvable admin token refuses boot (a silently-absent
         // token would lock the admin API while the operator believes it is guarded).
@@ -1269,11 +1275,9 @@ pub fn build_app_from_config(
                 // `all_keys()` failure is non-fatal — treat as 0 keys (the enforcement gate is
                 // unaffected; we only lose the advisory). Inertness is now recomputed from CHAIN
                 // SHAPE (is `keys` in the running chain?), not the admin token.
-                let store_is_durable = g.module != crate::config::GOVERNANCE_STORE_MEMORY;
                 let key_count = gs.all_keys().map(|k| k.len()).unwrap_or(0);
-                let keys_in_chain = auth_mw.keys_in_chain;
                 if let Some(banner) =
-                    inert_durable_keys_banner(store_is_durable, key_count, keys_in_chain)
+                    inert_durable_keys_banner(!ephemeral, key_count, auth_mw.keys_in_chain)
                 {
                     eprintln!("[error] {banner}");
                     diag_error!(DURABLE_KEYS_INERT, "{banner}");

@@ -84,7 +84,7 @@ pub(crate) fn cdylib(crate_snake: &str) -> Option<PathBuf> {
 /// THE LINKED DOOR: `manifest` and `entry` registered through [`PluginRegistry::link`].
 pub(crate) fn linked(manifest: Manifest, entry: &'static ColdEntry) -> PluginRegistry {
     PluginRegistry::empty()
-        .link(vec![LinkedPlugin { manifest, entry }])
+        .link(vec![LinkedPlugin::boundary(manifest, entry)])
         .expect("the linked door admits the plugin")
 }
 

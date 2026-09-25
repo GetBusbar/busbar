@@ -755,6 +755,61 @@ fn disabled_plugins_are_inert_even_when_present() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// K5 (DECISIONS #2 rule (1)) — THE BUILT-IN STORE IS A ROW OF THE STORE AXIS. The default store is
+/// registered through `PluginRegistry::link`, the admission a dropped-in store's row takes, and the
+/// configured name resolves to it there — not a name the kernel matches. With the plugins directory
+/// off the registry holds exactly that row, which states itself ephemeral and opens through
+/// `open_store`; with the directory on, the linked row still holds its name (first registration
+/// wins) and a dropped-in plugin spelling the same name stays the directory's own row.
+///
+/// RED by planting the door bypass: `linked_rows()` registering nothing leaves the default boot's
+/// `store.module: memory` unresolved (the preflight then refuses it as a plugin with plugins off).
+#[test]
+fn the_built_in_store_is_a_linked_row_of_the_store_axis() {
+    let name = crate::config::GOVERNANCE_STORE_MEMORY;
+    let reg = crate::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &crate::config::PluginsCfg::default(),
+        &Default::default(),
+    )
+    .expect("the default boot resolves its store on the axis");
+    let row = reg.resolve(name).expect("the default store is a row");
+    assert_eq!((row.manifest.kind.as_str(), row.ephemeral), ("store", true));
+    assert_eq!((reg.linked().len(), reg.loadable().len()), (1, 0));
+    reg.open_store(name, "{}")
+        .expect("the row opens through open_store");
+
+    let dir = tmp_plugin_dir("linked-store");
+    let tarball = unsigned_tarball(plugin_manifest(name, "acme-ram", "acme"), b"lib");
+    std::fs::write(dir.join("ram.tar.gz"), tarball).unwrap();
+    let mut cfg = plugins_cfg(&dir, true);
+    cfg.trust.allow_unsigned = true;
+    let reg = crate::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &cfg,
+        &Default::default(),
+    )
+    .expect("the directory scans");
+    let row = reg.resolve(name).expect("the name still resolves");
+    assert!(
+        row.ephemeral && row.manifest.publisher == "busbar",
+        "the linked row holds its name"
+    );
+    assert_eq!(
+        reg.loadable().len(),
+        1,
+        "the dropped-in row is still the directory's"
+    );
+    assert_eq!(reg.resolve("acme-ram").map(|p| p.ephemeral), Some(false));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// SECURITY: if the CONFIGURED governance store resolves to a plugin that is UNTRUSTED and NOT
 /// opted-in, boot must FAIL with a clear error that NAMES the plugin and carries the exact trust
 /// reason - never silently skip the store the operator asked for. With `allow_unsigned` set, the

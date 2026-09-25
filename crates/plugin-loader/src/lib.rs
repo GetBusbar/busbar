@@ -83,7 +83,7 @@ pub use plane::{
     link_plane, load_plane, load_plane_from_bytes, DynPlane, HotClaim, HotDeclaration, ServedPlane,
 };
 pub use registry::{
-    inventory as inventory_tarballs, scan_and_validate, supported_abi, InventoryEntry,
+    inventory as inventory_tarballs, scan_and_validate, supported_abi, InventoryEntry, LinkedEntry,
     LinkedPlugin, LoadablePlugin, PluginRegistry, SkippedPlugin,
 };
 pub use stage::sweep_dead_staging;

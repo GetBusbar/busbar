@@ -123,16 +123,25 @@ pub struct LoadablePlugin {
     pub manifest: Manifest,
     pub verdict: Verdict,
     pub lib_bytes: Vec<u8>,
+    /// Whether what this plugin holds is lost on restart — a store's own statement ([`LinkedPlugin`]).
+    /// A dropped-in row never states it: the plugins directory is where a durable store comes from.
+    pub ephemeral: bool,
     /// A linked row's boundary; `None` for a dropped-in row, whose boundary is `lib_bytes`.
-    entry: Option<&'static ColdEntry>,
+    entry: Option<LinkedEntry>,
 }
 
 impl LoadablePlugin {
+    /// Whether this row opens IN PROCESS ([`LinkedEntry::Store`]) rather than over the C ABI —
+    /// such a row is handed no configuration across a boundary, so there is none to resolve for it.
+    pub fn in_process(&self) -> bool {
+        matches!(self.entry, Some(LinkedEntry::Store(_)))
+    }
+
     /// What the one load runs over: the linked boundary, or the verified bytes.
     pub fn image(&self) -> crate::Image<'_> {
         match self.entry {
-            Some(entry) => crate::Image::Linked(entry),
-            None => crate::Image::Bytes(&self.lib_bytes),
+            Some(LinkedEntry::Boundary(entry)) => crate::Image::Linked(entry),
+            _ => crate::Image::Bytes(&self.lib_bytes),
         }
     }
 
@@ -166,10 +175,65 @@ const LINKED_KINDS: &[&str] = &[
 
 /// A cold-lane plugin LINKED into this build (DECISIONS #2 rule (1)): the manifest its signed
 /// tarball would carry — every statement about the plugin, none about an artifact (`sha256` and
-/// `signature` describe a file it does not have) — and its boundary, the SDK's `BUSBAR_COLD_ENTRY`.
+/// `signature` describe a file it does not have) — and its boundary.
 pub struct LinkedPlugin {
     pub manifest: Manifest,
-    pub entry: &'static ColdEntry,
+    pub entry: LinkedEntry,
+    /// [`LoadablePlugin::ephemeral`]: the plugin states that what it holds is lost on restart.
+    pub ephemeral: bool,
+}
+
+/// A linked plugin's boundary.
+#[derive(Clone, Copy)]
+pub enum LinkedEntry {
+    /// The SDK boundary it exports (`BUSBAR_COLD_ENTRY`), run through the one [`crate::Image`] load.
+    Boundary(&'static ColdEntry),
+    /// A store written against the store trait itself rather than the SDK boundary — the in-process
+    /// default a build ships. `open_store` calls it with the row's configuration, where it would
+    /// otherwise run the image load; everything before that (the row, its registration, name and
+    /// alias resolution, the kind check) is the axis every other row takes.
+    Store(fn(&str) -> Result<Box<dyn busbar_api::Store>, String>),
+}
+
+impl LinkedPlugin {
+    /// A linked SDK plugin: `manifest` and its boundary.
+    pub fn boundary(manifest: Manifest, entry: &'static ColdEntry) -> Self {
+        LinkedPlugin {
+            manifest,
+            entry: LinkedEntry::Boundary(entry),
+            ephemeral: false,
+        }
+    }
+
+    /// A built-in STORE named `name` (its own alias), at this binary's store payload schema.
+    pub fn store(
+        name: &str,
+        open: fn(&str) -> Result<Box<dyn busbar_api::Store>, String>,
+        ephemeral: bool,
+    ) -> Self {
+        LinkedPlugin {
+            manifest: Manifest {
+                name: name.into(),
+                alias: name.into(),
+                kind: busbar_plugin::cold::kind::STORE.into(),
+                version: env!("CARGO_PKG_VERSION").into(),
+                publisher: crate::sign::FIRST_PARTY_PUBLISHER.into(),
+                abi_version: busbar_plugin::cold::ABI_VERSION,
+                sha256: String::new(),
+                signature: String::new(),
+                description: String::new(),
+                homepage: String::new(),
+                license: String::new(),
+                needs: Default::default(),
+                settings_schema: None,
+                schema_derived: false,
+                host: None,
+                declares: Default::default(),
+            },
+            entry: LinkedEntry::Store(open),
+            ephemeral,
+        }
+    }
 }
 
 /// A plugin that failed phase 2 (untrusted, no matching opt-in; or an anti-downgrade reject) and is
@@ -258,7 +322,12 @@ impl PluginRegistry {
     /// it, as an invalid tarball is.
     pub fn link(self, linked: Vec<LinkedPlugin>) -> Result<Self, String> {
         let mut rows = Vec::with_capacity(linked.len() + self.rows.len());
-        for LinkedPlugin { manifest, entry } in linked {
+        for LinkedPlugin {
+            manifest,
+            entry,
+            ephemeral,
+        } in linked
+        {
             crate::sign::validate_identity(&manifest, crate::sign::HOST_IDENTITY)
                 .and_then(|()| crate::sign::validate_abi(&manifest, &supported_abi))
                 .and_then(|()| match LINKED_KINDS.contains(&manifest.kind.as_str()) {
@@ -277,6 +346,7 @@ impl PluginRegistry {
                 },
                 manifest,
                 lib_bytes: Vec::new(),
+                ephemeral,
                 entry: Some(entry),
             });
         }
@@ -362,6 +432,9 @@ impl PluginRegistry {
         cfg_json: &str,
     ) -> Result<Box<dyn busbar_api::Store>, String> {
         let p = self.resolve_kind(name_or_alias, "store", "back the governance store")?;
+        if let Some(LinkedEntry::Store(open)) = p.entry {
+            return open(cfg_json);
+        }
         // Hand the manifest's payload schema to the loader: a store built against an older schema
         // is spoken to in the shape it can decode (the usage-ledger ops changed shape in 1.6.0).
         crate::load_store_image(
@@ -603,6 +676,7 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
             manifest: unpacked.manifest,
             verdict,
             lib_bytes: unpacked.lib_bytes,
+            ephemeral: false,
             entry: None,
         }),
         Err(rejected) => FileOutcome::Skipped(SkippedPlugin {

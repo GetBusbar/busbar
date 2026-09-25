@@ -70,3 +70,39 @@ fn a_linked_and_a_dropped_in_store_register_byte_identical_rows() {
     );
     assert_eq!(linked, dropped, "the two doors must register one row");
 }
+
+/// THE LINKED DOOR ADMITS WHAT THE DROPPED-IN DOOR ADMITS. A linked row passes the structural gate a
+/// signed manifest passes (every check but the artifact's integrity): a name the directory would
+/// refuse, a kind the door does not serve and a payload schema this binary cannot speak are each
+/// refused, naming the row; a well-formed built-in store row registers, opens through `open_store`
+/// and carries its own ephemeral statement.
+#[test]
+fn the_linked_door_refuses_what_the_structural_gate_refuses() {
+    use crate::{LinkedPlugin, PluginRegistry};
+    fn ram(_: &str) -> Result<Box<dyn Store>, String> {
+        Err("never opened".into())
+    }
+    let refused = |row: LinkedPlugin| match PluginRegistry::empty().link(vec![row]) {
+        Ok(_) => panic!("the linked door admitted a row the structural gate refuses"),
+        Err(e) => e,
+    };
+    let e = refused(LinkedPlugin::store("Not A Name", ram, false));
+    assert!(e.contains("is not a valid plugin name"), "{e}");
+    let mut wrong_kind = LinkedPlugin::store("a-plane", ram, false);
+    wrong_kind.manifest.kind = "plane".into();
+    wrong_kind.manifest.abi_version = 1;
+    assert!(refused(wrong_kind).contains("is not linked through this door"));
+    let mut future = LinkedPlugin::store("a-store", ram, false);
+    future.manifest.abi_version = u32::MAX;
+    assert!(refused(future).contains("is not supported for kind 'store'"));
+
+    let reg = PluginRegistry::empty()
+        .link(vec![LinkedPlugin::store("a-store", ram, true)])
+        .expect("a well-formed row registers");
+    let row = reg.resolve("a-store").expect("resolves by name");
+    assert!(row.ephemeral && reg.loadable().is_empty() && reg.linked().len() == 1);
+    let Err(e) = reg.open_store("a-store", "{}") else {
+        panic!("open_store must call the row's own constructor");
+    };
+    assert_eq!(e, "never opened");
+}
