@@ -336,6 +336,29 @@ pub struct IrResponse {
     pub request_echo: Option<Value>,
 }
 
+/// An empty assistant answer: no content, no stop reason, zero usage, no identity. Exists so a
+/// construction site can spread `..Default::default()` and stay source-compatible when the IR gains
+/// a response slot (Q57 IR-slot wave): a literal that names every field breaks on every addition,
+/// one that spreads the default does not. `role` is `Assistant` because every response the IR
+/// carries is the model's turn.
+impl Default for IrResponse {
+    fn default() -> Self {
+        IrResponse {
+            role: IrRole::Assistant,
+            content: Vec::new(),
+            stop_reason: None,
+            usage: IrUsage::default(),
+            model: None,
+            id: None,
+            created: None,
+            system_fingerprint: None,
+            stop_sequence: None,
+            logprobs: Vec::new(),
+            request_echo: None,
+        }
+    }
+}
+
 /// The normalized reasoning/thinking ask (see [`IrRequest::reasoning`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IrReasoningAsk {
@@ -818,7 +841,7 @@ pub enum CacheKind {
 ///
 /// Neutral fields are the intersection that travels cross-protocol: a human-readable `kind` tag plus
 /// the location/source coordinates both Anthropic and Gemini expose.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct IrCitation {
     /// Citation-type discriminator. For Anthropic this is the `type` tag verbatim (`char_location`,
     /// `page_location`, `content_block_location`, `web_search_result_location`); for a Gemini
@@ -855,7 +878,7 @@ pub struct IrCitation {
     pub raw: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct IrTool {
     pub name: String,
     pub description: Option<String>,
@@ -896,7 +919,7 @@ pub struct IrTool {
     pub strict: Option<bool>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct IrUsage {
     /// UNCACHED input tokens. Readers NORMALIZE to this convention: providers whose wire
     /// `input/prompt` total already INCLUDES the cached prefix (OpenAI, Gemini, Responses) subtract
@@ -1319,4 +1342,289 @@ impl StreamDecodeState {
         self.next_ir_index = idx + 1;
         idx
     }
+}
+
+// ─────────────────────────── Q57 IR-slot wave: the typed slot vocabulary ───────────────────────────
+//
+// Owner directive Q57 (2026-09-24): a field the source dialect carries, that the IR and the target
+// can carry, must map. The types below are the typed carriers for the concepts the IR-mapping audit
+// (`ir-mapping-audit.md` §4.8, IR-01..IR-21) found with NO IR slot even though two or more dialects
+// model them natively. Architect rule: a TYPED slot per concept, never a generic passthrough bag;
+// `IrRequest::extra` stays same-dialect-only and is still cleared on the cross-protocol seam.
+//
+// Every type here is protocol-neutral: the variant names are the concept, not a wire spelling. Where
+// the OpenAI family's word happens to be the most general spelling, `as_str`/`parse` use it (the same
+// convention [`IrReasoningEffort::as_str`] follows); a dialect with a different vocabulary maps in
+// its own module. A slot is `None`/empty when the source did not carry the concept, and a writer
+// emits NOTHING for an absent slot — so a request or response that never set a slot keeps its bytes.
+
+/// Which capacity tier the caller asks to be served from (IR-04). OpenAI Chat and Responses
+/// `service_tier`, Anthropic `service_tier`.
+///
+/// | IR          | OpenAI Chat / Responses | Anthropic        |
+/// |-------------|-------------------------|------------------|
+/// | `Auto`      | `"auto"`                | `"auto"`         |
+/// | `Default`   | `"default"`             | `"standard_only"`|
+/// | `Flex`      | `"flex"`                | — (not representable: omit + warn) |
+/// | `Scale`     | `"scale"`               | — (not representable: omit + warn) |
+/// | `Priority`  | `"priority"`            | `"auto"` (Anthropic serves priority capacity under `auto` when the org has it; closest honest ask) |
+///
+/// Cohere v2 `priority` is an integer queue ordering, not a capacity tier — a different concept, so
+/// it is NOT read into this slot. The RESPONSE-side "tier that actually served" stays on
+/// [`IrUsageDetail::service_tier`] (attribution), which is a different fact from this request ask.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrServiceTier {
+    Auto,
+    Default,
+    Flex,
+    Scale,
+    Priority,
+}
+
+impl IrServiceTier {
+    /// The OpenAI-family word (`auto`/`default`/`flex`/`scale`/`priority`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IrServiceTier::Auto => "auto",
+            IrServiceTier::Default => "default",
+            IrServiceTier::Flex => "flex",
+            IrServiceTier::Scale => "scale",
+            IrServiceTier::Priority => "priority",
+        }
+    }
+
+    /// Parse the OpenAI-family word. An unknown word is `None` — the reader leaves the key in
+    /// `extra` (same-dialect relay) rather than guessing a tier.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "auto" => Some(IrServiceTier::Auto),
+            "default" => Some(IrServiceTier::Default),
+            "flex" => Some(IrServiceTier::Flex),
+            "scale" => Some(IrServiceTier::Scale),
+            "priority" => Some(IrServiceTier::Priority),
+            _ => None,
+        }
+    }
+}
+
+/// Output verbosity ask (IR-07): OpenAI Chat `verbosity`, Responses `text.verbosity`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrVerbosity {
+    Low,
+    Medium,
+    High,
+}
+
+impl IrVerbosity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IrVerbosity::Low => "low",
+            IrVerbosity::Medium => "medium",
+            IrVerbosity::High => "high",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "low" => Some(IrVerbosity::Low),
+            "medium" => Some(IrVerbosity::Medium),
+            "high" => Some(IrVerbosity::High),
+            _ => None,
+        }
+    }
+}
+
+/// Image fidelity ask on an input image (IR-08): OpenAI Chat `image_url.detail`, Responses
+/// `input_image.detail`, Cohere `image_url.detail`. All three use the same three words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrImageDetail {
+    Auto,
+    Low,
+    High,
+}
+
+impl IrImageDetail {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IrImageDetail::Auto => "auto",
+            IrImageDetail::Low => "low",
+            IrImageDetail::High => "high",
+        }
+    }
+
+    /// An unknown word (a vendor adding e.g. `"original"`) is `None`: the reader drops it with a
+    /// warn rather than coercing it onto a different fidelity the caller did not ask for.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "auto" => Some(IrImageDetail::Auto),
+            "low" => Some(IrImageDetail::Low),
+            "high" => Some(IrImageDetail::High),
+            _ => None,
+        }
+    }
+}
+
+/// Which role a folded system prompt was written in (IR-14). OpenAI Chat and Responses accept both
+/// a `system` and a `developer` role and they are distinct wire spellings; every other dialect has
+/// only a system prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrSystemRole {
+    System,
+    Developer,
+}
+
+impl IrSystemRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IrSystemRole::System => "system",
+            IrSystemRole::Developer => "developer",
+        }
+    }
+}
+
+/// An output modality the caller asks the model to produce (IR-19): OpenAI Chat `modalities`
+/// (`"text"`, `"audio"`), Gemini `generationConfig.responseModalities` (`"TEXT"`, `"AUDIO"`,
+/// `"IMAGE"`). The produced audio/image rides the response as an [`IrBlock::Media`] /
+/// [`IrBlock::Image`] block, which already exist. Voice selection is NOT carried: voice names are
+/// vendor catalogues (`alloy` vs `Kore`) with no shared vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrModality {
+    Text,
+    Audio,
+    Image,
+}
+
+impl IrModality {
+    /// Lower-case neutral word (OpenAI spelling; Gemini upper-cases it).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IrModality::Text => "text",
+            IrModality::Audio => "audio",
+            IrModality::Image => "image",
+        }
+    }
+
+    /// Case-insensitive, so both the OpenAI and the Gemini spellings parse.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "text" => Some(IrModality::Text),
+            "audio" => Some(IrModality::Audio),
+            "image" => Some(IrModality::Image),
+            _ => None,
+        }
+    }
+}
+
+/// A provider-HOSTED (server-side, built-in) tool, neutral across the dialects that offer the same
+/// capability (IR-11). Distinct from [`IrTool::hosted`], which is the raw Responses object kept for a
+/// same-protocol re-emit and is still dropped on the cross-protocol seam: THIS type is what crosses.
+///
+/// | kind            | Anthropic                         | Responses                  | Gemini            | OpenAI Chat |
+/// |-----------------|-----------------------------------|----------------------------|-------------------|-------------|
+/// | `WebSearch`     | `web_search_<version>`            | `web_search` (`web_search_preview`) | `googleSearch` | `web_search_options` |
+/// | `CodeExecution` | `code_execution_<version>`        | `code_interpreter` (`container:{type:"auto"}`) | `codeExecution` | — |
+/// | `WebFetch`      | `web_fetch_<version>`             | —                          | `urlContext`      | — |
+///
+/// The versioned Anthropic tool type is chosen by the WRITER (its current GA version), not carried:
+/// the version names Anthropic's own tool schema revision, which no other dialect has.
+#[derive(Debug, Clone, PartialEq)]
+pub enum IrHostedTool {
+    WebSearch(IrWebSearch),
+    CodeExecution,
+    WebFetch(IrWebFetch),
+}
+
+impl IrHostedTool {
+    /// The neutral name for a drop `warn!` / `dropped_egress_controls` entry.
+    pub fn kind_str(&self) -> &'static str {
+        match self {
+            IrHostedTool::WebSearch(_) => "web_search",
+            IrHostedTool::CodeExecution => "code_execution",
+            IrHostedTool::WebFetch(_) => "web_fetch",
+        }
+    }
+}
+
+/// Parameters of a hosted web search. Each field is `None`/empty when the source did not set it; a
+/// writer whose dialect cannot express a set field drops THAT field with a warn and keeps the tool.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct IrWebSearch {
+    /// Anthropic `max_uses`.
+    pub max_uses: Option<u32>,
+    /// Anthropic `allowed_domains`, Responses `filters.allowed_domains`.
+    pub allowed_domains: Vec<String>,
+    /// Anthropic `blocked_domains`.
+    pub blocked_domains: Vec<String>,
+    /// Anthropic / Responses / Chat `user_location` (`type:"approximate"` in all three).
+    pub user_location: Option<IrUserLocation>,
+    /// Responses `search_context_size`, Chat `web_search_options.search_context_size`
+    /// (`low`/`medium`/`high` — the [`IrVerbosity`] words, reused rather than a fourth copy).
+    pub search_context_size: Option<IrVerbosity>,
+}
+
+/// Parameters of a hosted URL fetch (Anthropic `web_fetch_*`, Gemini `urlContext`).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct IrWebFetch {
+    /// Anthropic `max_uses`.
+    pub max_uses: Option<u32>,
+    /// Anthropic `allowed_domains`.
+    pub allowed_domains: Vec<String>,
+    /// Anthropic `blocked_domains`.
+    pub blocked_domains: Vec<String>,
+}
+
+/// An approximate user location for a hosted web search. Anthropic, Responses and Chat all use the
+/// same `{type:"approximate", city, region, country, timezone}` members.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct IrUserLocation {
+    pub city: Option<String>,
+    pub region: Option<String>,
+    /// ISO 3166-1 alpha-2 country code.
+    pub country: Option<String>,
+    /// IANA timezone name.
+    pub timezone: Option<String>,
+}
+
+/// A refinement of [`IrStopReason`] that some dialects can state and others cannot (IR-16, and the
+/// refusal category half of IR-02). The coarse `stop_reason` stays authoritative and is always set
+/// to the nearest variant, so a writer that ignores this detail still emits a valid, close stop
+/// value; a writer whose dialect names the refinement emits it exactly.
+#[derive(Debug, Clone, PartialEq)]
+pub enum IrStopDetail {
+    /// The context window filled before the output cap (Anthropic and Bedrock
+    /// `model_context_window_exceeded`). Readers set `stop_reason = MaxTokens` beside it.
+    ContextWindowExceeded,
+    /// A refusal with the classifier's category / explanation where the dialect states them
+    /// (Anthropic `stop_details:{type:"refusal", category, explanation}`). Readers set
+    /// `stop_reason = Refusal` beside it.
+    Refusal {
+        category: Option<String>,
+        explanation: Option<String>,
+    },
+}
+
+/// Whether a thinking block's text is the model's full reasoning or a summary of it (IR-17):
+/// Responses `reasoning.summary[]` vs `reasoning.content[]`; Gemini thought parts and Anthropic
+/// `display:"summarized"` thinking are summaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrThinkingKind {
+    Full,
+    Summary,
+}
+
+/// Which model family issued an opaque reasoning signature (IR-18). A signature is only valid for
+/// the family that minted it: an Anthropic `signature` sent to Gemini as `thoughtSignature`, or to
+/// Responses as `encrypted_content`, is a foreign blob the backend rejects or misreads.
+///
+/// Bedrock-served Claude signatures are `Anthropic`: the family, not the transport, issued them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrSignatureOrigin {
+    /// Claude (first-party Anthropic, or Claude on Bedrock).
+    Anthropic,
+    /// Gemini `thoughtSignature`.
+    Gemini,
+    /// OpenAI Responses `reasoning.encrypted_content`.
+    OpenAi,
+    /// A non-Claude Bedrock reasoning model's signature.
+    BedrockOther,
 }

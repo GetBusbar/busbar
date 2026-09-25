@@ -364,3 +364,52 @@ fn cohere_billed_units_win_over_raw_in_to_token_usage() {
         (90, 35)
     );
 }
+
+// ── Q57 IR-slot vocabulary: every neutral word round-trips, and an unknown word is refused rather
+// than coerced onto a neighbouring value (a coerced tier/detail/verbosity is a silent mis-map).
+#[test]
+fn q57_slot_vocabulary_round_trips_and_refuses_unknown_words() {
+    for t in [
+        IrServiceTier::Auto,
+        IrServiceTier::Default,
+        IrServiceTier::Flex,
+        IrServiceTier::Scale,
+        IrServiceTier::Priority,
+    ] {
+        assert_eq!(IrServiceTier::parse(t.as_str()), Some(t));
+    }
+    assert_eq!(IrServiceTier::parse("standard_only"), None);
+    for v in [IrVerbosity::Low, IrVerbosity::Medium, IrVerbosity::High] {
+        assert_eq!(IrVerbosity::parse(v.as_str()), Some(v));
+    }
+    assert_eq!(IrVerbosity::parse("max"), None);
+    for d in [IrImageDetail::Auto, IrImageDetail::Low, IrImageDetail::High] {
+        assert_eq!(IrImageDetail::parse(d.as_str()), Some(d));
+    }
+    assert_eq!(IrImageDetail::parse("original"), None);
+    // Gemini upper-cases modalities; OpenAI lower-cases them. Both are the same concept.
+    assert_eq!(IrModality::parse("AUDIO"), Some(IrModality::Audio));
+    assert_eq!(IrModality::parse("text"), Some(IrModality::Text));
+    assert_eq!(IrModality::parse("video"), None);
+    assert_eq!(IrSystemRole::Developer.as_str(), "developer");
+    assert_eq!(
+        IrHostedTool::WebSearch(IrWebSearch::default()).kind_str(),
+        "web_search"
+    );
+}
+
+// The `Default` impls exist so construction sites can spread `..Default::default()` and survive a
+// slot addition. They must describe an ABSENT value: nothing set, nothing a writer would emit.
+#[test]
+fn q57_defaults_are_absent_values() {
+    let r = IrResponse::default();
+    assert_eq!(r.role, IrRole::Assistant);
+    assert!(r.content.is_empty() && r.stop_reason.is_none() && r.logprobs.is_empty());
+    assert!(r.id.is_none() && r.model.is_none() && r.request_echo.is_none());
+    assert_eq!(r.usage, IrUsage::default());
+    assert_eq!(r.usage.billable_tokens(), 0);
+    let t = IrTool::default();
+    assert!(t.name.is_empty() && t.hosted.is_none() && t.strict.is_none());
+    assert_eq!(t.input_schema, Value::Null);
+    assert_eq!(IrCitation::default().raw, None);
+}

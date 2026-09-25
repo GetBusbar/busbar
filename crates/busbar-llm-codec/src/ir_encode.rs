@@ -103,15 +103,9 @@ pub fn warn_dropped_tool_strict(tools: &[crate::ir::IrTool], egress: &'static st
 /// `rewrite_model_if_needed`, so this carries none.
 pub fn ping_request() -> crate::ir::IrRequest {
     use crate::ir::{IrBlock, IrMessage, IrRequest, IrRole};
+    // Only the fields a ping sets are named; everything else is the IR default (absent), so a new
+    // IR slot never has to be threaded through here and never changes the probe bytes.
     IrRequest {
-        reasoning: None,
-        reasoning_budgets: None,
-        logprobs: None,
-        top_logprobs: None,
-        user: None,
-        parallel_tool_calls: None,
-        system: vec![],
-        system_turns_folded: 0,
         messages: vec![IrMessage {
             role: IrRole::User,
             content: vec![IrBlock::Text {
@@ -120,19 +114,7 @@ pub fn ping_request() -> crate::ir::IrRequest {
                 citations: vec![],
             }],
         }],
-        tools: vec![],
         max_tokens: Some(1),
-        temperature: None,
-        top_p: None,
-        top_k: None,
-        stop: vec![],
-        tool_choice: None,
-        stream: false,
-        frequency_penalty: None,
-        presence_penalty: None,
-        seed: None,
-        n: None,
-        response_format: None,
-        extra: serde_json::Map::new(),
+        ..IrRequest::default()
     }
 }
