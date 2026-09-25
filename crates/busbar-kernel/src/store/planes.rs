@@ -361,14 +361,7 @@ impl PlaneBreakers {
     /// makes that dead code.
     #[cfg(all(any(test, feature = "test-support"), unix))]
     pub fn reset(&self, key: &str) {
-        use std::sync::atomic::Ordering;
-        let cell = self.health.cell(key, 0);
-        let _tx = crate::store::lock_recover(cell.transition_lock());
-        cell.cooldown_until().store(0, Ordering::Release);
-        cell.breaker_state()
-            .store(crate::store::ST_CLOSED, Ordering::Release);
-        cell.probe_in_flight().store(false, Ordering::Release);
-        cell.streak().store(0, Ordering::Release);
+        self.health.force_cell(key, 0, 0, 0, 0);
     }
 
     /// FORCE one target's cell Open until `until` — the test-only inverse of [`Self::reset`], for
@@ -376,13 +369,7 @@ impl PlaneBreakers {
     /// plane-consumer task refusal) without having to burn real failures to get there.
     #[cfg(any(test, feature = "test-support"))]
     pub fn force_open(&self, key: &str, lane: usize, until: u64) {
-        use std::sync::atomic::Ordering;
-        let cell = self.health.cell(key, lane);
-        let _tx = crate::store::lock_recover(cell.transition_lock());
-        cell.cooldown_until().store(until, Ordering::Release);
-        cell.breaker_state()
-            .store(crate::store::ST_OPEN, Ordering::Release);
-        cell.probe_in_flight().store(false, Ordering::Release);
+        self.health.force_open_in(key, lane, until);
     }
 }
 

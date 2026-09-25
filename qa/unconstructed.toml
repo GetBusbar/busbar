@@ -143,17 +143,11 @@ switch    = "STRIKE THIS ROW in the same commit that gives the composition root 
 # owner signs them, not an agent.
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 
-# BREAKER — the operator's per-destination request budget is never installed, so the root's
-# breaker answers "admissible" for every destination forever.
-[[capability]]
-id        = "breaker-request-budget"
-built     = "crates/busbar-kernel-breaker/src/lib.rs"
-symbol    = "set_budget"
-construct = [".set_budget("]
-scope     = ["crates"]
-why       = "BreakerAdapter::admissible() answers from budget_remaining(dest) != Some(0), and no destination ever HAS a budget, so the lifetime request cap config.yaml documents as max_requests can never refuse anything on the root's breaker path."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that reads the operator's max_requests out of config and calls set_budget for each destination when the root breaker is constructed (crates/busbar/src/root/kernel.rs, via adapters.rs BreakerAdapter::with_diagnostics)."
+# BREAKER — `breaker-request-budget` STRUCK 2026-09-25 (item 142, the breaker fold; K2-0 one-breaker
+# ruling Q40/Q47): the kernel's admission path now runs on the one breaker, and `HealthState` declares
+# every lane's `max_requests` through `BreakerUnit::set_budget` when it is built (store/in_memory/
+# mod.rs). The lane spends, refunds and reads that same counter — the unit's own, shared by handle —
+# so the cap is counted once, where it always was, and never beside it.
 
 # BREAKER — the operator's error map never reaches the breaker either.
 [[capability]]
@@ -166,16 +160,10 @@ why       = "The per-destination error map that lets an operator classify an ups
 unshipped = true
 switch    = "STRIKE THIS ROW in the commit that feeds the operator's declared error_maps into the root breaker at construction time, alongside the budget row above — they are the same seam and should land together."
 
-# BREAKER — the explicit-limits constructor has no caller at all, not even a test.
-[[capability]]
-id        = "breaker-with-limits"
-built     = "crates/busbar-kernel-breaker/src/lib.rs"
-symbol    = "with_limits"
-construct = ["BreakerUnit::with_limits(", ".with_limits("]
-scope     = ["crates"]
-why       = "The constructor that takes explicit hard_down_cooldown and max_honored_retry_after has no caller anywhere, so the composed breaker runs on ADR-0002 compiled-in defaults and the two knobs cannot be moved by any deployment."
-unshipped = true
-switch    = "STRIKE THIS ROW when the root constructs its breaker through with_limits with values read from config, or DELETE with_limits if the defaults are the decision — an unreachable constructor is not a knob."
+# BREAKER — `breaker-with-limits` STRUCK 2026-09-25 (item 142, the breaker fold): `HealthState` builds
+# its one breaker with `BreakerUnit::new().with_limits(hard_down_cooldown_secs,
+# max_honored_retry_after_secs)` from the two live `limits.*` keys, and every hard-down trip and every
+# honoured Retry-After ceiling reads them back from the unit. No second copy of either knob remains.
 
 # BUDGET — `budget-pricer-card` STRUCK 2026-09-25 (UC-STRIKE; #43 / item 104 "one function", Q36/Q9):
 # `Pricer::with_card` had no production caller and is DELETED — it was the pre-item-123 reserved-four

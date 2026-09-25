@@ -292,6 +292,27 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
             .insert(destination, Arc::new(budget));
     }
 
+    /// The destination's declared budget itself, shared rather than copied: a caller that
+    /// admits against one destination many times holds the counter this unit spends, so there is
+    /// one budget and one figure however many readers it has. `None` if never declared.
+    pub fn budget(&self, destination: DestinationId) -> Option<Arc<LifetimeBudget>> {
+        self.budgets
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&destination)
+            .map(Arc::clone)
+    }
+
+    /// The sticky cooldown a hard-down trip arms (see [`Self::with_limits`]).
+    pub fn hard_down_cooldown_secs(&self) -> u64 {
+        self.hard_down_cooldown_secs
+    }
+
+    /// The absolute ceiling on an honored upstream Retry-After (see [`Self::with_limits`]).
+    pub fn max_honored_retry_after_secs(&self) -> u64 {
+        self.max_honored_retry_after_secs
+    }
+
     /// Remaining lifetime budget for a destination, or `None` if unlimited or never declared
     /// (an undeclared destination is treated as unlimited, matching 1.5.5's default).
     pub fn budget_remaining(&self, destination: DestinationId) -> Option<i64> {
@@ -371,7 +392,9 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
         }
     }
 
-    fn cell(&self, pool: &str, destination: DestinationId) -> Arc<BreakerCell> {
+    /// The `(pool, destination)` cell, created Closed on first touch and registered for the
+    /// destination's hard-down fan-out ([`Self::hard_down_all`]) before anything can reach it.
+    pub fn cell(&self, pool: &str, destination: DestinationId) -> Arc<BreakerCell> {
         // The hit path — every admission and every observation of an already-touched member —
         // borrows the whole key from the caller's own arguments and allocates nothing.
         if let Some(c) = self

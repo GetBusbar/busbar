@@ -5,6 +5,50 @@ use super::*;
 // the config carriers moved out of core's re-export chain.
 use busbar_kernel::store::{BreakerCfg, TripConfig, TripMode};
 
+/// Rewrite one field of a lane's default cell through the one breaker's own restore — the
+/// state a test's precondition names, not the history that leads to it.
+fn poke(store: &HealthState, lane: usize, f: impl FnOnce(&mut CellSnapshot)) {
+    let cell = &store.get_lane(lane).cell;
+    let mut snap = cell.snapshot();
+    f(&mut snap);
+    cell.restore(snap);
+}
+
+/// Put a lane's default cell in state `st` (0 Closed, 1 Open, 2 HalfOpen). HalfOpen is reached the
+/// only way the breaker allows — an expired Open whose probe is won — so it carries a live probe.
+fn set_state(store: &HealthState, lane: usize, st: u64) {
+    if st == 2 {
+        let until = store.get_lane(lane).cell.cooldown_until();
+        poke(store, lane, |c| c.state = 1);
+        assert!(matches!(
+            store.get_lane(lane).cell.acquire(until),
+            ProbeAdmit::ProbeWon(_)
+        ));
+    } else {
+        poke(store, lane, |c| c.state = st);
+    }
+}
+
+/// Record one outcome into a lane's default-cell window at `t` without any transition: a failure
+/// under a config that can neither trip nor bench, or a plain success.
+fn seed_outcome(store: &HealthState, lane: usize, t: u64, is_error: bool) {
+    let cell = &store.get_lane(lane).cell;
+    if is_error {
+        let inert = BreakerCfg {
+            honor_retry_after: false,
+            bench_below_trip_threshold: false,
+            trip: TripConfig {
+                min_requests: usize::MAX,
+                ..TripConfig::default()
+            },
+            ..BreakerCfg::default()
+        };
+        let _ = cell.record_failure(t, &fsm_cfg(&inert), None, 0);
+    } else {
+        let _ = cell.record_success(t);
+    }
+}
+
 fn make_lane_data(id: usize, max_permits: usize) -> LaneData {
     LaneData {
         model: format!("model-{}", id),
@@ -108,22 +152,27 @@ fn test_hard_down_follows_identity_across_rebuild() {
 }
 
 /// A snapshot captured while a lane's single-flight probe was in flight
-/// carries `ST_HALF_OPEN`. Restoring it verbatim WEDGES the cell (HalfOpen is rejected by both
+/// carries `2`. Restoring it verbatim WEDGES the cell (HalfOpen is rejected by both
 /// `cell_ready_breaker`/`cell_acquire_breaker` and no probe outcome ever runs against a restored
 /// cell whose `probe_in_flight` is false), benching the lane forever when health probing is off.
 /// Restore must normalize HalfOpen → Open (the sibling-create path already did).
 #[test]
 fn restored_halfopen_state_normalizes_to_open() {
-    // The pure helper both restore sites share.
-    assert_eq!(restored_breaker_state(ST_HALF_OPEN), ST_OPEN);
-    assert_eq!(restored_breaker_state(ST_OPEN), ST_OPEN);
-    assert_eq!(restored_breaker_state(ST_CLOSED), ST_CLOSED);
+    // The one restore both sites share (the breaker cell's own).
+    for (from, to) in [(2, 1), (1, 1), (0, 0)] {
+        let c = FsmCell::new();
+        c.restore(CellSnapshot {
+            state: from,
+            ..CellSnapshot::default()
+        });
+        assert_eq!(c.snapshot().state, to);
+    }
 
     // End to end: a snapshot with a HalfOpen lane-global state restores as Open, not wedged.
     set_now_for_test(9000);
     let a = HealthState::new(vec![make_lane_data(3, 4)]);
     let mut snaps = a.export_health();
-    snaps[0].breaker_state = ST_HALF_OPEN; // as if captured mid-probe
+    snaps[0].breaker_state = 2; // as if captured mid-probe
     let b = HealthState::new_with_limits_restored(
         vec![make_lane_data(3, 4)],
         crate::config::DEFAULT_HARD_DOWN_COOLDOWN_SECS,
@@ -131,8 +180,8 @@ fn restored_halfopen_state_normalizes_to_open() {
         &snaps,
     );
     assert_eq!(
-        b.get_lane(0).breaker_state.load(Ordering::Relaxed),
-        ST_OPEN,
+        b.get_lane(0).cell.snapshot().state,
+        1,
         "a restored HalfOpen must become Open, or the lane wedges and never self-recovers"
     );
 }
@@ -166,7 +215,7 @@ fn restore_does_not_clobber_new_limit_with_unlimited_sentinel() {
         &snaps,
     );
     assert_eq!(
-            restored.get_lane(0).budget.load(Ordering::Relaxed),
+            restored.get_lane(0).budget.remaining().unwrap_or(-1),
             100,
             "the fresh cap must survive; the unlimited -1 sentinel must NOT clobber it (lane would wedge)"
         );
@@ -189,7 +238,7 @@ fn restore_does_not_clobber_new_limit_with_unlimited_sentinel() {
         &spent,
     );
     assert_eq!(
-        carried.get_lane(0).budget.load(Ordering::Relaxed),
+        carried.get_lane(0).budget.remaining().unwrap_or(-1),
         40,
         "limited→limited must carry the remaining budget, not reset to the full cap"
     );
@@ -210,7 +259,7 @@ fn restore_does_not_clobber_new_limit_with_unlimited_sentinel() {
         &over,
     );
     assert_eq!(
-        clamped.get_lane(0).budget.load(Ordering::Relaxed),
+        clamped.get_lane(0).budget.remaining().unwrap_or(-1),
         300,
         "a carried remaining above the NEW cap must clamp to the cap, not over-serve"
     );
@@ -305,10 +354,7 @@ fn test_record_failure_returns_true_only_on_threshold_trip() {
     );
 
     // HalfOpen→Open reopen (failed recovery probe) is NOT a fresh Closed→Open trip.
-    store
-        .get_lane(0)
-        .breaker_state
-        .store(ST_HALF_OPEN, Ordering::Relaxed);
+    set_state(&store, 0, 2);
     assert!(
         !store.record_transient(0, "5xx", &cfg, None),
         "a HalfOpen→Open reopen (failed probe) must NOT report a fresh trip"
@@ -316,17 +362,6 @@ fn test_record_failure_returns_true_only_on_threshold_trip() {
     assert!(matches!(store.breaker_state(0), BreakerState::Open { .. }));
 }
 
-/// The consecutive-failure streak bump in `cell_record_failure` must
-/// happen UNDER the per-cell `transition_lock`, serialized with the should_trip/compute_cooldown
-/// read — NOT as an unconditional `fetch_add` BEFORE the lock. The old pre-lock bump let
-/// concurrent failures over-count the streak before the first trip read the value, inflating the
-/// first-trip escalation/cooldown level.
-///
-/// Deterministic exposure: hold the default cell's `transition_lock`, then drive a failure from
-/// another thread. With the bump RELOCATED under the lock, the spawned failure blocks at the lock
-/// and the streak CANNOT advance while we hold it (stays 0). The OLD code bumped the streak before
-/// taking the lock, so the streak would advance to 1 even while the lock is held — this assertion
-/// fails against the old code and passes after the fix.
 /// With `base_cooldown_secs = 1` (the minimum config_validate permits),
 /// the ±10% jitter can draw −1, and the clamp floor `duration / 2 = 1/2` truncates to 0 — so a
 /// tripped cell got a ZERO cooldown and re-admitted instantly (`now >= cooldown_until`), the exact
@@ -337,7 +372,7 @@ fn test_record_failure_returns_true_only_on_threshold_trip() {
 fn cooldown_never_zero_for_base_one() {
     let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     let lane = store.get_lane(0).clone();
-    assert_eq!(lane.streak().load(Ordering::Relaxed), 0);
+    assert_eq!(lane.cell.streak(), 0);
     let cfg = BreakerCfg {
         base_cooldown_secs: 1,
         max_cooldown_secs: 1000,
@@ -355,7 +390,9 @@ fn cooldown_never_zero_for_base_one() {
     // span = 3 for base=1, so ~1/3 of seeds draw jitter −1; the sweep is guaranteed to hit it.
     for t in 0..600u64 {
         set_now_for_test(t);
-        let cd = HealthState::compute_cooldown_with_retry_after(&*lane, t, &cfg, None, 3600);
+        let cd = lane
+            .cell
+            .compute_cooldown_with_retry_after(t, &fsm_cfg(&cfg), None, 3600);
         assert!(
             cd >= 1,
             "base_cooldown_secs=1 must never yield a 0 cooldown (t={t} gave {cd})"
@@ -388,10 +425,12 @@ fn backoff_saturates_not_wraps_at_high_streak() {
     };
     // Drive the streak to the danger zone (>= 63) and sweep the jitter seed.
     for streak in [63u32, 64, 100, 1000] {
-        lane.streak().store(streak, Ordering::Relaxed);
+        poke(&store, 0, |c| c.streak = streak);
         for t in 0..80u64 {
             set_now_for_test(t);
-            let cd = HealthState::compute_cooldown_with_retry_after(&*lane, t, &cfg, None, 3600);
+            let cd = lane
+                .cell
+                .compute_cooldown_with_retry_after(t, &fsm_cfg(&cfg), None, 3600);
             assert!(
                     cd >= 1,
                     "even base at streak {streak} must saturate toward max, never wrap to 0 (t={t} gave {cd})"
@@ -400,103 +439,8 @@ fn backoff_saturates_not_wraps_at_high_streak() {
     }
 }
 
-#[test]
-fn test_streak_bump_is_serialized_under_transition_lock() {
-    set_now_for_test(1000);
-    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
-    // Consecutive mode, n=2: the streak alone drives both the trip decision and the cooldown
-    // shift, so an over-counted streak is directly observable.
-    let cfg = BreakerCfg {
-        base_cooldown_secs: 10,
-        max_cooldown_secs: 1000,
-        honor_retry_after: false,
-        // The primary plane's pools fail over; see BreakerCfg::bench_below_trip_threshold.
-        bench_below_trip_threshold: true,
-        trip: TripConfig {
-            mode: TripMode::Consecutive,
-            window_s: 30,
-            threshold: 0.5,
-            min_requests: 5,
-            consecutive_n: 2,
-        },
-    };
-
-    // The default ("") cell IS the LaneState, which implements BreakerCellAccess — grab its
-    // transition lock the same way the record path does.
-    let lane = store.get_lane(0).clone();
-    assert_eq!(
-        lane.streak().load(Ordering::Relaxed),
-        0,
-        "fresh lane starts with streak 0"
-    );
-
-    let guard = lock_recover(lane.transition_lock());
-
-    // Spawn a failure that must block on the transition lock we hold. The barrier gives a
-    // deterministic handshake: the spawned thread rendezvous, then immediately calls
-    // `record_transient`. After the rendezvous releases, the spawned thread runs the lock-free
-    // prologue of `cell_record_failure` (outcome_window push + err bump + — in the OLD code — the
-    // pre-lock `streak().fetch_add(1)`) and then blocks on the transition lock we still hold.
-    let barrier = Arc::new(std::sync::Barrier::new(2));
-    let store_t = Arc::clone(&store);
-    let cfg_t = cfg.clone();
-    let barrier_t = Arc::clone(&barrier);
-    let handle = std::thread::spawn(move || {
-        // Mirror the recording thread's clock (the test clock is thread-local).
-        set_now_for_test(1000);
-        barrier_t.wait();
-        store_t.record_transient(0, "5xx", &cfg_t, None)
-    });
-
-    barrier.wait();
-    // After the rendezvous, give the spawned thread a real, generous window to execute its
-    // lock-free prologue and PARK on the held transition lock. Under the OLD (buggy) placement the
-    // streak `fetch_add` ran BEFORE the lock, so it has already advanced to 1 by now; under the FIX
-    // the bump is AFTER the lock, so the parked thread leaves the streak untouched at 0.
-    std::thread::sleep(std::time::Duration::from_millis(250));
-    assert_eq!(
-            lane.streak().load(Ordering::Relaxed),
-            0,
-            "while the transition_lock is held, a concurrent failure must NOT advance the streak — \
-             the bump is serialized UNDER the lock (old code bumped it before the lock, over-counting)"
-        );
-
-    // Release the lock; the parked failure now completes, bumping the streak to exactly 1 (no
-    // trip yet: 1 < n=2).
-    drop(guard);
-    let tripped_first = handle.join().expect("record thread panicked");
-    assert!(
-        !tripped_first,
-        "the first failure (streak 1 < n=2) must NOT trip"
-    );
-    assert_eq!(
-        lane.streak().load(Ordering::Relaxed),
-        1,
-        "after the lock releases, the serialized bump lands → streak exactly 1"
-    );
-
-    // A second serialized failure reaches streak exactly 2 == n → trips, and the cooldown uses
-    // shift=2 (base 10 << 2 = 40, ±10% jitter, no retry-after floor), NOT an inflated level.
-    let tripped_second = store.record_transient(0, "5xx", &cfg, None);
-    assert!(
-        tripped_second,
-        "the second failure (streak 2 == n) must trip Closed→Open"
-    );
-    assert_eq!(
-        lane.streak().load(Ordering::Relaxed),
-        2,
-        "two serialized failures reach streak exactly 2 at the trip, not an inflated count"
-    );
-    let now = crate::store::now_for_test();
-    let remaining = store.cooldown_remaining(0, now);
-    // shift=2 → 40s ±10% (jitter band [36,44], lower clamp duration/2=20 inert here). An inflated
-    // streak (shift>=3 → >=80s) would land WELL outside this window.
-    assert!(
-        (36..=44).contains(&remaining),
-        "first-trip cooldown must reflect shift=2 (~40s ±10%), not an inflated escalation \
-             level; got {remaining}s"
-    );
-}
+// `test_streak_bump_is_serialized_under_transition_lock` moved with the state machine it pins:
+// `busbar-kernel-breaker`'s `streak_bump_is_serialized_under_the_transition_lock` (item 142).
 
 /// The spend/refund contract the forward path's over-refund guard relies on.
 /// `spend_budget` is a NO-OP returning `false` when the budget is already 0 (never driven
@@ -517,11 +461,11 @@ fn test_spend_refund_budget_contract() {
         store.spend_budget(0),
         "spend on a positive budget must succeed"
     );
-    assert_eq!(store.get_lane(0).budget.load(Ordering::Relaxed), 0);
+    assert_eq!(store.get_lane(0).budget.remaining().unwrap_or(-1), 0);
     // Its paired refund is the exact inverse — back to the cap of 1, never above.
     store.refund_budget(0);
     assert_eq!(
-        store.get_lane(0).budget.load(Ordering::Relaxed),
+        store.get_lane(0).budget.remaining().unwrap_or(-1),
         1,
         "a refund paired with a real spend must restore the cap exactly"
     );
@@ -529,14 +473,14 @@ fn test_spend_refund_budget_contract() {
     // Now exhaust the budget and prove the no-op spend reports `false` (the guard signal): an
     // UNGUARDED refund here would push the budget to 1 — ABOVE the now-0 effective ceiling.
     assert!(store.spend_budget(0), "spend to drain to 0");
-    assert_eq!(store.get_lane(0).budget.load(Ordering::Relaxed), 0);
+    assert_eq!(store.get_lane(0).budget.remaining().unwrap_or(-1), 0);
     let spent_again = store.spend_budget(0);
     assert!(
         !spent_again,
         "spend on an exhausted (0) budget must be a no-op reporting false"
     );
     assert_eq!(
-        store.get_lane(0).budget.load(Ordering::Relaxed),
+        store.get_lane(0).budget.remaining().unwrap_or(-1),
         0,
         "the no-op spend must NOT drive the budget negative"
     );
@@ -544,7 +488,7 @@ fn test_spend_refund_budget_contract() {
     // hazard the guard avoids: an unconditional refund would over-raise the budget.
     store.refund_budget(0); // simulates the OLD unconditional refund
     assert_eq!(
-        store.get_lane(0).budget.load(Ordering::Relaxed),
+        store.get_lane(0).budget.remaining().unwrap_or(-1),
         1,
         "an UNGUARDED refund over-raises the budget above its effective ceiling — this is why the \
              forward path must refund ONLY when `budget_spent` is true"
@@ -562,7 +506,7 @@ fn test_spend_refund_budget_contract() {
     );
     ustore.refund_budget(0);
     assert_eq!(
-        ustore.get_lane(0).budget.load(Ordering::Relaxed),
+        ustore.get_lane(0).budget.remaining().unwrap_or(-1),
         -1,
         "refund on an unlimited lane must be a no-op (budget stays the unlimited sentinel)"
     );
@@ -597,7 +541,7 @@ fn test_is_ready_any_cell_false_when_every_cell_open() {
 
 /// `lane_usable_any_cell` must NOT short-circuit on the
 /// lane-default (`""`) cell when the lane has per-pool cells. The default cell IS the `LaneState`,
-/// starts `ST_CLOSED`/`cooldown=0`, and is written ONLY by direct/ad-hoc routes — pool-routed
+/// starts `0`/`cooldown=0`, and is written ONLY by direct/ad-hoc routes — pool-routed
 /// traffic NEVER touches it, so in production it stays "ready" forever. An earlier fix iterated all
 /// cells but still checked the default cell FIRST and returned early on it, so `/healthz` and
 /// `/stats usable` STILL over-reported ready when every per-pool cell was Open. Here every per-pool
@@ -608,7 +552,7 @@ fn test_is_ready_any_cell_false_when_pool_cells_open_default_untouched() {
     let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     let now = 100_000;
     // Materialize two per-pool cells, then trip BOTH Open. The default `""` cell is deliberately
-    // left in its pristine ST_CLOSED/cooldown=0 state — exactly what pool-routed traffic leaves it.
+    // left in its pristine 0/cooldown=0 state — exactly what pool-routed traffic leaves it.
     store.force_open_in("poolA", 0, now + 600);
     store.force_open_in("poolB", 0, now + 600);
     assert!(
@@ -719,10 +663,10 @@ fn test_recover_close_ignores_expired_past_cooldown_on_closed_cell() {
     let past_cooldown = now - 600; // nonzero but already EXPIRED relative to `now`.
                                    // Cell is Closed (default state) with a stale past cooldown left over from a prior trip.
     {
-        let c = store.cell("", 0);
-        let _tx = lock_recover(c.transition_lock());
-        c.cooldown_until().store(past_cooldown, Ordering::Release);
-        c.breaker_state().store(ST_CLOSED, Ordering::Release);
+        poke(&store, 0, |c| {
+            c.cooldown_until = past_cooldown;
+            c.state = 0;
+        });
     }
     // Recovery observes the past cooldown as `observed`. Under the OLD `> 0` check this would close
     // (suppressed == true); the fix's `> now` makes it a no-op.
@@ -939,11 +883,8 @@ fn test_cooldown_expiry_to_halfopen() {
     // Put lane in Open state with specific until time
     set_now_for_test(2000);
 
-    store
-        .get_lane(0)
-        .cooldown_until
-        .store(1500, Ordering::Relaxed);
-    store.get_lane(0).breaker_state.store(1, Ordering::Relaxed);
+    poke(&store, 0, |c| c.cooldown_until = 1500);
+    set_state(&store, 0, 1);
 
     // Before expiry: not usable
     assert!(
@@ -973,18 +914,14 @@ fn test_hard_down_long_cooldown_and_recovery() {
     store.record_hard_down(0, "billing / insufficient balance");
 
     let ls = store.get_lane(0);
-    let until = ls.cooldown_until.load(Ordering::Relaxed);
+    let until = ls.cell.cooldown_until();
     // NOT permanently dead (that would block recovery) — the core hard-down invariant.
     assert!(
         !ls.dead.load(Ordering::Relaxed),
         "hard-down must NOT set dead — it is recoverable"
     );
     // Open state with a LONG sticky cooldown (record uses HARD_DOWN_COOLDOWN_SECS).
-    assert_eq!(
-        ls.breaker_state.load(Ordering::Relaxed),
-        1,
-        "hard-down → Open"
-    );
+    assert_eq!(ls.cell.snapshot().state, 1, "hard-down → Open");
     // (Test around the ACTUAL `until` — the #[cfg(test)] global clock races across
     // parallel tests, so an absolute `now+1800` assert would be flaky; this is robust.)
     assert!(
@@ -1010,11 +947,8 @@ fn test_single_flight_probe() {
     set_now_for_test(2000);
 
     // Put lane in Open state with expired cooldown
-    store
-        .get_lane(0)
-        .cooldown_until
-        .store(1500, Ordering::Relaxed);
-    store.get_lane(0).breaker_state.store(1, Ordering::Relaxed);
+    poke(&store, 0, |c| c.cooldown_until = 1500);
+    set_state(&store, 0, 1);
 
     // First request: should transition to HalfOpen and try to acquire probe
     let first_usable = store.usable(0, 2000);
@@ -1022,7 +956,7 @@ fn test_single_flight_probe() {
     println!(
         "first_usable={}, probe_in_flight={}",
         first_usable,
-        store.get_lane(0).probe_in_flight.load(Ordering::Relaxed)
+        store.get_lane(0).cell.probe_in_flight()
     );
 
     // Second request: should see HalfOpen with probe already in flight
@@ -1031,7 +965,7 @@ fn test_single_flight_probe() {
     println!(
         "second_usable={}, probe_in_flight={}",
         second_usable,
-        store.get_lane(0).probe_in_flight.load(Ordering::Relaxed)
+        store.get_lane(0).cell.probe_in_flight()
     );
 
     assert!(
@@ -1049,11 +983,8 @@ fn test_probe_success_to_closed() {
     let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
     // Put lane in HalfOpen with a probe in flight
-    store
-        .get_lane(0)
-        .probe_in_flight
-        .store(true, Ordering::Relaxed);
-    store.get_lane(0).breaker_state.store(2, Ordering::Relaxed);
+    // (probe_in_flight follows the state below)
+    set_state(&store, 0, 2);
 
     // Simulate probe success: transition to Closed
     store.closed_state(0, 1500);
@@ -1075,12 +1006,12 @@ fn test_probe_failure_to_open_with_escalated_cooldown() {
     let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
     // Set baseline streak to 2
-    store.get_lane(0).streak.store(2, Ordering::Relaxed);
+    poke(&store, 0, |c| c.streak = 2);
 
     set_now_for_test(1500);
 
     // Put lane in HalfOpen state
-    store.get_lane(0).breaker_state.store(2, Ordering::Relaxed);
+    set_state(&store, 0, 2);
 
     let state_before = store.breaker_state(0);
     assert!(
@@ -1089,7 +1020,7 @@ fn test_probe_failure_to_open_with_escalated_cooldown() {
     );
 
     // Simulate probe failure via record_outcome_error_with_time + open_state
-    store.record_outcome_error_with_time(0, 1500);
+    seed_outcome(&store, 0, 1500, true);
 
     let cfg = BreakerCfg::default();
     store.open_state(0, 1500, &cfg);
@@ -1116,7 +1047,7 @@ fn test_probe_failure_to_open_with_escalated_cooldown() {
 fn test_probe_failure_honors_retry_after_floor() {
     let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(50_000);
-    store.get_lane(0).streak.store(0, Ordering::Relaxed);
+    poke(&store, 0, |c| c.streak = 0);
 
     let cfg = BreakerCfg {
         base_cooldown_secs: 15,
@@ -1129,12 +1060,9 @@ fn test_probe_failure_honors_retry_after_floor() {
     // Put the default cell in HalfOpen so a SINGLE probe failure reopens it with the BASE
     // (un-escalated) ~15s backoff — small enough that a retry_after=90 clearly dominates,
     // isolating the floor from cooldown escalation.
-    store
-        .get_lane(0)
-        .breaker_state
-        .store(ST_HALF_OPEN, Ordering::Relaxed);
+    set_state(&store, 0, 2);
     store.record_probe_failure_all_cells(0, "health-probe", &|_pool| cfg.clone(), Some(90));
-    let until = store.get_lane(0).cooldown_until.load(Ordering::Relaxed);
+    let until = store.get_lane(0).cell.cooldown_until();
     assert!(
             until >= 50_000 + 90,
             "probe failure must honor the retry_after=90 floor (got cooldown_until={until}, base ~15s would be ~50015)"
@@ -1143,13 +1071,10 @@ fn test_probe_failure_honors_retry_after_floor() {
     // below the 90s floor — proving the floor came from the threaded retry_after, not the base.
     let store2 = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(50_000);
-    store2.get_lane(0).streak.store(0, Ordering::Relaxed);
-    store2
-        .get_lane(0)
-        .breaker_state
-        .store(ST_HALF_OPEN, Ordering::Relaxed);
+    poke(&store2, 0, |c| c.streak = 0);
+    set_state(&store2, 0, 2);
     store2.record_probe_failure_all_cells(0, "health-probe", &|_pool| cfg.clone(), None);
-    let until_no_ra = store2.get_lane(0).cooldown_until.load(Ordering::Relaxed);
+    let until_no_ra = store2.get_lane(0).cell.cooldown_until();
     assert!(
             until_no_ra < 50_000 + 90,
             "without retry_after the cooldown must be the base backoff (< 90s floor), got {until_no_ra}"
@@ -1166,24 +1091,18 @@ fn test_exhaustive_match_no_fallback() {
     set_now_for_test(1000);
 
     // Closed
-    store.get_lane(0).breaker_state.store(0, Ordering::Relaxed);
+    set_state(&store, 0, 0);
     assert!(store.usable(0, 1000), "Closed should be usable");
 
     // Open (before expiry)
-    store
-        .get_lane(0)
-        .cooldown_until
-        .store(2000, Ordering::Relaxed);
-    store.get_lane(0).breaker_state.store(1, Ordering::Relaxed);
+    poke(&store, 0, |c| c.cooldown_until = 2000);
+    set_state(&store, 0, 1);
     assert!(!store.usable(0, 1500), "Open before expiry not usable");
 
     // HalfOpen - regardless of probe_in_flight, should NOT be usable
     // (only the request that won CAS during Open->HalfOpen transition is allowed through)
-    store
-        .get_lane(0)
-        .probe_in_flight
-        .store(true, Ordering::Relaxed);
-    store.get_lane(0).breaker_state.store(2, Ordering::Relaxed);
+    // (probe_in_flight follows the state below)
+    set_state(&store, 0, 2);
     assert!(
         !store.usable(0, 1500),
         "HalfOpen not usable (only via CAS winner)"
@@ -1199,7 +1118,7 @@ fn test_streak_reset_on_success() {
     let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
     // Set a high streak
-    store.get_lane(0).streak.store(5, Ordering::Relaxed);
+    poke(&store, 0, |c| c.streak = 5);
 
     set_now_for_test(1000);
 
@@ -1207,13 +1126,13 @@ fn test_streak_reset_on_success() {
     store.record_success(0);
 
     assert_eq!(
-        store.get_lane(0).streak.load(Ordering::Relaxed),
+        store.get_lane(0).cell.streak(),
         0,
         "streak should reset on success"
     );
 }
 
-/// `cell_record_success` resets the streak before the HalfOpen→Closed CAS: a success recorded against a cell still in ST_OPEN — reachable via the bare
+/// `cell_record_success` resets the streak before the HalfOpen→Closed CAS: a success recorded against a cell still in 1 — reachable via the bare
 /// `record_success(lane)` on the degraded-forward path — must NOT zero the streak. In Consecutive
 /// mode the streak drives the escalating backoff cooldown; wiping it on a still-Open cell resets
 /// the per-cell failure memory and lets a persistently-failing upstream be re-probed more
@@ -1225,36 +1144,30 @@ fn test_success_on_open_cell_preserves_streak_for_backoff_escalation() {
 
     // Park the default cell Open with an accumulated streak (as after several consecutive
     // failures tripped the breaker and escalation is in progress).
-    store
-        .get_lane(0)
-        .breaker_state
-        .store(ST_OPEN, Ordering::Relaxed);
-    store.get_lane(0).streak.store(5, Ordering::Relaxed);
+    set_state(&store, 0, 1);
+    poke(&store, 0, |c| c.streak = 5);
 
     // A bare success lands on the still-Open cell (degraded-forward path). The HalfOpen→Closed
     // CAS fails (Open ≠ HalfOpen) so no recovery occurs — and the streak must be preserved.
     store.record_success(0);
 
     assert_eq!(
-        store.get_lane(0).streak.load(Ordering::Relaxed),
+        store.get_lane(0).cell.streak(),
         5,
         "a success on a still-Open cell must NOT zero the streak (preserves backoff escalation)"
     );
     assert_eq!(
-        store.get_lane(0).breaker_state.load(Ordering::Relaxed),
-        ST_OPEN,
+        store.get_lane(0).cell.snapshot().state,
+        1,
         "the cell must remain Open (success on Open does not recover it)"
     );
 
     // Sanity: a success on a CLOSED cell still resets the streak (the normal happy path).
-    store
-        .get_lane(0)
-        .breaker_state
-        .store(ST_CLOSED, Ordering::Relaxed);
-    store.get_lane(0).streak.store(4, Ordering::Relaxed);
+    set_state(&store, 0, 0);
+    poke(&store, 0, |c| c.streak = 4);
     store.record_success(0);
     assert_eq!(
-        store.get_lane(0).streak.load(Ordering::Relaxed),
+        store.get_lane(0).cell.streak(),
         0,
         "a success on a Closed cell must reset the streak"
     );
@@ -1432,11 +1345,8 @@ fn test_half_open_success_recovers_to_closed() {
     set_now_for_test(3000);
 
     // Lane is Open with an expired cooldown.
-    store
-        .get_lane(0)
-        .cooldown_until
-        .store(2000, Ordering::Relaxed);
-    store.get_lane(0).breaker_state.store(1, Ordering::Relaxed);
+    poke(&store, 0, |c| c.cooldown_until = 2000);
+    set_state(&store, 0, 1);
 
     // First request after expiry transitions to HalfOpen and wins the single-flight probe.
     assert!(store.usable(0, 3000), "first request should win the probe");
@@ -1458,7 +1368,7 @@ fn test_half_open_success_recovers_to_closed() {
         "and keep being admitted — recovery is sticky, not a one-shot"
     );
     assert!(
-        !store.get_lane(0).probe_in_flight.load(Ordering::Relaxed),
+        !store.get_lane(0).cell.probe_in_flight(),
         "the single-flight probe must be released on recovery"
     );
 }
@@ -1466,7 +1376,7 @@ fn test_half_open_success_recovers_to_closed() {
 /// Concurrency regression for the non-CAS Open→HalfOpen transition. Two threads
 /// racing an expired-Open cell must yield EXACTLY ONE probe winner, and the `probe_in_flight`
 /// flag must never end up wedged `true` on a cell that did not retain the probe. The old code
-/// did `store(ST_HALF_OPEN)` unconditionally then a separate `probe_in_flight` CAS, so a delayed
+/// did `store(2)` unconditionally then a separate `probe_in_flight` CAS, so a delayed
 /// store could clobber a concurrent `cell_closed` and force `probe_in_flight=true` on a Closed
 /// cell — permanently benching the lane on the next Open cycle. The fix makes the state move a
 /// single Open→HalfOpen CAS, with only the winner setting the probe.
@@ -1481,14 +1391,8 @@ fn test_concurrent_open_to_half_open_single_probe_winner() {
         let now = 3000u64;
 
         // Lane Open with an already-expired cooldown — both racers are probe-eligible.
-        store
-            .get_lane(0)
-            .cooldown_until
-            .store(1000, Ordering::Relaxed);
-        store
-            .get_lane(0)
-            .breaker_state
-            .store(ST_OPEN, Ordering::Relaxed);
+        poke(&store, 0, |c| c.cooldown_until = 1000);
+        set_state(&store, 0, 1);
 
         let winners = Arc::new(AtomicUsize::new(0));
         let barrier = Arc::new(Barrier::new(2));
@@ -1522,7 +1426,7 @@ fn test_concurrent_open_to_half_open_single_probe_winner() {
             "the probe winner must leave the cell HalfOpen"
         );
         assert!(
-            store.get_lane(0).probe_in_flight.load(Ordering::Relaxed),
+            store.get_lane(0).cell.probe_in_flight(),
             "the winner must hold the single-flight probe"
         );
     }
@@ -1539,14 +1443,8 @@ fn test_concurrent_acquire_racing_probe_success_never_wedges_flag() {
     for _ in 0..2000 {
         let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
         let now = 3000u64;
-        store
-            .get_lane(0)
-            .cooldown_until
-            .store(1000, Ordering::Relaxed);
-        store
-            .get_lane(0)
-            .breaker_state
-            .store(ST_OPEN, Ordering::Relaxed);
+        poke(&store, 0, |c| c.cooldown_until = 1000);
+        set_state(&store, 0, 1);
 
         // Thread A wins the probe (deterministically, before the race) and will report success.
         // Thread B races a fresh acquisition against A's success.
@@ -1558,7 +1456,7 @@ fn test_concurrent_acquire_racing_probe_success_never_wedges_flag() {
             // A acquires the probe first so the cell is HalfOpen with probe held.
             assert!(store_a.usable(0, now), "A must win the initial probe");
             barrier_a.wait();
-            // A's probe succeeds → cell_closed clears probe_in_flight and writes ST_CLOSED.
+            // A's probe succeeds → cell_closed clears probe_in_flight and writes 0.
             store_a.record_success(0);
         });
 
@@ -1576,7 +1474,7 @@ fn test_concurrent_acquire_racing_probe_success_never_wedges_flag() {
         // After the dust settles the cell is either Closed (A's success won) or HalfOpen (B
         // re-acquired after A closed). In neither outcome may a Closed cell hold the probe.
         let state = store.breaker_state(0);
-        let probe_held = store.get_lane(0).probe_in_flight.load(Ordering::Relaxed);
+        let probe_held = store.get_lane(0).cell.probe_in_flight();
         match state {
             BreakerState::Closed => assert!(
                 !probe_held,
@@ -1597,7 +1495,7 @@ fn test_concurrent_acquire_racing_probe_success_never_wedges_flag() {
 /// `cell_record_success` TOCTOU: a half-open probe SUCCESS racing a concurrent
 /// `record_hard_down_all_cells` (billing exhaustion / invalid credential) must NEVER silently
 /// recover the lane and drop the hard-down's sticky 30-minute cooldown. Before the fix the success
-/// recorder did a plain `load(HalfOpen)` then an UNCONDITIONAL `store(ST_CLOSED)` (clearing the
+/// recorder did a plain `load(HalfOpen)` then an UNCONDITIONAL `store(0)` (clearing the
 /// cooldown), so a hard-down landing in the window between the read and the write was clobbered —
 /// the parked credential-failure lane was instantly re-readied. The CAS (HalfOpen→Closed) makes
 /// success own the transition only when it wins the race; if the hard-down moved the cell to Open
@@ -1612,18 +1510,9 @@ fn test_concurrent_success_racing_hard_down_never_drops_sticky_cooldown() {
         let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
         let now = 3000u64;
         // Park the cell in HalfOpen (expired prior cooldown), as if a probe was just acquired.
-        store
-            .get_lane(0)
-            .cooldown_until
-            .store(1000, Ordering::Relaxed);
-        store
-            .get_lane(0)
-            .breaker_state
-            .store(ST_HALF_OPEN, Ordering::Relaxed);
-        store
-            .get_lane(0)
-            .probe_in_flight
-            .store(true, Ordering::Relaxed);
+        poke(&store, 0, |c| c.cooldown_until = 1000);
+        set_state(&store, 0, 2);
+        // (probe_in_flight follows the state below)
 
         let barrier = Arc::new(Barrier::new(2));
 
@@ -1647,7 +1536,7 @@ fn test_concurrent_success_racing_hard_down_never_drops_sticky_cooldown() {
         b.join().expect("B must not panic");
 
         let state = store.breaker_state(0);
-        let cooldown = store.get_lane(0).cooldown_until.load(Ordering::Relaxed);
+        let cooldown = store.get_lane(0).cell.cooldown_until();
         match state {
             // Success won the CAS before the hard-down's store landed: legitimate full recovery,
             // cooldown cleared. (The hard-down's store(Open) must then have lost the race; if it
@@ -2403,7 +2292,7 @@ fn test_spend_budget_concurrent_never_over_spends() {
         "exactly {BUDGET} spends may succeed under contention; got {total_wins}"
     );
     assert_eq!(
-        store.get_lane(0).budget.load(Ordering::Relaxed),
+        store.get_lane(0).budget.remaining().unwrap_or(-1),
         0,
         "budget must settle at exactly 0 — never driven negative by a concurrent burst"
     );
@@ -2503,12 +2392,12 @@ fn test_error_rate_ignores_stale_errors_outside_window() {
     // 100 errors long ago (raw helper: seeds the window + cumulative err without evaluating).
     set_now_for_test(1000);
     for _ in 0..100 {
-        store.record_outcome_error_with_time(0, 1000);
+        seed_outcome(&store, 0, 1000, true);
     }
     // Advance well past the 30s window, then take clean recent traffic.
     set_now_for_test(2000);
     for _ in 0..5 {
-        store.record_outcome_success_with_time(0, 2000);
+        seed_outcome(&store, 0, 2000, false);
     }
     // One recent error arrives. Windowed view: 5 successes + 1 error = 1/6 ≈ 0.17 < 0.5 → no
     // trip. (The old cumulative-error logic would have computed min(101,6)/6 = 1.0 and tripped.)
@@ -2571,18 +2460,18 @@ fn test_soft_cooldown_is_probeable_and_recoverable() {
 fn test_try_acquire_probe_exclusivity() {
     let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
-    // Put lane in HalfOpen state manually
-    store.get_lane(0).breaker_state.store(2, Ordering::Relaxed);
+    // An expired Open: the probe is there to be won, once.
+    set_state(&store, 0, 1);
 
     // First acquisition should succeed
     assert!(
-        store.try_acquire_probe(0),
+        matches!(store.get_lane(0).cell.acquire(0), ProbeAdmit::ProbeWon(_)),
         "first probe acquisition should succeed"
     );
 
     // Second acquisition should fail (probe already in flight)
     assert!(
-        !store.try_acquire_probe(0),
+        matches!(store.get_lane(0).cell.acquire(0), ProbeAdmit::Denied(_)),
         "second probe acquisition should fail"
     );
 }
@@ -2592,14 +2481,17 @@ fn test_clear_probe_after_success() {
     let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
     // Acquire the probe
-    assert!(store.try_acquire_probe(0), "should acquire probe");
+    set_state(&store, 0, 1);
+    let ProbeAdmit::ProbeWon(epoch) = store.get_lane(0).cell.acquire(0) else {
+        panic!("should acquire probe");
+    };
 
-    // Clear it (simulating successful completion)
-    store.clear_probe(0);
+    // Release it (the owner-checked release an undispatched probe takes)
+    store.release_probe_owned_in("", 0, epoch);
 
     // Should be able to acquire again
     assert!(
-        store.try_acquire_probe(0),
+        matches!(store.get_lane(0).cell.acquire(0), ProbeAdmit::ProbeWon(_)),
         "should be able to re-acquire after clear"
     );
 }
@@ -2612,15 +2504,12 @@ fn test_bounded_window_memory() {
 
     // Add more entries than window capacity
     for i in 0..2000 {
-        store.record_outcome_error_with_time(0, 1000 + i as u64);
+        seed_outcome(&store, 0, 1000 + i as u64, true);
     }
 
     // Window should be bounded (max ~1024 entries)
-    let window = store.get_lane(0).outcome_window.lock().unwrap();
-    assert!(
-        window.entries.len() <= 1024,
-        "outcomes window should be bounded"
-    );
+    let (entries, _) = store.get_lane(0).cell.outcomes_in_window(3000, u64::MAX);
+    assert!(entries <= 1024, "outcomes window should be bounded");
 }
 
 #[test]
@@ -2630,11 +2519,8 @@ fn test_usable_transitions_on_clock_advance() {
     // Put lane in Open state with until = 2000
     set_now_for_test(2500);
 
-    store
-        .get_lane(0)
-        .cooldown_until
-        .store(2000, Ordering::Relaxed);
-    store.get_lane(0).breaker_state.store(1, Ordering::Relaxed);
+    poke(&store, 0, |c| c.cooldown_until = 2000);
+    set_state(&store, 0, 1);
 
     // At time 1999: not usable (still in cooldown)
     assert!(!store.usable(0, 1999), "not usable before cooldown expires");
@@ -2668,14 +2554,14 @@ fn test_escalating_cooldown_on_repeated_trips() {
     let cfg = BreakerCfg::default();
 
     // First trip after one failure: streak=1 -> cooldown ~15s.
-    store.get_lane(0).streak.store(1, Ordering::Relaxed);
+    poke(&store, 0, |c| c.streak = 1);
     store.open_state(0, 1000, &cfg);
     let until1 = store.cooldown_remaining(0, 1000);
 
     set_now_for_test(2000); // Advance time past first cooldown
 
     // Second trip after a second failure: streak=2 -> cooldown ~30s (exponential backoff).
-    store.get_lane(0).streak.store(2, Ordering::Relaxed);
+    poke(&store, 0, |c| c.streak = 2);
     store.open_state(0, 2000, &cfg);
     let until2 = store.cooldown_remaining(0, 2000);
 
@@ -2749,7 +2635,7 @@ fn test_retry_after_429_with_computed_backoff_lower() {
     set_now_for_test(70000);
 
     // Explicitly reset streak to 0 (fresh lane has this, but tests can race)
-    store.get_lane(0).streak.store(0, Ordering::Relaxed);
+    poke(&store, 0, |c| c.streak = 0);
 
     // Simulate a 429 with retry_after=30s and computed backoff < 30s (streak=0 -> base 15s)
     let cfg = BreakerCfg {
@@ -2763,14 +2649,14 @@ fn test_retry_after_429_with_computed_backoff_lower() {
     store.open_state_with_retry_after(0, 70000, &cfg, Some(30));
 
     // Cooldown should be max(computed_backoff=15, retry_after=30) = 30
-    let until = store.get_lane(0).cooldown_until.load(Ordering::Relaxed);
+    let until = store.get_lane(0).cell.cooldown_until();
     assert!(
         until >= 70030,
         "cooldown floor should honor retry_after when larger than computed backoff (got {until})"
     );
 
     // Lane should be unavailable during cooldown - check at a time that's definitely before cooldown expires
-    let test_now = store.get_lane(0).cooldown_until.load(Ordering::Relaxed) - 10;
+    let test_now = store.get_lane(0).cell.cooldown_until() - 10;
     assert!(
         !store.usable(0, test_now),
         "lane should be down during retry-after period"
@@ -2804,7 +2690,7 @@ fn test_retry_after_exceeds_max_cooldown() {
     store.open_state_with_retry_after(0, 1000, &cfg, Some(300));
 
     // Server's explicit Retry-After is always respected even if > max_cooldown_secs
-    let until = store.get_lane(0).cooldown_until.load(Ordering::Relaxed);
+    let until = store.get_lane(0).cell.cooldown_until();
     assert_eq!(
         until, 1300,
         "server retry-after must be honored even when exceeding max_cooldown"
@@ -2825,7 +2711,7 @@ fn test_retry_after_absent_fallback_to_computed() {
     set_now_for_test(60000);
 
     // Explicitly reset streak to 0 (fresh lane has this, but tests can race)
-    store.get_lane(0).streak.store(0, Ordering::Relaxed);
+    poke(&store, 0, |c| c.streak = 0);
 
     // No retry_after present -> should fall back to computed backoff (15s for streak=0)
     let cfg = BreakerCfg {
@@ -2840,7 +2726,7 @@ fn test_retry_after_absent_fallback_to_computed() {
 
     // Should use computed backoff without any server override (streak=0 -> base 15s, now jittered
     // ~±10%, so assert the band around base rather than an exact value).
-    let until = store.get_lane(0).cooldown_until.load(Ordering::Relaxed);
+    let until = store.get_lane(0).cell.cooldown_until();
     assert!(
             (60013..=60017).contains(&until),
             "should fall back to the (jittered ~15s) computed backoff when retry_after absent (got {until})"
@@ -2856,7 +2742,7 @@ fn test_retry_after_record_rate_limit_uses_floor() {
     // Record rate limit with retry_after=45s (streak=1 -> computed would be ~30s)
     store.record_rate_limit(0, 1000, &BreakerCfg::default(), Some(45));
 
-    let until = store.get_lane(0).cooldown_until.load(Ordering::Relaxed);
+    let until = store.get_lane(0).cell.cooldown_until();
     assert_eq!(
         until, 1045,
         "record_rate_limit should honor retry_after as cooldown floor"
@@ -2871,12 +2757,12 @@ fn test_retry_after_record_transient_uses_floor() {
     set_now_for_test(50000);
 
     // Explicitly reset streak to 0 (fresh lane has this, but tests can race)
-    store.get_lane(0).streak.store(0, Ordering::Relaxed);
+    poke(&store, 0, |c| c.streak = 0);
 
     // Record transient error with retry_after=60s (streak=0 -> computed would be 15s)
     store.record_transient(0, "timeout", &BreakerCfg::default(), Some(60));
 
-    let until = store.get_lane(0).cooldown_until.load(Ordering::Relaxed);
+    let until = store.get_lane(0).cell.cooldown_until();
     // Should honor retry_after floor of 60s: cooldown should be at least now + 60
     // Use a wider tolerance to account for any timing variations
     assert!(
@@ -2893,7 +2779,7 @@ fn test_retry_after_record_transient_uses_floor() {
 fn test_retry_after_not_honored_ignores_server_value() {
     let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(80000);
-    store.get_lane(0).streak.store(0, Ordering::Relaxed);
+    poke(&store, 0, |c| c.streak = 0);
 
     let cfg = BreakerCfg {
         base_cooldown_secs: 15,
@@ -2906,7 +2792,7 @@ fn test_retry_after_not_honored_ignores_server_value() {
     // Server says Retry-After: 1, but not honoring → use computed backoff (15s for streak=0),
     // NOT the (shorter) server value.
     store.open_state_with_retry_after(0, 80000, &cfg, Some(1));
-    let until = store.get_lane(0).cooldown_until.load(Ordering::Relaxed);
+    let until = store.get_lane(0).cell.cooldown_until();
     // The streak==0 base cooldown is jittered (deterministic per-cell, ~±10% of the
     // 15s base), so assert the computed-backoff band around base — and crucially NOT the (shorter)
     // 1s server Retry-After value, which the `honor_retry_after=false` path must ignore.
@@ -2928,11 +2814,8 @@ fn test_failed_probe_does_not_permanently_lock_lane() {
 
     // Lane Open with an expired cooldown.
     set_now_for_test(10_000);
-    store
-        .get_lane(0)
-        .cooldown_until
-        .store(9_000, Ordering::Relaxed);
-    store.get_lane(0).breaker_state.store(1, Ordering::Relaxed);
+    poke(&store, 0, |c| c.cooldown_until = 9_000);
+    set_state(&store, 0, 1);
 
     // First request wins the probe (Open→HalfOpen, probe acquired).
     assert!(
@@ -2940,7 +2823,7 @@ fn test_failed_probe_does_not_permanently_lock_lane() {
         "first request wins the half-open probe"
     );
     assert!(
-        store.get_lane(0).probe_in_flight.load(Ordering::Relaxed),
+        store.get_lane(0).cell.probe_in_flight(),
         "probe should be in flight"
     );
 
@@ -2951,13 +2834,13 @@ fn test_failed_probe_does_not_permanently_lock_lane() {
         "a failed probe reopens the breaker"
     );
     assert!(
-        !store.get_lane(0).probe_in_flight.load(Ordering::Relaxed),
+        !store.get_lane(0).cell.probe_in_flight(),
         "cell_open MUST release the probe (else the lane is locked out forever)"
     );
 
     // After the new cooldown expires, a request must again be able to win the probe — proving
     // the lane is NOT permanently benched.
-    let until = store.get_lane(0).cooldown_until.load(Ordering::Relaxed);
+    let until = store.get_lane(0).cell.cooldown_until();
     set_now_for_test(until + 1);
     assert!(
             store.usable(0, until + 1),
@@ -2981,14 +2864,11 @@ fn test_hard_down_while_probing_does_not_wedge_lane() {
 
     // Lane Open with an expired cooldown → a request wins the half-open probe.
     set_now_for_test(50_000);
-    store
-        .get_lane(0)
-        .cooldown_until
-        .store(49_000, Ordering::Relaxed);
-    store.get_lane(0).breaker_state.store(1, Ordering::Relaxed);
+    poke(&store, 0, |c| c.cooldown_until = 49_000);
+    set_state(&store, 0, 1);
     assert!(store.usable(0, 50_000), "request wins the half-open probe");
     assert!(
-        store.get_lane(0).probe_in_flight.load(Ordering::Relaxed),
+        store.get_lane(0).cell.probe_in_flight(),
         "probe is in flight (HalfOpen)"
     );
 
@@ -3000,13 +2880,13 @@ fn test_hard_down_while_probing_does_not_wedge_lane() {
     );
     // The probe flag MUST be cleared so the lane can recover.
     assert!(
-        !store.get_lane(0).probe_in_flight.load(Ordering::Relaxed),
+        !store.get_lane(0).cell.probe_in_flight(),
         "record_hard_down MUST release the probe (else the lane is locked out forever)"
     );
 
     // After the sticky cooldown expires (operator fixed the key/billing), a request must again
     // be able to win the probe — proving hard-down is RECOVERABLE, not a permanent kill.
-    let until = store.get_lane(0).cooldown_until.load(Ordering::Relaxed);
+    let until = store.get_lane(0).cell.cooldown_until();
     set_now_for_test(until + 1);
     assert!(
         store.usable(0, until + 1),
@@ -3018,7 +2898,7 @@ fn test_hard_down_while_probing_does_not_wedge_lane() {
         "the recovery probe re-enters HalfOpen"
     );
     assert!(
-        store.get_lane(0).probe_in_flight.load(Ordering::Relaxed),
+        store.get_lane(0).cell.probe_in_flight(),
         "the recovery request holds the single-flight probe"
     );
 }
@@ -3039,11 +2919,8 @@ fn test_selection_does_not_steal_probes_from_unselected_lanes() {
     // All three Open with already-expired cooldowns (so all are "ready" but each would need a
     // probe to actually dispatch).
     for i in 0..3 {
-        store
-            .get_lane(i)
-            .cooldown_until
-            .store(19_000, Ordering::Relaxed);
-        store.get_lane(i).breaker_state.store(1, Ordering::Relaxed);
+        poke(&store, i, |c| c.cooldown_until = 19_000);
+        set_state(&store, i, 1);
     }
 
     let candidates = vec![0usize, 1, 2];
@@ -3058,12 +2935,12 @@ fn test_selection_does_not_steal_probes_from_unselected_lanes() {
     // selection enumeration alone must not consume probe budget.
     for i in 0..3 {
         assert_eq!(
-            store.get_lane(i).breaker_state.load(Ordering::Relaxed),
+            store.get_lane(i).cell.snapshot().state,
             1,
             "lane {i} must remain Open after pure selection (no Open→HalfOpen side effect)"
         );
         assert!(
-            !store.get_lane(i).probe_in_flight.load(Ordering::Relaxed),
+            !store.get_lane(i).cell.probe_in_flight(),
             "lane {i} must NOT have a probe in flight from mere selection enumeration"
         );
     }
@@ -3071,11 +2948,11 @@ fn test_selection_does_not_steal_probes_from_unselected_lanes() {
     // And the dispatch path (usable) on a single chosen lane DOES acquire exactly one probe.
     assert!(store.usable(0, 20_000), "dispatch on lane 0 wins its probe");
     assert!(
-        store.get_lane(0).probe_in_flight.load(Ordering::Relaxed),
+        store.get_lane(0).cell.probe_in_flight(),
         "the dispatched lane acquires the probe"
     );
     assert!(
-        !store.get_lane(1).probe_in_flight.load(Ordering::Relaxed),
+        !store.get_lane(1).cell.probe_in_flight(),
         "a non-dispatched lane still has no probe in flight"
     );
 }
@@ -3087,11 +2964,8 @@ fn test_selection_does_not_steal_probes_from_unselected_lanes() {
 fn test_is_ready_is_side_effect_free() {
     let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(30_000);
-    store
-        .get_lane(0)
-        .cooldown_until
-        .store(29_000, Ordering::Relaxed);
-    store.get_lane(0).breaker_state.store(1, Ordering::Relaxed); // Open, expired cooldown
+    poke(&store, 0, |c| c.cooldown_until = 29_000);
+    set_state(&store, 0, 1); // Open, expired cooldown
 
     // Many readiness probes must not mutate state.
     for _ in 0..100 {
@@ -3101,12 +2975,12 @@ fn test_is_ready_is_side_effect_free() {
         );
     }
     assert_eq!(
-        store.get_lane(0).breaker_state.load(Ordering::Relaxed),
+        store.get_lane(0).cell.snapshot().state,
         1,
         "is_ready must NOT transition Open→HalfOpen"
     );
     assert!(
-        !store.get_lane(0).probe_in_flight.load(Ordering::Relaxed),
+        !store.get_lane(0).cell.probe_in_flight(),
         "is_ready must NOT acquire the single-flight probe"
     );
 }
@@ -3164,11 +3038,8 @@ fn test_swrr_rebalance_on_trip() {
     set_now_for_test(1000);
 
     // Put member 0 in Open state (tripped)
-    store.get_lane(0).breaker_state.store(1, Ordering::Relaxed); // Open
-    store
-        .get_lane(0)
-        .cooldown_until
-        .store(u64::MAX, Ordering::Relaxed);
+    set_state(&store, 0, 1); // Open
+    poke(&store, 0, |c| c.cooldown_until = u64::MAX);
 
     let candidates: Vec<usize> = vec![0, 1];
     let weights: Vec<u32> = vec![w0, w1];
@@ -3305,11 +3176,8 @@ fn test_swrr_no_open_selection() {
     set_now_for_test(1000);
 
     // Put member 1 in Open state
-    store.get_lane(1).breaker_state.store(1, Ordering::Relaxed);
-    store
-        .get_lane(1)
-        .cooldown_until
-        .store(u64::MAX, Ordering::Relaxed);
+    set_state(&store, 1, 1);
+    poke(&store, 1, |c| c.cooldown_until = u64::MAX);
 
     let candidates: Vec<usize> = vec![0, 1, 2];
     let weights: Vec<u32> = vec![w0, w1, w2];
@@ -3350,11 +3218,8 @@ fn test_swrr_all_down_returns_none() {
 
     // Put all members in Open state
     for i in 0..2 {
-        store.get_lane(i).breaker_state.store(1, Ordering::Relaxed);
-        store
-            .get_lane(i)
-            .cooldown_until
-            .store(u64::MAX, Ordering::Relaxed);
+        set_state(&store, i, 1);
+        poke(&store, i, |c| c.cooldown_until = u64::MAX);
     }
 
     let candidates: Vec<usize> = vec![0, 1];
@@ -3369,7 +3234,7 @@ fn test_swrr_all_down_returns_none() {
 
 /// Out-of-band probe failures against an ALREADY-Open cell must NOT advance the
 /// consecutive streak. The streak `fetch_add` used to run unconditionally before the state match,
-/// so the ST_OPEN no-op arm still inflated the streak → a later HalfOpen re-trip computed an
+/// so the 1 no-op arm still inflated the streak → a later HalfOpen re-trip computed an
 /// over-long cooldown (`base << inflated_streak`, pinned at max). Here we batter an Open cell with
 /// N failures, then drive it HalfOpen and fail once; the recomputed cooldown must reflect ONLY the
 /// real consecutive count (streak==1 → base<<1), NOT N+1 (which would pin at max).
@@ -3397,31 +3262,24 @@ fn test_open_cell_probe_failures_do_not_inflate_streak() {
     // Park the cell Open with an expired cooldown (so it stays Open across the probe failures).
     store.force_open_in("", 0, 0);
     let lane = store.get_lane(0).clone();
-    assert_eq!(
-        lane.streak().load(Ordering::Relaxed),
-        0,
-        "starts at streak 0"
-    );
+    assert_eq!(lane.cell.streak(), 0, "starts at streak 0");
 
     // N out-of-band probe failures against the Open cell — each must be a streak no-op.
     for _ in 0..20 {
         store.record_transient(0, "5xx", &cfg, None);
     }
     assert_eq!(
-        lane.streak().load(Ordering::Relaxed),
+        lane.cell.streak(),
         0,
         "failures recorded against an already-Open cell must NOT advance the streak"
     );
 
-    // Now drive the cell HalfOpen (the probe winner) and fail the probe: this is the ST_HALF_OPEN
+    // Now drive the cell HalfOpen (the probe winner) and fail the probe: this is the 2
     // arm, which bumps the streak to 1 and reopens with the escalated cooldown.
-    {
-        let _tx = lock_recover(lane.transition_lock());
-        lane.breaker_state().store(ST_HALF_OPEN, Ordering::Release);
-    }
+    set_state(&store, 0, 2);
     store.record_transient(0, "5xx", &cfg, None);
     assert_eq!(
-        lane.streak().load(Ordering::Relaxed),
+        lane.cell.streak(),
         1,
         "the HalfOpen probe failure is the first real consecutive failure → streak 1"
     );
@@ -3471,8 +3329,9 @@ fn test_streak_zero_base_cooldown_is_jittered_and_desynced() {
         .map(|i| {
             let c = store.get_lane(i).clone();
             // Fresh: streak == 0.
-            assert_eq!(c.streak().load(Ordering::Relaxed), 0);
-            HealthState::compute_cooldown_with_retry_after(c.as_ref(), 5_000, &cfg, None, 0)
+            assert_eq!(c.cell.streak(), 0);
+            c.cell
+                .compute_cooldown_with_retry_after(5_000, &fsm_cfg(&cfg), None, 0)
         })
         .collect();
 
@@ -3513,7 +3372,7 @@ fn test_export_health_reads_consistent_state_cooldown_pair() {
     let snaps = store.export_health();
     let s0 = &snaps[0];
 
-    // Default cell: Open (ST_OPEN == 1) MUST pair with a non-zero, future cooldown - never a torn
+    // Default cell: Open (1 == 1) MUST pair with a non-zero, future cooldown - never a torn
     // (Open, 0). A lock-free straddling read could observe the state store without the paired
     // cooldown store; holding the transition lock for both loads rules that out.
     assert_eq!(s0.breaker_state, 1, "default cell exported as Open");
@@ -3596,7 +3455,7 @@ fn test_breaker_verdict_maps_each_cell_state() {
     // Fresh Closed cell (cooldown 0) → Ready.
     let cell = store.cell("p", 0);
     assert_eq!(
-        breaker_verdict(cell.as_ref(), now),
+        cell.fsm().verdict(now),
         BreakerVerdict::Ready,
         "a Closed, elapsed-cooldown cell is Ready"
     );
@@ -3605,7 +3464,7 @@ fn test_breaker_verdict_maps_each_cell_state() {
     store.force_open_in("p", 0, now + 600);
     let cell = store.cell("p", 0);
     assert_eq!(
-        breaker_verdict(cell.as_ref(), now),
+        cell.fsm().verdict(now),
         BreakerVerdict::Open { until: now + 600 },
         "an unexpired Open cell reports Open with its exact until"
     );
@@ -3614,7 +3473,7 @@ fn test_breaker_verdict_maps_each_cell_state() {
     store.force_open_in("p", 0, 0);
     let cell = store.cell("p", 0);
     assert_eq!(
-        breaker_verdict(cell.as_ref(), now),
+        cell.fsm().verdict(now),
         BreakerVerdict::ProbeWinnable,
         "an expired Open cell is ProbeWinnable"
     );
@@ -3626,7 +3485,7 @@ fn test_breaker_verdict_maps_each_cell_state() {
     );
     let cell = store.cell("p", 0);
     assert_eq!(
-        breaker_verdict(cell.as_ref(), now),
+        cell.fsm().verdict(now),
         BreakerVerdict::HalfOpen,
         "a HalfOpen (probe-in-flight) cell reports HalfOpen"
     );

@@ -141,6 +141,90 @@ impl BreakerCell {
     pub fn err_count(&self) -> u64 {
         self.err.load(Ordering::Relaxed)
     }
+
+    /// The consecutive-failure streak the escalating cooldown reads.
+    pub fn streak(&self) -> u32 {
+        self.streak.load(Ordering::Relaxed)
+    }
+
+    /// The raw cooldown deadline, in Unix seconds (0 when none is armed).
+    pub fn cooldown_until(&self) -> u64 {
+        self.cooldown_until.load(Ordering::Acquire)
+    }
+
+    /// The single-flight probe generation — the owner token the last probe winner holds.
+    pub fn probe_epoch(&self) -> u64 {
+        self.probe_epoch.load(Ordering::Acquire)
+    }
+
+    /// Whether a won recovery probe is still outstanding on this cell.
+    pub fn probe_in_flight(&self) -> bool {
+        self.probe_in_flight.load(Ordering::Acquire)
+    }
+
+    /// `(outcomes, errors)` recorded within `window_s` seconds of `now` — the error-rate trip
+    /// signal's two figures, read once for a caller that projects them.
+    pub fn outcomes_in_window(&self, now: u64, window_s: u64) -> (usize, usize) {
+        lock_recover(&self.outcome_window).outcomes_in_window(now, window_s)
+    }
+
+    /// What survives a rebuild of this cell: its state and cooldown read as ONE pair under the
+    /// transition lock (a lock-free pair of loads can straddle a transition and persist a tripped
+    /// cell with a cleared cooldown), plus the streak and the lifetime error count.
+    pub fn snapshot(&self) -> CellSnapshot {
+        let (state, cooldown_until) = {
+            let _tx = lock_recover(&self.transition_lock);
+            (
+                self.breaker_state.load(Ordering::Acquire),
+                self.cooldown_until.load(Ordering::Acquire),
+            )
+        };
+        CellSnapshot {
+            state,
+            cooldown_until,
+            streak: self.streak.load(Ordering::Relaxed),
+            err: self.err.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Hold the transition lock, for a test that must park a transition at it.
+    #[cfg(test)]
+    pub(crate) fn transition_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+        lock_recover(&self.transition_lock)
+    }
+
+    /// Carry a [`Self::snapshot`] into this cell. A snapshot taken mid-probe restores as Open: the
+    /// probe it names belonged to the cell that won it, so a HalfOpen restored here would be a probe
+    /// nobody holds — no admission could win it and no outcome would ever close it. Open with the
+    /// captured (expired) cooldown lets the first request win a fresh probe instead.
+    pub fn restore(&self, snap: CellSnapshot) {
+        let _tx = lock_recover(&self.transition_lock);
+        let state = if snap.state == ST_HALF_OPEN {
+            ST_OPEN
+        } else {
+            snap.state
+        };
+        self.cooldown_until
+            .store(snap.cooldown_until, Ordering::Release);
+        self.breaker_state.store(state, Ordering::Release);
+        self.probe_in_flight.store(false, Ordering::Release);
+        self.streak.store(snap.streak, Ordering::Relaxed);
+        self.err.store(snap.err, Ordering::Relaxed);
+    }
+}
+
+/// A cell's persisted form (see [`BreakerCell::snapshot`]). `state` is the cell's own encoding —
+/// `0` Closed, `1` Open, `2` HalfOpen — the value a persisted health snapshot has always carried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CellSnapshot {
+    /// The FSM state, in the cell's own encoding.
+    pub state: u64,
+    /// The cooldown deadline, in Unix seconds.
+    pub cooldown_until: u64,
+    /// The consecutive-failure streak.
+    pub streak: u32,
+    /// The lifetime error count.
+    pub err: u64,
 }
 
 /// Public FSM state, independent of any pending soft cooldown detail beyond `until`.
