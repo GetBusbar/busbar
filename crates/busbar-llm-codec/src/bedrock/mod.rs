@@ -467,6 +467,8 @@ fn read_bedrock_reasoning_block(reasoning: &serde_json::Value) -> Option<crate::
             signature,
             redacted: false,
             cache_control: None,
+            kind: None,
+            signature_origin: None,
         });
     }
     if let Some(redacted) = reasoning.get("redactedContent").and_then(|r| r.as_str()) {
@@ -475,6 +477,8 @@ fn read_bedrock_reasoning_block(reasoning: &serde_json::Value) -> Option<crate::
             signature: None,
             redacted: true,
             cache_control: None,
+            kind: None,
+            signature_origin: None,
         });
     }
     None
@@ -632,6 +636,8 @@ fn bedrock_media_block(
         source: ir_source,
         name,
         cache_control: None,
+        citations: None,
+        context: None,
     }
 }
 
@@ -1027,6 +1033,7 @@ fn read_bedrock_citations_content(v: &serde_json::Value) -> crate::ir::IrBlock {
         text,
         cache_control: None,
         citations,
+        refusal: false,
     }
 }
 
@@ -1283,6 +1290,7 @@ fn read_bedrock_image_block(image: &serde_json::Value) -> Option<crate::ir::IrBl
                 data: bytes.to_string(),
             },
             cache_control: None,
+            detail: None,
         });
     }
 
@@ -1300,6 +1308,7 @@ fn read_bedrock_image_block(image: &serde_json::Value) -> Option<crate::ir::IrBl
                     }),
                 },
                 cache_control: None,
+                detail: None,
             });
         }
     }
@@ -1321,6 +1330,7 @@ fn guard_content_block(guard: &serde_json::Value) -> Option<crate::ir::IrBlock> 
             text: t.to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         });
     }
     guard.get("image").and_then(read_bedrock_image_block)
@@ -1659,6 +1669,7 @@ impl super::proto_codec::StreamFraming for BedrockStreamFraming {
                 cache_read_input_tokens: None,
                 detail: crate::ir::IrUsageDetail::default(),
             },
+            stop_detail: None,
         }];
         // Frame 2: `metadata` carrying the token usage — but a native ConverseStream emits EXACTLY ONE
         // `metadata`. Emit it ONLY if real usage rode WITH the stop (the native Bedrock→Bedrock case
@@ -1686,6 +1697,7 @@ impl super::proto_codec::StreamFraming for BedrockStreamFraming {
                     stop_reason: None,
                     stop_sequence,
                     usage: usage.clone(),
+                    stop_detail: None,
                 });
                 self.emitted = true;
                 self.pending = false;
@@ -1734,6 +1746,7 @@ impl super::proto_codec::StreamFraming for BedrockStreamFraming {
                 cache_read_input_tokens: None,
                 detail: crate::ir::IrUsageDetail::default(),
             },
+            stop_detail: None,
         })
     }
 }
@@ -1881,6 +1894,7 @@ pub fn bedrock_response_to_eventstream(
                     &IrStreamEvent::BlockStart {
                         index,
                         block: IrBlockMeta::Text,
+                        refusal: false,
                     },
                     &mut out,
                 );
@@ -1916,6 +1930,7 @@ pub fn bedrock_response_to_eventstream(
                             id: id.clone(),
                             name: name.clone(),
                         },
+                        refusal: false,
                     },
                     &mut out,
                 );
@@ -1946,6 +1961,7 @@ pub fn bedrock_response_to_eventstream(
                     &IrStreamEvent::BlockStart {
                         index,
                         block: IrBlockMeta::Thinking,
+                        refusal: false,
                     },
                     &mut out,
                 );
@@ -2019,6 +2035,7 @@ pub fn bedrock_response_to_eventstream(
                 detail: crate::ir::IrUsageDetail::default(),
             },
             stop_sequence: None,
+            stop_detail: None,
         },
         &mut out,
     );
@@ -2027,6 +2044,7 @@ pub fn bedrock_response_to_eventstream(
             stop_reason: None,
             usage: ir.usage.clone(),
             stop_sequence: None,
+            stop_detail: None,
         },
         &mut out,
     );

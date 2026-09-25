@@ -720,6 +720,7 @@ fn read_gemini_media_part(part: &serde_json::Value) -> Option<crate::ir::IrBlock
                     data,
                 },
                 cache_control: None,
+                detail: None,
             }
         } else {
             crate::ir::IrBlock::Media {
@@ -730,6 +731,8 @@ fn read_gemini_media_part(part: &serde_json::Value) -> Option<crate::ir::IrBlock
                 },
                 name: None,
                 cache_control: None,
+                citations: None,
+                context: None,
             }
         });
     }
@@ -748,6 +751,7 @@ fn read_gemini_media_part(part: &serde_json::Value) -> Option<crate::ir::IrBlock
                 crate::ir::IrBlock::Image {
                     source: crate::ir::IrImageSource::Url(uri),
                     cache_control: None,
+                    detail: None,
                 }
             } else {
                 crate::ir::IrBlock::Media {
@@ -755,6 +759,8 @@ fn read_gemini_media_part(part: &serde_json::Value) -> Option<crate::ir::IrBlock
                     source: crate::ir::IrImageSource::Url(uri),
                     name: None,
                     cache_control: None,
+                    citations: None,
+                    context: None,
                 }
             },
         );

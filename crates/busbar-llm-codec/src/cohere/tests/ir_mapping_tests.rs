@@ -92,7 +92,11 @@ fn coh01_thinking_and_text_are_separate_balanced_blocks() {
     let starts: Vec<(usize, IrBlockMeta)> = evs
         .iter()
         .filter_map(|e| match e {
-            E::BlockStart { index, block } => Some((*index, block.clone())),
+            E::BlockStart {
+                index,
+                block,
+                refusal: _,
+            } => Some((*index, block.clone())),
             _ => None,
         })
         .collect();
@@ -161,10 +165,12 @@ fn coh01_thinking_then_tool_call_is_balanced() {
             E::BlockStart {
                 index,
                 block: IrBlockMeta::Thinking,
+                refusal: _,
             } => Some(format!("start-thinking-{index}")),
             E::BlockStart {
                 index,
                 block: IrBlockMeta::ToolUse { .. },
+                refusal: _,
             } => Some(format!("start-tool-{index}")),
             E::BlockStop { index } => Some(format!("stop-{index}")),
             _ => None,

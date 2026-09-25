@@ -474,6 +474,7 @@ fn rsp11_error_stop_reason_message_delta_writes_response_failed() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     });
     assert_eq!(frames.len(), 1);
     let (name, data) = &frames[0];
@@ -646,6 +647,7 @@ fn rsp17_service_tier_crosses_both_directions() {
                 ..Default::default()
             },
         },
+        stop_detail: None,
     });
     assert_eq!(frames[0].1["response"]["service_tier"], "priority");
 }

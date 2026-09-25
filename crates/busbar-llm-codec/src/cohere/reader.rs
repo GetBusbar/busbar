@@ -240,6 +240,7 @@ impl ProtocolReader for CohereReader {
                                 text: s.to_string(),
                                 cache_control: None,
                                 citations: Vec::new(),
+                                refusal: false,
                             });
                         } else if let Some(arr) = content_val.as_array() {
                             for block_val in arr {
@@ -251,6 +252,7 @@ impl ProtocolReader for CohereReader {
                                                 text: text.to_string(),
                                                 cache_control: None,
                                                 citations: Vec::new(),
+                                                refusal: false,
                                             });
                                         }
                                     } else {
@@ -291,6 +293,7 @@ impl ProtocolReader for CohereReader {
                                 text: content_val.as_str().unwrap_or("").to_string(),
                                 cache_control: None,
                                 citations: Vec::new(),
+                                refusal: false,
                             });
                         } else if let Some(arr) = content_val.as_array() {
                             for block_val in arr {
@@ -304,6 +307,7 @@ impl ProtocolReader for CohereReader {
                                                     text: text.to_string(),
                                                     cache_control: None,
                                                     citations: Vec::new(),
+                                                    refusal: false,
                                                 });
                                             }
                                         }
@@ -331,6 +335,7 @@ impl ProtocolReader for CohereReader {
                                                             url,
                                                         ),
                                                     cache_control: None,
+                                                    detail: None,
                                                 });
                                             }
                                         }
@@ -359,6 +364,8 @@ impl ProtocolReader for CohereReader {
                                                     signature: None,
                                                     redacted: false,
                                                     cache_control: None,
+                                                    kind: None,
+                                                    signature_origin: None,
                                                 });
                                             }
                                         }
@@ -386,6 +393,8 @@ impl ProtocolReader for CohereReader {
                                     signature: None,
                                     redacted: false,
                                     cache_control: None,
+                                    kind: None,
+                                    signature_origin: None,
                                 },
                             );
                         }
@@ -534,6 +543,7 @@ impl ProtocolReader for CohereReader {
                             text: content_text,
                             cache_control: None,
                             citations: Vec::new(),
+                            refusal: false,
                         });
                     }
                     if let Some(arr) = msg_val.get("content").and_then(|c| c.as_array()) {
@@ -553,6 +563,8 @@ impl ProtocolReader for CohereReader {
                                     .filter(|s| !s.is_empty())
                                     .map(String::from),
                                 cache_control: None,
+                                citations: None,
+                                context: None,
                             });
                         }
                     }
@@ -564,6 +576,7 @@ impl ProtocolReader for CohereReader {
                             text: String::new(),
                             cache_control: None,
                             citations: Vec::new(),
+                            refusal: false,
                         });
                     }
                     msg_content.push(crate::ir::IrBlock::ToolResult {
@@ -753,6 +766,16 @@ impl ProtocolReader for CohereReader {
             n: None,
             response_format,
             extra,
+            metadata: None,
+            service_tier: None,
+            store: None,
+            safety_identifier: None,
+            prompt_cache_key: None,
+            verbosity: None,
+            allowed_tools: None,
+            hosted_tools: Vec::new(),
+            system_role: None,
+            output_modalities: None,
         })
     }
 
@@ -883,6 +906,7 @@ impl ProtocolReader for CohereReader {
                     out.push(IrStreamEvent::BlockStart {
                         index: ti,
                         block: crate::ir::IrBlockMeta::Text,
+                        refusal: false,
                     });
                 }
             }
@@ -900,6 +924,7 @@ impl ProtocolReader for CohereReader {
                     out.push(IrStreamEvent::BlockStart {
                         index: text_idx,
                         block: crate::ir::IrBlockMeta::Text,
+                        refusal: false,
                     });
                 }
 
@@ -990,6 +1015,7 @@ impl ProtocolReader for CohereReader {
                     out.push(IrStreamEvent::BlockStart {
                         index: plan_idx,
                         block: crate::ir::IrBlockMeta::Thinking,
+                        refusal: false,
                     });
                 }
                 if let Some(text) = data
@@ -1141,6 +1167,7 @@ impl ProtocolReader for CohereReader {
                     // Cohere has no stop_sequence analog in its stream.
                     stop_sequence: None,
                     usage,
+                    stop_detail: None,
                 });
                 out.push(IrStreamEvent::MessageStop);
             }
@@ -1205,6 +1232,7 @@ impl ProtocolReader for CohereReader {
                     out.push(IrStreamEvent::BlockStart {
                         index: ir_idx,
                         block: crate::ir::IrBlockMeta::ToolUse { id, name },
+                        refusal: false,
                     });
                     // Cohere may include initial argument text on the start frame.
                     if let Some(args) = tc
@@ -1344,6 +1372,8 @@ impl ProtocolReader for CohereReader {
                     signature: None,
                     redacted: false,
                     cache_control: None,
+                    kind: None,
+                    signature_origin: None,
                 });
             }
         }
@@ -1366,6 +1396,7 @@ impl ProtocolReader for CohereReader {
                                     text: text.to_string(),
                                     cache_control: None,
                                     citations: std::mem::take(&mut citations_pending),
+                                    refusal: false,
                                 });
                             }
                         }
@@ -1383,6 +1414,8 @@ impl ProtocolReader for CohereReader {
                                     signature: None,
                                     redacted: false,
                                     cache_control: None,
+                                    kind: None,
+                                    signature_origin: None,
                                 });
                             }
                         }
@@ -1399,6 +1432,7 @@ impl ProtocolReader for CohereReader {
                 text: String::new(),
                 cache_control: None,
                 citations: std::mem::take(&mut citations_pending),
+                refusal: false,
             });
         }
 
@@ -1533,6 +1567,7 @@ impl ProtocolReader for CohereReader {
             stop_sequence: None,
 
             request_echo: None,
+            stop_detail: None,
         })
     }
 }

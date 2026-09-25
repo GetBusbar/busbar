@@ -14,6 +14,7 @@ fn buffered_response_wraps_into_converse_stream_frames() {
             text: "hello world".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: IrUsage {
@@ -30,6 +31,7 @@ fn buffered_response_wraps_into_converse_stream_frames() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let mut bytes = bedrock_response_to_eventstream(&ir, Some(42));
     assert!(!bytes.is_empty(), "must emit eventstream frames");
@@ -100,6 +102,7 @@ fn buffered_tool_use_wraps_into_converse_stream_tool_frames() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let mut bytes = bedrock_response_to_eventstream(&ir, Some(7));
     let frames = busbar_substrate_values::eventstream::drain_frames(&mut bytes);
@@ -154,6 +157,7 @@ fn buffered_multi_block_assigns_distinct_monotonic_content_block_indices() {
                 text: "Let me check the weather.".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             },
             IrBlock::ToolUse {
                 thought_signature: None,
@@ -166,6 +170,7 @@ fn buffered_multi_block_assigns_distinct_monotonic_content_block_indices() {
                 text: "One moment.".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             },
         ],
         stop_reason: Some(crate::ir::IrStopReason::ToolUse),
@@ -183,6 +188,7 @@ fn buffered_multi_block_assigns_distinct_monotonic_content_block_indices() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let mut bytes = bedrock_response_to_eventstream(&ir, Some(99));
     let frames = busbar_substrate_values::eventstream::drain_frames(&mut bytes);
@@ -291,6 +297,7 @@ fn buffered_tool_use_with_absent_stop_reason_defaults_to_tool_use() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let mut bytes = bedrock_response_to_eventstream(&ir, Some(3));
     let frames = busbar_substrate_values::eventstream::drain_frames(&mut bytes);
@@ -317,6 +324,7 @@ fn buffered_text_only_with_absent_stop_reason_defaults_to_end_turn() {
             text: "All done.".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: None,
         usage: IrUsage {
@@ -333,6 +341,7 @@ fn buffered_text_only_with_absent_stop_reason_defaults_to_end_turn() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let mut bytes = bedrock_response_to_eventstream(&ir, Some(3));
     let frames = busbar_substrate_values::eventstream::drain_frames(&mut bytes);
@@ -376,6 +385,7 @@ fn buffered_explicit_stop_reason_overrides_content_default() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let mut bytes = bedrock_response_to_eventstream(&ir, Some(3));
     let frames = busbar_substrate_values::eventstream::drain_frames(&mut bytes);

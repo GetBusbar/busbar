@@ -123,13 +123,19 @@ pub struct StreamTranslate {
     terminal_error: Option<String>,
     /// TERMINAL-USAGE FOLD (SSE ingress: anthropic/gemini/cohere/responses — see
     /// `StreamFraming::folds_terminal_usage`). Holds the deferred terminal `MessageDelta`
-    /// `(stop_reason, stop_sequence, usage)` so a trailing usage-only chunk (OpenAI `include_usage`)
-    /// can be merged into it before it is flushed at `finish()`. `None` until the finish delta arrives
+    /// `(stop_reason, stop_sequence, usage, stop_detail)` so a trailing usage-only chunk (OpenAI
+    /// `include_usage`) can be merged into it before it is flushed at `finish()`. `None` until the
+    /// finish delta arrives
     /// (and for the OpenAI/Bedrock ingresses, which opt out). `pending_stop` records that the paired
     /// `MessageStop` was also deferred, so `finish()` re-emits it after the flushed delta. The response
     /// body feeds `finish()`'s output through the json-array framer too, so this flush reaches the
     /// client uniformly on both the SSE and gemini-json-array paths.
-    pending_terminal: Option<(crate::ir::IrStopReason, Option<String>, crate::ir::IrUsage)>,
+    pending_terminal: Option<(
+        crate::ir::IrStopReason,
+        Option<String>,
+        crate::ir::IrUsage,
+        Option<crate::ir::IrStopDetail>,
+    )>,
     pending_stop: bool,
     /// IR block indices whose BlockStart was TRANSLATED and whose BlockStop has not been. Anything
     /// still here at the terminal frame was never closed by the egress reader — a truncated upstream,
@@ -409,12 +415,26 @@ impl StreamTranslate {
             stop_reason: Some(reason),
             usage,
             stop_sequence,
+            stop_detail,
         } = &ev
         {
-            if let Some(events) =
+            if let Some(mut events) =
                 self.framing
                     .on_combined_stop_delta(*reason, stop_sequence.clone(), usage)
             {
+                // The framing re-splits the terminal delta into its own frames and names no
+                // `IrStopDetail`; the refinement rides the stop-bearing one it produced, so a
+                // context-window / refusal detail is not lost on this ingress (buffered == stream).
+                for emit in &mut events {
+                    if let crate::ir::IrStreamEvent::MessageDelta {
+                        stop_reason: Some(_),
+                        stop_detail: d,
+                        ..
+                    } = emit
+                    {
+                        *d = stop_detail.clone();
+                    }
+                }
                 for emit in &events {
                     self.emit_ir_event(emit, out);
                 }
@@ -436,6 +456,7 @@ impl StreamTranslate {
                     stop_reason: Some(reason),
                     usage,
                     stop_sequence,
+                    stop_detail,
                 } => {
                     match self.pending_terminal.as_mut() {
                         // A DUPLICATE stop-bearing delta (some providers repeat the terminal
@@ -443,10 +464,14 @@ impl StreamTranslate {
                         // one carries (non-zero fields only), instead of overwriting the whole tuple —
                         // a duplicate with empty usage would otherwise drop the real, client-visible
                         // terminal usage. (found: 1.4.0, streaming-billing.)
-                        Some((_, _, acc)) => merge_trailing_usage(acc, usage),
+                        Some((_, _, acc, _)) => merge_trailing_usage(acc, usage),
                         None => {
-                            self.pending_terminal =
-                                Some((*reason, stop_sequence.clone(), usage.clone()))
+                            self.pending_terminal = Some((
+                                *reason,
+                                stop_sequence.clone(),
+                                usage.clone(),
+                                stop_detail.clone(),
+                            ))
                         }
                     }
                     return;
@@ -460,7 +485,7 @@ impl StreamTranslate {
                     usage,
                     ..
                 } if self.pending_terminal.is_some() => {
-                    if let Some((_, _, acc)) = self.pending_terminal.as_mut() {
+                    if let Some((_, _, acc, _)) = self.pending_terminal.as_mut() {
                         merge_trailing_usage(acc, usage);
                     }
                     return;
@@ -1109,12 +1134,13 @@ impl StreamTranslate {
         // had, just deferred to end-of-stream (nothing follows a stop, so ordering is unchanged). The
         // response body feeds this `finish()` output through the json-array framer too, so the terminal
         // frame reaches the client on the gemini-json-array path as well as plain SSE.
-        if let Some((reason, stop_sequence, usage)) = self.pending_terminal.take() {
+        if let Some((reason, stop_sequence, usage, stop_detail)) = self.pending_terminal.take() {
             self.emit_ir_event(
                 &crate::ir::IrStreamEvent::MessageDelta {
                     stop_reason: Some(reason),
                     stop_sequence,
                     usage,
+                    stop_detail,
                 },
                 &mut out,
             );
@@ -1183,11 +1209,16 @@ pub fn response_to_ir_events(ir: &crate::ir::IrResponse) -> Vec<crate::ir::IrStr
     for block in ir.content.iter() {
         match block {
             IrBlock::Text {
-                text, citations, ..
+                text,
+                citations,
+                refusal,
+                ..
             } => {
+                // A refusal message stays a refusal on the synthesized stream (IR-02).
                 events.push(IrStreamEvent::BlockStart {
                     index,
                     block: IrBlockMeta::Text,
+                    refusal: *refusal,
                 });
                 events.push(IrStreamEvent::BlockDelta {
                     index,
@@ -1219,6 +1250,7 @@ pub fn response_to_ir_events(ir: &crate::ir::IrResponse) -> Vec<crate::ir::IrStr
                         id: id.clone(),
                         name: name.clone(),
                     },
+                    refusal: false,
                 });
                 events.push(IrStreamEvent::BlockDelta {
                     index,
@@ -1240,6 +1272,7 @@ pub fn response_to_ir_events(ir: &crate::ir::IrResponse) -> Vec<crate::ir::IrStr
                     } else {
                         IrBlockMeta::Thinking
                     },
+                    refusal: false,
                 });
                 if *redacted {
                     events.push(IrStreamEvent::BlockDelta {
@@ -1283,6 +1316,7 @@ pub fn response_to_ir_events(ir: &crate::ir::IrResponse) -> Vec<crate::ir::IrStr
         stop_reason: Some(ir.stop_reason.unwrap_or(default_stop)),
         stop_sequence: ir.stop_sequence.clone(),
         usage: ir.usage.clone(),
+        stop_detail: ir.stop_detail.clone(),
     });
     events.push(IrStreamEvent::MessageStop);
     events

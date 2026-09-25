@@ -13,6 +13,7 @@ fn resp(reason: IrStopReason) -> IrResponse {
             text: "x".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(reason),
         usage: IrUsage {
@@ -28,6 +29,7 @@ fn resp(reason: IrStopReason) -> IrResponse {
         system_fingerprint: None,
         stop_sequence: None,
         request_echo: None,
+        stop_detail: None,
     }
 }
 

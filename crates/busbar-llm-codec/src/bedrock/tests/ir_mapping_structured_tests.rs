@@ -51,6 +51,7 @@ fn bed06_foreign_reasoning_ask_writes_thinking() {
                 text: "hi".into(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         max_tokens: Some(8192),

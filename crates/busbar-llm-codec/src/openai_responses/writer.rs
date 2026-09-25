@@ -648,7 +648,11 @@ impl ProtocolWriter for ResponsesWriter {
                 )]
             }
 
-            IrStreamEvent::BlockStart { index, block } => match block {
+            IrStreamEvent::BlockStart {
+                index,
+                block,
+                refusal: _,
+            } => match block {
                 crate::ir::IrBlockMeta::Text => {
                     // A native /v1/responses stream brackets a text part inside a `message` output
                     // item: `output_item.added(message)` opens the item, `content_part.added`
@@ -1083,6 +1087,7 @@ impl ProtocolWriter for ResponsesWriter {
                 stop_reason,
                 usage,
                 stop_sequence: _,
+                stop_detail: _,
             } => {
                 // RSP-11: once this stream has written `response.failed` (an upstream `Error` event
                 // — a Cohere `ERROR` / Gemini `MALFORMED_FUNCTION_CALL` reader emits one right

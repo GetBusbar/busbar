@@ -130,6 +130,7 @@ fn anthropic_clamps_and_drops_by_max_tokens() {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         max_tokens: Some(max_tokens),

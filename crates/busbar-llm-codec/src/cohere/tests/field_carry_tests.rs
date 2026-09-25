@@ -445,6 +445,7 @@ fn cohere_stream_events_reach_a_cohere_client() {
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 0,
             block: IrBlockMeta::Text,
+            refusal: false,
         })
         .expect("content-start frame");
     assert_eq!(cs["type"], "content-start", "stream:content-start");
@@ -476,6 +477,7 @@ fn cohere_stream_events_reach_a_cohere_client() {
                 id: "tc1".to_string(),
                 name: "search".to_string(),
             },
+            refusal: false,
         })
         .expect("tool-call-start frame");
     assert_eq!(ts["type"], "tool-call-start", "stream:tool-call-start");
@@ -509,6 +511,7 @@ fn cohere_stream_events_reach_a_cohere_client() {
             stop_reason: None,
             stop_sequence: None,
             usage: stream_usage(),
+            stop_detail: None,
         })
         .expect("message-end frame");
     assert_eq!(me["type"], "message-end", "stream:message-end");

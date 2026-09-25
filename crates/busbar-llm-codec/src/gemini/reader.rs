@@ -325,6 +325,7 @@ impl ProtocolReader for GeminiReader {
                             text: text_val.to_string(),
                             cache_control: None,
                             citations: Vec::new(),
+                            refusal: false,
                         });
                     }
                 }
@@ -407,6 +408,8 @@ impl ProtocolReader for GeminiReader {
                                 signature,
                                 redacted: false,
                                 cache_control: None,
+                                kind: None,
+                                signature_origin: None,
                             });
                         }
                         // Text part
@@ -415,6 +418,7 @@ impl ProtocolReader for GeminiReader {
                                 text: text_val.to_string(),
                                 cache_control: None,
                                 citations: Vec::new(),
+                                refusal: false,
                             });
                         }
                         // FunctionCall (ToolUse)
@@ -492,6 +496,7 @@ impl ProtocolReader for GeminiReader {
                                 text: response_text,
                                 cache_control: None,
                                 citations: Vec::new(),
+                                refusal: false,
                             }];
                             // A multimodal result's attachments ride in `functionResponse.parts`
                             // (GEM-07) — carried into the result's content beside the JSON.
@@ -760,6 +765,16 @@ impl ProtocolReader for GeminiReader {
             n,
             response_format,
             extra,
+            metadata: None,
+            service_tier: None,
+            store: None,
+            safety_identifier: None,
+            prompt_cache_key: None,
+            verbosity: None,
+            allowed_tools: None,
+            hosted_tools: Vec::new(),
+            system_role: None,
+            output_modalities: None,
         })
     }
 
@@ -872,6 +887,7 @@ impl ProtocolReader for GeminiReader {
                     stop_reason: Some(prompt_block_stop_reason(block_reason)),
                     stop_sequence: None,
                     usage,
+                    stop_detail: None,
                 });
                 out.push(IrStreamEvent::MessageStop);
                 return out;
@@ -964,6 +980,7 @@ impl ProtocolReader for GeminiReader {
                                             out.push(IrStreamEvent::BlockStart {
                                                 index: 0,
                                                 block: crate::ir::IrBlockMeta::Thinking,
+                                                refusal: false,
                                             });
                                         }
                                         out.push(IrStreamEvent::BlockDelta {
@@ -1012,6 +1029,7 @@ impl ProtocolReader for GeminiReader {
                                         out.push(IrStreamEvent::BlockStart {
                                             index: ti,
                                             block: crate::ir::IrBlockMeta::Text,
+                                            refusal: false,
                                         });
                                     }
                                     out.push(IrStreamEvent::BlockDelta {
@@ -1130,6 +1148,7 @@ impl ProtocolReader for GeminiReader {
                                             id,
                                             name: name_val.clone(),
                                         },
+                                        refusal: false,
                                     });
 
                                     // NOTE: `IrBlockMeta::ToolUse` deliberately has no
@@ -1213,6 +1232,7 @@ impl ProtocolReader for GeminiReader {
                     out.push(IrStreamEvent::BlockStart {
                         index: ti,
                         block: crate::ir::IrBlockMeta::Text,
+                        refusal: false,
                     });
                 }
                 out.push(IrStreamEvent::BlockDelta {
@@ -1252,6 +1272,7 @@ impl ProtocolReader for GeminiReader {
                     out.push(IrStreamEvent::BlockStart {
                         index: ti,
                         block: crate::ir::IrBlockMeta::Text,
+                        refusal: false,
                     });
                 }
                 out.push(IrStreamEvent::BlockDelta {
@@ -1336,6 +1357,7 @@ impl ProtocolReader for GeminiReader {
                     // Gemini has no stop_sequence analog in its stream.
                     stop_sequence: None,
                     usage,
+                    stop_detail: None,
                 });
                 out.push(IrStreamEvent::MessageStop);
             }
@@ -1385,6 +1407,7 @@ impl ProtocolReader for GeminiReader {
                     stop_sequence: None,
 
                     request_echo: None,
+                    stop_detail: None,
                 });
             }
         }
@@ -1470,6 +1493,8 @@ impl ProtocolReader for GeminiReader {
                         signature,
                         redacted: false,
                         cache_control: None,
+                        kind: None,
+                        signature_origin: None,
                     });
                 }
                 // Text part → IrBlock::Text
@@ -1479,6 +1504,7 @@ impl ProtocolReader for GeminiReader {
                             text: text.to_string(),
                             cache_control: None,
                             citations: Vec::new(),
+                            refusal: false,
                         });
                     }
                 }
@@ -1638,6 +1664,7 @@ impl ProtocolReader for GeminiReader {
             stop_sequence: None,
 
             request_echo: None,
+            stop_detail: None,
         })
     }
 

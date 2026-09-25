@@ -366,6 +366,7 @@ fn gem16_streamed_citation_offsets_are_bytes_for_a_gemini_client() {
     let _ = writer.write_response_event(&IrStreamEvent::BlockStart {
         index: 0,
         block: crate::ir::IrBlockMeta::Text,
+        refusal: false,
     });
     let _ = writer.write_response_event(&IrStreamEvent::BlockDelta {
         index: 0,
@@ -547,6 +548,7 @@ fn gem08_call_ids_reach_gemini() {
             id: "call_9".to_string(),
             name: "f".to_string(),
         },
+        refusal: false,
     });
     let (_, frame) = writer
         .write_response_event(&IrStreamEvent::BlockStop { index: 0 })
@@ -587,6 +589,7 @@ fn gem13_reasoning_tokens_are_thoughts_for_a_gemini_client() {
                     ..Default::default()
                 },
             },
+            stop_detail: None,
         })
         .expect("terminal frame");
     let um = &frame["usageMetadata"];

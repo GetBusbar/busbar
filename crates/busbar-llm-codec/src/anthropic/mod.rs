@@ -995,6 +995,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
                 text,
                 cache_control,
                 citations,
+                refusal: false,
             })
         }
         "thinking" => {
@@ -1012,6 +1013,8 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
                 signature,
                 redacted: false,
                 cache_control,
+                kind: None,
+                signature_origin: None,
             })
         }
         STOP_TOOL_USE => {
@@ -1061,6 +1064,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
                     text: content_val.as_str().unwrap_or("").to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }]
             };
             let is_error = obj
@@ -1107,6 +1111,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
                             value: source.clone(),
                         },
                         cache_control,
+                        detail: None,
                     });
                 }
                 if src_type == Some("url") {
@@ -1118,6 +1123,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
                     return Ok(crate::ir::IrBlock::Image {
                         source: crate::ir::IrImageSource::Url(url),
                         cache_control,
+                        detail: None,
                     });
                 }
                 let media_type = src_obj
@@ -1133,6 +1139,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
                 Ok(crate::ir::IrBlock::Image {
                     source: crate::ir::IrImageSource::Base64 { media_type, data },
                     cache_control,
+                    detail: None,
                 })
             } else {
                 Err(IrError {
@@ -1172,6 +1179,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
                     text: String::new(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 });
             };
             let cache_control = read_cache_control(obj.get("cache_control"))?;
@@ -1245,6 +1253,8 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
                 source: ir_source,
                 name,
                 cache_control,
+                citations: None,
+                context: None,
             })
         }
         // A native `search_result` block — the RAG grounding payload a caller supplies so the model
@@ -1328,6 +1338,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
                 text,
                 cache_control,
                 citations,
+                refusal: false,
             })
         }
         // A native `redacted_thinking` block carries opaque `data` bytes (Anthropic's encrypted
@@ -1351,6 +1362,8 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
                 signature: None,
                 redacted: true,
                 cache_control,
+                kind: None,
+                signature_origin: None,
             })
         }
         // Forward-compatibility: a valid native Anthropic content-block type the IR does not model
@@ -1372,6 +1385,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
                 text: String::new(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             })
         }
     }
@@ -1417,6 +1431,7 @@ fn read_message(msg_val: &serde_json::Value) -> Result<crate::ir::IrMessage, IrE
             text: content_val.as_str().unwrap_or("").to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }]
     };
 
@@ -1758,6 +1773,7 @@ fn write_block(block: &crate::ir::IrBlock) -> serde_json::Value {
             text,
             cache_control,
             citations,
+            refusal: _,
         } => {
             let mut obj = serde_json::Map::new();
             obj.insert("type".to_string(), serde_json::json!("text"));
@@ -1801,6 +1817,8 @@ fn write_block(block: &crate::ir::IrBlock) -> serde_json::Value {
             signature,
             redacted: false,
             cache_control,
+            kind: _,
+            signature_origin: _,
         } => {
             let mut obj = serde_json::Map::new();
             obj.insert("type".to_string(), serde_json::json!("thinking"));
@@ -1885,6 +1903,7 @@ fn write_block(block: &crate::ir::IrBlock) -> serde_json::Value {
         crate::ir::IrBlock::Image {
             source,
             cache_control,
+            detail: _,
         } => {
             // Anthropic's Messages API has both a native URL image source and a base64 source.
             // S3/FileId references have no Anthropic projection and are FILTERED before write_block
@@ -1944,6 +1963,8 @@ fn write_block(block: &crate::ir::IrBlock) -> serde_json::Value {
             source,
             name,
             cache_control,
+            citations: _,
+            context: _,
         } => {
             // Anthropic has exactly ONE attachment block — `document` — and no audio or video block
             // at all. So a Document projects natively (this is the slot an OpenAI `file` part or a

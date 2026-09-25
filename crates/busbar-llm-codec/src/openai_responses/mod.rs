@@ -678,6 +678,7 @@ fn push_system_content(
                 text: text.to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             });
         }
     };
@@ -708,6 +709,7 @@ fn message_content_blocks(content: Option<&serde_json::Value>) -> Option<Vec<cra
             text: s.clone(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }]),
         Some(serde_json::Value::Array(arr)) => {
             Some(arr.iter().filter_map(|b| responses_block(b).ok()).collect())
@@ -910,6 +912,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
                 text,
                 cache_control: None,
                 citations,
+                refusal: false,
             })
         }
         "input_image" => {
@@ -964,6 +967,8 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
                 source,
                 name,
                 cache_control: None,
+                citations: None,
+                context: None,
             })
         }
         // RSP-09: an assistant-history `refusal` part (`{"type":"refusal","refusal":"..."}`) is the
@@ -979,6 +984,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
                 .to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }),
         // RSP-09: a user `input_audio` part (`{"type":"input_audio","input_audio":{"data":"<b64>",
         // "format":"wav"|"mp3"}}`) is the same part Chat Completions carries, read the same way
@@ -1007,6 +1013,8 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
                 },
                 name: None,
                 cache_control: None,
+                citations: None,
+                context: None,
             })
         }
         // Forward-compatibility: a valid native Responses content-block type the IR does not model
@@ -1027,6 +1035,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
                 text: String::new(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             })
         }
     }
@@ -1061,6 +1070,7 @@ fn responses_input_image_block(item: &serde_json::Value) -> Option<crate::ir::Ir
         return Some(crate::ir::IrBlock::Image {
             source: super::ir_encode::parse_image_url(url),
             cache_control: None,
+            detail: None,
         });
     }
     if let Some(file_id) = item
@@ -1074,6 +1084,7 @@ fn responses_input_image_block(item: &serde_json::Value) -> Option<crate::ir::Ir
                 value: serde_json::json!({ "file_id": file_id }),
             },
             cache_control: None,
+            detail: None,
         });
     }
     None

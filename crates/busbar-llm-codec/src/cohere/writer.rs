@@ -615,7 +615,11 @@ impl ProtocolWriter for CohereWriter {
                 ))
             }
 
-            IrStreamEvent::BlockStart { index, block } => match block {
+            IrStreamEvent::BlockStart {
+                index,
+                block,
+                refusal: _,
+            } => match block {
                 crate::ir::IrBlockMeta::Text => {
                     // Record the open text index so its matching `BlockStop` emits `content-end`. A
                     // cross-protocol block that carries NO opening frame (redacted thinking / Image, below)
@@ -815,6 +819,7 @@ impl ProtocolWriter for CohereWriter {
                 stop_reason,
                 usage,
                 stop_sequence: _,
+                stop_detail: _,
             } => {
                 let cohere_finish_reason = stop_reason
                     .map(write_cohere_stop_reason)

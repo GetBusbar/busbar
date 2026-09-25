@@ -836,7 +836,11 @@ impl ProtocolWriter for GeminiWriter {
             // its accumulator; a NEW index appends a fresh entry so parallel tool blocks (whose
             // BlockStarts are not strictly interleaved with their BlockStops) never clobber each
             // other. Text blocks have no Gemini block-start frame (inline parts) → None.
-            IrStreamEvent::BlockStart { index, block } => match block {
+            IrStreamEvent::BlockStart {
+                index,
+                block,
+                refusal: _,
+            } => match block {
                 crate::ir::IrBlockMeta::ToolUse { id, name } => {
                     if let Ok(mut guard) = self.open_tools.lock() {
                         let open_count = guard.len();
@@ -1117,6 +1121,7 @@ impl ProtocolWriter for GeminiWriter {
                 stop_reason,
                 usage,
                 stop_sequence: _,
+                stop_detail: _,
             } => {
                 let finish_reason = stop_reason
                     .map(write_gemini_stop_reason)

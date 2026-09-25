@@ -312,7 +312,8 @@ fn test_openai_streaming_reasoning_blocks() {
             e,
             IrStreamEvent::BlockStart {
                 index: 0,
-                block: IrBlockMeta::Thinking
+                block: IrBlockMeta::Thinking,
+                refusal: _,
             }
         )
     });
@@ -325,7 +326,8 @@ fn test_openai_streaming_reasoning_blocks() {
             e,
             IrStreamEvent::BlockStart {
                 index: 1,
-                block: IrBlockMeta::Text
+                block: IrBlockMeta::Text,
+                refusal: _,
             }
         )
     });
@@ -369,7 +371,8 @@ fn test_openai_streaming_no_reasoning_text_index_zero() {
             e,
             IrStreamEvent::BlockStart {
                 index: 0,
-                block: IrBlockMeta::Text
+                block: IrBlockMeta::Text,
+                refusal: _,
             }
         )),
         "without reasoning, text stays at index 0"
@@ -530,6 +533,7 @@ fn test_cache_control_preserved() {
         text: _,
         cache_control,
         citations: _,
+        refusal: _,
     } = &ir.system[0]
     else {
         panic!(
@@ -1051,6 +1055,7 @@ fn test_split_usage_never_collapses() {
             cache_read_input_tokens: Some(200),
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     });
     assert!(roundtrip.is_some());
     let (_, rt_data) = roundtrip.unwrap();
@@ -1411,6 +1416,7 @@ fn string_args_writers_emit_raw_tool_args_verbatim() {
         logprobs: Vec::new(),
 
         request_echo: None,
+        stop_detail: None,
     };
 
     // Responses: output[].arguments (bind the const to a local before borrowing — the writer holds
@@ -1586,6 +1592,7 @@ mod ir_property_tests {
             ref text,
             ref cache_control,
             ref citations,
+            refusal: _,
         } = ir.system[0]
         {
             assert_eq!(text, "You are a helpful assistant.");
@@ -2449,6 +2456,7 @@ mod ir_property_tests {
                 cache_read_input_tokens: None,
                 detail: crate::ir::IrUsageDetail::default(),
             },
+            stop_detail: None,
         };
         let result1 = writer.write_response_event(&ev1);
         assert!(result1.is_some());
@@ -2470,6 +2478,7 @@ mod ir_property_tests {
                 cache_read_input_tokens: None,
                 detail: crate::ir::IrUsageDetail::default(),
             },
+            stop_detail: None,
         };
         let result2 = writer.write_response_event(&ev2);
         assert!(result2.is_some());
@@ -2491,6 +2500,7 @@ mod ir_property_tests {
                 cache_read_input_tokens: None,
                 detail: crate::ir::IrUsageDetail::default(),
             },
+            stop_detail: None,
         };
         let result3 = writer.write_response_event(&ev3);
         assert!(result3.is_some());

@@ -16,6 +16,7 @@ fn image_url_req(uri: &str) -> crate::ir::IrRequest {
             content: vec![crate::ir::IrBlock::Image {
                 source: crate::ir::IrImageSource::Url(uri.to_string()),
                 cache_control: None,
+                detail: None,
             }],
         }],
         ..Default::default()

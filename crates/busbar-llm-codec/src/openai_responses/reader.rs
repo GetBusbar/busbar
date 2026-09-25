@@ -165,6 +165,7 @@ impl ProtocolReader for ResponsesReader {
                     text: instructions.to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 });
             }
         }
@@ -194,6 +195,7 @@ impl ProtocolReader for ResponsesReader {
                         text,
                         cache_control: None,
                         citations: Vec::new(),
+                        refusal: false,
                     }],
                 });
             } else if let Some(arr) = input_val.as_array() {
@@ -211,6 +213,7 @@ impl ProtocolReader for ResponsesReader {
                                     text,
                                     cache_control: None,
                                     citations: Vec::new(),
+                                    refusal: false,
                                 }],
                             });
                         }
@@ -249,6 +252,7 @@ impl ProtocolReader for ResponsesReader {
                                     text,
                                     cache_control: None,
                                     citations,
+                                    refusal: false,
                                 }],
                             });
                         }
@@ -304,6 +308,7 @@ impl ProtocolReader for ResponsesReader {
                                         text: out_str.clone(),
                                         cache_control: None,
                                         citations: Vec::new(),
+                                        refusal: false,
                                     }]
                                 }
                                 _ => output_val
@@ -439,6 +444,8 @@ impl ProtocolReader for ResponsesReader {
                                         signature,
                                         redacted: false,
                                         cache_control: None,
+                                        kind: None,
+                                        signature_origin: None,
                                     }],
                                 });
                             }
@@ -728,6 +735,16 @@ impl ProtocolReader for ResponsesReader {
             n: None,
             response_format,
             extra,
+            metadata: None,
+            service_tier: None,
+            store: None,
+            safety_identifier: None,
+            prompt_cache_key: None,
+            verbosity: None,
+            allowed_tools: None,
+            hosted_tools: Vec::new(),
+            system_role: None,
+            output_modalities: None,
         })
     }
 
@@ -839,6 +856,7 @@ impl ProtocolReader for ResponsesReader {
                                 out.push(IrStreamEvent::BlockStart {
                                     index: idx,
                                     block: crate::ir::IrBlockMeta::ToolUse { id: call_id, name },
+                                    refusal: false,
                                 });
                             }
                         }
@@ -864,6 +882,7 @@ impl ProtocolReader for ResponsesReader {
                                 out.push(IrStreamEvent::BlockStart {
                                     index: idx,
                                     block: crate::ir::IrBlockMeta::Thinking,
+                                    refusal: false,
                                 });
                             }
                         }
@@ -907,6 +926,7 @@ impl ProtocolReader for ResponsesReader {
                         out.push(IrStreamEvent::BlockStart {
                             index: idx,
                             block: crate::ir::IrBlockMeta::Thinking,
+                            refusal: false,
                         });
                     }
                     out.push(IrStreamEvent::BlockDelta {
@@ -981,6 +1001,7 @@ impl ProtocolReader for ResponsesReader {
                         out.push(IrStreamEvent::BlockStart {
                             index: idx,
                             block: crate::ir::IrBlockMeta::Text,
+                            refusal: false,
                         });
                     }
                     out.push(IrStreamEvent::BlockDelta {
@@ -1280,6 +1301,7 @@ impl ProtocolReader for ResponsesReader {
                                     out.push(IrStreamEvent::BlockStart {
                                         index: idx,
                                         block: crate::ir::IrBlockMeta::Text,
+                                        refusal: false,
                                     });
                                     out.push(IrStreamEvent::BlockDelta {
                                         index: idx,
@@ -1367,6 +1389,7 @@ impl ProtocolReader for ResponsesReader {
                         // Responses API has no stop_sequence analog in its stream.
                         stop_sequence: None,
                         usage,
+                        stop_detail: None,
                     });
                     out.push(IrStreamEvent::MessageStop);
                 } else if event_type == EVT_RESPONSE_FAILED {
@@ -1420,6 +1443,7 @@ impl ProtocolReader for ResponsesReader {
                         stop_reason,
                         stop_sequence: None,
                         usage,
+                        stop_detail: None,
                     });
                     out.push(IrStreamEvent::MessageStop);
                 }
@@ -1562,6 +1586,7 @@ impl ProtocolReader for ResponsesReader {
                                             text: text.to_string(),
                                             cache_control: None,
                                             citations,
+                                            refusal: false,
                                         });
                                     }
                                 } else if block_type == "refusal" {
@@ -1580,6 +1605,7 @@ impl ProtocolReader for ResponsesReader {
                                             text: text.to_string(),
                                             cache_control: None,
                                             citations: Vec::new(),
+                                            refusal: false,
                                         });
                                     }
                                 }
@@ -1653,6 +1679,8 @@ impl ProtocolReader for ResponsesReader {
                                 signature,
                                 redacted: false,
                                 cache_control: None,
+                                kind: None,
+                                signature_origin: None,
                             });
                         }
                     }
@@ -1840,6 +1868,7 @@ impl ProtocolReader for ResponsesReader {
             stop_sequence: None,
 
             request_echo: None,
+            stop_detail: None,
         })
     }
 

@@ -101,6 +101,7 @@ fn write_request_drops_top_k_with_warn() {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         tools: vec![],
@@ -117,6 +118,16 @@ fn write_request_drops_top_k_with_warn() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
 
     let writer = ResponsesWriter;
@@ -147,6 +158,7 @@ fn test_write_request() {
             text: "You are helpful.".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         system_turns_folded: 0,
         messages: vec![
@@ -156,6 +168,7 @@ fn test_write_request() {
                     text: "hi".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
             },
             crate::ir::IrMessage {
@@ -176,6 +189,7 @@ fn test_write_request() {
                         text: "sunny".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
+                        refusal: false,
                     }],
                     is_error: false,
                     cache_control: None,
@@ -209,6 +223,16 @@ fn test_write_request() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
 
     let writer = ResponsesWriter;
@@ -405,6 +429,7 @@ fn test_roundtrip_identity() {
             text: "You are helpful.".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         system_turns_folded: 0,
         messages: vec![
@@ -414,6 +439,7 @@ fn test_roundtrip_identity() {
                     text: "Hello!".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
             },
             crate::ir::IrMessage {
@@ -422,6 +448,7 @@ fn test_roundtrip_identity() {
                     text: "Hi there!".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
             },
         ],
@@ -439,6 +466,16 @@ fn test_roundtrip_identity() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
 
     let reader = ResponsesReader;
@@ -662,6 +699,7 @@ fn test_write_response_function_call_item_has_native_id() {
         system_fingerprint: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let writer = ResponsesWriter;
     let out = writer.write_response(&resp);
@@ -795,6 +833,7 @@ fn test_write_response_preserves_text_after_tool_order() {
                 text: "Here is the weather.".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             },
         ],
         stop_reason: Some(crate::ir::IrStopReason::ToolUse),
@@ -809,6 +848,7 @@ fn test_write_response_preserves_text_after_tool_order() {
         system_fingerprint: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let writer = ResponsesWriter;
     let out = writer.write_response(&resp);
@@ -974,6 +1014,7 @@ fn test_cross_protocol_write_synthesizes_valid_id() {
             text: "answer".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: crate::ir::IrUsage {
@@ -990,6 +1031,7 @@ fn test_cross_protocol_write_synthesizes_valid_id() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
 
     let out1 = writer.write_response(&make_ir());
@@ -1196,6 +1238,7 @@ fn test_write_response_event_blockdelta() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let (etype2, payload2) = writer.write_response_event(&ev2).expect("should emit");
     assert_eq!(etype2, "response.completed"); // golden wire-contract literal (kept bare on purpose)
@@ -1673,6 +1716,16 @@ fn test_tool_only_assistant_turn_no_empty_message_wrapper() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let writer = ResponsesWriter;
     let json = writer.write_request(&ir);
@@ -1723,6 +1776,7 @@ fn test_assistant_text_then_tool_call_order() {
                     text: "Let me check.".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 },
                 crate::ir::IrBlock::ToolUse {
                     thought_signature: None,
@@ -1747,6 +1801,16 @@ fn test_assistant_text_then_tool_call_order() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let writer = ResponsesWriter;
     let json = writer.write_request(&ir);
@@ -2023,6 +2087,7 @@ fn write_request_tool_result_multi_text_concatenates_without_separator() {
             text: s.to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }
     }
     let writer = ResponsesWriter;
@@ -2061,6 +2126,16 @@ fn write_request_tool_result_multi_text_concatenates_without_separator() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = writer.write_request(&req);
     let item = out["input"]
@@ -2101,6 +2176,16 @@ fn write_request_tool_result_multi_text_concatenates_without_separator() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = writer.write_request(&req);
     let item = out["input"]
@@ -2168,6 +2253,7 @@ fn test_unknown_stop_reason_maps_to_completed() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let (etype, payload) = writer.write_response_event(&ev).expect("should emit");
     assert_eq!(etype, "response.completed"); // golden wire-contract literal (kept bare on purpose)
@@ -2188,6 +2274,7 @@ fn test_unknown_stop_reason_maps_to_completed() {
             text: "ok".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::Refusal),
         usage: crate::ir::IrUsage {
@@ -2204,6 +2291,7 @@ fn test_unknown_stop_reason_maps_to_completed() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = writer.write_response(&resp);
     assert_eq!(
@@ -2328,6 +2416,7 @@ fn test_input_image_roundtrip_lossless() {
                     data: payload.to_string(),
                 },
                 cache_control: None,
+                detail: None,
             }],
         }],
         tools: Vec::new(),
@@ -2344,6 +2433,16 @@ fn test_input_image_roundtrip_lossless() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let writer = ResponsesWriter;
     let reader = ResponsesReader;
@@ -2403,6 +2502,7 @@ fn test_input_image_https_url_sentinel_roundtrip() {
             content: vec![crate::ir::IrBlock::Image {
                 source: crate::ir::IrImageSource::Url(stored_url),
                 cache_control: None,
+                detail: None,
             }],
         }],
         tools: Vec::new(),
@@ -2419,6 +2519,16 @@ fn test_input_image_https_url_sentinel_roundtrip() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let writer = ResponsesWriter;
     let json = writer.write_request(&ir);
@@ -2447,6 +2557,7 @@ fn test_write_request_emits_stream() {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         tools: Vec::new(),
@@ -2463,6 +2574,16 @@ fn test_write_request_emits_stream() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let writer = ResponsesWriter;
     assert_eq!(
@@ -2940,6 +3061,7 @@ fn test_every_stream_event_carries_top_level_type() {
                 id: "fc_1".to_string(),
                 name: "f".to_string(),
             },
+            refusal: false,
         },
         IrStreamEvent::BlockDelta {
             index: 0,
@@ -2954,6 +3076,7 @@ fn test_every_stream_event_carries_top_level_type() {
             stop_reason: Some(crate::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage(),
+            stop_detail: None,
         },
         IrStreamEvent::Error(IrError {
             class: StatusClass::ServerError,
@@ -3015,6 +3138,7 @@ fn test_sequence_number_monotonic_from_zero() {
             stop_reason: Some(crate::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage_fixture(),
+            stop_detail: None,
         },
     ];
 
@@ -3101,6 +3225,7 @@ fn test_every_stream_event_carries_sequence_number() {
                 id: "call_1".to_string(),
                 name: "f".to_string(),
             },
+            refusal: false,
         },
         IrStreamEvent::BlockDelta {
             index: 0,
@@ -3115,6 +3240,7 @@ fn test_every_stream_event_carries_sequence_number() {
             stop_reason: Some(crate::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage_fixture(),
+            stop_detail: None,
         },
         IrStreamEvent::Error(IrError {
             class: StatusClass::ServerError,
@@ -3173,6 +3299,7 @@ fn test_delta_and_item_added_carry_item_id_and_content_index() {
                 id: "call_9".to_string(),
                 name: "lookup".to_string(),
             },
+            refusal: false,
         })
         .expect("emit");
     let added_item = added
@@ -3272,6 +3399,7 @@ fn test_output_item_done_carries_matching_item_id_and_item() {
                 id: "call_x".to_string(),
                 name: "f".to_string(),
             },
+            refusal: false,
         })
         .expect("added emits");
     let added_id = added
@@ -3435,6 +3563,7 @@ fn test_text_block_emits_message_item_lifecycle() {
     let added_frames = writer.write_response_events(&IrStreamEvent::BlockStart {
         index: 0,
         block: crate::ir::IrBlockMeta::Text,
+        refusal: false,
     });
     let added_types: Vec<&str> = added_frames.iter().map(|(et, _)| et.as_str()).collect();
     assert_eq!(
@@ -3526,12 +3655,14 @@ fn test_tool_and_text_block_stop_emit_correctly_typed_done() {
                 id: "call_1".to_string(),
                 name: "f".to_string(),
             },
+            refusal: false,
         })
         .expect("tool added emits");
     let _ = writer
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 1,
             block: crate::ir::IrBlockMeta::Text,
+            refusal: false,
         })
         .expect("text added emits");
     let _ = writer.write_response_event(&IrStreamEvent::BlockDelta {
@@ -3583,6 +3714,7 @@ fn test_completed_event_carries_id_and_created_at() {
             stop_reason: Some(crate::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage_fixture(),
+            stop_detail: None,
         })
         .expect("emit");
     assert_eq!(etype, "response.completed"); // golden wire-contract literal (kept bare on purpose)
@@ -3770,6 +3902,7 @@ fn test_terminal_id_matches_created_id_cross_protocol() {
             stop_reason: Some(crate::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage_fixture(),
+            stop_detail: None,
         })
         .expect("MessageDelta emits terminal");
     assert_eq!(etype, "response.completed"); // golden wire-contract literal (kept bare on purpose)
@@ -3833,6 +3966,7 @@ fn test_terminal_id_matches_forwarded_created_id() {
             stop_reason: Some(crate::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage_fixture(),
+            stop_detail: None,
         })
         .expect("emit");
     assert_eq!(
@@ -3880,6 +4014,7 @@ fn test_carried_id_resets_per_stream() {
             stop_reason: Some(crate::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage_fixture(),
+            stop_detail: None,
         })
         .expect("emit");
     assert_eq!(
@@ -3972,6 +4107,7 @@ fn test_writer_open_text_indices_capped() {
             .write_response_event(&IrStreamEvent::BlockStart {
                 index: i,
                 block: crate::ir::IrBlockMeta::Text,
+                refusal: false,
             })
             .is_some()
         {
@@ -4040,6 +4176,7 @@ fn test_writer_refused_tool_open_emits_no_output_item_added() {
                     id: format!("call_{i}"),
                     name: "f".to_string(),
                 },
+                refusal: false,
             })
             .is_some()
         {
@@ -4183,6 +4320,7 @@ fn test_terminal_incomplete_emits_response_incomplete_for_max_tokens() {
             stop_reason: Some(crate::ir::IrStopReason::MaxTokens),
             stop_sequence: None,
             usage: usage_fixture(),
+            stop_detail: None,
         })
         .expect("MessageDelta emits a terminal event");
     assert_eq!(
@@ -4224,6 +4362,7 @@ fn test_terminal_incomplete_emits_response_incomplete_for_safety() {
             stop_reason: Some(crate::ir::IrStopReason::Safety),
             stop_sequence: None,
             usage: usage_fixture(),
+            stop_detail: None,
         })
         .expect("MessageDelta emits a terminal event");
     assert_eq!(etype, "response.incomplete"); // golden wire-contract literal (kept bare on purpose)
@@ -4255,6 +4394,7 @@ fn test_terminal_completed_unchanged_for_end_turn() {
             stop_reason: Some(crate::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage_fixture(),
+            stop_detail: None,
         })
         .expect("terminal");
     assert_eq!(etype, "response.completed"); // golden wire-contract literal (kept bare on purpose)
@@ -4406,6 +4546,7 @@ fn test_streamed_text_item_shares_one_item_id() {
     let added_frames = writer.write_response_events(&IrStreamEvent::BlockStart {
         index: 0,
         block: crate::ir::IrBlockMeta::Text,
+        refusal: false,
     });
     // output_item.added THEN content_part.added, both carrying the msg_… id.
     let added_id = added_frames[0].1["item_id"].as_str().unwrap().to_string();
@@ -4590,6 +4731,7 @@ fn test_created_at_is_constant_across_stream_events() {
             stop_reason: Some(crate::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage_fixture(),
+            stop_detail: None,
         })
         .expect("terminal event");
     assert_eq!(
@@ -4688,6 +4830,7 @@ fn test_function_call_done_carries_finalized_item() {
                 id: "call_abc".to_string(),
                 name: "get_weather".to_string(),
             },
+            refusal: false,
         })
         .expect("output_item.added should emit");
     assert_eq!(added.0, "response.output_item.added"); // golden wire-contract literal (kept bare on purpose)
@@ -4864,6 +5007,7 @@ fn test_write_response_emits_model_fallback() {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: crate::ir::IrUsage {
@@ -4880,6 +5024,7 @@ fn test_write_response_emits_model_fallback() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
 
     // Cross-protocol: no model in the IR → DEFAULT_MODEL, never an absent key.
@@ -4937,6 +5082,7 @@ fn test_stream_terminal_events_carry_model_fallback() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let (ename, completed) = writer.write_response_event(&delta).expect("terminal event");
     assert_eq!(ename, "response.completed"); // golden wire-contract literal (kept bare on purpose)
@@ -4992,6 +5138,7 @@ fn test_write_response_emits_error_null_for_completed_and_incomplete() {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(stop),
         usage: usage_fixture(),
@@ -5002,6 +5149,7 @@ fn test_write_response_emits_error_null_for_completed_and_incomplete() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let writer = ResponsesWriter;
 
@@ -5228,6 +5376,7 @@ fn test_stream_terminal_events_carry_output_and_error() {
             stop_reason: Some(crate::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage_fixture(),
+            stop_detail: None,
         })
         .expect("terminal event");
     assert!(
@@ -5253,6 +5402,7 @@ fn test_stream_terminal_events_carry_output_and_error() {
             stop_reason: Some(crate::ir::IrStopReason::MaxTokens),
             stop_sequence: None,
             usage: usage_fixture(),
+            stop_detail: None,
         })
         .expect("terminal event");
     assert!(
@@ -5313,6 +5463,7 @@ fn test_terminal_output_assembles_streamed_text_and_tool_items() {
     let _ = writer.write_response_event(&IrStreamEvent::BlockStart {
         index: 0,
         block: crate::ir::IrBlockMeta::Text,
+        refusal: false,
     });
     let _ = writer.write_response_event(&IrStreamEvent::BlockDelta {
         index: 0,
@@ -5331,6 +5482,7 @@ fn test_terminal_output_assembles_streamed_text_and_tool_items() {
             id: "call_abc".to_string(),
             name: "get_weather".to_string(),
         },
+        refusal: false,
     });
     let _ = writer.write_response_event(&IrStreamEvent::BlockDelta {
         index: 1,
@@ -5348,6 +5500,7 @@ fn test_terminal_output_assembles_streamed_text_and_tool_items() {
             stop_reason: Some(crate::ir::IrStopReason::ToolUse),
             stop_sequence: None,
             usage: usage_fixture(),
+            stop_detail: None,
         })
         .expect("terminal event");
     assert_eq!(ename, "response.completed"); // golden wire-contract literal (kept bare on purpose)
@@ -5401,6 +5554,7 @@ fn test_terminal_output_empty_when_no_blocks_streamed() {
             stop_reason: Some(crate::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage_fixture(),
+            stop_detail: None,
         })
         .expect("terminal event");
     let output = completed["response"]["output"]
@@ -5694,6 +5848,16 @@ fn empty_ir_request() -> crate::ir::IrRequest {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     }
 }
 
@@ -5846,6 +6010,8 @@ fn user_role_thinking_is_not_emitted_as_a_reasoning_item() {
                 signature: None,
                 redacted: false,
                 cache_control: None,
+                kind: None,
+                signature_origin: None,
             }],
         }],
         ..Default::default()
@@ -5928,6 +6094,7 @@ fn test_stop_not_emitted_on_responses() {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
     });
     req.stop = vec!["STOP".to_string(), "END".to_string()];
@@ -5954,6 +6121,7 @@ fn test_unsupported_sampling_params_omitted() {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
     });
     req.frequency_penalty = Some(0.5);
@@ -6103,7 +6271,8 @@ fn test_streaming_reasoning_round_trip() {
             e,
             crate::ir::IrStreamEvent::BlockStart {
                 index: 0,
-                block: crate::ir::IrBlockMeta::Thinking
+                block: crate::ir::IrBlockMeta::Thinking,
+                refusal: _,
             }
         )),
         "reasoning item.added opens a Thinking block at index 0: {added:?}"
@@ -6132,6 +6301,7 @@ fn test_streaming_reasoning_round_trip() {
         .write_response_event(&crate::ir::IrStreamEvent::BlockStart {
             index: 0,
             block: crate::ir::IrBlockMeta::Thinking,
+            refusal: false,
         })
         .expect("Thinking BlockStart emits a frame");
     assert_eq!(etype, "response.output_item.added"); // golden wire-contract literal (kept bare on purpose)
@@ -6208,6 +6378,7 @@ fn test_streaming_cached_tokens_round_trip() {
                 cache_read_input_tokens: Some(32),
                 detail: crate::ir::IrUsageDetail::default(),
             },
+            stop_detail: None,
         })
         .expect("MessageDelta emits a terminal frame");
     assert_eq!(
@@ -6262,6 +6433,7 @@ fn write_response_reconstructs_input_tokens_total_with_cached_details() {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: crate::ir::IrUsage {
@@ -6278,6 +6450,7 @@ fn write_response_reconstructs_input_tokens_total_with_cached_details() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let writer = ResponsesWriter;
     let out = writer.write_response(&resp);
@@ -6761,6 +6934,7 @@ fn responses_spec_required_members_present_on_every_response_shape() {
             text: "hi".into(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: usage_fixture(),
@@ -6772,6 +6946,7 @@ fn responses_spec_required_members_present_on_every_response_shape() {
         logprobs: Vec::new(),
 
         request_echo: None,
+        stop_detail: None,
     });
     assert_required(&body, "non-stream body");
     assert_eq!(body["incomplete_details"], serde_json::Value::Null);
@@ -6790,6 +6965,7 @@ fn responses_spec_required_members_present_on_every_response_shape() {
         logprobs: Vec::new(),
 
         request_echo: None,
+        stop_detail: None,
     });
     assert_required(&truncated, "non-stream incomplete body");
     assert_eq!(
@@ -6813,6 +6989,7 @@ fn responses_spec_required_members_present_on_every_response_shape() {
     let opened = writer.write_response_events(&IrStreamEvent::BlockStart {
         index: 0,
         block: crate::ir::IrBlockMeta::Text,
+        refusal: false,
     });
     assert_eq!(opened[1].0, "response.content_part.added");
     assert_eq!(opened[1].1["part"]["logprobs"], serde_json::json!([]));
@@ -6839,6 +7016,7 @@ fn responses_spec_required_members_present_on_every_response_shape() {
             stop_reason: Some(crate::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage_fixture(),
+            stop_detail: None,
         })
         .expect("completed");
     assert_required(&completed.1["response"], "response.completed");
@@ -6871,6 +7049,7 @@ fn responses_stream_logprobs_ride_text_done_and_finalized_part() {
     writer.write_response_events(&IrStreamEvent::BlockStart {
         index: 0,
         block: crate::ir::IrBlockMeta::Text,
+        refusal: false,
     });
     writer.write_response_events(&IrStreamEvent::BlockDelta {
         index: 0,
@@ -6985,6 +7164,7 @@ fn write_response_emits_url_citations_without_inventing_fields() {
                     None,
                 ),
             ],
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         stop_sequence: None,
@@ -6998,6 +7178,7 @@ fn write_response_emits_url_citations_without_inventing_fields() {
         system_fingerprint: None,
 
         request_echo: None,
+        stop_detail: None,
     };
 
     let writer = ResponsesWriter;
@@ -7034,6 +7215,7 @@ fn streamed_citations_reach_the_assembled_output_item() {
     let _ = ev(crate::ir::IrStreamEvent::BlockStart {
         index: 0,
         block: crate::ir::IrBlockMeta::Text,
+        refusal: false,
     });
     let _ = ev(crate::ir::IrStreamEvent::BlockDelta {
         index: 0,
@@ -7117,6 +7299,7 @@ fn cross_protocol_egress_into_responses_emits_content_part_bracket() {
         IrStreamEvent::BlockStart {
             index: 0,
             block: crate::ir::IrBlockMeta::Text,
+            refusal: false,
         },
         IrStreamEvent::BlockDelta {
             index: 0,
@@ -7131,6 +7314,7 @@ fn cross_protocol_egress_into_responses_emits_content_part_bracket() {
             stop_reason: Some(crate::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage_fixture(),
+            stop_detail: None,
         },
     ];
 
@@ -7652,6 +7836,7 @@ fn responses_url_citation_survives_a_responses_round_trip() {
                 encrypted_index: None,
                 raw: None,
             }],
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         stop_sequence: None,
@@ -7664,6 +7849,7 @@ fn responses_url_citation_survives_a_responses_round_trip() {
         },
         system_fingerprint: None,
         request_echo: None,
+        stop_detail: None,
     };
 
     let writer = ResponsesWriter;

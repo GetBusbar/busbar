@@ -498,6 +498,8 @@ fn read_cohere_document(doc: &serde_json::Value) -> crate::ir::IrBlock {
             },
             name: title.filter(|s| !s.is_empty()).or(id).map(String::from),
             cache_control: None,
+            citations: None,
+            context: None,
         },
         _ => crate::ir::IrBlock::Media {
             kind: crate::ir::IrMediaKind::Document,
@@ -507,6 +509,8 @@ fn read_cohere_document(doc: &serde_json::Value) -> crate::ir::IrBlock {
             },
             name: id.map(String::from),
             cache_control: None,
+            citations: None,
+            context: None,
         },
     }
 }
@@ -868,6 +872,7 @@ fn cohere_open_thinking_block(
     out.push(IrStreamEvent::BlockStart {
         index,
         block: crate::ir::IrBlockMeta::Thinking,
+        refusal: false,
     });
     Some(index)
 }

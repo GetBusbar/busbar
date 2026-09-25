@@ -246,6 +246,7 @@ impl ProtocolReader for BedrockReader {
                         text: text_val.to_string(),
                         cache_control: None,
                         citations: Vec::new(),
+                        refusal: false,
                     });
                 } else if let Some(cache_point) = sys_val.get("cachePoint") {
                     // No IR counterpart for a prompt-cache marker; stash it with its original index
@@ -332,6 +333,7 @@ impl ProtocolReader for BedrockReader {
                                 text: text_val.to_string(),
                                 cache_control: None,
                                 citations: Vec::new(),
+                                refusal: false,
                             });
                         } else if let Some(tool_use) = content_val.get("toolUse") {
                             // A present `toolUse` block MUST carry a non-empty string `toolUseId`: it
@@ -387,6 +389,7 @@ impl ProtocolReader for BedrockReader {
                                             text: text_val.to_string(),
                                             cache_control: None,
                                             citations: Vec::new(),
+                                            refusal: false,
                                         });
                                     } else if let Some(json_val) = inner_val.get("json") {
                                         // A native Converse `{"json": <value>}` tool-result block is
@@ -800,6 +803,16 @@ impl ProtocolReader for BedrockReader {
             n: None,
             response_format,
             extra,
+            metadata: None,
+            service_tier: None,
+            store: None,
+            safety_identifier: None,
+            prompt_cache_key: None,
+            verbosity: None,
+            allowed_tools: None,
+            hosted_tools: Vec::new(),
+            system_role: None,
+            output_modalities: None,
         })
     }
 
@@ -861,6 +874,7 @@ impl ProtocolReader for BedrockReader {
                             out.push(IrStreamEvent::BlockStart {
                                 index: idx,
                                 block: crate::ir::IrBlockMeta::ToolUse { id: tu_id, name },
+                                refusal: false,
                             });
                         }
                     } else if start_obj.contains_key("reasoningContent")
@@ -878,6 +892,7 @@ impl ProtocolReader for BedrockReader {
                         out.push(IrStreamEvent::BlockStart {
                             index: idx,
                             block: crate::ir::IrBlockMeta::Thinking,
+                            refusal: false,
                         });
                     } else if start_obj.is_empty() && state.started && !state.text_block_open {
                         // The native Bedrock ConverseStream wire sends `contentBlockStart` with an
@@ -890,6 +905,7 @@ impl ProtocolReader for BedrockReader {
                         out.push(IrStreamEvent::BlockStart {
                             index: idx,
                             block: crate::ir::IrBlockMeta::Text,
+                            refusal: false,
                         });
                     }
                 } else if state.started && !state.text_block_open {
@@ -898,6 +914,7 @@ impl ProtocolReader for BedrockReader {
                     out.push(IrStreamEvent::BlockStart {
                         index: idx,
                         block: crate::ir::IrBlockMeta::Text,
+                        refusal: false,
                     });
                 }
             }
@@ -928,6 +945,7 @@ impl ProtocolReader for BedrockReader {
                             out.push(IrStreamEvent::BlockStart {
                                 index: idx,
                                 block: crate::ir::IrBlockMeta::Text,
+                                refusal: false,
                             });
                         }
 
@@ -971,6 +989,7 @@ impl ProtocolReader for BedrockReader {
                             out.push(IrStreamEvent::BlockStart {
                                 index: idx,
                                 block: crate::ir::IrBlockMeta::Text,
+                                refusal: false,
                             });
                         }
                         if state.text_block_open {
@@ -1017,7 +1036,11 @@ impl ProtocolReader for BedrockReader {
                             } else {
                                 crate::ir::IrBlockMeta::Thinking
                             };
-                            out.push(IrStreamEvent::BlockStart { index: idx, block });
+                            out.push(IrStreamEvent::BlockStart {
+                                index: idx,
+                                block,
+                                refusal: false,
+                            });
                         }
                         if state.thinking_block_open {
                             if let Some(text) = reasoning.get("text").and_then(|t| t.as_str()) {
@@ -1212,6 +1235,7 @@ impl ProtocolReader for BedrockReader {
                     stop_reason: state.pending_stop_reason.take(),
                     stop_sequence: None,
                     usage,
+                    stop_detail: None,
                 });
                 out.push(IrStreamEvent::MessageStop);
             }
@@ -1335,6 +1359,7 @@ impl ProtocolReader for BedrockReader {
                         text: text_val.to_string(),
                         cache_control: None,
                         citations: Vec::new(),
+                        refusal: false,
                     });
                 } else if let Some(tool_use) = block_val.get("toolUse").and_then(|t| t.as_object())
                 {
@@ -1460,6 +1485,7 @@ impl ProtocolReader for BedrockReader {
                 .map(String::from),
 
             request_echo: None,
+            stop_detail: None,
         })
     }
 

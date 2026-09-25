@@ -577,6 +577,7 @@ fn ant15_response_image_and_json_blocks_are_not_invalid_blocks() {
                 text: "here".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             },
             crate::ir::IrBlock::Image {
                 source: crate::ir::IrImageSource::Base64 {
@@ -584,6 +585,7 @@ fn ant15_response_image_and_json_blocks_are_not_invalid_blocks() {
                     data: "iVBO".to_string(),
                 },
                 cache_control: None,
+                detail: None,
             },
             crate::ir::IrBlock::Json(json!({"k": 1})),
         ],
@@ -601,6 +603,7 @@ fn ant15_response_image_and_json_blocks_are_not_invalid_blocks() {
         system_fingerprint: None,
         stop_sequence: None,
         request_echo: None,
+        stop_detail: None,
     };
     let out = protocol_for("anthropic")
         .unwrap()
@@ -646,6 +649,7 @@ fn ant17_tool_result_content_is_filtered_like_message_content() {
                         text: "ok".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
+                        refusal: false,
                     },
                     crate::ir::IrBlock::Media {
                         kind: crate::ir::IrMediaKind::Audio,
@@ -655,6 +659,8 @@ fn ant17_tool_result_content_is_filtered_like_message_content() {
                         },
                         name: None,
                         cache_control: None,
+                        citations: None,
+                        context: None,
                     },
                     crate::ir::IrBlock::Image {
                         source: crate::ir::IrImageSource::Vendor {
@@ -662,11 +668,13 @@ fn ant17_tool_result_content_is_filtered_like_message_content() {
                             value: json!({"file_id": "file_1"}),
                         },
                         cache_control: None,
+                        detail: None,
                     },
                     crate::ir::IrBlock::Text {
                         text: String::new(),
                         cache_control: None,
                         citations: Vec::new(),
+                        refusal: false,
                     },
                 ],
                 is_error: false,

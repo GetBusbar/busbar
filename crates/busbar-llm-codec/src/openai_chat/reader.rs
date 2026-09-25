@@ -248,6 +248,7 @@ impl ProtocolReader for OpenAiReader {
                                 text: text.to_string(),
                                 cache_control: None,
                                 citations: Vec::new(),
+                                refusal: false,
                             });
                         } else if let Some(arr) = content.as_array() {
                             for block_val in arr {
@@ -264,6 +265,7 @@ impl ProtocolReader for OpenAiReader {
                             text: String::new(),
                             cache_control: None,
                             citations: Vec::new(),
+                            refusal: false,
                         });
                     }
                 } else {
@@ -283,6 +285,7 @@ impl ProtocolReader for OpenAiReader {
                                     text: text.to_string(),
                                     cache_control: None,
                                     citations: Vec::new(),
+                                    refusal: false,
                                 });
                             } else if let Some(arr) = cv.as_array() {
                                 for block_val in arr {
@@ -422,6 +425,7 @@ impl ProtocolReader for OpenAiReader {
                                 text: content_text,
                                 cache_control: None,
                                 citations: Vec::new(),
+                                refusal: false,
                             }],
                             is_error: false,
                             cache_control: None,
@@ -444,6 +448,7 @@ impl ProtocolReader for OpenAiReader {
                             text: refusal.to_string(),
                             cache_control: None,
                             citations: Vec::new(),
+                            refusal: false,
                         });
                     }
 
@@ -678,6 +683,16 @@ impl ProtocolReader for OpenAiReader {
             n,
             response_format,
             extra,
+            metadata: None,
+            service_tier: None,
+            store: None,
+            safety_identifier: None,
+            prompt_cache_key: None,
+            verbosity: None,
+            allowed_tools: None,
+            hosted_tools: Vec::new(),
+            system_role: None,
+            output_modalities: None,
         })
     }
 
@@ -803,6 +818,7 @@ impl ProtocolReader for OpenAiReader {
                 out.push(IrStreamEvent::BlockStart {
                     index,
                     block: crate::ir::IrBlockMeta::Thinking,
+                    refusal: false,
                 });
             }
             out.push(IrStreamEvent::BlockDelta {
@@ -860,6 +876,7 @@ impl ProtocolReader for OpenAiReader {
                 out.push(IrStreamEvent::BlockStart {
                     index: ti,
                     block: crate::ir::IrBlockMeta::Text,
+                    refusal: false,
                 });
             }
             out.push(IrStreamEvent::BlockDelta {
@@ -897,6 +914,7 @@ impl ProtocolReader for OpenAiReader {
                 out.push(IrStreamEvent::BlockStart {
                     index: ti,
                     block: crate::ir::IrBlockMeta::Text,
+                    refusal: false,
                 });
             }
             out.push(IrStreamEvent::BlockDelta {
@@ -939,6 +957,7 @@ impl ProtocolReader for OpenAiReader {
                     out.push(IrStreamEvent::BlockStart {
                         index: ti,
                         block: crate::ir::IrBlockMeta::Text,
+                        refusal: false,
                     });
                 }
                 if let Some(ti) = state.text_index {
@@ -1034,6 +1053,7 @@ impl ProtocolReader for OpenAiReader {
                                 id,
                                 name: name.to_string(),
                             },
+                            refusal: false,
                         });
                     }
                 }
@@ -1189,6 +1209,7 @@ impl ProtocolReader for OpenAiReader {
                 // OpenAI has no stop_sequence analog in its stream.
                 stop_sequence: None,
                 usage,
+                stop_detail: None,
             });
             out.push(IrStreamEvent::MessageStop);
         } else if let Some(usage) = chunk_usage {
@@ -1210,6 +1231,7 @@ impl ProtocolReader for OpenAiReader {
                     stop_reason: None,
                     stop_sequence: None,
                     usage,
+                    stop_detail: None,
                 });
             }
         }
@@ -1289,6 +1311,8 @@ impl ProtocolReader for OpenAiReader {
                         signature: None,
                         redacted: false,
                         cache_control: None,
+                        kind: None,
+                        signature_origin: None,
                     });
                     break;
                 }
@@ -1309,6 +1333,7 @@ impl ProtocolReader for OpenAiReader {
                         text: text.to_string(),
                         cache_control: None,
                         citations,
+                        refusal: false,
                     });
                 }
             } else if let Some(arr) = content_val.as_array() {
@@ -1346,6 +1371,7 @@ impl ProtocolReader for OpenAiReader {
                     text: text.to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 });
             }
         }
@@ -1534,6 +1560,7 @@ impl ProtocolReader for OpenAiReader {
             stop_sequence: None,
 
             request_echo: None,
+            stop_detail: None,
         })
     }
 }

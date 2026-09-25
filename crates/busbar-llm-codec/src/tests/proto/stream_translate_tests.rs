@@ -34,6 +34,7 @@ fn test_all_protocols_stream_write_read_roundtrip_preserves_text_and_terminal() 
         crate::ir::IrStreamEvent::BlockStart {
             index: 0,
             block: crate::ir::IrBlockMeta::Text,
+            refusal: false,
         },
         crate::ir::IrStreamEvent::BlockDelta {
             index: 0,
@@ -50,6 +51,7 @@ fn test_all_protocols_stream_write_read_roundtrip_preserves_text_and_terminal() 
                 cache_read_input_tokens: None,
                 detail: crate::ir::IrUsageDetail::default(),
             },
+            stop_detail: None,
         },
         crate::ir::IrStreamEvent::MessageStop,
     ];
@@ -201,6 +203,7 @@ fn encode_ir_events_as_wire(proto: &Protocol, events: &[crate::ir::IrStreamEvent
             stop_reason: Some(reason),
             usage,
             stop_sequence,
+            stop_detail: _,
         } = ev
         {
             if let Some(sub_events) =
@@ -295,6 +298,7 @@ fn test_all_protocol_pairs_stream_translate_roundtrip_preserves_text_and_termina
         crate::ir::IrStreamEvent::BlockStart {
             index: 0,
             block: crate::ir::IrBlockMeta::Text,
+            refusal: false,
         },
         crate::ir::IrStreamEvent::BlockDelta {
             index: 0,
@@ -311,6 +315,7 @@ fn test_all_protocol_pairs_stream_translate_roundtrip_preserves_text_and_termina
                 cache_read_input_tokens: None,
                 detail: crate::ir::IrUsageDetail::default(),
             },
+            stop_detail: None,
         },
         crate::ir::IrStreamEvent::MessageStop,
     ];
@@ -464,6 +469,7 @@ fn test_all_protocols_nonstream_write_read_roundtrip_preserves_text() {
                 text: text.to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
             stop_reason: Some(crate::ir::IrStopReason::EndTurn),
             stop_sequence: None,
@@ -480,6 +486,7 @@ fn test_all_protocols_nonstream_write_read_roundtrip_preserves_text() {
             system_fingerprint: None,
 
             request_echo: None,
+            stop_detail: None,
         };
         let body = proto.writer().write_response(&resp);
         let back = proto.reader().read_response(&body).unwrap_or_else(|e| {
@@ -1397,6 +1404,8 @@ fn redacted_reasoning_drops_on_writers_without_a_native_form() {
             signature: None,
             redacted: true,
             cache_control: None,
+            kind: None,
+            signature_origin: None,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: crate::ir::IrUsage {
@@ -1413,6 +1422,7 @@ fn redacted_reasoning_drops_on_writers_without_a_native_form() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
 
     // Bind each writer to a local (interior-mutable per-stream state).
@@ -2577,6 +2587,7 @@ fn every_writer_that_suppresses_a_block_start_suppresses_its_stop() {
                 .write_response_event(&IrStreamEvent::BlockStart {
                     index: start_index,
                     block: meta.clone(),
+                    refusal: false,
                 })
                 .is_some();
             let stop_emitted = writer
@@ -2642,6 +2653,7 @@ fn anthropic_deferred_redacted_start_pairs_with_its_stop_exactly_once() {
             .write_response_event(&IrStreamEvent::BlockStart {
                 index: 0,
                 block: IrBlockMeta::RedactedThinking,
+                refusal: false,
             })
             .is_none(),
         "the redacted BlockStart is deferred: it writes no frame"
@@ -4219,6 +4231,7 @@ fn test_tool_id_remap_event_reshapes_block_start() {
             id: "call_stream".to_string(),
             name: "f".to_string(),
         },
+        refusal: false,
     };
     ToolIdRemap::default().remap_event("anthropic", &mut ev);
     match ev {
@@ -4331,6 +4344,7 @@ fn test_gemini_decode() {
         text,
         cache_control: _,
         citations: _,
+        refusal: _,
     } = &ir.system[0]
     {
         assert_eq!(text, "You are a helpful assistant.");
@@ -4981,6 +4995,7 @@ fn test_buffered_as_stream_remaps_tool_ids_exactly_once() {
         created: Some(1_700_000_000),
         system_fingerprint: None,
         request_echo: None,
+        stop_detail: None,
     };
     // The engine's order: prepare the answer for the ingress client FIRST (that is where the id is
     // reshaped), then synthesize the client's native stream from the prepared answer.

@@ -267,7 +267,8 @@ fn stream_thinking_plus_logprobs_do_not_collide_on_index_zero() {
         e,
         IrStreamEvent::BlockStart {
             index: 0,
-            block: IrBlockMeta::Thinking
+            block: IrBlockMeta::Thinking,
+            refusal: _,
         }
     )));
     // The logprobs text block must open at 1, never 0.
@@ -275,6 +276,7 @@ fn stream_thinking_plus_logprobs_do_not_collide_on_index_zero() {
         IrStreamEvent::BlockStart {
             index,
             block: IrBlockMeta::Text,
+            refusal: _,
         } => Some(*index),
         _ => None,
     });

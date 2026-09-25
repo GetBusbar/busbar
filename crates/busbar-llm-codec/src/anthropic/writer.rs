@@ -669,7 +669,11 @@ impl ProtocolWriter for AnthropicWriter {
                     serde_json::Value::Object(data_obj),
                 ))
             }
-            IrStreamEvent::BlockStart { index, block } => {
+            IrStreamEvent::BlockStart {
+                index,
+                block,
+                refusal: _,
+            } => {
                 let content_block = match block {
                     // Anthropic's native `content_block_start` carries the block's SEED value so an
                     // SDK accumulator initializes the field before any delta arrives: a text block
@@ -866,6 +870,7 @@ impl ProtocolWriter for AnthropicWriter {
                 stop_reason,
                 stop_sequence,
                 usage,
+                stop_detail: _,
             } => {
                 let mut delta_obj = serde_json::Map::new();
                 if let Some(reason) = stop_reason {

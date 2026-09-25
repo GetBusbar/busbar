@@ -1292,6 +1292,7 @@ fn streamed_usage_sub_buckets_are_not_zeroed() {
                     ..Default::default()
                 },
             },
+            stop_detail: None,
         })
         .expect("terminal chunk");
     assert_eq!(
@@ -1345,6 +1346,7 @@ fn streamed_anthropic_cache_tiers_survive() {
                     ..Default::default()
                 },
             },
+            stop_detail: None,
         })
         .expect("message_delta");
     assert_eq!(
@@ -1399,6 +1401,7 @@ fn streamed_cohere_search_units_survive() {
                     ..Default::default()
                 },
             },
+            stop_detail: None,
         })
         .expect("message-end");
     assert_eq!(
@@ -1459,6 +1462,7 @@ fn bedrock_uncited_text_keeps_the_plain_shape() {
             text: "plain".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: crate::ir::IrUsage {
@@ -1476,6 +1480,7 @@ fn bedrock_uncited_text_keeps_the_plain_shape() {
         logprobs: Vec::new(),
 
         request_echo: None,
+        stop_detail: None,
     });
     assert_eq!(
         out["output"]["message"]["content"][0]["text"], "plain",

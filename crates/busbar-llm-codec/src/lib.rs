@@ -228,3 +228,8 @@ mod bedrock_eventstream_tests;
 #[cfg(test)]
 #[path = "tests/ir_seam_tests.rs"]
 mod ir_seam_tests;
+
+/// IR mapping Q57 — the typed slots through the shared stream machinery (IR-CORE).
+#[cfg(test)]
+#[path = "tests/ir_slot_carry_tests.rs"]
+mod ir_slot_carry_tests;

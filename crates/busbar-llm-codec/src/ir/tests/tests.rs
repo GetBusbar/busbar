@@ -288,18 +288,23 @@ fn readable_blocks_are_not_opaque() {
             text: "hello".into(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         },
         IrBlock::Thinking {
             text: "step one".into(),
             signature: None,
             redacted: false,
             cache_control: None,
+            kind: None,
+            signature_origin: None,
         },
         IrBlock::Thinking {
             text: "step one".into(),
             signature: Some("SIG".into()),
             redacted: false,
             cache_control: None,
+            kind: None,
+            signature_origin: None,
         },
         // A wholly-EMPTY thinking block carries nothing at all — there is no hidden content to
         // warn a consumer about, so it is not opaque either. (Every writer already emits no item
@@ -309,6 +314,8 @@ fn readable_blocks_are_not_opaque() {
             signature: None,
             redacted: false,
             cache_control: None,
+            kind: None,
+            signature_origin: None,
         },
     ];
     for block in cases {

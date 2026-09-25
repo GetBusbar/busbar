@@ -588,6 +588,7 @@ fn streamed_redacted_reasoning_preserves_bytes_on_anthropic_egress() {
     let start = w.write_response_event(&crate::ir::IrStreamEvent::BlockStart {
         index: 0,
         block: crate::ir::IrBlockMeta::RedactedThinking,
+        refusal: false,
     });
     assert!(
         start.is_none(),
@@ -647,6 +648,7 @@ fn anthropic_response_carries_every_spec_required_member_with_default_shapes() {
                 text: "hi".into(),
                 cache_control: None,
                 citations: vec![],
+                refusal: false,
             },
             crate::ir::IrBlock::ToolUse {
                 id: "toolu_1".into(),
@@ -660,6 +662,8 @@ fn anthropic_response_carries_every_spec_required_member_with_default_shapes() {
                 signature: None,
                 redacted: false,
                 cache_control: None,
+                kind: None,
+                signature_origin: None,
             },
         ],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
@@ -678,6 +682,7 @@ fn anthropic_response_carries_every_spec_required_member_with_default_shapes() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = anthropic_writer().write_response(&resp);
     assert_eq!(out["stop_details"], serde_json::Value::Null);
@@ -774,6 +779,7 @@ fn anthropic_response_cache_creation_is_null_when_total_known_but_tiers_are_not(
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = anthropic_writer().write_response(&resp);
     assert_eq!(out["usage"]["cache_creation_input_tokens"], 9);
@@ -822,6 +828,7 @@ fn anthropic_stream_events_carry_every_spec_required_member() {
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 0,
             block: IrBlockMeta::Text,
+            refusal: false,
         })
         .expect("text start");
     assert_eq!(
@@ -835,6 +842,7 @@ fn anthropic_stream_events_carry_every_spec_required_member() {
                 id: "toolu_1".into(),
                 name: "f".into(),
             },
+            refusal: false,
         })
         .expect("tool start");
     assert_eq!(
@@ -853,6 +861,7 @@ fn anthropic_stream_events_carry_every_spec_required_member() {
                 cache_read_input_tokens: None,
                 detail: crate::ir::IrUsageDetail::default(),
             },
+            stop_detail: None,
         })
         .expect("message_delta");
     assert_eq!(delta["delta"]["container"], serde_json::Value::Null);

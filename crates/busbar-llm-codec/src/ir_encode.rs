@@ -112,6 +112,7 @@ pub fn ping_request() -> crate::ir::IrRequest {
                 text: "ping".to_string(),
                 cache_control: None,
                 citations: vec![],
+                refusal: false,
             }],
         }],
         max_tokens: Some(1),

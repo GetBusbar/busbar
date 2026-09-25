@@ -216,6 +216,7 @@ impl ProtocolReader for AnthropicReader {
                     text,
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 });
             } else if let Some(arr) = system_val.as_array() {
                 for block_val in arr {
@@ -439,6 +440,16 @@ impl ProtocolReader for AnthropicReader {
             n: None,
             response_format,
             extra,
+            metadata: None,
+            service_tier: None,
+            store: None,
+            safety_identifier: None,
+            prompt_cache_key: None,
+            verbosity: None,
+            allowed_tools: None,
+            hosted_tools: Vec::new(),
+            system_role: None,
+            output_modalities: None,
         })
     }
 
@@ -526,7 +537,11 @@ impl ProtocolReader for AnthropicReader {
                     "image" => IrBlockMeta::Image,
                     _ => return None,
                 };
-                Some(IrStreamEvent::BlockStart { index, block: meta })
+                Some(IrStreamEvent::BlockStart {
+                    index,
+                    block: meta,
+                    refusal: false,
+                })
             }
             EVT_CONTENT_BLOCK_DELTA => {
                 let index = read_clamped_block_index(data)?;
@@ -627,6 +642,7 @@ impl ProtocolReader for AnthropicReader {
                     stop_reason,
                     stop_sequence,
                     usage,
+                    stop_detail: None,
                 })
             }
             EVT_MESSAGE_STOP => Some(IrStreamEvent::MessageStop),
@@ -716,6 +732,7 @@ impl ProtocolReader for AnthropicReader {
                             IrStreamEvent::BlockStart {
                                 index,
                                 block: IrBlockMeta::RedactedThinking,
+                                refusal: false,
                             },
                             IrStreamEvent::BlockDelta {
                                 index,
@@ -792,6 +809,7 @@ impl ProtocolReader for AnthropicReader {
                         text,
                         cache_control: None,
                         citations: Vec::new(),
+                        refusal: false,
                     };
                     mapped_forced_tool = true;
                 }
@@ -861,6 +879,7 @@ impl ProtocolReader for AnthropicReader {
             stop_sequence,
 
             request_echo: None,
+            stop_detail: None,
         })
     }
 }

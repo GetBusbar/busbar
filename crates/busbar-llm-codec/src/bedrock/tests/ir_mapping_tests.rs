@@ -343,6 +343,7 @@ fn bed09_refusal_writes_content_filtered() {
             text: "I can't help".into(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::Refusal),
         usage: crate::ir::IrUsage {
@@ -359,6 +360,7 @@ fn bed09_refusal_writes_content_filtered() {
         stop_sequence: None,
         logprobs: Vec::new(),
         request_echo: None,
+        stop_detail: None,
     };
     let out = writer().write_response(&resp);
     assert_eq!(out["stopReason"], "content_filtered", "{out}");

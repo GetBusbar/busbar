@@ -87,6 +87,7 @@ fn mk_response(
         system_fingerprint: None,
         stop_sequence: None,
         request_echo: None,
+        stop_detail: None,
     }
 }
 
@@ -101,6 +102,7 @@ fn text_block(text: &str) -> crate::ir::IrBlock {
         text: text.to_string(),
         cache_control: None,
         citations: Vec::new(),
+        refusal: false,
     }
 }
 
@@ -871,6 +873,8 @@ fn responses_response_output_items_emitted() {
             signature: Some("ENC".to_string()),
             redacted: false,
             cache_control: None,
+            kind: None,
+            signature_origin: None,
         },
     ];
     let out = write_response(&mk_response(
@@ -1002,6 +1006,7 @@ fn responses_stream_events_emitted_by_writer() {
         crate::ir::IrStreamEvent::BlockStart {
             index: 0,
             block: crate::ir::IrBlockMeta::Text,
+            refusal: false,
         },
     ));
     seen.extend(event_names(
@@ -1024,6 +1029,7 @@ fn responses_stream_events_emitted_by_writer() {
                 id: "call_s".to_string(),
                 name: "f".to_string(),
             },
+            refusal: false,
         },
     ));
     seen.extend(event_names(
@@ -1043,6 +1049,7 @@ fn responses_stream_events_emitted_by_writer() {
             stop_reason: Some(crate::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage(1, 1),
+            stop_detail: None,
         },
     ));
 
@@ -1090,6 +1097,7 @@ fn responses_duplicate_message_start_does_not_restart_stream() {
         w.write_response_events(&crate::ir::IrStreamEvent::BlockStart {
             index: 0,
             block: crate::ir::IrBlockMeta::Text,
+            refusal: false,
         }),
     );
     frames.extend(
@@ -1107,6 +1115,7 @@ fn responses_duplicate_message_start_does_not_restart_stream() {
             stop_reason: Some(crate::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage(1, 1),
+            stop_detail: None,
         }),
     );
 
@@ -1200,6 +1209,7 @@ fn responses_reset_clears_citation_and_logprob_accumulators() {
         w.write_response_events(&crate::ir::IrStreamEvent::BlockStart {
             index: 0,
             block: crate::ir::IrBlockMeta::Text,
+            refusal: false,
         }),
     );
     frames.extend(
@@ -1243,6 +1253,7 @@ fn responses_stream_incomplete_event_emitted() {
             stop_reason: Some(crate::ir::IrStopReason::MaxTokens),
             stop_sequence: None,
             usage: usage(1, 1),
+            stop_detail: None,
         },
     );
     assert!(

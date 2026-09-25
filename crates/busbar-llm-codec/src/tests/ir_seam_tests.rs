@@ -128,6 +128,7 @@ fn seam_matched_stop_sequence_survives_the_buffered_seam() {
             text: "one two".to_string(),
             cache_control: None,
             citations: vec![],
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::StopSequence),
         stop_sequence: Some("###".to_string()),

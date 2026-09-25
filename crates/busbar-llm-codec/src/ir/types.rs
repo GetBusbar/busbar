@@ -119,6 +119,45 @@ pub struct IrRequest {
     /// different location, so it carries between the two. `None` == caller never said, nothing
     /// emitted (both defaults are "parallel allowed", so absence round-trips as absence).
     pub parallel_tool_calls: Option<bool>,
+    // ── Q57 IR-slot wave (IR-CORE): typed request slots. Every one is ABSENT (`None`/empty) unless
+    // the source dialect carried the concept, and a writer emits nothing for an absent slot. The
+    // reader/writer contract for each is in ir-slots-landed.md and on the slot's type.
+    /// IR-03. Caller metadata map, in the caller's key order: OpenAI Chat / Responses `metadata`,
+    /// Bedrock `requestMetadata`, Gemini `labels` (all string -> string). `None` == absent; `Some`
+    /// of an empty vec == the caller sent `{}`. A writer that validates keys (Gemini label syntax)
+    /// drops the non-conforming ENTRIES with a warn, never the whole map.
+    pub metadata: Option<Vec<(String, String)>>,
+    /// IR-04. Requested capacity tier ([`IrServiceTier`]).
+    pub service_tier: Option<IrServiceTier>,
+    /// IR-05. OpenAI Chat / Responses `store`.
+    pub store: Option<bool>,
+    /// IR-06. OpenAI Chat / Responses `safety_identifier` (the successor of `user` for abuse
+    /// tracking; carried separately because a caller may send both).
+    pub safety_identifier: Option<String>,
+    /// IR-06. OpenAI Chat / Responses `prompt_cache_key`.
+    pub prompt_cache_key: Option<String>,
+    /// IR-07. OpenAI Chat `verbosity`, Responses `text.verbosity`.
+    pub verbosity: Option<IrVerbosity>,
+    /// IR-10. The tool SUBSET the model may call. Pairs with `tool_choice`: `Auto` (or absent) ==
+    /// "may call one of these", `Required` == "must call one of these". Chat / Responses
+    /// `tool_choice:{type:"allowed_tools", mode, tools}`, Gemini
+    /// `functionCallingConfig.allowedFunctionNames` (mode AUTO/ANY). A writer with no native subset
+    /// projects it by sending only the listed tools in `tools` — the same constraint, expressed by
+    /// omission. `None` == no restriction. Never set together with `tool_choice: Tool{..}`.
+    pub allowed_tools: Option<Vec<String>>,
+    /// IR-11. Provider-hosted tools that cross the seam ([`IrHostedTool`]). The raw Responses
+    /// object in [`IrTool::hosted`] is still same-protocol-only and still dropped on the seam; a
+    /// reader that recognises a hosted tool's KIND puts it HERE and does not also push the raw
+    /// `IrTool`. A writer with no analog for a kind drops that entry with a warn and reports it from
+    /// `dropped_egress_controls`.
+    pub hosted_tools: Vec<IrHostedTool>,
+    /// IR-14. `Some(Developer)` iff every system entry folded into `system` was written with the
+    /// `developer` role (Chat / Responses); `Some(System)` iff every one was `system`; `None` when
+    /// the dialect has no such distinction or the entries were mixed.
+    pub system_role: Option<IrSystemRole>,
+    /// IR-19. Requested output modalities ([`IrModality`]): Chat `modalities`, Gemini
+    /// `generationConfig.responseModalities`. `None` == absent (text).
+    pub output_modalities: Option<Vec<IrModality>>,
     pub stream: bool,
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -236,6 +275,10 @@ pub enum IrStreamEvent {
     BlockStart {
         index: usize,
         block: IrBlockMeta,
+        /// IR-02. `true` when this is a TEXT block whose deltas are a refusal message (Chat
+        /// `delta.refusal`, Responses `response.refusal.delta`); the streaming twin of
+        /// `IrBlock::Text::refusal`. Always `false` for a non-text block.
+        refusal: bool,
     },
     BlockDelta {
         index: usize,
@@ -252,6 +295,8 @@ pub enum IrStreamEvent {
         /// source carried it), so a same-protocol Anthropic passthrough stays byte-faithful while
         /// other protocols' output is unchanged.
         stop_sequence: Option<String>,
+        /// IR-16 / IR-02. The streaming twin of [`IrResponse::stop_detail`] (buffered == stream).
+        stop_detail: Option<IrStopDetail>,
         usage: IrUsage,
     },
     MessageStop,
@@ -333,6 +378,9 @@ pub struct IrResponse {
     /// spec's bare defaults. `None` on same-protocol (never reaches a writer — the body is relayed
     /// verbatim) and for every writer that echoes nothing (every non-Responses dialect ignores this
     /// field entirely). Additive: every reader that never sets it leaves prior behavior unchanged.
+    /// IR-16 / IR-02. Refinement of `stop_reason` ([`IrStopDetail`]); `stop_reason` is always set to
+    /// the nearest coarse variant beside it. `None` == no refinement.
+    pub stop_detail: Option<IrStopDetail>,
     pub request_echo: Option<Value>,
 }
 
@@ -355,6 +403,7 @@ impl Default for IrResponse {
             stop_sequence: None,
             logprobs: Vec::new(),
             request_echo: None,
+            stop_detail: None,
         }
     }
 }
@@ -498,6 +547,10 @@ pub enum IrBlock {
         text: String,
         cache_control: Option<CacheControl>,
         citations: Vec<IrCitation>,
+        /// IR-02. `true` when this text IS the model's refusal message (Chat `message.refusal`,
+        /// Responses `refusal` content part), not ordinary answer text. A writer with no refusal
+        /// shape emits it as ordinary text (the pre-slot behaviour).
+        refusal: bool,
     },
     Thinking {
         text: String,
@@ -516,6 +569,11 @@ pub enum IrBlock {
         /// the Anthropic reader populates it and only the Anthropic writer emits it; other protocols
         /// have no native analog and leave it `None`.
         cache_control: Option<CacheControl>,
+        /// IR-17. Full reasoning vs a summary of it ([`IrThinkingKind`]). `None` == unknown.
+        kind: Option<IrThinkingKind>,
+        /// IR-18. Which model family minted `signature` ([`IrSignatureOrigin`]). `None` == unknown
+        /// (every writer keeps its pre-slot behaviour for an unknown origin).
+        signature_origin: Option<IrSignatureOrigin>,
     },
     ToolUse {
         id: String,
@@ -558,6 +616,8 @@ pub enum IrBlock {
         /// vanishing — the dominant cache-on-image use case. Only the Anthropic reader populates it
         /// and only the Anthropic writer emits it; other protocols leave it `None`.
         cache_control: Option<CacheControl>,
+        /// IR-08. Requested fidelity ([`IrImageDetail`]): Chat / Responses / Cohere `detail`.
+        detail: Option<IrImageDetail>,
     },
     /// A non-image ATTACHMENT the caller sent for the model to reason over: a document (PDF, CSV,
     /// DOCX, …), an audio clip, or a video clip.
@@ -597,6 +657,10 @@ pub enum IrBlock {
         /// Anthropic cache breakpoint (`cache_control`) placed on a `document` block — same rationale
         /// as the `Image` field; documents are the largest thing anyone caches.
         cache_control: Option<CacheControl>,
+        /// IR-12. Document citations switch: Anthropic and Bedrock `citations:{enabled}`.
+        citations: Option<bool>,
+        /// IR-12. Document context string: Anthropic and Bedrock document `context`.
+        context: Option<String>,
     },
     /// Structured JSON content — a Bedrock Converse `{"json": <value>}` tool-result content block (an
     /// arbitrary-structured-data member of the `ToolResultContentBlock` union). It is NOT an image;

@@ -163,7 +163,10 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
             );
         }
     }
-    // HOSTED-TOOL cross-protocol drop. A Responses hosted tool
+    // HOSTED-TOOL cross-protocol drop — of the RAW, same-protocol-only `IrTool::hosted` object.
+    // A hosted tool whose KIND a reader recognises crosses the seam untouched in the typed
+    // `IrRequest::hosted_tools` slot (IR-11); what is dropped here is only the verbatim Responses
+    // object no other writer can emit. A Responses hosted tool
     // (`{"type":"web_search"}` → `IrTool{ name:"", hosted:Some(..) }`) has NO function-tool
     // analog: ONLY the Responses writer honors `hosted`; every other egress writer projects
     // an `IrTool` as a function tool keyed on `name`, so a hosted tool becomes a malformed

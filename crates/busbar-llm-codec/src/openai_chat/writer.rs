@@ -615,7 +615,11 @@ impl ProtocolWriter for OpenAiWriter {
                 });
                 Some(("".to_string(), chunk))
             }
-            IrStreamEvent::BlockStart { index, block } => match block {
+            IrStreamEvent::BlockStart {
+                index,
+                block,
+                refusal: _,
+            } => match block {
                 crate::ir::IrBlockMeta::Text => None,
                 crate::ir::IrBlockMeta::ToolUse { id, name } => {
                     // Stamp the CANONICAL IR block index here so parallel tool calls keep distinct,

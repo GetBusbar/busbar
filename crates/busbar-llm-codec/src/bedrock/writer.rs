@@ -962,7 +962,11 @@ impl ProtocolWriter for BedrockWriter {
                 serde_json::json!({ "role": "assistant" }),
             )),
 
-            IrStreamEvent::BlockStart { index, block } => match block {
+            IrStreamEvent::BlockStart {
+                index,
+                block,
+                refusal: _,
+            } => match block {
                 // A TEXT block has NO `contentBlockStart` on the AWS Bedrock ConverseStream wire.
                 // `ContentBlockStart$start` is a UNION whose members are `toolUse` (plus
                 // `image`/`toolResult` in newer API revisions) — there is NO text member (AWS
@@ -1131,6 +1135,7 @@ impl ProtocolWriter for BedrockWriter {
                 stop_reason,
                 usage,
                 stop_sequence: _,
+                stop_detail: _,
             } => match stop_reason {
                 Some(reason) => Some((
                     ET_MESSAGE_STOP.to_string(),

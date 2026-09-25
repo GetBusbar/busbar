@@ -672,6 +672,7 @@ fn cross_protocol_write_synthesizes_valid_unique_id() {
             text: "x".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: crate::ir::IrUsage {
@@ -689,6 +690,7 @@ fn cross_protocol_write_synthesizes_valid_unique_id() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out1 = anthropic_writer().write_response(&make());
     let out2 = anthropic_writer().write_response(&make());
@@ -736,6 +738,7 @@ fn write_response_synthesizes_id_when_neither_id_nor_created() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = anthropic_writer().write_response(&resp);
     let id = out
@@ -1292,6 +1295,7 @@ fn write_block_image_url_sentinel_emits_native_url_source() {
     let block = crate::ir::IrBlock::Image {
         source: crate::ir::IrImageSource::Url("https://example.com/cat.png".to_string()),
         cache_control: None,
+        detail: None,
     };
     let out = write_block(&block);
     assert_eq!(out.get("type").and_then(|t| t.as_str()), Some("image"));
@@ -1326,6 +1330,7 @@ fn write_block_real_base64_image_unchanged() {
             data: "iVBORw0KGgo=".to_string(),
         },
         cache_control: None,
+        detail: None,
     };
     let out = write_block(&block);
     let source = out.get("source").expect("source present");
@@ -1489,6 +1494,7 @@ fn read_block_unmodeled_document_type_degrades_not_400() {
                 text,
                 cache_control,
                 citations,
+                refusal: _,
             } => {
                 assert_eq!(text, "", "unmodeled block degrades to an empty text block");
                 assert!(cache_control.is_none());
@@ -1611,7 +1617,8 @@ fn streaming_redacted_thinking_is_not_dropped() {
             &evs[0],
             IrStreamEvent::BlockStart {
                 index: 0,
-                block: IrBlockMeta::RedactedThinking
+                block: IrBlockMeta::RedactedThinking,
+                refusal: _,
             }
         ),
         "first event is a RedactedThinking BlockStart: {:?}",
@@ -1786,17 +1793,22 @@ fn write_message_drops_unsigned_thinking_block() {
                 signature: None,
                 redacted: false,
                 cache_control: None,
+                kind: None,
+                signature_origin: None,
             },
             crate::ir::IrBlock::Thinking {
                 text: "signed reasoning".to_string(),
                 signature: Some("sig-abc".to_string()),
                 redacted: false,
                 cache_control: None,
+                kind: None,
+                signature_origin: None,
             },
             crate::ir::IrBlock::Text {
                 text: "the answer".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             },
         ],
     };
@@ -1844,12 +1856,16 @@ fn write_message_emits_empty_array_when_all_blocks_dropped() {
                 signature: None,
                 redacted: false,
                 cache_control: None,
+                kind: None,
+                signature_origin: None,
             },
             crate::ir::IrBlock::Thinking {
                 text: "unsigned reasoning B".to_string(),
                 signature: None,
                 redacted: false,
                 cache_control: None,
+                kind: None,
+                signature_origin: None,
             },
         ],
     };
@@ -1879,6 +1895,7 @@ fn write_message_emits_array_for_surviving_block() {
             text: "kept".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
     };
     let out = write_message(&msg, 0, &[]);
@@ -1903,6 +1920,8 @@ fn write_response_keeps_unsigned_thinking_block() {
             signature: None,
             redacted: false,
             cache_control: None,
+            kind: None,
+            signature_origin: None,
         }],
         stop_reason: None,
         usage: crate::ir::IrUsage {
@@ -1919,6 +1938,7 @@ fn write_response_keeps_unsigned_thinking_block() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = anthropic_writer().write_response(&resp);
     let content = out
@@ -2022,6 +2042,7 @@ fn read_message_delta_without_usage_preserves_terminal_event() {
             stop_reason,
             stop_sequence,
             usage,
+            stop_detail: _,
         } => {
             assert_eq!(
                 stop_reason,
@@ -2090,6 +2111,7 @@ fn write_response_emits_empty_model_when_none() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = anthropic_writer().write_response(&resp);
     assert_eq!(
@@ -2122,6 +2144,7 @@ fn write_response_preserves_present_model() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = anthropic_writer().write_response(&resp);
     assert_eq!(
@@ -2170,6 +2193,7 @@ fn every_write_response_event_carries_matching_top_level_type() {
         IrStreamEvent::BlockStart {
             index: 0,
             block: IrBlockMeta::Text,
+            refusal: false,
         },
         IrStreamEvent::BlockDelta {
             index: 0,
@@ -2186,6 +2210,7 @@ fn every_write_response_event_carries_matching_top_level_type() {
                 cache_read_input_tokens: None,
                 detail: crate::ir::IrUsageDetail::default(),
             },
+            stop_detail: None,
         },
         IrStreamEvent::MessageStop,
         IrStreamEvent::Error(IrError {
@@ -2226,6 +2251,7 @@ fn write_response_emits_null_stop_sequence_when_absent() {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: crate::ir::IrUsage {
@@ -2242,6 +2268,7 @@ fn write_response_emits_null_stop_sequence_when_absent() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = anthropic_writer().write_response(&resp);
     let ss = out
@@ -2279,6 +2306,7 @@ fn write_response_emits_matched_stop_sequence_string() {
         stop_sequence: Some("STOP".to_string()),
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = anthropic_writer().write_response(&resp);
     assert_eq!(
@@ -2585,6 +2613,7 @@ fn write_request_never_emits_system_role_message() {
                     text: "be terse".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
             },
             crate::ir::IrMessage {
@@ -2593,6 +2622,7 @@ fn write_request_never_emits_system_role_message() {
                     text: "hi".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
             },
         ],
@@ -2610,6 +2640,16 @@ fn write_request_never_emits_system_role_message() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = anthropic_writer().write_request(&req);
     let messages = out
@@ -2651,6 +2691,7 @@ fn write_message_system_role_does_not_emit_system() {
             text: "x".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
     };
     let out = write_message(&msg, 0, &[]);
@@ -2975,6 +3016,7 @@ fn test_anthropic_safety_stop_reason_maps_to_refusal() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = anthropic_writer().write_response(&resp);
     assert_eq!(
@@ -3007,6 +3049,7 @@ fn test_anthropic_streaming_safety_stop_reason_maps_to_refusal() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let (event, data) = anthropic_writer()
         .write_response_event(&ev)
@@ -3030,6 +3073,7 @@ fn test_anthropic_streaming_safety_stop_reason_maps_to_refusal() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let (_event2, data2) = anthropic_writer()
         .write_response_event(&ev2)
@@ -3059,6 +3103,7 @@ fn write_request_omits_unsupported_sampling_params() {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         max_tokens: Some(16),
@@ -3097,6 +3142,7 @@ fn write_request_downgrades_forced_tool_choice_to_auto_when_thinking_emitted() {
                     text: "hi".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
             }],
             tools: vec![crate::ir::IrTool {
@@ -3197,6 +3243,7 @@ fn write_request_projects_response_format_to_native_output_config() {
                 text: "extract".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         max_tokens: Some(64),
@@ -3319,6 +3366,7 @@ fn write_request_carries_json_tool_result_block_as_text() {
                         text: "ok".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
+                        refusal: false,
                     },
                     crate::ir::IrBlock::Json(serde_json::json!({ "answer": 42 })),
                 ],
@@ -3360,6 +3408,7 @@ fn write_request_no_response_format_warning_when_absent() {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         max_tokens: Some(16),
@@ -3440,11 +3489,14 @@ fn thinking_block_with_signature_survives_response_egress() {
                 signature: Some("sig-abc".to_string()),
                 redacted: false,
                 cache_control: None,
+                kind: None,
+                signature_origin: None,
             },
             crate::ir::IrBlock::Text {
                 text: "answer".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             },
         ],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
@@ -3462,6 +3514,7 @@ fn thinking_block_with_signature_survives_response_egress() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = anthropic_writer().write_response(&resp);
     let content = out
@@ -3506,6 +3559,7 @@ fn test_write_request_file_id_image_dropped_not_corrupted() {
                     text: "describe this".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 },
                 crate::ir::IrBlock::Image {
                     source: crate::ir::IrImageSource::Vendor {
@@ -3513,6 +3567,7 @@ fn test_write_request_file_id_image_dropped_not_corrupted() {
                         value: serde_json::json!({ "file_id": "file-abc123" }),
                     },
                     cache_control: None,
+                    detail: None,
                 },
             ],
         }],
@@ -3530,6 +3585,16 @@ fn test_write_request_file_id_image_dropped_not_corrupted() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = writer.write_request(&req);
     let wire = serde_json::to_string(&out).unwrap();
@@ -3579,6 +3644,7 @@ fn test_write_request_image_s3_dropped_not_corrupted() {
                     text: "describe this".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 },
                 crate::ir::IrBlock::Image {
                     source: crate::ir::IrImageSource::Vendor {
@@ -3586,6 +3652,7 @@ fn test_write_request_image_s3_dropped_not_corrupted() {
                         value: serde_json::json!({ "format": "png", "s3Location": { "uri": "s3://bucket/key.png" } }),
                     },
                     cache_control: None,
+                    detail: None,
                 },
             ],
         }],
@@ -3603,6 +3670,16 @@ fn test_write_request_image_s3_dropped_not_corrupted() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = writer.write_request(&req);
     let wire = serde_json::to_string(&out).unwrap();
@@ -3750,6 +3827,7 @@ fn anthropic_writes_web_search_citation_from_neutral_fields() {
             encrypted_index: None,
             raw: None,
         }],
+        refusal: false,
     };
     let wire = write_block(&block);
     let c = wire
@@ -3776,6 +3854,7 @@ fn anthropic_empty_citations_text_block_unaffected() {
         text: "plain".to_string(),
         cache_control: None,
         citations: Vec::new(),
+        refusal: false,
     };
     let wire = write_block(&block);
     assert!(
@@ -4054,11 +4133,14 @@ fn write_message_keeps_redacted_thinking_block() {
                 signature: None,
                 redacted: true,
                 cache_control: None,
+                kind: None,
+                signature_origin: None,
             },
             crate::ir::IrBlock::Text {
                 text: "the answer".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             },
         ],
     };
@@ -4110,6 +4192,7 @@ fn content_block_start_carries_seed_fields() {
         .write_response_event(&crate::ir::IrStreamEvent::BlockStart {
             index: 0,
             block: crate::ir::IrBlockMeta::Text,
+            refusal: false,
         })
         .expect("text block_start writes");
     assert_eq!(
@@ -4130,6 +4213,7 @@ fn content_block_start_carries_seed_fields() {
                 id: "toolu_01".to_string(),
                 name: "get_weather".to_string(),
             },
+            refusal: false,
         })
         .expect("tool_use block_start writes");
     assert_eq!(
@@ -4157,6 +4241,7 @@ fn content_block_start_carries_seed_fields() {
         .write_response_event(&crate::ir::IrStreamEvent::BlockStart {
             index: 2,
             block: crate::ir::IrBlockMeta::Thinking,
+            refusal: false,
         })
         .expect("thinking block_start writes");
     assert_eq!(

@@ -356,7 +356,8 @@ fn oai14_reasoning_after_text_is_carried() {
             .find(|e| matches!(e, crate::ir::IrStreamEvent::BlockStart { .. })),
         Some(crate::ir::IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::Text
+            block: crate::ir::IrBlockMeta::Text,
+            refusal: _,
         })
     ));
 }
@@ -433,6 +434,7 @@ fn oai03_service_tier_maps_both_ways() {
                     ..Default::default()
                 },
             },
+            stop_detail: None,
         })
         .expect("terminal chunk");
     assert_eq!(chunk["service_tier"], json!("default"), "{chunk}");

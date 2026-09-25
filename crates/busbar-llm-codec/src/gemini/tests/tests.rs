@@ -31,6 +31,7 @@ fn test_stream_tool_block_is_closed() {
         IrStreamEvent::BlockStart {
             index,
             block: IrBlockMeta::ToolUse { name, .. },
+            refusal: _,
         } if name == "get_weather" => Some(*index),
         _ => None,
     });
@@ -166,6 +167,7 @@ fn gemini_tool_after_finish_chunk_claims_a_fresh_index() {
         IrStreamEvent::BlockStart {
             index,
             block: IrBlockMeta::ToolUse { name, .. },
+            refusal: _,
         } if name == "get_weather" => Some(*index),
         _ => None,
     });
@@ -173,6 +175,7 @@ fn gemini_tool_after_finish_chunk_claims_a_fresh_index() {
         IrStreamEvent::BlockStart {
             index,
             block: IrBlockMeta::Text,
+            refusal: _,
         } => Some(*index),
         _ => None,
     });
@@ -180,6 +183,7 @@ fn gemini_tool_after_finish_chunk_claims_a_fresh_index() {
         IrStreamEvent::BlockStart {
             index,
             block: IrBlockMeta::ToolUse { name, .. },
+            refusal: _,
         } if name == "get_time" => Some(*index),
         _ => None,
     });
@@ -295,7 +299,8 @@ fn test_stream_text_and_tool_indices_stable_and_closed() {
             e,
             IrStreamEvent::BlockStart {
                 index: 0,
-                block: IrBlockMeta::Text
+                block: IrBlockMeta::Text,
+                refusal: _,
             }
         )
     });
@@ -306,7 +311,8 @@ fn test_stream_text_and_tool_indices_stable_and_closed() {
             e,
             IrStreamEvent::BlockStart {
                 index: 1,
-                block: IrBlockMeta::ToolUse { .. }
+                block: IrBlockMeta::ToolUse { .. },
+                refusal: _,
             }
         )
     });
@@ -373,7 +379,8 @@ fn test_stream_tool_before_text_no_index_collision() {
                 e,
                 IrStreamEvent::BlockStart {
                     index: 0,
-                    block: IrBlockMeta::ToolUse { .. }
+                    block: IrBlockMeta::ToolUse { .. },
+                    refusal: _,
                 }
             )),
             "tool (first to appear) must take index 0: {events:?}"
@@ -383,7 +390,8 @@ fn test_stream_tool_before_text_no_index_collision() {
                 e,
                 IrStreamEvent::BlockStart {
                     index: 1,
-                    block: IrBlockMeta::Text
+                    block: IrBlockMeta::Text,
+                    refusal: _,
                 }
             )),
             "text (after the tool) must take index 1: {events:?}"
@@ -420,6 +428,7 @@ fn test_stream_tool_index_stable_across_chunks() {
         IrStreamEvent::BlockStart {
             index,
             block: IrBlockMeta::ToolUse { .. },
+            refusal: _,
         } => Some(*index),
         _ => None,
     });
@@ -458,6 +467,7 @@ fn test_stream_two_tools_distinct_indices() {
             IrStreamEvent::BlockStart {
                 index,
                 block: IrBlockMeta::ToolUse { .. },
+                refusal: _,
             } => Some(*index),
             _ => None,
         })
@@ -517,6 +527,7 @@ fn test_stream_tool_only_indices_contiguous_from_zero() {
             IrStreamEvent::BlockStart {
                 index,
                 block: IrBlockMeta::ToolUse { .. },
+                refusal: _,
             } => Some(*index),
             _ => None,
         })
@@ -562,7 +573,8 @@ fn test_stream_text_then_tool_keeps_text_at_zero() {
             e,
             IrStreamEvent::BlockStart {
                 index: 0,
-                block: IrBlockMeta::Text
+                block: IrBlockMeta::Text,
+                refusal: _,
             }
         )),
         "text block must open at index 0: {events:?}"
@@ -574,6 +586,7 @@ fn test_stream_text_then_tool_keeps_text_at_zero() {
             IrStreamEvent::BlockStart {
                 index,
                 block: IrBlockMeta::ToolUse { .. },
+                refusal: _,
             } => Some(*index),
             _ => None,
         })
@@ -598,6 +611,7 @@ fn test_writer_tool_blockstart_emits_no_frame() {
             id: String::new(),
             name: "get_weather".to_string(),
         },
+        refusal: false,
     };
     assert!(
         writer.write_response_event(&ev).is_none(),
@@ -612,6 +626,7 @@ fn test_writer_text_blockstart_is_none() {
     let ev = IrStreamEvent::BlockStart {
         index: 0,
         block: IrBlockMeta::Text,
+        refusal: false,
     };
     assert!(writer.write_response_event(&ev).is_none());
 }
@@ -639,6 +654,7 @@ fn test_write_request_image_s3_dropped_not_corrupted() {
                     text: "describe this".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 },
                 crate::ir::IrBlock::Image {
                     source: crate::ir::IrImageSource::Vendor {
@@ -646,6 +662,7 @@ fn test_write_request_image_s3_dropped_not_corrupted() {
                         value: serde_json::json!({ "format": "png", "s3Location": { "uri": "s3://bucket/key.png" } }),
                     },
                     cache_control: None,
+                    detail: None,
                 },
             ],
         }],
@@ -663,6 +680,16 @@ fn test_write_request_image_s3_dropped_not_corrupted() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = writer.write_request(&req);
     let wire = serde_json::to_string(&out).unwrap();
@@ -718,6 +745,7 @@ fn test_writer_tool_call_emits_single_name_and_args_part() {
                 id: String::new(),
                 name: "get_weather".to_string(),
             },
+            refusal: false,
         },
         IrStreamEvent::BlockDelta {
             index: 1,
@@ -757,6 +785,7 @@ fn test_writer_tool_call_reassembles_split_json_args() {
                 id: String::new(),
                 name: "get_weather".to_string(),
             },
+            refusal: false,
         },
         IrStreamEvent::BlockDelta {
             index: 1,
@@ -814,6 +843,7 @@ fn test_writer_tool_call_args_capped_at_max_len() {
             id: String::new(),
             name: "big_tool".to_string(),
         },
+        refusal: false,
     });
 
     // Feed fragments that sum to well past the cap. Each fragment is a run of `'a'` bytes inside a
@@ -892,6 +922,7 @@ fn test_writer_tool_call_args_under_cap_round_trips() {
                 id: String::new(),
                 name: "get_weather".to_string(),
             },
+            refusal: false,
         },
         IrStreamEvent::BlockDelta {
             index: 1,
@@ -954,6 +985,7 @@ fn test_writer_parallel_tool_calls_keep_distinct_names_and_args() {
                 id: String::new(),
                 name: "get_weather".to_string(),
             },
+            refusal: false,
         },
         IrStreamEvent::BlockStart {
             index: 2,
@@ -961,6 +993,7 @@ fn test_writer_parallel_tool_calls_keep_distinct_names_and_args() {
                 id: String::new(),
                 name: "get_time".to_string(),
             },
+            refusal: false,
         },
         IrStreamEvent::BlockDelta {
             index: 1,
@@ -1017,6 +1050,7 @@ fn test_writer_tool_call_empty_args_flushed_on_stop() {
                 id: String::new(),
                 name: "ping".to_string(),
             },
+            refusal: false,
         })
         .is_none());
     let (_, chunk) = writer
@@ -1049,6 +1083,7 @@ fn test_writer_tool_call_no_frame_before_block_stop() {
                     id: String::new(),
                     name: "get_weather".to_string(),
                 },
+                refusal: false,
             })
             .is_none(),
         "tool BlockStart must emit no frame"
@@ -1484,6 +1519,7 @@ fn foreign_stop_reason_maps_to_other_not_verbatim() {
                 text: "x".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
             stop_reason: Some(foreign),
             usage: crate::ir::IrUsage {
@@ -1500,6 +1536,7 @@ fn foreign_stop_reason_maps_to_other_not_verbatim() {
             stop_sequence: None,
 
             request_echo: None,
+            stop_detail: None,
         };
         let wire = writer.write_response(&ir);
         assert_eq!(
@@ -1517,6 +1554,7 @@ fn foreign_stop_reason_maps_to_other_not_verbatim() {
                 cache_read_input_tokens: None,
                 detail: crate::ir::IrUsageDetail::default(),
             },
+            stop_detail: None,
         };
         let (_, frame) = writer
             .write_response_event(&ev)
@@ -1543,6 +1581,7 @@ fn test_response_identity_cross_protocol_emits_foreign_id() {
             text: "hello".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: crate::ir::IrUsage {
@@ -1559,6 +1598,7 @@ fn test_response_identity_cross_protocol_emits_foreign_id() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let wire = writer.write_response(&ir);
     assert_eq!(
@@ -1582,6 +1622,7 @@ fn test_response_identity_none_id_is_omitted_not_fabricated() {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: crate::ir::IrUsage {
@@ -1598,6 +1639,7 @@ fn test_response_identity_none_id_is_omitted_not_fabricated() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let wire = writer.write_response(&ir);
     assert!(
@@ -1697,6 +1739,7 @@ fn test_write_request_omits_stream_field() {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         tools: Vec::new(),
@@ -1713,6 +1756,16 @@ fn test_write_request_omits_stream_field() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let wire = writer.write_request(&req);
     assert!(
@@ -1822,6 +1875,7 @@ fn test_write_request_thinking_only_turn_survives_with_placeholder() {
                     text: "first".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
             },
             crate::ir::IrMessage {
@@ -1831,6 +1885,8 @@ fn test_write_request_thinking_only_turn_survives_with_placeholder() {
                     signature: None,
                     redacted: false,
                     cache_control: None,
+                    kind: None,
+                    signature_origin: None,
                 }],
             },
             crate::ir::IrMessage {
@@ -1839,6 +1895,7 @@ fn test_write_request_thinking_only_turn_survives_with_placeholder() {
                     text: "second".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
             },
         ],
@@ -1856,6 +1913,16 @@ fn test_write_request_thinking_only_turn_survives_with_placeholder() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let wire = writer.write_request(&req);
     let contents = wire
@@ -1921,6 +1988,7 @@ fn test_write_request_null_tool_result_coerced_to_struct() {
                     text: "null".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
                 is_error: false,
                 cache_control: None,
@@ -1940,6 +2008,16 @@ fn test_write_request_null_tool_result_coerced_to_struct() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let wire = writer.write_request(&req);
     let response = wire
@@ -1984,6 +2062,7 @@ fn test_write_request_scalar_tool_result_coerced_to_struct() {
                     text: "42".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
                 is_error: false,
                 cache_control: None,
@@ -2003,6 +2082,16 @@ fn test_write_request_scalar_tool_result_coerced_to_struct() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let wire = writer.write_request(&req);
     let response = wire
@@ -2122,11 +2211,13 @@ fn test_write_request_tool_result_plaintext_wrapped_not_dropped() {
                         text: "sunny".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
+                        refusal: false,
                     },
                     crate::ir::IrBlock::Text {
                         text: "and warm".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
+                        refusal: false,
                     },
                 ],
                 is_error: false,
@@ -2147,6 +2238,16 @@ fn test_write_request_tool_result_plaintext_wrapped_not_dropped() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let wire = writer.write_request(&req);
     let resp = wire
@@ -2185,6 +2286,7 @@ fn test_write_request_tool_result_json_passthrough() {
                     text: "{\"temp\":21}".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
                 is_error: false,
                 cache_control: None,
@@ -2204,6 +2306,16 @@ fn test_write_request_tool_result_json_passthrough() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let wire = writer.write_request(&req);
     let temp = wire
@@ -2225,6 +2337,7 @@ fn test_response_identity_cross_protocol_synthesizes_id_when_created_set() {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: crate::ir::IrUsage {
@@ -2241,6 +2354,7 @@ fn test_response_identity_cross_protocol_synthesizes_id_when_created_set() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let wire = writer.write_response(&ir);
     let synth = wire
@@ -2949,6 +3063,7 @@ fn test_generation_config_typed_fields_override_raw_extra() {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         tools: Vec::new(),
@@ -2965,6 +3080,16 @@ fn test_generation_config_typed_fields_override_raw_extra() {
         n: None,
         response_format: None,
         extra,
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let wire = writer.write_request(&ir);
     let gc = wire
@@ -3000,6 +3125,7 @@ fn test_stream_message_delta_includes_total_token_count() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let (_, frame) = writer
         .write_response_event(&ev)
@@ -3034,6 +3160,7 @@ fn test_stream_message_delta_total_token_count_saturates() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let (_, frame) = writer
         .write_response_event(&ev)
@@ -3061,6 +3188,7 @@ fn test_write_response_includes_total_token_count_cross_protocol() {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: crate::ir::IrUsage {
@@ -3077,6 +3205,7 @@ fn test_write_response_includes_total_token_count_cross_protocol() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let wire = writer.write_response(&ir);
     assert_eq!(
@@ -3109,6 +3238,7 @@ fn test_write_response_omits_total_token_count_same_protocol() {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: crate::ir::IrUsage {
@@ -3125,6 +3255,7 @@ fn test_write_response_omits_total_token_count_same_protocol() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let wire = writer.write_response(&ir);
     assert!(
@@ -3156,6 +3287,7 @@ fn test_write_response_total_token_count_saturates() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let wire = writer.write_response(&ir);
     assert_eq!(
@@ -3184,6 +3316,7 @@ fn test_write_response_includes_total_token_count_when_only_model_present() {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: crate::ir::IrUsage {
@@ -3201,6 +3334,7 @@ fn test_write_response_includes_total_token_count_when_only_model_present() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let wire = writer.write_response(&ir);
     assert_eq!(
@@ -3242,6 +3376,7 @@ fn test_write_response_model_only_total_token_count_saturates() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let wire = writer.write_response(&ir);
     assert_eq!(
@@ -3345,6 +3480,7 @@ fn test_write_response_tool_use_maps_to_stop() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let wire = writer.write_response(&ir);
     assert_eq!(
@@ -3370,6 +3506,7 @@ fn test_stream_message_delta_tool_use_maps_to_stop() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let (_, frame) = writer
         .write_response_event(&ev)
@@ -3406,6 +3543,7 @@ fn test_write_request_image_url_sentinel_emits_file_data() {
             content: vec![crate::ir::IrBlock::Image {
                 source: crate::ir::IrImageSource::Url("https://example.com/cat.png".to_string()),
                 cache_control: None,
+                detail: None,
             }],
         }],
         tools: Vec::new(),
@@ -3422,6 +3560,16 @@ fn test_write_request_image_url_sentinel_emits_file_data() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let wire = writer.write_request(&req);
     assert_eq!(
@@ -3458,6 +3606,7 @@ fn test_write_request_base64_image_still_inline_data() {
                     data: "aGVsbG8=".to_string(),
                 },
                 cache_control: None,
+                detail: None,
             }],
         }],
         tools: Vec::new(),
@@ -3474,6 +3623,16 @@ fn test_write_request_base64_image_still_inline_data() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let wire = writer.write_request(&req);
     assert_eq!(
@@ -3840,6 +3999,7 @@ fn test_tool_role_maps_to_user_for_function_response() {
                     text: "{\"temp\":21}".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
                 is_error: false,
                 cache_control: None,
@@ -3859,6 +4019,16 @@ fn test_tool_role_maps_to_user_for_function_response() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
 
     let wire = writer.write_request(&req);
@@ -3920,6 +4090,16 @@ fn test_assistant_tool_use_stays_model_role() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
 
     let wire = writer.write_request(&req);
@@ -4139,6 +4319,7 @@ fn test_write_request_cross_protocol_function_response_name_matches_call() {
                         text: "{\"temp\":21}".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
+                        refusal: false,
                     }],
                     is_error: false,
                     cache_control: None,
@@ -4159,6 +4340,16 @@ fn test_write_request_cross_protocol_function_response_name_matches_call() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
 
     let wire = writer.write_request(&req);
@@ -4209,6 +4400,7 @@ fn test_write_request_same_protocol_function_response_name_falls_back_to_id() {
                     text: "{\"temp\":21}".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
                 is_error: false,
                 cache_control: None,
@@ -4228,6 +4420,16 @@ fn test_write_request_same_protocol_function_response_name_falls_back_to_id() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let wire = writer.write_request(&req);
     assert_eq!(
@@ -4448,6 +4650,16 @@ fn test_tool_use_array_input_coerced_to_object_args() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let wire = writer.write_request(&req);
     let args = wire
@@ -4483,6 +4695,7 @@ fn test_tool_use_array_input_coerced_to_object_args() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let rwire = writer.write_response(&resp);
     let rargs = rwire
@@ -4529,6 +4742,7 @@ fn test_tool_use_object_input_passes_through_unchanged() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let rwire = writer.write_response(&resp);
     let rargs = rwire
@@ -5055,6 +5269,7 @@ fn base_ir_request() -> crate::ir::IrRequest {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         tools: Vec::new(),
@@ -5071,6 +5286,16 @@ fn base_ir_request() -> crate::ir::IrRequest {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     }
 }
 
@@ -5284,6 +5509,8 @@ fn test_thinking_block_round_trips_in_write_request() {
             signature: Some("sig-1".to_string()),
             redacted: false,
             cache_control: None,
+            kind: None,
+            signature_origin: None,
         }],
     });
     let wire = {
@@ -6301,6 +6528,7 @@ fn write_response_reconstructs_prompt_token_count_with_cached() {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: crate::ir::IrUsage {
@@ -6317,6 +6545,7 @@ fn write_response_reconstructs_prompt_token_count_with_cached() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = {
         let w = GeminiWriter;
@@ -6489,6 +6718,16 @@ fn test_outage_cross_protocol_tool_use_gets_sentinel_thought_signature() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     super::super::chat_handle::chat_prepare_for_egress(
         &mut ir_req,
@@ -6566,6 +6805,16 @@ fn test_prepare_for_egress_does_not_overwrite_real_thought_signature() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     super::super::chat_handle::chat_prepare_for_egress(
         &mut ir_req,
@@ -6634,6 +6883,16 @@ fn test_vertex_lane_gets_no_sentinel_thought_signature() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     super::super::chat_handle::chat_prepare_for_egress(
         &mut ir_req,
@@ -6709,6 +6968,16 @@ fn test_prepare_for_egress_fills_only_missing_signatures_in_parallel_calls() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     super::super::chat_handle::chat_prepare_for_egress(
         &mut ir_req,
@@ -6780,6 +7049,7 @@ fn test_write_response_emits_real_signature_never_sentinel() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let wire = writer.write_response(&with_sig);
     assert_eq!(
@@ -7015,6 +7285,7 @@ fn test_writer_open_tools_capped_in_entry_count() {
                 id: String::new(),
                 name: "t".to_string(),
             },
+            refusal: false,
         });
     }
     let held = writer.open_tools.lock().unwrap().len();

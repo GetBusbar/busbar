@@ -20,6 +20,7 @@ fn anthropic_to_cohere_document_media_warns_not_silent() {
                     text: "summarize this".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 },
                 crate::ir::IrBlock::Media {
                     kind: crate::ir::IrMediaKind::Document,
@@ -29,6 +30,8 @@ fn anthropic_to_cohere_document_media_warns_not_silent() {
                     },
                     name: Some("report.pdf".to_string()),
                     cache_control: None,
+                    citations: None,
+                    context: None,
                 },
             ],
         }],

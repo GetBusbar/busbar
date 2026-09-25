@@ -22,6 +22,8 @@ fn audio_req(media_type: &str) -> crate::ir::IrRequest {
                 },
                 name: None,
                 cache_control: None,
+                citations: None,
+                context: None,
             }],
         }],
         ..Default::default()

@@ -807,6 +807,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
                 text,
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             })
         }
         "image_url" => {
@@ -841,6 +842,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
             Ok(crate::ir::IrBlock::Image {
                 source: super::ir_encode::parse_image_url(url),
                 cache_control: None,
+                detail: None,
             })
         }
         // An audio ATTACHMENT the caller sent for the model to listen to:
@@ -874,6 +876,8 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
                 },
                 name: None,
                 cache_control: None,
+                citations: None,
+                context: None,
             })
         }
         // A file ATTACHMENT: `{"type":"file","file":{"file_data":"data:application/pdf;base64,…",
@@ -939,6 +943,8 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
                 source,
                 name,
                 cache_control: None,
+                citations: None,
+                context: None,
             })
         }
         // OpenAI gpt-4o-and-later responses carry `refusal` content parts; a client replaying its
@@ -955,6 +961,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
                 text,
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             })
         }
         // Forward-compatibility: an unknown/future content-part type (one OpenAI adds after this
@@ -968,6 +975,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
                 text: String::new(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             })
         }
     }

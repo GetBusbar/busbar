@@ -99,6 +99,7 @@ fn test_folded_usage_without_a_finish_reason_still_unfolds() {
                 cache_read_input_tokens: None,
                 detail: crate::ir::IrUsageDetail::default(),
             },
+            stop_detail: None,
         })
         .expect("a terminal MessageDelta with counts writes a chunk");
     assert!(
@@ -144,6 +145,7 @@ fn text_block(text: &str) -> IrBlock {
         text: text.to_string(),
         cache_control: None,
         citations: Vec::new(),
+        refusal: false,
     }
 }
 
@@ -158,6 +160,7 @@ fn stream_tool_use_block_start_uses_ir_index() {
             id: "call_b".to_string(),
             name: "lookup".to_string(),
         },
+        refusal: false,
     };
     let (_, chunk) = w
         .write_response_event(&ev)
@@ -192,6 +195,7 @@ fn stream_parallel_tool_calls_do_not_collide_at_index_zero() {
             id: id.to_string(),
             name: "f".to_string(),
         },
+        refusal: false,
     };
     let mk_delta = |idx: usize, frag: &str| IrStreamEvent::BlockDelta {
         index: idx,
@@ -380,6 +384,16 @@ fn write_request_tool_result_multi_text_concatenates_without_separator() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = openai_writer().write_request(&req);
     let tool_msg = out["messages"]
@@ -440,6 +454,16 @@ fn write_request_emits_max_tokens_from_modeled_cap() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = openai_writer().write_request(&req);
     assert_eq!(out["max_tokens"], serde_json::json!(512));
@@ -574,6 +598,16 @@ fn write_request_omits_token_cap_when_absent() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = openai_writer().write_request(&req);
     let obj = out.as_object().expect("object");
@@ -618,6 +652,16 @@ fn write_request_keeps_tool_use_on_user_message() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = openai_writer().write_request(&req);
     let msgs = out["messages"].as_array().expect("messages array");
@@ -671,6 +715,16 @@ fn write_request_pure_tool_result_message_emits_only_flat_entries() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = openai_writer().write_request(&req);
     let msgs = out["messages"].as_array().expect("messages array");
@@ -732,6 +786,16 @@ fn write_request_tool_role_mixed_content_not_dropped() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = openai_writer().write_request(&req);
     let msgs = out["messages"].as_array().expect("messages array");
@@ -806,6 +870,16 @@ fn write_request_tool_result_on_user_message_emits_tool_message() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = openai_writer().write_request(&req);
     let msgs = out["messages"].as_array().expect("messages array");
@@ -858,6 +932,7 @@ fn write_response_joins_text_blocks_and_keeps_tool_calls() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = openai_writer().write_response(&resp);
     let msg = &out["choices"][0]["message"];
@@ -896,6 +971,7 @@ fn write_response_content_null_when_no_text() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = openai_writer().write_response(&resp);
     assert_eq!(
@@ -1027,6 +1103,7 @@ fn cross_protocol_write_synthesizes_valid_id() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = openai_writer().write_response(&resp);
     let id = out["id"].as_str().expect("synthesized id is a string");
@@ -1073,6 +1150,7 @@ fn cross_protocol_write_response_emits_fallback_model() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = openai_writer().write_response(&resp);
     let obj = out.as_object().expect("response object");
@@ -1107,6 +1185,7 @@ fn write_response_preserves_upstream_model_over_fallback() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = openai_writer().write_response(&resp);
     assert_eq!(out["model"], serde_json::json!("gpt-4o-mini"));
@@ -1335,6 +1414,7 @@ fn preamble_text_then_tool_then_text_opens_a_fresh_balanced_text_block() {
             IrStreamEvent::BlockStart {
                 index,
                 block: IrBlockMeta::Text,
+                refusal: _,
             } => Some(*index),
             _ => None,
         })
@@ -1386,6 +1466,7 @@ fn write_response_total_tokens_saturates_on_overflow() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     // Must not panic (debug) or wrap (release); saturates at u64::MAX.
     let out = openai_writer().write_response(&resp);
@@ -1516,6 +1597,16 @@ fn write_request_tool_call_only_assistant_has_null_content() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = openai_writer().write_request(&req);
     let msg = &out["messages"][0];
@@ -1763,6 +1854,7 @@ fn write_request_non_text_system_block_does_not_vanish_silently() {
                     data: "AAAB".to_string(),
                 },
                 cache_control: None,
+                detail: None,
             },
         ],
         system_turns_folded: 0,
@@ -1784,6 +1876,16 @@ fn write_request_non_text_system_block_does_not_vanish_silently() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = openai_writer().write_request(&req);
     let msgs = out["messages"].as_array().expect("messages");
@@ -1897,6 +1999,7 @@ fn stream_message_delta_none_stop_reason_serializes_null_not_empty_string() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let (_, chunk) = openai_writer()
         .write_response_event(&ev)
@@ -1928,6 +2031,7 @@ fn stream_message_delta_maps_stop_reasons_to_openai_enum() {
                 cache_read_input_tokens: None,
                 detail: crate::ir::IrUsageDetail::default(),
             },
+            stop_detail: None,
         };
         let (_, chunk) = openai_writer()
             .write_response_event(&ev)
@@ -1983,6 +2087,16 @@ fn write_request_assistant_tool_result_block_not_emitted_as_content() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = openai_writer().write_request(&req);
     let msgs = out["messages"].as_array().expect("messages array");
@@ -2025,6 +2139,8 @@ fn write_request_thinking_block_dropped_from_message_content() {
                     signature: None,
                     redacted: false,
                     cache_control: None,
+                    kind: None,
+                    signature_origin: None,
                 },
                 text_block("visible"),
             ],
@@ -2043,6 +2159,16 @@ fn write_request_thinking_block_dropped_from_message_content() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = openai_writer().write_request(&req);
     let content = out["messages"][0]["content"]
@@ -2139,6 +2265,7 @@ fn stream_trailing_usage_only_chunk_emits_message_delta_with_usage() {
             stop_reason,
             stop_sequence,
             usage,
+            stop_detail: _,
         } => {
             // In-progress finish per the chunk shape (no finish_reason on a usage-only chunk).
             assert_eq!(*stop_reason, None);
@@ -2271,6 +2398,7 @@ fn write_response_falls_back_to_stop_when_stop_reason_none() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = openai_writer().write_response(&resp);
     let choice = out["choices"][0].as_object().expect("choice object");
@@ -2319,6 +2447,7 @@ fn write_response_maps_finish_reason_enum_values() {
             stop_sequence: None,
 
             request_echo: None,
+            stop_detail: None,
         };
         let out = openai_writer().write_response(&resp);
         assert_eq!(
@@ -2449,6 +2578,7 @@ fn stream_tool_arg_delta_uses_recorded_block_start_index() {
             IrStreamEvent::BlockStart {
                 index,
                 block: crate::ir::IrBlockMeta::ToolUse { .. },
+                refusal: _,
             } => Some(*index),
             _ => None,
         })
@@ -2526,6 +2656,7 @@ fn stream_tool_only_yields_zero_based_tool_indices() {
             IrStreamEvent::BlockStart {
                 index,
                 block: IrBlockMeta::ToolUse { .. },
+                refusal: _,
             } => Some(*index),
             _ => None,
         })
@@ -2593,6 +2724,7 @@ fn stream_text_then_tool_keeps_text_at_zero_tool_after() {
             IrStreamEvent::BlockStart {
                 index,
                 block: IrBlockMeta::Text,
+                refusal: _,
             } => Some(*index),
             _ => None,
         })
@@ -2623,6 +2755,7 @@ fn stream_text_then_tool_keeps_text_at_zero_tool_after() {
             IrStreamEvent::BlockStart {
                 index,
                 block: IrBlockMeta::ToolUse { .. },
+                refusal: _,
             } => Some(*index),
             _ => None,
         })
@@ -2701,6 +2834,7 @@ fn stream_tool_then_text_no_index_collision_and_stops_pair() {
             IrStreamEvent::BlockStart {
                 index,
                 block: IrBlockMeta::ToolUse { .. },
+                refusal: _,
             } => Some(*index),
             _ => None,
         })
@@ -2729,6 +2863,7 @@ fn stream_tool_then_text_no_index_collision_and_stops_pair() {
             IrStreamEvent::BlockStart {
                 index,
                 block: IrBlockMeta::Text,
+                refusal: _,
             } => Some(*index),
             _ => None,
         })
@@ -2765,6 +2900,7 @@ fn stream_tool_then_text_no_index_collision_and_stops_pair() {
             IrStreamEvent::BlockStart {
                 index,
                 block: IrBlockMeta::ToolUse { .. },
+                refusal: _,
             } => Some(*index),
             _ => None,
         })
@@ -3054,6 +3190,7 @@ fn stream_message_delta_emits_usage_when_counts_nonzero() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let (_, chunk) = openai_writer()
         .write_response_event(&ev)
@@ -3083,6 +3220,7 @@ fn stream_message_delta_omits_usage_when_all_counts_zero() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let (_, chunk) = openai_writer()
         .write_response_event(&ev)
@@ -3132,6 +3270,16 @@ fn req_with_tool(
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     }
 }
 
@@ -3314,6 +3462,7 @@ fn write_response_safety_round_trips_to_content_filter() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = openai_writer().write_response(&resp);
     assert_eq!(
@@ -3334,6 +3483,7 @@ fn stream_message_delta_safety_round_trips_to_content_filter() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let (_, chunk) = openai_writer()
         .write_response_event(&ev)
@@ -3532,6 +3682,16 @@ fn write_request_string_tool_arguments_emitted_verbatim() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = openai_writer().write_request(&req);
     let args = &out["messages"][0]["tool_calls"][0]["function"]["arguments"];
@@ -3570,6 +3730,7 @@ fn write_response_string_tool_arguments_emitted_verbatim() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = openai_writer().write_response(&resp);
     let args = &out["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"];
@@ -3599,7 +3760,8 @@ fn late_reasoning_delta_after_text_does_not_shift_indices() {
             e,
             IrStreamEvent::BlockStart {
                 index: 0,
-                block: crate::ir::IrBlockMeta::Text
+                block: crate::ir::IrBlockMeta::Text,
+                refusal: _,
             }
         )),
         "text block must open at index 0, got {evs1:?}"
@@ -3622,6 +3784,7 @@ fn late_reasoning_delta_after_text_does_not_shift_indices() {
             IrStreamEvent::BlockStart {
                 index: 1,
                 block: crate::ir::IrBlockMeta::Thinking,
+                refusal: _,
             }
         )),
         "late reasoning opens a thinking block at the next free index, got {evs2:?}"
@@ -3679,7 +3842,8 @@ fn early_reasoning_delta_still_opens_thinking_at_index_0() {
             e,
             IrStreamEvent::BlockStart {
                 index: 0,
-                block: crate::ir::IrBlockMeta::Thinking
+                block: crate::ir::IrBlockMeta::Thinking,
+                refusal: _,
             }
         )),
         "early reasoning must open a thinking block at index 0, got {evs:?}"
@@ -3902,6 +4066,16 @@ fn test_ir_request() -> crate::ir::IrRequest {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     }
 }
 
@@ -4421,6 +4595,7 @@ fn test_write_request_file_id_image_dropped_not_corrupted() {
                     text: "describe this".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 },
                 crate::ir::IrBlock::Image {
                     source: crate::ir::IrImageSource::Vendor {
@@ -4428,6 +4603,7 @@ fn test_write_request_file_id_image_dropped_not_corrupted() {
                         value: serde_json::json!({ "file_id": "file-abc123" }),
                     },
                     cache_control: None,
+                    detail: None,
                 },
             ],
         }],
@@ -4445,6 +4621,16 @@ fn test_write_request_file_id_image_dropped_not_corrupted() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = writer.write_request(&req);
     let wire = serde_json::to_string(&out).unwrap();
@@ -4494,6 +4680,7 @@ fn test_write_request_image_s3_dropped_not_corrupted() {
                     text: "describe this".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 },
                 crate::ir::IrBlock::Image {
                     source: crate::ir::IrImageSource::Vendor {
@@ -4501,6 +4688,7 @@ fn test_write_request_image_s3_dropped_not_corrupted() {
                         value: serde_json::json!({ "format": "png", "s3Location": { "uri": "s3://bucket/key.png" } }),
                     },
                     cache_control: None,
+                    detail: None,
                 },
             ],
         }],
@@ -4518,6 +4706,16 @@ fn test_write_request_image_s3_dropped_not_corrupted() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = writer.write_request(&req);
     let wire = serde_json::to_string(&out).unwrap();
@@ -4640,6 +4838,7 @@ fn write_response_reconstructs_prompt_tokens_total_with_cached_details() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = openai_writer().write_response(&resp);
     assert_eq!(
@@ -4678,6 +4877,7 @@ fn write_response_omits_cached_details_when_no_cache_read() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = openai_writer().write_response(&resp);
     assert_eq!(out["usage"]["prompt_tokens"], serde_json::json!(7));
@@ -4829,6 +5029,7 @@ fn read_response_surfaces_a_refusal_as_text_and_promotes_the_stop_reason() {
             text: "I can't help with that.".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         "the refusal text must not be dropped"
     );
@@ -4872,7 +5073,8 @@ fn stream_refusal_deltas_open_a_text_block_and_promote_the_stop_reason() {
             e,
             IrStreamEvent::BlockStart {
                 index: 0,
-                block: IrBlockMeta::Text
+                block: IrBlockMeta::Text,
+                refusal: _,
             }
         )),
         "a refusal delta must open a text block, got {evs1:?}"
@@ -4941,6 +5143,7 @@ fn write_response_carries_citations_with_join_relative_offsets() {
         text: text.into(),
         cache_control: None,
         citations,
+        refusal: false,
     };
 
     let resp = crate::ir::IrResponse {
@@ -4971,6 +5174,7 @@ fn write_response_carries_citations_with_join_relative_offsets() {
         system_fingerprint: None,
 
         request_echo: None,
+        stop_detail: None,
     };
 
     let v = openai_writer().write_response(&resp);
@@ -5046,11 +5250,13 @@ fn url_annotation_base_accumulates_in_characters() {
                 text: first_block.to_string(),
                 cache_control: None,
                 citations: vec![],
+                refusal: false,
             },
             IrBlock::Text {
                 text: "claim.".to_string(),
                 cache_control: None,
                 citations: vec![cite("claim.", "https://b.test")],
+                refusal: false,
             },
         ],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
@@ -5065,6 +5271,7 @@ fn url_annotation_base_accumulates_in_characters() {
         system_fingerprint: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let v = openai_writer().write_response(&resp);
     let anns = v["choices"][0]["message"]["annotations"]
@@ -5122,6 +5329,7 @@ fn write_response_omits_annotations_when_there_are_no_citations() {
             text: "plain".into(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         stop_sequence: None,
@@ -5135,6 +5343,7 @@ fn write_response_omits_annotations_when_there_are_no_citations() {
         system_fingerprint: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let v = openai_writer().write_response(&resp);
     assert!(v["choices"][0]["message"].get("annotations").is_none());
@@ -5421,6 +5630,8 @@ fn openai_write_drops_thinking_observably() {
                 signature: None,
                 redacted: false,
                 cache_control: None,
+                kind: None,
+                signature_origin: None,
             },
             text_block("the answer"),
         ],
@@ -5440,6 +5651,7 @@ fn openai_write_drops_thinking_observably() {
         logprobs: Vec::new(),
 
         request_echo: None,
+        stop_detail: None,
     };
 
     let cap = WarnCapture::default();
@@ -5587,6 +5799,7 @@ fn plain_ir_response(logprobs: Vec<crate::ir::IrTokenLogprob>) -> crate::ir::IrR
         system_fingerprint: None,
         stop_sequence: None,
         request_echo: None,
+        stop_detail: None,
     }
 }
 

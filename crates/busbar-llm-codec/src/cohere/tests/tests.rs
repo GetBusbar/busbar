@@ -37,6 +37,7 @@ fn test_write_request() {
             text: "You are helpful.".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         system_turns_folded: 0,
         messages: vec![
@@ -46,6 +47,7 @@ fn test_write_request() {
                     text: "hi".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
             },
             crate::ir::IrMessage {
@@ -66,6 +68,7 @@ fn test_write_request() {
                         text: "result text".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
+                        refusal: false,
                     }],
                     is_error: false,
                     cache_control: None,
@@ -93,6 +96,16 @@ fn test_write_request() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
 
     let writer = CohereWriter;
@@ -149,6 +162,7 @@ fn test_read_request_roundtrip() {
                     text: "user msg".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
             },
             crate::ir::IrMessage {
@@ -157,6 +171,7 @@ fn test_read_request_roundtrip() {
                     text: "assistant msg".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
             },
         ],
@@ -174,6 +189,16 @@ fn test_read_request_roundtrip() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
 
     let writer = CohereWriter;
@@ -257,7 +282,8 @@ fn test_stream_fanout() {
         evs[0],
         crate::ir::IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::Text
+            block: crate::ir::IrBlockMeta::Text,
+            refusal: _,
         }
     ));
 
@@ -447,6 +473,7 @@ fn test_write_response_preserves_parallel_tool_calls() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
 
     let writer = CohereWriter;
@@ -502,6 +529,16 @@ fn test_write_request_sole_tooluse_omits_empty_content() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
 
     let writer = CohereWriter;
@@ -537,6 +574,7 @@ fn test_write_request_text_block_shapes() {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         tools: vec![],
@@ -553,6 +591,16 @@ fn test_write_request_text_block_shapes() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let writer = CohereWriter;
     let j = writer.write_request(&single);
@@ -570,11 +618,13 @@ fn test_write_request_text_block_shapes() {
                     text: "a".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 },
                 crate::ir::IrBlock::Text {
                     text: "b".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 },
             ],
         }],
@@ -905,6 +955,7 @@ fn test_cross_protocol_write_synthesizes_valid_id() {
             text: "hello".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: crate::ir::IrUsage {
@@ -921,6 +972,7 @@ fn test_cross_protocol_write_synthesizes_valid_id() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
 
     let writer = CohereWriter;
@@ -1104,6 +1156,7 @@ fn test_safety_finish_reason_writes_complete_non_stream() {
             text: "moderated".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::Safety),
         usage: crate::ir::IrUsage {
@@ -1120,6 +1173,7 @@ fn test_safety_finish_reason_writes_complete_non_stream() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let writer = CohereWriter;
     let body = writer.write_response(&resp);
@@ -1150,6 +1204,7 @@ fn test_safety_finish_reason_writes_complete_stream() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let writer = CohereWriter;
     let (_, frame) = writer
@@ -1226,6 +1281,7 @@ fn test_generic_error_does_not_fold_into_safety_and_round_trips() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let err_out = writer.write_response(&err_resp);
     assert_eq!(
@@ -1640,6 +1696,7 @@ fn test_write_response_tool_calls_nested_and_roundtrip() {
                 text: "calling tools".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             },
             crate::ir::IrBlock::ToolUse {
                 thought_signature: None,
@@ -1671,6 +1728,7 @@ fn test_write_response_tool_calls_nested_and_roundtrip() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
 
     let writer = CohereWriter;
@@ -1835,6 +1893,7 @@ fn test_stream_tool_call_events_mapped() {
         crate::ir::IrStreamEvent::BlockStart {
             index,
             block: crate::ir::IrBlockMeta::ToolUse { id, name },
+            refusal: _,
         } => {
             assert_eq!(*index, 0);
             assert_eq!(id, "call_1");
@@ -1917,6 +1976,7 @@ fn test_stream_tool_before_text_no_index_collision() {
         crate::ir::IrStreamEvent::BlockStart {
             index,
             block: crate::ir::IrBlockMeta::ToolUse { id, name },
+            refusal: _,
         } => {
             assert_eq!(*index, 0, "the first-arriving tool claims IR index 0");
             assert_eq!(id, "call_1");
@@ -1936,6 +1996,7 @@ fn test_stream_tool_before_text_no_index_collision() {
         crate::ir::IrStreamEvent::BlockStart {
             index,
             block: crate::ir::IrBlockMeta::Text,
+            refusal: _,
         } => *index,
         other => panic!("expected text BlockStart, got {other:?}"),
     };
@@ -2004,7 +2065,8 @@ fn test_stream_tool_before_text_no_index_collision() {
         evs[0],
         crate::ir::IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::Text
+            block: crate::ir::IrBlockMeta::Text,
+            refusal: _,
         }
     ));
     let evs = reader.read_response_events(
@@ -2058,7 +2120,8 @@ fn test_stream_text_not_reopened_after_close() {
             evs[0],
             crate::ir::IrStreamEvent::BlockStart {
                 index: 0,
-                block: crate::ir::IrBlockMeta::Thinking
+                block: crate::ir::IrBlockMeta::Thinking,
+                refusal: _,
             }
         ),
         "tool-plan opens the leading reasoning block at index 0, got {evs:?}"
@@ -2135,7 +2198,8 @@ fn test_stream_message_end_closes_dangling_text_block() {
             evs[0],
             crate::ir::IrStreamEvent::BlockStart {
                 index: 0,
-                block: crate::ir::IrBlockMeta::Thinking
+                block: crate::ir::IrBlockMeta::Thinking,
+                refusal: _,
             }
         ),
         "tool-plan opens the reasoning block, got {evs:?}"
@@ -2245,6 +2309,7 @@ fn test_stream_citations_match_non_stream() {
             crate::ir::IrStreamEvent::BlockStart {
                 index,
                 block: crate::ir::IrBlockMeta::Text,
+                refusal: _,
             } => Some(*index),
             _ => None,
         })
@@ -2526,6 +2591,7 @@ fn test_write_request_stream_field_conditional() {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         tools: vec![],
@@ -2542,6 +2608,16 @@ fn test_write_request_stream_field_conditional() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
 
     let writer = CohereWriter;
@@ -2598,6 +2674,7 @@ fn test_write_response_event_message_end_carries_usage() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let writer = CohereWriter;
     let (_, frame) = writer
@@ -2636,6 +2713,7 @@ fn test_write_response_event_message_end_zero_usage_present() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let writer = CohereWriter;
     let (_, frame) = writer
@@ -2670,6 +2748,7 @@ fn test_message_end_usage_stream_roundtrip() {
             stop_reason: Some(crate::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage.clone(),
+            stop_detail: None,
         })
         .expect("message-end must serialize");
 
@@ -2709,6 +2788,7 @@ fn test_tool_role_text_alongside_result_not_dropped() {
                     text: "note".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 },
                 crate::ir::IrBlock::ToolResult {
                     tool_use_id: "t1".to_string(),
@@ -2716,6 +2796,7 @@ fn test_tool_role_text_alongside_result_not_dropped() {
                         text: "result".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
+                        refusal: false,
                     }],
                     is_error: false,
                     cache_control: None,
@@ -2736,6 +2817,16 @@ fn test_tool_role_text_alongside_result_not_dropped() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let writer = CohereWriter;
     let out = writer.write_request(&ir);
@@ -2776,11 +2867,13 @@ fn test_tool_result_multi_block_content_joins_without_space() {
                         text: "foo".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
+                        refusal: false,
                     },
                     crate::ir::IrBlock::Text {
                         text: "bar".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
+                        refusal: false,
                     },
                 ],
                 is_error: false,
@@ -2801,6 +2894,16 @@ fn test_tool_result_multi_block_content_joins_without_space() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let writer = CohereWriter;
     let out = writer.write_request(&ir);
@@ -2832,6 +2935,7 @@ fn test_tool_role_text_without_result_not_dropped() {
                 text: "orphan tool text".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         tools: vec![],
@@ -2848,6 +2952,16 @@ fn test_tool_role_text_without_result_not_dropped() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let writer = CohereWriter;
     let out = writer.write_request(&ir);
@@ -2886,11 +3000,13 @@ fn test_tool_role_multi_text_without_result_is_string() {
                     text: "a".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 },
                 crate::ir::IrBlock::Text {
                     text: "b".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 },
             ],
         }],
@@ -2908,6 +3024,16 @@ fn test_tool_role_multi_text_without_result_is_string() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let writer = CohereWriter;
     let out = writer.write_request(&ir);
@@ -3129,6 +3255,7 @@ fn test_stream_two_sequential_tool_calls_get_distinct_indices() {
         crate::ir::IrStreamEvent::BlockStart {
             index,
             block: crate::ir::IrBlockMeta::ToolUse { id, .. },
+            refusal: _,
         } => {
             assert_eq!(id, "call_a");
             *index
@@ -3178,6 +3305,7 @@ fn test_stream_two_sequential_tool_calls_get_distinct_indices() {
         crate::ir::IrStreamEvent::BlockStart {
             index,
             block: crate::ir::IrBlockMeta::ToolUse { id, .. },
+            refusal: _,
         } => {
             assert_eq!(id, "call_b");
             *index
@@ -3368,7 +3496,8 @@ fn test_stream_tool_after_closed_text_block_does_not_reuse_index_zero() {
         &evs[0],
         crate::ir::IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::Text
+            block: crate::ir::IrBlockMeta::Text,
+            refusal: _,
         }
     ));
 
@@ -3401,6 +3530,7 @@ fn test_stream_tool_after_closed_text_block_does_not_reuse_index_zero() {
         crate::ir::IrStreamEvent::BlockStart {
             index,
             block: crate::ir::IrBlockMeta::ToolUse { .. },
+            refusal: _,
         } => *index,
         other => panic!("expected BlockStart ToolUse, got {other:?}"),
     };
@@ -3461,6 +3591,7 @@ fn test_write_response_event_emits_tool_call_frames() {
             id: "call_x".to_string(),
             name: "get_weather".to_string(),
         },
+        refusal: false,
     };
     let (_, frame) = writer
         .write_response_event(&start)
@@ -3528,6 +3659,7 @@ fn test_writer_tool_call_frames_roundtrip_through_reader() {
                 id: "call_z".to_string(),
                 name: "lookup".to_string(),
             },
+            refusal: false,
         })
         .expect("start frame");
     let (_, delta_frame) = writer
@@ -3574,12 +3706,14 @@ fn test_write_response_event_redacted_thinking_and_image_blocks_suppressed() {
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 0,
             block: crate::ir::IrBlockMeta::RedactedThinking,
+            refusal: false,
         })
         .is_none());
     assert!(writer
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 0,
             block: crate::ir::IrBlockMeta::Image,
+            refusal: false,
         })
         .is_none());
     // The plaintext reasoning block MUST open — as a native `thinking` content block.
@@ -3587,6 +3721,7 @@ fn test_write_response_event_redacted_thinking_and_image_blocks_suppressed() {
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 0,
             block: crate::ir::IrBlockMeta::Thinking,
+            refusal: false,
         })
         .expect("a reasoning block has a native Cohere opening frame");
     assert_eq!(start["type"], ET_CONTENT_START);
@@ -3963,6 +4098,7 @@ fn test_block_stop_closes_tool_block_with_tool_call_end() {
                 id: "call_1".to_string(),
                 name: "get_weather".to_string(),
             },
+            refusal: false,
         })
         .expect("tool-call-start must emit");
     assert_eq!(
@@ -3992,6 +4128,7 @@ fn test_block_stop_closes_text_block_with_content_end() {
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 0,
             block: crate::ir::IrBlockMeta::Text,
+            refusal: false,
         })
         .expect("content-start must emit");
     assert_eq!(
@@ -4020,6 +4157,7 @@ fn test_block_stop_mixed_text_and_tool_close_events() {
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 0,
             block: crate::ir::IrBlockMeta::Text,
+            refusal: false,
         })
         .expect("text start");
     // Tool block at index 1.
@@ -4030,6 +4168,7 @@ fn test_block_stop_mixed_text_and_tool_close_events() {
                 id: "call_2".to_string(),
                 name: "lookup".to_string(),
             },
+            refusal: false,
         })
         .expect("tool start");
 
@@ -4065,6 +4204,7 @@ fn test_tool_block_open_close_roundtrip_through_reader() {
                 id: "call_z".to_string(),
                 name: "lookup".to_string(),
             },
+            refusal: false,
         })
         .expect("start frame");
     let (_, stop_frame) = writer
@@ -4106,6 +4246,7 @@ fn test_block_stop_tool_index_consumed_on_close() {
                 id: "c".to_string(),
                 name: "f".to_string(),
             },
+            refusal: false,
         })
         .expect("start");
     let (_, first) = writer
@@ -4138,6 +4279,7 @@ fn test_write_response_stop_sequence_maps_to_stop_sequence() {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::StopSequence),
         usage: crate::ir::IrUsage {
@@ -4154,6 +4296,7 @@ fn test_write_response_stop_sequence_maps_to_stop_sequence() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let writer = CohereWriter;
     let out = writer.write_response(&resp);
@@ -4175,6 +4318,7 @@ fn test_write_response_end_turn_maps_to_complete() {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: crate::ir::IrUsage {
@@ -4191,6 +4335,7 @@ fn test_write_response_end_turn_maps_to_complete() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let writer = CohereWriter;
     let out = writer.write_response(&resp);
@@ -4216,6 +4361,7 @@ fn test_stream_message_delta_stop_sequence_maps_to_stop_sequence() {
                 cache_read_input_tokens: None,
                 detail: crate::ir::IrUsageDetail::default(),
             },
+            stop_detail: None,
         })
         .expect("message-end frame");
     assert_eq!(
@@ -4371,7 +4517,11 @@ fn test_text_block_normalized_to_ir_index_zero() {
         &mut state,
     );
     match cs.as_slice() {
-        [IrStreamEvent::BlockStart { index, block }] => {
+        [IrStreamEvent::BlockStart {
+            index,
+            block,
+            refusal: _,
+        }] => {
             assert_eq!(
                 *index, 0,
                 "text BlockStart must be normalized to IR index 0"
@@ -4513,6 +4663,7 @@ fn test_thinking_blockstop_emits_no_orphan_content_end() {
     let start = writer.write_response_event(&IrStreamEvent::BlockStart {
         index: 0,
         block: crate::ir::IrBlockMeta::RedactedThinking,
+        refusal: false,
     });
     assert!(
         start.is_none(),
@@ -4530,6 +4681,7 @@ fn test_thinking_blockstop_emits_no_orphan_content_end() {
     let start = writer.write_response_event(&IrStreamEvent::BlockStart {
         index: 1,
         block: crate::ir::IrBlockMeta::Thinking,
+        refusal: false,
     });
     assert_eq!(start.expect("thinking opens").1["type"], ET_CONTENT_START);
     let stop = writer.write_response_event(&IrStreamEvent::BlockStop { index: 1 });
@@ -4545,6 +4697,7 @@ fn test_text_block_emits_balanced_content_start_and_end() {
     let start = writer.write_response_event(&IrStreamEvent::BlockStart {
         index: 0,
         block: crate::ir::IrBlockMeta::Text,
+        refusal: false,
     });
     let (_, start_data) = start.expect("Text BlockStart must emit a content-start frame");
     assert_eq!(
@@ -4578,6 +4731,7 @@ fn ir_with_tool_choice(tc: Option<crate::ir::IrToolChoice>) -> crate::ir::IrRequ
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         tools: vec![crate::ir::IrTool {
@@ -4603,6 +4757,16 @@ fn ir_with_tool_choice(tc: Option<crate::ir::IrToolChoice>) -> crate::ir::IrRequ
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     }
 }
 
@@ -4920,6 +5084,7 @@ fn tool_choice_maps_to_cohere_native_strings() {
                     text: "hi".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
             }],
             // `tools` is required alongside `tool_choice` — omitting it would test
@@ -5024,6 +5189,7 @@ fn n_candidate_count_never_emitted_on_cohere() {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         ..Default::default()
@@ -5077,7 +5243,8 @@ fn test_stream_tool_plan_delta_becomes_leading_reasoning_before_tool_call() {
             &evs[0],
             crate::ir::IrStreamEvent::BlockStart {
                 index: 0,
-                block: crate::ir::IrBlockMeta::Thinking
+                block: crate::ir::IrBlockMeta::Thinking,
+                refusal: _,
             }
         ),
         "first tool-plan-delta must open a leading reasoning block at index 0, got {evs:?}"
@@ -5133,7 +5300,7 @@ fn test_stream_tool_plan_delta_becomes_leading_reasoning_before_tool_call() {
             &evs[1],
             crate::ir::IrStreamEvent::BlockStart {
                 index: 1,
-                block: crate::ir::IrBlockMeta::ToolUse { id, name }
+                block: crate::ir::IrBlockMeta::ToolUse { id, name }, refusal: _,
             } if id == "t1" && name == "get_weather"
         ),
         "the tool must open at index 1, after the leading plan Text at index 0, got {evs:?}"
@@ -5154,6 +5321,7 @@ fn test_write_response_reemits_folded_tool_plan_as_content_not_tool_plan() {
                 text: "First I will check the weather.".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             },
             crate::ir::IrBlock::ToolUse {
                 thought_signature: None,
@@ -5179,6 +5347,7 @@ fn test_write_response_reemits_folded_tool_plan_as_content_not_tool_plan() {
         logprobs: Vec::new(),
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = writer.write_response(&resp);
     let message = out.get("message").expect("message");

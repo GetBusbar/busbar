@@ -103,6 +103,7 @@ fn cache_control_breakpoints_clamped_to_four_on_anthropic_egress() {
         text: t.to_string(),
         cache_control: cc,
         citations: Vec::new(),
+        refusal: false,
     };
 
     // 6 breakpoints total: one on `system`, five spread across two user messages.
