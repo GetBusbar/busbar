@@ -39,12 +39,10 @@ use serde::de::{DeserializeSeed, Deserializer, Error as _, IntoDeserializer, Map
 use serde::Deserialize;
 
 use super::DeployCfg;
-// The `mcp:` endpoint carrier is lifted through the config seam's plane-NEUTRAL spellings
-// (`EndpointSection` / `ENDPOINT_SECTION_KEY`), so this generic lift machinery names no concrete
-// plane (DECISIONS #1). The other carriers are already neutrally named.
+// Every carrier is lifted through the config seam's plane-NEUTRAL spellings, so this generic lift
+// machinery names no concrete plane (DECISIONS #1).
 use crate::plane::config::{
     AgentsSection, DecisionsSection, EndpointSection, StreamsSection, ToolsSection,
-    ENDPOINT_SECTION_KEY,
 };
 
 /// One lifted key's parse-and-bank step: deserialize the key's value straight into `Target` on the
@@ -68,7 +66,7 @@ trait LiftableSection: for<'de> Deserialize<'de> {
 }
 
 impl LiftableSection for EndpointSection {
-    const KEY: &'static str = ENDPOINT_SECTION_KEY;
+    const KEY: &'static str = EndpointSection::SECTION;
     fn bank(self, into: &mut Lifted) {
         into.endpoint = Some(self);
     }
@@ -103,7 +101,7 @@ impl LiftableSection for StreamsSection {
 }
 
 impl LiftableSection for DecisionsSection {
-    const KEY: &'static str = "decisions";
+    const KEY: &'static str = DecisionsSection::SECTION;
     fn bank(self, into: &mut Lifted) {
         into.decisions = Some(self);
     }
@@ -126,7 +124,9 @@ impl LiftableSection for crate::config::AuthPolicyCfg {
 /// In order: busbar's OWN endpoint as an OAuth 2.1 resource server; busbar AS an OAuth 2.1
 /// authorization server; then, one per registered plane that declares a top-level config section
 /// of its own — a remote-endpoint registry, a named-definition registry, a session-policy section,
-/// and a decision-model registry.
+/// and a decision-model registry. The ORDER is read by position: the endpoint and decision-model
+/// carriers take their key from entries 0 and 5 (`EndpointSection::SECTION`,
+/// `DecisionsSection::SECTION`), so this list is the only place either key is spelled.
 pub(crate) const LIFTED_TOP_LEVEL_KEYS: &[&str] =
     &["mcp", "oauth_as", "tools", "agents", "streams", "decisions"];
 

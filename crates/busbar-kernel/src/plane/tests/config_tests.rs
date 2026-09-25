@@ -140,10 +140,10 @@ fn the_parse_time_refusal_fires_on_a_name_nothing_defines() {
     // `Unknown`, because there is nothing there to have crossed a boundary.
     let empty: PlaneSections<u8> = PlaneSections::default();
     assert_eq!(
-        empty.resolve("mcp", "agents.planner"),
+        empty.resolve("tools", "agents.planner"),
         Err(RefError::Unknown {
             name: "agents.planner".to_string(),
-            plane: "mcp"
+            plane: "tools"
         }),
         "the resolve-time rule cannot see a shape violation; only the parse-time rule can"
     );

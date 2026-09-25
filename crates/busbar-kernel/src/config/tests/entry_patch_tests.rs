@@ -12,7 +12,7 @@ use serde_json::json;
 #[test]
 fn named_fields_land_and_unnamed_fields_survive() {
     let mut target = json!({
-        "url": "https://mcp.internal/fs",
+        "url": "https://tools.internal/fs",
         "transport": "http",
         "pin": { "mechanism": "cert_spki", "key": "sha256/PIN==" }
     });
@@ -20,7 +20,7 @@ fn named_fields_land_and_unnamed_fields_survive() {
     assert_eq!(
         target,
         json!({
-            "url": "https://mcp.internal/fs",
+            "url": "https://tools.internal/fs",
             "transport": "stdio",
             "pin": { "mechanism": "cert_spki", "key": "sha256/PIN==" }
         })

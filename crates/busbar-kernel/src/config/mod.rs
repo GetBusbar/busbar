@@ -1181,7 +1181,7 @@ pub struct DeployCfg {
     /// resource server. Its PRESENCE is what mounts that plane's endpoint — absent, the deployment
     /// carries no ingress for it and no `.well-known` document, and nothing joins the route table.
     /// See that plane's own endpoint config type.
-    // Type-erased through the neutral `McpEndpointSection` seam: the `mcp:` block deserializes into
+    // Type-erased through the neutral `EndpointSection` seam: the `mcp:` block deserializes into
     // its owning plane's own endpoint config behind `dyn PlaneEndpointCfg`, so `DeployCfg` names no
     // plane-specific endpoint type. The plane compiled out captures it raw and refuses a present block
     // at `resolve` (the deletion-gate leg).
@@ -2661,7 +2661,7 @@ pub fn resolve(
     // one obvious place to add it, beside the two already there, rather than a shape to re-copy.
     for (section, present) in [
         ("streams", deploy.streams.0.is_present()),
-        ("decisions", deploy.decisions.0.is_present()),
+        (DecisionsSection::SECTION, deploy.decisions.0.is_present()),
     ] {
         if present {
             plane_sections.insert(section);

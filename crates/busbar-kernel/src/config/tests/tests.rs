@@ -2311,6 +2311,7 @@ fn on_error_cfg_as_name_unwraps_both_variants() {
 /// rather than N near-identical single-purpose tests.
 #[test]
 fn serde_default_fns_return_their_documented_constants() {
+    // plane-purity: frozen-wire the omitted-`protocol:` default in the frozen providers.yaml config grammar (frozen since 1.5.3)
     assert_eq!(default_protocol(), "anthropic");
     assert_eq!(default_min_requests(), 5);
     assert_eq!(default_max_cooldown(), 120);
@@ -3761,11 +3762,11 @@ fn failover_pools_are_absent_by_default() {
     let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
     assert!(
         cfg.tool_pools.is_empty(),
-        "no MCP failover unless asked for"
+        "no tool-plane failover unless asked for"
     );
     assert!(
         cfg.agent_pools.is_empty(),
-        "no A2A failover unless asked for"
+        "no agent-plane failover unless asked for"
     );
 }
 

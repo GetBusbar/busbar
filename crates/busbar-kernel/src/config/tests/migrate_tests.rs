@@ -2578,11 +2578,11 @@ fn migrate_renames_mcp_refresh_ttl_to_verify_ttl_with_a_warning() {
 tools:
   servers:
     fs:
-      url: "https://fs.example.com/mcp"
+      url: "https://fs.example.com/rpc"
       pin: { mechanism: cert_spki, key: "sha256:abc" }
       refresh_ttl: "6h"
     docs:
-      url: "https://docs.example.com/mcp"
+      url: "https://docs.example.com/rpc"
       pin: { mechanism: unpinned }
 "#;
     let out = migrate_config(raw).expect("migrates");

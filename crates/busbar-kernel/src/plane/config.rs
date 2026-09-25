@@ -357,9 +357,15 @@ impl<'de> serde::Deserialize<'de> for StreamsSection {
 #[derive(Debug)]
 pub struct DecisionsSection(pub Box<dyn PlaneCfg>);
 
+impl DecisionsSection {
+    /// The top-level key this carrier is lifted from, read off the pre-pass's lift list — the one
+    /// place the key is spelled, because `cargo xtask gate config-schema` reads that list as source
+    /// literals (see [`crate::config::prepass::LIFTED_TOP_LEVEL_KEYS`]).
+    pub(crate) const SECTION: &'static str = crate::config::prepass::LIFTED_TOP_LEVEL_KEYS[5];
+}
 impl Default for DecisionsSection {
     fn default() -> Self {
-        DecisionsSection(default_plane_section("decisions"))
+        DecisionsSection(default_plane_section(Self::SECTION))
     }
 }
 impl<'de> serde::Deserialize<'de> for DecisionsSection {
@@ -367,17 +373,25 @@ impl<'de> serde::Deserialize<'de> for DecisionsSection {
     where
         D: serde::Deserializer<'de>,
     {
-        deserialize_plane_section("decisions", deserializer).map(DecisionsSection)
+        deserialize_plane_section(Self::SECTION, deserializer).map(DecisionsSection)
     }
 }
 
-/// THE `mcp:` ENDPOINT BLOCK as it lands in `DeployCfg`, type-erased behind [`PlaneEndpointCfg`] — the
+/// THE ENDPOINT BLOCK as it lands in `DeployCfg`, type-erased behind [`PlaneEndpointCfg`] — the
 /// neutral seam the owning plane's own endpoint-config type deserializes through. Absent/null ⇒
 /// `None` (endpoint not configured), byte-identical to the pre-seam typed field's `Default`.
 #[derive(Debug, Default)]
-pub struct McpEndpointSection(pub Option<Box<dyn PlaneEndpointCfg>>);
+pub struct EndpointSection(pub Option<Box<dyn PlaneEndpointCfg>>);
 
-impl<'de> serde::Deserialize<'de> for McpEndpointSection {
+impl EndpointSection {
+    /// The top-level key the endpoint block is lifted from, read off the pre-pass's lift list — the
+    /// one place the key is spelled (see [`DecisionsSection::SECTION`] for why it is a list entry).
+    /// It is 1.6.0-additive (`v1.5.3` and `v1.5.5` ship no such `DeployCfg` field, item 2), so no
+    /// frozen-wire exemption covers it.
+    pub(crate) const SECTION: &'static str = crate::config::prepass::LIFTED_TOP_LEVEL_KEYS[0];
+}
+
+impl<'de> serde::Deserialize<'de> for EndpointSection {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -388,21 +402,14 @@ impl<'de> serde::Deserialize<'de> for McpEndpointSection {
             busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
             deserializer,
         )
-        .map(McpEndpointSection)
+        .map(EndpointSection)
     }
 }
 
-/// THE FROZEN TOP-LEVEL WIRE KEY the `mcp:` endpoint block is lifted from — owned HERE, in the config
-/// seam beside its frozen carrier, so core's config PRE-PASS routes the lift through a plane-neutral
-/// spelling and names no concrete plane in its parse machinery (DECISIONS #1). NOT frozen: the
-/// `mcp:` key is 1.6.0-additive — `v1.5.3` and `v1.5.5` both ship a 26-field `DeployCfg` with no
-/// `mcp:` field (item 2) — so this literal carries no frozen-wire exemption and `plane-purity:key`
-/// counts it as the core-names-a-plane debt it is.
-pub(crate) const ENDPOINT_SECTION_KEY: &str = "mcp";
-
-/// The NEUTRAL ALIAS of the `mcp:` endpoint carrier type — the spelling the pre-pass lifts through so
-/// its generic lift machinery names no plane. Resolves to the snapshot-recorded [`McpEndpointSection`].
-pub(crate) type EndpointSection = McpEndpointSection;
+/// The spelling `DeployCfg`'s endpoint carrier field is declared with, because
+/// `config/config-schema.snapshot.json` records the field's type under this name and the snapshot
+/// must not move. Nothing else names it: the carrier is [`EndpointSection`].
+pub type McpEndpointSection = EndpointSection;
 
 /// EVERY TOP-LEVEL CONFIG SECTION a bare hook reference could be reaching onto, DERIVED from the two
 /// tables that declare the config grammar rather than written as a literal.
