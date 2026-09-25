@@ -308,7 +308,10 @@ async fn admin_corpus_reconciles_with_the_served_router() {
         unserved.is_empty(),
         "admin-bodies.json names operations this build does not serve: {unserved:?}"
     );
-    let unbound_uncorpused: Vec<&Op> = unbound.iter().filter(|op| !entries.contains_key(*op)).collect();
+    let unbound_uncorpused: Vec<&Op> = unbound
+        .iter()
+        .filter(|op| !entries.contains_key(*op))
+        .collect();
     assert!(
         unbound_uncorpused.is_empty(),
         "declared-but-unbound operations with NO admin-bodies.json entry (no cell can show they \
