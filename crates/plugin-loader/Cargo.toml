@@ -118,3 +118,11 @@ libc = { workspace = true }
 # back to the in-tree busbar-store-example-plugin when the sqlite sibling is not built; under CI a
 # missing fixture is a hard failure, never a skip. The sibling-built one is required only under
 # qa-gate.yml's `loader` leg (see store_fixture_plugin_path()'s doc comment in src/lib.rs).
+
+# THE BOTH-WAYS FIXTURES: <cold kind> = "<fixture crate>". `build.rs` turns these rows into the table
+# `src/tests/both_ways.rs` includes, so each conformance test reaches its kind's fixture by KIND and no
+# test source names a plugin instance. A fixture here is also a dev-dependency above: the linked door
+# needs its `rlib`, the dropped-in door its `cdylib`.
+[package.metadata.busbar.both-ways]
+store = "busbar-store-example-plugin"
+secret = "busbar-secret-example-plugin"

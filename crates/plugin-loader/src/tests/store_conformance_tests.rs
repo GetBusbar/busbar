@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **`kind: store`, BOTH WAYS** (DECISIONS #2 rule (1), K5). The in-tree store example registered
-//! through the LINKED door (its `rlib`'s `BUSBAR_COLD_ENTRY`) and the DROPPED-IN door (its `cdylib`,
-//! signed into `plugins/`) resolves to the byte-identical registry row, and the store each door's
-//! `open_store` opens answers one script byte-identically. See [`super::both_ways`].
+//! **`kind: store`, BOTH WAYS** (DECISIONS #2 rule (1), K5). The store kind's in-tree fixture
+//! registered through the LINKED door (its `rlib`'s `BUSBAR_COLD_ENTRY`) and the DROPPED-IN door
+//! (its `cdylib`, signed into `plugins/`) resolves to the byte-identical registry row, and the
+//! store each door's `open_store` opens answers one script byte-identically. See
+//! [`super::both_ways`].
 //!
-//! RED by planting the door bypass the axis replaces — linked rows handed to [`PluginRegistry::link`]
-//! and never registered — which leaves the linked registry with no row for the name.
+//! RED by planting the door bypass the axis replaces — linked rows handed to
+//! [`PluginRegistry::link`] and never registered — which leaves the linked registry with no row for
+//! the name.
 
 use super::both_ways::{both_doors, statement};
 use busbar_api::{ScopeRef, Store, VirtualKey};
@@ -34,28 +36,26 @@ fn script(store: &dyn Store) -> String {
     )
 }
 
-/// THE EXIT TEST: the store example linked and dropped in registers the same row and opens a store
+/// THE EXIT TEST: the store fixture linked and dropped in registers the same row and opens a store
 /// that answers the same.
 #[test]
 fn a_linked_and_a_dropped_in_store_register_byte_identical_rows() {
     let manifest = statement(
         "store",
-        "store-example",
-        "example-store",
+        "store-fixture",
+        "the-store",
         busbar_plugin::cold::ABI_VERSION,
     );
     let Some([linked, dropped]) = both_doors(
         manifest,
-        &busbar_store_example_plugin::BUSBAR_COLD_ENTRY,
-        "busbar_store_example_plugin",
         |registry| {
             registry
-                .open_store("example-store", "{}")
+                .open_store("the-store", "{}")
                 .expect("the store opens through its alias")
         },
         |opened| script(opened.as_ref()),
     ) else {
-        eprintln!("skip: store example cdylib not built");
+        eprintln!("skip: the store fixture's cdylib is not built");
         return;
     };
     assert!(

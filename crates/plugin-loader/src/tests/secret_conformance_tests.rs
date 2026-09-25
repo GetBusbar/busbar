@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **`kind: secret`, BOTH WAYS** (DECISIONS #2 rule (1), K5). The in-tree secret example registered
-//! through the LINKED door (its `rlib`'s `BUSBAR_COLD_ENTRY`) and the DROPPED-IN door (its `cdylib`,
-//! signed into `plugins/`) resolves to the byte-identical registry row, and the module each door's
-//! `open_secret` opens resolves one script byte-identically — a hit, a miss and a malformed
-//! reference, the two refusals with their kind and text. See [`super::both_ways`].
+//! **`kind: secret`, BOTH WAYS** (DECISIONS #2 rule (1), K5). The secret kind's in-tree fixture
+//! registered through the LINKED door (its `rlib`'s `BUSBAR_COLD_ENTRY`) and the DROPPED-IN door
+//! (its `cdylib`, signed into `plugins/`) resolves to the byte-identical registry row, and the
+//! module each door's `open_secret` opens resolves one script byte-identically — a hit, a miss and
+//! a malformed reference, the two refusals with their kind and text. See [`super::both_ways`].
 //!
-//! RED by planting the door bypass the axis replaces — linked rows handed to [`PluginRegistry::link`]
-//! and never registered — which leaves the linked registry with no row for the name.
+//! RED by planting the door bypass the axis replaces — linked rows handed to
+//! [`PluginRegistry::link`] and never registered — which leaves the linked registry with no row for
+//! the name.
 
 use super::both_ways::{both_doors, statement};
 use busbar_api::SecretModule;
@@ -32,28 +33,26 @@ fn script(module: &dyn SecretModule) -> String {
         .join("\n")
 }
 
-/// THE EXIT TEST: the secret example linked and dropped in registers the same row and opens a module
-/// that resolves the same.
+/// THE EXIT TEST: the secret fixture linked and dropped in registers the same row and opens a
+/// module that resolves the same.
 #[test]
 fn a_linked_and_a_dropped_in_secret_module_register_byte_identical_rows() {
     let manifest = statement(
         "secret",
-        "secret-example",
-        "example-secret",
+        "secret-fixture",
+        "the-secret",
         busbar_plugin::cold::SECRET_ABI_VERSION,
     );
     let Some([linked, dropped]) = both_doors(
         manifest,
-        &busbar_secret_example_plugin::BUSBAR_COLD_ENTRY,
-        "busbar_secret_example_plugin",
         |registry| {
             registry
-                .open_secret("example-secret", r#"{"map": {"db-password": "hunter2"}}"#)
+                .open_secret("the-secret", r#"{"map": {"db-password": "hunter2"}}"#)
                 .expect("the secret module opens through its alias")
         },
         |opened| script(opened.as_ref()),
     ) else {
-        eprintln!("skip: secret example cdylib not built");
+        eprintln!("skip: the secret fixture's cdylib is not built");
         return;
     };
     assert!(

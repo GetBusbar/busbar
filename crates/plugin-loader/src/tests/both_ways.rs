@@ -11,6 +11,10 @@
 //! own `open_*`, runs one script against each opened instance, and requires the two rows and the two
 //! transcripts to be byte-identical.
 //!
+//! Each kind's fixture comes from the table `build.rs` generates out of `Cargo.toml`'s
+//! `[package.metadata.busbar.both-ways]` ([`fixture`]): the tests reach a fixture by its KIND, and no
+//! test source names a plugin instance.
+//!
 //! What is compared is the plugin's STATEMENT (its manifest, every field but the two that describe
 //! a tarball — `sha256` and `signature`) and its BEHAVIOUR. What is not compared is provenance —
 //! the tarball's `file` and the trust `verdict` — which belongs to the door, exactly as the export
@@ -20,6 +24,19 @@ use crate::sign::{sign, Manifest, SigningKey, TrustPolicy};
 use crate::{LinkedPlugin, PluginRegistry};
 use busbar_plugin::cold::ColdEntry;
 use std::path::PathBuf;
+
+include!(concat!(env!("OUT_DIR"), "/both_ways.rs"));
+
+/// The both-ways fixture of `kind`: its `cdylib`'s crate name and its linked entry.
+pub(crate) fn fixture(kind: &str) -> (&'static str, &'static ColdEntry) {
+    FIXTURES
+        .iter()
+        .find(|(k, ..)| *k == kind)
+        .map(|&(_, krate, entry)| (krate, entry))
+        .unwrap_or_else(|| {
+            panic!("no `{kind}` row in Cargo.toml's [package.metadata.busbar.both-ways]")
+        })
+}
 
 /// The manifest both doors state for the plugin: a first-party `name`/`alias` of `kind` at payload
 /// schema `abi_version`, with no artifact.
@@ -119,16 +136,15 @@ pub(crate) fn row(registry: &PluginRegistry, name: &str) -> String {
     serde_json::json!({ "manifest": stated, "alias_resolves_to": by_alias }).to_string()
 }
 
-/// Both doors for one plugin: `(row, transcript)` for the LINKED registration, then for the DROPPED
-/// one — each registry's row for `manifest.name`, and `script` run over what `open` makes of it.
-/// `None` when the `cdylib` is not built in this (scoped, non-CI) run.
+/// Both doors for the fixture of `manifest.kind`: `(row, transcript)` for the LINKED registration,
+/// then for the DROPPED one — each registry's row for `manifest.name`, and `script` run over what
+/// `open` makes of it. `None` when the `cdylib` is not built in this (scoped, non-CI) run.
 pub(crate) fn both_doors<T>(
     manifest: Manifest,
-    entry: &'static ColdEntry,
-    crate_snake: &str,
     open: impl Fn(&PluginRegistry) -> T,
     script: impl Fn(&T) -> String,
 ) -> Option<[(String, String); 2]> {
+    let (crate_snake, entry) = fixture(&manifest.kind);
     let lib = std::fs::read(cdylib(crate_snake)?).expect("read the cdylib");
     let name = manifest.name.clone();
     let doors = [
