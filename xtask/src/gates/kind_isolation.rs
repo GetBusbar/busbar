@@ -2782,6 +2782,167 @@ fn banned_for(kind: &str, planes: &BTreeSet<String>) -> Vec<(String, &'static st
     out
 }
 
+// How many per-file READINGS this thread has actually performed (a memo miss in [`vocab_lines`] or
+// [`source_facts`]) — the exit tests' probe for "an unchanged file is read once". Thread-local, so
+// parallel tests cannot see each other's reads.
+#[cfg(test)]
+thread_local! {
+    static READINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// ONE PRODUCTION LINE AS [`rule_vocab`] READS IT: literals blanked, lowercased, and the crate-path
+/// tokens it carries.
+struct VocabLine {
+    lineno: usize,
+    /// The line with its literals blanked — what a finding quotes.
+    code: String,
+    /// `code`, lowercased — what every needle is put to.
+    lower: String,
+    /// Every maximal `[a-z0-9_-]` run that ends immediately before a `::` in `lower`.
+    toks: Vec<String>,
+}
+
+impl VocabLine {
+    fn new(lineno: usize, code: String) -> VocabLine {
+        let lower = code.to_lowercase();
+        let b = lower.as_bytes();
+        let mut toks = Vec::new();
+        let mut p = 0usize;
+        while p + 1 < b.len() {
+            if b[p] == b':' && b[p + 1] == b':' {
+                let mut s = p;
+                while s > 0 && path_byte(b[s - 1]) {
+                    s -= 1;
+                }
+                if s < p {
+                    toks.push(lower[s..p].to_string());
+                }
+            }
+            p += 1;
+        }
+        VocabLine {
+            lineno,
+            code,
+            lower,
+            toks,
+        }
+    }
+}
+
+/// The crate name of a `name::` path when asking a [`VocabLine`]'s tokens about it is EXACTLY
+/// `line.lower.contains(path)`; `None` when only the substring search will do.
+///
+/// Such a path occurs in a line iff some `::` in it is preceded by the name, and when the name is
+/// made only of `[a-z0-9_-]` that is iff the name is a SUFFIX of the maximal run of those bytes
+/// ending at that `::` — which is what [`VocabLine::toks`] holds. A name with any other byte (or no
+/// trailing `::`) is put to the line the long way, so the answer is the same for every input.
+fn simple_path_name(path: &str) -> Option<&str> {
+    let name = path.strip_suffix("::")?;
+    (!name.is_empty() && name.bytes().all(path_byte)).then_some(name)
+}
+
+fn path_byte(c: u8) -> bool {
+    c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'-'
+}
+
+/// [`rule_vocab`]'s reading of one file, MEMOISED on its path and bytes.
+///
+/// The rule used to re-read every production line of every kind-bearing source file — blank the
+/// literals, lowercase, and put ~140 crate paths to each line by substring search — on every gate
+/// run. A self-test case is a gate run over a tree one plant away from the last, so that was 727 s
+/// of the `kind-isolation` battery spent re-reading files no case had touched. The reading is a
+/// pure function of `(path, bytes)`; the verdict over it is still taken fresh on every run, against
+/// that run's own crates, dependencies and kind.
+static VOCAB_LINES_MEMO: std::sync::OnceLock<
+    std::sync::Mutex<BTreeMap<u64, std::sync::Arc<Vec<VocabLine>>>>,
+> = std::sync::OnceLock::new();
+
+fn vocab_key(rel: &str, text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    rel.hash(&mut h);
+    text.hash(&mut h);
+    h.finish()
+}
+
+fn vocab_lines(rel: &str, text: &str) -> std::sync::Arc<Vec<VocabLine>> {
+    let key = vocab_key(rel, text);
+    let memo = VOCAB_LINES_MEMO.get_or_init(Default::default);
+    if let Some(found) = memo
+        .lock()
+        .expect("the vocab memo mutex is never poisoned")
+        .get(&key)
+    {
+        return std::sync::Arc::clone(found);
+    }
+    #[cfg(test)]
+    READINGS.with(|n| n.set(n.get() + 1));
+    let lines: Vec<VocabLine> = scan::production_lines(text)
+        .into_iter()
+        .map(|(lineno, code)| VocabLine::new(lineno, scan::blank_literals(&code)))
+        .collect();
+    let lines = std::sync::Arc::new(lines);
+    memo.lock()
+        .expect("the vocab memo mutex is never poisoned")
+        .insert(key, std::sync::Arc::clone(&lines));
+    lines
+}
+
+/// Every `(line index, needle index)` where a BANNED needle names itself in the file, memoised on
+/// the path, the bytes and the banned list — everything the answer reads.
+static VOCAB_BANNED_MEMO: std::sync::OnceLock<BannedMemo> = std::sync::OnceLock::new();
+
+/// key -> every `(line index, needle index)` hit.
+type BannedMemo = std::sync::Mutex<BTreeMap<u64, std::sync::Arc<Vec<(usize, usize)>>>>;
+
+fn vocab_banned_hits(
+    rel: &str,
+    text: &str,
+    lines: &[VocabLine],
+    banned: &[(String, &'static str)],
+) -> std::sync::Arc<Vec<(usize, usize)>> {
+    if banned.is_empty() {
+        return std::sync::Arc::new(Vec::new());
+    }
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        vocab_key(rel, text).hash(&mut h);
+        banned.hash(&mut h);
+        h.finish()
+    };
+    let memo = VOCAB_BANNED_MEMO.get_or_init(Default::default);
+    if let Some(found) = memo
+        .lock()
+        .expect("the vocab memo mutex is never poisoned")
+        .get(&key)
+    {
+        return std::sync::Arc::clone(found);
+    }
+    let mut hits = Vec::new();
+    for (at, line) in lines.iter().enumerate() {
+        let lower = &line.lower;
+        for (n, (needle, _)) in banned.iter().enumerate() {
+            let hit = if needle.contains(':') || needle.ends_with('_') || needle.ends_with('-') {
+                lower.contains(needle.as_str())
+            } else {
+                word_ci(lower, needle)
+            };
+            if hit && is_grpc_library_vocab(needle, lower) {
+                continue;
+            }
+            if hit {
+                hits.push((at, n));
+            }
+        }
+    }
+    let hits = std::sync::Arc::new(hits);
+    memo.lock()
+        .expect("the vocab memo mutex is never poisoned")
+        .insert(key, std::sync::Arc::clone(&hits));
+    hits
+}
+
 fn rule_vocab(cx: &Ctx, crates: &[CrateInfo], planes: &BTreeSet<String>) -> Row {
     let kind_of: BTreeMap<&str, &'static str> = crates
         .iter()
@@ -2810,7 +2971,10 @@ fn rule_vocab(cx: &Ctx, crates: &[CrateInfo], planes: &BTreeSet<String>) -> Row 
     // its own manifest declares the edge. Both spellings, because `busbar_plane_llm::` and
     // `busbar-plane-llm` are one crate and a rule that reads one of them reads half the tree.
     let by_dir: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.dir.as_str(), c)).collect();
-    let crate_paths: Vec<(String, String)> = crates
+    //
+    // Each path carries its name when the name is SIMPLE (see [`simple_path_name`]), so a line can
+    // be asked about it through the `::` tokens it carries instead of by a substring search.
+    let crate_paths: Vec<(String, String, Option<String>)> = crates
         .iter()
         .flat_map(|c| {
             [
@@ -2818,7 +2982,12 @@ fn rule_vocab(cx: &Ctx, crates: &[CrateInfo], planes: &BTreeSet<String>) -> Row 
                 (format!("{}::", c.name), c.name.clone()),
             ]
         })
+        .map(|(path, owner)| {
+            let simple = simple_path_name(&path).map(str::to_string);
+            (path, owner, simple)
+        })
         .collect();
+    let every_path_simple = crate_paths.iter().all(|(_, _, simple)| simple.is_some());
 
     let mut offenders: Vec<String> = Vec::new();
     let mut scanned = 0usize;
@@ -2839,11 +3008,13 @@ fn rule_vocab(cx: &Ctx, crates: &[CrateInfo], planes: &BTreeSet<String>) -> Row 
         };
         let banned = banned_for(kind, planes);
         scanned += 1;
-        for (lineno, code) in scan::production_lines(&f.text) {
-            // BLANK THE LITERALS FIRST. A ban on an identifier that would equally match its own
-            // prose in a `format!` is a ban that reds on documentation.
-            let code = scan::blank_literals(&code);
-            let lower = code.to_lowercase();
+        let lines = vocab_lines(&rel, &f.text);
+        for line in lines.iter() {
+            if every_path_simple && line.toks.is_empty() {
+                continue;
+            }
+            let lineno = line.lineno;
+            let code = &line.code;
 
             // NO CRATE NAMES A CRATE IT DOES NOT DEPEND ON, whatever kind either of them is.
             //
@@ -2854,8 +3025,17 @@ fn rule_vocab(cx: &Ctx, crates: &[CrateInfo], planes: &BTreeSet<String>) -> Row 
             // is not a longer list of kind words: it is that naming a crate path you declare no
             // dependency on is a reach with no edge to score, in EVERY direction at once. Where the
             // dependency exists the edge is in the ledger, at its exact count, with its verdict.
-            for (path, owner) in &crate_paths {
-                if owner.as_str() == me.name || !lower.contains(path.as_str()) {
+            for (path, owner, simple) in &crate_paths {
+                if owner.as_str() == me.name {
+                    continue;
+                }
+                let named = match simple {
+                    // A line with no `name::` token names no simple crate path at all, which is
+                    // most lines: they are skipped without putting a single path to them.
+                    Some(name) => line.toks.iter().any(|t| t.ends_with(name.as_str())),
+                    None => line.lower.contains(path.as_str()),
+                };
+                if !named {
                     continue;
                 }
                 if me
@@ -2873,24 +3053,15 @@ fn rule_vocab(cx: &Ctx, crates: &[CrateInfo], planes: &BTreeSet<String>) -> Row 
                     code.trim()
                 ));
             }
-
-            for (needle, why) in &banned {
-                let hit = if needle.contains(':') || needle.ends_with('_') || needle.ends_with('-')
-                {
-                    lower.contains(needle.as_str())
-                } else {
-                    word_ci(&lower, needle)
-                };
-                if hit && is_grpc_library_vocab(needle, &lower) {
-                    continue;
-                }
-                if hit {
-                    offenders.push(format!(
-                        "{needle}\t{rel}:{lineno}\t{why} ({kind} crate): {}",
-                        code.trim()
-                    ));
-                }
-            }
+        }
+        for &(at, n) in vocab_banned_hits(&rel, &f.text, &lines, &banned).iter() {
+            let line = &lines[at];
+            let (needle, why) = &banned[n];
+            offenders.push(format!(
+                "{needle}\t{rel}:{}\t{why} ({kind} crate): {}",
+                line.lineno,
+                line.code.trim()
+            ));
         }
     }
 
@@ -3668,8 +3839,8 @@ fn index_sources(cx: &Ctx) -> Result<SourceIndex, String> {
         let Some(dir) = owning_dir(&rel) else {
             continue;
         };
-        if rel.starts_with(&format!("{dir}/tests/")) && rel.contains(CONFORMANCE_MARKER) {
-            let (live, _ignored) = live_battery_entries(&f.text);
+        let facts = source_facts(&rel, &dir, &f.text);
+        if let Some(live) = facts.live {
             if live > 0 {
                 idx.conformance.insert(dir.clone());
                 idx.conformance_dead.remove(&dir);
@@ -3677,30 +3848,99 @@ fn index_sources(cx: &Ctx) -> Result<SourceIndex, String> {
                 idx.conformance_dead.insert(dir.clone());
             }
         }
-        if !is_shipped_source(&rel) {
+        if !facts.shipped {
             continue;
         }
-        if rel == format!("{dir}/src/lib.rs") {
+        if let Some(found) = &facts.mods {
             idx.has_lib.insert(dir.clone());
-            let mods = idx.skeleton.entry(dir.clone()).or_default();
-            for (_, code) in scan::production_lines(&f.text) {
+            idx.skeleton
+                .entry(dir.clone())
+                .or_default()
+                .extend(found.iter().cloned());
+        }
+        let counts = idx.impls.entry(dir.clone()).or_default();
+        for t in &facts.heads {
+            *counts.entry(t.clone()).or_default() += 1;
+        }
+    }
+    Ok(idx)
+}
+
+/// WHAT ONE FILE CONTRIBUTES TO THE SOURCE INDEX — a pure function of its path and its bytes.
+///
+/// [`index_sources`] used to re-derive all of it for every one of the ~1 700 source files on every
+/// gate run, and a self-test case IS a gate run over a tree that differs from the last one by a
+/// plant or two: 365 s of the `kind-isolation` battery went on re-reading `impl` heads out of files
+/// no case had touched. The fold over the files is unchanged; only the per-file reading is
+/// remembered, keyed on everything it reads (see [`SOURCE_FACTS_MEMO`]).
+struct SourceFacts {
+    /// `Some(live entries)` when the file is a `tests/*conformance*` battery of its crate.
+    live: Option<usize>,
+    /// Whether the file is shipped source at all.
+    shipped: bool,
+    /// `Some(mod names)` when the file is its crate's `src/lib.rs` (and shipped).
+    mods: Option<Vec<String>>,
+    /// Every trait-impl head in it, when shipped; empty otherwise.
+    heads: Vec<String>,
+}
+
+/// The per-file memo behind [`source_facts`]. The key hashes the path, the owning directory and the
+/// bytes — every input the reading has — so a hit is a memo and never a stale reading, and a plant
+/// that changes a file changes its key.
+static SOURCE_FACTS_MEMO: std::sync::OnceLock<
+    std::sync::Mutex<BTreeMap<u64, std::sync::Arc<SourceFacts>>>,
+> = std::sync::OnceLock::new();
+
+fn source_facts(rel: &str, dir: &str, text: &str) -> std::sync::Arc<SourceFacts> {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    rel.hash(&mut h);
+    dir.hash(&mut h);
+    text.hash(&mut h);
+    let key = h.finish();
+    let memo = SOURCE_FACTS_MEMO.get_or_init(Default::default);
+    if let Some(found) = memo
+        .lock()
+        .expect("the source-facts memo mutex is never poisoned")
+        .get(&key)
+    {
+        return std::sync::Arc::clone(found);
+    }
+    #[cfg(test)]
+    READINGS.with(|n| n.set(n.get() + 1));
+    let live = (rel.starts_with(&format!("{dir}/tests/")) && rel.contains(CONFORMANCE_MARKER))
+        .then(|| live_battery_entries(text).0);
+    let shipped = is_shipped_source(rel);
+    let mut mods = None;
+    let mut heads = Vec::new();
+    if shipped {
+        if rel == format!("{dir}/src/lib.rs") {
+            let mut found = Vec::new();
+            for (_, code) in scan::production_lines(text) {
                 let t = code.trim();
                 let body = t
                     .strip_prefix("pub mod ")
                     .or_else(|| t.strip_prefix("mod "));
                 if let Some(name) = body.and_then(|b| b.split(&[';', ' ', '{'][..]).next()) {
                     if !name.is_empty() {
-                        mods.insert(name.to_string());
+                        found.push(name.to_string());
                     }
                 }
             }
+            mods = Some(found);
         }
-        let counts = idx.impls.entry(dir.clone()).or_default();
-        for t in impl_heads(&f.text) {
-            *counts.entry(t).or_default() += 1;
-        }
+        heads = impl_heads(text);
     }
-    Ok(idx)
+    let facts = std::sync::Arc::new(SourceFacts {
+        live,
+        shipped,
+        mods,
+        heads,
+    });
+    memo.lock()
+        .expect("the source-facts memo mutex is never poisoned")
+        .insert(key, std::sync::Arc::clone(&facts));
+    facts
 }
 
 fn rule_shape(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
@@ -8508,5 +8748,110 @@ mod plant_tests {
             &rule_wires(&planted, &crates_of(&planted).0),
             &["unregistered-wire", "busbar-transport-stdio"],
         );
+    }
+}
+
+#[cfg(test)]
+mod memo_tests {
+    use super::*;
+
+    fn reads() -> usize {
+        READINGS.with(|n| n.get())
+    }
+
+    /// `:vocab` READS AN UNCHANGED FILE ONCE. It used to re-read every production line of every
+    /// kind-bearing source file on every gate run — 727 s of a 2 393 s `kind-isolation` battery,
+    /// re-reading files no case had touched.
+    #[test]
+    fn the_vocabulary_rule_reads_an_unchanged_file_once() {
+        let rel = "crates/zz-vocab-probe/src/lib.rs";
+        let text = "use busbar_plane_llm::X;\nfn f() {}\n";
+        let start = reads();
+        let a = vocab_lines(rel, text);
+        let b = vocab_lines(rel, text);
+        assert_eq!(
+            reads() - start,
+            1,
+            "the second ask is answered from the memo"
+        );
+        assert!(std::sync::Arc::ptr_eq(&a, &b));
+        let _ = vocab_lines(rel, "use busbar_plane_mcp::X;\n");
+        assert_eq!(
+            reads() - start,
+            2,
+            "changed bytes are a new reading, never a stale one"
+        );
+    }
+
+    /// `:faces`' SOURCE INDEX READS AN UNCHANGED FILE ONCE — 365 s of the same battery.
+    #[test]
+    fn the_source_index_reads_an_unchanged_file_once() {
+        let dir = "crates/zz-index-probe";
+        let rel = "crates/zz-index-probe/src/lib.rs";
+        let text = "pub mod wire;\nimpl busbar_contract::Plane for Wire {}\n";
+        let start = reads();
+        let a = source_facts(rel, dir, text);
+        let b = source_facts(rel, dir, text);
+        assert_eq!(
+            reads() - start,
+            1,
+            "the second ask is answered from the memo"
+        );
+        assert!(std::sync::Arc::ptr_eq(&a, &b));
+        assert_eq!(a.mods.as_deref(), Some(&["wire".to_string()][..]));
+        assert_eq!(a.heads, vec!["Plane".to_string()]);
+        let _ = source_facts(rel, dir, "pub mod other;\n");
+        assert_eq!(
+            reads() - start,
+            2,
+            "changed bytes are a new reading, never a stale one"
+        );
+    }
+
+    /// THE TOKEN READING OF A CRATE PATH IS THE SUBSTRING READING, for every line and every name
+    /// here — including the ones that must fall back to the substring search. `:vocab` asks ~140
+    /// crate paths of every line; asking them through the `name::` tokens a line carries is the
+    /// same question only if this holds.
+    #[test]
+    fn a_crate_path_read_off_the_tokens_is_the_substring_reading() {
+        let lines = [
+            "use busbar_plane_llm::Thing;",
+            "let x = xbusbar_plane_llm::y;",
+            "busbar-plane-llm::",
+            "a::b::c::busbar_plane_llm",
+            ":::busbar_x:::y",
+            "Busbar_Plane_LLM::x",
+            "é::busbar_x::é",
+            "busbar_x :: y",
+            "plane_llm::x and llm::y",
+            "::",
+            "",
+            "busbar_plane_llm:: busbar_plane_mcp::",
+            "<busbar_x as T>::f",
+            "r#busbar_x::y",
+        ];
+        let paths = [
+            "busbar_plane_llm::",
+            "busbar-plane-llm::",
+            "plane_llm::",
+            "llm::",
+            "busbar_x::",
+            "x::",
+            "busbar_plane_mcp::",
+            "Busbar_X::",
+            "é::",
+            "::",
+        ];
+        for raw in lines {
+            let line = VocabLine::new(1, raw.to_string());
+            for path in paths {
+                let want = line.lower.contains(path);
+                let got = match simple_path_name(path) {
+                    Some(name) => line.toks.iter().any(|t| t.ends_with(name)),
+                    None => line.lower.contains(path),
+                };
+                assert_eq!(got, want, "line {raw:?}, path {path:?}");
+            }
+        }
     }
 }
