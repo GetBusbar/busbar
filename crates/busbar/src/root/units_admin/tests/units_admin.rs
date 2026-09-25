@@ -394,9 +394,9 @@ fn the_audit_doors_carry_no_credential_into_the_sealed_facts() {
 /// writing them.
 ///
 /// Three postures over the same step, and each one is a different failure if the seam is not
-/// consulted. Under a fleet that sealed dual control, one principal's export is REFUSED — a step
-/// that wrote `approved` for itself would let a single operator take the keyset out of a node
-/// whose whole reason for sealing the posture was that no single operator can. Under a fleet that
+/// consulted. Under a fleet that sealed dual control, one principal's mutation is REFUSED — a step
+/// that wrote `approved` for itself would let a single operator change a node whose whole reason
+/// for sealing the posture was that no single operator can. Under a fleet that
 /// HAS run the ceremony, a disaster-recovery verb is ADMITTED — a step that wrote `unset` for
 /// itself refused the very operators who ran the ceremony, permanently and with no way to lift
 /// it. And a posture the node cannot read at all is refused rather than guessed.
@@ -455,9 +455,12 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
         },
         ApprovalState::NotYetApproved,
     )));
-    assert!(
-        under("/api/v1/admin/export-keyset", required).is_err(),
-        "one principal exported the keyset out of a fleet that sealed dual control"
+    // The maker-checker refusal, said in the kernel's vocabulary (`verbs_reason`: a pending approval
+    // is a veto).
+    assert_eq!(
+        under("/api/v1/admin/plane-record-write", required),
+        Err(ReasonCode::HookVeto),
+        "one principal's mutation passed a fleet that sealed dual control"
     );
 
     let ceremony_run = Sealed(Some((
@@ -1286,12 +1289,12 @@ fn a_verb_the_table_never_named_has_nowhere_to_go_and_a_resolved_one_has_nowhere
 fn the_audit_doors_seal_the_resolved_class_and_append_to_no_ring() {
     let mut mutating = a_request();
     mutating.method = "POST".to_string();
-    mutating.path = "/api/v1/admin/operator-key".to_string();
+    mutating.path = "/api/v1/admin/plane-record-write".to_string();
     let (binding, ctx, seal) = a_bound_unit(mutating.clone());
     let resolved = binding
         .units
         .verb(ctx.key)
-        .expect("the operator-key write is a row the table names");
+        .expect("the plane-record write is a row the table names");
     assert!(!resolved.read_only, "the fixture must be a mutation");
     binding
         .units
@@ -1397,11 +1400,11 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
     };
 
     // A root-only mutation that applied: exactly one row, under its own name, `applied`.
-    let (binding, ctx, seal) = a_bound_unit(mutating("/api/v1/admin/operator-key"));
+    let (binding, ctx, seal) = a_bound_unit(mutating("/api/v1/admin/plane-record-write"));
     let resolved = binding
         .units
         .verb(ctx.key)
-        .expect("the operator-key write is a row the table names");
+        .expect("the plane-record write is a row the table names");
     assert!(!resolved.read_only, "the fixture must be a mutation");
     binding.units.set_principal(ctx.key, PrincipalId::new(WHO));
     binding.units.set_answer(
@@ -1466,7 +1469,7 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
     binding.units.close(ctx.key);
 
     // A refused mutation by somebody the node identified is recorded as an attempt, not dropped.
-    let (binding, ctx, seal) = a_bound_unit(mutating("/api/v1/admin/operator-key"));
+    let (binding, ctx, seal) = a_bound_unit(mutating("/api/v1/admin/plane-record-write"));
     binding.units.set_principal(ctx.key, PrincipalId::new(WHO));
     let before = the_one_rings_rows_by(WHO).len();
     let _ = audit_refused(

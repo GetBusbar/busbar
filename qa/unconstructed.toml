@@ -287,7 +287,13 @@ switch    = "STRIKE THIS ROW in the commit that converts a child hold at parent 
 # currency"): the mutators `RateCard::set_rate`/`set_fee` had no production caller and are DELETED —
 # a card is built whole by its constructors, so no second path can move a price.
 
-# ─── THE THIRTEEN 1.6.0 MONEY-GOVERNANCE VERBS WITH NO EFFECT BOUND (architect ruling 2026-09-24) ───
+# ─── THE 1.6.0 MONEY-GOVERNANCE VERBS WITH NO EFFECT BOUND (architect ruling 2026-09-24) ───
+#
+# Thirteen when armed; FIVE STRUCK 2026-09-25 (UC-STRIKE, owner ruling 2026-09-08, ARCHITECTURE
+# section 4.7 + admin-new-verbs-contract.md): `admin-verb-{set-operator-key,set-escrow,
+# set-dual-control,export-keyset,approve}-effect`. Those five left 1.6.0: their `KernelVerb`
+# variants, `NEW_VERBS` entries, table rows and posture code are DELETED, and their paths answer the
+# unmounted 404 exactly as they did while unbound. Eight remain below.
 #
 # Each resolves in the closed verb table (`crates/busbar-core-admin/src/admin_codec/verbs.rs`) and
 # has NO effect behind it: measured 2026-09-24, every one walked the scope, operator and dual-control
@@ -330,36 +336,6 @@ scope     = ["crates"]
 why       = "`POST /api/v1/admin/plane-record-write` is declared in the closed verb table but no effect is bound to it, so an operator cannot write a plane record entry; the node does not serve the path (unmounted 404, no audit row) and the document does not describe it."
 unshipped = true
 switch    = "STRIKE THIS ROW in the commit that binds the effect: a production call to plane_record_write_effect( reached from the composition root's execute_new_verb, and an effect_bound arm for KernelVerb naming this verb, so the mount serves it and the generated document describes it."
-
-[[capability]]
-id        = "admin-verb-set-operator-key-effect"
-built     = "crates/busbar-core-admin/src/verb.rs"
-symbol    = "effect_bound"
-construct = ["set_operator_key_effect("]
-scope     = ["crates"]
-why       = "`POST /api/v1/admin/operator-key` is declared in the closed verb table but no effect is bound to it, so an operator cannot seal the fleet's operator public key; the node does not serve the path (unmounted 404, no audit row) and the document does not describe it."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that binds the effect: a production call to set_operator_key_effect( reached from the composition root's execute_new_verb, and an effect_bound arm for KernelVerb naming this verb, so the mount serves it and the generated document describes it."
-
-[[capability]]
-id        = "admin-verb-set-escrow-effect"
-built     = "crates/busbar-core-admin/src/verb.rs"
-symbol    = "effect_bound"
-construct = ["set_escrow_effect("]
-scope     = ["crates"]
-why       = "`POST /api/v1/admin/escrow` is declared in the closed verb table but no effect is bound to it, so an operator cannot set the M-of-N key-loss escrow; the node does not serve the path (unmounted 404, no audit row) and the document does not describe it."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that binds the effect: a production call to set_escrow_effect( reached from the composition root's execute_new_verb, and an effect_bound arm for KernelVerb naming this verb, so the mount serves it and the generated document describes it."
-
-[[capability]]
-id        = "admin-verb-set-dual-control-effect"
-built     = "crates/busbar-core-admin/src/verb.rs"
-symbol    = "effect_bound"
-construct = ["set_dual_control_effect("]
-scope     = ["crates"]
-why       = "`POST /api/v1/admin/dual-control` is declared in the closed verb table but no effect is bound to it, so an operator cannot flip the dual-control posture between single and required; the node does not serve the path (unmounted 404, no audit row) and the document does not describe it."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that binds the effect: a production call to set_dual_control_effect( reached from the composition root's execute_new_verb, and an effect_bound arm for KernelVerb naming this verb, so the mount serves it and the generated document describes it."
 
 [[capability]]
 id        = "admin-verb-set-overdraft-ceiling-effect"
@@ -410,23 +386,3 @@ scope     = ["crates"]
 why       = "`POST /api/v1/admin/slices/resolve` is declared in the closed verb table but no effect is bound to it, so an operator cannot resolve a slice-level dispute; the node does not serve the path (unmounted 404, no audit row) and the document does not describe it."
 unshipped = true
 switch    = "STRIKE THIS ROW in the commit that binds the effect: a production call to resolve_slice_effect( reached from the composition root's execute_new_verb, and an effect_bound arm for KernelVerb naming this verb, so the mount serves it and the generated document describes it."
-
-[[capability]]
-id        = "admin-verb-export-keyset-effect"
-built     = "crates/busbar-core-admin/src/verb.rs"
-symbol    = "effect_bound"
-construct = ["export_keyset_effect("]
-scope     = ["crates"]
-why       = "`POST /api/v1/admin/export-keyset` is declared in the closed verb table but no effect is bound to it, so an operator cannot export the deployment keyset sealed to a recipient public key; the node does not serve the path (unmounted 404, no audit row) and the document does not describe it."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that binds the effect: a production call to export_keyset_effect( reached from the composition root's execute_new_verb, and an effect_bound arm for KernelVerb naming this verb, so the mount serves it and the generated document describes it."
-
-[[capability]]
-id        = "admin-verb-approve-effect"
-built     = "crates/busbar-core-admin/src/verb.rs"
-symbol    = "effect_bound"
-construct = ["approve_effect("]
-scope     = ["crates"]
-why       = "`POST /api/v1/admin/approve` is declared in the closed verb table but no effect is bound to it, so an operator cannot approve a held mutation (the maker-checker verb); the node does not serve the path (unmounted 404, no audit row) and the document does not describe it."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that binds the effect: a production call to approve_effect( reached from the composition root's execute_new_verb, and an effect_bound arm for KernelVerb naming this verb, so the mount serves it and the generated document describes it."

@@ -4,7 +4,7 @@
 //! THE 1.6.0 KERNEL VERBS, IN THE ONE DOCUMENT.
 //!
 //! The closed verb table (`admin_codec::verbs`) declares 26 operations 1.6.0 adds to the
-//! administrative surface: the 18 money-governance verbs ([`NEW_VERBS`]), the five ledger views
+//! administrative surface: the 13 money-governance verbs ([`NEW_VERBS`]), the five ledger views
 //! ([`LEDGER_VERBS`]) and the three audit-chain reads ([`AUDIT_VERBS`]). The router in this crate
 //! mounts none of them. The node's administrative mount walks every row the table declares whose
 //! effect is bound through the kernel loop, and it is the composition root's route step that answers them — the ledger and

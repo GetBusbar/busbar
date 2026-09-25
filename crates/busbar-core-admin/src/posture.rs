@@ -1,29 +1,31 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Dual-control posture and the operator-key ceremony gate, for the 17 new 1.6.0 verbs.
+//! Dual-control posture and the operator-key gate, for the new 1.6.0 verbs
+//! ([`crate::verb::NEW_VERBS`]).
 //!
 //! Two independent gates, both sealed at `Bootstrap` and both read here as plain values the
 //! integrator resolves from the sealed `Policy` (the resolution itself — reading the journal — is a
 //! `// contract:` seam; see `the integrator's policy read`):
 //!
-//! - **Operator state.** `unset` (no ceremony run yet) refuses every irreducible verb except
-//!   [`KernelVerb::SetOperatorKey`] and [`KernelVerb::ExportKeyset`] — the two verbs a fleet needs
-//!   to run the ceremony and to back up its keyset first. `set` lifts that refusal.
+//! - **Operator state.** `unset` (no operator key sealed) refuses every irreducible verb; `set`
+//!   lifts that refusal. The two ceremony verbs that used to be admitted under `unset`
+//!   (`set_operator_key`, `export_keyset`) left 1.6.0 by the owner's 2026-09-08 ruling: the
+//!   operator key is configured (`auth.operator_pub`), and keyset export is an off-node CLI.
 //! - **Dual-control posture.** `single` (the default on upgrade and on a fresh install) admits
-//!   every verb immediately. `required` needs a matching `approve` for every mutating verb except
-//!   `approve` itself, whose only controls are payload-hash equality and the `SelfApproval`
-//!   refusal.
+//!   every verb immediately. `required` needs a matching approval for every mutating verb. The
+//!   `approve` and `set_dual_control` verbs left 1.6.0 by the same ruling, so no node seals
+//!   `required` and the integrator resolves [`ApprovalState::NotYetApproved`].
 //!
 //! Both gates apply to the SAME verb call in sequence: operator state is checked first (it is the
 //! narrower, harder failure — a fleet that has never run the ceremony has no meaningful
 //! maker-checker state to check either), then dual-control posture.
 
 use crate::refusal::{ReasonCode, Refusal, RefusalStep};
-use crate::verb::{KernelVerb, ADMITTED_UNDER_UNSET, IRREDUCIBLE_VERBS, READ_ONLY_NEW_VERBS};
+use crate::verb::{KernelVerb, IRREDUCIBLE_VERBS, READ_ONLY_NEW_VERBS};
 
-/// Whether the operator-key ceremony (`busbar operator keygen` + `set_operator_key`) has run, and
-/// when it has, the raw 32-byte ed25519 public key it sealed.
+/// Whether an operator key is sealed (`auth.operator_pub`), and when it is, the raw 32-byte ed25519
+/// public key.
 ///
 /// The key travels ON the state on purpose: the gate below only needs to know a ceremony ran, but the
 /// verbs whose signatures are checked against the sealed key (D38 `amend_rate_history`) need the key
@@ -83,8 +85,7 @@ pub enum ApprovalState {
 }
 
 /// Check the operator-ceremony gate for an irreducible verb. Returns `Ok(())` when the verb is
-/// either not irreducible, or irreducible and admitted (operator set, or one of the two verbs
-/// admitted under `unset`). A verb this crate does not classify as irreducible is never refused
+/// either not irreducible, or irreducible and admitted (operator set). A verb this crate does not classify as irreducible is never refused
 /// here regardless of operator state — this gate is scoped to exactly the closed
 /// [`IRREDUCIBLE_VERBS`] list.
 pub fn check_operator_gate(verb: KernelVerb, operator: OperatorState) -> Result<(), Refusal> {
@@ -94,26 +95,17 @@ pub fn check_operator_gate(verb: KernelVerb, operator: OperatorState) -> Result<
     if !IRREDUCIBLE_VERBS.contains(&verb) {
         return Ok(());
     }
-    if ADMITTED_UNDER_UNSET.contains(&verb) {
-        return Ok(());
-    }
     Err(Refusal::new(RefusalStep::Admit, ReasonCode::OperatorUnset))
 }
 
 /// Check the dual-control gate for a mutating verb, given the caller's own [`ApprovalState`] for
-/// the pending mutation (irrelevant, and never consulted, under `Single`). `approve` itself is
-/// never subject to this gate (the architecture document: "maker-checker applies to every mutating
-/// verb except `approve` itself"); its own [`ApprovalState::SelfApproved`] /
-/// [`ApprovalState::PayloadMismatch`] outcomes are surfaced by calling [`check_approve`] instead.
+/// the pending mutation (irrelevant, and never consulted, under `Single`).
 pub fn check_dual_control(
     verb: KernelVerb,
     dual_control: DualControl,
     approval: ApprovalState,
 ) -> Result<(), Refusal> {
-    if verb == KernelVerb::Approve {
-        return Ok(());
-    }
-    // Maker-checker is scoped to MUTATING verbs, and two of the seventeen are not: `verify` and
+    // Maker-checker is scoped to MUTATING verbs, and two of the new verbs are not: `verify` and
     // `plane_facts` are bound `GET`. A read has no pending mutation, so there is nothing a checker
     // could ever approve for it — holding one here does not delay it, it refuses it for as long as
     // the posture stands, and `verify` is the check an operator runs to find out what state the
@@ -140,38 +132,7 @@ pub fn check_dual_control(
     }
 }
 
-/// The `approve` verb's own admission check: the approver must differ from the maker, and the
-/// payload hash it carries must equal the pending mutation's. Distinct from
-/// [`check_dual_control`], which gates every OTHER mutating verb on `approve`'s outcome; this is
-/// the check `approve` itself runs.
-pub fn check_approve(maker: &str, approver: &str, payload_matches: bool) -> Result<(), Refusal> {
-    if maker == approver {
-        return Err(Refusal::new(RefusalStep::Approve, ReasonCode::SelfApproval));
-    }
-    if !payload_matches {
-        return Err(Refusal::new(
-            RefusalStep::Approve,
-            ReasonCode::PayloadMismatch,
-        ));
-    }
-    Ok(())
-}
-
-/// `set_dual_control(required)` needs at least two distinct admin principals configured —
-/// otherwise the fleet could seal `required` with no second checker able to ever approve anything.
-/// `distinct_admin_principals` is the count the integrator resolves from governance
-/// (`// contract:`).
-pub fn check_set_dual_control_required(distinct_admin_principals: usize) -> Result<(), Refusal> {
-    if distinct_admin_principals < 2 {
-        return Err(Refusal::new(
-            RefusalStep::Approve,
-            ReasonCode::InsufficientApprovers,
-        ));
-    }
-    Ok(())
-}
-
-/// The full posture check for the 17 new verbs, run in the order the module doc names: operator
+/// The full posture check for the new verbs, run in the order the module doc names: operator
 /// gate first, then dual control. Legacy verbs and named surfaces are never subject to either gate
 /// here (the architecture document scopes the operator/dual-control machinery to the irreducible
 /// set and the mutating-verb maker-checker rule, both of which this crate reads through

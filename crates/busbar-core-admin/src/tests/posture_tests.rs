@@ -1,32 +1,27 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Posture-rule assertions for the 17 new verbs: refused under `operator: unset` except
-//! `set_operator_key` and `export_keyset`; refused under `required` dual control without a
-//! matching, non-self, payload-matching `approve`; `approve` itself is never subject to the
-//! dual-control gate.
+//! Posture-rule assertions for the new verbs: an irreducible one is refused under
+//! `operator: unset`; a mutating one is refused under `required` dual control without a matching,
+//! non-self, payload-matching approval.
 
 use crate::posture::{
-    check_approve, check_dual_control, check_new_verb_admission, check_operator_gate,
-    check_set_dual_control_required, ApprovalState, DualControl, OperatorState, PostureCtx,
+    check_dual_control, check_new_verb_admission, check_operator_gate, ApprovalState, DualControl,
+    OperatorState, PostureCtx,
 };
 use crate::refusal::ReasonCode;
 use crate::verb::{KernelVerb, NEW_VERBS};
 
 #[test]
-fn every_new_verb_except_set_operator_key_and_export_keyset_is_refused_under_unset() {
+fn every_irreducible_new_verb_is_refused_under_unset() {
     for verb in NEW_VERBS {
         let result = check_operator_gate(*verb, OperatorState::Unset);
         match verb {
-            KernelVerb::SetOperatorKey | KernelVerb::ExportKeyset => {
-                assert!(result.is_ok(), "{verb:?} must be admitted under unset");
-            }
             KernelVerb::PlaneFacts
             | KernelVerb::PlaneRecordWrite
             | KernelVerb::SetOverdraftCeiling
             | KernelVerb::SetDisputeMaxAge
             | KernelVerb::ResolveSlice
-            | KernelVerb::Approve
             | KernelVerb::Verify => {
                 // Not in the irreducible set: the operator gate never applies to these.
                 assert!(
@@ -56,7 +51,7 @@ fn every_new_verb_is_admitted_once_operator_is_set() {
 #[test]
 fn single_posture_admits_every_mutating_verb_with_no_approval() {
     assert!(check_dual_control(
-        KernelVerb::SetEscrow,
+        KernelVerb::PlaneRecordWrite,
         DualControl::Single,
         ApprovalState::NotYetApproved
     )
@@ -66,7 +61,7 @@ fn single_posture_admits_every_mutating_verb_with_no_approval() {
 #[test]
 fn required_posture_refuses_without_a_matching_approval() {
     let err = check_dual_control(
-        KernelVerb::SetEscrow,
+        KernelVerb::PlaneRecordWrite,
         DualControl::Required,
         ApprovalState::NotYetApproved,
     )
@@ -77,7 +72,7 @@ fn required_posture_refuses_without_a_matching_approval() {
 #[test]
 fn required_posture_admits_with_a_matching_approval() {
     assert!(check_dual_control(
-        KernelVerb::SetEscrow,
+        KernelVerb::PlaneRecordWrite,
         DualControl::Required,
         ApprovalState::Approved
     )
@@ -87,7 +82,7 @@ fn required_posture_admits_with_a_matching_approval() {
 #[test]
 fn required_posture_surfaces_self_approval_and_payload_mismatch() {
     let self_approved = check_dual_control(
-        KernelVerb::SetEscrow,
+        KernelVerb::PlaneRecordWrite,
         DualControl::Required,
         ApprovalState::SelfApproved,
     )
@@ -95,7 +90,7 @@ fn required_posture_surfaces_self_approval_and_payload_mismatch() {
     assert_eq!(self_approved.reason, ReasonCode::SelfApproval);
 
     let mismatch = check_dual_control(
-        KernelVerb::SetEscrow,
+        KernelVerb::PlaneRecordWrite,
         DualControl::Required,
         ApprovalState::PayloadMismatch,
     )
@@ -103,22 +98,10 @@ fn required_posture_surfaces_self_approval_and_payload_mismatch() {
     assert_eq!(mismatch.reason, ReasonCode::PayloadMismatch);
 }
 
-#[test]
-fn approve_itself_is_never_subject_to_the_dual_control_gate() {
-    // Even with `NotYetApproved` (nonsensical for `approve`, but the gate must exempt the verb
-    // outright rather than rely on the caller never passing that combination).
-    assert!(check_dual_control(
-        KernelVerb::Approve,
-        DualControl::Required,
-        ApprovalState::NotYetApproved
-    )
-    .is_ok());
-}
-
 /// A read is not a mutation, so the maker-checker gate has nothing of its to hold.
 ///
-/// The document scopes maker-checker to "every mutating verb except `approve` itself", and
-/// `verify`/`plane_facts` are the two of the seventeen bound as GETs. Holding them behind an
+/// The document scopes maker-checker to every mutating verb, and `verify`/`plane_facts` are the two
+/// new verbs bound as GETs. Holding them behind an
 /// approval does not delay them — it refuses them forever, because there is no pending mutation for
 /// anyone to approve, and `verify` is precisely the check an operator runs to find out what state a
 /// fleet under `required` is in.
@@ -133,7 +116,7 @@ fn a_read_only_new_verb_is_not_held_by_the_maker_checker_gate() {
     // The control: a mutating verb on the same gate still waits.
     assert_eq!(
         check_dual_control(
-            KernelVerb::SetEscrow,
+            KernelVerb::PlaneRecordWrite,
             DualControl::Required,
             ApprovalState::NotYetApproved
         )
@@ -141,37 +124,6 @@ fn a_read_only_new_verb_is_not_held_by_the_maker_checker_gate() {
         .reason,
         ReasonCode::ApprovalPending
     );
-}
-
-#[test]
-fn check_approve_refuses_self_approval() {
-    let err = check_approve("alice", "alice", true).unwrap_err();
-    assert_eq!(err.reason, ReasonCode::SelfApproval);
-}
-
-#[test]
-fn check_approve_refuses_payload_mismatch() {
-    let err = check_approve("alice", "bob", false).unwrap_err();
-    assert_eq!(err.reason, ReasonCode::PayloadMismatch);
-}
-
-#[test]
-fn check_approve_admits_a_different_approver_with_a_matching_payload() {
-    assert!(check_approve("alice", "bob", true).is_ok());
-}
-
-#[test]
-fn set_dual_control_required_needs_at_least_two_admin_principals() {
-    // The reason, not just the refusal: an operator locking themselves out of their own node needs
-    // to be told which precondition they missed, and every other test in this file pins the code
-    // its call site returns.
-    let err = check_set_dual_control_required(1).unwrap_err();
-    assert_eq!(err.reason, ReasonCode::InsufficientApprovers);
-    assert_eq!(
-        check_set_dual_control_required(0).unwrap_err().reason,
-        ReasonCode::InsufficientApprovers
-    );
-    assert!(check_set_dual_control_required(2).is_ok());
 }
 
 #[test]

@@ -168,21 +168,17 @@ pub const KNOWN_UNSHIPPED: &[&str] = &[
     // `plugin-abi-keyed-units` STRUCK 2026-09-24 (owner ruling Q33d/Q35; item 123).
     "hold-late-accrual-parent-exit",
     // `rate-card-multi-currency` STRUCK 2026-09-25 (#66, spec Q4): `set_rate`/`set_fee` deleted.
-    // The thirteen 1.6.0 admin verbs with no effect bound: not served (architect ruling
-    // 2026-09-24); binding each strikes its row.
+    // The 1.6.0 admin verbs with no effect bound: not served (architect ruling 2026-09-24);
+    // binding each strikes its row. Five STRUCK 2026-09-25 (owner ruling 2026-09-08: set_operator_key,
+    // set_escrow, set_dual_control, export_keyset, approve left 1.6.0 and are deleted).
     "admin-verb-verify-effect",
     "admin-verb-plane-facts-effect",
     "admin-verb-plane-record-write-effect",
-    "admin-verb-set-operator-key-effect",
-    "admin-verb-set-escrow-effect",
-    "admin-verb-set-dual-control-effect",
     "admin-verb-set-overdraft-ceiling-effect",
     "admin-verb-set-dispute-max-age-effect",
     "admin-verb-commit-upgrade-effect",
     "admin-verb-resolve-dispute-effect",
     "admin-verb-resolve-slice-effect",
-    "admin-verb-export-keyset-effect",
-    "admin-verb-approve-effect",
 ];
 
 /// The per-capability row id.

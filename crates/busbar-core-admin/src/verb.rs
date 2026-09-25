@@ -9,7 +9,7 @@
 //!   tag (49 paths, 34 read-only / 32 full) — see [`LEGACY_VERBS`], and the conformance test in
 //!   `tests/table_matches_openapi.rs` that fails the build if this list and the committed fixture
 //!   ever disagree, by even one operation or one scope;
-//! - one of the **17 new 1.6.0 verbs** named in the architecture document — see [`NEW_VERBS`];
+//! - one of the **13 new 1.6.0 verbs** named in the architecture document — see [`NEW_VERBS`];
 //! - one of the **five 1.6.0 ledger views** — see [`LEDGER_VERBS`]. These are reads of what the
 //!   ledger already holds, so they are the one group of 1.6.0 additions that is `ReadOnly` rather
 //!   than `Full`, and the only group that is never posture-gated: reading a figure changes nothing,
@@ -131,7 +131,7 @@ macro_rules! legacy_row {
 
 /// The closed kernel-verb table.
 ///
-/// Three groups, in the order the module doc names them: 66 legacy verbs, 17 new verbs, then the
+/// Three groups, in the order the module doc names them: 66 legacy verbs, 13 new verbs, then the
 /// named non-admin surfaces. `#[non_exhaustive]` is deliberately NOT used — the whole point of a
 /// closed table is that a `match` on this enum fails to compile the day a new operation is added
 /// without updating this file, and a wildcard arm would silently swallow that.
@@ -289,10 +289,6 @@ pub enum KernelVerb {
     PlaneFacts,
     /// Write a `PlaneRecord` entry.
     PlaneRecordWrite,
-    /// Set the operator public key (irreducible; admitted under `unset` with the admin credential).
-    SetOperatorKey,
-    /// Set the M-of-N key-loss escrow (irreducible).
-    SetEscrow,
     /// Deliberately break the journal chain (disaster recovery; irreducible; off-node CLI also
     /// exists on a stopped node).
     ChainBreak,
@@ -300,8 +296,6 @@ pub enum KernelVerb {
     StoreRestore,
     /// Reseal the epoch floor after a chain break/restore (irreducible; off-node CLI also exists).
     ResealEpochFloor,
-    /// Flip dual-control posture between `single` and `required` (irreducible).
-    SetDualControl,
     /// Set a bucket's overdraft ceiling.
     SetOverdraftCeiling,
     /// Set `dispute_max_age`.
@@ -314,11 +308,6 @@ pub enum KernelVerb {
     ResolveSlice,
     /// Manually adjust a ledger figure (irreducible above `adjust_threshold`).
     Adjust,
-    /// Export the deployment keyset, sealed to a recipient public key (irreducible; the one verb
-    /// admitted under `operator: unset` besides `SetOperatorKey`).
-    ExportKeyset,
-    /// The maker-checker approval verb (checked, not itself dual-controlled).
-    Approve,
     /// `POST /api/v1/admin/ledger/amend-rate-history` — append a signed, back-dated correction to
     /// the dated rate-card history (irreducible). It out-ranks the entry it corrects and rewrites
     /// nothing; recompute reprices the corrected window against the new entry.
@@ -683,26 +672,24 @@ pub const LEGACY_VERBS: &[LegacyVerbRow] = &[
     ),
 ];
 
-/// The 18 new 1.6.0 verbs: the seventeen money-governance verbs, plus `amend_rate_history` — the
+/// The 13 new 1.6.0 verbs: the twelve money-governance verbs, plus `amend_rate_history` — the
 /// signed, back-dated rate-card correction the dated-history design adds to the irreducible set.
+/// `set_operator_key`, `set_escrow`, `set_dual_control`, `export_keyset` and `approve` left 1.6.0
+/// by the owner's 2026-09-08 ruling (ARCHITECTURE section 4.7): they are not verbs, and their paths are
+/// the unmounted `404`.
 pub const NEW_VERBS: &[KernelVerb] = &[
     KernelVerb::Verify,
     KernelVerb::PlaneFacts,
     KernelVerb::PlaneRecordWrite,
-    KernelVerb::SetOperatorKey,
-    KernelVerb::SetEscrow,
     KernelVerb::ChainBreak,
     KernelVerb::StoreRestore,
     KernelVerb::ResealEpochFloor,
-    KernelVerb::SetDualControl,
     KernelVerb::SetOverdraftCeiling,
     KernelVerb::SetDisputeMaxAge,
     KernelVerb::CommitUpgrade,
     KernelVerb::ResolveDispute,
     KernelVerb::ResolveSlice,
     KernelVerb::Adjust,
-    KernelVerb::ExportKeyset,
-    KernelVerb::Approve,
     KernelVerb::AmendRateHistory,
 ];
 
@@ -744,10 +731,10 @@ const fn is_new_verb(verb: KernelVerb) -> bool {
     false
 }
 
-/// The two of the seventeen the architecture document binds as `GET` — "POST for every mutating
+/// The two new verbs the architecture document binds as `GET` — "POST for every mutating
 /// verb, GET for the two read-only verbs (`verify`, `plane_facts`)".
 ///
-/// They stay members of [`NEW_VERBS`] because they ARE two of the seventeen, and the operator
+/// They stay members of [`NEW_VERBS`] because they ARE two of them, and the operator
 /// ceremony still reaches them through the same gate every other new verb runs (neither is in
 /// [`IRREDUCIBLE_VERBS`], so that gate admits them). What being named here changes is everything
 /// that follows from a verb being a read rather than a mutation: the scope it asks for, the mutation
@@ -812,21 +799,12 @@ pub const IRREDUCIBLE_VERBS: &[KernelVerb] = &[
     KernelVerb::ChainBreak,
     KernelVerb::StoreRestore,
     KernelVerb::CommitUpgrade,
-    KernelVerb::SetDualControl,
     KernelVerb::ResealEpochFloor,
-    KernelVerb::SetOperatorKey,
-    KernelVerb::SetEscrow,
-    KernelVerb::ExportKeyset,
     KernelVerb::Adjust,
     KernelVerb::ResolveDispute,
     // `amend_rate_history` rewrites what the past cost, so D38 seals it irreducible.
     KernelVerb::AmendRateHistory,
 ];
-
-/// The two verbs admitted under `operator: unset` (every other irreducible verb is refused until
-/// the ceremony completes).
-pub const ADMITTED_UNDER_UNSET: &[KernelVerb] =
-    &[KernelVerb::SetOperatorKey, KernelVerb::ExportKeyset];
 
 /// THE ONE JOIN between this enum's spelling of a verb and the admin table's spelling of it.
 ///
@@ -854,24 +832,19 @@ pub const ADMITTED_UNDER_UNSET: &[KernelVerb] =
 #[must_use]
 pub const fn verb_name(verb: KernelVerb) -> Option<&'static str> {
     Some(match verb {
-        // The 18 money-governance verbs.
+        // The 13 money-governance verbs.
         KernelVerb::Verify => "verify",
         KernelVerb::PlaneFacts => "plane_facts",
         KernelVerb::PlaneRecordWrite => "plane_record_write",
-        KernelVerb::SetOperatorKey => "set_operator_key",
-        KernelVerb::SetEscrow => "set_escrow",
         KernelVerb::ChainBreak => "chain_break",
         KernelVerb::StoreRestore => "store_restore",
         KernelVerb::ResealEpochFloor => "reseal_epoch_floor",
-        KernelVerb::SetDualControl => "set_dual_control",
         KernelVerb::SetOverdraftCeiling => "set_overdraft_ceiling",
         KernelVerb::SetDisputeMaxAge => "set_dispute_max_age",
         KernelVerb::CommitUpgrade => "commit_upgrade",
         KernelVerb::ResolveDispute => "resolve_dispute",
         KernelVerb::ResolveSlice => "resolve_slice",
         KernelVerb::Adjust => "adjust",
-        KernelVerb::ExportKeyset => "export_keyset",
-        KernelVerb::Approve => "approve",
         KernelVerb::AmendRateHistory => "amend_rate_history",
         // The 5 ledger views.
         KernelVerb::GetLedgerTotals => "get_ledger_totals",

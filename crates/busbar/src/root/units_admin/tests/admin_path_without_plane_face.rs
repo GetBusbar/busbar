@@ -649,22 +649,30 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
     }
 }
 
-/// The thirteen 1.6.0 verbs this build binds NO EFFECT to, as `(method, path)` — measured, not
+/// The eight 1.6.0 verbs this build binds NO EFFECT to, as `(method, path)` — measured, not
 /// assumed: each resolved in the table, walked every gate, sealed a `rejected` row and then reached
 /// a surface with no handler for it, which answered `404`.
 #[cfg(feature = "root-admin")]
-const THE_UNBOUND_VERBS: [(&str, &str); 13] = [
+const THE_UNBOUND_VERBS: [(&str, &str); 8] = [
     ("GET", "/api/v1/admin/verify"),
     ("GET", "/api/v1/admin/plane-facts"),
     ("POST", "/api/v1/admin/plane-record-write"),
-    ("POST", "/api/v1/admin/operator-key"),
-    ("POST", "/api/v1/admin/escrow"),
-    ("POST", "/api/v1/admin/dual-control"),
     ("POST", "/api/v1/admin/overdraft-ceiling"),
     ("POST", "/api/v1/admin/dispute-max-age"),
     ("POST", "/api/v1/admin/commit-upgrade"),
     ("POST", "/api/v1/admin/disputes/resolve"),
     ("POST", "/api/v1/admin/slices/resolve"),
+];
+
+/// The five verbs the owner removed from 1.6.0 on 2026-09-08 (`set_operator_key`, `set_escrow`,
+/// `set_dual_control`, `export_keyset`, `approve`), as `(method, path)`. They are no longer in the
+/// table at all; while they were, they were unbound and answered the unmounted `404`. Removing them
+/// must not move that answer by a byte.
+#[cfg(feature = "root-admin")]
+const THE_REMOVED_VERBS: [(&str, &str); 5] = [
+    ("POST", "/api/v1/admin/operator-key"),
+    ("POST", "/api/v1/admin/escrow"),
+    ("POST", "/api/v1/admin/dual-control"),
     ("POST", "/api/v1/admin/export-keyset"),
     ("POST", "/api/v1/admin/approve"),
 ];
@@ -672,7 +680,8 @@ const THE_UNBOUND_VERBS: [(&str, &str); 13] = [
 /// AN ADMIN VERB WHOSE EFFECT IS NOT BOUND IS NOT SERVED (architect ruling 2026-09-24).
 ///
 /// Under a sealed operator key and a full-scope operator — the posture in which every gate admits —
-/// each of the thirteen answers EXACTLY what an unmounted path answers (`404 not_found` /
+/// each of the eight (and each of the five the owner removed, which the table no longer names)
+/// answers EXACTLY what an unmounted path answers (`404 not_found` /
 /// `resource not found`, byte for byte, which is also the published 1.5.5 answer for every one of
 /// these paths) and seals NO audit row. It used to be walked through the gates, sealed a `rejected`
 /// row, and then answered the same 404 from a surface with no handler for it. And the set is the
@@ -724,7 +733,7 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
         br#"{"error":{"code":"not_found","message":"resource not found"}}"#.to_vec(),
         "the control is the router's generic miss"
     );
-    for (method, path) in THE_UNBOUND_VERBS {
+    for (method, path) in THE_UNBOUND_VERBS.into_iter().chain(THE_REMOVED_VERBS) {
         let body = if method == "GET" {
             Vec::new()
         } else {
@@ -734,7 +743,7 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
         assert_eq!(
             (status, answer.as_slice()),
             (unmounted_status, unmounted.as_slice()),
-            "{method} {path}: an unbound verb answers exactly what an unmounted path answers"
+            "{method} {path}: an unbound or removed verb answers exactly what an unmounted path answers"
         );
         assert_eq!(
             the_operators_rows_for(&mounted, path).await,
@@ -758,6 +767,15 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
         THE_UNBOUND_VERBS.into_iter().collect(),
         "the measured set is exactly what the one generic check leaves unbound"
     );
+    let table = busbar_core_admin::admin_codec::verbs::table();
+    for (method, path) in THE_REMOVED_VERBS {
+        assert!(
+            !table
+                .iter()
+                .any(|row| row.method == method && row.template == path),
+            "{method} {path}: a verb the owner removed from 1.6.0 still has a row in the table"
+        );
+    }
 }
 
 /// A NODE WITH NO SEALED OPERATOR KEY ANSWERS THE AMEND PATH AS 1.5.5 DOES (oracle cells

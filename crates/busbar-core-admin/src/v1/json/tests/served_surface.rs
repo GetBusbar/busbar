@@ -16,8 +16,9 @@
 //!
 //! 1. the closed verb table (`admin_codec::verbs::table`): every `(method, path)` the node's
 //!    administrative mount walks through the kernel loop, which is how the 66 legacy operations and
-//!    the thirteen 1.6.0 kernel verbs whose effect is bound are answered (the other thirteen are
-//!    declared and NOT served — [`unbound_declared_operations`]);
+//!    the 1.6.0 kernel verbs whose effect is bound are answered (the other eight are declared and
+//!    NOT served — [`unbound_declared_operations`]; the five the owner removed from 1.6.0 are not
+//!    declared at all — [`REMOVED_OPERATIONS`]);
 //! 2. every named-definition section (`NamedMapSection::sections`), five operations each, which the
 //!    router mounts in one loop — including each plane-owned section;
 //! 3. every plane's admin trust verbs (`PlaneDecl::admin_routes`), which the router mounts in one
@@ -76,6 +77,27 @@ fn unbound_declared_operations() -> BTreeSet<Op> {
                 .is_some_and(|v| !crate::verb::effect_bound(*v))
         })
         .map(|row| (row.method.to_string(), row.template.to_string()))
+        .collect()
+}
+
+/// THE FIVE OPERATIONS THE OWNER REMOVED FROM 1.6.0 (2026-09-08: `set_operator_key`, `set_escrow`,
+/// `set_dual_control`, `export_keyset`, `approve`). They are not verbs, so the table has no row for
+/// them and the node answers each with the unmounted `404` — exactly what it answered while they
+/// were declared-but-unbound, and the published 1.5.5 answer for a path it never had. Each keeps
+/// its admin corpus entry and cells, which are what show that answer did not move.
+const REMOVED_OPERATIONS: [(&str, &str); 5] = [
+    ("POST", "/api/v1/admin/operator-key"),
+    ("POST", "/api/v1/admin/escrow"),
+    ("POST", "/api/v1/admin/dual-control"),
+    ("POST", "/api/v1/admin/export-keyset"),
+    ("POST", "/api/v1/admin/approve"),
+];
+
+/// The removed operations as [`Op`]s.
+fn removed_operations() -> BTreeSet<Op> {
+    REMOVED_OPERATIONS
+        .iter()
+        .map(|(m, p)| (m.to_string(), p.to_string()))
         .collect()
 }
 
@@ -297,12 +319,31 @@ async fn admin_corpus_reconciles_with_the_served_router() {
     let unbound = unbound_declared_operations();
     assert_eq!(
         unbound.len(),
-        13,
-        "the thirteen money-governance verbs with no effect bound: {unbound:?}"
+        8,
+        "the eight money-governance verbs with no effect bound: {unbound:?}"
+    );
+    let removed = removed_operations();
+    let removed_but_present: Vec<&Op> = removed
+        .iter()
+        .filter(|op| served.contains_key(*op) || unbound.contains(*op))
+        .collect();
+    assert!(
+        removed_but_present.is_empty(),
+        "an operation the owner removed from 1.6.0 is still declared or served: \
+         {removed_but_present:?}"
+    );
+    let removed_uncorpused: Vec<&Op> = removed
+        .iter()
+        .filter(|op| !entries.contains_key(*op))
+        .collect();
+    assert!(
+        removed_uncorpused.is_empty(),
+        "a removed operation lost its admin-bodies.json entry (no cell can show it still answers \
+         the unmounted 404): {removed_uncorpused:?}"
     );
     let unserved: Vec<&Op> = entries
         .keys()
-        .filter(|op| !served.contains_key(*op) && !unbound.contains(*op))
+        .filter(|op| !served.contains_key(*op) && !unbound.contains(*op) && !removed.contains(*op))
         .collect();
     assert!(
         unserved.is_empty(),

@@ -196,7 +196,7 @@ fn for_verb_matches_1_5_5s_classify_mutation_row_for_row() {
 
 /// The two 1.6.0 verbs bound as GETs never spend a mutation slot.
 ///
-/// `verify` and `plane_facts` are the two of the seventeen the architecture document binds as `GET`,
+/// `verify` and `plane_facts` are the two new verbs the architecture document binds as `GET`,
 /// and they have no legacy row, so the path lookup below cannot see them: without being named they
 /// fall through to CRUD and cost one of the sixty mutations a minute an operator gets. A node being
 /// watched — `verify` is the check the operator-key ceremony's own battery cell runs — would then
