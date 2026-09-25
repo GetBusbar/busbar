@@ -343,7 +343,7 @@ needle = "busbar_kernel::"
 # measurement on the committed tree (HEAD b091b4e83), a raise the owner ruled is a needle repair
 # arming the true count, not a relaxation of what the instrument ever saw. Downward only from here.
 [rules.ports-only.max_per_crate]
-busbar-llm = 264
+busbar-llm = 263
 busbar-mcp = 287
 busbar-a2a = 236
 busbar-voice = 89
@@ -775,7 +775,7 @@ kernel_crate = "busbar-kernel"
 # budget-book read fix). Pinned at the measurement, no slack. It RATCHETS DOWN when item 142's
 # breaker fold lands (store/in_memory/breaker.rs, ~580 code lines), which takes the kernel back
 # under 51439; that commit lowers this figure to what it then measures.
-kernel_ceiling = 51799
+kernel_ceiling = 51744
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
