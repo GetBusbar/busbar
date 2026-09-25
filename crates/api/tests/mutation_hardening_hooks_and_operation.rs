@@ -133,7 +133,7 @@ fn op_shape_all_has_exactly_six_entries() {
 // ── `Operation` ───────────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn operation_llm_verbs_are_all_invoke_shape_with_their_published_name() {
+fn operation_invoke_class_verbs_are_all_invoke_shape_with_their_published_name() {
     let cases = [
         (Operation::CHAT, "chat"),
         (Operation::EMBEDDINGS, "embeddings"),
@@ -180,11 +180,12 @@ fn operation_all_lists_exactly_the_six_protocol_surface_verbs_in_order() {
     );
 }
 
-/// The LLM verbs are NOT in `Operation::ALL` (they arrive from protocol declarations instead — see
-/// the module doc) — pinning the negative half of that design so a mutant that folded them back in
-/// (or dropped a real entry without anyone noticing the length still matched some other case) fails.
+/// The invoke-class verbs above are NOT in `Operation::ALL` (they arrive from protocol declarations
+/// instead — see the module doc) — pinning the negative half of that design so a mutant that folded
+/// them back in (or dropped a real entry without anyone noticing the length still matched some other
+/// case) fails.
 #[test]
-fn operation_all_excludes_the_llm_verbs() {
+fn operation_all_excludes_the_invoke_class_verbs() {
     assert!(!Operation::ALL.contains(&Operation::CHAT));
     assert!(!Operation::ALL.contains(&Operation::EMBEDDINGS));
     assert_eq!(Operation::ALL.len(), 6);

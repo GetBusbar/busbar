@@ -55,9 +55,9 @@ fn auth_principal_actor_id_is_the_principal_id_or_anonymous() {
 /// fail this).
 #[test]
 fn caller_token_debug_redacts_and_shows_presence_only() {
-    let present = CallerToken(Some("super-secret-bearer-token".to_string()));
+    let present = CallerToken(Some("super-secret-caller-token".to_string()));
     let dbg = format!("{present:?}");
-    assert!(!dbg.contains("super-secret-bearer-token"), "{dbg}");
+    assert!(!dbg.contains("super-secret-caller-token"), "{dbg}");
     assert!(dbg.contains("<present>"), "{dbg}");
 
     let absent = CallerToken(None);
