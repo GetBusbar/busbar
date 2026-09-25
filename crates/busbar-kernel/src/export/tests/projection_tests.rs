@@ -16,6 +16,7 @@ use busbar_plugin_loader::{ExportField, ExportStream};
 
 /// Build a one-instance `export:` map and resolve it, returning the accumulated errors.
 fn resolve_errs(yaml: &str) -> Vec<String> {
+    crate::test_support::export_axis::install_export_axis();
     let defs: ExportDefs = serde_yaml::from_str(yaml).expect("fixture parses");
     let mut errors = Vec::new();
     let _ = crate::config::resolve_export(&defs, &mut errors);
@@ -124,14 +125,19 @@ fn empty_streams_list_is_a_loud_error() {
 /// its meaning: the module's own streams. It must NOT resolve to an empty projection.
 #[test]
 fn absent_streams_takes_the_modules_own_streams() {
-    let defs: ExportDefs = serde_yaml::from_str(
-        "req-log:\n  module: request-log-webhook\n  settings:\n    url: https://sink.example.com/l\n",
-    )
-    .unwrap();
+    // The module's own streams are what its row carries — a sink carrying `logs` (the request-log
+    // sinks are export-axis modules, so the rule is exercised on the resolver itself).
     let mut errors = Vec::new();
-    let cfg = crate::config::resolve_export(&defs, &mut errors);
+    let proj = resolve_projection(
+        "req-log",
+        "request-log-webhook",
+        Some(&[ExportStream::Logs]),
+        None,
+        None,
+        false,
+        &mut errors,
+    );
     assert!(errors.is_empty(), "{errors:#?}");
-    let proj = cfg.request_log_webhooks[0].projection;
     assert!(proj.wants_stream(ExportStream::Logs));
     assert!(!proj.wants_stream(ExportStream::Metrics));
     assert!(!proj.granted_fields(ExportStream::Logs).is_empty());
@@ -359,6 +365,7 @@ fn a_grant_on_one_stream_does_not_leak_into_another() {
 /// declared, never call-then-discard" discipline `hooks::requested_signals` applies to hook signals.
 #[test]
 fn projection_union_is_the_compute_gate() {
+    crate::test_support::export_axis::install_export_axis();
     let empty = ProjectionUnion::default();
     assert!(empty.is_empty());
     for s in ExportStream::ALL {
@@ -366,7 +373,7 @@ fn projection_union_is_the_compute_gate() {
     }
 
     let defs: ExportDefs = serde_yaml::from_str(
-        "req-log:\n  module: request-log-webhook\n  settings:\n    url: https://sink.example.com/l\ntraces:\n  module: otlp\n  settings:\n    url: http://localhost:4318/v1/traces\n",
+        "req-log:\n  module: request-log-webhook\n  streams: [logs]\n  settings:\n    url: https://sink.example.com/l\ntraces:\n  module: otlp\n  settings:\n    url: http://localhost:4318/v1/traces\n",
     )
     .unwrap();
     let mut errors = Vec::new();

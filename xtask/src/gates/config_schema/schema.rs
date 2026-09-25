@@ -325,6 +325,10 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         // (K9b: the file sink is the `busbar-export-file` export plugin). A tracked SOURCE
         // relocation exactly like `ModelCfg` above, so the snapshot does not move by a byte.
         "crates/busbar-export-file/src/config.rs".to_string(),
+        // `WebhookSettings` / `ExportAuthHeader` — a `request-log-webhook` instance's `settings:` —
+        // moved out of `busbar-kernel/src/config/mod.rs` into the sink that reads it (K9c: the
+        // webhook sink is the `busbar-export-webhook` export plugin), same tracked relocation.
+        "crates/busbar-export-webhook/src/config.rs".to_string(),
     ]);
     Ok(out)
 }

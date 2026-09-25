@@ -64,7 +64,7 @@ pub use busbar_kernel::egress::engine::{
 // The infallible per-lane egress-client shim now lives in the neutral substrate
 // (`busbar_kernel::proxy::build_egress_client`) so a plane crate builds its egress client without
 // reaching into `busbar-core`; re-exported here for core's own `crate::proxy::build_egress_client`
-// call sites (`preflight`, `auth::token`, `egress_auth`, `export::webhook`, `engine_facade`).
+// call sites (`preflight`, `auth::token`, `egress_auth`, `engine_facade`).
 
 // THE PLANE'S AUDIT CHAIN, DRIVEN THROUGH THE REAL ROUTER. Mounted from the plane rather than from
 // `reqlog.rs` (which has its own record-level battery) for the reason the file's header gives: the

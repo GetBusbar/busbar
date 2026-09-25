@@ -1226,28 +1226,10 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // usize incl. 0, the explicit unlimited posture — the DEFAULT is 8192, not 0).
     validate_limits(&cfg.limits, &mut errors);
 
-    // PER-INSTANCE webhook bounds (1.5.3): `export:` holds NAMED instances, each with its own
-    // `delivery_timeout_secs`, so this check runs once per configured sink rather than once over a
-    // single process-global value that could only ever describe one of them.
-    for (i, w) in cfg.export.request_log_webhooks.iter().enumerate() {
-        if w.delivery_timeout_secs > MAX_DURATION_SECS {
-            errors.push(format!(
-                "the `module: request-log-webhook` export instance targeting '{}' (#{i}) sets \
-                 settings.delivery_timeout_secs: {}, above the {MAX_DURATION_SECS}-second (30-year) \
-                 ceiling every duration is bounded by — a delivery deadline that far out overflows \
-                 the clock",
-                w.url, w.delivery_timeout_secs
-            ));
-        }
-        if w.delivery_timeout_secs < 1 {
-            errors.push(format!(
-                "the `module: request-log-webhook` export instance targeting '{}' (#{i}) sets \
-                 settings.delivery_timeout_secs: 0, which would abort every delivery — it must be \
-                 >= 1",
-                w.url
-            ));
-        }
-    }
+    // The export-axis sinks' own checks across their instances (export ABI minor 8) — e.g. a
+    // webhook sink's per-instance delivery deadline and its in-flight bound — in this phase, after
+    // the limits, as the built-in sinks' were.
+    crate::export::plugin::check(&cfg.export, &mut errors);
 
     // A model maps to ONE lane, so its `context_max` must be single-valued across every pool that
     // names it. `build_app_from_config` (boot) rejects a genuine conflict — mirror that here so a
@@ -1313,23 +1295,6 @@ fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<Stri
              body is not instantly buffered)"
                 .to_string(),
         );
-    }
-    if limits.max_inflight_webhook_deliveries < 1 {
-        errors.push(
-            "export.request-log-webhook.settings.max_inflight_deliveries must be >= 1 (a 0-permit \
-             semaphore admits nothing, silently dropping every webhook delivery)"
-                .to_string(),
-        );
-    }
-    // The webhook exporter seeds a `Semaphore::new(max_inflight_webhook_deliveries())` with no other
-    // upper bound — see `MAX_SEMAPHORE_PERMITS`'s doc comment for why this is the panic
-    // precondition, not a policy opinion.
-    if limits.max_inflight_webhook_deliveries > MAX_SEMAPHORE_PERMITS {
-        errors.push(format!(
-            "export.request-log-webhook.settings.max_inflight_deliveries must be <= \
-             {MAX_SEMAPHORE_PERMITS} (tokio::sync::Semaphore's hard permit ceiling — a value above \
-             it panics at build time instead of failing validation)"
-        ));
     }
     // The honored-Retry-After ceiling and hard-down cooldown must be >= 1s to be meaningful.
     if limits.max_honored_retry_after_secs < 1 {
@@ -1448,7 +1413,6 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
         // ceiling.
         request_body_max_bytes: _,
         max_inbound_concurrent: _,
-        max_inflight_webhook_deliveries: _,
         // SAFE AT ANY VALUE — compared against a count/length only, never added to, allocated
         // from, or slept on (0 = unlimited where documented).
         pool_max_idle_per_host: _,

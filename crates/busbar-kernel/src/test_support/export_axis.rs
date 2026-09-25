@@ -55,7 +55,8 @@ pub fn registry_of(tag: &str, rows: &[(&str, &str)]) -> &'static PluginRegistry 
 
 /// The axis every test in this binary resolves `export:` against — installed once, as the
 /// composition root does. Besides a neutral row (`k9-axis-sink`, alias `k9-tail`) it holds a row
-/// spelling each FIRST-PARTY sink's frozen module name (`request-log-file`, K9b): a linked build
+/// spelling each FIRST-PARTY sink's frozen module name (`request-log-file`, K9b;
+/// `request-log-webhook`, K9c): a linked build
 /// resolves that module on its axis, so a test configuration naming it resolves here too. The rows'
 /// bytes are not a library, so each sink validates nothing and opens nothing — enough for the
 /// configuration layer, which is all a kernel test drives.
@@ -67,6 +68,7 @@ pub fn install_export_axis() {
             &[
                 ("k9-axis-sink", "k9-tail"),
                 ("k9b-log-file", "request-log-file"),
+                ("k9c-webhook", "request-log-webhook"),
             ],
         ));
     });

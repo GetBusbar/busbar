@@ -21,7 +21,7 @@ use crate::net_guard::{
 
 // 1.5.3 LIFT-OUT: the request-log webhook DELIVERY (the `WEBHOOK_URL`/`CLIENT`/
 // `AdmissionGate` machinery, `configure_webhook`, `fire_request_log`, `build_request_log`) moved OUT
-// of this module into the built-in `request-log-webhook` EXPORTER (`crate::export::webhook`). The
+// of this module into the `request-log-webhook` EXPORTER (now the `busbar-export-webhook` plugin). The
 // SSRF VALIDATOR ([`validate_webhook_url`] / [`host_is_internal`]) + the userinfo masker
 // ([`mask_userinfo`]) STAY here (they are shared, validated primitives — `mask_userinfo` also guards
 // the OTLP endpoint log below) and are called BY the exporter. Only distribution moved; validation
@@ -212,10 +212,9 @@ fn scheme_is(url: &str, scheme: &str) -> bool {
 ///     guards do NOT block the same set on the localhost family — they intentionally differ.
 ///
 /// `None` (webhook disabled) is always valid. Pure, so it is unit-testable without touching the
-/// process-wide `OnceLock`s. Called by the built-in `request-log-webhook` / `generic-webhook`
-/// exporters ([`crate::export::webhook`]) that now own the delivery; `pub` since K9a S5, because it
-/// is the URL policy the composition root's egress carrier applies to every request a plugin sink
-/// asks the host to make.
+/// process-wide `OnceLock`s. `pub` because it is the URL policy the composition root's egress
+/// carrier applies to every target a plugin sink asks the host to admit or carry (K9a S5, K9c) —
+/// the `request-log-webhook` sink's among them.
 pub fn validate_webhook_url(url: Option<String>) -> Result<Option<String>, String> {
     let Some(u) = url else {
         return Ok(None);

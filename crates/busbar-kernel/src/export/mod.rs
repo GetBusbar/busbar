@@ -15,15 +15,13 @@
 //!   well-known-`/metrics` exception), rendering the recorder registry. When `export.prometheus` is
 //!   present the recorder is installed (collection on) and a `GET /metrics` plugin route is
 //!   registered; absent ⇒ no recorder, `/metrics` unmounted, every emit site a true no-op.
-//! - [`webhook`] — PUSH per-request. The `request-log-webhook` + `generic-webhook` sinks POST the
-//!   built request-log line behind the relocated SSRF guard + bounded `AdmissionGate` delivery.
 //!
-//! Every other module — `request-log-file` among them — is a row of the EXPORT AXIS ([`plugin`]).
+//! Every other module — `request-log-file` and `request-log-webhook` among them — is a row of the
+//! EXPORT AXIS ([`plugin`]).
 
 pub mod plugin;
 pub(crate) mod projection;
 pub mod prometheus;
-pub(crate) mod webhook;
 
 use crate::config::ExportCfg;
 use crate::export::projection::ProjectedRecord;
@@ -58,15 +56,6 @@ use std::sync::Arc;
 pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
     let built_in = prometheus::route_decl(cfg).into_iter();
     built_in.chain(plugin::route_decls(cfg)).collect()
-}
-
-/// Configure every PUSH request-log exporter from the resolved `export:` block. Called once at
-/// boot; the process-global sinks are `OnceLock`-guarded (like the metrics recorder), so a later
-/// config apply cannot re-point them (restart-to-apply, same posture the request-log webhook always
-/// had). No-op for an absent block. The webhook exporter builds its own delivery client (see
-/// `webhook::CLIENT`) — nothing here touches the LLM egress pool.
-pub fn configure(cfg: &ExportCfg) {
-    webhook::configure(cfg);
 }
 
 /// Whether the kernel serves `module` itself — a module an export-axis row may not spell, since
@@ -131,13 +120,6 @@ impl<'a> PayloadCache<'a> {
     }
 }
 
-/// The projection a test sink is given: the whole `logs` stream, so a test that is not ABOUT the
-/// projection sees the same payload the pre-projection code produced.
-#[cfg(test)]
-pub(crate) fn test_logs_projection() -> projection::Projection {
-    projection::Projection::for_test(&[ExportStream::Logs], ExportStream::Logs.default_fields())
-}
-
 /// Fan the request-log facts out to every configured PUSH sink, each receiving a payload built TO
 /// ITS OWN PROJECTION. Fire-and-forget; never blocks the request path and never surfaces errors —
 /// telemetry must not affect serving.
@@ -147,6 +129,5 @@ pub(crate) fn test_logs_projection() -> projection::Projection {
 /// [`PayloadCache`]).
 pub(crate) fn deliver_request_log(facts: &RequestLogFacts<'_>) {
     let mut cache = PayloadCache::new(facts);
-    webhook::deliver_logs(&mut cache);
     plugin::deliver_logs(&mut cache);
 }

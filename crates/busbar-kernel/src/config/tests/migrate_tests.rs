@@ -1218,9 +1218,9 @@ pools: {}
     let deploy: crate::config::DeployCfg = crate::config::deploy_from_yaml_str(&migrated_yaml)
         .expect("the migrated config must boot-parse");
     let mut errs = Vec::new();
-    let export = crate::config::resolve_export(&deploy.export, &mut errs);
+    let export = crate::config::resolve_export(&built_ins(&deploy.export), &mut errs);
     assert!(errs.is_empty(), "{errs:?}");
-    assert_eq!(export.request_log_webhooks.len(), 1);
+    assert_eq!(webhooks(&deploy.export), 1);
     assert!(export.prometheus.is_some() && export.otlp.is_some());
 
     // IDEMPOTENT: re-migrating the already-new document moves nothing more, and the TREE is stable.
@@ -1506,9 +1506,9 @@ fn golden_migrate_type_keyed_export_becomes_a_named_map() {
         crate::config::deploy_from_yaml_str(&serde_yaml::to_string(&doc).unwrap())
             .expect("boot-parses");
     let mut errs = Vec::new();
-    let export = crate::config::resolve_export(&deploy.export, &mut errs);
+    let export = crate::config::resolve_export(&built_ins(&deploy.export), &mut errs);
     assert!(errs.is_empty(), "{errs:?}");
-    assert_eq!(export.request_log_webhooks.len(), 2);
+    assert_eq!(webhooks(&deploy.export), 2);
     assert!(export.prometheus.is_some());
 }
 
@@ -2363,11 +2363,12 @@ export:
         serde_yaml::from_value(dig(&doc, &["export"]).unwrap().clone())
             .expect("the migrated export block must parse");
     let mut errs = Vec::new();
-    let export = crate::config::resolve_export(&defs, &mut errs);
+    let export = crate::config::resolve_export(&built_ins(&defs), &mut errs);
     assert!(errs.is_empty(), "{errs:?}");
-    assert!(export.request_log_webhooks[0]
-        .projection
-        .wants_stream(busbar_plugin_loader::ExportStream::Logs));
+    // The webhook instance's projection is the sink's own to resolve (it is an export-axis module);
+    // what the migration writes for it is `logs`, the stream it carries.
+    assert_eq!(webhooks(&defs), 1);
+    let _ = export;
 
     // IDEMPOTENT: a second run writes nothing more.
     let (out2, doc2) = migrate_to_value(&migrated_yaml);
@@ -2643,4 +2644,20 @@ fn migrate_never_invents_a_keyless_api_key() {
         dig(&doc, &["providers", "local", "api_key"]).is_none(),
         "a provider with no credential to convert gets NO api_key — never a fabricated `none`"
     );
+}
+
+/// The `request-log-webhook` instances of a migrated `export:` block — an export-axis module (the
+/// `busbar-export-webhook` plugin), which this test binary has no axis for.
+fn webhooks(defs: &crate::config::ExportDefs) -> usize {
+    defs.values()
+        .filter(|d| d.module.trim() == crate::config::EXPORT_MODULE_REQUEST_LOG_WEBHOOK)
+        .count()
+}
+
+/// `defs` without its `request-log-webhook` instances — what this test binary can resolve.
+fn built_ins(defs: &crate::config::ExportDefs) -> crate::config::ExportDefs {
+    defs.iter()
+        .filter(|(_, d)| d.module.trim() != crate::config::EXPORT_MODULE_REQUEST_LOG_WEBHOOK)
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
 }

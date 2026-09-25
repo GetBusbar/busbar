@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "busbar-export-webhook"
+version = "1.5.0"
+edition = "2021"
+rust-version = "1.97"
+description = "The request-log WEBHOOK export sink as a kind:export plugin: POSTs each request-log line to the operator's https:// target through the host's egress carrier (it never dials), linked into the busbar binary or dropped into plugins/ — one crate, one registration."
+license = "Apache-2.0"
+publish = false
+
+[lib]
+# cdylib: the dropped-in door (a signed tarball in plugins/); rlib: the linked door (the composition
+# root's linked table reaches `linked::EXPORT`) — one source, two artifacts (DECISIONS #2 rule (1)).
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+busbar-plugin-sdk = { path = "../plugin-sdk" }
+# The settings shape (`deny_unknown_fields`, so the operator's typo is the same refusal it was).
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The userinfo mask on the target URL the sink's diagnostics name (its own lines, never the host's).
+url = { workspace = true }

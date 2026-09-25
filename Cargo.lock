@@ -340,6 +340,7 @@ dependencies = [
  "busbar-core-admin",
  "busbar-core-connsec",
  "busbar-export-file",
+ "busbar-export-webhook",
  "busbar-kernel",
  "busbar-kernel-audit",
  "busbar-kernel-breaker",
@@ -554,6 +555,16 @@ dependencies = [
  "busbar-plugin-sdk",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "busbar-export-webhook"
+version = "1.5.0"
+dependencies = [
+ "busbar-plugin-sdk",
+ "serde",
+ "serde_json",
+ "url",
 ]
 
 [[package]]

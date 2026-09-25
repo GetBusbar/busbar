@@ -600,7 +600,6 @@ pub const HOST_SERIES: &[&str] = &[
     busbar_kernel::metrics::TRANSLATIONS_TOTAL,
     busbar_kernel::metrics::PLANE_REQUESTS_TOTAL,
     busbar_kernel::metrics::PLANE_REQUEST_DURATION_SECONDS,
-    busbar_kernel::metrics::WEBHOOK_LOGS_DROPPED_TOTAL,
     busbar_kernel::metrics::ADMISSION_DENIED_TOTAL,
     busbar_kernel::metrics::METERING_PENDING_COALESCED_TOTAL,
     busbar_kernel::metrics::PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL,
@@ -863,3 +862,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/linked_exports.rs"]
 mod export_tests;
+
+#[cfg(test)]
+#[path = "tests/export_webhook_conformance.rs"]
+mod export_webhook_conformance;

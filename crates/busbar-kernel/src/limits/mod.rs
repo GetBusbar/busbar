@@ -81,16 +81,11 @@ pub(crate) fn upstream_error_body_max_bytes() -> usize {
         .unwrap_or(crate::config::DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES)
 }
 
-// 1.5.3: there is deliberately NO process-global webhook-delivery-CONCURRENCY accessor
-// here either. Each NAMED `export:` webhook instance owns its `settings.max_inflight_deliveries` and
-// its own `AdmissionGate` (`export::webhook::Target::gate`), so one saturated sink can never consume
-// the budget an operator capped on another. `LimitsResolved::max_inflight_webhook_deliveries` (the
-// MAX across instances) survives only as the bound `config_validate` range-checks.
-
-// 1.5.3: there is deliberately NO process-global webhook-delivery-timeout accessor here. `export:`
-// carries NAMED webhook instances, each with its own `settings.delivery_timeout_secs`, so the
-// deadline is read PER TARGET at the delivery site (`export::webhook::Target::timeout`). A global
-// accessor would have to pick one instance's value and silently apply it to the others.
+// There is deliberately NO process-global webhook-delivery accessor here, for concurrency or for
+// the deadline: the request-log webhook is an export PLUGIN (`busbar-export-webhook`), and each
+// NAMED instance states its own in-flight bound when started and carries its own
+// `delivery_timeout_secs` on each request — so one saturated sink can never consume another's
+// budget, and no accessor has to pick one instance's value for the others.
 
 /// Max per-key gauge series emitted per `/metrics` scrape.
 pub(crate) fn key_gauge_limit() -> usize {

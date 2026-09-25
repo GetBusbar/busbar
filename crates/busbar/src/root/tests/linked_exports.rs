@@ -166,7 +166,12 @@ fn a_linked_and_a_dropped_in_export_sink_are_one_sink() {
         !rows.is_empty() || crate::LINKED.exports.is_empty(),
         "every linked export sink states a row"
     );
-    for row in rows {
+    // The scenario below is a DESTINATION sink's (it writes and rotates a file the host opened for
+    // it); a linked sink that declares no destination — the webhook sink, which has the host carry
+    // its requests instead — is proved both ways by its own test (`export_webhook_conformance`).
+    let with_destinations =
+        |r: &busbar_plugin_loader::LinkedPlugin| !r.manifest.declares.destinations.is_empty();
+    for row in rows.into_iter().filter(with_destinations) {
         let (manifest, name) = (row.manifest.clone(), row.manifest.name.clone());
         let alias = manifest.alias.clone();
         let Some(lib) = cdylib(&name) else {

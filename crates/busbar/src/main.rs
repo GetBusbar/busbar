@@ -872,12 +872,10 @@ async fn run(data_workers: usize) {
          re-learned from live traffic"
     );
 
-    // Configure the built-in request-log EXPORTERS (every named `request-log-webhook` instance; a
-    // `request-log-file` instance is an export-axis sink, opened above) from the resolved `export:` block (the webhook
-    // exporter owns its delivery client). No-op when no request-log sink is configured (the default). The
-    // recorder-installing `prometheus` exporter is wired separately (`metrics::configure` above +
-    // the `/metrics` plugin route in `build_app_from_config`).
-    export::configure(&resolved_export);
+    // START the export axis's opened sinks (every request-log sink is one): each states whether it
+    // takes deliveries this run and its in-flight admission — the moment the built-in request-log
+    // exporters were configured, so a sink that refuses its own target at start says so here.
+    export::plugin::start();
 
     // Spawn the active health probers (one per lane with a probing mode). No-op when every lane is
     // `mode: none` / has no `health:` block. The composition root owns THIS generation's engine host

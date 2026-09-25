@@ -1792,8 +1792,6 @@ pub struct ExportCfg {
     /// The `prometheus` instance's settings, if one is configured. `None` ⇒ no recorder installed,
     /// `/metrics` not mounted, every emit site a true no-op (the zero-config default).
     pub prometheus: Option<PrometheusSettings>,
-    /// Every configured `request-log-webhook` instance, in config order. Empty ⇒ no webhook sink.
-    pub request_log_webhooks: Vec<WebhookSettings>,
     /// The `otlp` instance's settings, if one is configured. `None` ⇒ no tracer/span export.
     pub otlp: Option<OtlpSettings>,
     /// Every instance whose `module:` names an export module registered on the EXPORT AXIS
@@ -1827,14 +1825,13 @@ impl ExportCfg {
             self.prometheus
                 .iter()
                 .map(|s| &s.projection)
-                .chain(self.request_log_webhooks.iter().map(|s| &s.projection))
                 .chain(self.otlp.iter().map(|s| &s.projection))
                 .chain(self.plugins.iter().map(|s| &s.projection)),
         )
     }
 }
 
-/// The two limits `LimitsResolved` sources from the resolved `export:` block rather than from
+/// The limit `LimitsResolved` sources from the resolved `export:` block rather than from
 /// `limits:` itself (1.5.3: moved from the retired `observability.*`/`metrics.*` keys onto the
 /// built-in EXPORTER settings). `busbar_kernel::config::limits::LimitsResolved::from_sections`
 /// takes anything that converts to `ExportLimits`, so core (the only crate that knows the typed
@@ -1842,27 +1839,11 @@ impl ExportCfg {
 /// re-walking `export.*` itself.
 impl From<&ExportCfg> for busbar_kernel::config::limits::ExportLimits {
     fn from(export: &ExportCfg) -> Self {
-        // `max_inflight_webhook_deliveries` seeds ONE shared `AdmissionGate` across every webhook
-        // instance, so with several named instances it takes the MAXIMUM of the CONFIGURED values:
-        // the shared bound must accommodate the most permissive sink, or a generous instance would be
-        // silently throttled by a stingy sibling. No instances ⇒ the historical default. (The
-        // per-delivery TIMEOUT needs no such reconciliation and is NOT projected here: it is applied
-        // per instance off `WebhookSettings::delivery_timeout_secs` at the delivery site, and bounds
-        // -checked per instance by `config_validate` — which is what named instances are FOR.)
-        let max_inflight_webhook_deliveries = export
-            .request_log_webhooks
-            .iter()
-            .map(|w| w.max_inflight_deliveries)
-            .max()
-            .unwrap_or_else(default_max_inflight_webhook_deliveries);
         let key_gauge_limit = export
             .prometheus
             .as_ref()
             .map_or_else(default_key_gauge_limit, |p| p.key_gauge_limit);
-        Self {
-            max_inflight_webhook_deliveries,
-            key_gauge_limit,
-        }
+        Self { key_gauge_limit }
     }
 }
 
@@ -1877,38 +1858,6 @@ pub struct PrometheusSettings {
     pub buffer_seconds: u64,
     #[serde(default = "default_key_gauge_limit")]
     pub key_gauge_limit: usize,
-    /// THIS INSTANCE'S RESOLVED PROJECTION — the streams + fields this sink is granted, from its
-    /// `streams:` / `fields:` keys (see `crate::export::projection`). NOT an operator key: it is
-    /// `#[serde(skip)]` so the `settings:` bag stays exactly what the operator wrote, and it is
-    /// filled in by [`resolve_export`]. It rides here so the delivery path can build this sink's
-    /// payload TO ITS PROJECTION without a second lookup keyed on instance name.
-    #[serde(skip)]
-    pub(crate) projection: crate::export::projection::Projection,
-}
-
-/// `settings:` of an `export.<name>.module: request-log-webhook` instance — relocated from the retired
-/// `observability` webhook keys. Also absorbs the retired `generic-webhook` exporter: its ONLY extra
-/// over this one was `auth_header:`, which is now just a setting here, and its other reason to exist
-/// (a SECOND webhook target) is what the named-instance map itself provides.
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct WebhookSettings {
-    /// The webhook target URL — REQUIRED, `https://`-only, SSRF-guarded (relocated from the retired
-    /// `observability.request_log_webhook_url`).
-    pub url: String,
-    /// An optional auth header applied to every delivery from THIS instance (e.g.
-    /// `{ name: Authorization, value: "Bearer ${WEBHOOK_TOKEN}" }`). The `value` rides the config's
-    /// `${VAR}` env interpolation, so a secret is never stored literally.
-    #[serde(default)]
-    pub auth_header: Option<ExportAuthHeader>,
-    /// Max concurrent deliveries (default 64) — relocated from `max_inflight_webhook_deliveries`.
-    #[serde(default = "default_max_inflight_webhook_deliveries")]
-    pub max_inflight_deliveries: usize,
-    /// Per-delivery timeout (seconds, default 2) — relocated from `webhook_delivery_timeout_secs`.
-    /// Applied PER INSTANCE (each sink carries its own deadline), which is what having named
-    /// instances is for.
-    #[serde(default = "default_webhook_delivery_timeout_secs")]
-    pub delivery_timeout_secs: u64,
     /// THIS INSTANCE'S RESOLVED PROJECTION — the streams + fields this sink is granted, from its
     /// `streams:` / `fields:` keys (see `crate::export::projection`). NOT an operator key: it is
     /// `#[serde(skip)]` so the `settings:` bag stays exactly what the operator wrote, and it is
@@ -1934,14 +1883,6 @@ pub struct OtlpSettings {
     /// payload TO ITS PROJECTION without a second lookup keyed on instance name.
     #[serde(skip)]
     pub(crate) projection: crate::export::projection::Projection,
-}
-
-/// One `{ name, value }` auth header for a webhook export instance.
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct ExportAuthHeader {
-    pub name: String,
-    pub value: String,
 }
 
 /// Lower the `export:` NAMED-DEFINITION map into the typed [`ExportCfg`] every runtime consumer reads.
@@ -2018,11 +1959,6 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
                 prometheus_owner = Some(name);
                 out.prometheus = typed!(PrometheusSettings);
             }
-            EXPORT_MODULE_REQUEST_LOG_WEBHOOK => {
-                if let Some(v) = typed!(WebhookSettings) {
-                    out.request_log_webhooks.push(v);
-                }
-            }
             EXPORT_MODULE_OTLP => {
                 if let Some(owner) = otlp_owner {
                     errors.push(format!(
@@ -2066,24 +2002,21 @@ pub use busbar_kernel::config::limits::{
     default_default_max_tokens, default_hard_down_cooldown_secs, default_hook_content_max_bytes,
     default_key_gauge_limit, default_max_auto_provisioned_groups,
     default_max_honored_retry_after_secs, default_max_inbound_concurrent,
-    default_max_inflight_webhook_deliveries, default_max_keys_per_principal,
-    default_pool_idle_timeout_secs, default_pool_max_idle_per_host, default_probe_interval_secs,
-    default_probe_timeout_secs, default_rate_sweep_interval, default_reasoning_high,
-    default_reasoning_low, default_reasoning_medium, default_reasoning_minimal,
-    default_request_body_max_bytes, default_request_body_read_timeout_secs,
-    default_tls_handshake_timeout_secs, default_upstream_error_body_max_bytes,
-    default_upstream_request_timeout_secs, default_usage_flush_interval_ms,
-    default_webhook_delivery_timeout_secs, ExportLimits, HealthDefaultsCfg, LimitsCfg,
-    LimitsResolved, ReasoningEffortBudgets, RoutingCfg, DEFAULT_DEFAULT_MAX_TOKENS,
+    default_max_keys_per_principal, default_pool_idle_timeout_secs, default_pool_max_idle_per_host,
+    default_probe_interval_secs, default_probe_timeout_secs, default_rate_sweep_interval,
+    default_reasoning_high, default_reasoning_low, default_reasoning_medium,
+    default_reasoning_minimal, default_request_body_max_bytes,
+    default_request_body_read_timeout_secs, default_tls_handshake_timeout_secs,
+    default_upstream_error_body_max_bytes, default_upstream_request_timeout_secs,
+    default_usage_flush_interval_ms, ExportLimits, HealthDefaultsCfg, LimitsCfg, LimitsResolved,
+    ReasoningEffortBudgets, RoutingCfg, DEFAULT_DEFAULT_MAX_TOKENS,
     DEFAULT_HARD_DOWN_COOLDOWN_SECS, DEFAULT_KEY_GAUGE_LIMIT, DEFAULT_MAX_HONORED_RETRY_AFTER_SECS,
-    DEFAULT_MAX_INBOUND_CONCURRENT, DEFAULT_MAX_INFLIGHT_WEBHOOK_DELIVERIES,
-    DEFAULT_PLUGIN_FETCH_MAX_BYTES, DEFAULT_POOL_IDLE_TIMEOUT_SECS, DEFAULT_POOL_MAX_IDLE_PER_HOST,
-    DEFAULT_PROBE_INTERVAL_SECS, DEFAULT_PROBE_TIMEOUT_SECS, DEFAULT_RATE_SWEEP_INTERVAL,
-    DEFAULT_REQUEST_BODY_MAX_BYTES, DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS,
-    DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS, DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES,
-    DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS, DEFAULT_USAGE_FLUSH_INTERVAL_MS,
-    DEFAULT_WEBHOOK_DELIVERY_TIMEOUT_SECS, REQUEST_BODY_MAX_BYTES_CEIL,
-    REQUEST_BODY_MAX_BYTES_FLOOR,
+    DEFAULT_MAX_INBOUND_CONCURRENT, DEFAULT_PLUGIN_FETCH_MAX_BYTES, DEFAULT_POOL_IDLE_TIMEOUT_SECS,
+    DEFAULT_POOL_MAX_IDLE_PER_HOST, DEFAULT_PROBE_INTERVAL_SECS, DEFAULT_PROBE_TIMEOUT_SECS,
+    DEFAULT_RATE_SWEEP_INTERVAL, DEFAULT_REQUEST_BODY_MAX_BYTES,
+    DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS, DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS,
+    DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES, DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
+    DEFAULT_USAGE_FLUSH_INTERVAL_MS, REQUEST_BODY_MAX_BYTES_CEIL, REQUEST_BODY_MAX_BYTES_FLOOR,
 };
 
 fn default_plugins_dir() -> String {

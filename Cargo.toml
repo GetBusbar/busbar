@@ -45,6 +45,7 @@ members = [
     "crates/export-example-plugin",
     "crates/busbar-export-prometheus",
     "crates/busbar-export-file",
+    "crates/busbar-export-webhook",
     "crates/plane-example",
     "crates/hooks-ranking",
     "crates/store-memory",

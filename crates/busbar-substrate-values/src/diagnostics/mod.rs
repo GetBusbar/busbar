@@ -2264,53 +2264,6 @@ pub const PLANE_AUDIT_ROW_UNREADABLE: Diagnostic = Diagnostic {
     retired: false,
 };
 
-pub const WEBHOOK_EXPORTER_DISABLED: Diagnostic = Diagnostic {
-    code: 7070,
-    class: Class::Plane,
-    slug: "webhook-exporter-disabled",
-    title: "Webhook log exporter disabled (invalid configuration)",
-    severity: Severity::Actionable,
-    summary: "A request-log webhook exporter could not be built from its configuration and has been \
-              disabled, so its request logs are NOT delivered. This is a config problem surfaced at \
-              boot, not a transient delivery failure.",
-    action: "Fix the named webhook exporter's configuration (URL, auth header, or projection) and \
-             restart to re-enable delivery.",
-    since: "1.6.0",
-    retired: false,
-};
-
-pub const WEBHOOK_DELIVERY_NON_2XX: Diagnostic = Diagnostic {
-    code: 7071,
-    class: Class::Plane,
-    slug: "webhook-delivery-non-2xx",
-    title: "Webhook log delivery returned non-2xx (log dropped)",
-    severity: Severity::BenignRecurring,
-    summary:
-        "A request-log webhook delivery got a non-2xx response from the sink, so that one log \
-              line was dropped (deliveries are fire-and-forget and never retried). This can recur \
-              per request when a sink is unhealthy, so it is logged at debug.",
-    action: "If logs are being lost, check the webhook sink's health and the delivery counters. \
-             `WEBHOOK_LOGS_DROPPED_TOTAL` tracks the volume.",
-    since: "1.6.0",
-    retired: false,
-};
-
-pub const WEBHOOK_DELIVERY_TRANSPORT_ERROR: Diagnostic = Diagnostic {
-    code: 7072,
-    class: Class::Plane,
-    slug: "webhook-delivery-transport-error",
-    title: "Webhook log delivery transport error (log dropped)",
-    severity: Severity::BenignRecurring,
-    summary:
-        "A request-log webhook delivery failed with a transport error (connection/timeout/DNS), \
-              so that one log line was dropped. Deliveries are fire-and-forget and never retried; \
-              this can recur per request when a sink is unreachable, so it is logged at debug.",
-    action: "If logs are being lost, check the webhook sink's reachability and the delivery \
-             counters. `WEBHOOK_LOGS_DROPPED_TOTAL` tracks the volume.",
-    since: "1.6.0",
-    retired: false,
-};
-
 pub const IR_CLAMP_N_TO_1: Diagnostic = Diagnostic {
     code: 7078,
     class: Class::Plane,
@@ -3546,9 +3499,6 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &PLANE_CALLLOG_ROW_UNREADABLE,
     &PLANE_JOURNAL_ROW_UNREADABLE,
     &PLANE_AUDIT_ROW_UNREADABLE,
-    &WEBHOOK_EXPORTER_DISABLED,
-    &WEBHOOK_DELIVERY_NON_2XX,
-    &WEBHOOK_DELIVERY_TRANSPORT_ERROR,
     &IR_CLAMP_N_TO_1,
     &IR_DROP_REASONING,
     &IR_DROP_PROMPT_CACHE,

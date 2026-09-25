@@ -1053,6 +1053,11 @@ reviewed_allowlist = ["busbar-api", "busbar-plugin-sdk", "serde", "serde_json", 
 # `flock` FileStore takes around its read-modify-write (crates/store-example-plugin/src/lib.rs,
 # FileLock), unix-only, in the fixture that models a fleet sharing one durable path.
 store-example-plugin = ["libc"]
+# REVIEWED 2026-09-25 (item 141, the webhook sink's extraction): `url` is the WHATWG parser the host's
+# own webhook guard parses the target with; the sink uses it for one thing only — masking the
+# target's userinfo in its own diagnostic lines, byte for byte as the compiled-in sink did
+# (`mask_userinfo`: re-serialize through the parser, `***` for the userinfo). No I/O, no host state.
+busbar-export-webhook = ["url"]
 [rules.manifest-allowlist.known_red_deps]
 busbar-plane-llm = ["busbar-llm"]
 # busbar-plane-a2a HAS NO ROW, for the same reason busbar-plane-mcp lost its one: the codec fold

@@ -132,7 +132,6 @@ pub(crate) fn produced_fields(stream: ExportStream) -> &'static [ExportField] {
 pub(crate) fn module_streams(module: &str) -> Option<&'static [ExportStream]> {
     match module {
         crate::config::EXPORT_MODULE_PROMETHEUS => Some(&[ExportStream::Metrics]),
-        crate::config::EXPORT_MODULE_REQUEST_LOG_WEBHOOK => Some(&[ExportStream::Logs]),
         crate::config::EXPORT_MODULE_OTLP => Some(&[ExportStream::Traces]),
         _ => None,
     }

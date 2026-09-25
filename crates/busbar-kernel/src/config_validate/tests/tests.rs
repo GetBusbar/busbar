@@ -870,30 +870,24 @@ fn test_validate_rejects_oversized_max_concurrent() {
 
 /// The exact same `Semaphore::new` panic precondition, on the two sibling
 /// operator-config values that feed a `Semaphore::new` with no bound of their own —
-/// `limits.max_inbound_concurrent` (tower's `GlobalConcurrencyLimitLayer`, main.rs) and
-/// `observability.max_inflight_webhook_deliveries` (observability.rs). Same class, same fix, one
-/// shared constant (`MAX_SEMAPHORE_PERMITS`) — this test exists so the class stays closed if either
-/// sibling's call site changes independently of `models.<m>.max_concurrent`.
+/// `limits.max_inbound_concurrent` (tower's `GlobalConcurrencyLimitLayer`, main.rs). (The webhook
+/// sink's `max_inflight_deliveries` is the sink's own check now — `busbar-export-webhook`'s
+/// `the_validation_phase_checks_are_the_compiled_in_sinks_lines`, same boundary.) This test exists
+/// so the class stays closed if the call site changes independently of `models.<m>.max_concurrent`.
 #[test]
 fn test_validate_rejects_oversized_inbound_and_webhook_concurrency_limits() {
     let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
     cfg.limits.max_inbound_concurrent = tokio::sync::Semaphore::MAX_PERMITS + 1;
-    cfg.limits.max_inflight_webhook_deliveries = tokio::sync::Semaphore::MAX_PERMITS + 1;
 
-    let errs = validate(&cfg).expect_err("both oversized limits must fail validation");
+    let errs = validate(&cfg).expect_err("the oversized limit must fail validation");
     assert!(
         errs.iter().any(|e| e.contains("max_inbound_concurrent")),
         "expected an oversized max_inbound_concurrent error; got: {errs:?}"
-    );
-    assert!(
-        errs.iter().any(|e| e.contains("max_inflight_deliveries")),
-        "expected an oversized max_inflight_deliveries error; got: {errs:?}"
     );
 
     // The boundary value, and 0 (max_inbound_concurrent's explicit "disable the layer" posture),
     // must both stay clean.
     cfg.limits.max_inbound_concurrent = 0;
-    cfg.limits.max_inflight_webhook_deliveries = tokio::sync::Semaphore::MAX_PERMITS;
     assert!(
         validate(&cfg).is_ok(),
         "0 (disabled) and the exact boundary value must not error"
@@ -5171,12 +5165,8 @@ fn test_validate_limits_boundary_fields_reject_zero_accept_one() {
         request_body_read_timeout_secs,
         "request_body_read_timeout_secs"
     );
-    // 1.5.3: `delivery_timeout_secs` is validated PER named `request-log-webhook` export instance
-    // (see `validate`'s per-instance loop), not off a single process-global `LimitsResolved` field.
-    check_floor_one!(
-        max_inflight_webhook_deliveries,
-        "max_inflight_deliveries must be >= 1"
-    );
+    // The webhook sink's `delivery_timeout_secs` / `max_inflight_deliveries` floors are the sink's
+    // own checks (`busbar-export-webhook`), not `LimitsResolved` fields.
     check_floor_one!(max_honored_retry_after_secs, "max_honored_retry_after_secs");
     check_floor_one!(hard_down_cooldown_secs, "hard_down_cooldown_secs");
     check_floor_one!(
@@ -5195,38 +5185,6 @@ fn test_validate_limits_boundary_fields_reject_zero_accept_one() {
     check_floor_one!(
         default_policy_timeout_ms,
         "default_policy_timeout_ms must be >= 1"
-    );
-}
-
-/// `max_inflight_webhook_deliveries`'s ceiling is `MAX_SEMAPHORE_PERMITS` itself, same exact-boundary
-/// shape as `max_inbound_concurrent`'s ceiling test below — found missing by adversarial review (only
-/// the `max_inbound_concurrent` twin had a ceiling test; this field's own `> MAX_SEMAPHORE_PERMITS`
-/// guard, mod.rs:1333, had none).
-#[test]
-fn test_validate_limits_max_inflight_webhook_deliveries_ceiling_is_exact() {
-    let at_cap = config::LimitsResolved {
-        max_inflight_webhook_deliveries: MAX_SEMAPHORE_PERMITS,
-        ..config::LimitsResolved::default()
-    };
-    let mut errs = Vec::new();
-    validate_limits(&at_cap, &mut errs);
-    assert!(
-        !errs
-            .iter()
-            .any(|e| e.contains("max_inflight_deliveries must be <=")),
-        "exactly MAX_SEMAPHORE_PERMITS must be accepted; got {errs:?}"
-    );
-
-    let over_cap = config::LimitsResolved {
-        max_inflight_webhook_deliveries: MAX_SEMAPHORE_PERMITS + 1,
-        ..config::LimitsResolved::default()
-    };
-    let mut errs = Vec::new();
-    validate_limits(&over_cap, &mut errs);
-    assert!(
-        errs.iter()
-            .any(|e| e.contains("max_inflight_deliveries must be <=")),
-        "MAX_SEMAPHORE_PERMITS + 1 must be rejected; got {errs:?}"
     );
 }
 
@@ -5914,8 +5872,9 @@ fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
 /// ITEM 147 — the unbounded-numeric sweep. `limits.pool_idle_timeout_secs` at 2^63 used to pass
 /// validation (so the admin settings apply answered 200) and then overflow `Instant + Duration`
 /// under the egress pool mutex, killing the shard's egress until restart. Every duration on the
-/// settings surface — and the per-instance webhook `delivery_timeout_secs` — is now refused above
-/// the 30-year runtime horizon, by name; the boundary value itself stays clean.
+/// settings surface is now refused above the 30-year runtime horizon, by name; the boundary value
+/// itself stays clean. (The webhook sink's per-instance `delivery_timeout_secs` is refused the same
+/// way by the sink's own check — `busbar-export-webhook`.)
 #[test]
 fn test_validate_refuses_every_duration_past_the_runtime_horizon() {
     let over_s = MAX_DURATION_SECS + 1;
@@ -5931,12 +5890,6 @@ fn test_validate_refuses_every_duration_past_the_runtime_horizon() {
     cfg.limits.default_probe_timeout_secs = u64::MAX;
     cfg.limits.usage_flush_interval_ms = over_ms;
     cfg.limits.default_policy_timeout_ms = u64::MAX;
-    let webhook: crate::config::WebhookSettings = serde_json::from_value(serde_json::json!({
-        "url": "https://hooks.example.com/ingest",
-        "delivery_timeout_secs": u64::MAX,
-    }))
-    .expect("webhook settings");
-    cfg.export.request_log_webhooks.push(webhook);
 
     let errs = validate(&cfg).expect_err("every over-horizon duration must fail validation");
     for name in [
@@ -5950,7 +5903,6 @@ fn test_validate_refuses_every_duration_past_the_runtime_horizon() {
         "health.default_probe_timeout_secs",
         "advanced.usage_flush_interval_ms",
         "routing.default_policy_timeout_ms",
-        "settings.delivery_timeout_secs: 18446744073709551615",
     ] {
         assert!(
             errs.iter()

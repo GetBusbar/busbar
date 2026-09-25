@@ -1855,12 +1855,8 @@ models:
     );
     assert_eq!(l.default_max_tokens, DEFAULT_DEFAULT_MAX_TOKENS);
     assert_eq!(l.default_max_tokens, crate::proto::DEFAULT_MAX_TOKENS);
-    assert_eq!(
-        l.max_inflight_webhook_deliveries,
-        DEFAULT_MAX_INFLIGHT_WEBHOOK_DELIVERIES
-    );
-    // 1.5.3: the per-delivery webhook TIMEOUT is no longer projected onto `LimitsResolved` — it is
-    // per named `request-log-webhook` export instance (see `WebhookSettings::delivery_timeout_secs`).
+    // The webhook sink's in-flight bound and delivery deadline are its own settings, checked by the
+    // sink (`busbar-export-webhook`), never projected onto `LimitsResolved`.
     assert_eq!(l.key_gauge_limit, DEFAULT_KEY_GAUGE_LIMIT);
     assert_eq!(l.rate_sweep_interval, DEFAULT_RATE_SWEEP_INTERVAL);
     assert_eq!(l.usage_flush_interval_ms, DEFAULT_USAGE_FLUSH_INTERVAL_MS);
@@ -3613,26 +3609,28 @@ fn secrets_block_stays_module_keyed_by_design() {
 /// unrepresentable and this test could not be written at all.
 #[test]
 fn export_named_map_allows_two_instances_of_one_module() {
+    // Two instances of one module on the export axis (the webhook sink is such a module).
+    crate::test_support::export_axis::install_export_axis();
     let defs: crate::config::ExportDefs = serde_yaml::from_str(
-        "req-log:  { module: request-log-webhook, settings: { url: \"https://logs.example.com/a\" } }\n\
-         req-siem: { module: request-log-webhook, settings: { url: \"https://siem.internal/b\", delivery_timeout_secs: 9 } }\n",
+        "req-log:  { module: k9-tail, settings: { url: \"https://logs.example.com/a\" } }\n\
+         req-siem: { module: k9-tail, settings: { url: \"https://siem.internal/b\", delivery_timeout_secs: 9 } }\n",
     )
     .expect("two instances of one module parse");
     let mut errors = Vec::new();
     let export = crate::config::resolve_export(&defs, &mut errors);
     assert!(errors.is_empty(), "{errors:?}");
-    assert_eq!(export.request_log_webhooks.len(), 2);
-    assert_eq!(
-        export.request_log_webhooks[0].url,
-        "https://logs.example.com/a"
-    );
-    assert_eq!(
-        export.request_log_webhooks[1].url,
-        "https://siem.internal/b"
-    );
+    assert_eq!(export.plugins.len(), 2);
+    assert_eq!(export.plugins[0].name, "req-log");
+    assert_eq!(export.plugins[1].name, "req-siem");
     // Per-INSTANCE settings really are independent — the whole point of named instances.
-    assert_eq!(export.request_log_webhooks[0].delivery_timeout_secs, 2);
-    assert_eq!(export.request_log_webhooks[1].delivery_timeout_secs, 9);
+    assert_eq!(
+        export.plugins[0].def.settings.get("delivery_timeout_secs"),
+        None
+    );
+    assert_eq!(
+        export.plugins[1].def.settings["delivery_timeout_secs"],
+        serde_json::json!(9)
+    );
 
     // A second singleton instance is a loud error, never a silent loss.
     for module in ["prometheus", "otlp"] {

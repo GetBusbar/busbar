@@ -395,3 +395,61 @@ fn a_hooks_diagnostic_is_emitted_while_its_metrics_stay_frozen() {
         cap.messages()
     );
 }
+
+/// K9c: A FIRST-PARTY plugin's diagnostic is written as the host writes its own — the catalogue
+/// line a `diag_*!` site writes, byte for byte: its message, `diag=`, then its fields in the order
+/// it attached them, with no `plugin=` provenance label and no `fields=` bag. Any other plugin's
+/// keeps the provenance shape.
+#[test]
+fn a_first_party_plugins_diagnostic_is_written_as_the_hosts_own_line() {
+    use std::io::Write;
+    #[derive(Clone, Default)]
+    struct Buf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl Write for Buf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let d = *crate::diagnostics::REGISTRY
+        .iter()
+        .find(|d| d.severity == crate::diagnostics::Severity::Actionable)
+        .expect("an actionable code");
+    busbar_plugin_loader::observe::grant_series("k9c-first-party", true, &[]).unwrap();
+    let entry = serde_json::to_value(
+        busbar_plugin::cold::observe::PluginDiagnostic::warn(
+            format!("BUSBAR-{}", d.code),
+            "it broke",
+        )
+        .field("webhook_url", "\"https://a/\"")
+        .field("status", "503"),
+    )
+    .unwrap();
+    let buf = Buf::default();
+    let writer = buf.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || writer.clone())
+        .with_target(false)
+        .with_ansi(false)
+        .without_time()
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        let url = String::from("https://a/");
+        crate::diagnostics::diag_warn!(d, webhook_url = url, status = 503u16, "it broke");
+        KernelPluginObserver.observe(
+            "k9c-first-party",
+            "export",
+            &[],
+            std::slice::from_ref(&entry),
+        );
+        KernelPluginObserver.observe("k9c-third-party", "export", &[], &[entry]);
+    });
+    let text = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 3, "{text}");
+    assert_eq!(lines[0], lines[1], "the first-party line is the host's own");
+    assert!(lines[2].contains("plugin=k9c-third-party"), "{text}");
+}

@@ -709,11 +709,8 @@ pub const PLANE_REQUEST_DURATION_SECONDS: &str = "busbar_plane_request_duration_
 // call site resolve unchanged. Pure `&str` — no registry moved, scrape byte-identical.
 // ROUTE_POLICY_* are defined at the top of this module.
 
-// Request-log webhook deliveries DROPPED because the in-flight delivery semaphore was saturated (the
-// webhook endpoint is slow/unreachable and the bounded delivery pool is full). Incremented once per
-// dropped log. Unlabeled — the drop is a global backpressure condition, not per-request. An operator
-// alerts on a non-zero rate to detect "the webhook is overwhelmed and logs are being shed silently."
-pub const WEBHOOK_LOGS_DROPPED_TOTAL: &str = "busbar_webhook_logs_dropped_total"; // no labels
+// The request-log WEBHOOK sink's `busbar_webhook_logs_dropped_total` is the `busbar-export-webhook`
+// sink's own, declared first-party (its shed counter) in its manifest (K9c).
 
 // The request-log FILE sink's three series (`busbar_file_logs_{dropped,rotated,rotate_failed}_total`)
 // are the `busbar-export-file` sink's own, declared first-party in its manifest (K9b).

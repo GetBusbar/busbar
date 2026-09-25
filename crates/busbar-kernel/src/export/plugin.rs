@@ -57,13 +57,55 @@ pub(crate) fn probe(
     AXIS.get()?.probe_export(module, name, cfg)
 }
 
+/// The sinks' own checks across every instance of each axis module `cfg` configures, in
+/// configuration order (export ABI minor 8) — run while the configuration is validated, after its
+/// limits; each line joins `errors` verbatim.
+pub(crate) fn check(cfg: &ExportCfg, errors: &mut Vec<String>) {
+    let Some(axis) = AXIS.get() else {
+        return;
+    };
+    let mut modules: Vec<&str> = Vec::new();
+    for p in &cfg.plugins {
+        let module = p.def.module.trim();
+        if modules.contains(&module) {
+            continue;
+        }
+        modules.push(module);
+        let instances: Vec<(String, Value)> = cfg
+            .plugins
+            .iter()
+            .filter(|q| q.def.module.trim() == module)
+            .map(|q| (q.name.clone(), Value::Object(q.def.settings.clone())))
+            .collect();
+        errors.extend(axis.check_export(module, &instances).unwrap_or_default());
+    }
+}
+
 /// One opened plugin sink.
 struct PluginSink {
     name: String,
     module: String,
     sink: Arc<DynExport>,
     projection: Projection,
+    /// Its admission, as it stated it when started ([`start`]).
+    admission: OnceLock<Admission>,
+}
+
+/// A started sink's admission: whether it takes deliveries this run, and its in-flight gate.
+struct Admission {
+    live: bool,
     gate: AdmissionGate,
+}
+
+impl PluginSink {
+    /// The admission it stated when started; before then, or when it stated none, the host's:
+    /// live, [`MAX_INFLIGHT_PLUGIN_DELIVERIES`], the gate named for the module.
+    fn admission(&self) -> &Admission {
+        self.admission.get_or_init(|| Admission {
+            live: true,
+            gate: AdmissionGate::new(MAX_INFLIGHT_PLUGIN_DELIVERIES, leak(&self.module)),
+        })
+    }
 }
 
 /// The opened sinks, set once at boot by [`open`].
@@ -105,8 +147,7 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
             module: module.to_string(),
             sink: Arc::new(sink),
             projection,
-            // The gate is named for the module, as each built-in sink's gate always was.
-            gate: AdmissionGate::new(MAX_INFLIGHT_PLUGIN_DELIVERIES, leak(module)),
+            admission: OnceLock::new(),
         });
     }
     if !errors.is_empty() {
@@ -122,13 +163,43 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
 pub(crate) fn deliver_logs(cache: &mut PayloadCache<'_>) {
     let subscribed = |s: &&PluginSink| s.projection.wants_stream(ExportStream::Logs);
     for s in sinks().filter(subscribed) {
-        let Some(permit) = s.gate.try_enter() else {
+        let admission = s.admission();
+        if !admission.live {
+            continue;
+        }
+        let Some(permit) = admission.gate.try_enter() else {
             s.sink.shed();
             continue;
         };
         let payload = cache.get(s.projection);
         crate::audit::amend::export_read(&s.module, cache.facts.ingress_protocol, &payload);
         s.sink.deliver_detached(ExportStream::Logs, payload, permit);
+    }
+}
+
+/// START every opened sink (export ABI minor 8) — at the moment the host starts its PUSH sinks:
+/// each states whether it takes deliveries this run and its in-flight admission (bound, gate name),
+/// after the host performed any ops it asked for first. A sink that states none — or fails to
+/// answer, which is logged — is fed at the host's default admission.
+pub fn start() {
+    for s in sinks() {
+        let stated = s.sink.start().unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "export plugin start failed");
+            None
+        });
+        let Some((live, inflight, gate)) = stated else {
+            continue;
+        };
+        let bound = match inflight {
+            0 => MAX_INFLIGHT_PLUGIN_DELIVERIES,
+            n => usize::try_from(n).unwrap_or(usize::MAX),
+        };
+        let bound = bound.clamp(1, tokio::sync::Semaphore::MAX_PERMITS);
+        let gate = leak(if gate.is_empty() { &s.module } else { &gate });
+        let _ = s.admission.set(Admission {
+            live,
+            gate: AdmissionGate::new(bound, gate),
+        });
     }
 }
 

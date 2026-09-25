@@ -139,10 +139,6 @@ pub const DEFAULT_MAX_TOKENS: u32 = 4096;
 /// Default global fallback for the translation-injected `max_tokens`. The SAME number as
 /// [`DEFAULT_MAX_TOKENS`], and now literally it — the two can no longer drift.
 pub const DEFAULT_DEFAULT_MAX_TOKENS: u32 = DEFAULT_MAX_TOKENS;
-/// Default max concurrent webhook deliveries. Mirrors `observability.rs`.
-pub const DEFAULT_MAX_INFLIGHT_WEBHOOK_DELIVERIES: usize = 64;
-/// Default per-webhook delivery timeout (seconds). Mirrors `observability.rs`.
-pub const DEFAULT_WEBHOOK_DELIVERY_TIMEOUT_SECS: u64 = 2;
 /// Default max per-key gauge series emitted per scrape. Mirrors `metrics.rs`.
 pub const DEFAULT_KEY_GAUGE_LIMIT: usize = 2000;
 /// Default rate-sweep amortization interval. Mirrors `governance.rs`.
@@ -201,12 +197,6 @@ pub fn default_request_body_read_timeout_secs() -> u64 {
 }
 pub fn default_default_max_tokens() -> u32 {
     DEFAULT_DEFAULT_MAX_TOKENS
-}
-pub fn default_max_inflight_webhook_deliveries() -> usize {
-    DEFAULT_MAX_INFLIGHT_WEBHOOK_DELIVERIES
-}
-pub fn default_webhook_delivery_timeout_secs() -> u64 {
-    DEFAULT_WEBHOOK_DELIVERY_TIMEOUT_SECS
 }
 pub fn default_key_gauge_limit() -> usize {
     DEFAULT_KEY_GAUGE_LIMIT
@@ -395,17 +385,14 @@ impl Default for RoutingCfg {
     }
 }
 
-/// The two limits that come from the resolved `export:` block rather than from `limits:` itself:
-/// the shared webhook-delivery admission bound and the per-scrape gauge cap. The `export:` block is
+/// The limit that comes from the resolved `export:` block rather than from `limits:` itself: the
+/// per-scrape gauge cap. The `export:` block is
 /// lowered in busbar-core (its typed settings carry a core-owned projection), so the resolver hands
 /// just these two numbers across; `Default` is the historical pair an export-less config resolves
 /// to. busbar-core implements `From<&ExportCfg>` for this so its callers pass the resolved block
 /// straight through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExportLimits {
-    /// The SHARED webhook-delivery admission bound: the MAX across every configured
-    /// `request-log-webhook` instance, or the historical default with none configured.
-    pub max_inflight_webhook_deliveries: usize,
     /// Max per-key gauge series emitted per `/metrics` scrape: the `prometheus` instance's setting,
     /// or the historical default with no instance configured.
     pub key_gauge_limit: usize,
@@ -414,7 +401,6 @@ pub struct ExportLimits {
 impl Default for ExportLimits {
     fn default() -> Self {
         Self {
-            max_inflight_webhook_deliveries: default_max_inflight_webhook_deliveries(),
             key_gauge_limit: default_key_gauge_limit(),
         }
     }
@@ -445,10 +431,6 @@ pub struct LimitsResolved {
     pub max_honored_retry_after_secs: u64,
     pub default_max_tokens: u32,
     pub reasoning_effort_budgets: ReasoningEffortBudgets,
-    /// The SHARED webhook-delivery admission bound (max across every configured
-    /// `request-log-webhook` export instance — see [`ExportLimits`]). The per-delivery
-    /// TIMEOUT is deliberately NOT here: it is per instance on the webhook settings.
-    pub max_inflight_webhook_deliveries: usize,
     pub key_gauge_limit: usize,
     pub rate_sweep_interval: u32,
     pub usage_flush_interval_ms: u64,
@@ -488,15 +470,12 @@ impl LimitsResolved {
         health: &HealthDefaultsCfg,
         routing: &RoutingCfg,
     ) -> Self {
-        // 1.5.3: the webhook + gauge limits moved from the retired `observability.*`/`metrics.*` keys
+        // 1.5.3: the gauge limit moved from the retired `observability.*`/`metrics.*` keys
         // onto the built-in EXPORTER settings. They arrive here already reduced to the two numbers
         // (historical defaults when the exporter is absent) so the deep `limits` readers (metrics
-        // gauge cap, webhook admission bound) are unchanged while the CONFIG SURFACE they read from
+        // gauge cap) are unchanged while the CONFIG SURFACE they read from
         // is the new one.
-        let ExportLimits {
-            max_inflight_webhook_deliveries,
-            key_gauge_limit,
-        } = export.into();
+        let ExportLimits { key_gauge_limit } = export.into();
         Self {
             upstream_request_timeout_secs: limits.upstream_request_timeout_secs,
             request_body_max_bytes: limits.request_body_max_bytes,
@@ -513,7 +492,6 @@ impl LimitsResolved {
             max_honored_retry_after_secs: limits.max_honored_retry_after_secs,
             default_max_tokens: limits.default_max_tokens,
             reasoning_effort_budgets: limits.reasoning_effort_budgets,
-            max_inflight_webhook_deliveries,
             key_gauge_limit,
             rate_sweep_interval: advanced.rate_sweep_interval,
             usage_flush_interval_ms: advanced.usage_flush_interval_ms,
