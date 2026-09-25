@@ -2028,6 +2028,8 @@ fn anthropic_effort_word(effort: crate::ir::IrReasoningEffort) -> &'static str {
         E::Minimal | E::Low => "low",
         E::Medium => "medium",
         E::High => "high",
+        E::XHigh => "xhigh",
+        E::Max => "max",
     }
 }
 

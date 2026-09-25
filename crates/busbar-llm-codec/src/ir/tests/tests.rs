@@ -420,3 +420,27 @@ fn q57_defaults_are_absent_values() {
     assert_eq!(t.input_schema, Value::Null);
     assert_eq!(IrCitation::default().raw, None);
 }
+
+// IR-09: the words above High and the OFF ask. `parse` stays the four historical words (no reader
+// changes bytes before it opts in); `parse_extended` adds the two; projections never turn OFF into
+// an enable ask and never emit an OpenAI word an older model 400s on.
+#[test]
+fn ir09_reasoning_off_and_effort_above_high() {
+    use IrReasoningAsk::*;
+    use IrReasoningEffort::*;
+    let table = [1000u32, 4000, 8000, 16000];
+    assert_eq!(IrReasoningEffort::parse("xhigh"), None);
+    assert_eq!(IrReasoningEffort::parse_extended("xhigh"), Some(XHigh));
+    assert_eq!(IrReasoningEffort::parse_extended("max"), Some(Max));
+    assert_eq!(IrReasoningEffort::parse_extended("high"), Some(High));
+    assert_eq!(XHigh.as_str(), "xhigh");
+    assert_eq!(Max.as_str(), "max");
+    assert_eq!(XHigh.as_openai_reasoning_effort(), "high");
+    assert_eq!(Max.as_openai_reasoning_effort(), "high");
+    assert_eq!(Effort(XHigh).to_budget(table), 16000);
+    assert_eq!(Effort(Max).to_budget(table), 16000);
+    assert_eq!(Off.to_budget(table), 0);
+    assert_eq!(Off.to_effort(table), Minimal);
+    // A budget never bucketizes above High: the table has no row there.
+    assert_eq!(Budget(u32::MAX).to_effort(table), High);
+}

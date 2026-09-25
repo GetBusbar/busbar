@@ -419,15 +419,27 @@ pub enum IrReasoningAsk {
     /// verbatim; projected to protocols with no dynamic concept as the `medium` table entry
     /// (with a warn), since "model decides" has no closer analog than the middle of the road.
     Dynamic,
+    /// Reasoning explicitly switched OFF (IR-09): Anthropic / Cohere `thinking:{type:"disabled"}`,
+    /// OpenAI Chat / Responses effort `"none"`, Gemini `thinkingBudget: 0`. DIFFERENT from `None`
+    /// on [`IrRequest::reasoning`] ("the caller never said"): a reasoning-by-default model keeps
+    /// thinking when nothing is said and stops when this is said. A writer MUST match `Off` before
+    /// projecting through [`Self::to_budget`]/[`Self::to_effort`] — those return the smallest
+    /// value for it (0 / `Minimal`), which as an ENABLE ask would invert the caller's meaning.
+    Off,
 }
 
-/// The four effort words, ordered by ascending budget.
+/// The effort words, ordered by ascending budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IrReasoningEffort {
     Minimal,
     Low,
     Medium,
     High,
+    /// Above `High` (IR-09): OpenAI Chat / Responses `"xhigh"`, Anthropic `output_config.effort`
+    /// `"xhigh"`. Budget projection is the table's top entry (the table has no row above high).
+    XHigh,
+    /// The top of the scale (IR-09): Anthropic `output_config.effort` `"max"`.
+    Max,
 }
 
 /// The compiled-in effort table (mirrors the config defaults) — the writer fallback when the seam
@@ -442,8 +454,13 @@ impl IrReasoningAsk {
             IrReasoningAsk::Effort(IrReasoningEffort::Minimal) => table[0],
             IrReasoningAsk::Effort(IrReasoningEffort::Low) => table[1],
             IrReasoningAsk::Effort(IrReasoningEffort::Medium) => table[2],
-            IrReasoningAsk::Effort(IrReasoningEffort::High) => table[3],
+            // The table has no row above `high`: the two words above it take its top budget.
+            IrReasoningAsk::Effort(
+                IrReasoningEffort::High | IrReasoningEffort::XHigh | IrReasoningEffort::Max,
+            ) => table[3],
             IrReasoningAsk::Dynamic => table[2],
+            // Never an enable ask — see the variant doc; writers match `Off` first.
+            IrReasoningAsk::Off => 0,
         }
     }
 
@@ -454,6 +471,8 @@ impl IrReasoningAsk {
         match self {
             IrReasoningAsk::Effort(e) => e,
             IrReasoningAsk::Dynamic => IrReasoningEffort::Medium,
+            // Never an enable ask — see the variant doc; writers match `Off` first.
+            IrReasoningAsk::Off => IrReasoningEffort::Minimal,
             IrReasoningAsk::Budget(n) => {
                 if n >= table[3] {
                     IrReasoningEffort::High
@@ -477,9 +496,14 @@ impl IrReasoningEffort {
     /// model is operator-declared, not known here — emitting the universally-valid `"low"` upholds
     /// the never-cause-a-400 translation invariant. (Same-protocol OpenAI is byte-exact and never
     /// reaches this projection.)
+    ///
+    /// `XHigh`/`Max` project to `"high"` for the same reason: `"xhigh"` is accepted only by the
+    /// newest OpenAI reasoning models, and the lane's model is not known here. A writer that KNOWS
+    /// its lane accepts it may emit [`Self::as_str`] instead.
     pub fn as_openai_reasoning_effort(self) -> &'static str {
         match self {
             IrReasoningEffort::Minimal => "low",
+            IrReasoningEffort::XHigh | IrReasoningEffort::Max => "high",
             other => other.as_str(),
         }
     }
@@ -490,9 +514,14 @@ impl IrReasoningEffort {
             IrReasoningEffort::Low => "low",
             IrReasoningEffort::Medium => "medium",
             IrReasoningEffort::High => "high",
+            IrReasoningEffort::XHigh => "xhigh",
+            IrReasoningEffort::Max => "max",
         }
     }
 
+    /// The four words every reader has always accepted. Deliberately NOT widened to `xhigh`/`max`:
+    /// a reader opts into the words above `High` through [`Self::parse_extended`] once every
+    /// writer it can reach projects them (IR-09), so no path changes bytes before it is wired.
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "minimal" => Some(IrReasoningEffort::Minimal),
@@ -500,6 +529,15 @@ impl IrReasoningEffort {
             "medium" => Some(IrReasoningEffort::Medium),
             "high" => Some(IrReasoningEffort::High),
             _ => None,
+        }
+    }
+
+    /// [`Self::parse`] plus the words above `High` (`xhigh`, `max`) — IR-09.
+    pub fn parse_extended(s: &str) -> Option<Self> {
+        match s {
+            "xhigh" => Some(IrReasoningEffort::XHigh),
+            "max" => Some(IrReasoningEffort::Max),
+            other => Self::parse(other),
         }
     }
 }
