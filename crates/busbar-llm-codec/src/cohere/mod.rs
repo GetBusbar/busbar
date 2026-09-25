@@ -814,7 +814,7 @@ pub struct CohereWriter {
     open_tool_indices: std::sync::Mutex<std::collections::BTreeSet<usize>>,
     /// Per-stream set of text-block indices that emitted a `content-start` frame, so the matching
     /// `BlockStop` emits `content-end` ONLY for a block that actually opened. Cross-protocol blocks
-    /// that carry no opening frame (Thinking / Image — see the `BlockStart` arm, which maps them to
+    /// that carry no opening frame (redacted thinking / Image — see the `BlockStart` arm, which maps them to
     /// `None`) are never recorded here, so their `BlockStop` emits NOTHING rather than an orphan
     /// `content-end` with no matching `content-start`. Mirrors the Gemini writer's
     /// no-frame-for-untracked-index behavior. Same `Mutex` / poison-degrades-to-no-op discipline as
@@ -911,7 +911,7 @@ impl CohereWriter {
 
     /// Record that a `content-start` frame was emitted for text block `index`, so the matching
     /// `BlockStop` emits `content-end` for it. Cross-protocol blocks that emit no opening frame
-    /// (Thinking / Image) are never recorded, so their `BlockStop` stays silent. Lock poisoning
+    /// (redacted thinking / Image) are never recorded, so their `BlockStop` stays silent. Lock poisoning
     /// degrades to a no-op rather than panicking on the request path.
     fn mark_text_open(&self, index: usize) {
         if let Ok(mut set) = self.open_text_indices.lock() {

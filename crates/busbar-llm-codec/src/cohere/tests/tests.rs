@@ -3555,19 +3555,20 @@ fn test_writer_tool_call_frames_roundtrip_through_reader() {
     }
 }
 
-/// A Thinking/Image stream BLOCK-START has no native Cohere v2 opening frame, so the writer
+/// A redacted-thinking/Image stream BLOCK-START has no native Cohere v2 opening frame, so the writer
 /// suppresses it rather than emitting a fabricated non-native frame.
 ///
-/// A reasoning DELTA is a different matter and is NOT suppressed: Cohere v2 has a native
-/// `tool-plan-delta` frame — the one this protocol's own reader consumes — so suppressing it made a
-/// streamed plan reach a Cohere-ingress client as nothing while the same turn non-streamed arrived.
+/// A plaintext reasoning block is a different matter and is NOT suppressed: a Cohere reasoning model
+/// streams its reasoning as a `thinking` content block — `content-start {type:"thinking"}` then
+/// `content-delta {thinking}` — the frames this protocol's own reader consumes (COH-09; it used to
+/// ride `tool-plan-delta`, the frame for the plan that precedes a tool call).
 #[test]
-fn test_write_response_event_thinking_and_image_blocks_suppressed() {
+fn test_write_response_event_redacted_thinking_and_image_blocks_suppressed() {
     let writer = CohereWriter;
     assert!(writer
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::Thinking,
+            block: crate::ir::IrBlockMeta::RedactedThinking,
         })
         .is_none());
     assert!(writer
@@ -3576,15 +3577,24 @@ fn test_write_response_event_thinking_and_image_blocks_suppressed() {
             block: crate::ir::IrBlockMeta::Image,
         })
         .is_none());
-    // The reasoning DELTA, by contrast, MUST emit — into Cohere's native `tool-plan-delta` frame.
+    // The plaintext reasoning block MUST open — as a native `thinking` content block.
+    let (_, start) = writer
+        .write_response_event(&IrStreamEvent::BlockStart {
+            index: 0,
+            block: crate::ir::IrBlockMeta::Thinking,
+        })
+        .expect("a reasoning block has a native Cohere opening frame");
+    assert_eq!(start["type"], ET_CONTENT_START);
+    assert_eq!(start["delta"]["message"]["content"]["type"], "thinking");
+    // The reasoning DELTA MUST emit — into the thinking content block, never `tool-plan-delta`.
     let (_, frame) = writer
         .write_response_event(&IrStreamEvent::BlockDelta {
             index: 0,
             delta: crate::ir::IrDelta::ThinkingDelta("x".to_string()),
         })
-        .expect("a reasoning delta has a native Cohere frame (`tool-plan-delta`)");
-    assert_eq!(frame["type"], ET_TOOL_PLAN_DELTA);
-    assert_eq!(frame["delta"]["message"]["tool_plan"], "x");
+        .expect("a reasoning delta has a native Cohere frame");
+    assert_eq!(frame["type"], ET_CONTENT_DELTA);
+    assert_eq!(frame["delta"]["message"]["content"]["thinking"], "x");
 }
 
 /// A Cohere `tool`-role message's `content` must be decoded
@@ -4485,30 +4495,40 @@ fn test_bad_request_body_mentioning_tokens_is_context_length() {
     assert_eq!(signal.class, StatusClass::ContextLength);
 }
 
-/// A cross-protocol `Thinking` block carries NO opening frame on the Cohere
-/// stream (its `BlockStart` maps to `None`), so its `BlockStop` must emit NOTHING — not an orphan
-/// `content-end` with no matching `content-start`. Against the old code the `BlockStop` fell
-/// through to an unconditional `content-end`.
+/// A cross-protocol REDACTED-thinking block carries NO opening frame on the Cohere stream (its
+/// `BlockStart` maps to `None`), so its `BlockStop` must emit NOTHING — not an orphan `content-end`
+/// with no matching `content-start`. Against the old code the `BlockStop` fell through to an
+/// unconditional `content-end`. A plaintext `Thinking` block DOES open (a `thinking` content block,
+/// COH-09), so its `BlockStop` closes it with the matching `content-end`.
 #[test]
 fn test_thinking_blockstop_emits_no_orphan_content_end() {
     let writer = CohereWriter;
 
-    // Thinking BlockStart → no frame.
+    // Redacted-thinking BlockStart → no frame.
     let start = writer.write_response_event(&IrStreamEvent::BlockStart {
         index: 0,
-        block: crate::ir::IrBlockMeta::Thinking,
+        block: crate::ir::IrBlockMeta::RedactedThinking,
     });
     assert!(
         start.is_none(),
-        "a Thinking BlockStart must not emit an opening frame"
+        "a redacted-thinking BlockStart must not emit an opening frame"
     );
 
-    // Thinking BlockStop → no frame (the orphan-content-end defect).
+    // Its BlockStop → no frame (the orphan-content-end defect).
     let stop = writer.write_response_event(&IrStreamEvent::BlockStop { index: 0 });
     assert!(
         stop.is_none(),
-        "a Thinking BlockStop must emit no frame (no orphan content-end)"
+        "a redacted-thinking BlockStop must emit no frame (no orphan content-end)"
     );
+
+    // A plaintext Thinking block is balanced: content-start, then content-end.
+    let start = writer.write_response_event(&IrStreamEvent::BlockStart {
+        index: 1,
+        block: crate::ir::IrBlockMeta::Thinking,
+    });
+    assert_eq!(start.expect("thinking opens").1["type"], ET_CONTENT_START);
+    let stop = writer.write_response_event(&IrStreamEvent::BlockStop { index: 1 });
+    assert_eq!(stop.expect("thinking closes").1["type"], ET_CONTENT_END);
 }
 
 /// A normal Text block still emits a balanced `content-start` / `content-end` pair — the

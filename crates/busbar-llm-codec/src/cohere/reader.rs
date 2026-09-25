@@ -334,6 +334,25 @@ impl ProtocolReader for CohereReader {
                                                 });
                                             }
                                         }
+                                        // An assistant turn replaying a reasoning model's
+                                        // `{"type":"thinking"}` part: the IR's Thinking block, in
+                                        // place (COH-04).
+                                        Some("thinking")
+                                            if role == crate::ir::IrRole::Assistant =>
+                                        {
+                                            if let Some(text) = block_obj
+                                                .get("thinking")
+                                                .and_then(|t| t.as_str())
+                                                .filter(|s| !s.is_empty())
+                                            {
+                                                msg_content.push(crate::ir::IrBlock::Thinking {
+                                                    text: text.to_string(),
+                                                    signature: None,
+                                                    redacted: false,
+                                                    cache_control: None,
+                                                });
+                                            }
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -1294,14 +1313,34 @@ impl ProtocolReader for CohereReader {
         if let Some(content_arr) = message_val.get("content").and_then(|c| c.as_array()) {
             for block_val in content_arr {
                 if let Some(block_obj) = block_val.as_object() {
-                    if block_obj.get("type").and_then(|t| t.as_str()) == Some("text") {
-                        if let Some(text) = block_obj.get("text").and_then(|t| t.as_str()) {
-                            content.push(crate::ir::IrBlock::Text {
-                                text: text.to_string(),
-                                cache_control: None,
-                                citations: std::mem::take(&mut citations_pending),
-                            });
+                    match block_obj.get("type").and_then(|t| t.as_str()) {
+                        Some("text") => {
+                            if let Some(text) = block_obj.get("text").and_then(|t| t.as_str()) {
+                                content.push(crate::ir::IrBlock::Text {
+                                    text: text.to_string(),
+                                    cache_control: None,
+                                    citations: std::mem::take(&mut citations_pending),
+                                });
+                            }
                         }
+                        // A reasoning model's `{"type":"thinking","thinking":"…"}` content part is
+                        // the model's reasoning: the IR's Thinking block, never visible text. It
+                        // used to fall through and vanish (COH-03).
+                        Some("thinking") => {
+                            if let Some(text) = block_obj
+                                .get("thinking")
+                                .and_then(|t| t.as_str())
+                                .filter(|s| !s.is_empty())
+                            {
+                                content.push(crate::ir::IrBlock::Thinking {
+                                    text: text.to_string(),
+                                    signature: None,
+                                    redacted: false,
+                                    cache_control: None,
+                                });
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }

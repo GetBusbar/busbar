@@ -290,3 +290,209 @@ fn coh10_streamed_message_end_carries_the_whole_prompt_and_the_cache_hit() {
     );
     assert_eq!(end["delta"]["usage"]["cached_tokens"], json!(4), "{out}");
 }
+
+/// A client request (`ingress` dialect) translated for a backend speaking `egress`, through the
+/// production request seam.
+fn translate_request(ingress: &'static str, egress: &str, body: &Value) -> Value {
+    let ingress_p = crate::proto_codec::protocol_for(ingress).expect("ingress");
+    let egress_p = crate::proto_codec::protocol_for(egress).expect("egress");
+    let mut req = ingress_p.reader().read_request(body).expect("read_request");
+    crate::chat_handle::chat_prepare_for_egress(
+        &mut req,
+        &busbar_substrate_values::ir::egress_prep::EgressPrep {
+            thought_signature_fill: false,
+            ingress_protocol: ingress,
+            egress_requires_max_tokens: egress_p.decl().is_some_and(|d| d.requires_max_tokens),
+            lane_default_max_tokens: None,
+            global_default_max_tokens: 4096,
+            reasoning_allowed: true,
+            reasoning_budgets: crate::ir::REASONING_BUDGET_DEFAULTS,
+            prompt_caching_allowed: true,
+            cache_control_cap: None,
+        },
+    );
+    egress_p.writer().write_request(&req)
+}
+
+// ── COH-03 / COH-04 / COH-07 / COH-08 / COH-09: reasoning is reasoning, in both directions ─────────
+
+/// COH-03: a buffered Cohere reasoning response's `{"type":"thinking"}` content part reaches a
+/// foreign client as reasoning; it used to vanish.
+#[test]
+fn coh03_buffered_thinking_part_reaches_a_foreign_client() {
+    let body = json!({
+        "id": "c-1", "finish_reason": "COMPLETE",
+        "message": {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "hmm"}, {"type": "text", "text": "hello"}]},
+        "usage": {"tokens": {"input_tokens": 3, "output_tokens": 2}}
+    });
+    let ir = crate::proto_codec::protocol_for("cohere")
+        .expect("cohere")
+        .reader()
+        .read_response(&body)
+        .expect("read");
+    assert!(
+        matches!(&ir.content[..], [crate::ir::IrBlock::Thinking { text, .. }, crate::ir::IrBlock::Text { .. }] if text == "hmm"),
+        "COH-03: {:?}",
+        ir.content
+    );
+    let out = translate_response("cohere", "anthropic", &body);
+    assert_eq!(out["content"][0]["type"], json!("thinking"), "{out}");
+    assert_eq!(out["content"][0]["thinking"], json!("hmm"), "{out}");
+    assert_eq!(out["content"][1]["text"], json!("hello"), "{out}");
+}
+
+/// COH-04 (thinking half): an assistant history turn's `{"type":"thinking"}` part reaches a foreign
+/// backend as reasoning, in place.
+#[test]
+fn coh04_request_assistant_thinking_part_is_carried() {
+    let body = json!({
+        "model": "m",
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "hmm"}, {"type": "text", "text": "ok"}]},
+            {"role": "user", "content": "more"}
+        ]
+    });
+    let out = translate_request("cohere", "gemini", &body);
+    let parts = &out["contents"][1]["parts"];
+    assert_eq!(parts[0], json!({"text": "hmm", "thought": true}), "{out}");
+    assert_eq!(parts[1], json!({"text": "ok"}), "{out}");
+}
+
+/// COH-07: a history turn's reasoning with NO tool call is written as a `thinking` content part, not
+/// as a `tool_plan` for a call that was never made. With a tool call the plan slot stays.
+#[test]
+fn coh07_history_thinking_without_tool_calls_is_a_thinking_part() {
+    let body = json!({
+        "model": "claude", "max_tokens": 100,
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "hmm", "signature": "sig"},
+                {"type": "text", "text": "ok"}]},
+            {"role": "user", "content": "more"}
+        ]
+    });
+    let out = translate_request("anthropic", "cohere", &body);
+    let turn = &out["messages"][1];
+    assert!(turn.get("tool_plan").is_none(), "COH-07: {out}");
+    assert_eq!(
+        turn["content"],
+        json!([{"type": "thinking", "thinking": "hmm"}, {"type": "text", "text": "ok"}]),
+        "COH-07: {out}"
+    );
+
+    let with_call = json!({
+        "model": "claude", "max_tokens": 100,
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "call f", "signature": "sig"},
+                {"type": "tool_use", "id": "t1", "name": "f", "input": {}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "r"}]}
+        ],
+        "tools": [{"name": "f", "input_schema": {"type": "object"}}]
+    });
+    let out = translate_request("anthropic", "cohere", &with_call);
+    assert_eq!(out["messages"][1]["tool_plan"], json!("call f"), "{out}");
+}
+
+/// COH-08: a foreign model's buffered reasoning reaches a Cohere client as a `thinking` content part,
+/// not as `message.tool_plan`.
+#[test]
+fn coh08_buffered_thinking_is_a_thinking_part_not_a_tool_plan() {
+    let body = json!({
+        "id": "msg_1", "type": "message", "role": "assistant", "model": "claude",
+        "content": [
+            {"type": "thinking", "thinking": "hmm", "signature": "sig"},
+            {"type": "text", "text": "hello"},
+            {"type": "tool_use", "id": "toolu_1", "name": "f", "input": {"a": 1}}],
+        "stop_reason": "tool_use", "stop_sequence": null,
+        "usage": {"input_tokens": 10, "output_tokens": 5}
+    });
+    let out = translate_response("anthropic", "cohere", &body);
+    let msg = &out["message"];
+    assert!(msg.get("tool_plan").is_none(), "COH-08: {out}");
+    assert_eq!(
+        msg["content"],
+        json!([{"type": "thinking", "thinking": "hmm"}, {"type": "text", "text": "hello"}]),
+        "COH-08: {out}"
+    );
+    assert_eq!(
+        msg["tool_calls"][0]["function"]["name"],
+        json!("f"),
+        "{out}"
+    );
+}
+
+/// COH-09: a foreign model's streamed reasoning reaches a Cohere client as a thinking content block
+/// (`content-start {type:"thinking"}` / `content-delta {thinking}` / `content-end`), not as
+/// `tool-plan-delta` frames — and the Cohere reader reads those frames back as the same reasoning.
+#[test]
+fn coh09_streamed_thinking_is_a_thinking_content_block() {
+    let raw = concat!(
+        "event: message_start\n",
+        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\n\n",
+        "event: content_block_start\n",
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"hmm\"}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig\"}}\n\n",
+        "event: content_block_stop\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "event: content_block_start\n",
+        "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n",
+        "event: content_block_stop\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+        "event: message_delta\n",
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":5}}\n\n",
+        "event: message_stop\n",
+        "data: {\"type\":\"message_stop\"}\n\n",
+    );
+    let out = translate_stream("anthropic", "cohere", raw);
+    let frames = sse_data(&out);
+    assert!(
+        !frames.iter().any(|v| v["type"] == "tool-plan-delta"),
+        "COH-09: {out}"
+    );
+    let kinds: Vec<String> = frames
+        .iter()
+        .filter(|v| {
+            v["type"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("content-"))
+        })
+        .map(|v| {
+            let c = &v["delta"]["message"]["content"];
+            let what = if c.get("thinking").is_some() {
+                "thinking"
+            } else if c.get("text").is_some() {
+                "text"
+            } else {
+                ""
+            };
+            format!("{}:{}:{what}", v["type"].as_str().unwrap_or(""), v["index"])
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            "content-start:0:thinking",
+            "content-delta:0:thinking",
+            "content-end:0:",
+            "content-start:1:text",
+            "content-delta:1:text",
+            "content-end:1:",
+        ],
+        "COH-09: {out}"
+    );
+    // The Cohere reader reads the translated stream back as the same reasoning, then the answer.
+    let back = translate_stream("cohere", "anthropic", &out);
+    assert!(back.contains("\"thinking\":\"hmm\""), "{back}");
+    assert!(back.contains("hello"), "{back}");
+}
