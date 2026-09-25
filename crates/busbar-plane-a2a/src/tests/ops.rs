@@ -48,8 +48,8 @@ fn the_two_spellings_of_an_operation_agree() {
             partner.len()
         );
         assert_eq!(
-            partner[0].streaming, row.streaming,
-            "the two spellings of {} disagree on streaming",
+            partner[0].multi_frame, row.multi_frame,
+            "the two spellings of {} disagree on multi_frame",
             row.op
         );
     }
@@ -68,21 +68,21 @@ fn the_lookup_answers_the_table_and_nothing_else() {
     assert_eq!(row_for("MESSAGE/SEND"), None);
 }
 
-/// Every streaming method is one of the two the codec's own streaming test recognises.
+/// Every multi-frame method is one of the two the codec's own multi-frame test recognises.
 ///
 /// The codec decides "does this stream" by looking for a `/stream` suffix or one of two names.
 /// This asserts the same set from the other direction, so the two readings cannot drift apart
 /// without a red here.
 #[test]
-fn the_streaming_set_matches_the_codecs_own_rule() {
+fn the_multi_frame_set_matches_the_codecs_own_rule() {
     for row in METHODS {
         let by_the_codecs_rule = row.method.ends_with("/stream")
             || row.method == "tasks/resubscribe"
             || row.method == "SendStreamingMessage"
             || row.method == "SubscribeToTask";
         assert_eq!(
-            row.streaming, by_the_codecs_rule,
-            "{} disagrees with the codec's streaming rule",
+            row.multi_frame, by_the_codecs_rule,
+            "{} disagrees with the codec's multi_frame rule",
             row.method
         );
     }

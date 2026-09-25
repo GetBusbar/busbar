@@ -26,7 +26,7 @@ pub const FACT_VERSION: &str = "a2a_version";
 pub const FACT_AGENT_ID: &str = "agent_id";
 
 /// Whether the answer is a stream of events rather than one reply.
-pub const FACT_STREAMING: &str = "streaming";
+pub const FACT_MULTI_FRAME: &str = "streaming";
 
 /// The task the answer is about.
 pub const FACT_TASK_ID: &str = "task_id";

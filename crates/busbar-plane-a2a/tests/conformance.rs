@@ -155,7 +155,7 @@ fn the_two_vocabularies_agree_slot_for_slot() {
             a.op, b.op
         );
         assert_eq!(
-            a.streaming, b.streaming,
+            a.multi_frame, b.multi_frame,
             "the two wordings of {slot} stream differently"
         );
     }
@@ -929,7 +929,7 @@ fn the_document_mount_is_unchanged_by_the_open_surfaces() {
         .decode_ingress(&mut cursor, None, &ctx)
         .expect("an envelope on the mount decodes")
     else {
-        panic!("a non-streaming request is one whole unit");
+        panic!("a single-frame request is one whole unit");
     };
     assert_eq!(draft.op, ops::OP_TASK_GET);
     assert_eq!(

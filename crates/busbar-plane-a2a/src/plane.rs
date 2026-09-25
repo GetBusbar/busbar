@@ -47,7 +47,7 @@ pub struct Codec {
     /// Whether the request this half carries expects a STREAMED answer. Set at `encode_egress` on
     /// the upstream half from the request's operation; read at `decode_response`. A unary answer
     /// ends on its result; a streamed one ends only on `final:true` (or an error).
-    pub streaming: bool,
+    pub multi_frame: bool,
 }
 
 /// The fact key the per-name projection reports the agent's own name under.
@@ -122,7 +122,7 @@ impl A2aPlane {
                 lane: agent.lane,
             },
             None => DestinationFacts::Upstream {
-                transport: crate::claims::TRANSPORT_HTTP,
+                transport: crate::claims::HTTP_TRANSPORT,
                 address: busbar_contract::UpstreamAddress::socket(""),
                 lane: LaneId::new(""),
             },
@@ -142,7 +142,7 @@ fn request_facts<'u>(body: &'u [u8], envelope: &jsonrpc::Envelope) -> Facts<'u> 
         let _ = facts.set(f::FACT_METHOD, FactValue::Str(method));
         if let Some(row) = ops::row_for(method) {
             let _ = facts.set(f::FACT_WORDING, FactValue::Str(row.wording.as_str()));
-            let _ = facts.set(f::FACT_STREAMING, FactValue::Bool(row.streaming));
+            let _ = facts.set(f::FACT_MULTI_FRAME, FactValue::Bool(row.multi_frame));
         }
     }
     if let Some(raw) = envelope.id_bytes(body) {
@@ -296,9 +296,9 @@ fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
 /// answer — a `result` or an `error` — and an envelope carrying neither ends nothing; a STREAMED
 /// answer ends only when a frame says it is the last (`final:true`) or reports an error, so its
 /// intermediate events, `result` and all, are frames rather than endings.
-fn response_terminal(body: &[u8], streaming: bool) -> bool {
+fn response_terminal(body: &[u8], multi_frame: bool) -> bool {
     let is_error = has(body, jsonrpc::PTR_ERROR);
-    if streaming {
+    if multi_frame {
         is_error || read_raw(body, jsonrpc::PTR_RESULT_FINAL) == Some(b"true".as_slice())
     } else {
         is_error || has(body, jsonrpc::PTR_RESULT)
@@ -306,13 +306,13 @@ fn response_terminal(body: &[u8], streaming: bool) -> bool {
 }
 
 /// The finish class one unit ending is.
-fn finish_of(end: &UnitEnd, streaming: bool) -> FinishClass {
+fn finish_of(end: &UnitEnd, multi_frame: bool) -> FinishClass {
     // One mapping, written once in the contract and read by every plane. All this plane decides is
     // what a COMPLETED unit is, which is a question about the exchange and not about the ending: a
     // streamed unit ends a turn of a session that continues, a unary one ends the whole answer.
     busbar_contract::unit::finish_class_of(
         end,
-        if streaming {
+        if multi_frame {
             FinishClass::TurnComplete
         } else {
             FinishClass::Complete
@@ -448,7 +448,7 @@ fn decode_open_surface<'u>(
             ops::OP_PUSH_EVENT
         }
     };
-    let _ = facts.set(f::FACT_STREAMING, FactValue::Bool(false));
+    let _ = facts.set(f::FACT_MULTI_FRAME, FactValue::Bool(false));
     Ok(Ingress::OneShot(Box::new(UnitDraft {
         op,
         body_ir: view(body, &[PTR_TASK_ID, PTR_CONTEXT_ID], ctx)?,
@@ -536,7 +536,7 @@ impl Plane for A2aPlane {
         };
         // A request whose answer arrives as a run of events stays OPEN across those events. One
         // whose answer is a single document is complete in this frame.
-        if row.streaming {
+        if row.multi_frame {
             Ok(Ingress::Open(Box::new(draft)))
         } else {
             Ok(Ingress::OneShot(Box::new(draft)))
@@ -557,7 +557,7 @@ impl Plane for A2aPlane {
         // answer's first event can itself be a whole Task).
         if let Some(state) = st {
             if let Some(codec) = state.get_mut::<Codec>() {
-                codec.streaming = Self::row_for_op(u.op()).is_some_and(|row| row.streaming);
+                codec.multi_frame = Self::row_for_op(u.op()).is_some_and(|row| row.multi_frame);
             }
         }
         // The caller's envelope goes on unchanged unless a record leg came back saying the agent
@@ -685,11 +685,11 @@ impl Plane for A2aPlane {
         // Whether this exchange streams was decided when the request went out (`encode_egress` set
         // it on this upstream half from the request's own operation). A unary answer ends on its one
         // result; a streamed one ends on the frame that says it is the last. See `response_terminal`.
-        let streaming = st
+        let multi_frame = st
             .as_deref()
             .and_then(PlaneSessionState::get::<Codec>)
-            .is_some_and(|codec| codec.streaming);
-        let terminal = response_terminal(body, streaming);
+            .is_some_and(|codec| codec.multi_frame);
+        let terminal = response_terminal(body, multi_frame);
         if let Some(state) = st {
             if let Some(codec) = state.get_mut::<Codec>() {
                 codec.events_read = codec.events_read.saturating_add(1);
@@ -942,13 +942,13 @@ impl Plane for A2aPlane {
     }
 
     fn audit<'u>(&self, u: &Unit<'u>, out: &UnitEnd, _ctx: &Ctx<'u>) -> AuditFacts {
-        let streaming = Self::row_for_op(u.op()).is_some_and(|r| r.streaming);
+        let multi_frame = Self::row_for_op(u.op()).is_some_and(|r| r.multi_frame);
         AuditFacts {
             // The DRAFT's class is the one that priced the unit, and this is that class read back
             // off the unit. A plane that named a different class here would be disputing its own
             // earlier answer, which is exactly what the loop treats it as.
             op_class: u.op(),
-            finish: finish_of(out, streaming),
+            finish: finish_of(out, multi_frame),
         }
     }
 

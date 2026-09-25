@@ -21,10 +21,10 @@
 use busbar_contract::grammar::{Claim, PathSeg, Selector};
 
 /// The request transport every one of this plane's document claims is made against.
-pub const TRANSPORT_HTTP: &str = "http";
+pub const HTTP_TRANSPORT: &str = "http";
 
 /// The framed transport the newer binding of this protocol is made against.
-pub const TRANSPORT_GRPC: &str = "grpc";
+pub const GRPC_TRANSPORT: &str = "grpc";
 
 /// The credential scheme this plane's authenticated claims sit under.
 ///
@@ -46,7 +46,7 @@ const SCHEME_ALTS: &[&str] = &["bearer"];
 /// Build one claim over a selector on the document transport.
 const fn http(selector: Selector) -> Claim {
     Claim {
-        transport: TRANSPORT_HTTP,
+        transport: HTTP_TRANSPORT,
         selector,
         scheme: Some(SCHEME),
         scheme_alternatives: SCHEME_ALTS,
@@ -60,7 +60,7 @@ const fn http(selector: Selector) -> Claim {
 /// Build one claim over a selector on the framed transport.
 const fn grpc(selector: Selector) -> Claim {
     Claim {
-        transport: TRANSPORT_GRPC,
+        transport: GRPC_TRANSPORT,
         selector,
         scheme: Some(SCHEME),
         scheme_alternatives: SCHEME_ALTS,
@@ -74,7 +74,7 @@ const fn grpc(selector: Selector) -> Claim {
 /// consulting one, which is what a deliberately open surface actually is.
 const fn open_http(selector: Selector) -> Claim {
     Claim {
-        transport: TRANSPORT_HTTP,
+        transport: HTTP_TRANSPORT,
         selector,
         scheme: None,
         scheme_alternatives: &[],

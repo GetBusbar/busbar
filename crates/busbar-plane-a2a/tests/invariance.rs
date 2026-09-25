@@ -120,14 +120,20 @@ fn the_manifest_names_only_what_a_plane_may_name() {
             "busbar-caps",
             "busbar-kernel",
             "busbar-unit-",
-            "busbar-plane-llm",
-            "busbar-plane-mcp",
         ] {
             assert!(
                 !name.starts_with(forbidden),
                 "the plane depends on {name}, which is kernel-side"
             );
         }
+        // No plane depends on a sibling plane's crate — the broker law (DECISION #8): planes
+        // never talk to each other. A prefix check over the whole `busbar-plane-` family
+        // generalises what used to be two named siblings, so a THIRD sibling plane added to the
+        // roster is covered without this test being edited again.
+        assert!(
+            !name.starts_with("busbar-plane-"),
+            "the plane depends on sibling plane crate {name}"
+        );
     }
 }
 

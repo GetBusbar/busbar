@@ -114,7 +114,7 @@ fn the_answering_kind_agrees_with_the_method_table() {
                 continue;
             };
             let row = ops::row_for(name).expect("a declared method is one the vocabulary carries");
-            let want = if row.streaming {
+            let want = if row.multi_frame {
                 sfc::Answering::Stream
             } else {
                 sfc::Answering::Unary
