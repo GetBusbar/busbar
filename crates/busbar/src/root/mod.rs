@@ -72,7 +72,6 @@ pub mod kernel;
 pub mod ledger_identity;
 pub mod linked;
 pub mod migration;
-pub mod money_book;
 #[cfg(feature = "plane-decision")]
 pub mod plane_decision;
 pub mod policy;

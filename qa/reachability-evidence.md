@@ -98,11 +98,11 @@ plane recorded? Until ruled, the rows stay RED and are NOT declared in `qa/reach
 
 ## 3. Unreached root modules — the `root-module` row
 
-`crates/busbar/src/root/money_book.rs` is declared by `root/mod.rs` (a declaration, not a use) and
-named by nothing else in the crate's non-test code, so no chain from `fn main()` arrives at it; its
-own doc calls it dormant. K2b deletes it (UC-STRIKE shape), and this paragraph goes with it.
-`root/vocabulary.rs` was the same shape with a doc that read as live boot infrastructure ("the
-leak-once interner… filled at boot, sealed"); K2b deleted it in a4df4799d.
+None today. The row's two findings were deleted by K2b (UC-STRIKE shape), each declared by
+`root/mod.rs` and named by nothing else in the crate's non-test code: `root/vocabulary.rs`, whose doc
+read as live boot infrastructure ("the leak-once interner… filled at boot, sealed"), in a4df4799d;
+and `root/money_book.rs`, whose own doc called it dormant, in the commit that struck its paragraph
+here.
 
 ## 4. Superseded pre-unification unit modules — not the unit path
 
