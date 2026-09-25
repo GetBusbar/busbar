@@ -29,7 +29,9 @@
 //! the absence is the assertion that matters: the agent receives NO `message/send`
 //! for the refused call, and the refusal follows a live re-fetch of the card, not a stale memory.
 
-#![cfg(all(feature = "plane-a2a", feature = "auth-admin-tokens"))]
+// The plane under test is the linked row driving the `admin-envelope` root seam (build.rs emits
+// `linked_admin_envelope` from `[package.metadata.busbar.linked-axes]`).
+#![cfg(all(linked_admin_envelope, feature = "auth-admin-tokens"))]
 
 use std::io::{Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};

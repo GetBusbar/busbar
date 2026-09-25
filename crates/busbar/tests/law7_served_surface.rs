@@ -12,12 +12,7 @@
 //! `agents`, and the voice plane's `/v1/realtime` doors mounted and audience-checked. The control
 //! boots the SAME binary with each plane section present and requires every one of those back.
 #![cfg(unix)]
-#![cfg(all(
-    feature = "proto-llm",
-    feature = "plane-mcp",
-    feature = "plane-a2a",
-    feature = "plane-voice"
-))]
+#![cfg(linked_every_plane)]
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -47,9 +42,9 @@ const PLANE_SECTIONS: &str = r#"mcp:
   canonical_uri: "http://127.0.0.1:{data_port}/mcp"
   authorization_servers: ["http://127.0.0.1:{admin_port}"]
 tools:
-  t1: { url: "https://t.example/mcp", pin: { mechanism: unpinned } }
+  t1: { url: "https://t.example/rpc", pin: { mechanism: unpinned } }
 agents:
-  a1: { url: "https://a.example/a2a", pin: { mechanism: unpinned } }
+  a1: { url: "https://a.example/card", pin: { mechanism: unpinned } }
 streams:
   context_window_tokens: 16384
 "#;

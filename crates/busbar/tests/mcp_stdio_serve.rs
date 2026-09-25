@@ -30,7 +30,9 @@
 // never exits on stdin EOF. These end-to-end tests drive that stdio channel, so they belong to the
 // same feature as the mode they exercise — matching the binary's own `#[cfg(feature = "plane-mcp")]`
 // on the serve block.
-#![cfg(feature = "plane-mcp")]
+// The plane under test is the linked row carrying the `stdio-serve` axis (build.rs emits
+// `linked_axis_stdio_serve` from `[package.metadata.busbar.linked-axes]`).
+#![cfg(linked_axis_stdio_serve)]
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -43,7 +45,7 @@ const CANONICAL: &str = "http://127.0.0.1:18080/mcp";
 
 fn fixture_dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
-        "busbar-mcp-stdio-{}-{tag}-{}",
+        "busbar-stdio-serve-{}-{tag}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -86,7 +88,7 @@ fn jwt_with_aud(aud: &str) -> String {
 fn record_skip(reason: &str) {
     let test = std::thread::current()
         .name()
-        .unwrap_or("mcp_stdio_serve")
+        .unwrap_or(env!("CARGO_CRATE_NAME"))
         .to_string();
 
     if std::env::var_os("CI").is_some() {
@@ -106,7 +108,7 @@ fn record_skip(reason: &str) {
                 .join("busbar-test-skips.ledger")
         });
 
-    let row = format!("mcp_stdio_serve\t{test}\t{reason}\n");
+    let row = format!("{}\t{test}\t{reason}\n", env!("CARGO_CRATE_NAME"));
     let wrote = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -358,7 +360,10 @@ fn an_mcp_deployment_with_an_empty_chain_refuses_to_boot() {
     write_configs(&dir, "");
     let mut child = spawn(&dir, None);
     let code = wait_bounded(&mut child.child, Duration::from_secs(80));
-    assert_ne!(code, 0, "mcp + empty auth.chain must not boot");
+    assert_ne!(
+        code, 0,
+        "the endpoint door + empty auth.chain must not boot"
+    );
     let stderr = child.stderr_so_far();
     assert!(
         stderr.contains("auth.chain is empty"),

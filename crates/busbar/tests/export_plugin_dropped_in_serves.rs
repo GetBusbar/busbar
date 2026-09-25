@@ -22,7 +22,7 @@
 //! RED against the tree before the axis: step 1 fails, the process exits naming the unknown exporter.
 
 #![cfg(unix)]
-#![cfg(feature = "proto-llm")]
+#![cfg(linked_axis_body_ingress)]
 
 use std::io::{Read, Write};
 use std::net::TcpStream;

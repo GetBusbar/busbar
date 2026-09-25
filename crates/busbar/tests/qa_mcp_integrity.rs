@@ -33,7 +33,9 @@
 //!    plane's own `the_digest_of_the_cross_language_pin_fixture_is_pinned`. A drift here would make
 //!    the control fail for the wrong reason; this test names that reason instead.
 
-#![cfg(all(feature = "plane-mcp", feature = "auth-admin-tokens"))]
+// The plane under test is the linked row carrying the `stdio-serve` axis (build.rs emits
+// `linked_axis_stdio_serve` from `[package.metadata.busbar.linked-axes]`).
+#![cfg(all(linked_axis_stdio_serve, feature = "auth-admin-tokens"))]
 
 use std::io::{Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};

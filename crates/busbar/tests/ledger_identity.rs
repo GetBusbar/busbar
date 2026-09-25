@@ -44,7 +44,7 @@
 //! are one sum and the identity is an equality rather than a difference.
 #![cfg(unix)]
 // Needs a bootable server with an LLM route: the money path is what is being reconciled.
-#![cfg(feature = "proto-llm")]
+#![cfg(linked_axis_body_ingress)]
 
 use std::io::{Read, Write};
 use std::net::TcpStream;

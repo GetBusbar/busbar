@@ -21,7 +21,8 @@
 //!
 //! `busbar` already carries `busbar-transport-ws`, `busbar-transport-http` and
 //! `busbar-transport-tcp` as ordinary (non-dev) dependencies — `busbar-transport-ws` behind the
-//! default-on `plane-voice` feature, which is why this file is gated on it too — so this file changes no
+//! default-on feature of the linked plane carrying the `ws-arrivals` axis, which is why this file is
+//! gated on that axis (`linked_axis_ws_arrivals`, emitted by build.rs) too — so this file changes no
 //! wire string, no config key and no customer-visible behaviour: it is the same six assertions
 //! [`busbar-transport-ws/src/tests/battery.rs`] used to carry, moved to the one crate whose
 //! manifest can honestly own the edge they exercise.
@@ -30,7 +31,7 @@
 //! byte-exact round trip, half-close, cancel-mid-frame, backpressure, K-writers, frame meta, and
 //! the crate's own private-helper unit tests) are untouched and still live in that crate.
 
-#![cfg(feature = "plane-voice")]
+#![cfg(linked_axis_ws_arrivals)]
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,7 +40,9 @@ use futures::StreamExt;
 
 use busbar_contract::transport::wire::TransportError;
 use busbar_contract::{ScratchBytes, StreamId, Transport};
-use busbar_transport_ws::WsTransport;
+use busbar_transport_http::{ClientSettings, HttpTransport};
+use busbar_transport_tcp::TcpTransport;
+use busbar_transport_ws::{WsTransport, MESSAGE_MAX_BYTES_KEY};
 
 /// The target the client role names in its upgrade request — the same fixture value the crate's
 /// own battery uses.
@@ -56,8 +59,7 @@ impl busbar_contract::ConfigView for HttpCfg {
         None
     }
     fn get_int(&self, k: &str) -> Option<i64> {
-        self.1
-            .filter(|_| k == busbar_transport_ws::MESSAGE_MAX_BYTES_KEY)
+        self.1.filter(|_| k == MESSAGE_MAX_BYTES_KEY)
     }
     fn get_bool(&self, _k: &str) -> Option<bool> {
         None
@@ -94,9 +96,7 @@ fn verified_upstream(host: &'static str) -> busbar_contract::VerifiedDestination
 /// — and the composed chain the adopted connection reports is the real one, not a name for itself.
 #[tokio::test]
 async fn an_in_band_upgrade_over_http_with_cleared_facts() {
-    let http = Arc::new(busbar_transport_http::HttpTransport::new(
-        busbar_transport_http::ClientSettings::default(),
-    ));
+    let http = Arc::new(HttpTransport::new(ClientSettings::default()));
     let ws = Arc::new(WsTransport::new());
     let keys = test_key_handle();
     let listener = http
@@ -115,7 +115,7 @@ async fn an_in_band_upgrade_over_http_with_cleared_facts() {
         })
     };
 
-    let client_t = WsTransport::over(Arc::new(busbar_transport_tcp::TcpTransport::new()));
+    let client_t = WsTransport::over(Arc::new(TcpTransport::new()));
     let url: &'static str = Box::leak(format!("ws://{addr}/duplex").into_boxed_str());
     let client_conn = client_t.dial(&verified_upstream(url), &keys).await.unwrap();
     let (before, after_source, upgraded) = upgrade_task.await.unwrap();
@@ -149,11 +149,9 @@ async fn an_in_band_upgrade_over_http_with_cleared_facts() {
 /// thing it owns — the WebSocket handshake — on the streams they give up.
 #[tokio::test]
 async fn a_composed_round_trip_over_the_layers_below() {
-    let http = Arc::new(busbar_transport_http::HttpTransport::new(
-        busbar_transport_http::ClientSettings::default(),
-    ));
+    let http = Arc::new(HttpTransport::new(ClientSettings::default()));
     let server_t = Arc::new(WsTransport::over(http));
-    let client_t = WsTransport::over(Arc::new(busbar_transport_tcp::TcpTransport::new()));
+    let client_t = WsTransport::over(Arc::new(TcpTransport::new()));
     let keys = test_key_handle();
     let listener = server_t
         .listen(&HttpCfg("127.0.0.1:0".to_string(), None), &keys)
@@ -200,10 +198,8 @@ async fn a_composed_round_trip_over_the_layers_below() {
 async fn the_layer_reported_is_one_the_transport_declares() {
     use busbar_contract::TransportMeta;
 
-    let over_http = WsTransport::over(Arc::new(busbar_transport_http::HttpTransport::new(
-        busbar_transport_http::ClientSettings::default(),
-    )));
-    let over_tcp = WsTransport::over(Arc::new(busbar_transport_tcp::TcpTransport::new()));
+    let over_http = WsTransport::over(Arc::new(HttpTransport::new(ClientSettings::default())));
+    let over_tcp = WsTransport::over(Arc::new(TcpTransport::new()));
     assert_eq!(over_http.composed_over(), Some("http"));
     assert_eq!(over_tcp.composed_over(), Some("tcp"));
     assert_eq!(WsTransport::new().composed_over(), None);
@@ -223,9 +219,7 @@ async fn the_layer_reported_is_one_the_transport_declares() {
 #[tokio::test]
 async fn the_message_cap_is_the_operator_s_and_not_the_library_s() {
     const CAP: usize = 1024;
-    let t = Arc::new(WsTransport::over(Arc::new(
-        busbar_transport_tcp::TcpTransport::new(),
-    )));
+    let t = Arc::new(WsTransport::over(Arc::new(TcpTransport::new())));
     // The listener is where the operator's configuration reaches this transport at all.
     let listener = t
         .listen(
@@ -273,10 +267,7 @@ async fn the_message_cap_is_the_operator_s_and_not_the_library_s() {
 async fn a_dial_only_instance_holds_the_ceiling_its_root_named() {
     const CAP: usize = 1024;
     // No `listen` anywhere in this cell: the ceiling arrives only through the constructor.
-    let t = WsTransport::over_with_max_message_bytes(
-        Arc::new(busbar_transport_tcp::TcpTransport::new()),
-        CAP,
-    );
+    let t = WsTransport::over_with_max_message_bytes(Arc::new(TcpTransport::new()), CAP);
 
     let peer = WsTransport::new();
     let (end_a, end_b) = tokio::io::duplex(64 * 1024);
@@ -338,7 +329,7 @@ async fn a_secure_target_over_a_cleartext_lower_layer_is_refused_before_any_byte
         }
     });
 
-    let client_t = WsTransport::over(Arc::new(busbar_transport_tcp::TcpTransport::new()));
+    let client_t = WsTransport::over(Arc::new(TcpTransport::new()));
     let url: &'static str = Box::leak(format!("wss://{addr}/duplex").into_boxed_str());
     let err = client_t
         .dial(&verified_upstream(url), &test_key_handle())

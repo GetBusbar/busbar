@@ -15,7 +15,7 @@
 // The fixture boots a REAL busbar with a configured provider; a `--no-default-features` build has
 // no wire codec compiled in and fail-closes at boot, which is correct product behaviour, not a
 // regression. Full-feature builds run it.
-#![cfg(feature = "proto-llm")]
+#![cfg(linked_axis_body_ingress)]
 
 use std::collections::BTreeSet;
 use std::io::Read;

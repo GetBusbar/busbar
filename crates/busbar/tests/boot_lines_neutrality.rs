@@ -15,7 +15,7 @@
 //! before comparison, exactly as `testing/shadow-oracle/normalize.py`'s `boot.exhaustion-order` rule
 //! does for the oracle's own recording of this same cell.
 #![cfg(unix)]
-#![cfg(feature = "proto-llm")]
+#![cfg(linked_axis_body_ingress)]
 
 use std::io::{Read, Write};
 use std::net::TcpStream;

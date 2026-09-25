@@ -18,14 +18,10 @@
 //! from in-process; this one boots the real shipped binary end to end so the plane crates'
 //! actual `Cargo.toml` feature wiring, not a unit-test fixture, is what is under test).
 #![cfg(unix)]
-// "Every plane compiled in" requires all four plane-bearing features; a build missing one of
-// them is not the shape this test is about, so it skips rather than giving a false pass/fail.
-#![cfg(all(
-    feature = "proto-llm",
-    feature = "plane-mcp",
-    feature = "plane-a2a",
-    feature = "plane-voice"
-))]
+// "Every plane compiled in" is `linked_every_plane` (build.rs: every linked row carrying the `plane`
+// axis is enabled); a build missing one is not the shape this test is about, so it skips rather than
+// giving a false pass/fail.
+#![cfg(linked_every_plane)]
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
