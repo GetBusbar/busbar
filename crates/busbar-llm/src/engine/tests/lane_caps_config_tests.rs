@@ -79,6 +79,7 @@ fn lane_caps_default_to_the_pre_capability_forms_and_resolve_provider_then_model
         max_output_key: Some(MaxOutputKeyCfg::MaxTokens),
         anthropic_adaptive_thinking: Some(true),
         native_structured_output: Some(true),
+        ..Default::default()
     }];
     let cfg = merge_provider_fallback(&def, &deploy);
     assert_eq!(
@@ -143,4 +144,76 @@ fn shipped_catalog_declares_the_lane_capabilities() {
     ] {
         assert_eq!(anthropic.lane_caps_for(older), LaneCaps::NONE, "{older}");
     }
+}
+
+/// Item 12 (Q57) at the CATALOG: the shipped providers.yaml declares `thinking_always_on` for the
+/// Claude models that cannot switch thinking off (Opus 5.5, Fable 5.x) on the first-party
+/// `anthropic` entry and on `bedrock`, keeping adaptive thinking + native structured output; and
+/// `reasoning_none` for the GPT-5.1 / 5.2 ids on `openai` and `responses`. Every id outside those
+/// patterns resolves both to the default `false` (today's bytes).
+#[test]
+fn shipped_catalog_declares_reasoning_none_and_thinking_always_on() {
+    let raw = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../providers.yaml"))
+        .expect("read providers.yaml");
+    let defs: HashMap<String, ProviderDef> =
+        serde_yaml::from_str(&raw).expect("parse providers.yaml");
+    let resolved = |name: &str| merge_provider_fallback(&defs[name], &provider_deploy("K"));
+    let (anthropic, bedrock) = (resolved("anthropic"), resolved("bedrock"));
+    for (lane, model) in [
+        (&anthropic, "claude-opus-5-5"),
+        (&anthropic, "claude-opus-5-5-20260901"),
+        (&anthropic, "claude-fable-5"),
+        (&anthropic, "claude-fable-5-1"),
+        (&bedrock, "anthropic.claude-opus-5-5-v1:0"),
+        (&bedrock, "us.anthropic.claude-fable-5-1-v1:0"),
+        (&bedrock, "global.anthropic.claude-fable-5-v1:0"),
+    ] {
+        let caps = lane.lane_caps_for(model);
+        assert!(
+            caps.thinking_always_on
+                && caps.anthropic_adaptive_thinking
+                && caps.native_structured_output
+                && !caps.reasoning_none,
+            "{model}: {caps:?}"
+        );
+    }
+    for (lane, model) in [
+        (&anthropic, "claude-opus-5"),
+        (&anthropic, "claude-opus-4-7"),
+        (&anthropic, "claude-sonnet-5"),
+        (&anthropic, "claude-sonnet-4-5"),
+        (&bedrock, "us.anthropic.claude-opus-5-v1:0"),
+        (&bedrock, "anthropic.claude-sonnet-4-5-20250929-v1:0"),
+        (&bedrock, "amazon.nova-pro-v1:0"),
+    ] {
+        assert!(!lane.lane_caps_for(model).thinking_always_on, "{model}");
+    }
+    for name in ["openai", "responses"] {
+        let lane = resolved(name);
+        for model in [
+            "gpt-5.1",
+            "gpt-5.1-2025-11-13",
+            "gpt-5.2",
+            "gpt-5.2-2025-12-11",
+        ] {
+            let caps = lane.lane_caps_for(model);
+            assert!(
+                caps.reasoning_none && !caps.thinking_always_on,
+                "{name} {model}: {caps:?}"
+            );
+        }
+        for model in ["gpt-5", "gpt-5-mini", "gpt-5.1-mini", "gpt-4o", "o3"] {
+            assert!(
+                !lane.lane_caps_for(model).reasoning_none,
+                "{name} {model} must keep the default"
+            );
+        }
+    }
+    // The `openai` entry's provider-level max_output_key still applies to the reasoning_none rule.
+    assert_eq!(
+        resolved("openai").lane_caps_for("gpt-5.1").max_output_key,
+        MaxOutputKey::MaxCompletionTokens
+    );
+    // An OpenAI-compatible host declares neither.
+    assert_eq!(resolved("groq").lane_caps_for("gpt-5.1"), LaneCaps::NONE);
 }
