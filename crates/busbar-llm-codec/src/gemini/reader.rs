@@ -1521,6 +1521,14 @@ impl ProtocolReader for GeminiReader {
                     });
                 }
 
+                // An image / audio part the model GENERATED (`inlineData` / `fileData` — image
+                // generation, audio output) is answer content (GEM-17): read it into Image / Media so
+                // a target that carries a response attachment (Bedrock's response `image`) gets it,
+                // instead of the part vanishing on every hop.
+                if let Some(block) = read_gemini_media_part(part) {
+                    content.push(block);
+                }
+
                 // Code-execution parts the model authored (`executableCode` / `codeExecutionResult`,
                 // emitted by Gemini's code-interpreter tool). No cross-protocol dialect has a native
                 // slot, so drop WITH a warn on cross-protocol egress rather than corrupting them into

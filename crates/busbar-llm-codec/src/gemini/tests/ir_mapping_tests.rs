@@ -593,3 +593,17 @@ fn gem13_reasoning_tokens_are_thoughts_for_a_gemini_client() {
     assert_eq!(um["thoughtsTokenCount"], json!(20), "{frame}");
     assert_eq!(um["totalTokenCount"], json!(40), "{frame}");
 }
+
+/// GEM-17: an image the model GENERATED reaches a target that carries a response attachment
+/// (Bedrock's response `image`) instead of vanishing.
+#[test]
+fn gem17_generated_image_reaches_bedrock() {
+    let body = json!({"candidates": [{"content": {"role": "model", "parts": [
+        {"text": "here"}, {"inlineData": {"mimeType": "image/png", "data": "iVBO"}}]}, "finishReason": "STOP"}],
+        "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}});
+    let out = xresp("gemini", "bedrock", &body);
+    let content = out["output"]["message"]["content"]
+        .as_array()
+        .expect("content");
+    assert!(content.iter().any(|b| b.get("image").is_some()), "{out}");
+}
