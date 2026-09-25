@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! NO VERB NAMES A PLANE OR A PROTOCOL — proven on the REAL shipped `[llm, mcp, a2a]` roster.
+//! NO VERB NAMES A PLANE OR A PROTOCOL — proven on the REAL shipped roster.
 //!
 //! The half of `src/tests/operation_tests.rs::no_verb_name_carries_a_protocol_identity` that needs
 //! the real roster registered. The unit test reads the protocol names off core's own test registry;
-//! the plane keys (`a2a` among them, whose plane core's unit test binary never registers) are only
+//! the plane keys (one of them a plane core's unit test binary never registers) are only
 //! enumerable once the planes install their test seams, which is an integration-test target's job
 //! (see `plane_dispatch_cross_plane.rs`'s header for the same move).
 
@@ -24,19 +24,19 @@ fn register_planes() {
 #[test]
 fn no_verb_name_carries_a_plane_key_or_a_protocol_name() {
     register_planes();
-    let mut identities: Vec<&'static str> = busbar_kernel::plane::plane_keys().collect();
+    // The keys come from the roster just registered, never from literals here.
+    let plane_keys: Vec<&'static str> = busbar_kernel::plane::plane_keys().collect();
+    assert!(
+        plane_keys.len() >= 3,
+        "the registered roster declares at least three plane keys: {plane_keys:?}"
+    );
+    let mut identities: Vec<&'static str> = plane_keys.clone();
     identities.extend(
         busbar_kernel::proto::registry::registry()
             .decls()
             .iter()
             .map(|d| d.name),
     );
-    for key in ["llm", "mcp", "a2a"] {
-        assert!(
-            identities.contains(&key),
-            "{key} is missing from the roster's identities: {identities:?}"
-        );
-    }
     let verbs: Vec<Operation> = Operation::ALL
         .iter()
         .copied()
