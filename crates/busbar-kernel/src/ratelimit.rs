@@ -128,9 +128,14 @@ pub fn classify_mutation(rel: &str) -> MutationClass {
     // one. Derived from the section table rather than listed as literals, so a new section is
     // classified correctly the moment its variant exists (the `docs/admin-api.md` config row and
     // `rate_limit_doc_table_matches_classifier` are the paired ledger).
+    // On a path-SEGMENT boundary: `/export` and `/export/{name}` are the section, `/export-keyset`
+    // is not.
     if crate::config::named_map::NamedMapSection::sections()
         .iter()
-        .any(|s| rel.starts_with(s.path_root().as_ref()))
+        .any(|s| {
+            rel.strip_prefix(s.path_root().as_ref())
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        })
     {
         return MutationClass::Config;
     }

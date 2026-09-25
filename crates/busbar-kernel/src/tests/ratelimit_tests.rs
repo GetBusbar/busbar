@@ -209,3 +209,28 @@ fn the_config_table_is_not_the_whole_decision_and_its_doc_names_what_else_decide
         );
     }
 }
+
+/// A NAMED-MAP ROOT MATCHES ON A PATH-SEGMENT BOUNDARY (architect ruling 2026-09-24). `/export` and
+/// everything under `/export/` is the section's CONFIG blast radius; `/export-keyset` merely shares
+/// its first six characters and is not — a prefix match put it on the 10/min budget.
+#[test]
+fn a_named_map_root_matches_on_a_segment_boundary_only() {
+    for section in crate::config::named_map::NamedMapSection::sections() {
+        let root = section.path_root();
+        for inside in [
+            root.to_string(),
+            format!("{root}/n"),
+            format!("{root}/n/settings"),
+        ] {
+            assert!(
+                matches!(classify_mutation(&inside), MutationClass::Config),
+                "{inside} is the section's own path"
+            );
+        }
+        let neighbour = format!("{root}-keyset");
+        assert!(
+            matches!(classify_mutation(&neighbour), MutationClass::Crud),
+            "{neighbour} only shares the root's leading characters"
+        );
+    }
+}
