@@ -138,10 +138,9 @@ fn dp_gov_with_key() -> (
     std::sync::Arc<dyn busbar_kernel::test_support::engine_kit::GovKit>,
     String,
 ) {
-    use busbar_kernel::governance::MemoryStore;
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    let store = std::sync::Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -363,9 +362,8 @@ async fn test_chain_accepts_all_carriers_and_native_401() {
 #[tokio::test]
 async fn test_disabled_virtual_key_is_rejected_401() {
     crate::testkit::install_test_seams();
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_kernel::governance::MemoryStore;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -384,7 +382,7 @@ async fn test_disabled_virtual_key_is_rejected_401() {
         });
     let server = MockServer::new(state).await;
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -494,9 +492,8 @@ async fn test_disabled_virtual_key_is_rejected_401() {
 #[tokio::test]
 async fn test_governance_accepts_vendor_carriers_and_native_401() {
     crate::testkit::install_test_seams();
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_kernel::governance::MemoryStore;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -520,7 +517,7 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
     }
     let server = MockServer::new(state).await;
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -637,9 +634,8 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
 #[tokio::test]
 async fn test_governance_revoked_signed_token_key_rejected() {
     crate::testkit::install_test_seams();
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
-    use busbar_kernel::governance::MemoryStore;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -648,7 +644,7 @@ async fn test_governance_revoked_signed_token_key_rejected() {
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -740,9 +736,8 @@ async fn test_governance_revoked_signed_token_key_rejected() {
 #[tokio::test]
 async fn test_governance_inert_without_admin_token_static_token_admitted() {
     crate::testkit::install_test_seams();
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_kernel::governance::MemoryStore;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -766,7 +761,7 @@ async fn test_governance_inert_without_admin_token_static_token_admitted() {
     let token = "grp:static";
     let auth_cfg = chain_cfg(&["test-groups-module"]);
     // The default-deploy governance engine: RAM store, NO admin token, NO minted keys → INERT.
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .unwrap();
@@ -846,9 +841,8 @@ async fn test_governance_inert_without_admin_token_static_token_admitted() {
 #[tokio::test]
 async fn test_governance_inert_without_admin_token_open_relay_admits() {
     crate::testkit::install_test_seams();
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_kernel::governance::MemoryStore;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -869,7 +863,7 @@ async fn test_governance_inert_without_admin_token_open_relay_admits() {
     });
     let server = MockServer::new(state).await;
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .unwrap();
@@ -917,9 +911,8 @@ async fn test_governance_inert_without_admin_token_open_relay_admits() {
 #[tokio::test]
 async fn test_governance_active_with_admin_token_enforces_minted_key() {
     crate::testkit::install_test_seams();
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_kernel::governance::MemoryStore;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -940,7 +933,7 @@ async fn test_governance_active_with_admin_token_enforces_minted_key() {
     });
     let server = MockServer::new(state).await;
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -1040,10 +1033,9 @@ async fn test_governance_active_with_admin_token_enforces_minted_key() {
 #[tokio::test]
 async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins() {
     crate::testkit::install_test_seams();
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_api::{Store, VirtualKey};
-    use busbar_kernel::governance::MemoryStore;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
+    use busbar_api::VirtualKey;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -1070,7 +1062,7 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
     // does NOT target). If the key's controls were enforced, a request to pool "pa" bearing this
     // secret would be pool-ACL rejected. Under an INERT engine they are NOT consulted at all.
     let persisted_secret = "sk-vk-persisted-from-prior-run";
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     store
         .put_key(&VirtualKey {
             id: "kold".to_string(),
@@ -1181,9 +1173,8 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
 #[tokio::test]
 async fn test_active_governance_persisted_key_is_enforced() {
     crate::testkit::install_test_seams();
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
-    use busbar_kernel::governance::MemoryStore;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -1193,7 +1184,7 @@ async fn test_active_governance_persisted_key_is_enforced() {
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -1371,7 +1362,7 @@ async fn test_1_5_2_open_chain_valid_vkey_ignored_not_metered() {
         "open chain admits regardless of the presented vkey"
     );
     // PURE ANONYMOUS: the voluntarily-presented key was ignored → its ledger recorded no spend.
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
+    use crate::test_support::engine_kit::EngineTestKit as _;
     let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_flat(1);
     let spend = gov
         .usage_for(cost.as_ref(), &key_id, busbar_kernel::store::now())
@@ -1475,10 +1466,9 @@ async fn test_1_5_2_role_bound_principal_synthesized() {
 #[tokio::test]
 async fn test_1_5_2_signed_ingress_under_keys_chain_admitted() {
     crate::testkit::install_test_seams();
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     busbar_kernel::metrics::init();
     let state = std::sync::Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -1491,7 +1481,7 @@ async fn test_1_5_2_signed_ingress_under_keys_chain_admitted() {
     });
     let server = MockServer::new(state).await;
 
-    let store = std::sync::Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), None)
         .unwrap();

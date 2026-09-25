@@ -12,8 +12,8 @@
 //! response still writes its metering row: the plane always ledgers, and billing off is the money
 //! VIEW reading 0, never a missing row.
 use super::*;
+use crate::test_support::engine_kit::EngineTestKit as _;
 use busbar_kernel::governance::NewKeySpec;
-use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
 use bytes::Bytes;
 use futures::StreamExt as _;
 
@@ -43,7 +43,7 @@ where
 {
     crate::testkit::install_test_seams();
     busbar_kernel::metrics::init();
-    let store = Arc::new(busbar_kernel::governance::MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .expect("gov");

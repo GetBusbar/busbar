@@ -16,7 +16,6 @@
 use super::{translate_response_cross_protocol, BudgetSpendGuard};
 use crate::engine::AppEngineExt as _;
 use crate::engine::TapCell;
-use busbar_kernel::governance::MemoryStore;
 use busbar_kernel::governance::NewKeySpec;
 use busbar_kernel::test_support::engine_kit::{CostKit, EngineTestKit as _, GovKit};
 use std::sync::Arc;
@@ -31,7 +30,7 @@ fn fixture() -> (
     busbar_api::VirtualKey,
 ) {
     crate::testkit::install_test_seams();
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .expect("gov");

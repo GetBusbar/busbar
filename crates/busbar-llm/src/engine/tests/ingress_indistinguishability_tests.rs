@@ -495,9 +495,8 @@ async fn test_cross_protocol_response_carries_ingress_ct_and_native_id() {
 #[tokio::test]
 async fn test_untranslatable_2xx_does_not_charge_tokens() {
     crate::testkit::install_test_seams();
-    use busbar_kernel::governance::MemoryStore;
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     busbar_kernel::metrics::init();
     let state = Arc::new(MockServerState::new());
     // OpenAI-shaped 2xx: a real `usage` block (so the tap WOULD count 7+3=10 tokens) but an EMPTY
@@ -518,7 +517,7 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
     // Gov + a virtual key. Spend is DERIVED now, so the "no token billing" intent is asserted on
     // the token ledger itself: a zero post-call token count proves no token billing happened (the
     // tap WOULD have ledgered 7+3=10 tokens if it wrongly ran).
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .expect("gov");
@@ -713,16 +712,15 @@ async fn test_untranslatable_2xx_refunds_budget_and_trips_breaker() {
 async fn test_same_protocol_nonstream_multichunk_counts_usage() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
-    use busbar_kernel::governance::MemoryStore;
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
     busbar_kernel::metrics::init();
 
     // Gov + virtual key. Spend is DERIVED now, so "the tail usage was counted" is asserted on the
     // token ledger: a 1000-token post-drain ledger proves the reassembled body's `usage` ran.
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .expect("gov");
@@ -853,9 +851,8 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
 async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
-    use busbar_kernel::governance::MemoryStore;
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
 
@@ -869,7 +866,7 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
     );
     assert_eq!(super::max_translated_body_bytes(), CAP);
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .expect("gov");
@@ -996,9 +993,8 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
 async fn test_truncated_beyond_recovery_bills_nonzero_floor_not_zero() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
-    use busbar_kernel::governance::MemoryStore;
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
 
@@ -1010,7 +1006,7 @@ async fn test_truncated_beyond_recovery_bills_nonzero_floor_not_zero() {
     );
     assert_eq!(super::max_translated_body_bytes(), CAP);
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .expect("gov");
@@ -1158,9 +1154,8 @@ async fn test_truncated_beyond_recovery_bills_nonzero_floor_not_zero() {
 fn nonstream_tap_cap_is_read_once_per_decision() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
-    use busbar_kernel::governance::MemoryStore;
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use bytes::Bytes;
     use futures::StreamExt;
     use std::panic::AssertUnwindSafe;
@@ -1183,7 +1178,7 @@ fn nonstream_tap_cap_is_read_once_per_decision() {
     // (`taps_nonstream_usage() && usage_sink.is_some()`) that gates this branch — never reached
     // to completion here (only 2 chunks are polled, never draining to the billing arm), so no
     // background flush task is required.
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .expect("gov");
@@ -1477,14 +1472,13 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_anthropic_sse() {
 async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
-    use busbar_kernel::governance::MemoryStore;
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
     busbar_kernel::metrics::init();
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .expect("gov");
@@ -3716,10 +3710,9 @@ async fn test_streaming_nonsse_post_first_byte_cut_refunds_the_lane_unit() {
 async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
-    use busbar_kernel::governance::MemoryStore;
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use bytes::Bytes;
     use futures::StreamExt as _;
 
@@ -3755,7 +3748,7 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
 
     // A usage sink over a real GovState: any accrual call with nonzero tokens leaves an
     // observable token ledger in the key's window (spend derives; tokens are the ledger).
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .expect("gov");
@@ -3875,10 +3868,9 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
 async fn test_cancel_drop_bills_partial_tokens() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
-    use busbar_kernel::governance::MemoryStore;
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::store::BreakerCfg;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use bytes::Bytes;
     use futures::StreamExt as _;
 
@@ -3891,7 +3883,7 @@ async fn test_cancel_drop_bills_partial_tokens() {
         .pool("p", &[(0, 1)])
         .build();
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .expect("gov");
@@ -3992,10 +3984,9 @@ async fn test_cancel_drop_bills_partial_tokens() {
 async fn test_cancel_drop_bills_streamed_tokens_on_aborted_translate() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
-    use busbar_kernel::governance::MemoryStore;
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::store::BreakerCfg;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use bytes::Bytes;
     use futures::StreamExt as _;
 
@@ -4008,7 +3999,7 @@ async fn test_cancel_drop_bills_streamed_tokens_on_aborted_translate() {
         .pool("p", &[(0, 1)])
         .build();
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .expect("gov");

@@ -4,13 +4,12 @@
 
 use super::*;
 use crate::engine::POOL_LABEL_UNRESOLVED;
+use crate::test_support::engine_kit::EngineTestKit as _;
 use crate::test_support::{LaneSpec, TestApp};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use busbar_contract::caps::KernelSeal;
-use busbar_kernel::governance::MemoryStore;
 use busbar_kernel::proxy::reqlog::{RequestRecord, REQUESTS};
-use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
 
 /// The one operation class these fixtures seal, as a plane names its own.
 const OP: OpClassId = OpClassId::new("chat");
@@ -49,7 +48,7 @@ fn governed(
     Arc<crate::test_support::BuiltApp>,
     [busbar_api::VirtualKey; 2],
 ) {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,

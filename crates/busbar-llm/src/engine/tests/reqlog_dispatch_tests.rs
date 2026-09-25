@@ -29,13 +29,12 @@
 //! second chain of its own.
 
 use super::auth_dispatch_tests::PresentCredential as _;
+use crate::test_support::engine_kit::EngineTestKit as _;
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-use busbar_kernel::governance::MemoryStore;
 use busbar_kernel::proxy::reqlog::{
     RequestRecord, OUTCOME_DISPATCHED, OUTCOME_REFUSED, PRINCIPAL_UNGOVERNED, REASON_NOT_GRANTED,
     REQUESTS,
 };
-use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -78,7 +77,7 @@ async fn a_governed_deployment(
     let server = MockServer::new(state).await;
     let a_url = server.base_url();
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[9u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,

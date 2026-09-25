@@ -393,8 +393,7 @@ async fn test_cross_protocol_nonstream_preserves_model() {
 #[tokio::test]
 async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
     crate::testkit::install_test_seams();
-    use busbar_kernel::governance::MemoryStore;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
+    use crate::test_support::engine_kit::EngineTestKit as _;
     busbar_kernel::metrics::init();
 
     let state = Arc::new(MockServerState::new());
@@ -410,7 +409,7 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
     }
     let server = MockServer::new(state.clone()).await;
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -522,8 +521,7 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
 #[tokio::test]
 async fn test_cross_protocol_stream_records_tokens_for_tpm() {
     crate::testkit::install_test_seams();
-    use busbar_kernel::governance::MemoryStore;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
+    use crate::test_support::engine_kit::EngineTestKit as _;
     busbar_kernel::metrics::init();
 
     // OpenAI-protocol SSE stream whose final chunk carries usage totalling 160 tokens
@@ -546,7 +544,7 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
     }
     let server = MockServer::new(state.clone()).await;
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -1017,11 +1015,10 @@ async fn test_metrics_requires_auth_in_chain_mode() {
 #[tokio::test]
 async fn test_governance_vkey_auth_and_pool_acl() {
     crate::testkit::install_test_seams();
-    use busbar_kernel::governance::MemoryStore;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
+    use crate::test_support::engine_kit::EngineTestKit as _;
 
     busbar_kernel::metrics::init();
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -1098,12 +1095,10 @@ async fn test_governance_vkey_auth_and_pool_acl() {
 #[tokio::test]
 async fn test_governance_budget_over_quota() {
     crate::testkit::install_test_seams();
-    use busbar_api::Store;
-    use busbar_kernel::governance::MemoryStore;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
+    use crate::test_support::engine_kit::EngineTestKit as _;
 
     busbar_kernel::metrics::init();
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -1222,11 +1217,9 @@ async fn test_governance_budget_over_quota() {
 /// per-protocol over-quota envelope tests below: the rejection fires before resolution, so no lane/pool/backend is
 /// needed — only a parseable body that carries `model` where the protocol expects it.
 async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
-    use busbar_api::Store;
-    use busbar_kernel::governance::MemoryStore;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
+    use crate::test_support::engine_kit::EngineTestKit as _;
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -1474,11 +1467,10 @@ async fn test_budget_over_quota_bedrock_envelope() {
 #[tokio::test]
 async fn test_governance_rate_limit_429() {
     crate::testkit::install_test_seams();
-    use busbar_kernel::governance::MemoryStore;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
+    use crate::test_support::engine_kit::EngineTestKit as _;
 
     busbar_kernel::metrics::init();
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -1588,10 +1580,9 @@ async fn test_governance_rate_limit_429() {
 /// `model` where the protocol expects it. An omitted `allowed_pools` admits every pool so the ACL
 /// never short-circuits the rate gate.
 async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
-    use busbar_kernel::governance::MemoryStore;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
+    use crate::test_support::engine_kit::EngineTestKit as _;
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,

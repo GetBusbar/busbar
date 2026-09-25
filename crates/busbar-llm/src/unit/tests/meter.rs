@@ -51,7 +51,7 @@ async fn rig() -> (
     state.push(completion());
     let server = MockServer::new(state).await;
     let store: std::sync::Arc<dyn busbar_api::Store> =
-        std::sync::Arc::new(busbar_kernel::governance::MemoryStore::new());
+        crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov_kit = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .expect("governance");
@@ -418,7 +418,7 @@ fn priced_rig() -> (
 ) {
     crate::testkit::install_test_seams();
     let store: std::sync::Arc<dyn busbar_api::Store> =
-        std::sync::Arc::new(busbar_kernel::governance::MemoryStore::new());
+        crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov_kit = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .expect("governance");

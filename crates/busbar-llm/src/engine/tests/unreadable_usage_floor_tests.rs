@@ -8,8 +8,8 @@
 //! exactly what the truncated-tail path bills when it recovers nothing — the conservative floor over
 //! the delivered bytes (`estimate_usage_from_truncated_tail`), attributed to the output tier.
 use super::*;
+use crate::test_support::engine_kit::EngineTestKit as _;
 use busbar_kernel::governance::NewKeySpec;
-use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
 use bytes::Bytes;
 use http_body_util::BodyExt as _;
 
@@ -24,7 +24,7 @@ fn floor_for(delivered: usize) -> u64 {
 async fn billed_tokens_for(body: &str) -> u64 {
     crate::testkit::install_test_seams();
     busbar_kernel::metrics::init();
-    let store = Arc::new(busbar_kernel::governance::MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .expect("gov");
@@ -152,7 +152,8 @@ async fn stream_refused_usage_bills_the_floor_not_zero() {
     });
     let server = MockServer::new(state).await;
 
-    let store: Arc<dyn busbar_api::Store> = Arc::new(busbar_kernel::governance::MemoryStore::new());
+    let store: Arc<dyn busbar_api::Store> =
+        crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov_kit = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .expect("governance");

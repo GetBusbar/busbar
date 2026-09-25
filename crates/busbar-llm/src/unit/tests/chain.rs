@@ -9,13 +9,13 @@ use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 
+use crate::test_support::engine_kit::EngineTestKit as _;
 use busbar_contract::caps::{
     Approve, Audit, Authenticate, Consumption, Dial, Grant, KernelSeal, OpClassId, Outcome, Pass,
     PrincipalId, Route, VerifiedDestination, Verify,
 };
 use busbar_kernel::plane_host::EngineTablesView;
 use busbar_kernel::proxy::reqlog::REQUESTS;
-use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
 
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use crate::unit::{admit, approve, arrival, audit, authenticate, decode, meter, route, verify};
@@ -269,7 +269,7 @@ async fn rig_inner(fixture: Fixture, billed: bool) -> Rig {
         );
     }
 
-    let store = Arc::new(busbar_kernel::governance::MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     if let Some(requests) = fixture.seeded_group_requests() {
         use busbar_api::Store as _;
         store

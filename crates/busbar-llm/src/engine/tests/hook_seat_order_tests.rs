@@ -148,7 +148,8 @@ async fn rig(reject_at_gate: bool) -> (Rig, Arc<dyn Fn() -> Ledger + Send + Sync
     }
     let server = crate::test_support::MockServer::new(state).await;
 
-    let store: Arc<dyn busbar_api::Store> = Arc::new(busbar_kernel::governance::MemoryStore::new());
+    let store: Arc<dyn busbar_api::Store> =
+        crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,

@@ -234,12 +234,11 @@ async fn apply_global_rewrites_chains_in_order() {
 #[test]
 fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     crate::testkit::install_test_seams();
-    use busbar_kernel::governance::MemoryStore;
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::governance::SECS_PER_DAY;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .expect("gov");
@@ -363,11 +362,10 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
 #[test]
 fn test_nonstream_token_sum_saturates_no_panic_on_overflow() {
     crate::testkit::install_test_seams();
-    use busbar_kernel::governance::MemoryStore;
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     // No fee, no rate card → the derived-spend math can't overflow, isolating the SUM under test.
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
@@ -447,11 +445,10 @@ fn test_stable_hash_is_deterministic() {
 #[test]
 fn ledger_prices_an_aliased_lane_at_the_rate_card() {
     crate::testkit::install_test_seams();
-    use busbar_kernel::governance::MemoryStore;
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .expect("gov");
