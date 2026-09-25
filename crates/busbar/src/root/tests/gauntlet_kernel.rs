@@ -531,11 +531,18 @@ async fn run_served(witness: &str, test_fn: &str) {
         );
         answered.insert(plane.to_string());
     }
+    // What this build owes is what the ledgers cite `test_fn` for AMONG THE PLANES IT LINKS. A
+    // "some served plane carries the witness" floor is a claim about every plane at once: a build
+    // linking one served plane would be asked for a witness only an unlinked plane carries. The
+    // floor that keeps the test from passing over nothing is the ledgers' own citation, which does
+    // not move with the feature set.
+    let cited = planes_citing(test_fn);
     assert!(
-        !answered.is_empty() || served::SERVED_WITNESSES.is_empty(),
-        "no linked served plane carries a `{witness}` witness"
+        !cited.is_empty(),
+        "no ledger cell cites {THIS_FILE}::{test_fn} as any plane's served-leg proof, so the \
+         `{witness}` witness is owed by nobody and this test proves nothing"
     );
-    let owed: Vec<String> = planes_citing(test_fn)
+    let owed: Vec<String> = cited
         .into_iter()
         .filter(|p| linked.contains(p) && !answered.contains(p))
         .collect();

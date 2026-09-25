@@ -407,6 +407,10 @@ busbar-store-example-plugin = { path = "../store-example-plugin" }
 # the test links its `PLANE_DECL` (the linked door) and drops its cdylib into a temp `plugins/`
 # directory (the dropped-in door) and requires the two to install byte-identical registry rows.
 busbar-plugin-example-plane = { path = "../plane-example" }
+# That proof calls the router it built as the tower service it is (`ServiceExt::oneshot`). The
+# normal-edge `tower` above is `root-admin`'s own and optional, so a build without `root-admin` (every
+# single-plane build) would not compile the test; the test's edge is its own, unconditional here.
+tower = { workspace = true, features = ["util"] }
 # tests/cli_validate.rs builds signed plugin tarball fixtures.
 hex = { workspace = true }
 # `root/transports.rs` provisions a listener against a real self-signed pair rather than a fixture
