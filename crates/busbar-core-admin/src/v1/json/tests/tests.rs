@@ -326,8 +326,8 @@ fn openapi_error_enum_matches_admin_error_codes() {
 #[test]
 fn openapi_documents_the_loops_503_on_every_operation_it_walks() {
     let doc = openapi_doc_seamed();
-    let codes = &doc["components"]["schemas"]["Error"]["properties"]["error"]["properties"]["code"]
-        ["enum"];
+    let codes =
+        &doc["components"]["schemas"]["Error"]["properties"]["error"]["properties"]["code"]["enum"];
     assert!(
         codes
             .as_array()
@@ -340,8 +340,8 @@ fn openapi_documents_the_loops_503_on_every_operation_it_walks() {
             if method.starts_with("x-") {
                 continue;
             }
-            let loop_walks = crate::admin_codec::verbs::resolve(&method.to_ascii_uppercase(), path)
-                .is_some();
+            let loop_walks =
+                crate::admin_codec::verbs::resolve(&method.to_ascii_uppercase(), path).is_some();
             let documented = &op["responses"]["503"];
             if loop_walks {
                 walked += 1;
@@ -359,7 +359,10 @@ fn openapi_documents_the_loops_503_on_every_operation_it_walks() {
             }
         }
     }
-    assert!(walked >= 66, "only {walked} loop-walked operations were checked");
+    assert!(
+        walked >= 66,
+        "only {walked} loop-walked operations were checked"
+    );
 }
 
 /// The escalation 403 fires on PUT `/hooks/{name}` and PATCH
