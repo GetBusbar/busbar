@@ -164,7 +164,7 @@ pub const KNOWN_UNSHIPPED: &[&str] = &[
     "breaker-pool-observation",
     // `plugin-abi-keyed-units` STRUCK 2026-09-24 (owner ruling Q33d/Q35; item 123).
     "hold-late-accrual-parent-exit",
-    "rate-card-multi-currency",
+    // `rate-card-multi-currency` STRUCK 2026-09-25 (#66, spec Q4): `set_rate`/`set_fee` deleted.
     // The thirteen 1.6.0 admin verbs with no effect bound: not served (architect ruling
     // 2026-09-24); binding each strikes its row.
     "admin-verb-verify-effect",

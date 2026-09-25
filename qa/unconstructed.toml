@@ -300,16 +300,9 @@ why       = "Its own doc calls this what makes the late-accrual exposure a mecha
 unshipped = true
 switch    = "STRIKE THIS ROW in the commit that converts a child hold at parent exit on the real path. MONEY: PARKED-OWNER — an owner signs, not an agent."
 
-# MONEY — the multi-currency card has no production builder.
-[[capability]]
-id        = "rate-card-multi-currency"
-built     = "crates/busbar-kernel-ledger/src/cost/rate.rs"
-symbol    = "set_rate"
-construct = [".set_rate("]
-scope     = ["crates"]
-why       = "The documented way a multi-currency card is built has no production caller; production builds exactly one currency through from_micro_rates_in, so a card carrying a second currency cannot be constructed by any deployment."
-unshipped = true
-switch    = "STRIKE THIS ROW when a production path builds a multi-currency card, or DELETE set_rate/set_fee if a card is always built whole — a mutator nothing calls is a second way to move a price. MONEY: PARKED-OWNER."
+# MONEY — `rate-card-multi-currency` STRUCK 2026-09-25 (UC-STRIKE, #66 OWNER-LOCKED + spec Q4 "no
+# currency"): the mutators `RateCard::set_rate`/`set_fee` had no production caller and are DELETED —
+# a card is built whole by its constructors, so no second path can move a price.
 
 # ─── THE THIRTEEN 1.6.0 MONEY-GOVERNANCE VERBS WITH NO EFFECT BOUND (architect ruling 2026-09-24) ───
 #
