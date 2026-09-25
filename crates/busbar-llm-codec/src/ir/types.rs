@@ -912,10 +912,11 @@ pub struct IrTool {
     /// accepted, so the failure surfaced later as a parse error on an argument object nobody had
     /// asked to be lenient about.
     ///
-    /// Carried across the OpenAI Chat ↔ Responses pair, which are the two dialects that model it.
-    /// Anthropic, Gemini, Bedrock and Cohere have no per-tool strict flag (Cohere's `strict_tools` is
-    /// a REQUEST-level switch, not a per-tool one), so their writers drop it with a `warn!` naming
-    /// the tools affected — a genuine target-protocol limit, signalled rather than silent.
+    /// Carried by every dialect that models it: OpenAI Chat and Responses `strict`, Anthropic
+    /// `tools[].strict` (ANT-04/05), Bedrock Converse `toolSpec.strict` (BED-08), and Cohere's
+    /// REQUEST-level `strict_tools` when every tool agrees (COH-11/12). Gemini has no strict flag,
+    /// and Cohere cannot express tools that disagree, so those writers drop it with a `warn!`
+    /// naming the tools affected — a genuine target-protocol limit, signalled rather than silent.
     pub strict: Option<bool>,
 }
 

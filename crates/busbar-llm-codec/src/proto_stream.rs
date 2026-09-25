@@ -840,8 +840,10 @@ impl StreamTranslate {
                             "message_start" | "message_delta" | "error"
                         )
                     {
-                        // The Anthropic same-proto reader is stateless
-                        // (`AnthropicReader::read_response_events` takes an unused `_state`) and
+                        // The Anthropic reader's decode state (`open_tools`, which tracks the
+                        // server-tool blocks it suppresses cross-protocol) only shapes the IR events
+                        // a FOREIGN writer re-emits; a same-proto stream relays the bytes and reads
+                        // only usage and errors, so skipping the rest cannot desync it. And
                         // Anthropic's same-proto framing seams (`suppress_same_proto_frame` /
                         // `strip_same_proto_usage`) are the constant-`false` defaults, so nothing
                         // downstream of this egress needs a decoded `data` for any event except the

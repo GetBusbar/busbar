@@ -71,14 +71,14 @@ pub fn is_json_tool_result_block(block: &crate::ir::IrBlock) -> bool {
 /// tools whose strict-schema guarantee is being dropped.
 ///
 /// `strict: true` is a BEHAVIOURAL contract — OpenAI guarantees the model's tool arguments conform
-/// to the schema exactly, and callers legitimately skip validation because of it. Anthropic, Gemini,
-/// Bedrock and Cohere have no per-tool equivalent (Cohere's `strict_tools` is a request-level switch,
-/// not a per-tool one), so the guarantee genuinely cannot cross — but it was crossing SILENTLY, which
-/// turned "your tool arguments are schema-guaranteed" into "they are not" with nothing said. One warn
-/// per request naming the affected tools, so the drop is at least visible in the logs.
+/// to the schema exactly, and callers legitimately skip validation because of it. Gemini has no
+/// strict flag, and Cohere's request-level `strict_tools` cannot express tools that disagree, so
+/// there the guarantee genuinely cannot cross — but it was crossing SILENTLY, which turned "your
+/// tool arguments are schema-guaranteed" into "they are not" with nothing said. One warn per request
+/// naming the affected tools, so the drop is at least visible in the logs.
 ///
-/// Called by each writer that cannot express the flag; the writers that CAN (OpenAI Chat, Responses)
-/// emit it instead and never call this.
+/// Called by the writers that cannot express the flag (Gemini; Cohere for disagreeing tools); the
+/// writers that CAN (OpenAI Chat, Responses, Anthropic, Bedrock) emit it instead and never call this.
 pub fn warn_dropped_tool_strict(tools: &[crate::ir::IrTool], egress: &'static str) {
     let named: Vec<&str> = tools
         .iter()
