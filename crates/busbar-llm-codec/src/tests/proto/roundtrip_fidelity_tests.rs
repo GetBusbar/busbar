@@ -563,7 +563,7 @@ fn bedrock_document_is_modelled_without_double_emitting() {
 /// This is CONTENT INJECTION, not loss: `tool_plan` is the model's INTERNAL pre-tool-call plan, and
 /// reading it into a leading `IrBlock::Text` made every cross-protocol client render it as the
 /// answer's first paragraph — text the model never intended to show. It belongs in the IR's
-/// reasoning carrier, which is also what lets the Cohere writer put it back in its native slot.
+/// reasoning carrier, which the Cohere writer emits as a `thinking` content part (COH-08).
 #[test]
 fn cohere_tool_plan_is_reasoning_not_visible_text() {
     let entry = crate::proto_codec::protocol_for("cohere").expect("cohere");
@@ -595,10 +595,21 @@ fn cohere_tool_plan_is_reasoning_not_visible_text() {
          intend to show"
     );
 
-    // Same-protocol: it goes back into its native slot rather than into `content`.
+    // Written back as a Cohere RESPONSE, reasoning is a `{type:"thinking"}` content part ahead of
+    // the answer — never `message.tool_plan`, and never visible text (COH-08, IR mapping Q57). (A
+    // Cohere -> Cohere answer is relayed verbatim in production; this pins the writer's contract
+    // for a Thinking block, whichever dialect read it.)
     let out = entry.writer.write_response(&ir);
-    assert_eq!(out["message"]["tool_plan"], "I will search for it");
-    assert_eq!(out["message"]["content"][0]["text"], "hi");
+    assert!(
+        out["message"].get("tool_plan").is_none(),
+        "a response's reasoning is a thinking part, not tool_plan: {out}"
+    );
+    assert_eq!(out["message"]["content"][0]["type"], "thinking");
+    assert_eq!(
+        out["message"]["content"][0]["thinking"],
+        "I will search for it"
+    );
+    assert_eq!(out["message"]["content"][1]["text"], "hi");
 
     // Cross-protocol: an Anthropic client sees it as a `thinking` block, not as the answer.
     let anthropic = crate::proto_codec::protocol_for("anthropic").expect("anthropic");
