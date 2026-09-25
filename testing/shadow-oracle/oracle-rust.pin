@@ -82,8 +82,12 @@
 # The published 1.5.5 names none, so the golden side runs every config byte for byte. Still a
 # feature branch head; re-pin to the integration/merge commit when that branch lands.
 #
+# 2026-09-24: moved 6067df5 -> 5652f33, the same branch's next commit — the step writes no file beside
+# the config it edits (hazard|no-data-dir|files lists that directory and recorded the step's own log);
+# its record goes to <work>/.oracle-upgrade-step.log beside the precheck log.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=6067df5
+release_ref=5652f33
 crate=busbar-release-oracle
 bin=busbar-oracle
