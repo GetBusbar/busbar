@@ -34,7 +34,7 @@ fn open_reads_and_validates_delivered_license_key() {
 }
 
 /// `authenticate` must compare the caller's credential to configured secret material under a
-/// DIGEST (`busbar_api::sha256_hex`), never raw-vs-raw — mirroring `auth-admin-tokens`, the
+/// DIGEST (`busbar_contract::redacted::sha256_hex`), never raw-vs-raw — mirroring `auth-admin-tokens`, the
 /// template this plugin follows. A timing leak cannot be asserted directly in a unit test, so
 /// this is a STRUCTURAL guard: it constructs the module directly (same-module private-field
 /// access) and asserts its stored comparison material is `sha256_hex("sekret")` exactly, a
@@ -45,7 +45,7 @@ fn open_reads_and_validates_delivered_license_key() {
 #[test]
 fn credential_is_compared_under_a_digest() {
     let m = StaticModule {
-        token_hash: busbar_api::sha256_hex(b"sekret"),
+        token_hash: busbar_contract::redacted::sha256_hex(b"sekret"),
         id: "alice".to_string(),
         roles: vec!["platform".to_string()],
     };
@@ -86,7 +86,7 @@ fn credential_is_compared_under_a_digest() {
 #[test]
 fn module_name_is_static_auth() {
     let m = StaticModule {
-        token_hash: busbar_api::sha256_hex(b"sekret"),
+        token_hash: busbar_contract::redacted::sha256_hex(b"sekret"),
         id: "alice".to_string(),
         roles: vec![],
     };

@@ -24,9 +24,8 @@
 //! `LICENSE-OK`); a real plugin would verify a signature/expiry. A present-but-invalid `licenseKey`
 //! is a load error — the plugin, not the gateway, decides its own licensing policy.
 
-use busbar_api::sha256_hex;
 use busbar_contract::auth::{AuthModule, AuthVerdict, Principal};
-use busbar_contract::redacted::constant_time_eq;
+use busbar_contract::redacted::{constant_time_eq, sha256_hex};
 use serde::Deserialize;
 
 /// The plugin's opaque config: the one accepted token and the identity it grants.

@@ -453,14 +453,13 @@ dependencies = [
 name = "busbar-auth-admin-tokens"
 version = "1.5.0"
 dependencies = [
- "busbar-api",
+ "busbar-contract",
 ]
 
 [[package]]
 name = "busbar-auth-static-plugin"
 version = "1.5.0"
 dependencies = [
- "busbar-api",
  "busbar-contract",
  "busbar-plugin-sdk",
  "serde",

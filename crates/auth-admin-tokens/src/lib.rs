@@ -11,7 +11,8 @@
 //! arrives on two carriers, and the constant-time both-carriers fold must live INSIDE the module —
 //! selecting a carrier before the compare would reintroduce the timing observable the fold kills).
 
-use busbar_api::{constant_time_eq, sha256_hex, AuthOutcome, Principal};
+use busbar_contract::auth::{AuthVerdict, Principal};
+use busbar_contract::redacted::{constant_time_eq, sha256_hex};
 
 /// The fixed principal id the operator admin token identifies as. The built-in operator credential
 /// carries FULL admin scope by definition (it is the root credential the deployment was born with);
@@ -49,13 +50,13 @@ pub fn authenticate_admin_tokens(
     configured_hash: Option<&str>,
     bearer: Option<&str>,
     header: Option<&str>,
-) -> AuthOutcome {
+) -> AuthVerdict {
     let Some(configured_hash) = configured_hash else {
-        return AuthOutcome::Pass;
+        return AuthVerdict::Pass;
     };
     if bearer.is_none() && header.is_none() {
         // No credential presented for this module — defer (the chain's all-Pass denies).
-        return AuthOutcome::Pass;
+        return AuthVerdict::Pass;
     }
     // Read off the PUBLIC candidate strings only, BEFORE either compare, so no branch below can
     // depend on a compare result: the constant-time fold is untouched.
@@ -72,7 +73,7 @@ pub fn authenticate_admin_tokens(
             .unwrap_or(false),
     );
     if std::hint::black_box(bearer_match | header_match) != 0 {
-        return AuthOutcome::Identify(Principal::from_id(ADMIN_TOKENS_PRINCIPAL_ID));
+        return AuthVerdict::Identify(Principal::from_id(ADMIN_TOKENS_PRINCIPAL_ID));
     }
     // Only a carrier that was actually presented AND is not JWS-shaped counts as "addressed to this
     // module, and wrong" — that still terminally denies. A carrier that is absent, or present but
@@ -80,9 +81,9 @@ pub fn authenticate_admin_tokens(
     let bearer_addressed_me = bearer.is_some() && !bearer_is_jws;
     let header_addressed_me = header.is_some() && !header_is_jws;
     if bearer_addressed_me || header_addressed_me {
-        AuthOutcome::Reject
+        AuthVerdict::Reject
     } else {
-        AuthOutcome::Pass
+        AuthVerdict::Pass
     }
 }
 
