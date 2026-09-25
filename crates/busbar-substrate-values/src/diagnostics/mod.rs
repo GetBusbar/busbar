@@ -2841,72 +2841,82 @@ pub const LANE_HARD_DOWN_ALL_CELLS: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// RETIRED before 1.6.0 shipped: the kernel's own breaker state machine that raised this code is
+/// deleted and the kernel runs on the one breaker, which logs nothing. The number is kept so a log
+/// line from a pre-release build still resolves to an entry that says what happened.
 pub const BREAKER_UNEXPECTED_STATE_CLASSIFY: Diagnostic = Diagnostic {
     code: 5041,
     class: Class::Proxy,
     slug: "breaker-unexpected-state-classify",
-    title: "Unexpected breaker state on classify (fail-safe: deny admission)",
+    title: "Unexpected breaker state on classify (fail-safe: deny admission) — RETIRED",
     severity: Severity::Actionable,
-    summary: "The breaker classify path read a cell state that is not one of the three valid \
+    summary: "RETIRED. The breaker classify path read a cell state that is not one of the three valid \
               encodings (Closed/Open/HalfOpen). This is IMPOSSIBLE under the atomic-sentinel \
               invariant, so reaching it means a real invariant break or memory corruption. busbar \
               fails SAFE — treats the cell as never-elapsing Open so admission is denied — rather \
               than panic the dispatching task. Warned once per process; recurrence logs at debug.",
-    action: "Capture the logged state value and file a bug — a breaker cell should never hold an \
-             unexpected state. Requests to that cell are safely denied (fail-closed) until it is \
-             re-armed; investigate for memory corruption if it persists.",
+    action: "Nothing emits this code. The one breaker keeps its cell state behind a lock and \
+             answers an unreachable encoding silently, with the same fail-safe result.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
+/// RETIRED before 1.6.0 shipped: the kernel's own breaker state machine that raised this code is
+/// deleted and the kernel runs on the one breaker, which logs nothing. The number is kept so a log
+/// line from a pre-release build still resolves to an entry that says what happened.
 pub const BREAKER_UNEXPECTED_STATE_PROBE: Diagnostic = Diagnostic {
     code: 5042,
     class: Class::Proxy,
     slug: "breaker-unexpected-state-probe",
-    title: "Unexpected breaker state on probe acquisition (fail-safe: refuse)",
+    title: "Unexpected breaker state on probe acquisition (fail-safe: refuse) — RETIRED",
     severity: Severity::Actionable,
-    summary: "The breaker probe-acquisition path read an unexpected cell state (not \
+    summary: "RETIRED. The breaker probe-acquisition path read an unexpected cell state (not \
               Closed/Open/HalfOpen). Impossible under the atomic-sentinel invariant; busbar refuses \
               the probe acquisition (admits nobody) rather than panic the dispatching task. Same \
               invariant-break family as BUSBAR-5041. Warned once per process; recurrence logs at \
               debug.",
-    action: "Capture the logged state value and file a bug. Probe acquisition is safely refused; \
-             investigate for memory corruption if it persists.",
+    action: "Nothing emits this code. The one breaker keeps its cell state behind a lock and \
+             answers an unreachable encoding silently, with the same fail-safe result.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
+/// RETIRED before 1.6.0 shipped: the kernel's own breaker state machine that raised this code is
+/// deleted and the kernel runs on the one breaker, which logs nothing. The number is kept so a log
+/// line from a pre-release build still resolves to an entry that says what happened.
 pub const BREAKER_UNEXPECTED_STATE_READ: Diagnostic = Diagnostic {
     code: 5043,
     class: Class::Proxy,
     slug: "breaker-unexpected-state-read",
-    title: "Unexpected breaker state on state read (reporting Closed)",
+    title: "Unexpected breaker state on state read (reporting Closed) — RETIRED",
     severity: Severity::Actionable,
-    summary: "A breaker cell state read (a total, side-effect-free projection) found an unexpected \
+    summary: "RETIRED. A breaker cell state read (a total, side-effect-free projection) found an unexpected \
               encoding. Impossible under the atomic-sentinel invariant; busbar reports the benign \
               Closed default rather than panic, keeping the read total for any encoding. Same family \
               as BUSBAR-5041. Warned once per process; recurrence logs at debug.",
-    action: "Capture the logged state value and file a bug — this read should never see an unexpected \
-             state. The projection is safe; investigate for memory corruption if it persists.",
+    action: "Nothing emits this code. The one breaker keeps its cell state behind a lock and \
+             answers an unreachable encoding silently, with the same fail-safe result.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
+/// RETIRED before 1.6.0 shipped: the kernel's own breaker state machine that raised this code is
+/// deleted and the kernel runs on the one breaker, which logs nothing. The number is kept so a log
+/// line from a pre-release build still resolves to an entry that says what happened.
 pub const BREAKER_UNEXPECTED_STATE_RECORD_FAILURE: Diagnostic = Diagnostic {
     code: 5044,
     class: Class::Proxy,
     slug: "breaker-unexpected-state-record-failure",
-    title: "Unexpected breaker state in record_failure (no-op)",
+    title: "Unexpected breaker state in record_failure (no-op) — RETIRED",
     severity: Severity::Actionable,
-    summary: "The breaker failure-recording path read an unexpected cell state (not \
+    summary: "RETIRED. The breaker failure-recording path read an unexpected cell state (not \
               Closed/Open/HalfOpen). Impossible under the atomic-sentinel invariant; busbar treats it \
               as a no-op (like the already-Open case) rather than panic the task. Same family as \
               BUSBAR-5041. Warned once per process; recurrence logs at debug.",
-    action: "Capture the logged state value and file a bug — a breaker cell should never hold an \
-             unexpected state. The failure record is safely dropped; investigate for memory \
-             corruption if it persists.",
+    action: "Nothing emits this code. The one breaker keeps its cell state behind a lock and \
+             answers an unreachable encoding silently, with the same fail-safe result.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
 pub const PLUGINS_DIR_FINGERPRINT_FAILED: Diagnostic = Diagnostic {
