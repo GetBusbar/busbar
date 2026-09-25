@@ -14,8 +14,8 @@
 //! artifact. `ws` composing OVER `http`/`tcp` is real and shipped (`WsTransport::over`, an
 //! adoption through a contract trait — see the crate's own report), but PROVING that composition
 //! with a real `http`/`tcp` instance requires naming both crates, and the one place in the tree a
-//! real protocol may be named at all is the composition root: [`busbar_transport_grpc`]'s and
-//! [`busbar_transport_http`]'s own `tests/no_plane_names.rs` say so explicitly ("The proof that a
+//! real protocol may be named at all is the composition root: [`busbar_transport_http`]'s own
+//! `tests/grpc_no_plane_names.rs` and `tests/no_plane_names.rs` say so explicitly ("The proof that a
 //! real protocol's bytes survive this mount belongs where a real protocol may be named — the
 //! composition root — and it is asserted there").
 //!

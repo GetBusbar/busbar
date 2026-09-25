@@ -12,7 +12,7 @@
 //! two things the document mount does not — splitting a call's target into the two names, and
 //! answering an unknown one the way this wire answers it — and reuses everything else.
 //!
-//! Everything else is [`busbar_transport_http::mount`]: the request view a plane reads facts
+//! Everything else is [`crate::mount`]: the request view a plane reads facts
 //! through, the frame, the seam where a mount leaves what arrived for the units that will read it,
 //! and the loop drive. Writing a second copy of those here would be a second answer to how a unit is
 //! run, and the two would disagree the first time one of them was fixed.

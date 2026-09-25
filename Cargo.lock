@@ -361,7 +361,6 @@ dependencies = [
  "busbar-plugin-loader",
  "busbar-store-example-plugin",
  "busbar-substrate-values",
- "busbar-transport-grpc",
  "busbar-transport-http",
  "busbar-transport-sse",
  "busbar-transport-stdio",
@@ -1032,24 +1031,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-transport-grpc"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
- "busbar-transport-http",
- "bytes",
- "futures",
- "http",
- "http-body-util",
- "hyper",
- "hyper-util",
- "tokio",
- "tokio-util",
- "tonic",
- "tower",
-]
-
-[[package]]
 name = "busbar-transport-http"
 version = "1.6.0"
 dependencies = [
@@ -1068,6 +1049,8 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-util",
+ "tonic",
+ "tower",
  "webpki-roots",
 ]
 

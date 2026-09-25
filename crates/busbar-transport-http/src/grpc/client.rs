@@ -16,8 +16,8 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use busbar_contract::transport::wire::TransportError;
 use busbar_contract::StreamId;
 
-use crate::codec::RawCodec;
-use crate::conn::ConnState;
+use super::codec::RawCodec;
+use super::conn::ConnState;
 
 /// How the HTTP/2 connection under a dial ended.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -67,9 +67,9 @@ impl tower::Service<http::Request<tonic::body::Body>> for Dialer {
 ///
 /// The task below is not the whole of the connection: the HTTP/2 client spawns a driver of its own
 /// on the executor, and THAT is what holds the stream. It ends when the stream does — see
-/// [`crate::conn::Cut`], which is how a caller closing this connection reaches it.
+/// [`super::conn::Cut`], which is how a caller closing this connection reaches it.
 pub(crate) async fn handshake_h2(
-    stream: crate::conn::Cuttable,
+    stream: super::conn::Cuttable,
     authority: &str,
     preface_timeout: std::time::Duration,
 ) -> Result<(Dialer, http::Uri, ConnectionOver), TransportError> {
@@ -78,10 +78,10 @@ pub(crate) async fn handshake_h2(
     // identical vector: the TCP (or TLS) leg below already proved the far side answered, not that
     // it will ever complete the HTTP/2 preface — an upstream that stops right there would
     // otherwise park this dial task, and the socket under it, for the life of the process. Unlike
-    // the accept side (`crate::conn::PrefaceGuard`), the client handshake future here already IS
+    // the accept side (`super::conn::PrefaceGuard`), the client handshake future here already IS
     // just the preface — `hyper`'s client builder returns the moment it completes, before any
     // request goes out — so this `timeout` wraps it directly, on the budget the transport was
-    // built with ([`crate::conn::PREFACE_TIMEOUT`] unless a caller shortened it).
+    // built with ([`super::conn::PREFACE_TIMEOUT`] unless a caller shortened it).
     let (send_request, connection) = tokio::time::timeout(
         preface_timeout,
         hyper::client::conn::http2::Builder::new(TokioExecutor::new())
@@ -115,7 +115,7 @@ pub(crate) async fn handshake_h2(
 /// Open a fresh gRPC call for `stream_id` over `dialer` against `method`, registering its outbound
 /// channel and
 /// spawning the task that forwards the call's inbound messages into `state`'s shared inbound
-/// channel — the client-side mirror of [`crate::server::handle_one_rpc`].
+/// channel — the client-side mirror of [`super::server::handle_one_rpc`].
 pub(crate) async fn open_stream(
     state: Arc<ConnState>,
     dialer: Dialer,
@@ -123,8 +123,8 @@ pub(crate) async fn open_stream(
     method: &'static str,
     stream_id: StreamId,
     serial: u64,
-) -> Result<crate::conn::OutboundTx, TransportError> {
-    let (out_tx, out_rx) = crate::conn::outbound_channel();
+) -> Result<super::conn::OutboundTx, TransportError> {
+    let (out_tx, out_rx) = super::conn::outbound_channel();
     // `with_origin`, not `new`: an HTTP/2 request needs a scheme and an authority (`:authority`
     // pseudo-header) — `Grpc::new` alone leaves both empty, which `hyper`'s h2 client rejects
     // (`MissingUriSchemeAndAuthority`), a real error this crate's own battery caught red before
@@ -151,14 +151,14 @@ pub(crate) async fn open_stream(
             // that class has to reach the reader as a frame; reporting only the opening failure
             // left a call the upstream had judged posting no status evidence at all, which is the
             // difference between "refused" and "nothing answered" on the leg that decides a fee.
-            let frame = crate::server::terminal_frame(stream_id, Some(&status));
+            let frame = super::server::terminal_frame(stream_id, Some(&status));
             let _ = state.send_inbound(Ok((stream_id, frame))).await;
             return Err(TransportError::Refused);
         }
     };
     let stream = response.into_inner();
     tokio::spawn(async move {
-        crate::server::forward_inbound(state.clone(), stream_id, stream, true).await;
+        super::server::forward_inbound(state.clone(), stream_id, stream, true).await;
         // The upstream's answer has ended, trailer and all: this call is over, and the sender the
         // connection registered for it is one nothing will drain again. By serial, because by the
         // time this runs the id may already have been reused — and THAT call is still live.
@@ -168,9 +168,9 @@ pub(crate) async fn open_stream(
 }
 
 /// The outbound request-message stream: raw `Vec<u8>` items, no `Result` wrapping (unlike the
-/// server's [`crate::server::OutStream`]) because the client-side `Codec::Encode` item type here
+/// server's [`super::server::OutStream`]) because the client-side `Codec::Encode` item type here
 /// is the plain message, per `tonic::client::Grpc::streaming`'s own signature.
-struct InStream(crate::conn::OutboundRx);
+struct InStream(super::conn::OutboundRx);
 
 impl Stream for InStream {
     type Item = Vec<u8>;

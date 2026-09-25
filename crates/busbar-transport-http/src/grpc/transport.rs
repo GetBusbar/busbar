@@ -21,8 +21,8 @@ use busbar_contract::{
     Fut, ScratchBytes, StreamId, Transport, TransportConfigView, TransportKeyHandle, TransportMeta,
 };
 
-use crate::client;
-use crate::conn::{ConnState, GrpcConnHandle};
+use super::client;
+use super::conn::{ConnState, GrpcConnHandle};
 
 type FrameStream =
     std::pin::Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>>;
@@ -66,7 +66,7 @@ pub struct GrpcTransport {
     /// `busbar_transport_ws`'s identical field for the two-lifecycle reasoning this mirrors.
     max_message_bytes: AtomicUsize,
     /// How long the HTTP/2 connection preface — accept or dial — has to complete;
-    /// [`crate::conn::PREFACE_TIMEOUT`] unless a caller said otherwise. Carried the same way
+    /// [`super::conn::PREFACE_TIMEOUT`] unless a caller said otherwise. Carried the same way
     /// `max_message_bytes` is: read once here, applied to every connection this instance goes on
     /// to accept or dial.
     preface_timeout: std::time::Duration,
@@ -89,7 +89,7 @@ impl GrpcTransport {
             next_id: AtomicU64::new(1),
             conns: SyncMutex::new(HashMap::new()),
             max_message_bytes: AtomicUsize::new(0),
-            preface_timeout: crate::conn::PREFACE_TIMEOUT,
+            preface_timeout: super::conn::PREFACE_TIMEOUT,
             lower: None,
         }
     }
@@ -101,7 +101,7 @@ impl GrpcTransport {
             next_id: AtomicU64::new(1),
             conns: SyncMutex::new(HashMap::new()),
             max_message_bytes: AtomicUsize::new(0),
-            preface_timeout: crate::conn::PREFACE_TIMEOUT,
+            preface_timeout: super::conn::PREFACE_TIMEOUT,
             lower: Some(lower),
         }
     }
@@ -120,11 +120,11 @@ impl GrpcTransport {
     }
 
     /// The cap every connection this instance accepts or dials from here on is decoded under: the
-    /// deployment's own, if `listen` has read one, else [`crate::codec::MAX_MESSAGE_BYTES`] — the
+    /// deployment's own, if `listen` has read one, else [`super::codec::MAX_MESSAGE_BYTES`] — the
     /// crate's default, unchanged from before this field existed.
     fn message_cap(&self) -> usize {
         match self.max_message_bytes.load(Ordering::Relaxed) {
-            0 => crate::codec::MAX_MESSAGE_BYTES,
+            0 => super::codec::MAX_MESSAGE_BYTES,
             cap => cap,
         }
     }
@@ -134,7 +134,7 @@ impl GrpcTransport {
         &self,
         lower: &Arc<dyn Transport>,
         conn: &Conn,
-    ) -> Result<(crate::conn::LowerIo, Vec<&'static str>), TransportError> {
+    ) -> Result<(super::conn::LowerIo, Vec<&'static str>), TransportError> {
         let mut chain = lower.arrival(conn).transport_chain;
         let raw = lower.detach(conn).ok_or(TransportError::HandoffMismatch)?;
         chain.push(<Self as TransportMeta>::KEY);
@@ -208,7 +208,7 @@ impl Transport for GrpcTransport {
             let state = ConnState::new(None, chain, self.message_cap());
             state.set_local_port(port);
             self.conns.lock().unwrap().insert(id, state.clone());
-            crate::server::serve_connection(stream, state, self.preface_timeout);
+            super::server::serve_connection(stream, state, self.preface_timeout);
             Ok(Conn::new(Arc::new(GrpcConnHandle { id, peer })))
         })
     }
@@ -233,7 +233,7 @@ impl Transport for GrpcTransport {
             // does not see them.
             let method = address
                 .extra(busbar_contract::transport::registry::facts::METHOD)
-                .unwrap_or(crate::server::RPC_PATH);
+                .unwrap_or(super::server::RPC_PATH);
             // The socket is the layer below's, dialled against the address this destination
             // already carries. Re-addressing narrows the sealed destination to what that layer
             // reads; it does not re-seal it, and it cannot widen where the unit may go.
@@ -253,7 +253,7 @@ impl Transport for GrpcTransport {
             // The stream goes to the HTTP/2 client wrapped in the seam that cuts it, and the seam
             // is armed on the state below: a dialled connection nothing can stop is one `close`
             // only stops listing, while the socket under it stays with a task no caller can reach.
-            let (stream, cut) = crate::conn::Cuttable::new(stream);
+            let (stream, cut) = super::conn::Cuttable::new(stream);
             let (dialer, origin, over) =
                 client::handshake_h2(stream, authority, self.preface_timeout).await?;
             let id = self.mint_id();
@@ -336,7 +336,7 @@ impl Transport for GrpcTransport {
                         let fut: std::pin::Pin<
                             Box<
                                 dyn std::future::Future<
-                                        Output = Result<crate::conn::OutboundTx, TransportError>,
+                                        Output = Result<super::conn::OutboundTx, TransportError>,
                                     > + Send,
                             >,
                         > = Box::pin(async move {
@@ -351,7 +351,7 @@ impl Transport for GrpcTransport {
                             .await
                         });
                         let call = futures::FutureExt::shared(fut);
-                        open.insert(stream.0, crate::conn::Call::new(serial, call.clone()));
+                        open.insert(stream.0, super::conn::Call::new(serial, call.clone()));
                         (serial, call)
                     }
                 }

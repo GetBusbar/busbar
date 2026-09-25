@@ -36,8 +36,8 @@ use busbar_contract::wire::Frame;
 use busbar_contract::TransportMeta;
 use busbar_contract::{SlabBytes, StreamId};
 
-use crate::codec::RawCodec;
-use crate::conn::ConnState;
+use super::codec::RawCodec;
+use super::conn::ConnState;
 
 /// This crate's own name for tonic's inbound message stream type — used at every call site below
 /// instead of the tonic type spelled out, so the crate-private plumbing that threads it around
@@ -77,7 +77,7 @@ const MAX_HEADER_LIST_BYTES: u32 = 16 * 1024;
 /// for a graceful shutdown (a GOAWAY: no new calls, the ones in flight end with their own
 /// trailers), and the socket goes with the task.
 pub(crate) fn serve_connection(
-    stream: crate::conn::LowerIo,
+    stream: super::conn::LowerIo,
     state: Arc<ConnState>,
     preface_timeout: std::time::Duration,
 ) {
@@ -85,11 +85,11 @@ pub(crate) fn serve_connection(
     state.arm_shutdown(stop_tx);
     let ending = state.clone();
     tokio::spawn(async move {
-        // Bounded: see `crate::conn::PrefaceGuard` on why the preface-only budget has to live on
+        // Bounded: see `super::conn::PrefaceGuard` on why the preface-only budget has to live on
         // the raw stream rather than around this whole future. The budget is the one the
-        // transport was built with — [`crate::conn::PREFACE_TIMEOUT`] unless a caller shortened
+        // transport was built with — [`super::conn::PREFACE_TIMEOUT`] unless a caller shortened
         // it (a deployment, or a battery cell proving item 146 without a real ten-second wait).
-        let io = TokioIo::new(crate::conn::PrefaceGuard::new(stream, preface_timeout));
+        let io = TokioIo::new(super::conn::PrefaceGuard::new(stream, preface_timeout));
         let svc = hyper::service::service_fn(move |req: hyper::Request<Incoming>| {
             let state = state.clone();
             async move { Ok::<_, std::convert::Infallible>(handle_one_rpc(state, req).await) }
@@ -140,7 +140,7 @@ async fn handle_one_rpc(
     // A bounded max decoding message size, so one oversized length-prefixed message cannot make
     // the framing layer reserve unbounded memory: `tonic` refuses an over-limit prefix with
     // `OUT_OF_RANGE` before it buffers the body. The cap is this CONNECTION's — the deployment's
-    // own, if `listen` read one, else `crate::codec::MAX_MESSAGE_BYTES` — not a crate-wide
+    // own, if `listen` read one, else `super::codec::MAX_MESSAGE_BYTES` — not a crate-wide
     // constant, so a listener the operator capped is actually capped.
     let mut grpc =
         tonic::server::Grpc::new(RawCodec).max_decoding_message_size(state.max_message_bytes);
@@ -181,8 +181,8 @@ impl tower::Service<Request<InboundBody>> for RpcHandler {
             // The call becomes real HERE, at the first moment anything can be written to it: the
             // response stream below is what drains this channel, and dropping that stream is what
             // removes the entry again. See `handle_one_rpc` on why registering any earlier leaks.
-            let (out_tx, out_rx) = crate::conn::outbound_channel();
-            let serial = state.register(stream_id.0, crate::conn::opened(out_tx));
+            let (out_tx, out_rx) = super::conn::outbound_channel();
+            let serial = state.register(stream_id.0, super::conn::opened(out_tx));
             // `is_response = false`: this is the REQUEST body, which carries no `grpc-status`
             // trailer — only a gRPC response does. See `forward_inbound`'s own note.
             tokio::spawn(forward_inbound(
@@ -286,7 +286,7 @@ pub(crate) fn terminal_frame(stream_id: StreamId, status: Option<&Status>) -> Fr
         // caller's fault: no breaker record, no failover.
         // The namespace is the one the transport DECLARES, not one this line spells: a frame
         // cannot report in a numbering the transport did not say it reports in.
-        status_code: <crate::transport::GrpcTransport as TransportMeta>::STATUS_NAMESPACE.and_then(
+        status_code: <super::transport::GrpcTransport as TransportMeta>::STATUS_NAMESPACE.and_then(
             |ns| {
                 u32::try_from(code as i32)
                     .ok()
@@ -353,7 +353,7 @@ pub(crate) fn map_status(status: &Status) -> busbar_contract::transport::wire::W
 /// the call's: hyper drops it when the RPC ends, and that is the moment the connection's outbound
 /// map should stop holding a sender nothing will ever drain again.
 pub(crate) struct OutStream {
-    rx: crate::conn::OutboundRx,
+    rx: super::conn::OutboundRx,
     state: Arc<ConnState>,
     stream_id: StreamId,
     serial: u64,
@@ -361,7 +361,7 @@ pub(crate) struct OutStream {
 
 impl OutStream {
     pub(crate) fn new(
-        rx: crate::conn::OutboundRx,
+        rx: super::conn::OutboundRx,
         state: Arc<ConnState>,
         stream_id: StreamId,
         serial: u64,

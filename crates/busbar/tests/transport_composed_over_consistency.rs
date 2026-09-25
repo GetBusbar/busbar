@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use busbar_contract::{Transport, TransportMeta};
-use busbar_transport_grpc::GrpcTransport;
+use busbar_transport_http::grpc::GrpcTransport;
 use busbar_transport_http::{ClientSettings, HttpTransport};
 use busbar_transport_sse::SseTransport;
 use busbar_transport_stdio::StdioTransport;

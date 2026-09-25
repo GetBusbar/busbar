@@ -131,14 +131,16 @@ const FAM_STREAM: &[&str] = &[
 // no `busbar-decision-codec` for the family to list. The family is what EXISTS.
 const FAM_DECISION: &[&str] = &["busbar-plane-decision"];
 
-// ── TRANSPORTS (each concrete transport is its own crate) ─────────────────────────────────────
+// ── TRANSPORTS (each concrete transport is its own crate, except the HTTP dialects) ────────────
+// `grpc` is HTTP/2 framing and was FOLDED INTO `busbar-transport-http` (dep-wall §6.5 ruling 1,
+// owner Q68): the crate that may name the instance is the one that holds it now.
 const FAM_HTTP: &[&str] = &["busbar-transport-http"];
 const FAM_WS: &[&str] = &["busbar-transport-ws"];
 const FAM_STDIO: &[&str] = &["busbar-transport-stdio"];
 const FAM_TCP: &[&str] = &["busbar-transport-tcp"];
 const FAM_TLS: &[&str] = &["busbar-transport-tls"];
 const FAM_SSE: &[&str] = &["busbar-transport-sse"];
-const FAM_GRPC: &[&str] = &["busbar-transport-grpc"];
+const FAM_GRPC: &[&str] = &["busbar-transport-http"];
 
 // ── STORES (no backend crate exists in this tree — any reference is premature coupling) ────────
 const FAM_NONE: &[&str] = &[];

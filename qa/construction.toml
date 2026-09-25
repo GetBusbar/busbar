@@ -1332,7 +1332,7 @@ max_sites = 0
 # nine below, each still forging today.
 known_sites = [
   "crates/busbar-plane-streaming/src/tests/harness.rs",
-  "crates/busbar-transport-grpc/src/tests/battery.rs",
+  "crates/busbar-transport-http/src/grpc/tests/battery.rs",
   "crates/busbar-transport-http/src/tests/mod.rs",
   "crates/busbar-transport-stdio/src/tests/battery.rs",
   "crates/busbar-transport-tcp/src/tests/mod.rs",

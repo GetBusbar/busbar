@@ -357,7 +357,7 @@ pub(crate) struct ConnState {
     /// The dial-side connection, the origin URI, and the gRPC method every call it opens is
     /// dialled against — the method the destination named, so two destinations on one transport
     /// can name two different upstream methods.
-    pub(crate) dialer: Option<(Arc<crate::client::Dialer>, http::Uri, &'static str)>,
+    pub(crate) dialer: Option<(Arc<super::client::Dialer>, http::Uri, &'static str)>,
     pub(crate) next_local_stream: std::sync::atomic::AtomicU64,
     /// The `:path` of every RPC served on this connection, in arrival order. gRPC names each call
     /// by a path, so this is what the transport actually answered on — recorded rather than
@@ -385,7 +385,7 @@ pub(crate) struct ConnState {
     /// only itself was one a location could not resolve against.
     pub(crate) chain: Vec<&'static str>,
     /// The largest gRPC message this connection will decode, fixed at the moment the connection was
-    /// made: [`crate::transport::GrpcTransport::message_cap`], the deployment's own cap if `listen`
+    /// made: [`super::transport::GrpcTransport::message_cap`], the deployment's own cap if `listen`
     /// read one, else `codec::MAX_MESSAGE_BYTES`. Read from here rather than re-read from the
     /// transport on every RPC, so a connection already open keeps the ceiling it was accepted or
     /// dialled under even if a later `listen` on the same transport instance changes it.
@@ -394,7 +394,7 @@ pub(crate) struct ConnState {
 
 impl ConnState {
     pub(crate) fn new(
-        dialer: Option<(Arc<crate::client::Dialer>, http::Uri, &'static str)>,
+        dialer: Option<(Arc<super::client::Dialer>, http::Uri, &'static str)>,
         chain: Vec<&'static str>,
         max_message_bytes: usize,
     ) -> Arc<Self> {

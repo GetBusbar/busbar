@@ -13,8 +13,8 @@ use busbar_contract::transport::wire::Unit0Trigger;
 use busbar_contract::transport::AbiVersion;
 use busbar_contract::{Kind, Plugin, TransportMeta};
 
-use crate::claims;
-use crate::transport::GrpcTransport;
+use super::claims;
+use super::transport::GrpcTransport;
 
 impl Plugin for GrpcTransport {
     fn key(&self) -> &'static str {

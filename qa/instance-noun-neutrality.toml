@@ -274,7 +274,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "a2a"
 kind = "plane"
-file = "crates/busbar-transport-grpc/tests/no_plane_names.rs"
+file = "crates/busbar-transport-http/tests/grpc_no_plane_names.rs"
 count = 7
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
@@ -1656,22 +1656,6 @@ category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 
 [[leak]]
-noun = "grpc"
-kind = "transport"
-file = "crates/busbar/src/root/registry.rs"
-count = 1
-category = "composition-root"
-wave = "keystone / composition-root — register_planes both-ways self-registration"
-
-[[leak]]
-noun = "grpc"
-kind = "transport"
-file = "crates/busbar/tests/transport_composed_over_consistency.rs"
-count = 1
-category = "composition-root"
-wave = "keystone / composition-root — register_planes both-ways self-registration"
-
-[[leak]]
 noun = "hook"
 kind = "hook"
 file = "crates/busbar-kernel/src/hooks/tests/tests.rs"
@@ -1786,14 +1770,6 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "http"
 kind = "transport"
-file = "crates/busbar-transport-grpc/src/tests/battery.rs"
-count = 1
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "http"
-kind = "transport"
 file = "crates/busbar-transport-sse/src/lib.rs"
 count = 1
 category = "cross-plugin"
@@ -1827,7 +1803,7 @@ wave = "keystone / composition-root — register_planes both-ways self-registrat
 noun = "http"
 kind = "transport"
 file = "crates/busbar/src/root/registry.rs"
-count = 1
+count = 2
 category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
@@ -1875,7 +1851,7 @@ wave = "keystone / composition-root — register_planes both-ways self-registrat
 noun = "http"
 kind = "transport"
 file = "crates/busbar/tests/transport_composed_over_consistency.rs"
-count = 1
+count = 2
 category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
@@ -2226,7 +2202,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "llm"
 kind = "plane"
-file = "crates/busbar-transport-grpc/tests/no_plane_names.rs"
+file = "crates/busbar-transport-http/tests/grpc_no_plane_names.rs"
 count = 3
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
@@ -2978,7 +2954,7 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 [[leak]]
 noun = "mcp"
 kind = "plane"
-file = "crates/busbar-transport-grpc/tests/no_plane_names.rs"
+file = "crates/busbar-transport-http/tests/grpc_no_plane_names.rs"
 count = 4
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
@@ -5250,7 +5226,7 @@ wave = "substrate neutralization — opaque PlaneRecord across the ABI, never an
 [[leak]]
 noun = "streaming"
 kind = "plane"
-file = "crates/busbar-transport-grpc/src/client.rs"
+file = "crates/busbar-transport-http/src/grpc/client.rs"
 count = 1
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
@@ -5258,7 +5234,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "streaming"
 kind = "plane"
-file = "crates/busbar-transport-grpc/src/server.rs"
+file = "crates/busbar-transport-http/src/grpc/server.rs"
 count = 4
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
@@ -5290,7 +5266,7 @@ wave = "keystone / composition-root — register_planes both-ways self-registrat
 [[leak]]
 noun = "tcp"
 kind = "transport"
-file = "crates/busbar-transport-grpc/src/tests/battery.rs"
+file = "crates/busbar-transport-http/src/grpc/tests/battery.rs"
 count = 1
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
@@ -5554,7 +5530,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "voice"
 kind = "plane"
-file = "crates/busbar-transport-grpc/tests/no_plane_names.rs"
+file = "crates/busbar-transport-http/tests/grpc_no_plane_names.rs"
 count = 5
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"

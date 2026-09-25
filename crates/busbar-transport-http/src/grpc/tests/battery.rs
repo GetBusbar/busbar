@@ -22,13 +22,13 @@ use busbar_contract::{
     TransportKeyHandle, VerifiedDestination,
 };
 
-use crate::GrpcTransport;
+use super::GrpcTransport;
 
 /// A `grpc` transport standing on `http`, which is what carries an inbound connection.
 fn server_transport() -> GrpcTransport {
-    GrpcTransport::over(std::sync::Arc::new(
-        busbar_transport_http::HttpTransport::new(busbar_transport_http::ClientSettings::default()),
-    ))
+    GrpcTransport::over(std::sync::Arc::new(crate::HttpTransport::new(
+        crate::ClientSettings::default(),
+    )))
 }
 
 /// A dial-only, raw-socket lower layer, standing in for `busbar-transport-tcp` in this battery.
@@ -232,7 +232,7 @@ impl busbar_contract::ConfigView for CapCfg {
     }
     fn get_int(&self, k: &str) -> Option<i64> {
         self.1
-            .filter(|_| k == crate::transport::MESSAGE_MAX_BYTES_KEY)
+            .filter(|_| k == super::transport::MESSAGE_MAX_BYTES_KEY)
     }
     fn get_bool(&self, _k: &str) -> Option<bool> {
         None
@@ -447,7 +447,7 @@ async fn an_ok_grpc_status_trailer_terminates_the_call_as_success() {
     );
 }
 
-/// [`crate::server::map_status`] directly, EVERY `grpc-status` code the protocol defines, one row
+/// [`super::server::map_status`] directly, EVERY `grpc-status` code the protocol defines, one row
 /// each.
 ///
 /// The rows that matter most are the four that used to fall to a catch-all. The two failure classes
@@ -486,7 +486,7 @@ fn map_status_reads_the_grpc_status_trailer_honestly() {
     ] {
         let status = tonic::Status::new(code, "fixture");
         assert_eq!(
-            crate::server::map_status(&status),
+            super::server::map_status(&status),
             expected,
             "tonic::Code::{code:?} maps to {expected:?}"
         );
@@ -523,7 +523,7 @@ fn the_terminal_frame_names_grpcs_numbering_with_grpcs_number() {
         tonic::Code::Unauthenticated,
     ] {
         let status = tonic::Status::new(code, "fixture");
-        let frame = crate::server::terminal_frame(StreamId(1), Some(&status));
+        let frame = super::server::terminal_frame(StreamId(1), Some(&status));
         assert_eq!(
             frame.meta.status_code,
             Some(WireStatus::new(status_ns::GRPC, code as i32 as u32)),
@@ -531,7 +531,7 @@ fn the_terminal_frame_names_grpcs_numbering_with_grpcs_number() {
         );
     }
     let unavailable = tonic::Status::new(tonic::Code::Unavailable, "gone");
-    let frame = crate::server::terminal_frame(StreamId(1), Some(&unavailable));
+    let frame = super::server::terminal_frame(StreamId(1), Some(&unavailable));
     assert_eq!(frame.meta.status, Some(WireStatusClass::ServerError));
     assert_eq!(
         frame.meta.status_code,
@@ -1123,7 +1123,7 @@ async fn a_finished_call_leaves_no_entry_behind() {
 }
 
 /// `served_paths` is a diagnostic record, not a log: a connection open across many RPCs must not
-/// grow it forever. Past [`crate::conn::SERVED_PATHS_CAP`] calls it keeps only the most recent.
+/// grow it forever. Past [`super::conn::SERVED_PATHS_CAP`] calls it keeps only the most recent.
 #[tokio::test]
 async fn served_paths_stays_bounded_across_many_calls() {
     let server_t = std::sync::Arc::new(server_transport());
@@ -1150,7 +1150,7 @@ async fn served_paths_stays_bounded_across_many_calls() {
         correlates: None,
     };
 
-    let calls: u64 = crate::conn::SERVED_PATHS_CAP as u64 + 1;
+    let calls: u64 = super::conn::SERVED_PATHS_CAP as u64 + 1;
     let mut server_frames = server_t.frames(server_conn.clone());
     let mut client_frames = client_t.frames(client_conn.clone());
     for n in 1..=calls {
@@ -1194,7 +1194,7 @@ async fn served_paths_stays_bounded_across_many_calls() {
         .len();
     assert_eq!(
         served,
-        crate::conn::SERVED_PATHS_CAP,
+        super::conn::SERVED_PATHS_CAP,
         "{calls} RPCs over one connection fill the record to exactly the cap and no further"
     );
     // And it is the LAST handful, not the first: a record that kept the oldest entries and dropped
@@ -1209,7 +1209,7 @@ async fn served_paths_stays_bounded_across_many_calls() {
         .cloned();
     assert_eq!(
         oldest.as_deref(),
-        Some(crate::server::RPC_PATH),
+        Some(super::server::RPC_PATH),
         "every call in this fixture is on the same path, so the record's contents are checkable"
     );
 }
@@ -1253,7 +1253,7 @@ async fn a_call_answered_before_the_handler_runs_leaves_no_entry_behind() {
     for _ in 0..CALLS {
         let req = http::Request::builder()
             .method(http::Method::POST)
-            .uri(format!("http://{addr}{}", crate::server::RPC_PATH))
+            .uri(format!("http://{addr}{}", super::server::RPC_PATH))
             .header(http::header::CONTENT_TYPE, "application/grpc")
             .header("te", "trailers")
             // The compression this server never enabled.
@@ -1284,10 +1284,10 @@ async fn a_call_answered_before_the_handler_runs_leaves_no_entry_behind() {
 /// the call over, and the map entry must go with it.
 #[tokio::test]
 async fn dropping_a_served_calls_outbound_stream_prunes_its_entry() {
-    let state = crate::conn::ConnState::new(None, vec!["grpc"], crate::codec::MAX_MESSAGE_BYTES);
-    let (tx, rx) = crate::conn::outbound_channel();
-    let serial = state.register(3, crate::conn::opened(tx));
-    let out = crate::server::OutStream::new(rx, state.clone(), StreamId(3), serial);
+    let state = super::conn::ConnState::new(None, vec!["grpc"], super::codec::MAX_MESSAGE_BYTES);
+    let (tx, rx) = super::conn::outbound_channel();
+    let serial = state.register(3, super::conn::opened(tx));
+    let out = super::server::OutStream::new(rx, state.clone(), StreamId(3), serial);
     assert_eq!(state.outbound.lock().unwrap().len(), 1);
     drop(out);
     assert_eq!(
@@ -1305,7 +1305,7 @@ async fn dropping_a_served_calls_outbound_stream_prunes_its_entry() {
 /// complete.
 #[tokio::test]
 async fn the_inbound_channel_backpressures_a_peer_that_outruns_frames() {
-    let state = crate::conn::ConnState::new(None, vec!["grpc"], crate::codec::MAX_MESSAGE_BYTES);
+    let state = super::conn::ConnState::new(None, vec!["grpc"], super::codec::MAX_MESSAGE_BYTES);
     let one = || {
         Ok((
             StreamId(1),
@@ -1326,7 +1326,7 @@ async fn the_inbound_channel_backpressures_a_peer_that_outruns_frames() {
     // Nothing polls `frames()`, so nothing drains: well past the buffer's depth, the sender must
     // still be waiting rather than have swallowed every message.
     let flooded = tokio::time::timeout(Duration::from_millis(250), async {
-        for _ in 0..crate::conn::INBOUND_FRAME_BUFFER * 4 {
+        for _ in 0..super::conn::INBOUND_FRAME_BUFFER * 4 {
             let _ = state.send_inbound(one()).await;
         }
     })
@@ -1383,7 +1383,7 @@ async fn an_arrival_names_the_port_it_arrived_on() {
 /// per abandoned call, held for the life of the process.
 #[tokio::test]
 async fn a_forwarder_parked_on_a_full_inbound_buffer_ends_when_the_connection_does() {
-    let state = crate::conn::ConnState::new(None, vec!["grpc"], crate::codec::MAX_MESSAGE_BYTES);
+    let state = super::conn::ConnState::new(None, vec!["grpc"], super::codec::MAX_MESSAGE_BYTES);
     let one = || {
         Ok((
             StreamId(1),
@@ -1406,7 +1406,7 @@ async fn a_forwarder_parked_on_a_full_inbound_buffer_ends_when_the_connection_do
     let forwarder = {
         let state = state.clone();
         tokio::spawn(async move {
-            for _ in 0..crate::conn::INBOUND_FRAME_BUFFER * 4 {
+            for _ in 0..super::conn::INBOUND_FRAME_BUFFER * 4 {
                 if state.send_inbound(one()).await.is_err() {
                     return;
                 }
@@ -1716,7 +1716,7 @@ async fn write_backpressures_a_peer_that_never_reads() {
 
     let message = vec![b'x'; 4096];
     let flooded = tokio::time::timeout(Duration::from_secs(2), async {
-        for _ in 0..crate::conn::OUTBOUND_FRAME_BUFFER * 8 {
+        for _ in 0..super::conn::OUTBOUND_FRAME_BUFFER * 8 {
             client_t
                 .write(&client_conn, StreamId(1), ScratchBytes::new(&message))
                 .await
@@ -1892,8 +1892,8 @@ fn a_close_off_the_runtime_holds_the_cut_for_the_same_flush_window() {
     let (near, far) = tokio::io::duplex(64);
     // Held so the far end is a live peer rather than a closed one.
     let _far = far;
-    let (_cuttable, cut) = crate::conn::Cuttable::new(Box::new(near));
-    let state = crate::conn::ConnState::new(None, vec!["grpc"], crate::codec::MAX_MESSAGE_BYTES);
+    let (_cuttable, cut) = super::conn::Cuttable::new(Box::new(near));
+    let state = super::conn::ConnState::new(None, vec!["grpc"], super::codec::MAX_MESSAGE_BYTES);
     state.arm_cut(cut.clone());
     assert!(
         tokio::runtime::Handle::try_current().is_err(),
@@ -1906,7 +1906,7 @@ fn a_close_off_the_runtime_holds_the_cut_for_the_same_flush_window() {
         !cut.is_cut(),
         "a close must not cut the stream out from under bytes it has just accepted"
     );
-    std::thread::sleep(crate::conn::CUT_GRACE + Duration::from_millis(500));
+    std::thread::sleep(super::conn::CUT_GRACE + Duration::from_millis(500));
     assert!(
         cut.is_cut(),
         "and the window is a window: past it the stream goes, whatever the peer is doing"
@@ -1921,17 +1921,17 @@ fn a_close_off_the_runtime_holds_the_cut_for_the_same_flush_window() {
 /// call's sender, ending a second unit's answer for the first one's death.
 #[test]
 fn a_finished_call_cannot_end_the_one_that_reused_its_id() {
-    let state = crate::conn::ConnState::new(None, vec!["grpc"], crate::codec::MAX_MESSAGE_BYTES);
-    let (first_tx, _first_rx) = crate::conn::outbound_channel();
-    let first = state.register(7, crate::conn::opened(first_tx));
+    let state = super::conn::ConnState::new(None, vec!["grpc"], super::codec::MAX_MESSAGE_BYTES);
+    let (first_tx, _first_rx) = super::conn::outbound_channel();
+    let first = state.register(7, super::conn::opened(first_tx));
     assert!(
         state.end_call(7, first).is_some(),
         "its own entry is its own"
     );
 
     // The id comes round again, and the call now holding it is a different call.
-    let (second_tx, _second_rx) = crate::conn::outbound_channel();
-    let second = state.register(7, crate::conn::opened(second_tx));
+    let (second_tx, _second_rx) = super::conn::outbound_channel();
+    let second = state.register(7, super::conn::opened(second_tx));
     assert_ne!(first, second, "two calls on one id are two calls");
 
     // The first call's cleanup, arriving late.
@@ -2043,7 +2043,7 @@ async fn one_calls_inbound_failure_is_not_a_connection_wide_error() {
     let request = |body: bytes::Bytes| {
         http::Request::builder()
             .method(http::Method::POST)
-            .uri(format!("http://{addr}{}", crate::server::RPC_PATH))
+            .uri(format!("http://{addr}{}", super::server::RPC_PATH))
             .header(http::header::CONTENT_TYPE, "application/grpc")
             .header("te", "trailers")
             .body(http_body_util::Full::new(body))
@@ -2058,7 +2058,7 @@ async fn one_calls_inbound_failure_is_not_a_connection_wide_error() {
     // A FAILING call on the SAME connection: a length prefix declaring a body far past the max, so
     // the server's decoder refuses THAT stream's request body (`OUT_OF_RANGE`) — the per-stream
     // read failure whose old handling took the whole connection down.
-    let huge = ((crate::codec::MAX_MESSAGE_BYTES + 1) as u32).to_be_bytes();
+    let huge = ((super::codec::MAX_MESSAGE_BYTES + 1) as u32).to_be_bytes();
     let bad = bytes::Bytes::from(vec![0, huge[0], huge[1], huge[2], huge[3]]);
     let _bad_resp = send.send_request(request(bad)).await.unwrap();
 
@@ -2098,7 +2098,7 @@ async fn one_calls_inbound_failure_is_not_a_connection_wide_error() {
 
 /// An oversized message is refused, not buffered.
 ///
-/// The decoder checks a message's length PREFIX against [`crate::codec::MAX_MESSAGE_BYTES`] before it
+/// The decoder checks a message's length PREFIX against [`super::codec::MAX_MESSAGE_BYTES`] before it
 /// reserves the memory that prefix claims, so one over-limit length-prefixed message never becomes a
 /// frame and never commits the transport to a buffer of the size it declares. A normal message on a
 /// sibling call is delivered as always — the ceiling refuses only what is over it.
@@ -2130,7 +2130,7 @@ async fn an_oversized_message_is_refused_not_delivered() {
     let request = |body: bytes::Bytes| {
         http::Request::builder()
             .method(http::Method::POST)
-            .uri(format!("http://{addr}{}", crate::server::RPC_PATH))
+            .uri(format!("http://{addr}{}", super::server::RPC_PATH))
             .header(http::header::CONTENT_TYPE, "application/grpc")
             .header("te", "trailers")
             .body(http_body_util::Full::new(body))
@@ -2138,7 +2138,7 @@ async fn an_oversized_message_is_refused_not_delivered() {
     };
 
     // An OVER-limit message: a length prefix one byte past the ceiling. It must never be delivered.
-    let over = ((crate::codec::MAX_MESSAGE_BYTES + 1) as u32).to_be_bytes();
+    let over = ((super::codec::MAX_MESSAGE_BYTES + 1) as u32).to_be_bytes();
     let oversized = bytes::Bytes::from(vec![0, over[0], over[1], over[2], over[3]]);
     let _over_resp = send.send_request(request(oversized)).await.unwrap();
 
@@ -2159,7 +2159,7 @@ async fn an_oversized_message_is_refused_not_delivered() {
         "the oversized message was refused before it could be buffered or delivered as a frame"
     );
     assert!(
-        frame.meta.bytes <= crate::codec::MAX_MESSAGE_BYTES as u64,
+        frame.meta.bytes <= super::codec::MAX_MESSAGE_BYTES as u64,
         "no delivered frame exceeds the message ceiling"
     );
 }
@@ -2204,7 +2204,7 @@ async fn an_operator_configured_cap_is_enforced_not_the_hardcoded_default() {
     let request = |body: bytes::Bytes| {
         http::Request::builder()
             .method(http::Method::POST)
-            .uri(format!("http://{addr}{}", crate::server::RPC_PATH))
+            .uri(format!("http://{addr}{}", super::server::RPC_PATH))
             .header(http::header::CONTENT_TYPE, "application/grpc")
             .header("te", "trailers")
             .body(http_body_util::Full::new(body))
@@ -2323,7 +2323,7 @@ async fn the_server_advertises_a_max_concurrent_streams_cap() {
     .expect("the server sends its opening SETTINGS");
     assert_eq!(
         advertised,
-        Some(crate::server::MAX_CONCURRENT_STREAMS),
+        Some(super::server::MAX_CONCURRENT_STREAMS),
         "the server must advertise its per-connection stream cap, not hyper's unbounded default"
     );
 }
@@ -2344,9 +2344,9 @@ async fn dial_side_stalled_preface_is_dropped() {
     // buffer would for a peer that had merely gone briefly quiet rather than one throttling its
     // receive window to zero.
     let (a, _silent_peer) = tokio::io::duplex(1);
-    let (stream, _cut) = crate::conn::Cuttable::new(Box::new(a));
+    let (stream, _cut) = super::conn::Cuttable::new(Box::new(a));
     let started = tokio::time::Instant::now();
-    let result = crate::client::handshake_h2(stream, "irrelevant", Duration::from_millis(50)).await;
+    let result = super::client::handshake_h2(stream, "irrelevant", Duration::from_millis(50)).await;
     let err = match result {
         Err(e) => e,
         Ok(_) => panic!("a stalled preface must not hang the dial forever"),
@@ -2370,8 +2370,8 @@ async fn dial_side_stalled_preface_is_dropped() {
 #[tokio::test(start_paused = true)]
 async fn accept_side_stalled_preface_is_dropped() {
     let (a, _silent_peer) = tokio::io::duplex(64 * 1024);
-    let state = crate::conn::ConnState::new(None, vec!["grpc"], 0);
-    crate::server::serve_connection(Box::new(a), state.clone(), Duration::from_millis(50));
+    let state = super::conn::ConnState::new(None, vec!["grpc"], 0);
+    super::server::serve_connection(Box::new(a), state.clone(), Duration::from_millis(50));
 
     let mut guard = state.inbound_rx.lock().await;
     let rx = guard
