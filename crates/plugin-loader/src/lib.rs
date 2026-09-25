@@ -2043,3 +2043,15 @@ mod store_conformance_tests;
 #[cfg(test)]
 #[path = "tests/secret_conformance_tests.rs"]
 mod secret_conformance_tests;
+
+/// `kind: auth` through both doors — the auth kind's first both-ways witness (#2, steps (1)-(5)): the
+/// compiled-in twin and the `cdylib`'s `busbar_call` put one wire, and the linked and dropped-in rows
+/// open one module.
+#[cfg(test)]
+#[path = "tests/auth_conformance_tests.rs"]
+mod auth_conformance_tests;
+
+/// `kind: hook` through both doors: one wire, one row, one routing policy.
+#[cfg(test)]
+#[path = "tests/hook_conformance_tests.rs"]
+mod hook_conformance_tests;

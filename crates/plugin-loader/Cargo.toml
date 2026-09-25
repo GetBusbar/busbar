@@ -105,6 +105,14 @@ busbar-store-example-plugin = { path = "../store-example-plugin" }
 # dropped-in door), and requires the two registry rows and what the two opened modules resolve to be
 # byte-identical (DECISIONS #2 rule (1)).
 busbar-secret-example-plugin = { path = "../secret-example-plugin" }
+# The `kind: auth` BOTH-WAYS fixture — #2's auth witness, step (4) (OWNER-LOCKED): its `rlib` gives the
+# test the COMPILED-IN module (its `pub fn open`, driven through the `dispatch_compiled_in` twin
+# `export_auth_plugin!` emits) and its `BUSBAR_COLD_ENTRY` (the linked door); its `cdylib` is the
+# dropped-in door. `auth_conformance_tests` requires the two to be one plugin — the auth kind's first
+# both-ways witness at any tag.
+busbar-auth-static-plugin = { path = "../auth-static-plugin" }
+# The `kind: hook` BOTH-WAYS fixture, on the same terms (`hook_conformance_tests`).
+busbar-hook-test-plugin = { path = "../hook-test-plugin" }
 
 [target.'cfg(unix)'.dependencies]
 # memfd_create (Linux zero-disk loads) + kill(pid, 0) liveness for the dead-pid staging sweep.
@@ -127,3 +135,5 @@ libc = { workspace = true }
 store = "busbar-store-example-plugin"
 secret = "busbar-secret-example-plugin"
 export = "busbar-export-example-plugin"
+auth = "busbar-auth-static-plugin"
+hook = "busbar-hook-test-plugin"

@@ -298,8 +298,9 @@ carries it, so sidecar logic and plugin logic are the same. The rules a sidecar 
 For in-process plugins, the transport is `busbar_call` over the frozen **hybrid ABI**, six
 kind-neutral C symbols: `busbar_abi`, `busbar_plugin_kind`, `busbar_open`, `busbar_call`,
 `busbar_free`, `busbar_close`. (`TRANSPORT_VERSION = 1` is the low-level C signature contract,
-frozen; `abi_version` in the manifest is the per-kind payload version: `HOOK_ABI_VERSION = 1` for
-the hook kind.) Operations are the same op-discriminated JSON payload as socket/webhook: `decide`,
+frozen; `abi_version` in the manifest is the per-kind payload version: `HOOK_ABI_VERSION = 2` for
+the hook kind: v2 wraps each reply in the observability envelope `{"result": …}`, v1 answers bare,
+and both load.) Operations are the same op-discriminated JSON payload as socket/webhook: `decide`,
 `transform`, `notify`, `configure`, `describe`, `status`. The serialization is JSON over the C ABI
 rather than NDJSON over a socket, but the payload contract is identical. A hook's decision logic
 is transport-agnostic.

@@ -351,10 +351,13 @@ fn hook_ffi_roundtrip_open_call_close() {
         let mut out_len: usize = 0;
         let st = hook_call_impl(handle, req.as_ptr(), req.len(), &mut out, &mut out_len);
         assert_eq!(st, STATUS_OK);
-        let resp: busbar_plugin::cold::hook::HookReply =
+        // Hook payload schema v2: the reply rides the observability envelope, bare (a hook reports
+        // its metrics in its `status` reply, never on the back-channel).
+        let envelope: Envelope<busbar_plugin::cold::hook::HookReply> =
             serde_json::from_slice(std::slice::from_raw_parts(out, out_len)).unwrap();
         free_impl(out, out_len);
-        match resp {
+        assert!(envelope.is_bare(), "{envelope:?}");
+        match envelope.result {
             busbar_plugin::cold::hook::HookReply::Reply(v) => {
                 assert_eq!(v, serde_json::json!({"order": [0]}))
             }
@@ -948,10 +951,11 @@ fn auth_abi_version_reads_the_shared_const() {
     assert_eq!(auth_abi_version(), busbar_plugin::cold::AUTH_ABI_VERSION);
 }
 
-/// Pin the auth payload schema at v2 (1.5.2 login primitives) — the SDK builds v2.
+/// Pin the auth payload schema at v3 (1.6.0: the enveloped wire over v2's login primitives) — the
+/// SDK builds v3.
 #[test]
-fn auth_abi_version_is_two() {
-    assert_eq!(auth_abi_version(), 2);
+fn auth_abi_version_is_three() {
+    assert_eq!(auth_abi_version(), 3);
 }
 
 // ── ABI v2 login dispatch (SDK server side) ────────────────────────────────────────────────

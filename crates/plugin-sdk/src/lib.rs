@@ -273,6 +273,12 @@ pub unsafe fn store_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutco
 /// level so the `export_plugin!` expansion can pass it to `close_boundary::<$ty>`.
 pub type AuthHandle = Box<dyn busbar_api::AuthPlugin>;
 
+/// Re-export the auth wire and the two auth faces so an auth author (and the `dispatch_compiled_in`
+/// twin `export_auth_plugin!` emits) names `busbar_plugin_sdk::AuthRequest` (etc.) without a direct
+/// `busbar-plugin` dependency, mirroring the hook/export re-export path.
+pub use busbar_api::{AuthModule, AuthPlugin};
+pub use busbar_plugin::cold::auth::{AuthRequest, AuthResponse};
+
 /// The auth handle behind the opaque `*mut c_void`: a boxed [`busbar_api::AuthPlugin`].
 type BoxedAuth = AuthHandle;
 
@@ -281,8 +287,14 @@ type BoxedAuth = AuthHandle;
 /// default (Reject) login behavior. This is what lets `export_auth_plugin!` keep accepting a
 /// `fn(&str) -> Result<Box<dyn AuthModule>, String>` ctor UNCHANGED while the exported handle is the
 /// unified `Box<dyn AuthPlugin>`.
-struct VerifyOnlyAuth(Box<dyn busbar_api::AuthModule>);
-impl busbar_api::AuthModule for VerifyOnlyAuth {
+///
+/// Generic over how the module is held: the dropped-in door's handle OWNS it (`Box`), and the
+/// compiled-in twin `export_auth_plugin!` emits BORROWS the one its caller opened (`&`) — one adapter,
+/// so the two doors cannot adapt a verify-only module differently.
+struct VerifyOnlyAuth<M>(M);
+impl<'a, M: std::ops::Deref<Target = dyn busbar_api::AuthModule + 'a> + Send + Sync>
+    busbar_api::AuthModule for VerifyOnlyAuth<M>
+{
     fn name(&self) -> &'static str {
         self.0.name()
     }
@@ -293,7 +305,10 @@ impl busbar_api::AuthModule for VerifyOnlyAuth {
         self.0.cacheable()
     }
 }
-impl busbar_api::LoginModule for VerifyOnlyAuth {}
+impl<'a, M: std::ops::Deref<Target = dyn busbar_api::AuthModule + 'a> + Send + Sync>
+    busbar_api::LoginModule for VerifyOnlyAuth<M>
+{
+}
 
 /// Wrap a verify-only auth module into the unified [`AuthHandle`]. Used by the `export_auth_plugin!`
 /// expansion; also the boundary for future login-capable plugins (which would box directly).
@@ -342,10 +357,40 @@ pub fn dispatch_auth(
     }
 }
 
+/// Run one auth request and wrap the answer in the observability envelope (DECISIONS #85) — what
+/// actually goes on the wire. The auth twin of [`dispatch_export_enveloped`] (#2's auth witness,
+/// step (1)).
+///
+/// An auth module's verify and login faces report nothing on the back-channel, so the envelope is
+/// BARE (`{"result": …}`): what makes it load-bearing is not what it carries today but that the
+/// dropped-in door (`busbar_call`, via [`auth_dispatch`]) and the compiled-in door (the
+/// `dispatch_compiled_in` twin `export_auth_plugin!` emits) run THIS function and nothing else, so the
+/// two builds of one crate are byte-identical on the wire and a compiled-in build has no
+/// back-channel of its own to reach. Shipped at auth payload schema v3 ([`auth_abi_version`]); the
+/// loader keeps the v1 floor and reads a bare (pre-envelope) answer exactly as before.
+pub fn dispatch_auth_enveloped(
+    module: &dyn busbar_api::AuthPlugin,
+    req: busbar_plugin::cold::auth::AuthRequest,
+) -> Envelope<busbar_plugin::cold::auth::AuthResponse> {
+    Envelope::bare(dispatch_auth(module, req))
+}
+
+/// [`dispatch_auth_enveloped`] over a VERIFY-ONLY module, adapted exactly as the dropped-in door
+/// adapts it ([`adapt_auth_handle`]): login requests take the fail-closed default. What the twin
+/// `export_auth_plugin!` emits runs, so the compiled-in door cannot adapt the module differently.
+#[doc(hidden)]
+pub fn dispatch_verify_only_enveloped(
+    module: &dyn busbar_api::AuthModule,
+    req: busbar_plugin::cold::auth::AuthRequest,
+) -> Envelope<busbar_plugin::cold::auth::AuthResponse> {
+    dispatch_auth_enveloped(&VerifyOnlyAuth(module), req)
+}
+
 /// The per-kind `dispatch` closure `export_auth_plugin!` hands to [`boundary::call_boundary`]: decode an
-/// [`busbar_plugin::cold::auth::AuthRequest`], run it via [`dispatch_auth`], and encode the
-/// [`busbar_plugin::cold::auth::AuthResponse`] into a [`BoundaryOutcome`]. An `authenticate` verdict
-/// (`Reject`/`Pass`) rides the OK payload — only an undecodable request / encode failure is non-OK.
+/// [`busbar_plugin::cold::auth::AuthRequest`], run it via [`dispatch_auth_enveloped`], and encode the
+/// enveloped [`busbar_plugin::cold::auth::AuthResponse`] into a [`BoundaryOutcome`]. An
+/// `authenticate` verdict (`Reject`/`Pass`) rides the OK payload — only an undecodable request /
+/// encode failure is non-OK.
 ///
 /// # Safety
 /// `handle` is a live auth handle from `open` (guaranteed non-null by the boundary wrapper).
@@ -355,7 +400,7 @@ pub unsafe fn auth_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcom
         Ok(r) => r,
         Err(e) => return BoundaryOutcome::Unsupported(format!("malformed request JSON: {e}")),
     };
-    let resp = dispatch_auth(module.as_ref(), request);
+    let resp = dispatch_auth_enveloped(module.as_ref(), request);
     match serde_json::to_vec(&resp) {
         Ok(payload) => BoundaryOutcome::Ok(payload),
         Err(e) => BoundaryOutcome::Error(format!("response encode failed: {e}")),
@@ -559,6 +604,17 @@ macro_rules! export_auth_plugin {
             ctor = __busbar_auth_open_adapted,
             handle = $crate::AuthHandle,
         );
+        /// THE COMPILED-IN ENTRY POINT — the twin of the `busbar_call` symbol above (#2's auth
+        /// witness, step (2)). A compiled-in build reaches the module `$ctor` opened through the SAME
+        /// op-dispatch and the SAME envelope the C symbol runs — `dispatch_auth_enveloped`, over the
+        /// same verify-only adapter — never through a shortcut into the module, so the two builds of
+        /// this crate are one plugin over one contract.
+        pub fn dispatch_compiled_in(
+            module: &dyn $crate::AuthModule,
+            req: $crate::AuthRequest,
+        ) -> $crate::Envelope<$crate::AuthResponse> {
+            $crate::dispatch_verify_only_enveloped(module, req)
+        }
     };
 }
 
@@ -595,6 +651,14 @@ macro_rules! export_login_plugin {
             ctor = __busbar_login_open,
             handle = $crate::AuthHandle,
         );
+        /// THE COMPILED-IN ENTRY POINT — the twin of the `busbar_call` symbol above, as
+        /// `export_auth_plugin!` emits it: the same `dispatch_auth_enveloped` the C symbol runs.
+        pub fn dispatch_compiled_in(
+            module: &dyn $crate::AuthPlugin,
+            req: $crate::AuthRequest,
+        ) -> $crate::Envelope<$crate::AuthResponse> {
+            $crate::dispatch_auth_enveloped(module, req)
+        }
     };
 }
 
@@ -784,6 +848,11 @@ pub trait HookHandler: Send + Sync {
 /// so the `export_plugin!` expansion can pass it to `close_boundary::<$ty>`.
 pub type HookHandle = Box<dyn HookHandler>;
 
+/// Re-export the hook wire so a hook author (and the `dispatch_compiled_in` twin
+/// `export_hook_plugin!` emits) names `busbar_plugin_sdk::HookRequest` / `HookReply` without a direct
+/// `busbar-plugin` dependency, mirroring the auth/export re-export path.
+pub use busbar_plugin::cold::hook::{HookReply, HookRequest};
+
 /// The hook handle behind the opaque `*mut c_void`: a boxed [`HookHandler`].
 type BoxedHook = HookHandle;
 
@@ -834,9 +903,26 @@ pub fn dispatch_hook(
     }
 }
 
+/// Run one hook request and wrap the reply in the observability envelope (DECISIONS #85) — what
+/// actually goes on the wire; the hook twin of [`dispatch_export_enveloped`].
+///
+/// A hook reports its metrics in its `status` reply (the shape #85's envelope was modelled on), so the
+/// envelope is BARE and the reply inside it is exactly [`dispatch_hook`]'s — the hook kind is a 1.6.0
+/// FUNCTIONAL fixed point, and this moves its wire, never its behaviour. The dropped-in door
+/// (`busbar_call`, via [`hook_dispatch`]) and the compiled-in door (the `dispatch_compiled_in` twin
+/// `export_hook_plugin!` emits) both run this, so the two builds are byte-identical on the wire.
+/// Shipped at hook payload schema v2 ([`hook_abi_version`]); the loader keeps the v1 floor and reads a
+/// bare (pre-envelope) reply exactly as before.
+pub fn dispatch_hook_enveloped(
+    handler: &dyn HookHandler,
+    req: busbar_plugin::cold::hook::HookRequest,
+) -> Envelope<busbar_plugin::cold::hook::HookReply> {
+    Envelope::bare(dispatch_hook(handler, req))
+}
+
 /// The per-kind `dispatch` closure `export_hook_plugin!` hands to [`boundary::call_boundary`]: decode a
-/// [`busbar_plugin::cold::hook::HookRequest`], run it via [`dispatch_hook`], and encode the reply into a
-/// [`BoundaryOutcome`].
+/// [`busbar_plugin::cold::hook::HookRequest`], run it via [`dispatch_hook_enveloped`], and encode the
+/// enveloped reply into a [`BoundaryOutcome`].
 ///
 /// # Safety
 /// `handle` is a live hook handle from `open` (guaranteed non-null by the boundary wrapper).
@@ -846,7 +932,7 @@ pub unsafe fn hook_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcom
         Ok(r) => r,
         Err(e) => return BoundaryOutcome::Unsupported(format!("malformed request JSON: {e}")),
     };
-    let resp = dispatch_hook(handler.as_ref(), request);
+    let resp = dispatch_hook_enveloped(handler.as_ref(), request);
     match serde_json::to_vec(&resp) {
         Ok(payload) => BoundaryOutcome::Ok(payload),
         Err(e) => BoundaryOutcome::Error(format!("response encode failed: {e}")),
@@ -1138,6 +1224,15 @@ macro_rules! export_hook_plugin {
             ctor = $ctor,
             handle = $crate::HookHandle,
         );
+        /// THE COMPILED-IN ENTRY POINT — the twin of the `busbar_call` symbol above: the handler
+        /// `$ctor` opened, reached through the SAME op-dispatch and envelope the C symbol runs
+        /// (`dispatch_hook_enveloped`), never through a shortcut into the handler.
+        pub fn dispatch_compiled_in(
+            handler: &dyn $crate::HookHandler,
+            req: $crate::HookRequest,
+        ) -> $crate::Envelope<$crate::HookReply> {
+            $crate::dispatch_hook_enveloped(handler, req)
+        }
     };
 }
 

@@ -594,7 +594,14 @@ pub const SECRET_ABI_VERSION: u32 = 1;
 /// wire-additive: a v1 plugin that only ever emits `Authenticate`/`Identity` is unaffected, and the
 /// loader floor stays `[1, 2]` (v1 plugins still load). Bumping the const value is the v2
 /// declaration; the identity-only `Identity` invariant (its own `deny_unknown_fields`) is untouched.
-pub const AUTH_ABI_VERSION: u32 = 2;
+///
+/// v3 (1.6.0, DECISIONS #85 + #2's auth witness): the response is wrapped in the observability
+/// envelope — [`crate::cold::observe::Envelope`]`<AuthResponse>`, `{"result": …}` — the one shape the
+/// SDK's `dispatch_auth_enveloped` puts on the wire through either door, so a compiled-in and a
+/// dropped-in build of one auth crate are byte-identical. The FLOOR STAYS 1: the loader's decoder
+/// reads a bare v1/v2 answer exactly as before (the two shapes are disjoint — no `AuthResponse`
+/// variant is named `result`), so no published auth plugin is refused.
+pub const AUTH_ABI_VERSION: u32 = 3;
 
 /// A [`busbar_api::SecretModule`] operation, serialized as the secret `call` request payload.
 #[derive(Debug, Serialize, Deserialize)]

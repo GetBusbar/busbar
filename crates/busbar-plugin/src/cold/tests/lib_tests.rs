@@ -226,9 +226,9 @@ fn abi_version_is_four() {
     assert_eq!(ABI_VERSION, 4);
 }
 
-/// The auth payload schema is at v2 (1.5.2 login primitives). Pinned so the SDK/loader floor and
-/// the wire additions can't silently drift apart.
+/// The auth payload schema is at v3 (1.6.0: the observability envelope over v2's login
+/// primitives). Pinned so the SDK/loader floor and the wire can't silently drift apart.
 #[test]
-fn auth_abi_version_is_two() {
-    assert_eq!(AUTH_ABI_VERSION, 2);
+fn auth_abi_version_is_three() {
+    assert_eq!(AUTH_ABI_VERSION, 3);
 }

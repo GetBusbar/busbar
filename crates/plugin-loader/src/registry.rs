@@ -61,15 +61,16 @@ pub fn supported_abi(kind: &str) -> &'static [u32] {
         // `Box<dyn AuthModule>` via `open_auth`). Payload schema v1 (verify-only) OR v2 (adds the
         // browser-login primitives). The FLOOR MUST STAY 1: the v2 wire additions are
         // externally-tagged additive variants, so a v1 plugin that only speaks `Authenticate`/
-        // `Identity` still loads and works. `[1, AUTH_ABI_VERSION]` = `[1, 2]`.
+        // `Identity` still loads and works; v3 wraps the same answers in the observability
+        // envelope (#85), which the decoder reads beside the bare shape. `[1, AUTH_ABI_VERSION]` =
+        // `[1, 3]`.
         "auth" => &[1, busbar_plugin::cold::AUTH_ABI_VERSION],
         // A `kind: hook` plugin is an in-process routing policy (the engine's routing/hook chains
         // consume `Arc<dyn RoutingPolicy>` via `open_hook`). The 1.5.0 replacement for the retired
-        // out-of-process socket/webhook hook transport. Payload schema v1.
-        "hook" => &[
-            busbar_plugin::cold::hook::HOOK_ABI_VERSION,
-            busbar_plugin::cold::hook::HOOK_ABI_VERSION,
-        ],
+        // out-of-process socket/webhook hook transport. Payload schema v1 (bare replies) up to v2
+        // (the same replies inside the observability envelope, #85): the decoder accepts either
+        // shape, so THE FLOOR STAYS 1 and every published hook keeps loading.
+        "hook" => &[1, busbar_plugin::cold::hook::HOOK_ABI_VERSION],
         // A `kind: export` plugin is a telemetry sink the engine's observability seam feeds
         // (`open_export`). Payload schema v2 (`streams`/`deliver`): 1.5.3 expanded the stream
         // vocabulary and REMOVED `audit` — an auditor is a projection made of other streams, not a

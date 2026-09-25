@@ -10,18 +10,19 @@ fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
 
-/// After the auth ABI v1→2 bump the loader floor MUST still admit v1 — a pre-built v1
-/// auth plugin (verify-only, e.g. `auth-static-plugin`) keeps loading. The supported range is the
-/// inclusive `[1, 2]`.
+/// After the auth ABI v1→2 bump (and v2→3, the enveloped wire) the loader floor MUST still admit
+/// v1 — a pre-built v1 auth plugin (verify-only, e.g. `auth-static-plugin`) keeps loading. The
+/// supported range is the inclusive `[1, 3]`.
 #[test]
 fn supported_abi_auth_floor_admits_v1() {
     let range = supported_abi("auth");
     assert_eq!(range, &[1, busbar_plugin::cold::AUTH_ABI_VERSION]);
     let (floor, max) = (range[0], range[1]);
     assert_eq!(floor, 1, "v1 auth plugins must still load");
-    assert_eq!(max, 2, "v2 is the current auth payload schema");
+    assert_eq!(max, 3, "v3 is the current auth payload schema");
     assert!(floor <= 1 && 1 <= max, "abi_version 1 is in range");
     assert!(floor <= 2 && 2 <= max, "abi_version 2 is in range");
+    assert!(floor <= 3 && 3 <= max, "abi_version 3 is in range");
 }
 
 /// THE STORE FLOOR IS 2 AND MUST STAY THERE. Every published first-party store plugin

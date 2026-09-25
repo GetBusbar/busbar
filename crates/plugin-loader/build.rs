@@ -7,8 +7,10 @@
 //   [package.metadata.busbar.both-ways]   <kind> = "<fixture crate>"
 //
 // and this turns the rows into `$OUT_DIR/both_ways.rs`: `(kind, the fixture's cdylib crate name, its
-// linked entry)` per row, in manifest order. `src/tests/both_ways.rs` includes it, so the conformance
-// tests reach each fixture by KIND and no test source names a plugin instance — the loader tests the
+// linked entry)` per row, in manifest order, and `<kind>_fixture` — the fixture crate itself, for a
+// test that drives its compiled-in twin (`open` + `dispatch_compiled_in`). `src/tests/both_ways.rs`
+// includes it, so the conformance tests reach each fixture by KIND and no test source names a plugin
+// instance — the loader tests the
 // axis, and a plugin tests itself (DECISIONS #2). The same shape as the composition root's linked
 // tables (`crates/busbar/src/linked_gen.rs`): one row per line, both sides optionally double-quoted.
 // Reads only this crate's own manifest.
@@ -24,6 +26,7 @@ fn main() {
          /// `(kind, cdylib crate name, linked entry)` of each cold kind's both-ways fixture.\n\
          pub(crate) static FIXTURES: &[(&str, &str, &busbar_plugin::cold::ColdEntry)] = &[\n",
     );
+    let mut crates = String::new();
     let mut in_table = false;
     for line in manifest.lines() {
         let code = line.split('#').next().unwrap_or("").trim();
@@ -37,9 +40,15 @@ fn main() {
             out.push_str(&format!(
                 "    (\"{kind}\", \"{snake}\", &::{snake}::BUSBAR_COLD_ENTRY),\n"
             ));
+            crates.push_str(&format!(
+                "// The `{kind}` both-ways fixture crate.\n\
+                 #[allow(unused_imports)]\n\
+                 pub(crate) use ::{snake} as {kind}_fixture;\n"
+            ));
         }
     }
     out.push_str("];\n");
+    out.push_str(&crates);
     let path = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("both_ways.rs");
     std::fs::write(path, out).expect("write both_ways.rs");
 }

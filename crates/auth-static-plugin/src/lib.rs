@@ -101,7 +101,12 @@ impl AuthModule for StaticModule {
 
 /// Construct the module from the engine-passed JSON config. Fail-closed: an empty/invalid config is a
 /// load error (surfaced by `open_auth` → boot/apply abort).
-fn open(cfg: &str) -> Result<Box<dyn AuthModule>, String> {
+///
+/// `pub` (#2's auth witness, step (3)) so the COMPILED-IN arm of the both-ways test constructs exactly
+/// the module the `cdylib`'s `busbar_open` constructs — not two similar objects built two ways, but
+/// the SAME constructor reached down two paths — and drives it through the `dispatch_compiled_in`
+/// twin `export_auth_plugin!` emits beside `busbar_call`.
+pub fn open(cfg: &str) -> Result<Box<dyn AuthModule>, String> {
     if cfg.trim().is_empty() {
         return Err("static-auth plugin requires config (token, id); none provided".to_string());
     }

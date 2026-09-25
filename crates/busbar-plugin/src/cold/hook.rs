@@ -35,7 +35,14 @@ use serde::{Deserialize, Serialize};
 /// envelope lifted verbatim from the retired socket/webhook wire. This is the per-kind PAYLOAD axis,
 /// NOT the transport axis — a hook plugin exports the SAME six neutral symbols ([`crate::cold::symbol`]) as
 /// every other kind, at `busbar_abi() == TRANSPORT_VERSION`.
-pub const HOOK_ABI_VERSION: u32 = 1;
+///
+/// v2 (1.6.0, DECISIONS #85): the reply is wrapped in the observability envelope —
+/// [`crate::cold::observe::Envelope`]`<HookReply>`, `{"result": …}` — the one shape the SDK's
+/// `dispatch_hook_enveloped` puts on the wire through either door (compiled in or dropped in). The
+/// reply INSIDE is v1's, byte for byte: hooks are a 1.6.0 functional fixed point, so this moves the
+/// wire and never the behaviour. The loader window is `[1, 2]`: a v1 hook answers bare and keeps
+/// loading (the shapes are disjoint — no `HookReply` variant is named `result`).
+pub const HOOK_ABI_VERSION: u32 = 2;
 
 /// A hook operation, serialized as the `call` request payload. One self-describing enum keeps the C
 /// ABI to a single `call` symbol; the variant is the op-code. Mirrors the retired socket/webhook wire

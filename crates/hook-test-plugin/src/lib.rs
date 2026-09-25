@@ -249,7 +249,11 @@ impl HookHandler for TestGate {
 
 /// Construct the gate from the engine-passed JSON config. An empty config is fine (a pure-abstain
 /// gate that never rejects); malformed JSON is a fail-closed load error.
-fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
+///
+/// `pub` so the COMPILED-IN arm of the hook both-ways test constructs exactly the handler the
+/// `cdylib`'s `busbar_open` constructs, and drives it through the `dispatch_compiled_in` twin
+/// `export_hook_plugin!` emits beside `busbar_call`.
+pub fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
     // Exercises the host log bridge from the one place it matters most — a constructor, where a
     // plugin has something worth reporting and where `tracing::warn!` inside a cdylib goes nowhere.
     busbar_plugin_sdk::hostlog::warn("test-hook plugin opened (host log bridge check)");

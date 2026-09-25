@@ -121,8 +121,9 @@ you can name the tarball anything.
 `name` is the canonical identity (`[a-z0-9-]+`, e.g. `busbar-store-valkey-plugin`); `alias` is the short
 config name (`valkey`). `store.module:` accepts either. `kind` is `store`, `secret`, `auth`, `hook`, or
 `export`. `version` is strict semver. `abi_version` declares which per-kind payload-schema generation
-the cdylib was built against. It is set **per kind**: `auth` is at `2`, `secret` and `hook` at `1`
-(auth was bumped 1→2 in 1.5.2 for the additive browser-login primitives), `export` is at `2` (1.5.3
+the cdylib was built against. It is set **per kind**: `auth` is at `3` and `hook` at `2` (each wraps
+its replies in the observability envelope; `auth` accepts `1..=3` — it was bumped 1→2 in 1.5.2 for
+the additive browser-login primitives — and `hook` accepts `1..=2`), `secret` at `1`, `export` is at `2` (1.5.3
 expanded the stream vocabulary and dropped `audit`, so a v1 sink is not accepted), and `store` accepts
 the range `2..=4`. The loader enforces a supported-version RANGE per kind, so a plugin built against an
 outdated (or too-new) ABI is refused at load rather than mis-called. See `busbar-plugin-abi` for the
@@ -423,8 +424,10 @@ counter climbs quadratically against a flat workload.
 Writing a plugin in another language? Wrap your response in `{"result": …}` and add the two arrays
 when you have something to report; omit them when you do not. A plugin built before the envelope
 answers `result` bare and keeps working — Busbar reads whichever shape your plugin speaks, decided
-once when it loads. Today only `kind: export` declares the enveloped payload schema (`abi_version: 3`);
-the other kinds' schemas are unchanged, and so are the six exported symbols and
+once when it loads. Three kinds declare the enveloped payload schema: `kind: export`
+(`abi_version: 3`), `kind: auth` (`abi_version: 3`) and `kind: hook` (`abi_version: 2`); an auth or
+hook reply inside the envelope is exactly the one it replaced, and an older plugin of either kind
+keeps loading. The store and secret schemas are unchanged, and so are the six exported symbols and
 `busbar_abi() == 1`.
 
 ## Hook plugins (`kind: hook`)

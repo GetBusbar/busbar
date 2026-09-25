@@ -627,6 +627,9 @@ fn the_log_ctx_is_interned_not_allocated_per_load() {
     let Some(_) = hook_plugin_path() else {
         return;
     };
+    // The record log is process-global, and the both-ways tests load the same plugin under names of
+    // their own; they hold the same guard, so this window holds only this test's loads.
+    let _guard = crate::observe::testing::exclusive();
     let before = crate::hostlog::log_tap::RECORDS
         .lock()
         .unwrap_or_else(|e| e.into_inner())

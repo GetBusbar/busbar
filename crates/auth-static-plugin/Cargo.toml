@@ -16,13 +16,14 @@ license = "Apache-2.0"
 # two both-ways witnesses in the tree (`plugin-loader/src/tests/{plane,export}_conformance_tests.rs`);
 # this crate was the one fixture that could not, being cdylib-only.
 #
-# ADDING THE ARTIFACT IS NOT THE WITNESS. The compiled-in door exists (K5): the `rlib`'s
-# `BUSBAR_COLD_ENTRY` is the same boundary `export_auth_plugin!` exports from the `cdylib`, and
-# `PluginRegistry::link` registers it on the one cold-kind axis the dropped-in door feeds. What is
-# missing is a test crate allowed to LINK this `rlib`: kind-isolation refuses any new edge to a
-# `kind: auth` crate (`plugin-tooling -> auth` is neither an architecture nor a TCB edge), and #2's
-# ordered cost names exactly that edge — `plugin-loader`'s dev-dependency on this crate — as its step
-# (4). The witness (`plugin-loader` `auth_conformance_tests`) waits on that ruling.
+# ADDING THE ARTIFACT IS NOT THE WITNESS — the witness is `plugin-loader`'s
+# `src/tests/auth_conformance_tests.rs`, #2's ordered cost walked in full: the SDK's
+# `dispatch_auth_enveloped` (1), the `dispatch_compiled_in` twin `export_auth_plugin!` emits beside
+# `busbar_call` (2), this crate's `pub fn open` (3), `plugin-loader`'s dev-dependency on this crate
+# (4), and the test (5), which drives `open` through the twin (compiled in) and this crate's `cdylib`
+# over the C ABI (dropped in) and requires the two wires to be byte-identical. The `rlib`'s
+# `BUSBAR_COLD_ENTRY` is also registered through `PluginRegistry::link` there, beside the same
+# `cdylib` signed into `plugins/`: one row, one module.
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
