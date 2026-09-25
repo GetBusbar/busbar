@@ -458,7 +458,7 @@ fn wants_client_cert(
     if trust.pinned_public_keys.is_empty() {
         builder.with_root_certificates(roots)
     } else {
-        let verifier = SpkiPinVerifier::new(roots, &trust.pinned_public_keys);
+        let verifier = PinnedKeyVerifier::new(roots, &trust.pinned_public_keys);
         builder
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(verifier))
@@ -470,12 +470,12 @@ fn wants_client_cert(
 /// OVER the standard verification, never in place of it: a pinned key on an otherwise-invalid chain
 /// is still a refusal.
 #[derive(Debug)]
-struct SpkiPinVerifier {
+struct PinnedKeyVerifier {
     inner: Arc<rustls::client::WebPkiServerVerifier>,
     pins: Vec<[u8; 32]>,
 }
 
-impl SpkiPinVerifier {
+impl PinnedKeyVerifier {
     fn new(roots: rustls::RootCertStore, pins: &[[u8; 32]]) -> Self {
         let inner = rustls::client::WebPkiServerVerifier::builder(Arc::new(roots))
             .build()
@@ -487,7 +487,7 @@ impl SpkiPinVerifier {
     }
 }
 
-impl rustls::client::danger::ServerCertVerifier for SpkiPinVerifier {
+impl rustls::client::danger::ServerCertVerifier for PinnedKeyVerifier {
     fn verify_server_cert(
         &self,
         end_entity: &rustls_pki_types::CertificateDer<'_>,
@@ -503,10 +503,10 @@ impl rustls::client::danger::ServerCertVerifier for SpkiPinVerifier {
             ocsp_response,
             now,
         )?;
-        let spki = subject_public_key_info(end_entity.as_ref()).ok_or_else(|| {
+        let key_info = subject_public_key_info(end_entity.as_ref()).ok_or_else(|| {
             rustls::Error::General("peer certificate carries no readable key".into())
         })?;
-        let digest = sha2::Sha256::digest(spki);
+        let digest = sha2::Sha256::digest(key_info);
         if self
             .pins
             .iter()
@@ -558,7 +558,7 @@ fn subject_public_key_info(cert_der: &[u8]) -> Option<&[u8]> {
     /// `[0] EXPLICIT`, the optional context tag carrying `TBSCertificate.version`.
     const TAG_VERSION: u8 = 0xA0;
     /// `serialNumber`, `signature`, `issuer`, `validity`, `subject` — the members before the SPKI.
-    const MEMBERS_BEFORE_SPKI: usize = 5;
+    const MEMBERS_BEFORE_KEY: usize = 5;
 
     // (tag, contents, whole) of one DER element off the front of `buf`, DER-strict on length.
     fn element(buf: &[u8]) -> Option<(u8, &[u8])> {
@@ -614,7 +614,7 @@ fn subject_public_key_info(cert_der: &[u8]) -> Option<&[u8]> {
         let (_, version) = element(rest)?;
         rest = &rest[version.len()..];
     }
-    for _ in 0..MEMBERS_BEFORE_SPKI {
+    for _ in 0..MEMBERS_BEFORE_KEY {
         let (_, member) = element(rest)?;
         rest = &rest[member.len()..];
     }
