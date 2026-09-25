@@ -24,6 +24,13 @@ license = "Apache-2.0"
 name = "busbar_kernel"
 path = "src/lib.rs"
 
+# THE TEST-LINKED PLANES (SEAM-T, N02 ruling): the dev-dependency plane crates the cross-plane
+# integration tests install and loop. build.rs emits `$OUT_DIR/test_linked.rs` from this list and
+# `tests/linked/mod.rs` includes it, so the tests' sources name none of these crates; they address a
+# plane by what its declaration states, read back from the registry.
+[package.metadata.busbar]
+test-linked = ["busbar-llm", "busbar-mcp", "busbar-a2a"]
+
 [dependencies]
 busbar-api = { path = "../api" }
 # ── ABSORBED from the pre-1.6.0 busbar-kernel crate (W4.a #19/#37) ────────────────────────────────
