@@ -139,40 +139,9 @@ impl ProtocolWriter for ResponsesWriter {
                                 }
                                 content_arr.push(serde_json::Value::Object(part));
                             }
-                            crate::ir::IrBlock::Image { source, .. } => match source {
-                                // A Responses-produced vendor reference is a `file_id` — re-emit
-                                // the native `input_image.file_id` form (a data URI would corrupt it).
-                                crate::ir::IrImageSource::Vendor { vendor, value }
-                                    if *vendor == VENDOR_NAME =>
-                                {
-                                    if let Some(id) = value.get("file_id").and_then(|i| i.as_str())
-                                    {
-                                        content_arr.push(serde_json::json!({
-                                            "type": "input_image",
-                                            "file_id": id
-                                        }));
-                                    }
-                                }
-                                // A foreign vendor reference (a Bedrock s3Location) has no Responses
-                                // analog — drop with a warn rather than corrupt the block.
-                                crate::ir::IrImageSource::Vendor { .. } => {
-                                    tracing::warn!(
-                                        "dropping unresolvable foreign vendor image reference on \
-                                         Responses egress: no cross-vendor analog"
-                                    );
-                                }
-                                // A URL/base64 image reconstructs the original `image_url`.
-                                url_or_b64 => {
-                                    if let Some(image_url) =
-                                        super::super::ir_encode::image_url_from_ir(url_or_b64)
-                                    {
-                                        content_arr.push(serde_json::json!({
-                                            "type": "input_image",
-                                            "image_url": image_url
-                                        }));
-                                    }
-                                }
-                            },
+                            crate::ir::IrBlock::Image { source, .. } => {
+                                content_arr.extend(input_image_part(source));
+                            }
                             // The Responses input surface has ONE attachment part, `input_file`, and
                             // no audio or video part — so a document projects natively (this is the
                             // slot an Anthropic `document` or a Bedrock `document` lands in) and the
@@ -181,73 +150,7 @@ impl ProtocolWriter for ResponsesWriter {
                             crate::ir::IrBlock::Media {
                                 kind, source, name, ..
                             } => {
-                                if *kind != crate::ir::IrMediaKind::Document {
-                                    tracing::warn!(
-                                        media_kind = kind.as_str(),
-                                        "dropping attachment on Responses egress: the input surface \
-                                         has an `input_file` part and no audio or video part; the \
-                                         block is NOT emitted"
-                                    );
-                                } else {
-                                    let mut part = serde_json::Map::new();
-                                    part.insert(
-                                        "type".to_string(),
-                                        serde_json::json!("input_file"),
-                                    );
-                                    let representable = match source {
-                                        crate::ir::IrImageSource::Base64 { media_type, data } => {
-                                            part.insert(
-                                                "file_data".to_string(),
-                                                serde_json::json!(format!(
-                                                    "data:{media_type};base64,{data}"
-                                                )),
-                                            );
-                                            true
-                                        }
-                                        crate::ir::IrImageSource::Url(url) => {
-                                            part.insert(
-                                                "file_url".to_string(),
-                                                serde_json::json!(url),
-                                            );
-                                            true
-                                        }
-                                        // This protocol's OWN uploads handle round-trips verbatim;
-                                        // a FOREIGN handle (a Bedrock s3Location, an Anthropic
-                                        // Files-API id) is unresolvable here.
-                                        crate::ir::IrImageSource::Vendor { vendor, value }
-                                            if *vendor == VENDOR_NAME =>
-                                        {
-                                            match value.get("file_id").and_then(|i| i.as_str()) {
-                                                Some(id) => {
-                                                    part.insert(
-                                                        "file_id".to_string(),
-                                                        serde_json::json!(id),
-                                                    );
-                                                    true
-                                                }
-                                                None => false,
-                                            }
-                                        }
-                                        crate::ir::IrImageSource::Vendor { vendor, .. } => {
-                                            tracing::warn!(
-                                                vendor = %vendor,
-                                                "dropping document attachment on Responses egress: \
-                                                 the source is a foreign vendor file handle this \
-                                                 backend cannot resolve; the block is NOT emitted"
-                                            );
-                                            false
-                                        }
-                                    };
-                                    if representable {
-                                        if let Some(n) = name {
-                                            part.insert(
-                                                "filename".to_string(),
-                                                serde_json::json!(n),
-                                            );
-                                        }
-                                        content_arr.push(serde_json::Value::Object(part));
-                                    }
-                                }
+                                content_arr.extend(input_file_part(*kind, source, name.as_deref()));
                             }
                             crate::ir::IrBlock::Json(_) => {
                                 // Structured-json (Bedrock tool-result content) has no Responses
@@ -272,35 +175,14 @@ impl ProtocolWriter for ResponsesWriter {
                                 content,
                                 ..
                             } => {
-                                // Concatenate adjacent text blocks WITHOUT a separator: a space
-                                // between fragments corrupts base64 / split JSON payloads.
-                                // Mirrors `openai_chat.rs::write_request`'s tool_result concat fix.
-                                let output_text = content
-                                    .iter()
-                                    .filter_map(|b| match b {
-                                        crate::ir::IrBlock::Text { text, .. } => Some(text.clone()),
-                                        // A non-Text ToolResult block is a Bedrock json-tool-result
-                                        // sentinel with no Responses analog. Drop WITH a warn
-                                        // (drop-with-warn convention) instead of vanishing silently.
-                                        other => {
-                                            if super::super::ir_encode::is_json_tool_result_block(other) {
-                                                tracing::warn!(
-                                                    "dropping structured json tool-result block on \
-                                                     Responses egress: a Bedrock `{{\"json\":...}}` \
-                                                     tool-result has no cross-protocol analog and is \
-                                                     NOT emitted"
-                                                );
-                                            }
-                                            None
-                                        }
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .concat();
+                                // RSP-10: text, JSON, images and files all reach `output` — see
+                                // `function_call_output_value`.
+                                let output_value = function_call_output_value(content);
 
                                 tool_items.push(serde_json::json!({
                                     "type": "function_call_output",
                                     "call_id": tool_use_id,
-                                    "output": output_text
+                                    "output": output_value
                                 }));
                             }
                             // A prior-turn Thinking block re-emits as a top-level Responses
@@ -397,35 +279,14 @@ impl ProtocolWriter for ResponsesWriter {
                             ..
                         } = block
                         {
-                            // Concatenate adjacent text blocks WITHOUT a separator: a space
-                            // between fragments corrupts base64 / split JSON payloads.
-                            // Mirrors `openai_chat.rs::write_request`'s tool_result concat fix.
-                            let output_text = content
-                                .iter()
-                                .filter_map(|b| match b {
-                                    crate::ir::IrBlock::Text { text, .. } => Some(text.clone()),
-                                    // A non-Text ToolResult block is a Bedrock json-tool-result
-                                    // sentinel with no Responses analog. Drop WITH a warn
-                                    // (drop-with-warn convention) instead of vanishing silently.
-                                    other => {
-                                        if super::super::ir_encode::is_json_tool_result_block(other) {
-                                            tracing::warn!(
-                                                "dropping structured json tool-result block on \
-                                                 Responses egress: a Bedrock `{{\"json\":...}}` \
-                                                 tool-result has no cross-protocol analog and is NOT \
-                                                 emitted"
-                                            );
-                                        }
-                                        None
-                                    }
-                                })
-                                .collect::<Vec<_>>()
-                                .concat();
+                            // RSP-10: text, JSON, images and files all reach `output` — see
+                            // `function_call_output_value`.
+                            let output_value = function_call_output_value(content);
 
                             input_arr.push(serde_json::json!({
                                 "type": "function_call_output",
                                 "call_id": tool_use_id,
-                                "output": output_text
+                                "output": output_value
                             }));
                         }
                     }
@@ -550,6 +411,11 @@ impl ProtocolWriter for ResponsesWriter {
             out.insert("top_logprobs".to_string(), serde_json::json!(top_logprobs));
         }
 
+        // RSP-06: the end-user id rides the Responses `user` member, as it does on Chat.
+        if let Some(user) = &req.user {
+            out.insert("user".to_string(), serde_json::json!(user));
+        }
+
         // SAMPLING: the Responses create API does NOT model `frequency_penalty`,
         // `presence_penalty`, `seed`, or `n` (verified against the official openai-python
         // `ResponseCreateParamsBase`: only `temperature`/`top_p`/`top_logprobs`/`text` are present).
@@ -657,6 +523,24 @@ impl ProtocolWriter for ResponsesWriter {
                 continue;
             }
             out.insert(key.clone(), value.clone());
+        }
+
+        // RSP-07: the logprobs ASK. `top_logprobs` alone does not make a Responses backend return
+        // logprobs — the `output_text` parts carry them only when `include` names
+        // `message.output_text.logprobs`. Add the entry (after the `extra` overlay, so an `include`
+        // the caller already sent keeps its other entries and never gains a duplicate).
+        if req.logprobs == Some(true) {
+            let include = out
+                .entry("include".to_string())
+                .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            if let Some(arr) = include.as_array_mut() {
+                if !arr
+                    .iter()
+                    .any(|v| v.as_str() == Some(INCLUDE_OUTPUT_TEXT_LOGPROBS))
+                {
+                    arr.push(serde_json::json!(INCLUDE_OUTPUT_TEXT_LOGPROBS));
+                }
+            }
         }
 
         serde_json::Value::Object(out)
@@ -970,11 +854,21 @@ impl ProtocolWriter for ResponsesWriter {
                         }),
                     )]
                 }
-                // An empty ThinkingDelta carries no content (drop it), and Responses has no streaming
-                // analog for a thinking `SignatureDelta` (the signature rides on the item's
-                // `encrypted_content`, not a stream delta) — so both emit no frame.
+                // RSP-01: a thinking `SignatureDelta` has no delta FRAME on Responses — the blob
+                // rides the finalized reasoning item's `encrypted_content`. So nothing is emitted
+                // HERE, but the signature is buffered for the reasoning item at this index and lands
+                // on its `output_item.done` (and the terminal `output[]`) at BlockStop, exactly as
+                // the buffered `write_response` puts `Thinking.signature` into `encrypted_content`.
+                // Dropping it broke multi-turn reasoning continuity on every streamed hop.
+                crate::ir::IrDelta::SignatureDelta(sig) => {
+                    self.append_reasoning_signature(*index, sig);
+                    Vec::new()
+                }
+                // An empty ThinkingDelta carries no content (drop it). Redacted reasoning is dropped
+                // on BOTH Responses paths (`write_response` skips a redacted Thinking block and the
+                // RedactedThinking BlockStart opens no item), so the stream stays identical to the
+                // buffered body.
                 &crate::ir::IrDelta::ThinkingDelta(_)
-                | crate::ir::IrDelta::SignatureDelta(_)
                 | crate::ir::IrDelta::RedactedReasoningDelta(_) => Vec::new(),
                 // Responses carries citations as `annotations` on the assembled `output_text`
                 // part, not as a standalone delta frame — so there is nothing to emit HERE, but the
@@ -1028,7 +922,7 @@ impl ProtocolWriter for ResponsesWriter {
                     // the chain-of-thought.
                     let item_id = self.item_id_for(ITEM_ID_PREFIX_RS, *index);
                     let text = self.take_reasoning_accum(*index);
-                    let item = serde_json::json!({
+                    let mut item = serde_json::json!({
                         "type": ITEM_TYPE_REASONING,
                         "id": item_id,
                         "summary": [],
@@ -1036,6 +930,13 @@ impl ProtocolWriter for ResponsesWriter {
                             { "type": CONTENT_TYPE_REASONING_TEXT, "text": text }
                         ]
                     });
+                    // RSP-01: the buffered signature becomes the item's `encrypted_content` — the
+                    // same member, on the same item shape, `write_response` emits.
+                    if let Some(sig) = self.take_reasoning_signature(*index) {
+                        if let Some(obj) = item.as_object_mut() {
+                            obj.insert("encrypted_content".to_string(), serde_json::json!(sig));
+                        }
+                    }
                     self.record_output_item(*index, item.clone());
                     vec![
                         (
@@ -1183,14 +1084,31 @@ impl ProtocolWriter for ResponsesWriter {
                 usage,
                 stop_sequence: _,
             } => {
+                // RSP-11: once this stream has written `response.failed` (an upstream `Error` event
+                // — a Cohere `ERROR` / Gemini `MALFORMED_FUNCTION_CALL` reader emits one right
+                // before its `MessageDelta{Error}`), the Responses stream is OVER: a second terminal
+                // event after it (the `response.completed` this arm used to write) is a shape real
+                // OpenAI never sends, and it told the client the failed turn completed.
+                if self.failed.load(Ordering::Relaxed) {
+                    return Vec::new();
+                }
                 // Map IR stop reasons to Responses statuses. An unknown/None reason defaults to
                 // `completed` (the safe choice) rather than `failed`: a future IR reason (e.g. a
                 // new `refusal`) that did NOT explicitly signal an error must not be misclassified
                 // as a failed response, which would trigger client-side error handling for a
                 // successful turn. Genuine failures arrive via IrStreamEvent::Error, not here.
-                let status = stop_reason
-                    .map(write_responses_status)
-                    .unwrap_or(STATUS_COMPLETED);
+                //
+                // RSP-11: an `Error` stop reason (the upstream says the generation FAILED) is the
+                // Responses `failed` status, carried on a `response.failed` terminal with a
+                // `server_error` — never a `completed` turn.
+                let generation_failed = *stop_reason == Some(crate::ir::IrStopReason::Error);
+                let status = if generation_failed {
+                    STATUS_FAILED
+                } else {
+                    stop_reason
+                        .map(write_responses_status)
+                        .unwrap_or(STATUS_COMPLETED)
+                };
 
                 let mut resp_obj = serde_json::Map::new();
                 // The native `response.completed`/`response.incomplete` terminal event ALWAYS
@@ -1262,7 +1180,21 @@ impl ProtocolWriter for ResponsesWriter {
                     "output".to_string(),
                     serde_json::Value::Array(self.drain_output_items()),
                 );
-                resp_obj.insert("error".to_string(), serde_json::Value::Null);
+                if generation_failed {
+                    self.failed.store(true, Ordering::Relaxed);
+                    resp_obj.insert(
+                        "error".to_string(),
+                        serde_json::json!({ "code": ERR_TYPE_SERVER_ERROR, "message": "error" }),
+                    );
+                } else {
+                    resp_obj.insert("error".to_string(), serde_json::Value::Null);
+                }
+                // RSP-17: the tier that served the response, as `write_response` emits it.
+                if let Some(tier) =
+                    write_responses_service_tier(usage.detail.service_tier.as_deref())
+                {
+                    resp_obj.insert("service_tier".to_string(), serde_json::json!(tier));
+                }
                 // Spec-required request-echo members plus `incomplete_details: null` on a completed
                 // response (the incomplete arm above already set the real object, which is kept).
                 fill_required_response_members(&mut resp_obj, self.carried_request_echo().as_ref());
@@ -1280,6 +1212,7 @@ impl ProtocolWriter for ResponsesWriter {
                 // arm); the match is over those two with a defensive fallback to `completed` for any
                 // future status string, never a `response.failed` (which would invent a failure).
                 let (event_name, event_type) = match status {
+                    STATUS_FAILED => (EVT_RESPONSE_FAILED, EVT_RESPONSE_FAILED),
                     STATUS_INCOMPLETE => (EVT_RESPONSE_INCOMPLETE, EVT_RESPONSE_INCOMPLETE),
                     STATUS_COMPLETED => (EVT_RESPONSE_COMPLETED, EVT_RESPONSE_COMPLETED),
                     _ => (EVT_RESPONSE_COMPLETED, EVT_RESPONSE_COMPLETED),
@@ -1350,6 +1283,8 @@ impl ProtocolWriter for ResponsesWriter {
                 );
                 // The same spec-required members every Response object carries.
                 fill_required_response_members(&mut resp_obj, self.carried_request_echo().as_ref());
+                // RSP-11: this is the stream's terminal event; a later `MessageDelta` writes nothing.
+                self.failed.store(true, Ordering::Relaxed);
                 vec![(
                     EVT_RESPONSE_FAILED.to_string(),
                     serde_json::json!({ "type": EVT_RESPONSE_FAILED, "response": resp_obj }),
@@ -1544,6 +1479,13 @@ impl ProtocolWriter for ResponsesWriter {
         // fixed. Its DATA is carried losslessly by the assistant text in `output[]` above, from which
         // any SDK reconstructs `output_text`; see `responses_response_output_and_output_text_emitted`.
         obj.insert("usage".to_string(), usage_value);
+        // RSP-17: the tier that SERVED the response (Anthropic `usage.service_tier`, or a Responses
+        // backend's own), in the Responses vocabulary; omitted when the IR carries none or a tier
+        // this vocabulary has no word for.
+        if let Some(tier) = write_responses_service_tier(resp.usage.detail.service_tier.as_deref())
+        {
+            obj.insert("service_tier".to_string(), serde_json::json!(tier));
+        }
         // The official SDK types `Response.error` as a REQUIRED nullable field present on EVERY
         // Response object: `null` on success/incomplete, a populated object on failure. The
         // streaming `response.created` skeleton already emits `error: null`; the non-streaming body
@@ -1641,4 +1583,129 @@ impl ProtocolWriter for ResponsesWriter {
     fn clone_box(&self) -> Box<dyn ProtocolWriter> {
         Box::new(self.clone())
     }
+}
+
+/// One IR image → the Responses `input_image` part, or `None` when the source has no Responses
+/// form. Shared by message content and `function_call_output` content (RSP-10), so an image reaches
+/// both the same way.
+fn input_image_part(source: &crate::ir::IrImageSource) -> Option<serde_json::Value> {
+    match source {
+        // A Responses-produced vendor reference is a `file_id` — re-emit the native
+        // `input_image.file_id` form (a data URI would corrupt it).
+        crate::ir::IrImageSource::Vendor { vendor, value } if *vendor == VENDOR_NAME => value
+            .get("file_id")
+            .and_then(|i| i.as_str())
+            .map(|id| serde_json::json!({ "type": "input_image", "file_id": id })),
+        // A foreign vendor reference (a Bedrock s3Location) has no Responses analog — drop with a
+        // warn rather than corrupt the block.
+        crate::ir::IrImageSource::Vendor { .. } => {
+            tracing::warn!(
+                "dropping unresolvable foreign vendor image reference on Responses egress: no \
+                 cross-vendor analog"
+            );
+            None
+        }
+        // A URL/base64 image reconstructs the original `image_url`.
+        url_or_b64 => super::super::ir_encode::image_url_from_ir(url_or_b64)
+            .map(|image_url| serde_json::json!({ "type": "input_image", "image_url": image_url })),
+    }
+}
+
+/// One IR attachment → the Responses `input_file` part, or `None` when it has no Responses form.
+/// The input surface has ONE attachment part, `input_file`, and no audio or video part, so only a
+/// document projects; the other kinds are dropped deliberately with a warn naming the construct.
+/// Shared by message content and `function_call_output` content (RSP-10).
+fn input_file_part(
+    kind: crate::ir::IrMediaKind,
+    source: &crate::ir::IrImageSource,
+    name: Option<&str>,
+) -> Option<serde_json::Value> {
+    if kind != crate::ir::IrMediaKind::Document {
+        tracing::warn!(
+            media_kind = kind.as_str(),
+            "dropping attachment on Responses egress: the input surface has an `input_file` part \
+             and no audio or video part; the block is NOT emitted"
+        );
+        return None;
+    }
+    let mut part = serde_json::Map::new();
+    part.insert("type".to_string(), serde_json::json!("input_file"));
+    match source {
+        crate::ir::IrImageSource::Base64 { media_type, data } => {
+            part.insert(
+                "file_data".to_string(),
+                serde_json::json!(format!("data:{media_type};base64,{data}")),
+            );
+        }
+        crate::ir::IrImageSource::Url(url) => {
+            part.insert("file_url".to_string(), serde_json::json!(url));
+        }
+        // This protocol's OWN uploads handle round-trips verbatim; a FOREIGN handle (a Bedrock
+        // s3Location, an Anthropic Files-API id) is unresolvable here.
+        crate::ir::IrImageSource::Vendor { vendor, value } if *vendor == VENDOR_NAME => {
+            let id = value.get("file_id").and_then(|i| i.as_str())?;
+            part.insert("file_id".to_string(), serde_json::json!(id));
+        }
+        crate::ir::IrImageSource::Vendor { vendor, .. } => {
+            tracing::warn!(
+                vendor = %vendor,
+                "dropping document attachment on Responses egress: the source is a foreign vendor \
+                 file handle this backend cannot resolve; the block is NOT emitted"
+            );
+            return None;
+        }
+    }
+    if let Some(n) = name {
+        part.insert("filename".to_string(), serde_json::json!(n));
+    }
+    Some(serde_json::Value::Object(part))
+}
+
+/// A `ToolResult`'s content → the `function_call_output.output` value (RSP-10).
+///
+/// `output` is a string OR an array of `input_text` / `input_image` / `input_file` parts (the reader
+/// already reads the array). An all-text result keeps the string form — adjacent text concatenated
+/// WITHOUT a separator (a space corrupts base64 / split JSON payloads; mirrors the Chat writer). A
+/// structured-JSON block (a Bedrock `{"json":...}` tool result) is the tool's output as JSON text,
+/// so it is serialized into that text rather than dropped. Only when an image or attachment is
+/// present does the output become the part array, so the image/file reaches the model instead of
+/// vanishing.
+fn function_call_output_value(content: &[crate::ir::IrBlock]) -> serde_json::Value {
+    let text_of = |b: &crate::ir::IrBlock| -> Option<String> {
+        match b {
+            crate::ir::IrBlock::Text { text, .. } => Some(text.clone()),
+            crate::ir::IrBlock::Json(v) => Some(v.to_string()),
+            _ => None,
+        }
+    };
+    let has_attachment = content.iter().any(|b| {
+        matches!(
+            b,
+            crate::ir::IrBlock::Image { .. } | crate::ir::IrBlock::Media { .. }
+        )
+    });
+    if !has_attachment {
+        return serde_json::json!(content.iter().filter_map(text_of).collect::<String>());
+    }
+    let mut parts: Vec<serde_json::Value> = Vec::new();
+    for block in content {
+        match block {
+            crate::ir::IrBlock::Image { source, .. } => parts.extend(input_image_part(source)),
+            crate::ir::IrBlock::Media {
+                kind, source, name, ..
+            } => parts.extend(input_file_part(*kind, source, name.as_deref())),
+            other => {
+                if let Some(text) = text_of(other) {
+                    parts
+                        .push(serde_json::json!({ "type": CONTENT_TYPE_INPUT_TEXT, "text": text }));
+                }
+            }
+        }
+    }
+    if parts.is_empty() {
+        // Every attachment was unrepresentable (warned above) and there was no text: the empty
+        // string the all-text form yields, not an empty part array.
+        return serde_json::json!("");
+    }
+    serde_json::Value::Array(parts)
 }

@@ -661,7 +661,7 @@ impl ProtocolReader for ResponsesReader {
             .get("reasoning")
             .and_then(|r| r.get("effort"))
             .and_then(|v| v.as_str())
-            .and_then(crate::ir::IrReasoningEffort::parse)
+            .and_then(read_responses_reasoning_effort)
             .map(crate::ir::IrReasoningAsk::Effort);
 
         // `/v1/responses` models a top-level `parallel_tool_calls` boolean, identically to Chat
@@ -684,12 +684,32 @@ impl ProtocolReader for ResponsesReader {
             .and_then(|v| v.as_u64())
             .and_then(|v| u32::try_from(v).ok());
 
+        // RSP-08: response-side logprobs are asked for by naming `message.output_text.logprobs` in
+        // `include` — the Responses spelling of the logprobs switch. Carry it as the IR's
+        // `logprobs` ask so a Chat/Gemini/Cohere backend is asked for them too. `include` itself
+        // stays in `extra` (it can name other response members this reader does not model).
+        let logprobs = obj
+            .get("include")
+            .and_then(|i| i.as_array())
+            .is_some_and(|arr| {
+                arr.iter()
+                    .any(|v| v.as_str() == Some(INCLUDE_OUTPUT_TEXT_LOGPROBS))
+            })
+            .then_some(true);
+
+        // RSP-05: the end-user id. A string `user` is the same field Chat Completions carries.
+        let user = obj
+            .get("user")
+            .and_then(|u| u.as_str())
+            .filter(|u| !u.is_empty())
+            .map(String::from);
+
         Ok(crate::ir::IrRequest {
             reasoning,
             reasoning_budgets: None,
-            logprobs: None,
+            logprobs,
             top_logprobs,
-            user: None,
+            user,
             parallel_tool_calls,
             system: system_blocks,
             system_turns_folded,
@@ -757,11 +777,10 @@ impl ProtocolReader for ResponsesReader {
                     if item_obj.get("type").and_then(|t| t.as_str())
                         == Some(ITEM_TYPE_FUNCTION_CALL)
                     {
-                        let call_id = item_obj
+                        let raw_call_id = item_obj
                             .get("call_id")
                             .and_then(|c| c.as_str())
-                            .unwrap_or("")
-                            .to_string();
+                            .unwrap_or("");
                         let name = item_obj
                             .get("name")
                             .and_then(|n| n.as_str())
@@ -770,6 +789,19 @@ impl ProtocolReader for ResponsesReader {
                         if let Some(output_index) =
                             data.get("output_index").and_then(|i| i.as_u64())
                         {
+                            // RSP-16: a BLANK `call_id` gets the SAME synthesized id the buffered
+                            // `read_response` mints for this item. `output_index` is the item's
+                            // position in `response.output[]`, which is exactly the ordinal the
+                            // buffered path hashes, so a stream and a buffered read of one response
+                            // agree on the correlation key instead of the stream carrying `""`.
+                            let call_id = if raw_call_id.is_empty() {
+                                synth_response_tool_call_id(
+                                    usize::try_from(output_index).unwrap_or(usize::MAX),
+                                    &name,
+                                )
+                            } else {
+                                raw_call_id.to_string()
+                            };
                             // Clamp the wire index before the cast: a crafted `u64::MAX` would
                             // otherwise feed the per-stream set and downstream index arithmetic
                             // unbounded. Saturate at MAX_OUTPUT_INDEX (mirrors openai_chat.rs).
@@ -955,6 +987,17 @@ impl ProtocolReader for ResponsesReader {
                         index: idx,
                         delta: crate::ir::IrDelta::TextDelta(delta),
                     });
+                    // RSP-04: the delta's token logprobs (`logprobs[]`, the `ResponseLogProb` shape)
+                    // ride the SAME text block as a `LogprobsDelta`, the way the buffered read
+                    // carries the part's `logprobs` onto `IrResponse.logprobs`. An empty or absent
+                    // array (the caller asked for none) emits nothing.
+                    let lps = read_responses_logprobs(data.get("logprobs"));
+                    if !lps.is_empty() {
+                        out.push(IrStreamEvent::BlockDelta {
+                            index: idx,
+                            delta: crate::ir::IrDelta::LogprobsDelta(lps),
+                        });
+                    }
                 }
             }
 
@@ -1030,8 +1073,33 @@ impl ProtocolReader for ResponsesReader {
                     // routes to the correct block kind AND the correct index — a native stream's two
                     // terminal frames for one text item (`content_part.done` then `output_item.done`,
                     // same index) close it exactly once because the second frame finds the key gone.
-                    if state.open_tools.remove(&idx) {
-                        // This index was a (now-closed) function-call item.
+                    //
+                    // A RAW index is a function-call or reasoning item, and those close on
+                    // `output_item.done` ONLY: a function-call item has no content parts, and a
+                    // reasoning item's `content_part.done` (its `reasoning_text` part) arrives BEFORE
+                    // the item's `output_item.done` — which is the frame that carries the reasoning
+                    // item's `encrypted_content`. Closing on the part would end the block before that
+                    // blob is read.
+                    let item_done = event_type == EVT_OUTPUT_ITEM_DONE;
+                    if item_done && state.open_tools.remove(&idx) {
+                        // RSP-02: a reasoning item's opaque `encrypted_content` (the multi-turn
+                        // reasoning-reuse blob) rides the finalized item on this frame. Carry it as
+                        // the block's `SignatureDelta` BEFORE the BlockStop, exactly as the buffered
+                        // read carries it into `Thinking.signature` — the rule both paths share is
+                        // `read_reasoning_encrypted_content`.
+                        if let Some(sig) = data
+                            .get("item")
+                            .filter(|it| {
+                                it.get("type").and_then(|t| t.as_str()) == Some(ITEM_TYPE_REASONING)
+                            })
+                            .and_then(read_reasoning_encrypted_content)
+                        {
+                            out.push(IrStreamEvent::BlockDelta {
+                                index: idx,
+                                delta: crate::ir::IrDelta::SignatureDelta(sig.to_string()),
+                            });
+                        }
+                        // This index was a (now-closed) function-call or reasoning item.
                         out.push(IrStreamEvent::BlockStop { index: idx });
                     } else if state.open_tools.remove(&(idx + TEXT_INDEX_KEY_OFFSET)) {
                         // This index was an open text block; close THIS index once. Removing the
@@ -1265,6 +1333,9 @@ impl ProtocolReader for ResponsesReader {
                                         .get("output_tokens_details")
                                         .and_then(|d| d.get("reasoning_tokens"))
                                         .and_then(read_count_u64),
+                                    // RSP-17: the tier that served the response, read off the
+                                    // terminal `response` exactly as the buffered read does.
+                                    service_tier: read_responses_service_tier(response_obj),
                                     ..Default::default()
                                 },
                             })
@@ -1276,7 +1347,10 @@ impl ProtocolReader for ResponsesReader {
                             output_tokens: 0,
                             cache_creation_input_tokens: None,
                             cache_read_input_tokens: None,
-                            detail: crate::ir::IrUsageDetail::default(),
+                            detail: crate::ir::IrUsageDetail {
+                                service_tier: read_responses_service_tier(response_obj),
+                                ..Default::default()
+                            },
                         }),
                         Err(refusal) => {
                             out.push(IrStreamEvent::Error(refusal));
@@ -1351,6 +1425,44 @@ impl ProtocolReader for ResponsesReader {
                 }
             }
 
+            // RSP-12: the TOP-LEVEL `error` stream event (`{"type":"error","code","message","param"}`)
+            // is the Responses stream's own mid-stream failure frame — distinct from a terminal
+            // `response.failed`. Unhandled, the stream just ended: the translator never saw an
+            // `Error`, so `terminal_error` stayed empty, the breaker recorded a clean close, and a
+            // cross-protocol client got a truncated SUCCESS. Surface it exactly as the
+            // `response.failed` arms do — the class derived from the code through the shared
+            // `class_for_response_failed`, then close every open block and stop.
+            EVT_ERROR => {
+                let provider_signal = data
+                    .get("code")
+                    .and_then(|c| c.as_str())
+                    .filter(|c| !c.is_empty())
+                    .or_else(|| {
+                        data.get("error")
+                            .and_then(|e| e.get("code"))
+                            .and_then(|c| c.as_str())
+                    })
+                    .unwrap_or(SIGNAL_RESPONSE_FAILED)
+                    .to_string();
+                out.push(IrStreamEvent::Error(IrError {
+                    class: class_for_response_failed(&provider_signal),
+                    provider_signal: Some(provider_signal),
+                    retry_after: None,
+                }));
+                let mut indices: Vec<usize> = state
+                    .open_tools
+                    .iter()
+                    .map(|&key| key.checked_sub(TEXT_INDEX_KEY_OFFSET).unwrap_or(key))
+                    .collect();
+                state.open_tools.clear();
+                indices.sort_unstable();
+                indices.dedup();
+                for index in indices {
+                    out.push(IrStreamEvent::BlockStop { index });
+                }
+                out.push(IrStreamEvent::MessageStop);
+            }
+
             _ => {}
         }
 
@@ -1415,6 +1527,7 @@ impl ProtocolReader for ResponsesReader {
         // A refusal rides on a `refusal` content part with `status:"completed"`, so the refusal
         // SIGNAL is not in `status`. Track it here to promote `stop_reason` to `Refusal` below.
         let mut saw_refusal = false;
+        let mut logprobs: Vec<crate::ir::IrTokenLogprob> = Vec::new();
         if let Some(output_arr) = obj.get("output").and_then(|o| o.as_array()) {
             for (item_ordinal, item) in output_arr.iter().enumerate() {
                 let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -1439,6 +1552,12 @@ impl ProtocolReader for ResponsesReader {
                                             .get("annotations")
                                             .map(super::super::openai_annotations::read_url_annotations)
                                             .unwrap_or_default();
+                                        // RSP-03: the part's token `logprobs` join the response's
+                                        // one IR logprob run, in part order — the writer's inverse
+                                        // attaches that run to the first text part.
+                                        logprobs.extend(read_responses_logprobs(
+                                            block_item.get("logprobs"),
+                                        ));
                                         content.push(crate::ir::IrBlock::Text {
                                             text: text.to_string(),
                                             cache_control: None,
@@ -1639,6 +1758,9 @@ impl ProtocolReader for ResponsesReader {
                     .and_then(|u| u.get("output_tokens_details"))
                     .and_then(|d| d.get("reasoning_tokens"))
                     .and_then(read_count_u64),
+                // RSP-17: the tier that SERVED the response (top-level `service_tier`), mapped onto
+                // the IR's attribution vocabulary. See `read_responses_service_tier`.
+                service_tier: read_responses_service_tier(body),
                 ..Default::default()
             },
         };
@@ -1706,7 +1828,7 @@ impl ProtocolReader for ResponsesReader {
         }
 
         Ok(crate::ir::IrResponse {
-            logprobs: Vec::new(),
+            logprobs,
             role: crate::ir::IrRole::Assistant,
             content,
             stop_reason,
