@@ -1309,3 +1309,50 @@ fn tokens_cap_counts_every_token_family_class_a_plane_declares() {
         true,
     );
 }
+
+/// Q51 (item 404, OWNER RULING Q9): a sealed `adjust` moves EVERY read of the budget book, not only
+/// `GET /admin/usage`. 1,000,000 input units at 2.5 micro-units each are 250 cents; corrected to
+/// 800,000 they are 200 — on the key's usage (`/keys`), its group's bucket (`/groups`) and the
+/// per-model token gauge (`/metrics`). Before the fix all three still read 250 / 1,000,000.
+#[test]
+fn an_adjust_moves_the_key_group_and_metrics_reads_of_the_budget_book() {
+    use crate::audit::amend::{correct_counts, ClassCounts, CountCorrection};
+    use busbar_api::UNIT_INPUT;
+    use busbar_contract::authz::Scope;
+    use busbar_kernel_ledger::cost::whole;
+    let g = gov();
+    let day = limit(LimitMetric::Budget, 100_000, Some(LimitWindow::Day));
+    let cm = model_with_card(
+        &[("g", group_cfg(None, true, vec![day]))],
+        0,
+        &[("m", 2.5, 0.0)],
+    );
+    let k = key("vk_q51_adjust_reads", Some("g"));
+    g.store.put_key(&k).expect("key persists");
+    let now = crate::store::now();
+    g.record_usage(&cm, &k, "", "m", &toks(1_000_000, 0), now);
+    let read = |g: &GovState| {
+        let key = g.usage_for(&cm, &k.id, now).unwrap().unwrap();
+        let group = (g.derived_bucket_usage(&cm, "group:g@day", "day", true, now)).unwrap();
+        let gauge = g.bucket_model_tokens(&cm, &k.id, super::WINDOW_TOTAL, now);
+        (
+            key.spend_cents,
+            key.tokens,
+            group.spend_cents,
+            gauge[0].1[UNIT_INPUT],
+        )
+    };
+    assert_eq!(read(&g), (250, 1_000_000, 250, 1_000_000), "as recorded");
+    let counts = |n: u64| ClassCounts::from([(UNIT_INPUT.to_string(), whole(n))]);
+    let correction = CountCorrection {
+        amends: "q51-adjust-reads-the-budget-book",
+        principal: Some(&k.id),
+        lane: "m",
+        card_epoch_ms: now * 1_000,
+        now: counts(800_000),
+        authorised_by: "root",
+        reason: "duplicate charge on a retried request",
+    };
+    correct_counts(Scope::Full, &counts(1_000_000), correction).expect("root correction seals");
+    assert_eq!(read(&g), (200, 800_000, 200, 800_000), "as corrected");
+}

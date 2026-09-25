@@ -1688,34 +1688,99 @@ impl GovState {
         now: u64,
     ) -> StoreResult<Result<DerivedUsage, busbar_kernel_ledger::cost::MoneyError>> {
         let window = budget_window(budget_period, now);
-        if let Some(cell) = self.budget.read(bucket_id).get(bucket_id) {
-            if cell.window_start == window {
-                // Fee derives from the BILLABLE (2xx-only) count; `requests` reports the
-                // admission count (the requests-limit truth).
-                let spend = cell
-                    .spend(cost, include_request_fee)
-                    .and_then(Money::minor_i64);
-                return Ok(spend.map(|spend_cents| DerivedUsage {
+        let live = (self.budget.read(bucket_id).get(bucket_id))
+            .filter(|c| c.window_start == window)
+            .cloned();
+        if let Some(mut cell) = live {
+            // Q51: the counts AS CORRECTED by every sealed `adjust` landing on this bucket. Fee
+            // derives from the BILLABLE (2xx-only) count; `requests` reports the admission count
+            // (the requests-limit truth).
+            let fixed =
+                self.corrected(cost, (bucket_id, budget_period, window), &mut cell.models)?;
+            let spend = fixed.and_then(|()| cell.spend(cost, include_request_fee));
+            return Ok(spend
+                .and_then(Money::minor_i64)
+                .map(|spend_cents| DerivedUsage {
                     spend_cents,
                     tokens: cell.total_tokens(),
                     requests: cell.requests,
                 }));
-            }
         }
         let ledger = self.store.get_usage(bucket_id, window)?;
-        let spend = cost.derive_spend_cents(
-            ledger
-                .models
-                .iter()
-                .map(|m| (m.model.as_str(), &m.usage_units)),
-            ledger.billable_requests,
-            include_request_fee,
-        );
+        let mut models = durable_segments(ledger.models);
+        let fixed = self.corrected(cost, (bucket_id, budget_period, window), &mut models)?;
+        let spend = fixed.and_then(|()| {
+            cost.derive_spend_cents(
+                models.iter().map(|m| (&*m.model, &m.cur)),
+                ledger.billable_requests,
+                include_request_fee,
+            )
+        });
         Ok(spend.map(|spend_cents| DerivedUsage {
             spend_cents,
-            tokens: super::token_total(ledger.models.iter().map(|m| &m.usage_units)),
+            tokens: super::token_total(models.iter().map(|m| &m.cur)),
             requests: ledger.requests,
         }))
+    }
+
+    /// **THE BUDGET BOOK'S COUNTS AS CORRECTED** (Q51, item 404, OWNER RULING Q9). An `adjust`
+    /// corrects a recorded unit's COUNTS on the node amendment journal; every read of this book
+    /// (key and group usage, the `/metrics` money gauges) prices `segments` only after this folds in
+    /// Σ (now − was) of each correction that lands on the bucket: its principal's own bucket, or an
+    /// UNSCOPED bucket of that key's group chain (a correction names no pool), whose window holds the
+    /// unit's card epoch. The delta lands on the unit's lane in the latest era not after the epoch.
+    /// A correction leaving a count fractional or below zero REFUSES (`Overflow`), never clamps.
+    fn corrected(
+        &self,
+        cost: &crate::cost::CostModel,
+        (bucket_id, period, window): (&str, &str, u64),
+        segments: &mut Vec<ModelCell>,
+    ) -> StoreResult<Result<(), busbar_kernel_ledger::cost::MoneyError>> {
+        use crate::audit::amend::{node_corrections, AmendBody, Subject};
+        for amendment in node_corrections() {
+            let AmendBody::Adjust(adj) = &amendment.body else {
+                continue;
+            };
+            let Subject::PrincipalId(p) = &adj.subject else {
+                continue;
+            };
+            let lands = budget_window(period, adj.card_epoch_ms / 1_000) == window
+                && (p == bucket_id
+                    || self.store.get_key(p)?.is_some_and(|k| {
+                        (cost.chain_for(&k).ok()).is_some_and(|c| {
+                            c.iter()
+                                .any(|b| b.bucket_id == bucket_id && b.scope.is_none())
+                        })
+                    }));
+            if !lands {
+                continue;
+            }
+            let at = adj.card_epoch_ms;
+            let seg = (segments.iter().enumerate())
+                .filter(|(_, m)| *m.model == *adj.lane && m.era <= at)
+                .max_by_key(|(_, m)| m.era)
+                .map(|(i, _)| i);
+            let i = seg.unwrap_or_else(|| {
+                segments.push(ModelCell {
+                    model: std::sync::Arc::from(adj.lane.as_str()),
+                    era: crate::rate_apply::effective_from_at(at),
+                    cur: BTreeMap::new(),
+                    flushed: BTreeMap::new(),
+                });
+                segments.len() - 1
+            });
+            let classes: std::collections::BTreeSet<&String> =
+                adj.was.keys().chain(adj.now.keys()).collect();
+            for class in classes {
+                let (whole, frac) = (adj.delta(class) / 1_000_000, adj.delta(class) % 1_000_000);
+                let slot = segments[i].cur.entry(class.clone()).or_insert(0);
+                match (i128::from(*slot).checked_add(whole)).and_then(|n| u64::try_from(n).ok()) {
+                    Some(n) if frac == 0 => *slot = n,
+                    _ => return Ok(Err(busbar_kernel_ledger::cost::MoneyError::Overflow)),
+                }
+            }
+        }
+        Ok(Ok(()))
     }
 
     /// SCRAPE-TIME view of one bucket's per-(model, tier) token counters for its CURRENT window:
@@ -1723,29 +1788,32 @@ impl GovState {
     /// scrape); allocation here is fine.
     pub fn bucket_model_tokens(
         &self,
+        cost: &crate::cost::CostModel,
         bucket_id: &str,
         budget_period: &str,
         now: u64,
     ) -> Vec<(String, std::collections::BTreeMap<String, u64>)> {
         let window = budget_window(budget_period, now);
-        {
-            let map = self.budget.read(bucket_id);
-            if let Some(cell) = map.get(bucket_id) {
-                if cell.window_start == window {
-                    // One series per MODEL: a model's eras are one set of counts to the scrape.
-                    let models = cell.models.iter().map(|m| (&*m.model, m.cur.clone()));
-                    return busbar_kernel_ledger::usage::by_lane(models, u64::saturating_add);
-                }
-            }
+        let live = (self.budget.read(bucket_id).get(bucket_id))
+            .filter(|c| c.window_start == window)
+            .map(|c| c.models.clone());
+        let read = live.map_or_else(
+            || (self.store.get_usage(bucket_id, window)).map(|l| durable_segments(l.models)),
+            Ok,
+        );
+        let Ok(mut models) = read else {
+            return Vec::new();
+        };
+        // Q51: the counts AS CORRECTED; a refused correction skips the series, as a failed read does.
+        if !matches!(
+            self.corrected(cost, (bucket_id, budget_period, window), &mut models),
+            Ok(Ok(()))
+        ) {
+            return Vec::new();
         }
-        match self.store.get_usage(bucket_id, window) {
-            Ok(ledger) => ledger
-                .models
-                .into_iter()
-                .map(|m| (m.model, m.usage_units))
-                .collect(),
-            Err(_) => Vec::new(),
-        }
+        // One series per MODEL: a model's eras are one set of counts to the scrape.
+        let models = models.iter().map(|m| (&*m.model, m.cur.clone()));
+        busbar_kernel_ledger::usage::by_lane(models, u64::saturating_add)
     }
 
     /// The HOOK-SEAM projection: per-bucket budget state for the key + every ancestor group -
@@ -2475,4 +2543,15 @@ fn money_refusal(bucket_id: &str, e: &busbar_kernel_ledger::cost::MoneyError) ->
     StoreError(format!(
         "the spend of bucket `{bucket_id}` cannot be priced: {e}"
     ))
+}
+
+/// The durable ledger's per-model rows as undated segments (the row carries no era).
+fn durable_segments(rows: Vec<busbar_api::ModelTokens>) -> Vec<ModelCell> {
+    let segment = |m: busbar_api::ModelTokens| ModelCell {
+        model: std::sync::Arc::from(m.model),
+        era: 0,
+        cur: m.usage_units,
+        flushed: BTreeMap::new(),
+    };
+    rows.into_iter().map(segment).collect()
 }
