@@ -639,6 +639,211 @@ fn every_io_error_kind_maps_through_the_table() {
     }
 }
 
+/// A listen/accept-only, raw-socket lower layer, standing in for `busbar-transport-tcp` in the
+/// one battery cell that needs a real accepted socket to upgrade off.
+///
+/// `tls` is a plugin-kind crate (`kind-isolation:closure`, DECISIONS #40): naming a sibling
+/// transport crate — even under `[dev-dependencies]` — links that crate's whole SHIPPED closure
+/// into this one's `cargo test` binary (the `closure-test-reach` finding). This cell only ever
+/// binds, accepts once and gives the raw stream up on `detach` — the same handful of lines
+/// `busbar-transport-tcp`'s own `listen`/`accept`/`detach` are, minus the multi-connection
+/// registry this cell never needs. Built directly on `tokio`, already an ordinary dependency
+/// below, so no workspace-crate edge is added, and every byte still crosses a real socket.
+struct RawSocketAcceptor {
+    listeners: StdArc<std::sync::Mutex<std::collections::HashMap<String, StdArc<tokio::net::TcpListener>>>>,
+    conns: StdArc<std::sync::Mutex<std::collections::HashMap<u64, Option<tokio::net::TcpStream>>>>,
+    next_id: StdArc<std::sync::atomic::AtomicU64>,
+}
+
+struct RawSocketListenerHandle {
+    addr: String,
+}
+impl busbar_contract::transport::wire::ListenerHandle for RawSocketListenerHandle {
+    fn local_addr(&self) -> String {
+        self.addr.clone()
+    }
+}
+
+struct RawSocketConnHandle {
+    id: u64,
+    peer: String,
+}
+impl busbar_contract::transport::wire::ConnHandle for RawSocketConnHandle {
+    fn id(&self) -> u64 {
+        self.id
+    }
+    fn peer(&self) -> String {
+        self.peer.clone()
+    }
+}
+
+impl RawSocketAcceptor {
+    fn new() -> Self {
+        Self {
+            listeners: StdArc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            conns: StdArc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            next_id: StdArc::new(std::sync::atomic::AtomicU64::new(0)),
+        }
+    }
+}
+
+impl Plugin for RawSocketAcceptor {
+    fn key(&self) -> &'static str {
+        "tcp"
+    }
+    fn kind(&self) -> busbar_contract::Kind {
+        busbar_contract::Kind::Transport
+    }
+    fn abi(&self) -> busbar_contract::transport::AbiVersion {
+        busbar_contract::transport::registry::TRANSPORT_ABI
+    }
+}
+
+impl Transport for RawSocketAcceptor {
+    fn arrival(&self, conn: &busbar_contract::transport::wire::Conn) -> busbar_contract::transport::wire::ArrivalRecord {
+        let has_it = self
+            .conns
+            .lock()
+            .unwrap()
+            .get(&conn.id())
+            .is_some_and(Option::is_some);
+        busbar_contract::transport::wire::ArrivalRecord {
+            source: conn.peer(),
+            port: if has_it { 1 } else { 0 },
+            alpn: None,
+            sni: None,
+            peer_cert: None,
+            transport_chain: vec!["tcp"],
+        }
+    }
+
+    fn listen<'a>(
+        &'a self,
+        cfg: &'a dyn TransportConfigView,
+        _keys: &'a TransportKeyHandle,
+    ) -> busbar_contract::transport::Fut<'a, Listener> {
+        Box::pin(async move {
+            let bind = cfg.bind().unwrap_or("127.0.0.1:0");
+            let listener = tokio::net::TcpListener::bind(bind)
+                .await
+                .map_err(|_| busbar_contract::transport::wire::TransportError::AddressRefused)?;
+            let addr = listener
+                .local_addr()
+                .map_err(|_| busbar_contract::transport::wire::TransportError::AddressRefused)?
+                .to_string();
+            self.listeners
+                .lock()
+                .unwrap()
+                .insert(addr.clone(), StdArc::new(listener));
+            Ok(Listener::new(StdArc::new(RawSocketListenerHandle { addr })))
+        })
+    }
+
+    fn accept<'a>(
+        &'a self,
+        l: &'a Listener,
+    ) -> busbar_contract::transport::Fut<'a, busbar_contract::transport::wire::Conn> {
+        Box::pin(async move {
+            let addr = l.local_addr();
+            let listener = self
+                .listeners
+                .lock()
+                .unwrap()
+                .get(&addr)
+                .cloned()
+                .ok_or(busbar_contract::transport::wire::TransportError::Closed)?;
+            let (stream, peer) = listener
+                .accept()
+                .await
+                .map_err(|_| busbar_contract::transport::wire::TransportError::Closed)?;
+            let id = self.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.conns.lock().unwrap().insert(id, Some(stream));
+            Ok(busbar_contract::transport::wire::Conn::new(StdArc::new(
+                RawSocketConnHandle {
+                    id,
+                    peer: peer.to_string(),
+                },
+            )))
+        })
+    }
+
+    fn dial<'a>(
+        &'a self,
+        _dest: &'a busbar_contract::VerifiedDestination,
+        _keys: &'a TransportKeyHandle,
+    ) -> busbar_contract::transport::Fut<'a, busbar_contract::transport::wire::Conn> {
+        Box::pin(async move { Err(busbar_contract::transport::wire::TransportError::HandoffMismatch) })
+    }
+
+    fn frames(
+        &self,
+        _conn: busbar_contract::transport::wire::Conn,
+    ) -> std::pin::Pin<
+        Box<
+            dyn futures::Stream<
+                    Item = Result<
+                        (StreamId, busbar_contract::Frame),
+                        busbar_contract::transport::wire::TransportError,
+                    >,
+                > + Send,
+        >,
+    > {
+        Box::pin(futures::stream::empty())
+    }
+
+    fn write<'a>(
+        &'a self,
+        _conn: &'a busbar_contract::transport::wire::Conn,
+        _stream: StreamId,
+        _bytes: ScratchBytes<'a>,
+    ) -> busbar_contract::transport::Fut<'a, usize> {
+        Box::pin(async move { Err(busbar_contract::transport::wire::TransportError::HandoffMismatch) })
+    }
+
+    fn encode_envelope<'a>(
+        &self,
+        _fields: &[(&str, &[u8])],
+        _body: &[u8],
+        _arena: &'a dyn busbar_contract::bounded::PlaneAlloc,
+    ) -> Result<busbar_contract::bounded::ScratchBytes<'a>, busbar_contract::wire::Encode> {
+        Err(busbar_contract::wire::Encode::ScratchExhausted)
+    }
+
+    fn adopt<'a>(
+        &'a self,
+        _from: &'a dyn Transport,
+        _conn: busbar_contract::transport::wire::Conn,
+        _keys: &'a TransportKeyHandle,
+    ) -> busbar_contract::transport::Fut<'a, busbar_contract::transport::wire::Conn> {
+        Box::pin(async move { Err(busbar_contract::transport::wire::TransportError::HandoffMismatch) })
+    }
+
+    fn detach(&self, conn: &busbar_contract::transport::wire::Conn) -> Option<busbar_contract::transport::wire::RawStream> {
+        let stream = self.conns.lock().unwrap().get_mut(&conn.id())?.take()?;
+        Some(busbar_contract::transport::wire::RawStream::new(
+            "tcp",
+            conn.peer(),
+            Box::new(tokio_util::compat::TokioAsyncReadCompatExt::compat(stream)),
+        ))
+    }
+
+    fn composed_over(&self) -> Option<&'static str> {
+        None
+    }
+
+    fn close(&self, _conn: busbar_contract::transport::wire::Conn, _reason: CloseReason) {}
+
+    fn unit0_refusal<'a>(
+        &'a self,
+        _conn: busbar_contract::transport::wire::Conn,
+        _stream: Option<StreamId>,
+        _refusal: &'a busbar_contract::Refusal,
+        _bytes: ScratchBytes<'a>,
+    ) -> busbar_contract::transport::Fut<'a, ()> {
+        Box::pin(async move { Err(busbar_contract::transport::wire::TransportError::HandoffMismatch) })
+    }
+}
+
 #[tokio::test]
 async fn an_in_band_upgrade_adopts_the_lower_layers_stream() {
     // The in-band upgrade cell: a `tcp`-owned connection is handed off, mid-life, and becomes a
@@ -648,7 +853,7 @@ async fn an_in_band_upgrade_adopts_the_lower_layers_stream() {
     let (server_cfg, client_cfg) = self_signed();
     let tls = TlsTransport::new();
     tls.register_server_config(0, server_cfg.clone());
-    let tcp = busbar_transport_tcp::TcpTransport::new();
+    let tcp = RawSocketAcceptor::new();
 
     struct TcpCfg;
     impl ConfigView for TcpCfg {

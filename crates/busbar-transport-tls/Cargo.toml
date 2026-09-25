@@ -11,12 +11,13 @@ license = "Apache-2.0"
 # manifest-gated. Names `busbar-contract` for the plugin surface and rustls for the handshake
 # itself — the same crypto backend the rest of the workspace pins (`ring`).
 #
-# `busbar-transport-tcp` is a DEV-dependency, and the manifest used to claim it was needed for the
-# in-band-upgrade seam (`take_stream`). It is not: `take_stream` is `TcpTransport`'s own method and
-# the caller of it is the composition root, not this crate. What `tls` does is ADOPT, through a
-# contract trait, and no line of this crate's shipped source names `busbar_transport_tcp` at all —
-# the single reference in the whole crate is `src/tests/mod.rs:651`, which builds a real `tcp` to
-# upgrade from.
+# `busbar-transport-tcp` is NOT a dependency here, and is not a dev-dependency either: naming a
+# sibling transport crate — even under `[dev-dependencies]` — links that crate's whole SHIPPED
+# closure into this one's `cargo test` binary (`kind-isolation:closure`'s `closure-test-reach`
+# finding). What `tls` does is ADOPT, through a contract trait, and no line of this crate's shipped
+# source names `busbar_transport_tcp` at all. The one battery cell that upgrades off a real
+# accepted socket (`src/tests/mod.rs::an_in_band_upgrade_adopts_the_lower_layers_stream`) opens one
+# straight off `tokio`, already an ordinary dependency below, instead of the sibling crate.
 [dependencies]
 tokio-util = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
@@ -36,7 +37,5 @@ ring = { workspace = true }
 # fixture implementor of the SEALED `KernelSeal` trait; this crate's test harnesses used to
 # forge their own. Dev-only and feature-gated, so it is absent from every release build.
 busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
-# The base byte stream the upgrade battery starts from — test-time only; see the note above.
-busbar-transport-tcp = { path = "../busbar-transport-tcp" }
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "io-util", "time", "macros", "test-util"] }
 rcgen = { workspace = true }
