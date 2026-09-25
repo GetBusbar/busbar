@@ -153,6 +153,11 @@ put_card() {  # put_card <json-body> -> prints the status
 
 CARD_A='{"rate_card":{"m-openai-chat":{"input_utok":1000000,"output_utok":2000000}}}'
 CARD_B='{"per_request_fee":3,"rate_card":{"m-openai-chat":{"input_utok":10000000,"output_utok":20000000}}}'
+# The operator upgrade step on the cards this cell writes (architect ruling under owner ruling Q42): each
+# billable class the binary under test names as unconfigured on a card is added at 0 on every entry. The
+# 1.5.5 golden names none: it is sent both cards as written.
+CARD_A="$("${BUSBAR_ORACLE_BIN:?}" upgrade-body "$BIN" "$W/config.yaml" <<<"$CARD_A")" || exit 1
+CARD_B="$("${BUSBAR_ORACLE_BIN:?}" upgrade-body "$BIN" "$W/config.yaml" <<<"$CARD_B")" || exit 1
 
 sleep 0.3
 stepjson usage_before "$(usage_of)"
