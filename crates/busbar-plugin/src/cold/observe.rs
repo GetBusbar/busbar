@@ -433,6 +433,13 @@ pub struct SeriesDecl {
     /// entry of another type under this name is not the declared series and is not granted.
     #[serde(rename = "type")]
     pub kind: String,
+    /// THE SHED COUNTER (K9b, export ABI minor 7): a `counter` the HOST increments by one for every
+    /// delivery it SHEDS for this sink at the sink's in-flight bound. A shed delivery never reaches
+    /// the sink, so the sink cannot count it itself — the one fact of its own the host must report
+    /// for it. Absent (`false`) on every declaration made before the flag existed, and skipped when
+    /// false, so their canonical bytes — and signatures — are unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shed: bool,
 }
 
 impl SeriesDecl {
@@ -441,7 +448,15 @@ impl SeriesDecl {
         SeriesDecl {
             name: name.into(),
             kind: kind.into(),
+            shed: false,
         }
+    }
+
+    /// The same declaration, marked the sink's shed counter (see [`SeriesDecl::shed`]).
+    #[must_use]
+    pub fn shed(mut self) -> SeriesDecl {
+        self.shed = true;
+        self
     }
 }
 

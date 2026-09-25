@@ -180,7 +180,7 @@ fn export_abi_version_is_three() {
 /// loader gates on stays put — pinned so a seam cannot land without saying so.
 #[test]
 fn export_abi_minor_counts_the_host_seams() {
-    assert_eq!((EXPORT_ABI_VERSION, EXPORT_ABI_MINOR), (3, 6));
+    assert_eq!((EXPORT_ABI_VERSION, EXPORT_ABI_MINOR), (3, 7));
 }
 
 /// S1's declaration wire: `{"name": …, "type": …}`, the same `type` token a reported metric carries.
@@ -190,6 +190,12 @@ fn a_declared_series_wire_is_pinned() {
     assert_eq!(
         serde_json::to_value(&d).expect("encode"),
         serde_json::json!({"name": "busbar_x_total", "type": "counter"})
+    );
+    // K9b's shed flag rides the same object, and only when set — an S1 declaration's bytes (and
+    // therefore its signature) are unchanged by the flag existing.
+    assert_eq!(
+        serde_json::to_value(d.shed()).expect("encode"),
+        serde_json::json!({"name": "busbar_x_total", "type": "counter", "shed": true})
     );
 }
 

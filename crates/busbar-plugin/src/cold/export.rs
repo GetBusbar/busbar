@@ -94,7 +94,10 @@ pub const EXPORT_ABI_VERSION: u32 = 3;
 /// 6 (K9a S6): the RECORDER SNAPSHOT — [`ExportRequest::Scrape`] hands a sink the host recorder's
 ///   samples as [`MetricFamily`]s; the sink answers the exposition it renders
 ///   ([`ExportResponse::Exposition`]).
-pub const EXPORT_ABI_MINOR: u32 = 6;
+/// 7 (K9b): the SHED COUNTER — a declared series may be marked `shed`
+///   ([`crate::cold::observe::SeriesDecl::shed`]): the host counts on it each delivery it sheds for
+///   the sink, which the sink is never called for and so cannot count.
+pub const EXPORT_ABI_MINOR: u32 = 7;
 
 /// One observability stream an export sink can carry OUT of the engine — the FROZEN word-space of
 /// the export projection grammar, the same discipline as the hook phase names.

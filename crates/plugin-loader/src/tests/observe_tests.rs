@@ -103,3 +103,25 @@ fn a_second_install_is_refused() {
     assert!(!install_plugin_observer(&Other));
     assert!(observer_installed());
 }
+
+/// K9b: a first-party sink's declaration marked `shed` is the counter the host counts its shed
+/// deliveries on. RED ARMS, in the same test: an unmarked declaration, a non-counter marked one, and
+/// the same marked declaration made by a plugin that is not first-party are none of them a shed
+/// counter.
+#[test]
+fn a_granted_shed_declaration_is_the_hosts_shed_counter() {
+    use busbar_plugin::cold::observe::SeriesDecl;
+    let declared = [
+        SeriesDecl::new("k9b_rotated_total", "counter"),
+        SeriesDecl::new("k9b_dropped_total", "counter").shed(),
+        SeriesDecl::new("k9b_level", "gauge").shed(),
+    ];
+    grant_series("k9b-first-party", true, &declared).expect("granted");
+    assert_eq!(shed_series("k9b-first-party"), vec!["k9b_dropped_total"]);
+    let third: Vec<SeriesDecl> = declared
+        .iter()
+        .map(|d| SeriesDecl::new(format!("{}_3p", d.name), d.kind.clone()).shed())
+        .collect();
+    grant_series("k9b-third-party", false, &third).expect("nothing to refuse");
+    assert!(shed_series("k9b-third-party").is_empty());
+}

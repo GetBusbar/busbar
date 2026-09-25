@@ -121,6 +121,23 @@ impl DynExport {
         self.destinations = crate::host::Destinations::bind(declared, settings)?;
         Ok(self)
     }
+
+    /// The host SHED one delivery for this sink (K9b): count it on each counter the sink was
+    /// GRANTED as its shed counter at open (a first-party declaration marked `shed`), folded through
+    /// the ONE observability path every envelope takes under this sink's name — so it renders
+    /// exactly as the sink's own report of that series would.
+    pub fn shed(&self) {
+        let shed = crate::observe::shed_series(&self.raw.path);
+        let metrics = shed.iter();
+        let metrics =
+            metrics.map(|n| serde_json::json!({"name": n, "type": "counter", "value": 1}));
+        let report = busbar_plugin::cold::observe::Envelope {
+            result: (),
+            metrics: metrics.collect(),
+            diagnostics: Vec::new(),
+        };
+        crate::observe::fold(&self.raw.path, abi_kind::EXPORT, &report);
+    }
 }
 
 impl DynExport {
@@ -214,18 +231,33 @@ impl crate::PluginRegistry {
         instance: &str,
         settings: &serde_json::Value,
     ) -> Option<Vec<String>> {
+        self.probe_export(module, instance, settings)
+            .map(|(_, problems)| problems)
+    }
+
+    /// [`Self::validate_export`], and the streams the sink DECLARED (K9b) — asked of the same
+    /// load, so the host resolves the instance's projection against what the module carries while
+    /// it validates the configuration, as it does a built-in module's. `None` when `module` is not
+    /// a `kind: export` row; an empty stream list when the sink will not open here (its open
+    /// refuses the boot naming the instance).
+    pub fn probe_export(
+        &self,
+        module: &str,
+        instance: &str,
+        settings: &serde_json::Value,
+    ) -> Option<(Vec<ExportStream>, Vec<String>)> {
         let p = self
             .resolve(module)
             .filter(|p| p.manifest.kind == abi_kind::EXPORT)?;
         let cfg = settings.to_string();
         let Ok(sink) = load_export_image(p.image(), &cfg, &p.manifest.name, &p.manifest.kind)
         else {
-            return Some(Vec::new());
+            return Some((Vec::new(), Vec::new()));
         };
-        Some(
-            sink.validate(instance, settings)
-                .unwrap_or_else(|e| vec![format!("export.{instance}: {e}")]),
-        )
+        let problems = sink
+            .validate(instance, settings)
+            .unwrap_or_else(|e| vec![format!("export.{instance}: {e}")]);
+        Some((sink.streams, problems))
     }
 }
 

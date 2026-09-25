@@ -163,6 +163,19 @@ pub fn first_party_series(plugin: &str, name: &str, kind: &str) -> bool {
     granted.is_some_and(|s| s.iter().any(|d| d.name == name && d.kind == kind))
 }
 
+/// The counters granted to `plugin` as its SHED counters (K9b): its first-party declarations
+/// marked `shed`, of type `counter` — what the host counts on when it sheds a delivery for it.
+pub fn shed_series(plugin: &str) -> Vec<String> {
+    let guard = GRANTS.read().unwrap_or_else(|e| e.into_inner());
+    let granted = guard
+        .as_ref()
+        .and_then(|g| g.get(plugin))
+        .into_iter()
+        .flatten();
+    let shed = granted.filter(|d| d.shed && d.kind == "counter");
+    shed.map(|d| d.name.clone()).collect()
+}
+
 /// THE ONE recording observer for this crate's whole test binary.
 ///
 /// It has to be one, and shared, because [`install_plugin_observer`] is deliberately a

@@ -117,6 +117,71 @@ fn pack_cli_respects_allow_unsigned_and_returns_the_right_exit_code() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `--declares-file` embeds the plugin's `declares` section into the SIGNED manifest, parsed as the
+/// type the loader verifies — so a dropped-in first-party sink ships the declarations its linked
+/// twin states. RED arm, in the same test: a file with a key the section does not have is refused
+/// at pack time and writes no tarball.
+#[test]
+fn pack_cli_embeds_the_declares_file() {
+    let dir = std::env::temp_dir().join(format!("plugin-pack-declares-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let lib_path = dir.join("lib.so");
+    std::fs::write(&lib_path, b"pretend cdylib").unwrap();
+    let declares = serde_json::json!({
+        "metrics": [{"name": "busbar_x_total", "type": "counter", "shed": true}],
+        "diagnostics": [{"code": 7999, "slug": "x", "title": "X", "severity": "actionable",
+                          "summary": "s", "action": "a", "since": "1.6.0"}],
+        "destinations": ["path"],
+    });
+    let pack_with = |file: &str| {
+        let path = dir.join("declares.json");
+        std::fs::write(&path, file).unwrap();
+        let out = dir.join("out.tar.gz");
+        let _ = std::fs::remove_file(&out);
+        let args: Vec<String> = [
+            "--lib",
+            &lib_path.to_string_lossy(),
+            "--name",
+            "n",
+            "--alias",
+            "n",
+            "--kind",
+            "export",
+            "--version",
+            "1.0.0",
+            "--publisher",
+            "p",
+            "--out",
+            &out.to_string_lossy(),
+            "--declares-file",
+            &path.to_string_lossy(),
+            "--allow-unsigned",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let code = pack(&args);
+        let unpacked = std::fs::read(&out).ok().map(|t| {
+            busbar_plugin_loader::tarball::unpack(&t)
+                .unwrap()
+                .manifest
+                .declares
+        });
+        (code, unpacked)
+    };
+    let (code, packed) = pack_with(&declares.to_string());
+    assert_eq!(code, ExitCode::SUCCESS);
+    assert_eq!(
+        serde_json::to_value(packed.expect("the tarball was written")).unwrap(),
+        declares
+    );
+    // RED ARM: not a `declares` section — refused, nothing written.
+    let (code, packed) = pack_with(r#"{"metrics": [], "series": []}"#);
+    assert_eq!(code, ExitCode::FAILURE);
+    assert!(packed.is_none(), "a refused pack must not leave a tarball");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The `--needs-*` level parser accepts the ladder tokens (case/alias-insensitively) and hard-errors
 /// on anything else (a fat-fingered intent must not silently default to a weaker/stronger level).
 #[test]
