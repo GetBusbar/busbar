@@ -91,7 +91,10 @@ pub const EXPORT_ABI_VERSION: u32 = 3;
 ///   with their [`HostResult`]s ([`ExportRequest::Resume`]).
 /// 5 (K9a S5): the EGRESS CARRIER — [`HostOp::Http`] / [`HostResult::Http`]: the host performs a
 ///   sink's outbound HTTP request through its own egress.
-pub const EXPORT_ABI_MINOR: u32 = 5;
+/// 6 (K9a S6): the RECORDER SNAPSHOT — [`ExportRequest::Scrape`] hands a sink the host recorder's
+///   samples as [`MetricFamily`]s; the sink answers the exposition it renders
+///   ([`ExportResponse::Exposition`]).
+pub const EXPORT_ABI_MINOR: u32 = 6;
 
 /// One observability stream an export sink can carry OUT of the engine — the FROZEN word-space of
 /// the export projection grammar, the same discipline as the hook phase names.
@@ -584,6 +587,51 @@ pub enum ExportRequest {
         /// One result per op, in the order the ops were asked.
         results: Vec<HostResult>,
     },
+    /// `scrape` — the host's RECORDER SNAPSHOT (K9a S6): every metric family the host recorder
+    /// holds right now — counters, gauges, histograms and quantile summaries — in the stable shape
+    /// [`MetricFamily`], for the sink to RENDER its exposition from. Reply:
+    /// [`ExportResponse::Exposition`]. The host serves what the sink rendered; the recorder stays
+    /// the host's, so a dropped-in sink renders the same samples a linked one does.
+    Scrape {
+        /// The families, in the recorder's own order.
+        families: Vec<MetricFamily>,
+    },
+}
+
+/// One metric FAMILY of the host recorder's snapshot (K9a S6): its name, its type, its help text,
+/// and its samples in order — the unit a text exposition is made of.
+///
+/// STABLE AND LOSSLESS. `kind` is the exposition's own type token (`counter` | `gauge` |
+/// `histogram` | `summary` | `untyped`); a histogram's `_bucket` / `_sum` / `_count` series and a
+/// summary's `quantile` series are SAMPLES of their family, carried as the recorder wrote them. A
+/// sample's value is the recorder's own spelling of the number, so rendering the snapshot back in
+/// the text format reproduces the host's exposition byte for byte.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetricFamily {
+    /// The family name, as its `# TYPE` line spells it.
+    pub name: String,
+    /// `counter` | `gauge` | `histogram` | `summary` | `untyped`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// The `# HELP` text, when the recorder has one (as written: escaped, one line).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub help: Option<String>,
+    /// The samples, in order.
+    #[serde(default)]
+    pub samples: Vec<MetricSample>,
+}
+
+/// One SAMPLE line of a [`MetricFamily`] (K9a S6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetricSample {
+    /// The series name — the family name, or it with `_bucket` / `_sum` / `_count`.
+    pub name: String,
+    /// The labels in order, each value as the exposition writes it (escaped), `le` / `quantile`
+    /// included where the recorder wrote them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<(String, String)>,
+    /// The value, in the recorder's own spelling.
+    pub value: String,
 }
 
 /// One act a sink asks the HOST to perform for it (K9a S4): the host executes it under its own
@@ -767,6 +815,13 @@ pub enum ExportResponse {
         token: u64,
         /// The acts, in order.
         ops: Vec<HostOp>,
+    },
+    /// `scrape` — the exposition the sink rendered from the snapshot, and its content type.
+    Exposition {
+        /// The `content-type` the host serves the body under.
+        content_type: String,
+        /// The rendered exposition.
+        body: String,
     },
 }
 

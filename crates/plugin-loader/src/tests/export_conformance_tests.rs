@@ -891,3 +891,49 @@ fn a_sinks_outbound_request_is_carried_by_the_host_the_same_through_either_door(
         "{refused}"
     );
 }
+
+/// **K9a S6 — THE RECORDER SNAPSHOT, BOTH WAYS.** A recorder exposition in the host recorder's own
+/// shape — counters, a gauge with escaped label values, a quantile summary, a bucketed histogram —
+/// read into the snapshot and handed to the export fixture registered through the LINKED door and
+/// the DROPPED-IN door: each renders it back BYTE FOR BYTE under the text exposition's content type,
+/// the same either way. RED ARM, in the same test: a sink over the wire that predates the op renders
+/// nothing (the host keeps serving its own exposition).
+#[test]
+fn a_sink_renders_the_recorder_snapshot_byte_identically_through_either_door() {
+    let exposition = crate::scrape::tests::EXPOSITION;
+    let manifest = super::both_ways::statement(
+        "export",
+        "s6-fixture",
+        "s6-fixture",
+        busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+    );
+    let render = |registry: &PluginRegistry| {
+        let sink = registry.open_export("s6-fixture", "{}").expect("opens");
+        let families = crate::scrape::snapshot(exposition).expect("the snapshot reads");
+        let (content_type, body) = sink.scrape(families).expect("the sink renders");
+        serde_json::json!({ "content_type": content_type, "body": body }).to_string()
+    };
+    let Some([linked, dropped]) =
+        super::both_ways::both_doors(manifest.clone(), render, String::clone)
+    else {
+        eprintln!("skip: the export fixture's cdylib is not built");
+        return;
+    };
+    let expected = serde_json::json!({
+        "content_type": "text/plain; version=0.0.4",
+        "body": exposition,
+    });
+    assert_eq!(
+        linked.1,
+        expected.to_string(),
+        "the render is byte-identical"
+    );
+    assert_eq!(linked, dropped, "both doors render the same");
+
+    // RED ARM: the pre-minor-6 wire renders nothing.
+    let registry = super::both_ways::linked(manifest, super::both_ways::fixture("export").1);
+    let mut sink = registry.open_export("s6-fixture", "{}").expect("opens");
+    sink.raw.call = unsupported_call;
+    let families = crate::scrape::snapshot(exposition).expect("the snapshot reads");
+    assert!(sink.scrape(families).is_err());
+}

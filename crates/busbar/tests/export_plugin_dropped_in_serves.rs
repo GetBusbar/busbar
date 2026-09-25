@@ -263,10 +263,10 @@ fn a_dropped_in_export_plugin_serves() {
     // exposition, attributed to it by the host. Delivery is off the request path, so poll briefly.
     let expected = format!("{{plugin=\"{PLUGIN}\"}} 1");
     let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
+    let exposition = loop {
         let exposition = scrape(data_port).map(|(_, b)| b).unwrap_or_default();
         if exposition.contains(&expected) {
-            break;
+            break exposition;
         }
         assert!(
             Instant::now() < deadline,
@@ -275,7 +275,20 @@ fn a_dropped_in_export_plugin_serves() {
             log_of(&dir)
         );
         std::thread::sleep(Duration::from_millis(50));
-    }
+    };
+
+    // 4. THE RECORDER SNAPSHOT (K9a S6): the host's real exposition, read into the snapshot and
+    // handed to the dropped-in sink, renders back byte for byte — the render a sink serving
+    // `/metrics` would hand the host.
+    let families = busbar_plugin_loader::scrape::snapshot(&exposition).expect("the snapshot reads");
+    let sink = busbar_plugin_loader::load_export_from_bytes(&lib, "{}", PLUGIN, "export")
+        .expect("the sink loads");
+    let (content_type, rendered) = sink.scrape(families).expect("the sink renders");
+    assert_eq!(content_type, "text/plain; version=0.0.4");
+    assert_eq!(
+        rendered, exposition,
+        "the sink's render of the snapshot is the host's exposition"
+    );
 
     drop(child);
     let _ = std::fs::remove_dir_all(&dir);

@@ -180,7 +180,7 @@ fn export_abi_version_is_three() {
 /// loader gates on stays put — pinned so a seam cannot land without saying so.
 #[test]
 fn export_abi_minor_counts_the_host_seams() {
-    assert_eq!((EXPORT_ABI_VERSION, EXPORT_ABI_MINOR), (3, 5));
+    assert_eq!((EXPORT_ABI_VERSION, EXPORT_ABI_MINOR), (3, 6));
 }
 
 /// S1's declaration wire: `{"name": …, "type": …}`, the same `type` token a reported metric carries.
@@ -429,5 +429,37 @@ fn the_egress_carrier_wire_is_pinned() {
     assert_eq!(
         serde_json::to_value(&answered).expect("encode"),
         serde_json::json!({"outcome": "http", "status": 204})
+    );
+}
+
+/// S6's snapshot wire: `{"op":"scrape","families":[{"name","type","help","samples":[…]}]}`
+/// answered `{"Exposition":{"content_type","body"}}`.
+#[test]
+fn the_recorder_snapshot_wire_is_pinned() {
+    let req = ExportRequest::Scrape {
+        families: vec![MetricFamily {
+            name: "x_seconds".into(),
+            kind: "summary".into(),
+            help: Some("h".into()),
+            samples: vec![MetricSample {
+                name: "x_seconds".into(),
+                labels: vec![("quantile".into(), "0.5".into())],
+                value: "0.25".into(),
+            }],
+        }],
+    };
+    assert_eq!(
+        serde_json::to_value(&req).expect("encode"),
+        serde_json::json!({"op": "scrape", "families": [{"name": "x_seconds", "type": "summary",
+            "help": "h", "samples": [{"name": "x_seconds", "labels": [["quantile", "0.5"]],
+            "value": "0.25"}]}]})
+    );
+    let resp = ExportResponse::Exposition {
+        content_type: "text/plain; version=0.0.4".into(),
+        body: String::new(),
+    };
+    assert_eq!(
+        serde_json::to_value(&resp).expect("encode"),
+        serde_json::json!({"Exposition": {"content_type": "text/plain; version=0.0.4", "body": ""}})
     );
 }
