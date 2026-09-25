@@ -12,12 +12,12 @@
 //! `named_map_tests.rs` is parameterized over WHATEVER `NamedMapSection::sections()` returns and
 //! stays there.
 
+mod linked;
+
 use busbar_kernel::config::named_map::NamedMapSection;
 
 fn register_planes() {
-    busbar_llm::testkit::install_test_seams();
-    busbar_mcp::testkit::install_test_seams();
-    busbar_a2a::testkit::install_test_seams();
+    linked::install();
 }
 
 /// F2 — BYTE-IDENTITY PIN. `sections()` is folded from the plane registry, so its ORDER is what the

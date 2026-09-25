@@ -13,13 +13,15 @@
 //! `a_key_row_whose_expires_at_is_in_the_past_still_verifies` (the governance-seam half, no
 //! `TestApp`/router involved) names no plane and stays in `src/tests/key_expires_at_tests.rs`.
 
+mod linked;
+
 use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec, Store};
 use busbar_kernel::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use std::sync::Arc;
 
 fn register_planes() {
-    busbar_llm::testkit::install_test_seams();
+    linked::install();
 }
 
 /// A governance engine over a memory store the test also keeps a handle to, so it can rewrite the

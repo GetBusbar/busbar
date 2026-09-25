@@ -14,12 +14,14 @@
 //!
 //! Every other test in `auth/tests/tests.rs` builds no lane/pool topology and stays there.
 
+mod linked;
+
 use busbar_kernel::auth::{AuthMiddleware, UpstreamCreds};
 use busbar_kernel::config::AuthCfg;
 use busbar_kernel::test_support::TestApp;
 
 fn register_planes() {
-    busbar_llm::testkit::install_test_seams();
+    linked::install();
 }
 
 /// `AuthMiddleware` with an empty chain admits ANY bearer (or none) at the front door. With an

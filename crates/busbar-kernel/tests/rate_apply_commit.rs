@@ -11,6 +11,8 @@
 //!
 //! A test BINARY of its own, because the rate holder is a process-wide `OnceLock` this file installs.
 
+mod linked;
+
 use std::sync::Mutex;
 
 use busbar_kernel::rate_apply::{install_rate_apply, RateApply, RawRates};
@@ -54,7 +56,7 @@ fn build(
 #[test]
 fn an_apply_that_never_commits_raises_no_rates_and_one_that_commits_raises_them_once() {
     busbar_kernel::metrics::init();
-    busbar_llm::testkit::install_test_seams();
+    linked::install();
     let recorder: &'static Recorder = Box::leak(Box::new(Recorder(Mutex::new(Vec::new()))));
     install_rate_apply(recorder);
 

@@ -9,13 +9,13 @@
 //! enumerable once the planes install their test seams, which is an integration-test target's job
 //! (see `plane_dispatch_cross_plane.rs`'s header for the same move).
 
+mod linked;
+
 use busbar_kernel::operation::Operation;
 
 /// Register the real roster in the process registry — idempotent (first-wins).
 fn register_planes() {
-    busbar_llm::testkit::install_test_seams();
-    busbar_mcp::testkit::install_test_seams();
-    busbar_a2a::testkit::install_test_seams();
+    linked::install();
 }
 
 /// The closed metric-label surface is `Operation::ALL ∪ declared_verbs()`. No word on it may carry a

@@ -11,14 +11,14 @@
 //! exactly what an integration-test target gives. See `plane_integration.rs`'s header for the same
 //! rationale, first written there.
 
+mod linked;
+
 use busbar_kernel::config::migrate::migrate_config;
 use busbar_kernel::config::{deploy_from_yaml_str, resolve, DeployCfg, ProviderDef};
 
 /// Register the real llm/mcp/a2a planes in the process registry, idempotent (first-wins).
 fn register_planes() {
-    busbar_llm::testkit::install_test_seams();
-    busbar_mcp::testkit::install_test_seams();
-    busbar_a2a::testkit::install_test_seams();
+    linked::install();
 }
 
 /// END-TO-END, 1.6.0: a COMPLETE 1.5.x-shaped config that uses EVERY deprecated spelling at once —
@@ -49,10 +49,10 @@ hooks:
     at: request
 tools:
   search-eu:
-    url: "https://eu.example/mcp"
+    url: "https://eu.example/t"
     pin: { mechanism: unpinned }
   search-us:
-    url: "https://us.example/mcp"
+    url: "https://us.example/t"
     pin: { mechanism: unpinned }
 agents:
   planner-eu:
@@ -121,16 +121,16 @@ agent_pools:
     // agent-kind pool map, and the model pool `fast` onto the model-kind pool map.
     assert!(
         cfg.tool_pools.contains_key("search"),
-        "the folded tool pool resolves onto the MCP failover plane: {:?}",
+        "the folded tool pool resolves onto the `tools:` plane's failover map: {:?}",
         cfg.tool_pools.keys().collect::<Vec<_>>()
     );
     assert!(
         cfg.agent_pools.contains_key("planner"),
-        "the folded agent pool resolves onto the A2A failover plane: {:?}",
+        "the folded agent pool resolves onto the `agents:` plane's failover map: {:?}",
         cfg.agent_pools.keys().collect::<Vec<_>>()
     );
     assert!(
         cfg.pools.contains_key("fast"),
-        "the LLM pool resolves onto the model plane"
+        "the model pool resolves onto the model plane"
     );
 }
