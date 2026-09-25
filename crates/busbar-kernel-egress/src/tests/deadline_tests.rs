@@ -44,7 +44,7 @@ fn a_spent_deadline_refuses_before_the_first_attempt() {
 }
 
 #[test]
-fn a_spent_deadline_refuses_before_a_streaming_attempt_too() {
+fn a_spent_deadline_refuses_before_a_streamed_attempt_too() {
     let node = one_lane_pool(true);
     let mut ctx = node.request_ctx();
     node.clock.advance_secs(node.timeout_secs + 1);
