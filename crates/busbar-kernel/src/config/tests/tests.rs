@@ -4270,3 +4270,49 @@ fn lane_caps_glob_matches_star_runs_only() {
     assert!(!glob_match("claude-opus-4-7*", "claude-opus-4-6"));
     assert!(!glob_match("a*b*c", "acb"));
 }
+
+/// OAI-01 / ANT-07/09/10 at the CATALOG: the shipped providers.yaml resolves the `openai` provider
+/// to `max_completion_tokens` and every OpenAI-compatible host to the default `max_tokens`, and the
+/// `anthropic` provider's newest models to adaptive thinking + native structured outputs while its
+/// older models keep the defaults.
+#[test]
+fn shipped_catalog_declares_the_lane_capabilities() {
+    use busbar_substrate_values::ir::egress_prep::{LaneCaps, MaxOutputKey};
+    let raw = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../providers.yaml"))
+        .expect("read providers.yaml");
+    let defs: HashMap<String, ProviderDef> =
+        serde_yaml::from_str(&raw).expect("parse providers.yaml");
+    let resolved = |name: &str| merge_provider_fallback(&defs[name], &provider_deploy("K"));
+    assert_eq!(
+        resolved("openai").lane_caps_for("gpt-5").max_output_key,
+        MaxOutputKey::MaxCompletionTokens
+    );
+    for host in ["groq", "together", "oci-genai", "deepseek", "openrouter"] {
+        assert_eq!(
+            resolved(host).lane_caps_for("any-model"),
+            LaneCaps::NONE,
+            "{host} must keep the defaults"
+        );
+    }
+    let anthropic = resolved("anthropic");
+    for newest in [
+        "claude-opus-4-7",
+        "claude-opus-5",
+        "claude-sonnet-5-20260101",
+        "claude-fable-5-1",
+    ] {
+        let caps = anthropic.lane_caps_for(newest);
+        assert!(
+            caps.anthropic_adaptive_thinking && caps.native_structured_output,
+            "{newest}: {caps:?}"
+        );
+    }
+    for older in [
+        "claude-opus-4-5",
+        "claude-sonnet-4-5",
+        "claude-haiku-4-5",
+        "claude-3-7-sonnet",
+    ] {
+        assert_eq!(anthropic.lane_caps_for(older), LaneCaps::NONE, "{older}");
+    }
+}
