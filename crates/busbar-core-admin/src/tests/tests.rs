@@ -13361,12 +13361,24 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     drive_key_cap_and_delegation_errors().await;
     drive_named_map_errors().await;
     drive_unpriced_usage_reads().await;
-    // The MCP trust verbs' own drivers, called here for the same reason as every line above it: a
-    // condition witnessed only by a sibling test is witnessed nowhere.
-    busbar_mcp::mcp::admin_view::adminverbs_tests::drive_mcp_verb_errors().await;
-    // And the A2A plane's, for the same reason — the two trust surfaces are the same shape and the
-    // witness obligation is the same obligation.
-    busbar_a2a::a2a::verbs::adminverbs_tests::drive_a2a_verb_errors().await;
+    // Every linked plane's own error-surface driver (its trust verbs), called here for the same reason
+    // as every line above it: a condition witnessed only by a sibling test is witnessed nowhere. Looped
+    // from the kernel's test-seam registry, so this names no plane; a plane whose driver went missing
+    // leaves its declared verbs unwitnessed and fails the over-claim walk below, and an empty registry
+    // is refused outright rather than read as "no plane verbs to witness".
+    crate::ensure_seam();
+    let plane_drivers: Vec<_> = busbar_kernel::test_support::seam::test_plane_seams()
+        .iter()
+        .filter_map(|seam| seam.error_surface_driver)
+        .collect();
+    assert!(
+        !plane_drivers.is_empty(),
+        "no linked plane registered an error-surface driver: the plane verbs' declared errors \
+         would go unwitnessed"
+    );
+    for drive in plane_drivers {
+        drive().await;
+    }
 
     let witnessed = busbar_kernel::admin::v1::contract::taxonomy::observed::snapshot();
     // Every (operation, ErrKind) the suite has actually produced, and every (operation, ErrKind,

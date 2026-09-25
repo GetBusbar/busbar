@@ -14,6 +14,8 @@
 //! installs these before it builds an `App` sees the same protocol set a shipped "busbar with the LLM
 //! plane" binary has.
 
+use busbar_kernel::{proto, test_support::seam::TestPlaneSeam};
+
 /// INSTALL THE LLM PROTOCOL + PLANE the composition root installs in production. Idempotent (both
 /// underlying substrate registrations dedupe by name/key), so a test may call it freely — including
 /// from several tests in one binary.
@@ -23,7 +25,7 @@
 /// `install_path_ingress` — so a `test-support` consumer that builds a path-model `App` resolves the
 /// gemini/bedrock arrivals, while a body-model `App` (which never resolves one) is unaffected.
 pub fn install_test_seams() {
-    busbar_kernel::proto::register_test_protocols(crate::DECLS);
+    proto::register_test_protocols(crate::DECLS);
     busbar_kernel::plane::registry::register_test_plane(&crate::PLANE_DECL);
     busbar_kernel::ingress::arrival::set_test_path_ingress(|| crate::PATH_INGRESS);
     busbar_kernel::ingress::arrival::set_test_body_ingress(|| crate::BODY_INGRESS);
@@ -38,7 +40,13 @@ pub fn install_test_seams() {
     // routes through this installed pointer in a `test-support`/plugin test binary (where core's
     // `cfg(test)` is FALSE), so without it every cross-protocol streaming forward falls back to raw
     // passthrough — the exact composition-root write `main.rs::run` makes in production. Set-once.
-    busbar_kernel::proto::install_stream_translator_factory(
-        crate::proto_stream::new_stream_translator,
-    );
+    proto::install_stream_translator_factory(crate::proto_stream::new_stream_translator);
 }
+
+/// THIS PLANE'S LINKED-TEST-SEAM ENTRY — what a test binary that links this crate without naming it
+/// registers into the kernel's test-seam registry and loops. No admin error surface.
+pub const TEST_SEAM: TestPlaneSeam = TestPlaneSeam {
+    name: "llm",
+    install: install_test_seams,
+    error_surface_driver: None,
+};

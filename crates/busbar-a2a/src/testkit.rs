@@ -14,7 +14,10 @@
 
 use crate::a2a::config::{AgentDefCfg, AgentsCfg};
 use crate::a2a::plane::A2aPlane;
-use busbar_kernel::test_support::{TestAppSeam, TestAppSeamExt};
+use busbar_kernel::test_support::{
+    seam::{ErrorSurfaceDriver, TestPlaneSeam},
+    TestAppSeam, TestAppSeamExt,
+};
 use std::sync::Arc;
 
 // The self-enveloping admin-verb backing (core's `CorePlaneAdminEnvelope`) — bound plane-side so the
@@ -211,3 +214,18 @@ impl<A: TestAppSeam> TestAppA2aExt for A {
         self
     }
 }
+
+/// THIS PLANE'S LINKED-TEST-SEAM ENTRY — what a test binary that links this crate without naming it
+/// registers into the kernel's test-seam registry and loops: the cross-plane install
+/// and the trust verbs' error-surface driver.
+pub const TEST_SEAM: TestPlaneSeam = TestPlaneSeam {
+    name: SCRATCH_KEY,
+    install: install_test_seams,
+    error_surface_driver: ERROR_SURFACE_DRIVER,
+};
+
+#[cfg(feature = "auth-admin-tokens")]
+const ERROR_SURFACE_DRIVER: Option<ErrorSurfaceDriver> =
+    Some(|| Box::pin(crate::a2a::verbs::adminverbs_tests::drive_a2a_verb_errors()));
+#[cfg(not(feature = "auth-admin-tokens"))]
+const ERROR_SURFACE_DRIVER: Option<ErrorSurfaceDriver> = None;

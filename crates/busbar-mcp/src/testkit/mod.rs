@@ -23,7 +23,11 @@ pub mod loopback_http;
 use crate::mcp::client::catalogue::CatalogueCache;
 use crate::mcp::config::{McpServerDefCfg, ToolsCfg};
 use crate::mcp::{McpCfg, McpResource, McpRuntime};
-use busbar_kernel::test_support::{TestAppSeam, TestAppSeamExt};
+use busbar_kernel::test_support::{
+    install_test_mcp_runtime_factory,
+    seam::{ErrorSurfaceDriver, TestPlaneSeam},
+    TestAppSeam, TestAppSeamExt,
+};
 use std::sync::Arc;
 
 /// The MCP plane's key in `TestApp`'s scratch map — the same string as `PLANE_DECL.key`.
@@ -284,3 +288,25 @@ pub fn prefresh_mcp_sightings(slots: &dyn busbar_kernel::plane_host::PlaneSlots)
         }
     });
 }
+
+/// THIS PLANE'S LINKED-TEST-SEAM ENTRY — what a test binary that links this crate without naming it
+/// registers into the kernel's test-seam registry and loops: the cross-plane install
+/// plus the default-runtime seed, and the trust verbs' error-surface driver.
+pub const TEST_SEAM: TestPlaneSeam = TestPlaneSeam {
+    name: SCRATCH_KEY,
+    install: install_linked_test_seams,
+    error_surface_driver: ERROR_SURFACE_DRIVER,
+};
+
+/// [`install_test_seams`], then seed this plane's always-present default runtime for every `TestApp`
+/// the linking test binary builds (the test-support analogue of the kernel's own `cfg(test)` seeding).
+fn install_linked_test_seams() {
+    install_test_seams();
+    install_test_mcp_runtime_factory(default_mcp_runtime);
+}
+
+#[cfg(feature = "auth-admin-tokens")]
+const ERROR_SURFACE_DRIVER: Option<ErrorSurfaceDriver> =
+    Some(|| Box::pin(crate::mcp::admin_view::adminverbs_tests::drive_mcp_verb_errors()));
+#[cfg(not(feature = "auth-admin-tokens"))]
+const ERROR_SURFACE_DRIVER: Option<ErrorSurfaceDriver> = None;

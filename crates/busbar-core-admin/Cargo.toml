@@ -24,6 +24,11 @@ license = "Apache-2.0"
 name = "busbar_core_admin"
 path = "src/lib.rs"
 
+# THE LINKED TEST-SEAM LIST: the dev-dependency crates whose `testkit::TEST_SEAM` entry this crate's
+# unit tests register and loop (build.rs emits the table; the sources name none of these crates).
+[package.metadata.busbar]
+test-linked = ["busbar-llm", "busbar-mcp", "busbar-a2a"]
+
 [dependencies]
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
 # The kernel-verb store face + idempotency window the absorbed verb-execution unit binds against

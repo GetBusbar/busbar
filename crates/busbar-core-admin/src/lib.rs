@@ -94,29 +94,31 @@ fn seam_mount(
 /// admin surface through the seam, which is unregistered until the composition root (production) or
 /// this helper (tests) installs it — so every moved test that wants the admin routes builds through
 /// here instead of naming `busbar_kernel::build_router` directly.
-/// Install the process-wide test environment exactly once: the admin mount seam PLUS the LLM/MCP/A2A
-/// plane+protocol test seams (protocols/codecs, plane runtimes, ingress hooks). busbar-core's own
+/// Install the process-wide test environment exactly once: every LINKED plane's test seams
+/// (protocols/codecs, plane runtimes, ingress hooks), then the admin mount seam. busbar-core's own
 /// unit-test binary auto-registers these from its `cfg(test)` builtins, but a test-support CONSUMER
 /// (this crate) has `cfg(test)` false for its busbar-core dependency, so it must install them
-/// explicitly — the same three `install_test_seams()` calls busbar-core's `tests/plane_integration.rs`
-/// makes. All are idempotent (first-wins), so calling this from every router builder is safe.
+/// explicitly. It names no plane crate: `build.rs` emits `TEST_LINKED` (each linked dev-dependency's
+/// `testkit::TEST_SEAM` entry, listed as data in Cargo.toml's `[package.metadata.busbar]
+/// test-linked`); this registers each into the kernel's test-seam registry and runs every registered
+/// install. All are idempotent (first-wins), so calling this from every router builder is safe.
 ///
 /// A `#[cfg(test)]` MODULE, not a bare `#[cfg(test)] fn`: this body is test-binary-only code, and the
-/// module is the form `plane-purity` reads as test scope. As a bare fn its plane-crate names were
-/// counted as PRODUCTION side channels of this neutral crate, which they never were.
+/// module is the form `plane-purity` reads as test scope.
 #[cfg(test)]
 mod test_seams {
+    include!(concat!(env!("OUT_DIR"), "/test_linked.rs"));
+
     pub(crate) fn ensure_seam() {
+        use busbar_kernel::test_support::seam::{register_test_plane_seam, test_plane_seams};
         static SEAM_ONCE: std::sync::Once = std::sync::Once::new();
         SEAM_ONCE.call_once(|| {
-            busbar_llm::testkit::install_test_seams();
-            busbar_mcp::testkit::install_test_seams();
-            busbar_a2a::testkit::install_test_seams();
-            // Having registered the MCP plane above, seed its always-present default runtime for
-            // every `TestApp` — the test-support analogue of busbar-core's own `cfg(test)` seeding.
-            busbar_kernel::test_support::install_test_mcp_runtime_factory(
-                busbar_mcp::testkit::default_mcp_runtime,
-            );
+            for entry in TEST_LINKED {
+                register_test_plane_seam(entry);
+            }
+            for seam in test_plane_seams() {
+                (seam.install)();
+            }
             super::install();
         });
     }
