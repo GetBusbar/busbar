@@ -86,8 +86,15 @@
 # the config it edits (hazard|no-data-dir|files lists that directory and recorded the step's own log);
 # its record goes to <work>/.oracle-upgrade-step.log beside the precheck log.
 #
+# 2026-09-24 (architect ruling under owner ruling Q42): moved 5652f33 -> 3519882, the same branch's
+# next commit — a rate card a CELL writes through the admin API (the settings PUT, any rate-card write
+# verb) goes through the same step: the build is asked about that card by `--validate` on a probe copy
+# of its booted config, and each class it names is added at 0 on every entry; http cells, their
+# pre-requests and a new `upgrade-body` subcommand for script cells. A body the build names nothing
+# for — every body the 1.5.5 golden is sent — goes byte for byte.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=5652f33
+release_ref=3519882
 crate=busbar-release-oracle
 bin=busbar-oracle
