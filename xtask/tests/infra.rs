@@ -1174,6 +1174,52 @@ fn the_walk_skips_what_the_tree_ignores_and_still_refuses_a_missing_root() {
     ));
 }
 
+/// THE IGNORE ORACLE IS ASKED ONCE PER PATH PER CONTEXT, not once per walk. Every walk used to
+/// spawn its own `git check-ignore` over its whole path list; a gate walks many times per run and a
+/// self-test case IS a run, so `no-float-money`'s 36 cases spawned 973 of them and
+/// `kind-isolation`'s 167 about 2 700, to re-ask questions whose answers had not changed.
+#[test]
+fn a_second_walk_asks_the_ignore_oracle_nothing_it_already_answered() {
+    let c = cx();
+    let spec = WalkSpec::new([format!("testing/{}", "shadow-oracle")]).min_files(1);
+    let first = c.walk(&spec).expect("the oracle tree walks");
+    let held = c.ignore_answers_held();
+    assert!(held >= first.len(), "every walked path's answer is held");
+
+    // The SAME walk, and the same walk through a clone: nothing new is asked.
+    let again = c.clone().walk(&spec).expect("the oracle tree walks again");
+    assert_eq!(
+        c.ignore_answers_held(),
+        held,
+        "a repeated walk asks nothing new"
+    );
+    assert_eq!(
+        first.iter().map(|f| f.rel.clone()).collect::<Vec<_>>(),
+        again.iter().map(|f| f.rel.clone()).collect::<Vec<_>>(),
+        "and reads the same tree"
+    );
+
+    // A PLANT is one new path, asked once, and an ignored plant is still dropped — the answer
+    // comes from the tree's real rules, as it always did.
+    let ignored = PathBuf::from(format!(
+        "testing/{}/__pycache__/memo-probe.pyc",
+        "shadow-oracle"
+    ));
+    let mut ov = Overlay::new();
+    ov.set(&ignored, "compiled bytecode\n");
+    let planted = c.with_overlay(ov);
+    let files = planted.walk(&spec).expect("the planted tree walks");
+    assert_eq!(
+        c.ignore_answers_held(),
+        held + 1,
+        "the plant is the only new question"
+    );
+    assert!(
+        !files.iter().any(|f| f.rel == ignored),
+        "an ignored plant is still not part of the tree the gates judge"
+    );
+}
+
 #[test]
 fn check_ignore_reads_a_clean_scan_set_as_none_ignored_rather_than_as_an_error() {
     // `git check-ignore` exits 1 when NOTHING matched, which is the ordinary answer over a clean

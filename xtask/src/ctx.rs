@@ -409,6 +409,9 @@ pub struct Ctx {
     overlay: Option<Arc<Overlay>>,
     scratch: PathBuf,
     env: Env,
+    /// `git check-ignore`'s answers, per path, SHARED by every clone and every overlay of this
+    /// context. See [`Ctx::ignored_among`].
+    ignore_memo: Arc<std::sync::Mutex<std::collections::BTreeMap<String, bool>>>,
 }
 
 impl Ctx {
@@ -433,6 +436,7 @@ impl Ctx {
             overlay: None,
             scratch,
             env: Env::capture(),
+            ignore_memo: Arc::default(),
         })
     }
 
@@ -447,6 +451,7 @@ impl Ctx {
             overlay: None,
             scratch,
             env: Env::capture(),
+            ignore_memo: Arc::default(),
         })
     }
 
@@ -682,10 +687,67 @@ impl Ctx {
     /// A tracked path is never reported by `git check-ignore` (it consults the index), so the
     /// answer is exactly the population that is both ignored and live.
     pub fn ignored(&self, rels: &[String]) -> std::collections::BTreeSet<String> {
-        gitp::check_ignore(&self.root, rels)
-            .unwrap_or_default()
-            .into_iter()
-            .collect()
+        self.ignored_among(rels).unwrap_or_default()
+    }
+
+    /// WHICH OF `asked` THE TREE'S IGNORE RULES CLAIM — `git check-ignore`, asked ONCE PER PATH per
+    /// context rather than once per walk.
+    ///
+    /// Every walk used to spawn its own `git check-ignore` over its whole path list, and a gate
+    /// walks many times per run: `kind-isolation` sixteen, `no-float-money` twenty-seven, once per
+    /// scan root. A self-test case IS a gate run, so a battery paid that per case — 973 `git`
+    /// processes for `no-float-money`'s 36 cases, 2 700 for `kind-isolation`'s 167 — to re-ask
+    /// questions whose answers had not changed. Process spawns are also the cost that stretches
+    /// most under load while the arithmetic work-unit ruler barely moves, which is how a battery
+    /// with no regression in it reads as one on a busy box.
+    ///
+    /// THE ANSWER IS A FUNCTION OF THE PATH AND THE REPOSITORY'S IGNORE RULES ON DISK, never of an
+    /// overlay: `git` cannot see an overlay, so a planted path was always asked about against the
+    /// real rules, and still is. The memo lives on the context (a fresh [`Ctx::new`]/[`Ctx::at`]
+    /// starts empty, a clone or [`Ctx::with_overlay`] shares it), so its lifetime is one gate run
+    /// or one battery over one tree. A `.gitignore` edited on disk DURING that lifetime is not
+    /// seen by it — the same snapshot the walk it serves has always taken of the directory tree.
+    /// A failed `git` is not remembered: the caller gets the error, exactly as before.
+    /// How many paths this context (and every clone and overlay of it) holds an ignore answer for —
+    /// what a walk that has been taken before does NOT ask `git` again. Read by the exit test that
+    /// pins the memo; a count, so it says nothing about which paths are ignored.
+    pub fn ignore_answers_held(&self) -> usize {
+        self.ignore_memo
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
+    }
+
+    fn ignored_among(
+        &self,
+        asked: &[String],
+    ) -> Result<std::collections::BTreeSet<String>, String> {
+        let unknown: Vec<String> = {
+            let memo = self.ignore_memo.lock().unwrap_or_else(|e| e.into_inner());
+            let mut seen = std::collections::BTreeSet::new();
+            asked
+                .iter()
+                .filter(|p| !memo.contains_key(p.as_str()) && seen.insert(p.as_str()))
+                .cloned()
+                .collect()
+        };
+        if !unknown.is_empty() {
+            let claimed: std::collections::BTreeSet<String> =
+                gitp::check_ignore(&self.root, &unknown)?
+                    .into_iter()
+                    .collect();
+            let mut memo = self.ignore_memo.lock().unwrap_or_else(|e| e.into_inner());
+            for p in unknown {
+                let yes = claimed.contains(&p);
+                memo.insert(p, yes);
+            }
+        }
+        let memo = self.ignore_memo.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(asked
+            .iter()
+            .filter(|p| memo.get(p.as_str()).copied().unwrap_or(false))
+            .cloned()
+            .collect())
     }
 
     fn drop_ignored(&self, rels: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -693,13 +755,12 @@ impl Ctx {
             .iter()
             .map(|r| r.to_string_lossy().replace('\\', "/"))
             .collect();
-        let Ok(ignored) = gitp::check_ignore(&self.root, &asked) else {
+        let Ok(ignored) = self.ignored_among(&asked) else {
             return rels;
         };
         if ignored.is_empty() {
             return rels;
         }
-        let ignored: std::collections::BTreeSet<String> = ignored.into_iter().collect();
         rels.into_iter()
             .filter(|r| !ignored.contains(&r.to_string_lossy().replace('\\', "/")))
             .collect()
