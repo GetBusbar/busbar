@@ -343,11 +343,10 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   still never refunded.
 - **The 1.6.0 ledger endpoints read money as of a rate-card history snapshot.** New reads
   `GET /api/v1/admin/ledger/{rate-history,repricings}`, a new operator-signed write
-  `POST /api/v1/admin/ledger/amend-rate-history`, and optional `?as_of=<history_seq>` and
-  `?currency=<CCY>` on the existing ledger reads. A card prices in one or more currencies natively,
-  with no pivot and no conversion. No 1.5.5 path or field is changed; the new operations are
-  described in the one administrative OpenAPI document, which `GET /api/v1/admin/ledger/openapi.json`
-  also serves.
+  `POST /api/v1/admin/ledger/amend-rate-history`, and an optional `?as_of=<history_seq>`
+  on the existing ledger reads. Money stays unitless, exactly as in 1.5.5: a rate card is plain
+  numbers and busbar attaches no currency. No 1.5.5 path or field is changed; the new operations are
+  described in the one administrative OpenAPI document served at `GET /api/v1/admin/openapi.json`.
 - **A stream that dies mid-flight is no longer served, and billed, as a completed one.** Two
   upstream failure shapes reached the client as a clean success in 1.5.5. An OpenAI-compatible
   backend (OpenAI, Azure, vLLM, OpenRouter) that fails after its 200 headers are on the wire sends
@@ -568,7 +567,12 @@ moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
 - **A 1.6.0 config is a 1.5.5 config plus whichever plane sections you write.** `mcp:`, `agents:`
   and `streams:` are new top-level keys; every 1.5.5 key keeps its 1.5.5 meaning and default, and a
   config with none of the three new keys boots and behaves exactly as it did under 1.5.5 (see
-  [Behaviour identical to 1.5.5](#behaviour-identical-to-155) above).
+  [Behaviour identical to 1.5.5](#behaviour-identical-to-155) above), with one exception below.
+- **A `rate_card` must price every billable class the build declares, or boot refuses.** An unpriced
+  class never silently bills 0. A 1.5.5 config with a `rate_card` needs each entry to gain
+  `units: { search_units: 0 }` (0 keeps search free), and a rate card written through
+  `PUT /api/v1/admin/config/settings` needs the same key or the write answers 400. `--validate`
+  names every class it wants.
 - **`busbar --migrate-config` leaves your 1.5.5 pool members exactly as written.** Only the four
   retired spellings named under [Breaking](#breaking) above are rewritten; nothing else in a pool,
   provider or model block is touched.
