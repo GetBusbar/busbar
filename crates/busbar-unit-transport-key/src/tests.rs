@@ -121,11 +121,11 @@ fn resolves_and_builds_server_only_config_for_valid_pair() {
 ///
 /// This asserts the RESOLUTION half only: three access entries for three secrets read, in order.
 /// What the verifier those bytes built then does to a client is
-/// [`only_the_mtls_config_refuses_a_client_that_offers_no_certificate`]'s, because nothing readable
-/// off a `ServerConfig` distinguishes a listener that demands a client certificate from one that
-/// does not.
+/// [`only_the_mutual_tls_config_refuses_a_client_that_offers_no_certificate`]'s, because nothing
+/// readable off a `ServerConfig` distinguishes a listener that demands a client certificate from
+/// one that does not.
 #[test]
-fn resolves_and_builds_mtls_config_when_client_ca_present() {
+fn resolves_and_builds_mutual_tls_config_when_client_ca_present() {
     install_crypto_provider();
     let (srv_cert_pem, srv_key_pem) = gen_self_signed();
     let (ca_pem, _leaf_pem, _leaf_key_pem) = gen_ca_and_leaf(vec!["busbar-client".into()]);
@@ -217,7 +217,7 @@ fn handshake_offering_no_client_certificate(
 /// `build_server_config` with `with_no_client_auth()` leaves every one of those assertions true and
 /// turns a listener an operator configured for mTLS into one that takes anonymous clients.
 #[test]
-fn only_the_mtls_config_refuses_a_client_that_offers_no_certificate() {
+fn only_the_mutual_tls_config_refuses_a_client_that_offers_no_certificate() {
     install_crypto_provider();
     let (server_ca_pem, server_cert_pem, server_key_pem) =
         gen_ca_and_leaf(vec!["localhost".into()]);
@@ -240,12 +240,12 @@ fn only_the_mtls_config_refuses_a_client_that_offers_no_certificate() {
     handshake_offering_no_client_certificate(Arc::new(server_only), &server_ca_pem)
         .expect("server-only TLS asks a client for nothing and completes");
 
-    let mtls = build_server_config(
+    let mutual_tls = build_server_config(
         &resolve_tls_material(&source, &journal, "cert", "key", Some("ca")).unwrap(),
     )
     .unwrap();
-    let err = handshake_offering_no_client_certificate(Arc::new(mtls), &server_ca_pem)
-        .expect_err("mTLS means the client MUST present a certificate");
+    let err = handshake_offering_no_client_certificate(Arc::new(mutual_tls), &server_ca_pem)
+        .expect_err("mutual TLS means the client MUST present a certificate");
     assert!(
         matches!(err, rustls::Error::NoCertificatesPresented),
         "the handshake failed for the wrong reason: {err:?}"
@@ -493,7 +493,7 @@ fn provision_client_registers_the_exact_config_handed_in_over_its_slot() {
     );
 }
 
-/// [`provision_server_named`] had no test at all: `only_the_mtls_config_refuses_a_client_that_
+/// [`provision_server_named`] had no test at all: `only_the_mutual_tls_config_refuses_a_client_that_
 /// offers_no_certificate` pins the single-cert path's client-cert verifier
 /// (`build_server_config`'s own inline arm); this is the SAME property for the named-SNI path's
 /// separate arm at the call site that builds `client_verifier` off `default_material.client_ca_pem`.
@@ -501,7 +501,7 @@ fn provision_client_registers_the_exact_config_handed_in_over_its_slot() {
 /// assertion about a named-SNI config — ALPN, the resolver's name table — untouched and green,
 /// while a listener an operator configured for mTLS quietly took anonymous clients.
 #[test]
-fn a_named_sni_listeners_shared_mtls_setting_refuses_an_anonymous_client() {
+fn a_named_sni_listeners_shared_mutual_tls_setting_refuses_an_anonymous_client() {
     install_crypto_provider();
     let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     let token = Grant::<KeyHandle>::mint(&seal);
@@ -550,7 +550,7 @@ fn a_named_sni_listeners_shared_mtls_setting_refuses_an_anonymous_client() {
 
     let cfg = sink.server.lock().unwrap().clone().expect("registered");
     let err = handshake_offering_no_client_certificate(cfg, &server_ca_pem)
-        .expect_err("the listener's shared mTLS setting must refuse an anonymous client");
+        .expect_err("the listener's shared mutual TLS setting must refuse an anonymous client");
     assert!(
         matches!(err, rustls::Error::NoCertificatesPresented),
         "the handshake failed for the wrong reason: {err:?}"
