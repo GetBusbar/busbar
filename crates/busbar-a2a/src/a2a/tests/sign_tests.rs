@@ -444,3 +444,36 @@ fn the_signature_is_taken_over_the_document_that_is_actually_served() {
     jws::verify_card(&served, &busbars_issuer_key(&signer))
         .expect("and THAT document is the one the signature covers");
 }
+
+/// The card subkey for THIS plane's domain, pinned to exact bytes (moved from the kernel's
+/// governance signing tests, which pin the construction over neutral domains). The vectors are
+/// SHA-256("busbar/subkey/v1" || secret || "a2a/agent-card-signing/v1") for the all-`seed` secret,
+/// reproduced independently. If one fails, do NOT re-baseline: every deployment's card key, and
+/// every caller's pin, just rotated silently.
+#[test]
+fn the_card_signing_domain_derives_the_exact_pinned_bytes() {
+    assert_eq!(
+        crate::a2a::sign::CARD_SIGNING_DOMAIN,
+        "a2a/agent-card-signing/v1"
+    );
+    for (seed, expected) in [
+        (
+            0u8,
+            "0bf68ad180162cd1cef2d93c0714a0bbc8584f6039fb39a4690589d11e82ecb5",
+        ),
+        (
+            7u8,
+            "9e3cc179e80446fc289701e3f0996a2305eedf7747bc082053f417f22bfbc14b",
+        ),
+    ] {
+        let token = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
+            &[seed; 32],
+            "pinned-card-domain",
+        );
+        assert_eq!(
+            hex::encode(token.derived_subkey_seed(crate::a2a::sign::CARD_SIGNING_DOMAIN)),
+            expected,
+            "the A2A card key derived off this signer must be byte-identical"
+        );
+    }
+}
