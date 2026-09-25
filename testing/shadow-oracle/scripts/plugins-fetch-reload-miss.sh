@@ -84,6 +84,9 @@ models:
 rate_card:
   m-openai-chat: { input_utok: 100000, output_utok: 200000 }
 EOF
+# The operator upgrade step (owner ruling Q42, docs/migration-1.6.md): the binary under test adds, at 0,
+# each billable class it names as unconfigured on this card. The 1.5.5 golden names none: its config runs as written.
+"${BUSBAR_ORACLE_BIN:?}" upgrade-config "$BIN" "$W/config.yaml" || exit 1
 
 ( cd "$W/serve" && exec python3 -m http.server "$FP" --bind 127.0.0.1 ) >"$W/fileserver.log" 2>&1 &
 fs_pid=$!; track_pid "$fs_pid"
