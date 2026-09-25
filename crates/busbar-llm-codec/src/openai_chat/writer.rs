@@ -4,14 +4,7 @@ impl ProtocolWriter for OpenAiWriter {
     fn probe_request(&self) -> serde_json::Value {
         // The ping IR is built by the plugin (ir_encode::ping_request); this dialect serializes it
         // through its own write_request, so the probe body matches a real request on this wire.
-        // The probe keeps its 1.5.5 `max_tokens` spelling: it is stamped as an OpenAI-origin cap,
-        // so the cross-protocol `max_completion_tokens` default (OAI-01) does not move its bytes.
-        let mut ping = super::super::ir_encode::ping_request();
-        ping.extra.insert(
-            MAX_COMPLETION_TOKENS_SENTINEL.to_string(),
-            serde_json::Value::Bool(false),
-        );
-        self.write_request(&ping)
+        self.write_request(&super::super::ir_encode::ping_request())
     }
 
     fn upstream_path(&self) -> &str {
@@ -27,6 +20,15 @@ impl ProtocolWriter for OpenAiWriter {
     }
 
     fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value {
+        self.write_request_for_lane(req, "", &LaneCaps::default())
+    }
+
+    fn write_request_for_lane(
+        &self,
+        req: &crate::ir::IrRequest,
+        _model: &str,
+        caps: &LaneCaps,
+    ) -> serde_json::Value {
         let mut messages_array: Vec<serde_json::Value> = Vec::new();
 
         // Prepend system message as first message if present. OpenAI system messages carry plain
@@ -337,26 +339,27 @@ impl ProtocolWriter for OpenAiWriter {
         );
 
         // Emit the modeled output-token cap. The reader promotes BOTH `max_tokens` and the modern
-        // `max_completion_tokens` into this one IR field and records the SOURCE spelling under
-        // `MAX_COMPLETION_TOKENS_SENTINEL` (true = `max_completion_tokens`, false = `max_tokens`), so
-        // an OpenAI-origin IR re-emits exactly the key the caller sent.
+        // `max_completion_tokens` into this one IR field and marks a cap that arrived as
+        // `max_completion_tokens` with `MAX_COMPLETION_TOKENS_SENTINEL`, so an OpenAI-origin IR
+        // re-emits that key.
         //
-        // A cap with NO sentinel came from another dialect (the seam clears `extra`) or from the
-        // cross-protocol max-tokens default. It is written as `max_completion_tokens` (OAI-01): that
-        // is the current Chat Completions parameter, `max_tokens` is its deprecated alias, and the
-        // o-series / gpt-5 reasoning models REJECT `max_tokens` with a 400 — so writing the legacy
-        // key failed every cross-protocol request routed to such a lane. The choice cannot be made
-        // per model here (the IR carries no model; the lane model is installed after this writer
-        // runs), and 1.5.5 had no per-model knowledge either; `max_completion_tokens` is the key
-        // every current OpenAI chat model accepts.
+        // A cap with NO sentinel (another dialect's — the seam clears `extra` — or the cap the seam
+        // injected) has a spelling that is a LANE fact this writer cannot see from the request: the
+        // o-series / gpt-5 models REJECT `max_tokens`, while an OpenAI-compatible host that does not
+        // know `max_completion_tokens` would run with NO output cap at all. So the lane's provider
+        // entry declares it (`max_output_key`, `LaneCaps::max_output_key`), and the default is
+        // `max_tokens` — what 1.5.5 wrote (OAI-01, architect ruling).
         if let Some(max_tokens) = req.max_tokens {
-            let key = match req
+            let completion_key = req
                 .extra
                 .get(MAX_COMPLETION_TOKENS_SENTINEL)
                 .and_then(|v| v.as_bool())
-            {
-                Some(false) => "max_tokens",
-                Some(true) | None => "max_completion_tokens",
+                .unwrap_or(false)
+                || caps.max_output_key == MaxOutputKey::MaxCompletionTokens;
+            let key = if completion_key {
+                "max_completion_tokens"
+            } else {
+                "max_tokens"
             };
             out.insert(key.to_string(), serde_json::json!(max_tokens));
         }

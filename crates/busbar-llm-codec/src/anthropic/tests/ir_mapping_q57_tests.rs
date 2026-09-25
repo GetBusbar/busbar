@@ -31,6 +31,48 @@ fn xreq(ingress: &'static str, egress: &str, body: &Value) -> Value {
     egress_p.writer().write_request(&req)
 }
 
+/// [`xreq`] onto a lane with the declared capabilities, through the production lane write.
+fn xreq_lane(
+    ingress: &'static str,
+    egress: &str,
+    body: &Value,
+    caps: &super::super::proto_codec::LaneCaps,
+) -> Value {
+    let egress_p = protocol_for(egress).expect("egress protocol");
+    let mut req = protocol_for(ingress)
+        .expect("ingress protocol")
+        .reader()
+        .read_request(body)
+        .expect("request reads");
+    super::super::chat_handle::chat_prepare_for_egress(
+        &mut req,
+        &busbar_substrate_values::ir::egress_prep::EgressPrep {
+            thought_signature_fill: false,
+            ingress_protocol: ingress,
+            egress_requires_max_tokens: true,
+            lane_default_max_tokens: None,
+            global_default_max_tokens: 4096,
+            reasoning_allowed: true,
+            reasoning_budgets: crate::ir::REASONING_BUDGET_DEFAULTS,
+            prompt_caching_allowed: true,
+            cache_control_cap: None,
+        },
+    );
+    egress_p
+        .writer()
+        .write_request_for_lane(&req, "claude-x", caps)
+}
+
+/// A lane of the newest Claude generation: declares adaptive thinking AND native structured
+/// outputs (the shipped catalog's model patterns turn both on for Opus 4.7+/5.x, Sonnet 5, Fable).
+fn newest_lane() -> super::super::proto_codec::LaneCaps {
+    super::super::proto_codec::LaneCaps {
+        anthropic_adaptive_thinking: true,
+        native_structured_output: true,
+        ..Default::default()
+    }
+}
+
 /// Cross-protocol buffered RESPONSE: `egress` (backend) reader → ingress seam → `ingress` writer.
 fn xresp(egress: &str, ingress: &'static str, body: &Value) -> Value {
     let egress_p = protocol_for(egress).expect("egress protocol");
@@ -211,8 +253,8 @@ fn ant06_output_config_format_is_read() {
     }
 }
 
-/// ANT-07 (with ANT-08): a foreign `response_format` rides Anthropic's native
-/// `output_config.format`. The caller's own `tool_choice` and parallelism survive untouched, no
+/// ANT-07 (with ANT-08): on a lane that declares native structured outputs, a foreign
+/// `response_format` rides Anthropic's native `output_config.format`. The caller's own `tool_choice` and parallelism survive untouched, no
 /// synthetic tool is invented, and the combination still carries under thinking.
 #[test]
 fn ant07_response_format_is_native_and_leaves_tool_choice_alone() {
@@ -226,7 +268,7 @@ fn ant07_response_format_is_native_and_leaves_tool_choice_alone() {
         "response_format": {"type": "json_schema", "json_schema": {"name": "out",
             "schema": {"type": "object", "properties": {"n": {"type": "object", "properties": {}}}}}}
     });
-    let out = xreq("openai", "anthropic", &body);
+    let out = xreq_lane("openai", "anthropic", &body, &newest_lane());
     assert_eq!(
         out["tool_choice"],
         json!({"type": "tool", "name": "lookup", "disable_parallel_tool_use": true}),
@@ -253,7 +295,7 @@ fn ant07_response_format_is_native_and_leaves_tool_choice_alone() {
     let mut thinking = body.clone();
     thinking.as_object_mut().unwrap().remove("tool_choice");
     thinking["reasoning_effort"] = json!("low");
-    let out2 = xreq("openai", "anthropic", &thinking);
+    let out2 = xreq_lane("openai", "anthropic", &thinking, &newest_lane());
     assert_eq!(out2["thinking"]["type"], "adaptive", "{out2}");
     assert_eq!(
         out2.pointer("/output_config/format/type"),
@@ -276,10 +318,68 @@ fn ant07_response_format_is_native_and_leaves_tool_choice_alone() {
         .unwrap();
     let anthropic = protocol_for("anthropic").unwrap();
     let w = anthropic.writer();
-    let out3 = w.write_request(&ir);
+    let out3 = w.write_request_for_lane(&ir, "claude-x", &newest_lane());
     assert!(out3.get("output_config").is_none(), "{out3}");
     assert_eq!(out3["tools"].as_array().unwrap().len(), 1, "{out3}");
-    assert!(w.dropped_egress_controls(&ir).contains(&"response_format"));
+    assert!(w
+        .dropped_egress_controls_for_lane(&ir, &newest_lane())
+        .contains(&"response_format"));
+}
+
+/// ANT-07, the lane that does NOT declare native structured outputs (the default — Claude 3.x,
+/// Sonnet 4 / Opus 4.0 400 on `output_config.format`): the directive takes the pre-capability
+/// forced-tool form, byte for byte what this writer sent before the capability existed, and the
+/// forced answer is mapped back to text on the buffered path.
+#[test]
+fn ant07_default_lane_keeps_the_forced_tool() {
+    let body = json!({
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "response_format": {"type": "json_schema", "json_schema": {"name": "out",
+            "schema": {"type": "object", "properties": {"n": {"type": "integer"}}}}}
+    });
+    let out = xreq_lane("openai", "anthropic", &body, &Default::default());
+    assert!(out.get("output_config").is_none(), "{out}");
+    assert_eq!(
+        out["tool_choice"],
+        json!({"type": "tool", "name": "busbar_response_format"}),
+        "{out}"
+    );
+    assert_eq!(
+        out["tools"][0]["input_schema"],
+        json!({"type": "object", "properties": {"n": {"type": "integer"}}}),
+        "{out}"
+    );
+    // The model-blind write is the default-lane write.
+    assert_eq!(xreq("openai", "anthropic", &body), out);
+    // A schema-less JSON mode is carried (permissive object schema), so nothing is reported dropped.
+    let ir = protocol_for("openai")
+        .unwrap()
+        .reader()
+        .read_request(
+            &json!({"model": "m", "messages": [{"role": "user", "content": "hi"}],
+            "response_format": {"type": "json_object"}}),
+        )
+        .unwrap();
+    let anthropic = protocol_for("anthropic").unwrap();
+    let w = anthropic.writer();
+    assert!(!w
+        .dropped_egress_controls_for_lane(&ir, &Default::default())
+        .contains(&"response_format"));
+
+    // The forced tool_use answer comes back to a foreign client as text.
+    let resp = json!({"id": "msg_1", "type": "message", "role": "assistant", "model": "claude-x",
+        "content": [{"type": "tool_use", "id": "toolu_1", "name": "busbar_response_format",
+                     "input": {"n": 3}}],
+        "stop_reason": "tool_use", "stop_sequence": null,
+        "usage": {"input_tokens": 3, "output_tokens": 4}});
+    let o = xresp("anthropic", "openai", &resp);
+    assert_eq!(
+        o["choices"][0]["message"]["content"],
+        json!("{\"n\":3}"),
+        "{o}"
+    );
+    assert_eq!(o["choices"][0]["finish_reason"], json!("stop"), "{o}");
 }
 
 /// ANT-09: Anthropic adaptive thinking and `output_config.effort` reach foreign backends.
@@ -302,19 +402,30 @@ fn ant09_adaptive_thinking_and_effort_are_read() {
     );
 }
 
-/// ANT-10: a word-form reasoning ask reaches Anthropic as adaptive thinking + effort, never as
-/// `budget_tokens` (a 400 on Opus 4.7+/5.x, Sonnet 5 and Fable).
+/// ANT-10: a word-form reasoning ask reaches an adaptive-thinking lane (Opus 4.7+/5.x, Sonnet 5,
+/// Fable — where `budget_tokens` is a 400) as adaptive thinking + effort, and every other lane as
+/// `budget_tokens` (architect lane-capability ruling).
 #[test]
 fn ant10_effort_ask_is_written_as_adaptive() {
     let body = json!({"model": "gpt-5", "messages": [{"role": "user", "content": "hi"}],
                       "max_completion_tokens": 8000, "reasoning_effort": "medium"});
-    let out = xreq("openai", "anthropic", &body);
+    let out = xreq_lane("openai", "anthropic", &body, &newest_lane());
     assert_eq!(out["thinking"], json!({"type": "adaptive"}), "{out}");
     assert_eq!(
         out.pointer("/output_config/effort"),
         Some(&json!("medium")),
         "{out}"
     );
+    // A lane that does not declare adaptive thinking (the default) gets `budget_tokens`, the only
+    // on-mode Haiku 4.5 / Sonnet 4.5 / Opus 4.5 and older accept.
+    let old = xreq_lane("openai", "anthropic", &body, &Default::default());
+    assert_eq!(old["thinking"]["type"], json!("enabled"), "{old}");
+    assert_eq!(
+        old["thinking"]["budget_tokens"],
+        json!(crate::ir::REASONING_BUDGET_DEFAULTS[2].min(8000 - 1024)),
+        "{old}"
+    );
+    assert!(old.get("output_config").is_none(), "{old}");
 }
 
 /// ANT-11: `model_context_window_exceeded` is a length cut-off on every foreign client, buffered and

@@ -246,7 +246,7 @@ fn bed06_bedrock_thinking_is_written_only_for_a_claude_lane_model() {
         .read_request(&body)
         .expect("read");
     let write = |model: &str| {
-        let mut h = crate::chat_handle::ChatReqHandle(ir.clone());
+        let mut h = crate::chat_handle::ChatReqHandle(ir.clone(), Default::default());
         match h.write_egress_request("bedrock", model) {
             busbar_substrate_values::wire::EgressWire::Json(v) => v,
             _ => panic!("chat writes JSON"),

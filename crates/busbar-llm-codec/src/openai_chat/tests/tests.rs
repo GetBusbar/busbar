@@ -412,7 +412,7 @@ fn write_request_forces_logprobs_flag_when_only_top_logprobs_present() {
 }
 
 #[test]
-fn write_request_emits_modeled_cap_as_max_completion_tokens() {
+fn write_request_emits_max_tokens_from_modeled_cap() {
     let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
@@ -442,10 +442,13 @@ fn write_request_emits_modeled_cap_as_max_completion_tokens() {
         extra: serde_json::Map::new(),
     };
     let out = openai_writer().write_request(&req);
-    // An IR cap with no OpenAI source spelling (empty `extra`: another dialect's request, or the
-    // seam default) is written as `max_completion_tokens` (OAI-01), and only once.
-    assert_eq!(out["max_completion_tokens"], serde_json::json!(512));
-    assert!(out.as_object().expect("object").get("max_tokens").is_none());
+    assert_eq!(out["max_tokens"], serde_json::json!(512));
+    // No stray `max_completion_tokens` (it is folded into the single modeled cap).
+    assert!(out
+        .as_object()
+        .expect("object")
+        .get("max_completion_tokens")
+        .is_none());
 }
 
 #[test]
@@ -478,10 +481,9 @@ fn max_completion_tokens_survives_read_write_roundtrip() {
 }
 
 #[test]
-fn max_completion_tokens_is_the_cross_protocol_cap_key() {
-    // On the CROSS-protocol seam `extra` is cleared (the source-spelling sentinel vanishes with
-    // it), so the cap is written as `max_completion_tokens` — the key the o-series / gpt-5 lanes
-    // require (they 400 on `max_tokens`) and every current OpenAI chat model accepts (OAI-01).
+fn max_completion_tokens_maps_to_max_tokens_cross_protocol() {
+    // On the CROSS-protocol seam `extra` is cleared (the sentinel vanishes with it), so the
+    // cap re-emits as the canonical `max_tokens` — other protocols have no `max_completion_tokens`.
     // Mirror the seam by clearing extra before the write.
     let body = serde_json::json!({
         "messages": [{ "role": "user", "content": "hi" }],
@@ -491,13 +493,16 @@ fn max_completion_tokens_is_the_cross_protocol_cap_key() {
     ir.extra.clear(); // the translate seam clears extra on a cross-protocol hop
     let out = openai_writer().write_request(&ir);
     assert_eq!(
-        out["max_completion_tokens"],
+        out["max_tokens"],
         serde_json::json!(777),
-        "cross-protocol egress emits `max_completion_tokens`"
+        "cross-protocol egress emits the canonical `max_tokens`"
     );
     assert!(
-        out.as_object().expect("object").get("max_tokens").is_none(),
-        "cross-protocol egress must not carry `max_tokens`"
+        out.as_object()
+            .expect("object")
+            .get("max_completion_tokens")
+            .is_none(),
+        "cross-protocol egress must not carry `max_completion_tokens`"
     );
 }
 
@@ -5269,9 +5274,12 @@ fn chat_response_annotations_read_into_ir_citations() {
         Some("web_search_result_location"),
         "routes downstream writers to their web-search citation shape"
     );
-    assert!(
-        c.start_index.is_none() && c.end_index.is_none(),
-        "offsets must stay None until the byte-vs-character unit is established: {c:?}"
+    // SHR-01 (IR mapping Q57): OpenAI documents both offsets as CHARACTER indices into the
+    // message — the IR's unit — so they carry unconverted.
+    assert_eq!(
+        (c.start_index, c.end_index),
+        (Some(7), Some(20)),
+        "the url_citation span must carry: {c:?}"
     );
 }
 

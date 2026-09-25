@@ -3175,8 +3175,9 @@ fn write_request_downgrades_forced_tool_choice_to_auto_when_thinking_emitted() {
     );
 }
 
-/// response_format → NATIVE structured outputs (ANT-07). A cross-protocol IR carrying a
-/// schema-bearing `response_format` reaching the Anthropic writer is projected onto Anthropic's
+/// response_format → NATIVE structured outputs (ANT-07) on a lane that declares them
+/// (`LaneCaps::native_structured_output`). A cross-protocol IR carrying a schema-bearing
+/// `response_format` reaching the Anthropic writer for such a lane is projected onto Anthropic's
 /// `output_config.format` (json_schema) — never a synthetic forced tool, which overwrote the caller's
 /// `tool_choice` and 400s on models that reject forced tool use. Asserts (a) no bare
 /// `response_format` key leaks, (b) no synthetic tool and no forced `tool_choice` are invented, and
@@ -3209,7 +3210,14 @@ fn write_request_projects_response_format_to_native_output_config() {
         ..Default::default()
     };
 
-    let out = anthropic_writer().write_request(&req);
+    let out = anthropic_writer().write_request_for_lane(
+        &req,
+        "claude-opus-5",
+        &busbar_substrate_values::ir::egress_prep::LaneCaps {
+            native_structured_output: true,
+            ..Default::default()
+        },
+    );
 
     assert!(
         !out.as_object().unwrap().contains_key("response_format"),
@@ -3236,12 +3244,15 @@ fn write_request_projects_response_format_to_native_output_config() {
     );
 }
 
-/// With native structured outputs there is no synthetic tool to map back (ANT-08): a response
-/// `tool_use` block is ALWAYS a real tool call, whatever its name, so the buffered reader and the
-/// streamed reader agree on it (the stream path never had the map-back, which is how a streaming
-/// JSON-mode client used to see a tool call).
+/// Only a lane WITHOUT native structured outputs (the default) is sent the forced tool; a native
+/// lane's answer is ordinary text and never carries the sentinel name.
+/// response_format tool-forcing MAP-BACK. The Anthropic response reader must project a forced
+/// `tool_use` block named `busbar_response_format` back to a plain assistant TEXT block carrying the
+/// tool input as JSON (the structured output the caller expects), and normalize the `tool_use`
+/// stop_reason to `end_turn`. A genuine (non-sentinel) tool_use must be left untouched.
 #[test]
-fn read_response_never_rewrites_a_tool_use_block() {
+fn read_response_maps_forced_response_format_tool_use_back_to_text() {
+    // Forced sentinel tool_use → structured text + end_turn.
     let body = serde_json::json!({
         "role": "assistant",
         "content": [{
@@ -3256,9 +3267,38 @@ fn read_response_never_rewrites_a_tool_use_block() {
     let resp = AnthropicReader
         .read_response(&body)
         .expect("valid response");
+    assert_eq!(resp.content.len(), 1, "one content block");
+    match &resp.content[0] {
+        crate::ir::IrBlock::Text { text, .. } => {
+            let v: serde_json::Value = serde_json::from_str(text).expect("text is JSON");
+            assert_eq!(v.pointer("/answer"), Some(&serde_json::json!("42")));
+        }
+        other => panic!("forced tool_use must map back to a Text block; got {other:?}"),
+    }
+    assert_eq!(
+        resp.stop_reason,
+        Some(crate::ir::IrStopReason::EndTurn),
+        "a forced-response-format tool_use stop_reason must normalize to end_turn"
+    );
+
+    // Regression proof: a genuine, non-sentinel tool_use is NOT rewritten.
+    let native = serde_json::json!({
+        "role": "assistant",
+        "content": [{
+            "type": "tool_use",
+            "id": "toolu_2",
+            "name": "get_weather",
+            "input": {"city": "SF"}
+        }],
+        "stop_reason": "tool_use",
+        "usage": {"input_tokens": 3, "output_tokens": 5}
+    });
+    let resp = AnthropicReader
+        .read_response(&native)
+        .expect("valid response");
     assert!(
-        matches!(&resp.content[0], crate::ir::IrBlock::ToolUse { name, .. } if name == "busbar_response_format"),
-        "a tool_use block must stay a ToolUse block on the buffered path"
+        matches!(&resp.content[0], crate::ir::IrBlock::ToolUse { name, .. } if name == "get_weather"),
+        "a native tool_use must be left as a ToolUse block"
     );
     assert_eq!(resp.stop_reason, Some(crate::ir::IrStopReason::ToolUse));
 }

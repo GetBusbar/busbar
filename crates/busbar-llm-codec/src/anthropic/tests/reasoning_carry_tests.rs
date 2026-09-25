@@ -4,7 +4,21 @@
 use super::super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter};
 use super::{anthropic_writer, AnthropicReader};
 use crate::ir::{IrReasoningAsk, IrReasoningEffort};
-use busbar_substrate_values::ir::egress_prep::EgressPrep;
+use busbar_substrate_values::ir::egress_prep::{EgressPrep, LaneCaps};
+
+/// A lane that declares adaptive thinking (Opus 4.7+/5.x, Sonnet 5, Fable). Every word-form
+/// assertion below that expects `thinking:{type:"adaptive"}` is about such a lane; a lane that
+/// declares nothing gets `budget_tokens` (see `effort_on_a_default_lane_is_budget_tokens`).
+fn adaptive(ir: &crate::ir::IrRequest) -> serde_json::Value {
+    anthropic_writer().write_request_for_lane(
+        ir,
+        "claude-opus-5",
+        &LaneCaps {
+            anthropic_adaptive_thinking: true,
+            ..LaneCaps::default()
+        },
+    )
+}
 
 fn openai_effort_body(effort: &str) -> serde_json::Value {
     serde_json::json!({
@@ -28,9 +42,29 @@ fn openai_effort_projects_to_anthropic_adaptive_effort() {
     );
     assert!(!ir.extra.contains_key("reasoning_effort"));
 
-    let out = anthropic_writer().write_request(&ir);
+    let out = adaptive(&ir);
     assert_eq!(out["thinking"], serde_json::json!({"type": "adaptive"}));
     assert_eq!(out["output_config"]["effort"], "high");
+}
+
+/// The same word-form ask on a lane that does NOT declare adaptive thinking (the default — Haiku
+/// 4.5, Sonnet 4.5, Opus 4.5 and older, which reject adaptive) is `thinking.budget_tokens` through
+/// the effort table, and no `output_config.effort` (ANT-10, architect lane-capability ruling).
+#[test]
+fn effort_on_a_default_lane_is_budget_tokens() {
+    let ir = super::super::openai_chat::OpenAiReader
+        .read_request(&openai_effort_body("high"))
+        .expect("parses");
+    let out =
+        anthropic_writer().write_request_for_lane(&ir, "claude-sonnet-4-5", &LaneCaps::default());
+    assert_eq!(
+        out["thinking"],
+        serde_json::json!({"type": "enabled", "budget_tokens": crate::ir::REASONING_BUDGET_DEFAULTS[3]}),
+        "{out}"
+    );
+    assert!(out.get("output_config").is_none(), "{out}");
+    // The model-blind write is the default-lane write.
+    assert_eq!(anthropic_writer().write_request(&ir), out);
 }
 
 /// Anthropic budget -> Gemini `thinkingBudget` is a straight number copy; and Gemini's
@@ -113,13 +147,14 @@ fn anthropic_clamps_and_drops_by_max_tokens() {
         "no room -> no thinking: {out2}"
     );
 
-    // A word-form ask at the same small max_tokens is adaptive: nothing to clamp, still emitted.
+    // A word-form ask at the same small max_tokens on an ADAPTIVE lane: nothing to clamp, still
+    // emitted.
     let mut small = openai_effort_body("high");
     small["max_tokens"] = serde_json::json!(1500);
     let ir3 = super::super::openai_chat::OpenAiReader
         .read_request(&small)
         .expect("parses");
-    let out3 = anthropic_writer().write_request(&ir3);
+    let out3 = adaptive(&ir3);
     assert_eq!(out3["thinking"]["type"], "adaptive", "{out3}");
 }
 
@@ -133,7 +168,7 @@ fn thinking_omits_incompatible_sampling_knobs() {
     let ir = super::super::openai_chat::OpenAiReader
         .read_request(&body)
         .expect("parses");
-    let out = anthropic_writer().write_request(&ir);
+    let out = adaptive(&ir);
     assert_eq!(out["thinking"]["type"], "adaptive");
     assert_eq!(out["output_config"]["effort"], "low");
     assert!(
@@ -228,8 +263,9 @@ fn seam_gate_clears_or_stamps() {
         Some(IrReasoningAsk::Effort(IrReasoningEffort::High))
     );
     assert_eq!(allowed.reasoning_budgets, Some([1024, 2048, 3072, 4096]));
-    // An effort word projects to Anthropic as adaptive thinking at that effort (no table lookup).
-    let out = anthropic_writer().write_request(&allowed);
+    // An effort word projects to an adaptive lane as adaptive thinking at that effort (no table
+    // lookup).
+    let out = adaptive(&allowed);
     assert_eq!(out["thinking"]["type"], "adaptive");
     assert_eq!(out["output_config"]["effort"], "high");
 }
@@ -272,10 +308,10 @@ fn responses_effort_round_trips() {
     cleared.extra.clear();
     let out = Protocol::responses().writer().write_request(&cleared);
     assert_eq!(out["reasoning"]["effort"], "medium");
-    // Anthropic egress: medium -> adaptive thinking at effort medium.
+    // Anthropic egress on an adaptive lane: medium -> adaptive thinking at effort medium.
     let mut with_max = cleared;
     with_max.max_tokens = Some(32000);
-    let aout = anthropic_writer().write_request(&with_max);
+    let aout = adaptive(&with_max);
     assert_eq!(aout["thinking"]["type"], "adaptive");
     assert_eq!(aout["output_config"]["effort"], "medium");
 }

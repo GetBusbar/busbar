@@ -95,52 +95,36 @@ fn anthropic_req(extra: Value) -> Value {
 
 // ── OAI-01: the output cap crossing into an OpenAI lane ─────────────────────────────────────────
 
-/// OAI-01. A cross-protocol request (here Anthropic → OpenAI, with and without a reasoning ask)
-/// writes its output cap as `max_completion_tokens`, never `max_tokens` — the o-series / gpt-5
-/// lanes 400 on `max_tokens`.
+/// OAI-01 (codec half, architect ruling). The codec writer does NOT pick the spelling blind: a
+/// cross-protocol cap is written as `max_tokens` (the key every OpenAI-compatible host accepts), and
+/// the lane's provider entry decides at the egress seam whether it becomes `max_completion_tokens`.
+/// An OpenAI-origin IR keeps the caller's own spelling, and the sentinel never leaks.
 #[test]
-fn oai01_cross_protocol_cap_is_max_completion_tokens() {
-    for extra in [
-        json!({}),
-        json!({"thinking": {"type": "enabled", "budget_tokens": 2048}}),
-    ] {
-        let out = xreq("anthropic", "openai", &anthropic_req(extra));
-        assert_eq!(out["max_completion_tokens"], json!(100), "{out}");
-        assert!(out.get("max_tokens").is_none(), "{out}");
-    }
-    // Every other source dialect takes the same seam.
-    let gemini = json!({
-        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
-        "generationConfig": {"maxOutputTokens": 77}
-    });
-    let out = xreq("gemini", "openai", &gemini);
-    assert_eq!(out["max_completion_tokens"], json!(77), "{out}");
-    assert!(out.get("max_tokens").is_none(), "{out}");
-}
-
-/// OAI-01 control: an OpenAI-origin IR still re-emits the caller's own spelling, and the health
-/// probe keeps its `max_tokens` bytes.
-#[test]
-fn oai01_openai_origin_cap_keeps_source_spelling() {
+fn oai01_codec_writes_source_spelling_or_max_tokens() {
     use crate::proto_codec::{ProtocolReader, ProtocolWriter};
-    let ir = super::OpenAiReader
-        .read_request(&json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "hi"}],
-            "max_tokens": 9
-        }))
-        .expect("reads");
-    let out = super::openai_writer().write_request(&ir);
-    assert_eq!(out["max_tokens"], json!(9), "{out}");
+    let out = xreq("anthropic", "openai", &anthropic_req(json!({})));
+    assert_eq!(out["max_tokens"], json!(100), "{out}");
     assert!(out.get("max_completion_tokens").is_none(), "{out}");
-    assert!(
-        out.get("__busbar_max_completion_tokens").is_none(),
-        "sentinel leaked: {out}"
-    );
 
-    let probe = super::openai_writer().probe_request();
-    assert_eq!(probe["max_tokens"], json!(1), "{probe}");
-    assert!(probe.get("max_completion_tokens").is_none(), "{probe}");
+    for (key, other) in [
+        ("max_tokens", "max_completion_tokens"),
+        ("max_completion_tokens", "max_tokens"),
+    ] {
+        let ir = super::OpenAiReader
+            .read_request(&json!({
+                "model": "gpt-5",
+                "messages": [{"role": "user", "content": "hi"}],
+                key: 9
+            }))
+            .expect("reads");
+        let out = super::openai_writer().write_request(&ir);
+        assert_eq!(out[key], json!(9), "{out}");
+        assert!(out.get(other).is_none(), "{out}");
+        assert!(
+            !out.to_string().contains("__busbar"),
+            "sentinel leaked: {out}"
+        );
+    }
 }
 
 // ── OAI-04: a structured-json tool result reaches the OpenAI tool message ───────────────────────
@@ -694,4 +678,39 @@ fn oai07_legacy_function_calling_request_maps() {
         "{same}"
     );
     assert!(!same.to_string().contains("__busbar"), "{same}");
+}
+
+/// OAI-01 (lane half, architect ruling). A lane that declares `max_output_key:
+/// max_completion_tokens` receives a cross-protocol cap — the caller's, and the one the seam injects
+/// — as `max_completion_tokens`; a lane that declares nothing receives `max_tokens`.
+#[test]
+fn oai01_lane_max_output_key_decides_the_cross_protocol_spelling() {
+    use crate::proto_codec::{LaneCaps, MaxOutputKey, ProtocolReader, ProtocolWriter};
+    let completion_lane = LaneCaps {
+        max_output_key: MaxOutputKey::MaxCompletionTokens,
+        ..LaneCaps::default()
+    };
+    let mut ir = crate::proto_codec::protocol_for("anthropic")
+        .expect("anthropic")
+        .reader()
+        .read_request(&anthropic_req(json!({})))
+        .expect("reads");
+    ir.extra.clear();
+    let w = super::openai_writer();
+    let on = w.write_request_for_lane(&ir, "gpt-5", &completion_lane);
+    assert_eq!(on["max_completion_tokens"], json!(100), "{on}");
+    assert!(on.get("max_tokens").is_none(), "{on}");
+    let off = w.write_request_for_lane(&ir, "llama-3", &LaneCaps::default());
+    assert_eq!(off["max_tokens"], json!(100), "{off}");
+    assert!(off.get("max_completion_tokens").is_none(), "{off}");
+
+    // A caller's own `max_completion_tokens` is never downgraded, whatever the lane declares.
+    let origin = super::OpenAiReader
+        .read_request(
+            &json!({"model": "m", "messages": [{"role": "user", "content": "hi"}],
+            "max_completion_tokens": 5}),
+        )
+        .expect("reads");
+    let kept = w.write_request_for_lane(&origin, "llama-3", &LaneCaps::default());
+    assert_eq!(kept["max_completion_tokens"], json!(5), "{kept}");
 }

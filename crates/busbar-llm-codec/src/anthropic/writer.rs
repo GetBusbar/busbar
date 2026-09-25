@@ -130,6 +130,14 @@ impl ProtocolWriter for AnthropicWriter {
     }
 
     fn dropped_egress_controls(&self, req: &crate::ir::IrRequest) -> Vec<&'static str> {
+        self.dropped_egress_controls_for_lane(req, &LaneCaps::default())
+    }
+
+    fn dropped_egress_controls_for_lane(
+        &self,
+        req: &crate::ir::IrRequest,
+        caps: &LaneCaps,
+    ) -> Vec<&'static str> {
         // Mirrors the `write_request` warns: Anthropic's Messages API has no native OpenAI-family
         // sampling controls `frequency_penalty`/`presence_penalty`/`seed`/`n`, so a cross-protocol
         // request carrying any of them has that control dropped on egress. A SCHEMA-carrying
@@ -137,10 +145,13 @@ impl ProtocolWriter for AnthropicWriter {
         // `output_config.format`. A schema-LESS JSON mode (`json_object`) has no Anthropic form, so
         // it IS listed — the seam records the drop rather than it vanishing.
         let mut dropped = Vec::new();
-        if req
-            .response_format
-            .as_ref()
-            .is_some_and(|rf| rf.json && rf.schema.is_none())
+        // Only a NATIVE-structured-output lane drops a schema-less JSON mode; the forced-tool form
+        // (the default) carries it with a permissive object schema.
+        if caps.native_structured_output
+            && req
+                .response_format
+                .as_ref()
+                .is_some_and(|rf| rf.json && rf.schema.is_none())
         {
             dropped.push("response_format");
         }
@@ -160,6 +171,15 @@ impl ProtocolWriter for AnthropicWriter {
     }
 
     fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value {
+        self.write_request_for_lane(req, "", &LaneCaps::default())
+    }
+
+    fn write_request_for_lane(
+        &self,
+        req: &crate::ir::IrRequest,
+        _model: &str,
+        caps: &LaneCaps,
+    ) -> serde_json::Value {
         let mut out = serde_json::Map::new();
         // Anthropic's Messages API has NO `system` role inside `messages` — system content lives in
         // the top-level `system` field. Anthropic's OWN reader canonicalizes a wire `role:"system"`
@@ -264,29 +284,92 @@ impl ProtocolWriter for AnthropicWriter {
         // Only a SCHEMA-carrying directive has a native form: Anthropic has no schema-less JSON
         // mode (`json_object`), so that one is dropped with a warn and reported through
         // `dropped_egress_controls` (NOT-REPRESENTABLE — no invented schema).
-        if let Some(rf) = req.response_format.as_ref().filter(|rf| rf.json) {
-            match &rf.schema {
-                Some(schema) => {
-                    let mut schema = schema.clone();
-                    close_object_schemas(&mut schema);
-                    // The schema description (OpenAI `json_schema.description`) has no sibling slot
-                    // in `output_config.format`; JSON Schema's own `description` keyword carries it
-                    // when the schema does not already describe itself.
-                    if let (Some(desc), Some(obj)) = (&rf.description, schema.as_object_mut()) {
-                        obj.entry("description")
-                            .or_insert_with(|| serde_json::json!(desc));
+        // Which form a structured-output directive takes is a LANE capability
+        // (`LaneCaps::native_structured_output`, declared per provider / model in the catalog), not
+        // something this writer can see from the request: the native form 400s on models that
+        // predate it (Claude 3.x, Sonnet 4 / Opus 4.0), and the forced-tool form 400s on models that
+        // reject forced tool use (Opus 4.7+/5.x, Sonnet 5, Fable 5.1). The default is the forced tool
+        // — what this writer sent before the capability existed — so nothing that worked stops.
+        if caps.native_structured_output {
+            if let Some(rf) = req.response_format.as_ref().filter(|rf| rf.json) {
+                match &rf.schema {
+                    Some(schema) => {
+                        let mut schema = schema.clone();
+                        close_object_schemas(&mut schema);
+                        // The schema description (OpenAI `json_schema.description`) has no sibling slot
+                        // in `output_config.format`; JSON Schema's own `description` keyword carries it
+                        // when the schema does not already describe itself.
+                        if let (Some(desc), Some(obj)) = (&rf.description, schema.as_object_mut()) {
+                            obj.entry("description")
+                                .or_insert_with(|| serde_json::json!(desc));
+                        }
+                        output_config.insert(
+                            "format".to_string(),
+                            serde_json::json!({ "type": OUTPUT_FORMAT_JSON_SCHEMA, "schema": schema }),
+                        );
                     }
-                    output_config.insert(
-                        "format".to_string(),
-                        serde_json::json!({ "type": OUTPUT_FORMAT_JSON_SCHEMA, "schema": schema }),
-                    );
+                    None => {
+                        tracing::warn!(
+                            parameter = "response_format",
+                            "dropping schema-less JSON mode on Anthropic egress: structured outputs \
+                             require a JSON schema and the Messages API has no schema-less JSON mode \
+                             (lossy-by-target)"
+                        );
+                    }
                 }
-                None => {
-                    tracing::warn!(
-                        parameter = "response_format",
-                        "dropping schema-less JSON mode on Anthropic egress: structured outputs \
-                         require a JSON schema and the Messages API has no schema-less JSON mode \
-                         (lossy-by-target)"
+            }
+        } else {
+            // response_format → Anthropic TOOL-FORCING. Anthropic's Messages API has NO native
+            // `response_format` field, so a structured-output / JSON-schema directive that crossed a
+            // protocol boundary (e.g. an OpenAI/Responses caller routed to a Claude backend) is
+            // translated to the idiomatic Anthropic mechanism: synthesize ONE tool whose `input_schema`
+            // IS the requested JSON schema and pin `tool_choice` to it, so the model MUST answer as that
+            // tool's input. The response reader recognizes `RESPONSE_FORMAT_TOOL_NAME` and maps the
+            // forced `tool_use` back to a plain assistant text block, so the caller sees structured
+            // content and never the synthetic tool. Placed BEFORE the thinking decision below so the
+            // forced `tool_choice` is subject to the same thinking-incompatibility downgrade as any other
+            // forced choice (Anthropic 400s on a forced/targeted tool_choice alongside extended thinking).
+            //
+            // DELIBERATE DIVERGENCE from the 1.5.5 golden: 1.5.5 DROPPED `response_format` here (the model
+            // got no schema and returned free-form prose — the owner-reported bug). Emitting the tool +
+            // tool_choice changes the upstream request bytes ON PURPOSE. Only reachable cross-protocol:
+            // same-protocol Anthropic relays the raw upstream body and never enters this writer.
+            if let Some(rf) = &req.response_format {
+                if rf.json {
+                    let mut tool = serde_json::Map::new();
+                    tool.insert(
+                        "name".to_string(),
+                        serde_json::json!(RESPONSE_FORMAT_TOOL_NAME),
+                    );
+                    tool.insert(
+                        "description".to_string(),
+                        serde_json::json!(rf.description.clone().unwrap_or_else(|| {
+                            "Respond by calling this tool with a JSON object that conforms to the \
+                             required schema."
+                                .to_string()
+                        })),
+                    );
+                    // Anthropic requires `input_schema` to be a JSON-Schema OBJECT. Use the caller's
+                    // schema when present; a schema-less `json_object` request (free-form JSON) falls
+                    // back to a permissive object schema so the tool definition stays valid.
+                    let schema = rf
+                        .schema
+                        .clone()
+                        .unwrap_or_else(|| serde_json::json!({"type": "object"}));
+                    tool.insert("input_schema".to_string(), schema);
+                    // Append to any tools the request already carried (create the array otherwise).
+                    match out.get_mut("tools").and_then(|v| v.as_array_mut()) {
+                        Some(arr) => arr.push(serde_json::Value::Object(tool)),
+                        None => {
+                            out.insert(
+                                "tools".to_string(),
+                                serde_json::Value::Array(vec![serde_json::Value::Object(tool)]),
+                            );
+                        }
+                    }
+                    out.insert(
+                        "tool_choice".to_string(),
+                        serde_json::json!({"type": "tool", "name": RESPONSE_FORMAT_TOOL_NAME}),
                     );
                 }
             }
@@ -308,7 +391,7 @@ impl ProtocolWriter for AnthropicWriter {
         // alongside thinking, so when the ask IS emitted those knobs are omitted (warned) below.
         let mut thinking_emitted = false;
         match req.reasoning {
-            Some(crate::ir::IrReasoningAsk::Effort(effort)) => {
+            Some(crate::ir::IrReasoningAsk::Effort(effort)) if caps.anthropic_adaptive_thinking => {
                 out.insert(
                     "thinking".to_string(),
                     serde_json::json!({ "type": THINKING_TYPE_ADAPTIVE }),
@@ -319,7 +402,7 @@ impl ProtocolWriter for AnthropicWriter {
                 );
                 thinking_emitted = true;
             }
-            Some(crate::ir::IrReasoningAsk::Dynamic) => {
+            Some(crate::ir::IrReasoningAsk::Dynamic) if caps.anthropic_adaptive_thinking => {
                 // "The model decides" IS adaptive thinking; no effort word is invented for it.
                 out.insert(
                     "thinking".to_string(),
@@ -327,10 +410,20 @@ impl ProtocolWriter for AnthropicWriter {
                 );
                 thinking_emitted = true;
             }
-            Some(ask @ crate::ir::IrReasoningAsk::Budget(_)) => {
+            // A numeric ask on every lane, and EVERY ask on a lane without adaptive thinking
+            // (`LaneCaps::anthropic_adaptive_thinking` false — the pre-capability default, and the
+            // only on-mode Haiku 4.5 / Sonnet 4.5 / Opus 4.5 and older accept): `budget_tokens`, a
+            // word projected through the operator's effort table.
+            Some(ask) => {
                 let table = req
                     .reasoning_budgets
                     .unwrap_or(crate::ir::REASONING_BUDGET_DEFAULTS);
+                if matches!(ask, crate::ir::IrReasoningAsk::Dynamic) {
+                    tracing::warn!(
+                        "gemini dynamic thinking (-1) has no Anthropic analog on this lane; \
+                         projecting as the 'medium' effort budget"
+                    );
+                }
                 let want = ask.to_budget(table);
                 let cap = req.max_tokens.map(|mt| mt.saturating_sub(1024));
                 let budget = cap.map_or(want, |c| want.min(c));

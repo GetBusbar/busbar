@@ -248,15 +248,16 @@ fn write_openai_service_tier(tier: Option<&str>) -> Option<&'static str> {
 /// model id keeps the synthesized value plausible.
 const DEFAULT_MODEL: &str = OPENAI_FAMILY_DEFAULT_MODEL;
 
-/// Busbar-internal sentinel key for output-cap source tracking. The reader folds BOTH `max_tokens`
-/// and the modern `max_completion_tokens` into the single IR `max_tokens` field so a caller's
-/// output-token cap survives the cross-protocol seam, and records the SOURCE spelling here (`true` =
-/// `max_completion_tokens`, `false` = `max_tokens`) so an OpenAI-origin IR re-emits the key the caller
-/// sent. `extra` is cleared on the cross-protocol seam, so the sentinel vanishes there, and a cap with
-/// no sentinel is written as `max_completion_tokens` — the key the o-series / gpt-5 reasoning models
-/// require (they 400 on `max_tokens`) and every current OpenAI chat model accepts (OAI-01). The
-/// `__busbar` prefix never collides with a real OpenAI field, and the writer consumes (does not leak)
-/// it.
+/// Busbar-internal sentinel key for `max_completion_tokens` source tracking. The reader folds BOTH `max_tokens` and the
+/// modern `max_completion_tokens` into the single IR `max_tokens` field so a caller's output-token
+/// cap survives the cross-protocol seam. But OpenAI's o1/o3 reasoning models REJECT `max_tokens` and
+/// require `max_completion_tokens`; an OpenAI->OpenAI passthrough to such a model that arrived as
+/// `max_completion_tokens` must re-emit `max_completion_tokens`, not `max_tokens`. The reader records
+/// the source spelling under this sentinel in `extra` so the writer can re-emit the SAME key on a
+/// same-protocol passthrough. `extra` is cleared on the cross-protocol seam, so the sentinel
+/// naturally vanishes there and a cross-protocol egress writes the key the LANE declares
+/// (`LaneCaps::max_output_key`, default `max_tokens` — OAI-01). The `__busbar` prefix never
+/// collides with a real OpenAI field, and the writer consumes (does not leak) it.
 const MAX_COMPLETION_TOKENS_SENTINEL: &str = "__busbar_max_completion_tokens";
 
 /// Busbar-internal sentinel key parking OpenAI's per-message PROVIDER-SPECIFIC fields — an assistant

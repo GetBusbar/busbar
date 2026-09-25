@@ -336,8 +336,9 @@ pub fn chat_usage(r: &IrResponse) -> Option<Billing> {
 
 // ─────────────────────────────── the handles ───────────────────────────────
 
-/// The chat REQUEST handle.
-pub struct ChatReqHandle(pub IrRequest);
+/// The chat REQUEST handle: the request, plus the egress lane's declared capabilities, which the
+/// seam records through `set_lane_caps` and the egress write hands to the writer.
+pub struct ChatReqHandle(pub IrRequest, pub super::proto_codec::LaneCaps);
 /// The chat RESPONSE handle.
 pub struct ChatRespHandle(pub IrResponse);
 
@@ -357,16 +358,24 @@ impl IrHandle for ChatReqHandle {
     fn prepare_for_egress(&mut self, prep: &EgressPrep) {
         chat_prepare_for_egress(&mut self.0, prep);
     }
+    fn set_lane_caps(&mut self, caps: busbar_substrate_values::ir::egress_prep::LaneCaps) {
+        self.1 = caps;
+    }
     fn egress_dropped_controls(&self, egress_proto: &str) -> Vec<&'static str> {
         super::proto_codec::protocol_for(egress_proto)
-            .map(|p| p.writer().dropped_egress_controls(&self.0))
+            .map(|p| {
+                p.writer()
+                    .dropped_egress_controls_for_lane(&self.0, &self.1)
+            })
             .unwrap_or_default()
     }
     fn write_egress_request(&mut self, egress_proto: &str, model: &str) -> EgressWire {
         // Chat is always a JSON body the router post-shapes (write_request_value == Some). The lane
-        // model rides along for the dialects whose spelling depends on the model family.
+        // model rides along for the dialects whose spelling depends on the model family, and the
+        // lane's declared capabilities (recorded by `set_lane_caps`) for the dialects whose
+        // spelling depends on what that model accepts.
         super::proto_codec::protocol_for(egress_proto)
-            .map(|p| EgressWire::Json(p.writer().write_request_for_model(&self.0, model)))
+            .map(|p| EgressWire::Json(p.writer().write_request_for_lane(&self.0, model, &self.1)))
             .unwrap_or_else(|| EgressWire::Bytes(Bytes::new()))
     }
 }
@@ -549,7 +558,7 @@ impl OperationHandler for ChatOperation {
             .ok_or_else(|| IngressReject::BadRequest(format!("unknown protocol {}", self.0)))?;
         p.reader()
             .read_request(v)
-            .map(|r| Box::new(ChatReqHandle(r)) as Box<dyn IrHandle>)
+            .map(|r| Box::new(ChatReqHandle(r, Default::default())) as Box<dyn IrHandle>)
             .map_err(|e| IngressReject::BadRequest(format!("{e:?}")))
     }
     fn read_response_value(&self, v: &Value) -> Result<Box<dyn IrHandle>, CodecError> {
@@ -573,7 +582,7 @@ impl OperationHandler for ChatOperation {
             .ok_or_else(|| IngressReject::BadRequest(format!("unknown protocol {}", self.0)))?;
         p.reader()
             .read_request(&v)
-            .map(|r| Box::new(ChatReqHandle(r)) as Box<dyn IrHandle>)
+            .map(|r| Box::new(ChatReqHandle(r, Default::default())) as Box<dyn IrHandle>)
             .map_err(|e| IngressReject::BadRequest(format!("{e:?}")))
     }
     fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {

@@ -16,6 +16,8 @@
 use http::StatusCode;
 // The protocol registry runtime relocated DOWN to `busbar_substrate_values::proto` (the reverse-edge rule):
 // this crate resolves `decl_for` / `ProtocolDecl` through the neutral ABI, not back into `busbar-core`.
+/// A lane's request-shape capabilities, handed to [`ProtocolWriter::write_request_for_lane`].
+pub use busbar_substrate_values::ir::egress_prep::{LaneCaps, MaxOutputKey};
 use busbar_substrate_values::proto as registry;
 use busbar_substrate_values::proto::{ArrayStreamFramer, DialectCodec, IrError};
 
@@ -225,6 +227,22 @@ pub trait ProtocolWriter: Send + Sync {
     /// Write an IR request to wire JSON.
     fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value;
 
+    /// THE PRODUCTION REQUEST WRITE: an IR request for a known egress lane — its resolved wire
+    /// `model` and its declared [`LaneCaps`]. Both request seams (the engine's cross-protocol hop via
+    /// `ChatReqHandle::write_egress_request`, the plane's `encode_egress`) call this. A dialect whose
+    /// wire shape depends on none of the capabilities keeps the default, which is exactly
+    /// [`Self::write_request_for_model`]; `write_request` itself is the default-capabilities,
+    /// model-blind write.
+    fn write_request_for_lane(
+        &self,
+        req: &crate::ir::IrRequest,
+        model: &str,
+        caps: &LaneCaps,
+    ) -> serde_json::Value {
+        let _ = caps;
+        self.write_request_for_model(req, model)
+    }
+
     /// Write an IR request for a KNOWN egress model — the production write the cross-protocol seam
     /// performs (`ChatReqHandle::write_egress_request`), where the resolved lane wire model is in
     /// hand. A dialect whose native spelling of a control depends on the model FAMILY behind the
@@ -298,6 +316,17 @@ pub trait ProtocolWriter: Send + Sync {
     /// is recorded as a first-class audit event by the cross-protocol seam). Default: none.
     fn dropped_egress_controls(&self, _req: &crate::ir::IrRequest) -> Vec<&'static str> {
         Vec::new()
+    }
+
+    /// [`Self::dropped_egress_controls`] for a lane with the declared [`LaneCaps`] — the set
+    /// [`Self::write_request_for_lane`] drops. Defaults to the capability-blind answer.
+    fn dropped_egress_controls_for_lane(
+        &self,
+        req: &crate::ir::IrRequest,
+        caps: &LaneCaps,
+    ) -> Vec<&'static str> {
+        let _ = caps;
+        self.dropped_egress_controls(req)
     }
 
     /// PERFORM the `path_base` body reshape `ProtocolDecl::reshapes_body_at_path_base` promised, returning

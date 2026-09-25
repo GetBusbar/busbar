@@ -44,3 +44,35 @@ pub struct EgressPrep<'a> {
     /// `EgressPrep`, matching how `reasoning_allowed`/`prompt_caching_allowed` are resolved.
     pub thought_signature_fill: bool,
 }
+
+/// Which key a dialect with two spellings of the output-token cap writes a CROSS-PROTOCOL cap under
+/// (a same-dialect request keeps the spelling its caller sent). Only the OpenAI Chat Completions
+/// dialect has two (`max_tokens`, `max_completion_tokens`); every other writer ignores this.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MaxOutputKey {
+    /// The key every OpenAI-compatible host accepts, and what 1.5.5 wrote. The default.
+    #[default]
+    MaxTokens,
+    /// The current key, REQUIRED by OpenAI's o-series / gpt-5 models (they reject `max_tokens`),
+    /// and not understood by every OpenAI-compatible host.
+    MaxCompletionTokens,
+}
+
+/// A lane's declared REQUEST-SHAPE capabilities: facts about what one upstream model accepts that a
+/// dialect writer cannot see from the request (the writer never sees the lane or its model). Each is
+/// declared per provider entry, with per-model patterns, in the provider catalog, and each DEFAULT is
+/// the form busbar sent before the capability existed, so a lane that declares nothing keeps
+/// receiving exactly the bytes it always did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LaneCaps {
+    /// See [`MaxOutputKey`].
+    pub max_output_key: MaxOutputKey,
+    /// The lane accepts adaptive thinking (`thinking:{type:"adaptive"}` plus `output_config.effort`)
+    /// — the only reasoning on-mode some Claude models accept. False: a reasoning ask is written as
+    /// `thinking.budget_tokens`, the form every other Claude model accepts.
+    pub anthropic_adaptive_thinking: bool,
+    /// The lane accepts native structured outputs (`output_config.format`). False: a structured
+    /// output directive is written in the dialect's pre-capability form (a forced tool on the
+    /// Anthropic wire).
+    pub native_structured_output: bool,
+}

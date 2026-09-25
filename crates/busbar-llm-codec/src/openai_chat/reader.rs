@@ -556,14 +556,13 @@ impl ProtocolReader for OpenAiReader {
             }
         }
 
-        // Stamp the source-key sentinel whenever a usable cap was read (never for a phantom cap):
-        // `true` when it arrived as `max_completion_tokens`, `false` when it arrived as `max_tokens`.
-        // Same-protocol only: `extra` is cleared on the cross-protocol seam, and a cap with NO
-        // sentinel is what tells the writer the request crossed from another dialect (OAI-01).
-        if max_tokens.is_some() {
+        // Stamp the source-key sentinel when the cap arrived as `max_completion_tokens` (and
+        // only when it produced a usable value, so we never claim a phantom cap). Same-protocol only:
+        // `extra` is cleared on the cross-protocol seam.
+        if max_completion_tokens_was_source && max_tokens.is_some() {
             extra.insert(
                 MAX_COMPLETION_TOKENS_SENTINEL.to_string(),
-                serde_json::Value::Bool(max_completion_tokens_was_source),
+                serde_json::Value::Bool(true),
             );
         }
         // Park the per-message participant names, only when at least one message carried one, so an
