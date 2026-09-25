@@ -203,16 +203,10 @@ switch    = "STRIKE THIS ROW in the commit that calls journal_checkpoint on a re
 # production writer and are DELETED. Model access stays the key/group pool ACL at the scope step; a
 # deny-list, if the owner wants one, is a new flagged config surface on the folded streaming plane.
 
-# NO NODE CAN LOAD A PLANE PLUGIN.
-[[capability]]
-id        = "plane-plugin-open"
-built     = "crates/plugin-loader/src/registry.rs"
-symbol    = "open_plane"
-construct = [".open_plane("]
-scope     = ["crates"]
-why       = "Of the registry's open_* kinds, open_auth/open_hook/open_secret/open_store all have production callers and open_plane has none, so no node can load a kind: plane plugin — the 1.6.0 plane ABI has a loader and no caller."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that calls open_plane from the composition root's plugin wiring. Already described at docs/design/BUSBAR-1.6.0.md:1627 — this row is that sentence made machine-readable."
+# PLANE PLUGINS — `plane-plugin-open` STRUCK 2026-09-25 (UC-GATE): 45a4bea96 (K4 keystone, item 40)
+# wired it. `main.rs` → `register_planes` → `root::linked::dropped_planes_of` →
+# `PluginRegistry::open_planes`, which opens every loadable `kind: plane` plugin through `open_plane`
+# (`crates/plugin-loader/src/registry.rs`), so a node loads a dropped-in plane at boot.
 
 # MID-LOG CORRUPTION — row `wal-corruption-verdict` STRUCK 2026-09-24 by owner ruling:
 # `recover_and_truncate` now branches on the scan's verdict (`.was_torn(`): a torn tail is cut

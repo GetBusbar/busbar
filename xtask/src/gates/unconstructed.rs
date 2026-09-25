@@ -168,7 +168,8 @@ pub const KNOWN_UNSHIPPED: &[&str] = &[
     // `money-one-function-view` STRUCK 2026-09-24 (owner ruling Q12/Q25c; item 421).
     // `voice-denied-destinations` STRUCK 2026-09-25 (Q67, revert to 1.5.5): the streaming plane's
     // unwired deny-list is deleted.
-    "plane-plugin-open",
+    // `plane-plugin-open` STRUCK 2026-09-25 (item 40, 45a4bea96): the root opens every dropped-in
+    // `kind: plane` plugin through `PluginRegistry::open_planes` -> `open_plane`.
     // `export-plugin-open` STRUCK 2026-09-25 (item 141): the composition root's dropped-in
     // export door opens each `kind: export` plugin an `export:` instance names (`open_export`).
     // `wal-corruption-verdict` STRUCK 2026-09-24 (owner ruling Q38): recover_and_truncate branches
