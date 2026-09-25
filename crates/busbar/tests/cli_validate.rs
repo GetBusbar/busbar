@@ -1349,6 +1349,7 @@ fn validate_refuses_none_on_a_secret_that_requires_a_credential() {
 /// verbatim. Mirrors `write_configs_with_api_key`'s shape (own `providers.yaml` + `config.yaml`,
 /// not the shared `write_configs` helper) because these tests vary the provider's `protocol:`,
 /// which `write_configs` hard-codes to `anthropic`.
+#[cfg(feature = "plane-decision")]
 fn write_decisions_configs(dir: &Path, protocol: &str, decisions_yaml: &str) {
     std::fs::write(
         dir.join("providers.yaml"),
@@ -1492,6 +1493,7 @@ fn validate_refuses_a_decisions_model_whose_provider_speaks_a_non_jev_dialect() 
 
 /// The published 1.5.5 refusal for `protocol: bogus`, byte for byte (golden cell
 /// `boot.refusal|BOOT-020|validate`).
+#[cfg(feature = "plane-decision")]
 const PROTOCOLS_1_5_5: &str =
     "must be one of: anthropic, openai, gemini, bedrock, responses, cohere\n";
 
