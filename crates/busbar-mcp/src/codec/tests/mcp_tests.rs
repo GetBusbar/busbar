@@ -640,10 +640,9 @@ fn the_declaration_registers_under_the_planes_key() {
 /// A SUBSCRIBE BODY PROJECTS ITS TARGET to the hook seam: a `prompt: ro` gate is shown the resource
 /// uri a `resources/subscribe` names, never an empty projection while the request forwards.
 ///
-/// Moved here from busbar-llm's `hook_non_chat_projection_tests` (K3; architect ruling "K3 intake
-/// list", N06): what it proves is THIS protocol's reader — the one the hook seam resolves by the
-/// registered protocol name and operation — so this plane tests it. The llm-side seam that groups the
-/// read content into the prompt projection keeps its own tests there.
+/// What it proves is THIS protocol's reader — the one the hook seam resolves by the registered
+/// protocol name and operation — so this plane tests it. The llm-side seam that groups the read
+/// content into the prompt projection keeps its own tests there.
 #[test]
 fn subscribe_body_projects_its_target() {
     use busbar_substrate_values::handlers::TranslateCodec as _;

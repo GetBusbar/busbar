@@ -427,7 +427,7 @@ pub static BODY_INGRESS: &[(&str, busbar_kernel::ingress::arrival::BodyIngress)]
 mod plane_decl_identity_tests;
 
 /// THE RESIDUAL-DIALECT TABLE — which of this plane's dialects a residual 404/405/413 is shaped in.
-/// Moved here from the kernel's cross-plane tests (K3): it asserts this plane's own declarations.
+/// It lives with the plane because it asserts this plane's own declarations.
 #[cfg(test)]
 #[path = "tests/residual_dialect_tests.rs"]
 mod residual_dialect_tests;
