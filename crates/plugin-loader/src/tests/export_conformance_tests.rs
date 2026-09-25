@@ -167,7 +167,7 @@ fn example_cdylib() -> Option<std::path::PathBuf> {
     if candidate.is_none() && std::env::var_os("CI").is_some() {
         panic!(
             "the export example plugin cdylib is not built under CI: `cargo test --workspace` must \
-             build busbar_export_example_plugin. Refusing to silently skip DECISIONS #11's \
+             build busbar_export_example_plugin. Refusing to silently skip design decision #11's \
              compiled-in vs dropped-in equivalence."
         );
     }
@@ -198,7 +198,7 @@ fn compiled_in_and_dropped_in_report_identical_observations() {
     assert_eq!(
         compiled, dropped,
         "compiled-in and dropped-in builds of ONE crate must hand the host identical \
-         observations — this is DECISIONS #11's real test"
+         observations — this is design decision #11's real test"
     );
     // And they must both have SAID something: an equivalence between two empty sequences is the
     // vacuous pass this test exists to avoid.

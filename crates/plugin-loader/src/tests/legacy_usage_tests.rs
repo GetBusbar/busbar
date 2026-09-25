@@ -66,7 +66,7 @@ fn one_delta() -> UsageDelta {
         requests: 1,
         billable_requests: 1,
         models: vec![ModelTokensDelta {
-            model: "m-openai-chat".to_string(),
+            model: "m-chat".to_string(),
             usage_units: [
                 (UNIT_INPUT.to_string(), 6i64),
                 (UNIT_OUTPUT.to_string(), 12i64),

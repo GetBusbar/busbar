@@ -359,8 +359,8 @@ fn a_serving_store() -> Arc<SeededRows> {
             models: vec![model("gpt-4", &[("input", 40)])],
         },
     );
-    store.seed_metering(WINDOW, metering_row("vk_a", "gpt-4", "openai"));
-    store.seed_metering(WINDOW, metering_row("vk_a", "gpt-4", "azure"));
+    store.seed_metering(WINDOW, metering_row("vk_a", "gpt-4", "prov-a"));
+    store.seed_metering(WINDOW, metering_row("vk_a", "gpt-4", "prov-b"));
     store
 }
 
@@ -456,7 +456,7 @@ fn the_opening_figures_equal_the_seeded_legacy_rows() {
 
     // The metering rows: the same day, one balance per lane and provider, and the cache-write
     // column is its own dimension rather than being folded into the input one.
-    for provider in ["openai", "azure"] {
+    for provider in ["prov-a", "prov-b"] {
         let pool = meter_pool_scope("gpt-4", provider);
         assert_eq!(
             opened(
@@ -830,7 +830,7 @@ fn an_opening_sealed_off_the_published_sqlite_store() {
             key_id: "vk_sqlite".to_string(),
             bucket: WINDOW,
             model: "gpt-4".to_string(),
-            provider: "openai".to_string(),
+            provider: "prov-a".to_string(),
             tokens_input: 1_234,
             tokens_output: 56,
             tokens_cache_read: 0,
@@ -872,7 +872,7 @@ fn an_opening_sealed_off_the_published_sqlite_store() {
             &opening.checkpoint.totals,
             "vk_sqlite",
             CapDimension::Class("input".into()),
-            meter_pool_scope("gpt-4", "openai")
+            meter_pool_scope("gpt-4", "prov-a")
         )
         .settled,
         1_234
