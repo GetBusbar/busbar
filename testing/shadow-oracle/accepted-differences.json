@@ -1278,6 +1278,262 @@
         "status": 1
       },
       "rationale": "Decision #64, quoted: \"#3: the `auth:` unknown-key error's 'expected one of' list gains `operator_pub` (a real new 1.6.0 auth field, D38 operator-sealing); exit code + main error unchanged — approved, oracle re-blesses `neutrality|NEUT-U-auth|validate`.\" MEASURED (measured 2026-09-24 by P3A-register against a fresh local ./bin/oracle record of HEAD 05c826a66): after D-1's diagnostic-code rewrite the only stderr difference is `operator_pub` inserted into the backtick list after `signing_key`. kind=additive with text_list_growth, so the runner proves the list only GREW (a removed, reordered or respelled key stays red) rather than blanketing the stream; it carries D-1's own diagnostic-code rewrite (an additive entry's list proof reads its OWN transform, not D-1's). PREMISE (evaluated): the exit code is unchanged (1), which is the other half of what #64 approved. (#64's BOOT-135 half needs no entry: boot.refusal|BOOT-135|boot is byte-identical to 1.5.5 again, bd51e2cab.)"
+    },
+    {
+      "id": "Q31 a request whose upstream is down bills only what the upstream reported (nothing)",
+      "kind": "breaking",
+      "changelog": "1.6.0 Changed: a request whose upstream fails is billed only the usage the upstream reports.",
+      "by": "owner (Matthew Jackson), 2026-09-24 ruling Q31 (via Q32)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-24",
+        "ruling": "Q31 as ruled in Q32: failures surface as errors + charge upstream-reported usage"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^billing\\|key-usage\\|after-upstream-down$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "billing|key-usage|after-upstream-down",
+            "pointer": "/spend_cents",
+            "equals": 0
+          },
+          {
+            "cell": "billing|key-usage|after-upstream-down",
+            "pointer": "/tokens",
+            "equals": 0
+          },
+          {
+            "cell": "billing|key-usage|after-upstream-down",
+            "pointer": "/requests",
+            "equals": 1
+          }
+        ]
+      },
+      "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): the key's usage after one chat whose upstream is DOWN (a 503 to the client) reads requests 1 / tokens 0 / spend_cents 0; 1.5.5 recorded requests 1 / tokens 18 / spend_cents 250 — it billed a request the upstream never answered. Owner ruling Q31 as ruled in Q32: a failed upstream charges only the usage the upstream reports, and a down upstream reports none. The cell's own `why` already stated the ruled figure (\"a 503: requests +1, billable refunded, spend 0\"). PREMISE (evaluated): exactly requests 1, tokens 0, spend 0 — any other figure withholds the entry. kind=breaking because it is a money figure a customer reads."
+    },
+    {
+      "id": "Q40 busbar_lane_state reads the pool's own breaker cell (a tripped lane reads 2, not 1)",
+      "kind": "improvement",
+      "changelog": "1.6.0 Changed: `busbar_lane_state` reads each pool's own breaker cell, so a lane tripped in a pool reads 2 there.",
+      "by": "owner (Matthew Jackson), 2026-09-24 ruling Q40 (via Q47)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-24",
+        "ruling": "Q40 as ruled in Q47: busbar_lane_state reads the pool's own cell (2 tripped, 1 only on a real half-open probe)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^(crosscut\\.traps\\|exhausted\\-retry\\-after\\-floor|documented\\|changelog\\|retry\\-after\\-floor|llm\\|anthropic\\|anthropic\\|request\\|upstream_down|llm\\|anthropic\\|cohere\\|request\\|upstream_down|llm\\|anthropic\\|gemini\\|request\\|upstream_down|llm\\|anthropic\\|openai\\|request\\|upstream_down|llm\\|bedrock\\|anthropic\\|request\\|upstream_down|llm\\|bedrock\\|cohere\\|request\\|upstream_down|llm\\|bedrock\\|gemini\\|request\\|upstream_down|llm\\|bedrock\\|openai\\|request\\|upstream_down|llm\\|cohere\\|anthropic\\|request\\|upstream_down|llm\\|cohere\\|cohere\\|request\\|upstream_down|llm\\|cohere\\|gemini\\|request\\|upstream_down|llm\\|cohere\\|openai\\|request\\|upstream_down|llm\\|gemini\\|anthropic\\|request\\|upstream_down|llm\\|gemini\\|cohere\\|request\\|upstream_down|llm\\|gemini\\|gemini\\|request\\|upstream_down|llm\\|gemini\\|openai\\|request\\|upstream_down|llm\\|openai\\|anthropic\\|request\\|upstream_down|llm\\|openai\\|cohere\\|request\\|upstream_down|llm\\|openai\\|gemini\\|request\\|upstream_down|llm\\|openai\\|openai\\|request\\|upstream_down|llm\\|responses\\|anthropic\\|request\\|upstream_down|llm\\|responses\\|cohere\\|request\\|upstream_down|llm\\|responses\\|gemini\\|request\\|upstream_down|llm\\|responses\\|openai\\|request\\|upstream_down|route\\.failover\\|fo\\|all\\-down|route\\.failover\\|fo\\|all\\-down\\-stream|route\\.failover\\|fo\\|primary\\-429|route\\.failover\\|fo\\|primary\\-5xx|route\\.failover\\|fo\\|primary\\-cut\\-body|route\\.failover\\|fo\\|primary\\-cut\\-stream|route\\.failover\\|fo\\|primary\\-down|route\\.failover\\|fo\\|second\\-request\\-after\\-trip)$",
+      "expected_cells": 34,
+      "classes": [
+        "effects.metrics"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "neutrality|metrics-series",
+            "body_contains": "busbar_lane_state Per-(pool,lane) circuit-breaker health: 0=healthy, 1=half-open, 2=tripped"
+          },
+          {
+            "cell": "ops.scrape|metrics|key",
+            "body_contains": "busbar_lane_state{pool=\"m-openai-chat\",lane=\"m-openai-chat\"} 0"
+          }
+        ]
+      },
+      "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): on each of these 34 cells the ONLY effects.metrics difference from 1.5.5 is busbar_lane_state{pool,lane} for the tripped lane reading 2 where 1.5.5 read 1 (every other metrics path is identical). route.failover|fo|primary-cut-body JOINS the list on this measurement: its spend series no longer moves since the cut-body billing fix landed, so lane_state 1 -> 2 is now its only metrics difference; any cell whose metrics move in any other path stays unnamed. Owner ruling Q40 as ruled in Q47: the gauge reads the pool's own cell, 2 when tripped, 1 only on a real half-open probe. SCOPE is the enumerated cell ids, not a family. PREMISE (evaluated, and bounded by what the runner's premise grammar can see — it reads status/body, never effects): the build serves the documented three-state per-(pool,lane) gauge and a HEALTHY lane still reads 0 on the scrape, so the forgiveness cannot cover a build whose healthy lanes moved. First registered from P3A-register's measurement of 05c826a66 (33 cells)."
+    },
+    {
+      "id": "Q41 an audit entry carries its record's scheme (served read)",
+      "kind": "additive",
+      "changelog": "1.6.0 Changed: every audit entry carries its `scheme`, the signing scheme of the record.",
+      "by": "owner (Matthew Jackson), 2026-09-24 ruling Q41 (via Q47)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-24",
+        "ruling": "Q41 as ruled in Q47: AuditEntry.scheme is required; regenerate openapi.json; upgrade notes list the change"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^admin\\.ops\\|GetAudit\\|ok$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "admin.ops|GetAudit|ok",
+            "pointer": "/items/0/scheme",
+            "equals": 2
+          },
+          {
+            "cell": "admin.ops|GetAudit|ok",
+            "pointer": "/items/3/scheme",
+            "equals": 2
+          }
+        ]
+      },
+      "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): GET /api/v1/admin/audit's four items each GAIN `scheme: 2`; every 1.5.5 member is unchanged. kind=additive so the runner still proves the candidate a JSON superset of the 1.5.5 page — a changed or removed audit member stays red. PREMISE (evaluated): the served entries carry scheme 2."
+    },
+    {
+      "id": "Q41 an audit entry carries its record's scheme (teller audit-record script)",
+      "kind": "breaking",
+      "changelog": "1.6.0 Changed: every audit entry carries its `scheme`, the signing scheme of the record.",
+      "by": "owner (Matthew Jackson), 2026-09-24 ruling Q41 (via Q47)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-24",
+        "ruling": "Q41 as ruled in Q47: AuditEntry.scheme is required; regenerate openapi.json; upgrade notes list the change"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^teller\\|audit-record$",
+      "expected_cells": 1,
+      "classes": [
+        "effects.script"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "admin.ops|GetAudit|ok",
+            "pointer": "/items/0/scheme",
+            "equals": 2
+          },
+          {
+            "cell": "teller|audit-record",
+            "pointer": "/audit_entry_delta",
+            "equals": 1
+          },
+          {
+            "cell": "teller|audit-record",
+            "pointer": "/newest_action",
+            "equals": "key.create"
+          }
+        ]
+      },
+      "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): the only difference is effects.script /audit_after/items/0/scheme and /newest_entry/scheme: absent -> 2. effects.script is a money-rated class, so only kind=breaking may take it. PREMISE (evaluated): the served audit entries carry scheme 2 and the teller step still seals exactly one key.create record (the step's own contract)."
+    },
+    {
+      "id": "#79 warm-up requests keep the card in force when they arrived (minor-unit-rounding)",
+      "kind": "breaking",
+      "changelog": "1.6.0 Changed: a request served before a rate-card edit keeps the price of the card in force when it arrived.",
+      "by": "owner (Matthew Jackson), spec #79 OWNER-LOCKED 2026-09-22",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-22",
+        "ruling": "spec #79 (docs/design/BUSBAR-1.6.0.md, OWNER-LOCKED 2026-09-22): a posting prices against the card in force when it arrived; publishing a new card never reprices the window before its effective_from. Registered under the architect ruling of 2026-09-24 that a cell whose only difference is a direct, measured consequence of an owner-locked row is registered citing that row with a premise pinning the exact figures"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^ledger\\|currency\\|minor-unit-rounding$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "ledger|currency|minor-unit-rounding",
+            "pointer": "/by_key/0/spend_micros",
+            "equals": 2500000
+          },
+          {
+            "cell": "ledger|currency|minor-unit-rounding",
+            "pointer": "/by_key/1/spend_micros",
+            "equals": 18
+          },
+          {
+            "cell": "ledger|currency|minor-unit-rounding",
+            "pointer": "/by_key/2/spend_micros",
+            "equals": 2500000
+          },
+          {
+            "cell": "ledger|currency|minor-unit-rounding",
+            "pointer": "/by_model/0/spend_micros",
+            "equals": 5000018
+          },
+          {
+            "cell": "ledger|currency|minor-unit-rounding",
+            "pointer": "/total/spend_micros",
+            "equals": 5000018
+          },
+          {
+            "cell": "ledger|currency|minor-unit-rounding",
+            "pointer": "/total/requests",
+            "equals": 3
+          }
+        ]
+      },
+      "rationale": "The cell PUTs a card at ONE micro-unit per token, sends one chat (oracle-ok), then reads GET /admin/usage. The two other keys (oracle-broke, oracle-quota) each served one warm-up request BEFORE the PUT, under the boot card. 1.5.5 repriced every row at read time: 18 / 18 / 18, total 54. Spec #79 (owner-locked): each posting is priced at the card in force at its arrival, so the two warm-up rows keep the boot card's 2,500,000 and only the post-edit chat reads 18: 2,500,000 / 18 / 2,500,000, by_model and total 5,000,018. MEASURED (measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build) with ONE scratch step, said out loud: the landed operator upgrade step applies to the configs the harness boots and the script cells write, NOT to the rate card this cell PUTs through the admin API, and HEAD refuses that 1.5.5-shaped card (400 `pools.rate_card does not configure billable unit(s) search_units declared by this plane`), so at HEAD the edit never happens and the cell reads 2,500,000 x3 / 7,500,000 — a refused write, not #79, and NOT forgiven here (the premise is FALSE on that build and the runner withholds this entry). With the same upgrade step applied to the cell's PUT body (units: {search_units: 0} on each entry, scratch copy of cells.json in the measuring worktree only) the cell reads exactly the five #79 figures above, the only differences from 1.5.5 being those five spend_micros leaves (by_key/1 unchanged at 18). PREMISE (evaluated): exactly those figures and 3 requests — a build whose figures differ in any digit withholds the entry, so it forgives nothing broader than #79. kind=breaking because it is a money figure a customer reads. D-3's note that this cell was out of its scope stands: this entry, not D-3, carries it."
+    },
+    {
+      "id": "#79 applying a config does not reprice recorded spend (PostConfigApply metrics series)",
+      "kind": "breaking",
+      "changelog": "1.6.0 Changed: applying a config no longer reprices spend already recorded in the `/metrics` spend series.",
+      "by": "owner (Matthew Jackson), spec #79 OWNER-LOCKED 2026-09-22",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-22",
+        "ruling": "spec #79 (docs/design/BUSBAR-1.6.0.md, OWNER-LOCKED 2026-09-22): a posting prices against the card in force when it arrived; publishing a new card never reprices the window before its effective_from. Registered under the architect ruling of 2026-09-24 that a cell whose only difference is a direct, measured consequence of an owner-locked row is registered citing that row with a premise pinning the exact figures"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^admin\\.ops\\|PostConfigApply\\|(ok|if-match-stale)$",
+      "expected_cells": 2,
+      "classes": [
+        "effects.metrics"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "admin.ops|PostConfigApply|ok",
+            "status": 200
+          },
+          {
+            "cell": "admin.ops|PostConfigApply|ok",
+            "pointer": "/applied",
+            "equals": true
+          },
+          {
+            "cell": "admin.ops|PostConfigApply|ok",
+            "pointer": "/config_version",
+            "equals": 1
+          },
+          {
+            "cell": "admin.ops|PostConfigApply|if-match-stale",
+            "status": 200
+          },
+          {
+            "cell": "admin.ops|PostConfigApply|if-match-stale",
+            "pointer": "/applied",
+            "equals": true
+          },
+          {
+            "cell": "admin.ops|PostConfigApply|if-match-stale",
+            "pointer": "/config_version",
+            "equals": 1
+          }
+        ]
+      },
+      "rationale": "Both cells POST /api/v1/admin/config/apply with a config that carries NO rate_card, after the oracle's warm-up in which key oracle-broke (group broke) was charged 250 cents under the boot card. 1.5.5 repriced that recorded spend at the applied (card-less) config: effects.metrics moved busbar_key_spend_cents{broke key} -250, busbar_bucket_spend_cents{group:broke@day} -250 and busbar_bucket_budget_remaining_cents{group:broke@day} +1. Spec #79 (owner-locked): a posting is priced at the card in force when it arrived, and publishing a new card never reprices the window before its effective_from — 1.6.0 leaves all three series unchanged. MEASURED (measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): on both cells those three paths are the ONLY effects.metrics differences. NOT forgiven, and left RED for their own owner: norm.rules on both cells (the golden's audit.hash normalizer fired, the candidate's did not) and effects.readback on the ok cell (the settings readback gains `limits: {request_body_max_bytes: 33554432}` where 1.5.5 read null) — neither is a #79 consequence. PREMISE (evaluated, bounded by what the runner's premise grammar can see — status/body, never effects): each apply was ACCEPTED (200, applied true, config_version 1), so the entry can never cover a build where the metric moved because the apply was refused. kind=breaking because the series are money figures an operator reads."
     }
   ]
 }

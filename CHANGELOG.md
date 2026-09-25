@@ -454,6 +454,30 @@ identically, and every 1.5.5 key and minted secret carries over.
   `POST /api/v1/admin/ledger/amend-rate-history` verb rather than editing the live card. See [the
   1.6.0 migration guide](docs/migration-1.6.md).
 
+- 1.6.0 Changed: a request whose upstream fails is billed only the usage the upstream reports.
+  1.5.5 charged a request whose upstream was down as if it had completed (18 tokens, 250 cents on
+  the oracle's card); 1.6.0 charges nothing for it, because the upstream reported nothing. The
+  request is still counted. **Migration:** none; a request whose upstream answered nothing no longer adds to a key's spend.
+- 1.6.0 Changed: `busbar_lane_state` reads each pool's own breaker cell, so a lane tripped in a pool reads 2 there.
+  1.5.5 read a lane's state across every pool, so a tripped lane could read 1 (half-open). 1.6.0
+  reads 2 while tripped and 1 only during a real half-open probe. **Migration:** alerts keyed on
+  `busbar_lane_state == 1` for a tripped lane should key on `2`.
+- 1.6.0 Changed: every audit entry carries its `scheme`, the signing scheme of the record.
+  `GET /api/v1/admin/audit` items gain `scheme`, and `openapi.json` marks it required.
+  **Migration:** none; every 1.5.5 member is unchanged.
+- 1.6.0 Changed: a request served before a rate-card edit keeps the price of the card in force when it arrived.
+  1.5.5 priced every row of `GET /api/v1/admin/usage` at the card current at read time, so a card
+  edited to one micro-unit per token made requests served earlier under a dearer card read 18
+  micro-units each; 1.6.0 reads them at the card they were served under (2,500,000 each on the
+  oracle's card). **Migration:** none; to change what an earlier window was charged, post a signed
+  correction through `POST /api/v1/admin/ledger/amend-rate-history`.
+- 1.6.0 Changed: applying a config no longer reprices spend already recorded in the `/metrics` spend series.
+  In 1.5.5, `POST /api/v1/admin/config/apply` with a config that drops the rate card moved
+  `busbar_key_spend_cents` and `busbar_bucket_spend_cents` down by what the earlier requests were
+  charged (250 cents on the oracle's card) and `busbar_bucket_budget_remaining_cents` up; in 1.6.0
+  those series keep each earlier request at the card in force when it arrived. **Migration:** none;
+  dashboards that read a drop in these series after an apply as a refund will no longer see one.
+
 - 1.6.0 Breaking: a provider whose `api_key` reference does not resolve now refuses boot; keyless
   local upstreams must declare `api_key: none`. 1.5.5 logged
   `[warn] provider <name> api_key (<reference>) empty` and started the lane with an empty
