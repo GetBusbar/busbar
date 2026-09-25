@@ -220,6 +220,7 @@ fn additive_red<'a>(
 /// The tracked file carrying `SecretRef`'s hand-written `Deserialize`, at its path today.
 const SECRETREF_SRC: &str = "crates/busbar-contract/src/secret_ref.rs";
 
+// qa-names: crates/secret-ref/src/lib.rs -- xtask/src/gates/config_schema/selftest.rs -- the baseline plant's path: SecretRef's source at the freeze point, before it moved into busbar-contract; the self-test plants the baseline under the historical name the gate reads
 /// The same file at the freeze point (`v1.5.3`), before it moved (`schema::MOVED_SOURCES`). The
 /// baseline is planted under this name because history is the only place the gate reads it from.
 const SECRETREF_BASE_SRC: &str = "crates/secret-ref/src/lib.rs";

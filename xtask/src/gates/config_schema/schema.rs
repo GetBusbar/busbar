@@ -258,6 +258,7 @@ fn core_file(cx: &Ctx, roots: &[String], rel: &str) -> Result<String, String> {
     }
 }
 
+// qa-names: crates/secret-ref/src/lib.rs -- xtask/src/gates/config_schema/schema.rs -- the path SecretRef's source had at the freeze point; the baseline is read from history under this old name, so it is absent from the tree on purpose
 /// TRACKED SOURCES THAT MOVED, as `(path today, path at the baseline)`. The baseline is read from
 /// history ([`crate::ctx::Ctx::git_show`]), where a moved file exists only under its old name, so
 /// the refusal see-through looks there too. Without this a verbatim move reads as a type whose
