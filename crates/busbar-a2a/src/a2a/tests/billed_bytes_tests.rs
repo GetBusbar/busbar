@@ -228,7 +228,7 @@ async fn a_streamed_relay_counts_every_frame() {
     let (status, _ct, body) = call_raw(&h, "planner", &envelope).await;
     assert_eq!(status, 200, "{body}");
     assert_eq!(body.matches("data:").count(), 3, "every frame was relayed");
-    assert!(h.sent()[0].streaming, "the hop went out as a stream");
+    assert!(h.sent()[0].is_stream, "the hop went out as a stream");
     // The ledger write lands on the relay thread as the hop settles; the caller's stream ends when
     // that thread lets go of the channel, which is after the settle — but wait boundedly regardless.
     let want = request_bytes(&h) + streamed;
@@ -243,7 +243,7 @@ async fn a_streamed_relay_counts_every_frame() {
     assert_eq!(
         got,
         Some(want),
-        "a streaming hop ledgers its request body plus EVERY streamed frame ({streamed} bytes)"
+        "a stream hop ledgers its request body plus EVERY streamed frame ({streamed} bytes)"
     );
 }
 

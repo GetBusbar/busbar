@@ -94,7 +94,7 @@ fn served_by(signer: &crate::a2a::sign::CardSigner<'_>) -> Value {
 }
 
 fn busbars_issuer_key(signer: &crate::a2a::sign::CardSigner<'_>) -> IssuerKey {
-    IssuerKey::from_spki_base64(&signer.issuer_spki_base64())
+    IssuerKey::from_key_info_base64(&signer.issuer_key_info_base64())
         .expect("busbar's published key must parse under the verifier that consumes it")
 }
 
@@ -241,10 +241,10 @@ fn the_signature_covers_exactly_the_inbound_paths_signing_payload() {
     );
     let signing_input = format!("{protected_b64}.{payload_b64}");
 
-    let spki = base64::engine::general_purpose::STANDARD
-        .decode(signer.issuer_spki_base64())
-        .expect("SPKI base64");
-    let raw: [u8; 32] = spki[12..].try_into().expect("32 key bytes");
+    let key_pin = base64::engine::general_purpose::STANDARD
+        .decode(signer.issuer_key_info_base64())
+        .expect("public-key info base64");
+    let raw: [u8; 32] = key_pin[12..].try_into().expect("32 key bytes");
     let key = VerifyingKey::from_bytes(&raw).expect("a verifying key");
     let sig_bytes: [u8; 64] = B64URL
         .decode(served["signatures"][0]["signature"].as_str().expect("sig"))
@@ -341,18 +341,18 @@ fn the_card_key_is_not_the_token_key_and_cannot_be_walked_back_to_it() {
     let host = std::sync::Arc::clone(&app).engine_host();
     let card = card_signer(&host).expect("a signing key means a card signer");
 
-    let card_spki = base64::engine::general_purpose::STANDARD
-        .decode(card.issuer_spki_base64())
-        .expect("SPKI");
+    let card_key_pin = base64::engine::general_purpose::STANDARD
+        .decode(card.issuer_key_info_base64())
+        .expect("public-key info");
     assert_ne!(
-        &card_spki[12..],
+        &card_key_pin[12..],
         token.verifying_key().as_bytes().as_slice(),
         "THE WHOLE POINT. A served card is a VENDOR's document with busbar's endpoints substituted \
          in; signing it with the credential-minting key would make the card path a signing oracle \
          over upstream-chosen bytes, holding the key that mints working busbar credentials."
     );
     assert_ne!(
-        card_spki[12..],
+        card_key_pin[12..],
         token.secret_bytes(),
         "and the derived PUBLIC key must not be the token SECRET either"
     );
@@ -365,10 +365,10 @@ fn the_derivation_is_deterministic_and_domain_separated() {
     assert_eq!(
         card_signer(&std::sync::Arc::clone(&app).engine_host())
             .unwrap()
-            .issuer_spki_base64(),
+            .issuer_key_info_base64(),
         card_signer(&std::sync::Arc::clone(&app).engine_host())
             .unwrap()
-            .issuer_spki_base64(),
+            .issuer_key_info_base64(),
         "a restart must serve cards under the same key, or every caller's pin breaks on a bounce"
     );
     assert_ne!(
@@ -395,7 +395,10 @@ fn rotating_the_token_key_rotates_the_card_key_with_it() {
     let after_host = std::sync::Arc::clone(&after_app).engine_host();
     let before = card_signer(&before_host).expect("a signing key means a card signer");
     let after = card_signer(&after_host).expect("a signing key means a card signer");
-    assert_ne!(before.issuer_spki_base64(), after.issuer_spki_base64());
+    assert_ne!(
+        before.issuer_key_info_base64(),
+        after.issuer_key_info_base64()
+    );
     assert_eq!(
         jws::verify_card(&served_by(&after), &busbars_issuer_key(&before)),
         Err(JwsError::NoSignatureVerified)

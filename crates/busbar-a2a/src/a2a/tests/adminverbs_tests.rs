@@ -22,7 +22,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use serde_json::{json, Value};
 
 use crate::a2a::config::{AgentDefCfg, AgentPinCfg, PinMechanism};
-use crate::a2a::jws::ED25519_SPKI_PREFIX;
+use crate::a2a::jws::ED25519_KEY_INFO_PREFIX;
 use crate::testkit::engine_boot::engine;
 
 const TOKEN: &str = "admintok";
@@ -54,8 +54,8 @@ fn key() -> SigningKey {
     SigningKey::from_bytes(&[7u8; 32])
 }
 
-fn spki_base64(k: &SigningKey) -> String {
-    let mut der = ED25519_SPKI_PREFIX.to_vec();
+fn key_info_base64(k: &SigningKey) -> String {
+    let mut der = ED25519_KEY_INFO_PREFIX.to_vec();
     der.extend_from_slice(k.verifying_key().as_bytes());
     STD.encode(der)
 }
@@ -117,7 +117,7 @@ fn agent_cfg(url: &str, allow_private: bool) -> AgentDefCfg {
         url: url.to_string(),
         pin: AgentPinCfg {
             mechanism: PinMechanism::JwsIssuerKey,
-            key: Some(spki_base64(&key())),
+            key: Some(key_info_base64(&key())),
             fingerprint: None,
         },
         reverify_ttl: None,

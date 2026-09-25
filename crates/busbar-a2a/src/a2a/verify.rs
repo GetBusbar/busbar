@@ -168,7 +168,7 @@ pub(crate) struct Handshake<'a> {
     /// The transport-layer identity of the hop that SERVED this document — the certificate the
     /// endpoint proved it held the key for, read off a handshake that had already verified
     /// ([`super::transport`]). The root for the mechanisms whose root the network is.
-    pub(crate) peer_spki: Option<&'a str>,
+    pub(crate) peer_key_pin: Option<&'a str>,
     /// THE OTHER DIRECTION: whether that hop carried busbar's client certificate for this
     /// registration ([`super::fetch::HttpResponse::client_identity_offered`]). The mutual half of
     /// `pin.mechanism: mtls`, and the reason it is a connection fact rather than a config read.
@@ -185,7 +185,7 @@ pub(crate) fn verify_document(
     document: &Value,
     handshake: Handshake<'_>,
 ) -> Result<VerifiedCard, VerifyRefusal> {
-    let observed_spki = handshake.peer_spki;
+    let observed_key_pin = handshake.peer_key_pin;
     let key = pin_cfg
         .key
         .as_deref()
@@ -206,11 +206,11 @@ pub(crate) fn verify_document(
         // certificate its endpoint proved possession of, and that is a real network-layer root and
         // still not trust-on-first-use, because the operator supplied the SPKI out of band exactly
         // as they supply an issuer key.
-        PinMechanism::CertSpki => {
-            let expected = key.ok_or(VerifyRefusal::NoTransportPin("cert_spki"))?;
-            let spki = transport_pin("cert_spki", expected, observed_spki)?;
-            CardPin::CertSpki {
-                spki,
+        PinMechanism::CertKeyPin => {
+            let expected = key.ok_or(VerifyRefusal::NoTransportPin(pin_cfg.mechanism.token()))?;
+            let key_pin = transport_pin(pin_cfg.mechanism.token(), expected, observed_key_pin)?;
+            CardPin::CertKeyPin {
+                key_pin,
                 card_fingerprint: card::fingerprint(document).map_err(VerifyRefusal::Card)?,
             }
         }
@@ -224,14 +224,14 @@ pub(crate) fn verify_document(
         // config: `client_identity:` names what busbar WOULD present, and this asks what the
         // connection DID carry. A pass here is the same distinction the peer half draws — "we could
         // not look" and "it matched" are different answers — applied to busbar's own end.
-        PinMechanism::Mtls => {
-            let expected = key.ok_or(VerifyRefusal::NoTransportPin("mtls"))?;
-            let spki = transport_pin("mtls", expected, observed_spki)?;
+        PinMechanism::MutualTls => {
+            let expected = key.ok_or(VerifyRefusal::NoTransportPin(pin_cfg.mechanism.token()))?;
+            let key_pin = transport_pin(pin_cfg.mechanism.token(), expected, observed_key_pin)?;
             if !handshake.client_identity_offered {
                 return Err(VerifyRefusal::MutualTlsNotPresented);
             }
-            CardPin::Mtls {
-                spki,
+            CardPin::MutualTls {
+                key_pin,
                 card_fingerprint: card::fingerprint(document).map_err(VerifyRefusal::Card)?,
             }
         }
@@ -407,7 +407,7 @@ fn fetch_and_verify(
                     pin_cfg,
                     &fetched.document,
                     Handshake {
-                        peer_spki: fetched.peer_spki.as_deref(),
+                        peer_key_pin: fetched.peer_key_pin.as_deref(),
                         client_identity_offered: fetched.client_identity_offered,
                     },
                 )
@@ -459,7 +459,7 @@ impl super::verbs::CardSource for RegistrationProbe<'_> {
                 Ok(fetched) => {
                     return Ok(super::verbs::SightedCard {
                         document: fetched.document,
-                        peer_spki: fetched.peer_spki,
+                        peer_key_pin: fetched.peer_key_pin,
                         client_identity_offered: fetched.client_identity_offered,
                     })
                 }
@@ -476,7 +476,7 @@ impl super::verbs::CardObserver for RegistrationProbe<'_> {
             self.pin_cfg,
             &card.document,
             Handshake {
-                peer_spki: card.peer_spki.as_deref(),
+                peer_key_pin: card.peer_key_pin.as_deref(),
                 client_identity_offered: card.client_identity_offered,
             },
         )

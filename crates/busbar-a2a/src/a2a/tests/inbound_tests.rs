@@ -86,7 +86,13 @@ fn a_scoped_live_key_of_the_right_kind_reaches_the_backend() {
 #[test]
 fn a_credential_of_another_kind_is_refused_with_401_and_never_names_a_backend() {
     let key = a_key("k1", None);
-    for kind in ["sigv4", "bearer", "", "a2a-inbound", "A2A_INBOUND"] {
+    for kind in [
+        "signed_request",
+        "static_token",
+        "",
+        "a2a-inbound",
+        "A2A_INBOUND",
+    ] {
         let err = authorize(&key, kind, "planner", &registrations(), 1, 1_000)
             .expect_err("only `a2a_inbound` admits here");
         assert_eq!(

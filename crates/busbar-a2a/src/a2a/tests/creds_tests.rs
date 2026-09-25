@@ -59,8 +59,8 @@ fn a_caller() -> busbar_api::VirtualKey {
 #[test]
 fn a_minted_lease_carries_the_secret_only_through_the_header_it_was_placed_at() {
     let cred = OutboundCredential {
-        secret: secret_file("bearer", "s3cr3t-vendor-token\n"),
-        placement: CredentialPlacement::Bearer,
+        secret: secret_file("lease", "s3cr3t-vendor-token\n"),
+        placement: CredentialPlacement::AuthorizationHeader,
         lease_ttl_ms: 60_000,
     };
     let reg = registration_with(Some(cred));
@@ -120,7 +120,7 @@ fn a_named_header_placement_carries_the_value_verbatim() {
 fn a_lease_stops_working_at_its_expiry_rather_than_being_checked_by_the_caller() {
     let cred = OutboundCredential {
         secret: secret_file("expiry", "tok"),
-        placement: CredentialPlacement::Bearer,
+        placement: CredentialPlacement::AuthorizationHeader,
         lease_ttl_ms: 5_000,
     };
     let reg = registration_with(Some(cred));
@@ -151,7 +151,7 @@ fn a_lease_minted_for_one_agent_is_refused_on_a_hop_to_another() {
     // FOR is one an unrelated code path can pick up and present somewhere else.
     let cred = OutboundCredential {
         secret: secret_file("scope", "tok"),
-        placement: CredentialPlacement::Bearer,
+        placement: CredentialPlacement::AuthorizationHeader,
         lease_ttl_ms: 60_000,
     };
     let reg = registration_with(Some(cred));
@@ -192,7 +192,7 @@ fn a_registration_with_no_credential_refuses_rather_than_delegating_unauthentica
 fn an_unresolvable_handle_fails_closed_and_names_the_agent() {
     let cred = OutboundCredential {
         secret: SecretRef::file("/nonexistent/busbar/a2a/secret".to_string()),
-        placement: CredentialPlacement::Bearer,
+        placement: CredentialPlacement::AuthorizationHeader,
         lease_ttl_ms: 60_000,
     };
     let reg = registration_with(Some(cred));
@@ -216,7 +216,7 @@ fn the_lease_never_renders_the_secret_in_a_debug_line() {
     // registration, which is how these leak in practice.
     let cred = OutboundCredential {
         secret: secret_file("debug", "SUPER-SECRET-VALUE"),
-        placement: CredentialPlacement::Bearer,
+        placement: CredentialPlacement::AuthorizationHeader,
         lease_ttl_ms: 60_000,
     };
     let reg = registration_with(Some(cred));
@@ -312,7 +312,7 @@ fn the_callers_credential_has_no_path_to_a_delegate() {
 fn busbars_own_credential_is_not_spent_for_a_caller_that_holds_no_grant_on_the_backend() {
     let cred = OutboundCredential {
         secret: secret_file("deputy", "BUSBARS-OWN-VENDOR-TOKEN"),
-        placement: CredentialPlacement::Bearer,
+        placement: CredentialPlacement::AuthorizationHeader,
         lease_ttl_ms: 60_000,
     };
     let reg = registration_with(Some(cred));

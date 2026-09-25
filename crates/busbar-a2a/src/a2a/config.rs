@@ -23,7 +23,7 @@
 //!
 //! A2A's authenticity root is a JWS issuer key PLUS a card fingerprint, and where a card carries no
 //! signature it degrades to a transport binding. That is four mechanisms carrying different
-//! material, and a scalar `spki_pin:` can spell exactly one of them. So `pin:` is
+//! material, and a scalar `pin_hash:` can spell exactly one of them. So `pin:` is
 //! `{mechanism, key?, fingerprint?}` and the mechanism is checked against the material it requires,
 //! here, at parse. A registration cannot claim `jws_issuer_key` and carry nothing to verify with.
 //!
@@ -110,9 +110,11 @@ pub enum PinMechanism {
     /// The card is SIGNED and verified against an operator-supplied, out-of-band JWS issuer key.
     JwsIssuerKey,
     /// The card is UNSIGNED; authenticity is bound to the card endpoint's certificate SPKI hash.
-    CertSpki,
+    #[serde(rename = "cert_spki")]
+    CertKeyPin,
     /// The card is UNSIGNED and served behind mutual TLS; pinned on the peer certificate SPKI hash.
-    Mtls,
+    #[serde(rename = "mtls")]
+    MutualTls,
     /// NO authenticity root. Registrable, never approvable.
     Unpinned,
 }
@@ -132,12 +134,13 @@ impl PinMechanism {
         !matches!(self, PinMechanism::Unpinned)
     }
 
-    /// The config token, for diagnostics. Deliberately the same string `serde` accepts.
-    fn token(self) -> &'static str {
+    /// The config token, for diagnostics, pin renderings and audit rows. Deliberately the same
+    /// string `serde` accepts, so every surface spells a mechanism one way.
+    pub(crate) fn token(self) -> &'static str {
         match self {
             PinMechanism::JwsIssuerKey => "jws_issuer_key",
-            PinMechanism::CertSpki => "cert_spki",
-            PinMechanism::Mtls => "mtls",
+            PinMechanism::CertKeyPin => "cert_spki",
+            PinMechanism::MutualTls => "mtls",
             PinMechanism::Unpinned => "unpinned",
         }
     }
@@ -485,7 +488,7 @@ pub fn validate_agent(name: &str, def: &AgentDefCfg) -> Result<(), String> {
     // matched against its material. `mtls` is defined as "served behind mutual TLS"; a registration
     // that claims it and names no certificate cannot get past the peer's `CertificateRequired`
     // alert, and it would fail six hours later on a re-verification tick rather than here.
-    if def.pin.mechanism == PinMechanism::Mtls && def.client_identity.is_none() {
+    if def.pin.mechanism == PinMechanism::MutualTls && def.client_identity.is_none() {
         return Err(format!(
             "{at}: `pin.mechanism: mtls` needs `client_identity:` — the `cert:` and `key:` \
              references to the certificate busbar PRESENTS to this endpoint. `mtls` means the \

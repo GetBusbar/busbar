@@ -107,7 +107,7 @@ async fn the_callers_busbar_key_appears_nowhere_on_the_relayed_wire() {
         "the scan has nothing to scan: {} bytes",
         wire.len()
     );
-    let forms = encodings(&h.bearer);
+    let forms = encodings(&h.caller_token);
     assert_eq!(forms.len(), 5, "every encoding must be exercised");
     for (encoding, bytes) in &forms {
         assert!(
@@ -117,7 +117,7 @@ async fn the_callers_busbar_key_appears_nowhere_on_the_relayed_wire() {
     }
     // Belt and braces on the same haystack: not even the token's claims segment may leave.
     let payload_segment = h
-        .bearer
+        .caller_token
         .trim_start_matches(busbar_kernel::governance::signing::TOKEN_PREFIX)
         .split('.')
         .next()
@@ -183,7 +183,7 @@ async fn with_no_leased_credential_the_hop_carries_no_credential_at_all() {
         sent[0].headers
     );
     let wire = h.all_wire();
-    for (encoding, bytes) in &encodings(&h.bearer) {
+    for (encoding, bytes) in &encodings(&h.caller_token) {
         assert!(
             !contains(&wire, bytes),
             "the caller's busbar key reached the backend as {encoding}"
@@ -552,7 +552,7 @@ fn a_grant_for_one_agent_cannot_mint_against_a_registration_for_another() {
     let mut reg = crate::a2a::registry::AgentRegistration::registered("payments", OTHER_BACKEND);
     reg.outbound_cred = Some(crate::a2a::creds::OutboundCredential {
         secret: busbar_secret_ref::SecretRef::file(secret_file().to_string_lossy().to_string()),
-        placement: crate::a2a::creds::CredentialPlacement::Bearer,
+        placement: crate::a2a::creds::CredentialPlacement::AuthorizationHeader,
         lease_ttl_ms: 600_000,
     });
     let out = crate::a2a::creds::mint(
@@ -688,7 +688,7 @@ fn a_lease(agent_id: &'static str, now_ms: u64) -> crate::a2a::creds::Lease {
         &grant,
         &crate::a2a::creds::OutboundCredential {
             secret: busbar_secret_ref::SecretRef::file(path.to_string_lossy().to_string()),
-            placement: crate::a2a::creds::CredentialPlacement::Bearer,
+            placement: crate::a2a::creds::CredentialPlacement::AuthorizationHeader,
             lease_ttl_ms: 600_000,
         },
         resolver.as_ref(),
@@ -702,7 +702,7 @@ fn a_lease(agent_id: &'static str, now_ms: u64) -> crate::a2a::creds::Lease {
 /// `build_request` takes a FRAMED request now — the composition is the binding's and the header set
 /// is the builder's — so these tests frame first and assert on the headers second, which is the
 /// same two steps the hop takes.
-fn framed(url: &url::Url, body: &[u8], streaming: bool) -> crate::a2a::relay::FramedRequest {
+fn framed(url: &url::Url, body: &[u8], is_stream: bool) -> crate::a2a::relay::FramedRequest {
     let envelope: serde_json::Value =
         serde_json::from_slice(body).unwrap_or(serde_json::Value::Null);
     let params = envelope
@@ -717,7 +717,7 @@ fn framed(url: &url::Url, body: &[u8], streaming: bool) -> crate::a2a::relay::Fr
                 method: crate::a2a::local::method_of(&envelope),
                 params: &params,
             },
-            streaming,
+            is_stream,
         )
         .expect("the JSON-RPC framing is a courier and cannot refuse a body")
 }
@@ -1057,8 +1057,8 @@ fn the_relay_guards_with_the_registrations_policy_and_not_the_planes_default() {
                 status: 200,
                 location: None,
                 body: br#"{"jsonrpc":"2.0","id":1,"result":{"kind":"task","id":"t","contextId":"c","status":{"state":"completed"}}}"#.to_vec(),
-                peer_spki: None,
                 client_identity_offered: false,
+                ..Default::default()
             })
         }
         fn post_stream(

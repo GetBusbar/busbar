@@ -241,20 +241,21 @@ fn a_required_protocol_capability_the_card_does_not_declare_excludes_the_agent()
     let regs = vec![planner(), researcher()];
     let key = a_key(None);
 
-    let streaming = TaskShape {
-        requires_streaming: true,
+    let is_stream = TaskShape {
+        requires_stream: true,
         ..Default::default()
     };
     assert_eq!(
         ids(&inbound_catalogue(
             &as_caller(&key),
             &regs,
-            &inbound(&streaming)
+            &inbound(&is_stream)
         )),
         vec!["planner"]
     );
     assert_eq!(
-        explain(&regs[1], &as_caller(&key), &inbound(&streaming)).expect_err("no streaming"),
+        explain(&regs[1], &as_caller(&key), &inbound(&is_stream))
+            .expect_err("no stream capability"),
         Excluded::CapabilityNotDeclared("streaming")
     );
 
@@ -477,7 +478,7 @@ fn every_filter_is_load_bearing_in_the_conjunction() {
     // through and is named by the failure.
     let shape = TaskShape {
         skill: Some("plan".to_string()),
-        requires_streaming: true,
+        requires_stream: true,
         requires_push_notifications: false,
         input_modes: vec!["application/json".to_string()],
         output_modes: vec!["application/json".to_string()],
@@ -509,18 +510,18 @@ fn every_filter_is_load_bearing_in_the_conjunction() {
         a_card(json!([{ "id": "other" }]), json!({ "streaming": true })),
     );
     wrong_skill.egress_scopes = vec!["orchestrator".to_string()];
-    let mut no_streaming = approved_with(
+    let mut no_stream = approved_with(
         "planner",
         a_card(json!([{ "id": "plan" }]), json!({ "streaming": false })),
     );
-    no_streaming.egress_scopes = vec!["orchestrator".to_string()];
+    no_stream.egress_scopes = vec!["orchestrator".to_string()];
 
     for (what, reg) in [
         ("trust", untrusted),
         ("scope", unscoped),
         ("egress", no_egress),
         ("skill", wrong_skill),
-        ("capability", no_streaming),
+        ("capability", no_stream),
     ] {
         assert!(
             delegation_catalogue(
@@ -541,13 +542,13 @@ fn the_task_shape_carries_no_channel_for_prose() {
     // arrive without this failing to compile.
     let TaskShape {
         skill,
-        requires_streaming,
+        requires_stream,
         requires_push_notifications,
         input_modes,
         output_modes,
     } = TaskShape::default();
     assert!(skill.is_none());
-    assert!(!requires_streaming && !requires_push_notifications);
+    assert!(!requires_stream && !requires_push_notifications);
     assert!(input_modes.is_empty() && output_modes.is_empty());
 }
 

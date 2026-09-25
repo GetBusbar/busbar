@@ -46,7 +46,7 @@ struct Endpoint {
     leaf_pem: String,
     leaf_key_pem: String,
     /// The expected `sha256/…` value, from `rcgen`'s own SPKI encoding of the leaf key. NOT from
-    /// anything in `crate::a2a::spki`.
+    /// anything in `crate::a2a::key_info`.
     expected_pin: String,
 }
 
@@ -67,7 +67,7 @@ fn endpoint_for(sans: Vec<String>) -> Endpoint {
         ca_pem: ca_cert.pem(),
         leaf_pem: leaf_cert.pem(),
         leaf_key_pem: leaf_kp.serialize_pem(),
-        // COMPUTED FROM RCGEN'S OWN SPKI ENCODING, never from `crate::a2a::spki`. This is the
+        // COMPUTED FROM RCGEN'S OWN SPKI ENCODING, never from `crate::a2a::key_info`. This is the
         // oracle; a test whose expectation came from the code under test would agree with a walk
         // that read the wrong member.
         expected_pin: format!(
@@ -117,9 +117,9 @@ fn observed_pin_over_tls(endpoint: &Endpoint, card: &Value) -> (Value, Option<St
 /// The shape every `cert_spki` and `unpinned` case here is about — those mechanisms are defined as
 /// one-way bindings, so naming the mutual half `false` at each call site is the honest spelling
 /// rather than a default that hides which question was asked.
-fn one_way(peer_spki: Option<&str>) -> Handshake<'_> {
+fn one_way(peer_key_pin: Option<&str>) -> Handshake<'_> {
     Handshake {
-        peer_spki,
+        peer_key_pin,
         client_identity_offered: false,
     }
 }
@@ -135,7 +135,7 @@ fn transport_pin_cfg(mechanism: PinMechanism, pin: &str) -> AgentPinCfg {
 // ══ THE PIN IS READ, AND IT IS THE RIGHT ONE ═════════════════════════════════════════════════════
 
 #[test]
-fn the_pin_read_off_a_real_handshake_is_the_leaf_keys_own_spki_hash() {
+fn the_pin_read_off_a_real_handshake_is_the_leaf_keys_own_key_pin_hash() {
     let endpoint = endpoint_for(vec![HOST.to_string()]);
     let (_card, observed) = observed_pin_over_tls(&endpoint, &an_unsigned_card());
     assert_eq!(
@@ -150,7 +150,7 @@ fn the_pin_read_off_a_real_handshake_is_the_leaf_keys_own_spki_hash() {
 // ══ A MISMATCHED CERTIFICATE IS REFUSED; THE PINNED ONE IS ACCEPTED ══════════════════════════════
 
 #[test]
-fn a_card_served_under_a_certificate_whose_spki_does_not_match_the_pin_is_refused() {
+fn a_card_served_under_a_certificate_whose_key_pin_does_not_match_the_pin_is_refused() {
     // The card is fine. The CA is trusted. The name is right. The KEY is somebody else's, which is
     // precisely the case an unsigned card has no other way to notice.
     let serving = endpoint_for(vec![HOST.to_string()]);
@@ -160,7 +160,7 @@ fn a_card_served_under_a_certificate_whose_spki_does_not_match_the_pin_is_refuse
     let card = an_unsigned_card();
     let (document, observed) = observed_pin_over_tls(&serving, &card);
     let refusal = verify_document(
-        &transport_pin_cfg(PinMechanism::CertSpki, &elsewhere.expected_pin),
+        &transport_pin_cfg(PinMechanism::CertKeyPin, &elsewhere.expected_pin),
         &document,
         one_way(observed.as_deref()),
     )
@@ -190,7 +190,7 @@ fn a_card_served_under_the_pinned_certificate_is_accepted_and_pins_what_was_obse
     let (document, observed) = observed_pin_over_tls(&endpoint, &card);
 
     let verified = verify_document(
-        &transport_pin_cfg(PinMechanism::CertSpki, &endpoint.expected_pin),
+        &transport_pin_cfg(PinMechanism::CertKeyPin, &endpoint.expected_pin),
         &document,
         one_way(observed.as_deref()),
     )
@@ -198,8 +198,8 @@ fn a_card_served_under_the_pinned_certificate_is_accepted_and_pins_what_was_obse
 
     assert_eq!(
         verified.pin,
-        CardPin::CertSpki {
-            spki: endpoint.expected_pin.clone(),
+        CardPin::CertKeyPin {
+            key_pin: endpoint.expected_pin.clone(),
             card_fingerprint: crate::a2a::card::fingerprint(&document).expect("fingerprint"),
         },
         "the recorded pin carries BOTH halves: the identity the network established and the card \
@@ -214,7 +214,7 @@ fn a_transport_pinned_registration_whose_hop_produced_no_certificate_is_refused(
     // plaintext hop produces no certificate, and that is a refusal rather than a pass — otherwise
     // an upstream downgrades its own pin by serving the card over `http://`.
     let refusal = verify_document(
-        &transport_pin_cfg(PinMechanism::CertSpki, "sha256/AAAA"),
+        &transport_pin_cfg(PinMechanism::CertKeyPin, "sha256/AAAA"),
         &an_unsigned_card(),
         one_way(None),
     )
@@ -226,7 +226,7 @@ fn a_transport_pinned_registration_whose_hop_produced_no_certificate_is_refused(
 fn a_transport_pinned_registration_with_no_pin_material_is_refused_rather_than_degraded() {
     let refusal = verify_document(
         &AgentPinCfg {
-            mechanism: PinMechanism::CertSpki,
+            mechanism: PinMechanism::CertKeyPin,
             key: None,
             fingerprint: None,
         },
@@ -240,7 +240,7 @@ fn a_transport_pinned_registration_with_no_pin_material_is_refused_rather_than_d
 // ══ THE HONEST DEGRADE, END TO END ═══════════════════════════════════════════════════════════════
 
 #[test]
-fn an_unsigned_card_with_a_matching_cert_spki_pin_is_a_root_an_operator_can_approve() {
+fn an_unsigned_card_with_a_matching_cert_key_pin_is_a_root_an_operator_can_approve() {
     // THE PROPERTY THE DESIGN CLAIMS AND THE BUILD DID NOT HAVE. An unsigned card is not
     // un-rootable: the certificate its endpoint proved possession of is a real network-layer root,
     // supplied out of band by the operator exactly as an issuer key is.
@@ -253,7 +253,7 @@ fn an_unsigned_card_with_a_matching_cert_spki_pin_is_a_root_an_operator_can_appr
 
     let (document, observed) = observed_pin_over_tls(&endpoint, &card);
     let verified = verify_document(
-        &transport_pin_cfg(PinMechanism::CertSpki, &endpoint.expected_pin),
+        &transport_pin_cfg(PinMechanism::CertKeyPin, &endpoint.expected_pin),
         &document,
         one_way(observed.as_deref()),
     )
@@ -336,7 +336,7 @@ impl crate::a2a::fetch::Resolver for HostOnLoopback {
 /// `allow_private` is set on the record as well as on the policy below because that is what the
 /// sweep lowers into the policy per registration; the two agreeing is the state a real deployment
 /// is in.
-fn an_mtls_registration(port: u16) -> crate::a2a::registry::AgentRegistration {
+fn a_mutual_tls_registration(port: u16) -> crate::a2a::registry::AgentRegistration {
     let mut reg = crate::a2a::registry::AgentRegistration::registered(
         "planner",
         format!("https://{HOST}:{port}/agent"),
@@ -364,12 +364,12 @@ fn loopback_policy() -> FetchPolicy {
 /// EVERY `mtls` registration, justified by a comment claiming the `agents:` grammar named no client
 /// certificate — which stopped being true when `client_identity:` landed.
 #[test]
-fn an_mtls_registration_that_presents_its_client_certificate_verifies() {
+fn a_mutual_tls_registration_that_presents_its_client_certificate_verifies() {
     let endpoint = endpoint_for(vec![HOST.to_string()]);
     let (client_ca, client_leaf, client_key) =
         super::transport_tests::ca_and_leaf(vec!["busbar.example".to_string()]);
     let card = an_unsigned_card();
-    let (addr, seen) = super::transport_mtls_tests::spawn_mtls(
+    let (addr, seen) = super::transport_mutual_tls_tests::spawn_mutual_tls(
         &endpoint.leaf_pem,
         &endpoint.leaf_key_pem,
         &client_ca,
@@ -378,16 +378,17 @@ fn an_mtls_registration_that_presents_its_client_certificate_verifies() {
 
     // THE IDENTITY THE OPERATOR NAMED, resolved the way boot resolves it, and carried by the
     // transport the sweep's `CardTransports` bundle hands out for THIS agent.
-    let identity = super::transport_mtls_tests::identity_from_config(&client_leaf, &client_key);
+    let identity =
+        super::transport_mutual_tls_tests::identity_from_config(&client_leaf, &client_key);
     let policy = loopback_policy();
     let transport = ReqwestTransport::new(&policy)
         .trusting_root(endpoint.ca_pem.as_bytes())
         .presenting(identity);
 
-    let mut registration = an_mtls_registration(addr.port());
+    let mut registration = a_mutual_tls_registration(addr.port());
     let pass = crate::a2a::verify::reverify_once(
         &mut registration,
-        &transport_pin_cfg(PinMechanism::Mtls, &endpoint.expected_pin),
+        &transport_pin_cfg(PinMechanism::MutualTls, &endpoint.expected_pin),
         &HostOnLoopback,
         &transport,
         &policy,
@@ -398,7 +399,7 @@ fn an_mtls_registration_that_presents_its_client_certificate_verifies() {
     assert_eq!(
         pass.refusal, None,
         "the peer is the pinned one and busbar presented the certificate this registration names; \
-         there is nothing left for `mtls` to refuse"
+         there is nothing left for the mutual half to refuse"
     );
     let Sighting::Seen(observation) = &registration.sighting else {
         panic!(
@@ -408,15 +409,15 @@ fn an_mtls_registration_that_presents_its_client_certificate_verifies() {
     };
     assert_eq!(
         observation.pin,
-        Some(CardPin::Mtls {
-            spki: endpoint.expected_pin.clone(),
+        Some(CardPin::MutualTls {
+            key_pin: endpoint.expected_pin.clone(),
             card_fingerprint: crate::a2a::card::fingerprint(&card).expect("fingerprint"),
         }),
         "the recorded pin is the mutual mechanism, carrying the identity the network established \
          and the card that identity served"
     );
     assert_eq!(
-        super::transport_mtls_tests::wait_for_conns(&seen),
+        super::transport_mutual_tls_tests::wait_for_conns(&seen),
         vec![Ok(1)],
         "and the mutual half is the PEER's finding: it completed the handshake against exactly one \
          certificate of busbar's"
@@ -430,7 +431,7 @@ fn an_mtls_registration_that_presents_its_client_certificate_verifies() {
 /// as `mtls` satisfied. An operator who chose `mtls` over `cert_spki` chose it for the mutual half,
 /// and a one-way connection did not supply one.
 #[test]
-fn an_mtls_registration_whose_hop_presented_no_client_certificate_is_still_refused() {
+fn a_mutual_tls_registration_whose_hop_presented_no_client_certificate_is_still_refused() {
     let endpoint = endpoint_for(vec![HOST.to_string()]);
     let card = an_unsigned_card();
     let (addr, _sni) = spawn_tls(
@@ -443,10 +444,10 @@ fn an_mtls_registration_whose_hop_presented_no_client_certificate_is_still_refus
     // NO `.presenting(..)`: this is the registration that has nothing to offer.
     let transport = ReqwestTransport::new(&policy).trusting_root(endpoint.ca_pem.as_bytes());
 
-    let mut registration = an_mtls_registration(addr.port());
+    let mut registration = a_mutual_tls_registration(addr.port());
     let pass = crate::a2a::verify::reverify_once(
         &mut registration,
-        &transport_pin_cfg(PinMechanism::Mtls, &endpoint.expected_pin),
+        &transport_pin_cfg(PinMechanism::MutualTls, &endpoint.expected_pin),
         &HostOnLoopback,
         &transport,
         &policy,
@@ -474,7 +475,7 @@ fn an_mtls_registration_whose_hop_presented_no_client_certificate_is_still_refus
 /// would go and configure a certificate FOR THE IMPOSTOR. The mutual half is only ever the reason
 /// once the peer is the one the operator pinned.
 #[test]
-fn an_mtls_look_alike_endpoint_is_named_as_one_rather_than_as_a_missing_certificate() {
+fn a_mutual_tls_look_alike_endpoint_is_named_as_one_rather_than_as_a_missing_certificate() {
     let endpoint = endpoint_for(vec![HOST.to_string()]);
     let elsewhere = endpoint_for(vec![HOST.to_string()]);
     let (document, observed) = observed_pin_over_tls(&endpoint, &an_unsigned_card());
@@ -483,10 +484,10 @@ fn an_mtls_look_alike_endpoint_is_named_as_one_rather_than_as_a_missing_certific
         assert!(
             matches!(
                 verify_document(
-                    &transport_pin_cfg(PinMechanism::Mtls, &elsewhere.expected_pin),
+                    &transport_pin_cfg(PinMechanism::MutualTls, &elsewhere.expected_pin),
                     &document,
                     Handshake {
-                        peer_spki: observed.as_deref(),
+                        peer_key_pin: observed.as_deref(),
                         client_identity_offered: offered,
                     },
                 )

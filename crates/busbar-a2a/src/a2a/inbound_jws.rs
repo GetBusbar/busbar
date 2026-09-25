@@ -44,14 +44,14 @@ use super::pin::CardPin;
 /// calling [`pin::pin_a_signed_card`](super::pin::pin_a_signed_card) directly. `Send + Sync` so the
 /// installed capability is a process-wide `&'static dyn`.
 pub(crate) trait InboundCardJws: Send + Sync {
-    /// Verify `card` against the operator's out-of-band `issuer_key_spki` and, on success, produce the
+    /// Verify `card` against the operator's out-of-band `issuer_key_info` and, on success, produce the
     /// pin bound to the fingerprint of the card that verified. Verify FIRST, pin only what passed —
     /// the ordering is [`pin_a_signed_card`](super::pin::pin_a_signed_card)'s and is not re-implemented
     /// here. Pass-through to that function.
     fn verify_signed_card(
         &self,
         card: &Value,
-        issuer_key_spki: &str,
+        issuer_key_info: &str,
     ) -> Result<(CardPin, jws::Verified), jws::JwsError>;
 }
 
@@ -65,9 +65,9 @@ impl InboundCardJws for PassThroughInboundJws {
     fn verify_signed_card(
         &self,
         card: &Value,
-        issuer_key_spki: &str,
+        issuer_key_info: &str,
     ) -> Result<(CardPin, jws::Verified), jws::JwsError> {
-        super::pin::pin_a_signed_card(card, issuer_key_spki)
+        super::pin::pin_a_signed_card(card, issuer_key_info)
     }
 }
 

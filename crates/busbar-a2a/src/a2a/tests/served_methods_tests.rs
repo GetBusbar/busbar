@@ -50,7 +50,7 @@ use super::relay_harness::*;
 /// name the inventory does not use.
 mod method {
     pub(super) const SEND_MESSAGE: &str = "SendMessage";
-    pub(super) const SEND_STREAMING_MESSAGE: &str = "SendStreamingMessage";
+    pub(super) const SEND_STREAM_MESSAGE: &str = "SendStreamingMessage";
     pub(super) const GET_TASK: &str = "GetTask";
     pub(super) const CANCEL_TASK: &str = "CancelTask";
     pub(super) const LIST_TASKS: &str = "ListTasks";
@@ -126,8 +126,8 @@ async fn send_message_is_served_and_reaches_the_backend() {
     let sent = h.sent();
     assert_eq!(sent.len(), 1, "exactly one hop is owed, got {}", sent.len());
     assert!(
-        !sent[0].streaming,
-        "a `SendMessage` must go out on the UNARY hop, not the streaming one"
+        !sent[0].is_stream,
+        "a `SendMessage` must go out on the UNARY hop, not the stream one"
     );
     let body: serde_json::Value =
         serde_json::from_slice(&sent[0].body).expect("the hop carries a JSON envelope");
@@ -146,11 +146,11 @@ async fn send_message_is_served_and_reaches_the_backend() {
 
 /// **`a2a|jsonrpc|server|client|SendStreamingMessage`.**
 ///
-/// The v1.0 spelling, and the assertion is that the STREAMING hop was taken: `reads_as_streaming`
+/// The v1.0 spelling, and the assertion is that the STREAMING hop was taken: `reads_as_stream`
 /// is the only place in this content-blind plane where a method name decides a transport, and a
 /// v1.0 caller whose stream went down the unary path gets one document where it asked for events.
 #[tokio::test]
-async fn send_streaming_message_is_served_as_a_stream() {
+async fn send_stream_message_is_served_as_a_stream() {
     let frames = vec![
         format!(
             "data: {}\n\n",
@@ -171,7 +171,7 @@ async fn send_streaming_message_is_served_as_a_stream() {
         "planner",
         &rpc(
             102,
-            method::SEND_STREAMING_MESSAGE,
+            method::SEND_STREAM_MESSAGE,
             serde_json::json!({
                 "message": {
                     "role": "user",
@@ -186,7 +186,7 @@ async fn send_streaming_message_is_served_as_a_stream() {
     assert_eq!(status, 200, "the streamed call must be served: {body}");
     assert!(
         ct.starts_with("text/event-stream"),
-        "the v1.0 streaming method must be framed as SSE, got `{ct}`"
+        "the v1.0 stream method must be framed as SSE, got `{ct}`"
     );
     assert_eq!(
         body.matches("data:").count(),
@@ -200,8 +200,8 @@ async fn send_streaming_message_is_served_as_a_stream() {
     let sent = h.sent();
     assert_eq!(sent.len(), 1);
     assert!(
-        sent[0].streaming,
-        "`SendStreamingMessage` must go out through the streaming transport"
+        sent[0].is_stream,
+        "the v1.0 stream method must go out through the stream transport"
     );
 }
 
@@ -385,7 +385,7 @@ async fn subscribe_to_task_refuses_what_busbar_knows_and_relays_what_it_does_not
         "planner",
         &rpc(
             141,
-            method::SEND_STREAMING_MESSAGE,
+            method::SEND_STREAM_MESSAGE,
             serde_json::json!({
                 "message": { "role": "user", "contextId": "ctx-sub",
                              "parts": [{ "kind": "text", "text": "OPEN IT" }] }
@@ -396,10 +396,10 @@ async fn subscribe_to_task_refuses_what_busbar_knows_and_relays_what_it_does_not
     assert!(ct.starts_with("text/event-stream"), "{body}");
     let sent = h.sent();
     assert_eq!(sent.len(), 1, "the submission opened the stream");
-    assert!(sent[0].streaming, "and it went out as a stream");
+    assert!(sent[0].is_stream, "and it went out as a stream");
     let asked: serde_json::Value =
         serde_json::from_slice(&sent[0].body).expect("the hop carries a JSON envelope");
-    assert_eq!(asked["method"], method::SEND_STREAMING_MESSAGE);
+    assert_eq!(asked["method"], method::SEND_STREAM_MESSAGE);
 }
 
 /// **`a2a|jsonrpc|server|client|CreateTaskPushNotificationConfig`**, and with it the member the
@@ -709,7 +709,7 @@ async fn the_extended_card_is_served_over_http_json_and_names_only_this_callers_
     .await;
     let resp = reqwest::Client::new()
         .get(format!("http://{}/a2a/extendedAgentCard", h.addr))
-        .header("authorization", format!("Bearer {}", h.bearer))
+        .header("authorization", format!("Bearer {}", h.caller_token))
         .send()
         .await
         .expect("the REST extended-card path answers");
@@ -792,7 +792,7 @@ async fn the_extended_card_is_served_over_grpc_at_the_path_the_proto_defines() {
             h.addr,
             super::super::serve::GRPC_MOUNT_PATH
         ))
-        .header("authorization", format!("Bearer {}", h.bearer))
+        .header("authorization", format!("Bearer {}", h.caller_token))
         .header("content-type", "application/grpc")
         .header("te", "trailers")
         .body(grpc_frame(&[]))

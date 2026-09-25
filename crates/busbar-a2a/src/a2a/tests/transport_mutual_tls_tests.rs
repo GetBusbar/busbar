@@ -48,7 +48,7 @@ type ClientCerts = Arc<Mutex<Vec<Result<usize, String>>>>;
 /// Built with `WebPkiClientVerifier`, which is the same construction the engine's inbound TLS server config
 /// uses for busbar's own inbound mTLS. A client that presents nothing is refused during the
 /// handshake and never reaches the HTTP layer at all.
-pub(super) fn spawn_mtls(
+pub(super) fn spawn_mutual_tls(
     server_cert_pem: &str,
     server_key_pem: &str,
     client_ca_pem: &str,
@@ -148,7 +148,7 @@ pub(super) fn identity_from_config(
     // colliding path means one test reads a file another is still writing.
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "busbar-a2a-mtls-{}-{}",
+        "busbar-a2a-mutual-tls-{}-{}",
         std::process::id(),
         SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
@@ -190,10 +190,10 @@ pub(super) fn identity_from_config(
 /// afterwards as the negative half: a registration that names NO client identity still gets refused
 /// by an mTLS peer, which is the honest outcome and not a silent downgrade to a one-way handshake.
 #[test]
-fn an_mtls_peer_refuses_a_card_fetch_that_presents_no_client_certificate() {
+fn a_mutual_tls_peer_refuses_a_card_fetch_that_presents_no_client_certificate() {
     let (server_ca, server_leaf, server_key) = ca_and_leaf(vec![HOST.to_string()]);
     let (client_ca, _client_leaf, _client_key) = ca_and_leaf(vec!["busbar.example".to_string()]);
-    let (addr, seen) = spawn_mtls(&server_leaf, &server_key, &client_ca, CARD.to_string());
+    let (addr, seen) = spawn_mutual_tls(&server_leaf, &server_key, &client_ca, CARD.to_string());
 
     let policy = FetchPolicy::default();
     let err = ReqwestTransport::new(&policy)
@@ -219,10 +219,10 @@ fn an_mtls_peer_refuses_a_card_fetch_that_presents_no_client_certificate() {
 
 /// THE FIX: the same peer, the same socket, the same CA — and a client identity to present.
 #[test]
-fn an_mtls_peer_accepts_the_card_fetch_when_the_registration_names_a_client_identity() {
+fn a_mutual_tls_peer_accepts_the_card_fetch_when_the_registration_names_a_client_identity() {
     let (server_ca, server_leaf, server_key) = ca_and_leaf(vec![HOST.to_string()]);
     let (client_ca, client_leaf, client_key) = ca_and_leaf(vec!["busbar.example".to_string()]);
-    let (addr, seen) = spawn_mtls(&server_leaf, &server_key, &client_ca, CARD.to_string());
+    let (addr, seen) = spawn_mutual_tls(&server_leaf, &server_key, &client_ca, CARD.to_string());
 
     // The identity is built the way the boot path builds it: the operator's two `SecretRef`s
     // resolved to PEM and handed to the TLS stack as one buffer. Here the references are `file:`
@@ -260,7 +260,7 @@ fn an_mtls_peer_accepts_the_card_fetch_when_the_registration_names_a_client_iden
 /// plane with two answers about the same agent, decided by which path asked. The probe now asks
 /// `for_agent` exactly as the sweep does.
 #[test]
-fn the_verb_layers_probe_fetches_an_mtls_vendors_card_with_that_registrations_certificate() {
+fn the_verb_layers_probe_fetches_a_mutual_tls_vendors_card_with_that_registrations_certificate() {
     use crate::a2a::verbs::CardSource;
 
     // AN IP-LITERAL ENDPOINT, because the probe carries the PRODUCTION resolver: `LiveCardFetch`
@@ -270,7 +270,7 @@ fn the_verb_layers_probe_fetches_an_mtls_vendors_card_with_that_registrations_ce
     // as the only thing this test varies.
     let (server_ca, server_leaf, server_key) = ca_and_leaf(vec!["127.0.0.1".to_string()]);
     let (client_ca, client_leaf, client_key) = ca_and_leaf(vec!["busbar.example".to_string()]);
-    let (addr, seen) = spawn_mtls(&server_leaf, &server_key, &client_ca, CARD.to_string());
+    let (addr, seen) = spawn_mutual_tls(&server_leaf, &server_key, &client_ca, CARD.to_string());
 
     let mut identities = crate::a2a::transport::ClientIdentities::new();
     identities.insert(
@@ -293,7 +293,7 @@ fn the_verb_layers_probe_fetches_an_mtls_vendors_card_with_that_registrations_ce
         format!("https://127.0.0.1:{}/agent", addr.port()),
     );
     let pin_cfg = crate::a2a::config::AgentPinCfg {
-        mechanism: crate::a2a::config::PinMechanism::Mtls,
+        mechanism: crate::a2a::config::PinMechanism::MutualTls,
         key: Some("sha256/whatever-the-verify-tests-pin".to_string()),
         fingerprint: None,
     };
@@ -338,9 +338,9 @@ fn each_registration_presents_its_own_certificate_and_not_another_registrations(
     let (payments_ca, payments_leaf, payments_key) =
         ca_and_leaf(vec!["busbar.example".to_string()]);
     let (planner_peer, planner_seen) =
-        spawn_mtls(&server_leaf, &server_key, &planner_ca, CARD.to_string());
+        spawn_mutual_tls(&server_leaf, &server_key, &planner_ca, CARD.to_string());
     let (payments_peer, payments_seen) =
-        spawn_mtls(&server_leaf, &server_key, &payments_ca, CARD.to_string());
+        spawn_mutual_tls(&server_leaf, &server_key, &payments_ca, CARD.to_string());
     let planner_url = url("https", planner_peer.port(), "/.well-known/agent-card.json");
     let payments_url = url(
         "https",
@@ -384,7 +384,9 @@ fn each_registration_presents_its_own_certificate_and_not_another_registrations(
     let _err = live
         .for_agent("an-agent-that-named-no-identity")
         .get(&planner_url, LOOPBACK)
-        .expect_err("no identity means no certificate to present, and an mTLS peer refuses that");
+        .expect_err(
+            "no identity means no certificate to present, and a mutual-TLS peer refuses that",
+        );
 
     // THE REFUSALS, READ AT THE PEER RATHER THAN OFF A CLIENT-SIDE ERROR STRING — which is what
     // `ClientCerts` exists for, and what the first test in this file already does.

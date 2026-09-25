@@ -79,7 +79,7 @@ const REST_RPC_ID: &str = "a2a-http-json";
 /// name here would compose an envelope for the version this binding does not belong to.
 pub(super) mod method {
     pub(crate) const SEND_MESSAGE: &str = "SendMessage";
-    pub(crate) const SEND_STREAMING_MESSAGE: &str = "SendStreamingMessage";
+    pub(crate) const SEND_STREAM_MESSAGE: &str = "SendStreamingMessage";
     pub(crate) const GET_TASK: &str = "GetTask";
     pub(crate) const LIST_TASKS: &str = "ListTasks";
     pub(crate) const CANCEL_TASK: &str = "CancelTask";
@@ -222,13 +222,13 @@ async fn compose_and_invoke(
 /// is the presence of `result` or `error`, which is the same test the relay's event reader applies
 /// for the same reason.
 async fn reframe(response: Response) -> Response {
-    let streaming = response
+    let is_stream = response
         .headers()
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|ct| ct.starts_with(super::relay::SSE_CONTENT_TYPE));
     let (mut parts, body) = response.into_parts();
-    if streaming {
+    if is_stream {
         return Response::from_parts(parts, reframe_events(body));
     }
     // The body is busbar's OWN answer, already fully composed in memory by the handler above; there
@@ -410,7 +410,7 @@ async fn message_stream(ctx: PlaneReqCtx) -> Response {
         gov,
         principal,
         wire,
-        method::SEND_STREAMING_MESSAGE,
+        method::SEND_STREAM_MESSAGE,
         params,
     )
     .await

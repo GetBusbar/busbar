@@ -44,7 +44,7 @@ use super::relay_harness::*;
 async fn post_raw(h: &Harness, body: &serde_json::Value) -> (u16, String) {
     let resp = reqwest::Client::new()
         .post(format!("http://{}/a2a/agents/planner", h.addr))
-        .header("authorization", format!("Bearer {}", h.bearer))
+        .header("authorization", format!("Bearer {}", h.caller_token))
         .header("content-type", "application/json")
         .body(serde_json::to_vec(body).expect("serialise"))
         .send()

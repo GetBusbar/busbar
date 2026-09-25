@@ -218,7 +218,7 @@ fn a_duplicate_skill_id_is_refused_rather_than_resolved() {
 fn the_reader_mirrors_the_wire_names_and_tolerates_absent_members() {
     let card = parse(&a_card()).expect("parse");
     assert_eq!(card.protocol_version, "0.3.0");
-    assert!(card.capabilities.streaming);
+    assert!(card.capabilities.is_stream);
     assert!(!card.capabilities.push_notifications);
     assert_eq!(card.supported_interfaces[0].protocol_binding, "JSONRPC");
     assert_eq!(card.default_input_modes, vec!["application/json"]);

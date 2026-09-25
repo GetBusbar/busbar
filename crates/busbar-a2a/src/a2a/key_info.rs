@@ -15,23 +15,25 @@
 //! outbound hop (the egress seam) it must hand the plane the SAME pin string the plane would have
 //! computed here, byte for byte, and a second copy of the walk would be a second answer to "what is
 //! this key's pin". So the walk lives in ONE neutral place and this module re-exports it — the a2a
-//! spelling ([`spki_pin`]) and the host spelling ([`busbar_kernel::plane_host::spki::pin`]) are the SAME
+//! spelling ([`pin_hash`]) and the host spelling ([`busbar_kernel::plane_host::spki::pin`]) are the SAME
 //! function, which is what makes a host-computed pin and a plane-computed pin identical.
 //!
-//! The DER handed to [`spki_pin`] is the leaf certificate of a handshake that ALREADY COMPLETED under
+//! The DER handed to [`pin_hash`] is the leaf certificate of a handshake that ALREADY COMPLETED under
 //! the ordinary chain-and-name check ([`super::transport`]). This is therefore an OBSERVATION of a
 //! connection somebody else already verified, never a substitute for verifying one.
 
 // The walk, the error taxonomy and the pin rendering all live in the neutral host module now; a2a
 // re-exports them under their historical names so this plane's tests keep one spelling. Since the
 // transport's hop moved onto the egress seam, the HOST computes the observed pin (from the same
-// [`busbar_kernel::plane_host::spki::pin`] this name aliases), so no non-test code reaches `spki_pin` any
+// [`busbar_kernel::plane_host::spki::pin`] this name aliases), so no non-test code reaches `pin_hash` any
 // more — the walk, its error taxonomy and the pin rendering are all exercised only by the tests.
 #[cfg(all(test, feature = "test-support"))]
-pub(crate) use busbar_kernel::plane_host::spki::pin as spki_pin;
+pub(crate) use busbar_kernel::plane_host::spki::pin as pin_hash;
 #[cfg(all(test, feature = "test-support"))]
-pub(crate) use busbar_kernel::plane_host::spki::{subject_public_key_info, SpkiError};
+pub(crate) use busbar_kernel::plane_host::spki::{
+    subject_public_key_info, SpkiError as KeyInfoError,
+};
 
 #[cfg(all(test, feature = "test-support"))]
-#[path = "tests/spki_tests.rs"]
-mod spki_tests;
+#[path = "tests/key_info_tests.rs"]
+mod key_info_tests;

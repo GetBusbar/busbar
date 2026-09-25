@@ -72,8 +72,8 @@ impl RelayTransport for CountingDenier {
             status: self.status,
             location: None,
             body: b"denied".to_vec(),
-            peer_spki: None,
             client_identity_offered: false,
+            ..Default::default()
         })
     }
     fn post_stream(
@@ -269,7 +269,7 @@ async fn call_with_headers(
 ) -> (u16, reqwest::header::HeaderMap, serde_json::Value) {
     let resp = reqwest::Client::new()
         .post(format!("http://{}/a2a/agents/planner", h.addr))
-        .header("authorization", format!("Bearer {}", h.bearer))
+        .header("authorization", format!("Bearer {}", h.caller_token))
         .header("content-type", "application/json")
         .json(body)
         .send()

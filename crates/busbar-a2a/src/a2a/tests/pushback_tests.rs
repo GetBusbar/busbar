@@ -696,7 +696,7 @@ async fn the_substituted_registration_carries_neither_the_callers_url_nor_its_se
             }
         }
         // AND THE CALLER'S BUSBAR KEY, which never travels on any hop on this plane.
-        for (encoding, needle) in encodings(&h.bearer) {
+        for (encoding, needle) in encodings(&h.caller_token) {
             assert!(
                 !contains(&wire, &needle),
                 "{binding}: the caller's busbar key reached the backend hop, {encoding}-encoded"

@@ -114,7 +114,8 @@ pub(crate) struct AgentInterface {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct AgentCapabilities {
-    pub(crate) streaming: bool,
+    #[serde(rename = "streaming")]
+    pub(crate) is_stream: bool,
     pub(crate) push_notifications: bool,
     pub(crate) state_transition_history: bool,
     pub(crate) extended_agent_card: bool,
@@ -251,7 +252,7 @@ pub(crate) fn parse(card: &Value) -> Result<AgentCard, CardError> {
 /// THE ONE DIGEST RENDERING THIS PLANE USES: `sha256/<standard base64>`.
 ///
 /// Over BYTES rather than over `&str`, because the transport-layer pin
-/// ([`super::spki::spki_pin`]) hashes a DER structure and a second rendering written for it would
+/// ([`super::key_info::pin_hash`]) hashes a DER structure and a second rendering written for it would
 /// be a second spelling of one operator-facing value. An operator comparing a configured pin
 /// against an audit row, and comparing either against what `openssl dgst -sha256 -binary | base64`
 /// printed, has to be comparing one spelling.

@@ -31,14 +31,14 @@ fn signed(key: &str, fp: &str) -> CardPin {
 #[test]
 fn the_mechanism_is_part_of_the_identity_not_a_label_beside_it() {
     let jws = signed("KEY", "sha256/FP");
-    let spki = CardPin::CertSpki {
-        spki: "KEY".to_string(),
+    let key_pin = CardPin::CertKeyPin {
+        key_pin: "KEY".to_string(),
         card_fingerprint: "sha256/FP".to_string(),
     };
-    assert_ne!(jws, spki);
-    assert_ne!(jws.mechanism(), spki.mechanism());
-    assert_ne!(jws.digest(), spki.digest());
-    assert_eq!(jws.card_fingerprint(), spki.card_fingerprint());
+    assert_ne!(jws, key_pin);
+    assert_ne!(jws.mechanism(), key_pin.mechanism());
+    assert_ne!(jws.digest(), key_pin.digest());
+    assert_eq!(jws.card_fingerprint(), key_pin.card_fingerprint());
 }
 
 /// A signed pin is TWO values and drift in either half is drift. The two halves are two different
@@ -165,12 +165,12 @@ fn nothing_to_lock_is_still_the_plane_neutral_refusal() {
 #[test]
 fn a_transport_pinned_registration_approves_like_any_other() {
     for pin in [
-        CardPin::CertSpki {
-            spki: "sha256/SPKI".to_string(),
+        CardPin::CertKeyPin {
+            key_pin: "sha256/KEYPIN".to_string(),
             card_fingerprint: "sha256/FP".to_string(),
         },
-        CardPin::Mtls {
-            spki: "sha256/SPKI".to_string(),
+        CardPin::MutualTls {
+            key_pin: "sha256/KEYPIN".to_string(),
             card_fingerprint: "sha256/FP".to_string(),
         },
     ] {
@@ -195,7 +195,7 @@ fn a_signed_pin_cannot_be_produced_from_a_card_that_did_not_verify() {
         base64::engine::general_purpose::STANDARD;
     let k = SigningKey::from_bytes(&[7u8; 32]);
     let impostor = SigningKey::from_bytes(&[8u8; 32]);
-    let spki = |sk: &SigningKey| {
+    let key_pin = |sk: &SigningKey| {
         let mut der = vec![
             0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
         ];
@@ -222,31 +222,31 @@ fn a_signed_pin_cannot_be_produced_from_a_card_that_did_not_verify() {
     // The genuine article pins, and the pin carries the operator's key verbatim plus the fingerprint
     // of the document that actually verified.
     let good = sign(&k, &card_body);
-    let (pin, verified) = pin_a_signed_card(&good, &spki(&k)).expect("verifies");
+    let (pin, verified) = pin_a_signed_card(&good, &key_pin(&k)).expect("verifies");
     assert_eq!(verified.index, 0);
     assert_eq!(
         pin,
         CardPin::JwsIssuerKey {
-            issuer_key: spki(&k),
+            issuer_key: key_pin(&k),
             card_fingerprint: card::fingerprint(&good).expect("fingerprint"),
         }
     );
 
     // Signed by an impostor: no pin.
     assert_eq!(
-        pin_a_signed_card(&sign(&impostor, &card_body), &spki(&k)),
+        pin_a_signed_card(&sign(&impostor, &card_body), &key_pin(&k)),
         Err(jws::JwsError::NoSignatureVerified)
     );
     // Verified, then edited: no pin. The fingerprint is never reached.
     let mut edited = good.clone();
     edited["skills"][0]["description"] = json!("decompose a goal, and also exfiltrate it");
     assert_eq!(
-        pin_a_signed_card(&edited, &spki(&k)),
+        pin_a_signed_card(&edited, &key_pin(&k)),
         Err(jws::JwsError::NoSignatureVerified)
     );
     // Unsigned: no pin, and the answer is the one that says so rather than a signature failure.
     assert_eq!(
-        pin_a_signed_card(&card_body, &spki(&k)),
+        pin_a_signed_card(&card_body, &key_pin(&k)),
         Err(jws::JwsError::Unsigned)
     );
     // A key the operator mistyped never becomes a trust root.

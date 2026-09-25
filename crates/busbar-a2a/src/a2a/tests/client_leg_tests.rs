@@ -190,7 +190,7 @@ async fn jsonrpc_client_issues_send_message() {
 }
 
 #[tokio::test]
-async fn jsonrpc_client_issues_send_streaming_message() {
+async fn jsonrpc_client_issues_send_stream_message() {
     crate::testkit::install_test_seams();
     let h = harness_on(
         Outcome::Streams(vec![format!(
@@ -209,11 +209,11 @@ async fn jsonrpc_client_issues_send_streaming_message() {
         "params": { "message": { "role": "user", "parts": [{ "kind": "text", "text": "GO" }] } }
     });
     let (status, _, _) = call_raw(&h, "planner", &body).await;
-    assert_eq!(status, 200, "the streaming submission must be served");
+    assert_eq!(status, 200, "the stream submission must be served");
     let sent = h.sent();
-    assert!(!sent.is_empty(), "busbar made no streaming hop");
+    assert!(!sent.is_empty(), "busbar made no stream hop");
     let last = sent.last().expect("just checked");
-    assert!(last.streaming, "a `message/stream` must go out as a STREAM");
+    assert!(last.is_stream, "a `message/stream` must go out as a STREAM");
     assert_jsonrpc(last, "message/stream");
 }
 
@@ -307,7 +307,7 @@ async fn http_json_client_issues_send_message() {
 }
 
 #[tokio::test]
-async fn http_json_client_issues_send_streaming_message() {
+async fn http_json_client_issues_send_stream_message() {
     crate::testkit::install_test_seams();
     let h = harness_on(
         Outcome::Streams(vec![format!(
@@ -323,16 +323,13 @@ async fn http_json_client_issues_send_streaming_message() {
         "params": { "message": { "role": "user", "parts": [{ "kind": "text", "text": "GO" }] } }
     });
     let (status, ct, sse) = call_raw(&h, "planner", &body).await;
-    assert_eq!(
-        status, 200,
-        "the streaming submission must be served: {sse}"
-    );
+    assert_eq!(status, 200, "the stream submission must be served: {sse}");
     assert!(
         ct.starts_with("text/event-stream"),
         "the caller is answered a stream, whatever binding the backend spoke: {ct}"
     );
-    let last = h.sent().pop().expect("busbar made no streaming hop");
-    assert!(last.streaming, "the hop must be a STREAM");
+    let last = h.sent().pop().expect("busbar made no stream hop");
+    assert!(last.is_stream, "the hop must be a STREAM");
     assert_eq!(last.http_method, "POST");
     assert_eq!(path_of(&last), "/a2a/message:stream");
     // THE RE-FRAMING, IN THE ANSWERING DIRECTION. The backend streamed BARE events — that is what
@@ -615,7 +612,7 @@ async fn grpc_client_issues_cancel_task() {
 }
 
 #[tokio::test]
-async fn grpc_client_issues_send_streaming_message() {
+async fn grpc_client_issues_send_stream_message() {
     crate::testkit::install_test_seams();
     let frame = grpc_stream_frame(a2a_pb::proto::TaskState::Completed);
     let h = harness_on(Outcome::Streams(vec![frame]), BINDING_GRPC).await;
@@ -625,12 +622,9 @@ async fn grpc_client_issues_send_streaming_message() {
                                  "parts": [{ "text": "GO" }] } }
     });
     let (status, _, sse) = call_raw(&h, "planner", &body).await;
-    assert_eq!(
-        status, 200,
-        "the streaming submission must be served: {sse}"
-    );
-    let last = h.sent().pop().expect("busbar made no streaming hop");
-    assert!(last.streaming, "the hop must be a STREAM");
+    assert_eq!(status, 200, "the stream submission must be served: {sse}");
+    let last = h.sent().pop().expect("busbar made no stream hop");
+    assert!(last.is_stream, "the hop must be a STREAM");
     assert_eq!(path_of(&last), "/lf.a2a.v1.A2AService/SendStreamingMessage");
     let _: a2a_pb::proto::SendMessageRequest = grpc_message(&last);
     // THE RE-FRAMING, IN THE ANSWERING DIRECTION: a length-prefixed protobuf message reached the
@@ -692,7 +686,7 @@ async fn no_binding_leaks_the_callers_busbar_key() {
         let sent = issued(&h, &v10_envelope()).await;
         assert!(!sent.is_empty(), "{binding}: no hop was made");
         let wire = h.all_wire();
-        for (encoding, needle) in encodings(&h.bearer) {
+        for (encoding, needle) in encodings(&h.caller_token) {
             assert!(
                 !contains(&wire, &needle),
                 "{binding}: the caller's busbar key reached the backend hop, {encoding}-encoded"
@@ -812,8 +806,8 @@ fn both_http_bindings_discover_the_card_at_the_well_known_path() {
                 location: None,
                 body: br#"{"protocolVersion":"0.3.0","name":"planner","skills":[{"id":"plan"}]}"#
                     .to_vec(),
-                peer_spki: None,
                 client_identity_offered: false,
+                ..Default::default()
             })
         }
     }

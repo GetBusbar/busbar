@@ -614,9 +614,9 @@ pub(crate) mod words;
 // refresh timer drives the same `due` this one does. See the standing rule: unify the duplicate
 // before a second copy can drift from the first.
 pub(crate) use busbar_kernel::trust::reverify;
+pub(crate) mod key_info;
 pub mod serve;
 pub(crate) mod sign;
-pub(crate) mod spki;
 pub mod task;
 pub(crate) mod transport;
 pub mod verbs;

@@ -2330,7 +2330,7 @@ async fn admitted(
     // un-pooled `prepare` admit re-homes its own probe into the SAME scope. One scope spans both. The
     // hop's neutral `EngineHost` (cloned) rides with it so `prepare`/`record_hop_outcome` reach the
     // breaker seam AND the streaming hop's durable-journal writes reach the task-event seam.
-    if shape.requires_streaming {
+    if shape.requires_stream {
         stream_hop(
             hop_ctx,
             seam,
@@ -3700,7 +3700,7 @@ fn resumable_task(
 /// rather than inlined so `local_tests::every_a2a_method_is_read_identically_under_both_of_its_live_json_rpc_names`
 /// can drive it: an asymmetry between the two eras is the failure worth locking out, and it cannot
 /// be locked out against an expression buried in a struct literal.
-fn reads_as_streaming(method: &str) -> bool {
+fn reads_as_stream(method: &str) -> bool {
     method.ends_with("/stream")
         || method == "tasks/resubscribe"
         || method == "SendStreamingMessage"
@@ -3708,8 +3708,8 @@ fn reads_as_streaming(method: &str) -> bool {
 }
 
 #[cfg(all(test, feature = "test-support"))]
-pub(crate) fn reads_as_streaming_for_test(method: &str) -> bool {
-    reads_as_streaming(method)
+pub(crate) fn reads_as_stream_for_test(method: &str) -> bool {
+    reads_as_stream(method)
 }
 
 #[cfg(all(test, feature = "test-support"))]
@@ -3731,11 +3731,11 @@ fn shape_of(envelope: &serde_json::Value) -> super::registry::TaskShape {
             .and_then(|m| m.get("skill"))
             .and_then(serde_json::Value::as_str)
             .map(str::to_string),
-        // BOTH SPELLINGS OF "THIS IS A STREAM": see [`reads_as_streaming`].
-        requires_streaming: envelope
+        // BOTH SPELLINGS OF "THIS IS A STREAM": see [`reads_as_stream`].
+        requires_stream: envelope
             .get("method")
             .and_then(serde_json::Value::as_str)
-            .is_some_and(reads_as_streaming),
+            .is_some_and(reads_as_stream),
         // ALL THREE SPELLINGS of "this task registers a callback" — the same pointer list the
         // callback guard reads ([`CALLBACK_CONFIG_POINTERS`]), because one spelling here was the
         // exact lesson the guard's doc comment records: a v1.0 `taskPushNotificationConfig`

@@ -65,7 +65,7 @@ pub(super) struct Recorded {
     pub(super) body: Vec<u8>,
     /// Whether the relay asked for a STREAM. Recorded so a test can assert that a `message/stream`
     /// went out as a streaming hop and a `message/send` did not.
-    pub(super) streaming: bool,
+    pub(super) is_stream: bool,
 }
 
 impl Recorded {
@@ -163,7 +163,7 @@ impl RecordingTransport {
         addr: IpAddr,
         headers: &[(String, String)],
         body: &[u8],
-        streaming: bool,
+        is_stream: bool,
     ) {
         self.log
             .lock()
@@ -174,7 +174,7 @@ impl RecordingTransport {
                 addr: Some(addr),
                 headers: headers.to_vec(),
                 body: body.to_vec(),
-                streaming,
+                is_stream,
             });
     }
 }
@@ -194,15 +194,15 @@ impl RelayTransport for RecordingTransport {
                 status: *status,
                 location: None,
                 body: reply.clone().into_bytes(),
-                peer_spki: None,
                 client_identity_offered: false,
+                ..Default::default()
             }),
             Outcome::AnswersCorrelated(status, reply) => Ok(HttpResponse {
                 status: *status,
                 location: None,
                 body: correlated(reply, body).into_bytes(),
-                peer_spki: None,
                 client_identity_offered: false,
+                ..Default::default()
             }),
             Outcome::Fails(err) => Err(err.clone()),
             Outcome::AnswersByHost(hosts) => {
@@ -215,8 +215,8 @@ impl RelayTransport for RecordingTransport {
                     status: *status,
                     location: None,
                     body: correlated(reply, body).into_bytes(),
-                    peer_spki: None,
                     client_identity_offered: false,
+                    ..Default::default()
                 })
             }
             Outcome::AnswersInTurn(status, replies, seen) => {
@@ -229,19 +229,19 @@ impl RelayTransport for RecordingTransport {
                     status: *status,
                     location: None,
                     body: correlated(reply, body).into_bytes(),
-                    peer_spki: None,
                     client_identity_offered: false,
+                    ..Default::default()
                 })
             }
             Outcome::AnswersThenStreams(status, reply, _) => Ok(HttpResponse {
                 status: *status,
                 location: None,
                 body: correlated(reply, body).into_bytes(),
-                peer_spki: None,
                 client_identity_offered: false,
+                ..Default::default()
             }),
             Outcome::Streams(_) | Outcome::StreamAnsweredUnary(_) => {
-                panic!("a streaming fixture was reached through the UNARY hop")
+                panic!("a stream fixture was reached through the UNARY hop")
             }
         }
     }
@@ -465,7 +465,7 @@ pub(super) fn agent_cfg(url: &str, with_credential: bool) -> crate::a2a::config:
         upstream_credentials: None,
         upstream_credential: with_credential.then(|| crate::a2a::creds::OutboundCredential {
             secret: busbar_secret_ref::SecretRef::file(secret_file().to_string_lossy().to_string()),
-            placement: crate::a2a::creds::CredentialPlacement::Bearer,
+            placement: crate::a2a::creds::CredentialPlacement::AuthorizationHeader,
             lease_ttl_ms: 600_000,
         }),
         egress_scopes: Vec::new(),
@@ -531,7 +531,7 @@ pub(super) async fn await_chain_with(
 pub(super) struct Harness {
     pub(super) addr: std::net::SocketAddr,
     /// The caller's busbar key: a REAL audience-bound token this deployment's verifier accepts.
-    pub(super) bearer: String,
+    pub(super) caller_token: String,
     pub(super) log: Arc<Mutex<Vec<Recorded>>>,
     pub(super) lookups: Arc<AtomicUsize>,
     pub(super) gov: Arc<dyn GovKit>,
@@ -777,7 +777,7 @@ async fn harness_core(
     gov.store().put_key(&scoped).expect("put");
     gov.refresh().expect("refresh");
 
-    let bearer = signer.mint_for_audience(
+    let caller_token = signer.mint_for_audience(
         &key.id,
         2_000_000_000,
         generation.as_deref(),
@@ -863,7 +863,7 @@ async fn harness_core(
 
     Harness {
         addr,
-        bearer,
+        caller_token,
         log,
         lookups,
         gov,
@@ -929,7 +929,7 @@ pub(super) async fn call_agent(
 ) -> (u16, serde_json::Value) {
     let resp = reqwest::Client::new()
         .post(format!("http://{}/a2a/agents/{agent}", h.addr))
-        .header("authorization", format!("Bearer {}", h.bearer))
+        .header("authorization", format!("Bearer {}", h.caller_token))
         .header("content-type", "application/json")
         .json(body)
         .send()
@@ -952,7 +952,7 @@ pub(super) async fn call_raw(
 ) -> (u16, String, String) {
     let resp = reqwest::Client::new()
         .post(format!("http://{}/a2a/agents/{agent}", h.addr))
-        .header("authorization", format!("Bearer {}", h.bearer))
+        .header("authorization", format!("Bearer {}", h.caller_token))
         .header("content-type", "application/json")
         .json(body)
         .send()

@@ -13,7 +13,7 @@
 //! so a self-signed test CA cannot be reached through the seam — the same reason `egress_tests` uses
 //! plaintext). The peer-SPKI dimension is therefore `None == None` here; its byte-identity over TLS is
 //! by CONSTRUCTION — the host and the plane decode the pin through the one shared
-//! `busbar_kernel::plane_host::spki::pin` (`a2a::spki::spki_pin` re-exports it), so there is no second spelling
+//! `busbar_kernel::plane_host::spki::pin` (`a2a::key_info::pin_hash` re-exports it), so there is no second spelling
 //! to diverge. `client_identity_offered` is asserted directly (both compute `is_some()`).
 
 use std::io::{Read, Write};
@@ -139,7 +139,7 @@ fn hop<'a>(url: &'a str) -> HopSpec<'a> {
 }
 
 /// THE CORE EQUALITY: the neutral buffered adapter and the A2A transport's own `get` agree field for
-/// field against the same fixture — status, location, body, peer_spki, client_identity_offered.
+/// field against the same fixture — status, location, body, peer_key_pin, client_identity_offered.
 #[test]
 fn buffered_adapter_matches_the_a2a_transport_get_byte_for_byte() {
     let body = b"the agent card bytes, exactly".to_vec();
@@ -167,7 +167,7 @@ fn buffered_adapter_matches_the_a2a_transport_get_byte_for_byte() {
     assert_eq!(seamed.body, direct.body, "body is byte-identical");
     assert_eq!(
         seamed.peer_spki, direct.peer_spki,
-        "peer_spki matches (None == None on plaintext)"
+        "the observed peer key pin matches (None == None on plaintext)"
     );
     assert_eq!(
         seamed.client_identity_offered, direct.client_identity_offered,

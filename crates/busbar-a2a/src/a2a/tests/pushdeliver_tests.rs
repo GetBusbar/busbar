@@ -87,8 +87,8 @@ impl RelayTransport for RecordingTransport {
             status: self.status,
             location: None,
             body: Vec::new(),
-            peer_spki: None,
             client_identity_offered: false,
+            ..Default::default()
         })
     }
 
@@ -100,7 +100,7 @@ impl RelayTransport for RecordingTransport {
         _body: &[u8],
         _on_chunk: &mut (dyn FnMut(&[u8]) -> ChunkFlow + Send),
     ) -> Result<StreamHead, String> {
-        panic!("a push notification is never a streaming hop")
+        panic!("a push notification is never a stream hop")
     }
 }
 

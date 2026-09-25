@@ -52,7 +52,7 @@ async fn post_with(
 ) -> (u16, serde_json::Value) {
     let mut req = reqwest::Client::new()
         .post(format!("http://{}/a2a/agents/planner", h.addr))
-        .header("authorization", format!("Bearer {}", h.bearer))
+        .header("authorization", format!("Bearer {}", h.caller_token))
         .body(serde_json::to_vec(&envelope()).expect("serialise"));
     if let Some(ct) = content_type {
         req = req.header("content-type", ct);
@@ -224,7 +224,7 @@ async fn the_media_type_is_judged_before_the_body_is_parsed() {
     let h = harness(Outcome::Answers(200, backend_ok()), false).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{}/a2a/agents/planner", h.addr))
-        .header("authorization", format!("Bearer {}", h.bearer))
+        .header("authorization", format!("Bearer {}", h.caller_token))
         .header("content-type", "text/plain")
         .header("A2A-Version", "1.0")
         .body("{'jsonrpc': '2.0', 'id': 1, 'method': 'SendMessage'}")

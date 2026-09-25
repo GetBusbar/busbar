@@ -651,7 +651,7 @@ pub(crate) trait OutboundFraming: Send + Sync {
         &self,
         base: &url::Url,
         call: &Outbound<'_>,
-        streaming: bool,
+        is_stream: bool,
     ) -> Result<FramedRequest, String>;
 
     /// Re-frame a COMPLETED answer into the JSON-RPC envelope [`read_reply`] reads.
@@ -748,13 +748,13 @@ impl OutboundFraming for JsonRpcFraming {
         &self,
         base: &url::Url,
         call: &Outbound<'_>,
-        streaming: bool,
+        is_stream: bool,
     ) -> Result<FramedRequest, String> {
         Ok(FramedRequest {
             http_method: "POST",
             url: base.clone(),
             content_type: Some(CONTENT_TYPE),
-            accept: if streaming {
+            accept: if is_stream {
                 ACCEPT_STREAM
             } else {
                 CONTENT_TYPE
@@ -826,7 +826,7 @@ fn rest_op(method: &str) -> Option<RestOp> {
             query: &[],
             body: true,
         },
-        m::SEND_STREAMING_MESSAGE => RestOp {
+        m::SEND_STREAM_MESSAGE => RestOp {
             http_method: "POST",
             path: "/message:stream",
             query: &[],
@@ -913,7 +913,7 @@ fn canonical_method(method: &str) -> Option<&'static str> {
     use super::rest::method as m;
     Some(match method {
         "SendMessage" | "message/send" => m::SEND_MESSAGE,
-        "SendStreamingMessage" | "message/stream" => m::SEND_STREAMING_MESSAGE,
+        "SendStreamingMessage" | "message/stream" => m::SEND_STREAM_MESSAGE,
         "GetTask" | "tasks/get" => m::GET_TASK,
         "ListTasks" | "tasks/list" => m::LIST_TASKS,
         "CancelTask" | "tasks/cancel" => m::CANCEL_TASK,
@@ -948,7 +948,7 @@ impl OutboundFraming for HttpJsonFraming {
         &self,
         base: &url::Url,
         call: &Outbound<'_>,
-        streaming: bool,
+        is_stream: bool,
     ) -> Result<FramedRequest, String> {
         let op = rest_op(call.method).ok_or_else(|| {
             format!(
@@ -1046,7 +1046,7 @@ impl OutboundFraming for HttpJsonFraming {
             http_method: op.http_method,
             url,
             content_type: op.body.then_some(CONTENT_TYPE),
-            accept: if streaming {
+            accept: if is_stream {
                 ACCEPT_STREAM
             } else {
                 CONTENT_TYPE
@@ -1195,7 +1195,7 @@ impl OutboundFraming for GrpcFraming {
         &self,
         base: &url::Url,
         call: &Outbound<'_>,
-        _streaming: bool,
+        _is_stream: bool,
     ) -> Result<FramedRequest, String> {
         let rpc = canonical_method(call.method).ok_or_else(|| {
             format!(
@@ -1256,9 +1256,7 @@ fn grpc_encode(rpc: &str, params: &serde_json::Value) -> Result<Vec<u8>, String>
     use super::rest::method as m;
     let params = params.clone();
     match rpc {
-        m::SEND_MESSAGE | m::SEND_STREAMING_MESSAGE => {
-            grpc_frame::<a2a::SendMessageRequest>(params)
-        }
+        m::SEND_MESSAGE | m::SEND_STREAM_MESSAGE => grpc_frame::<a2a::SendMessageRequest>(params),
         m::GET_TASK => grpc_frame::<a2a::GetTaskRequest>(params),
         m::LIST_TASKS => grpc_frame::<a2a::ListTasksRequest>(params),
         m::CANCEL_TASK => grpc_frame::<a2a::CancelTaskRequest>(params),
@@ -1277,9 +1275,7 @@ fn grpc_decode(rpc: &str, message: &[u8]) -> Result<serde_json::Value, String> {
     use super::rest::method as m;
     match rpc {
         m::SEND_MESSAGE => grpc_read::<a2a::SendMessageResponse>(message),
-        m::SEND_STREAMING_MESSAGE | m::SUBSCRIBE_TO_TASK => {
-            grpc_read::<a2a::StreamResponse>(message)
-        }
+        m::SEND_STREAM_MESSAGE | m::SUBSCRIBE_TO_TASK => grpc_read::<a2a::StreamResponse>(message),
         m::GET_TASK | m::CANCEL_TASK => grpc_read::<a2a::Task>(message),
         m::LIST_TASKS => grpc_read::<a2a::ListTasksResponse>(message),
         m::CREATE_PUSH_CONFIG | m::GET_PUSH_CONFIG => {
@@ -1591,7 +1587,7 @@ fn classify_hop(refusal: Option<&RelayRefusal>) -> HopOutcome {
 fn prepare<'a>(
     call: &RelayCall<'a>,
     seam: &dyn RelaySeam,
-    streaming: bool,
+    is_stream: bool,
     now_ms: u64,
     admit_id: &mut busbar_plugin::hot::AdmissionId,
 ) -> Result<(url::Url, PinnedTarget, OutboundRelayRequest), RelayRefusal> {
@@ -1658,7 +1654,7 @@ fn prepare<'a>(
                 method: &method,
                 params: &params,
             },
-            streaming,
+            is_stream,
         )
         .map_err(|reason| RelayRefusal::Unframable {
             binding: call.framing.word().to_string(),

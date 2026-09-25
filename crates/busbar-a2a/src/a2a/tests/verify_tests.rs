@@ -16,7 +16,7 @@ use std::net::IpAddr;
 
 use super::*;
 use crate::a2a::fetch::HttpResponse;
-use crate::a2a::jws::ED25519_SPKI_PREFIX;
+use crate::a2a::jws::ED25519_KEY_INFO_PREFIX;
 use crate::a2a::pin::CardPin;
 use base64::Engine as _;
 use busbar_kernel::trust::TrustState;
@@ -33,8 +33,8 @@ fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
 
-fn spki_base64(k: &SigningKey) -> String {
-    let mut der = ED25519_SPKI_PREFIX.to_vec();
+fn key_info_base64(k: &SigningKey) -> String {
+    let mut der = ED25519_KEY_INFO_PREFIX.to_vec();
     der.extend_from_slice(k.verifying_key().as_bytes());
     STD.encode(der)
 }
@@ -92,8 +92,8 @@ impl CardEndpoint {
                 status: 200,
                 location: None,
                 body: serde_json::to_vec(card).expect("serialize"),
-                peer_spki: None,
                 client_identity_offered: false,
+                ..Default::default()
             },
         );
     }
@@ -116,7 +116,7 @@ impl Transport for CardEndpoint {
 fn signed_pin(k: &SigningKey) -> AgentPinCfg {
     AgentPinCfg {
         mechanism: PinMechanism::JwsIssuerKey,
-        key: Some(spki_base64(k)),
+        key: Some(key_info_base64(k)),
         fingerprint: None,
     }
 }
@@ -267,7 +267,7 @@ fn unpinned_carrying_key_material_is_refused_on_the_wire_and_not_only_at_parse()
     let mut reg = a_registration();
     let contradictory = AgentPinCfg {
         mechanism: PinMechanism::Unpinned,
-        key: Some(spki_base64(&key(1))),
+        key: Some(key_info_base64(&key(1))),
         fingerprint: None,
     };
 
@@ -305,15 +305,15 @@ fn a_transport_pin_with_no_certificate_observed_is_refused_rather_than_recorded_
     // prevent, arriving from our side instead of theirs.
     let endpoint = CardEndpoint::serving(&a_card("decompose a goal"));
     for (mechanism, label) in [
-        (PinMechanism::CertSpki, "cert_spki"),
-        (PinMechanism::Mtls, "mtls"),
+        (PinMechanism::CertKeyPin, "cert_spki"),
+        (PinMechanism::MutualTls, "mtls"),
     ] {
         let mut reg = a_registration();
         let p = pass(
             &mut reg,
             &AgentPinCfg {
                 mechanism,
-                key: Some("sha256/SPKI==".to_string()),
+                key: Some("sha256/KEYPIN==".to_string()),
                 fingerprint: None,
             },
             &endpoint,
@@ -657,16 +657,16 @@ fn the_legacy_well_known_path_is_tried_only_when_the_canonical_one_served_nothin
                     status: 404,
                     location: None,
                     body: Vec::new(),
-                    peer_spki: None,
                     client_identity_offered: false,
+                    ..Default::default()
                 });
             }
             Ok(HttpResponse {
                 status: 200,
                 location: None,
                 body: self.body.clone(),
-                peer_spki: None,
                 client_identity_offered: false,
+                ..Default::default()
             })
         }
     }
@@ -713,8 +713,8 @@ fn the_legacy_well_known_path_is_tried_only_when_the_canonical_one_served_nothin
                 status: 200,
                 location: None,
                 body,
-                peer_spki: None,
                 client_identity_offered: false,
+                ..Default::default()
             })
         }
     }
@@ -857,9 +857,9 @@ fn approved_plane(
     k: &SigningKey,
     endpoint: &CardEndpoint,
 ) -> std::sync::Arc<crate::a2a::plane::A2aPlane> {
-    let spki = spki_base64(k);
+    let key_pin = key_info_base64(k);
     let cfg: crate::a2a::config::AgentsCfg = serde_yaml::from_str(&format!(
-        "planner:\n  url: \"https://a2a.vendor/planner\"\n  pin:\n    mechanism: jws_issuer_key\n    key: \"{spki}\"\n"
+        "planner:\n  url: \"https://a2a.vendor/planner\"\n  pin:\n    mechanism: jws_issuer_key\n    key: \"{key_pin}\"\n"
     ))
     .expect("a one-agent config");
     let plane =
@@ -960,8 +960,8 @@ impl Transport for BlockingCard {
                 status: 200,
                 location: None,
                 body: self.body.clone(),
-                peer_spki: None,
                 client_identity_offered: false,
+                ..Default::default()
             })
         } else {
             Err(format!("no card at `{url}`"))
@@ -981,11 +981,11 @@ fn a_blocking_card_host_does_not_hold_the_registry_lock_against_another_agents_r
     use std::time::Duration;
 
     let k = key(9);
-    let spki = spki_base64(&k);
+    let key_pin = key_info_base64(&k);
     // Two fronted agents: `planner` (whose card fetch will block) and `other` (whose verify-state a
     // concurrent caller reads).
     let cfg: crate::a2a::config::AgentsCfg = serde_yaml::from_str(&format!(
-        "planner:\n  url: \"https://a2a.vendor/planner\"\n  pin:\n    mechanism: jws_issuer_key\n    key: \"{spki}\"\nother:\n  url: \"https://a2a.vendor/other\"\n  pin:\n    mechanism: jws_issuer_key\n    key: \"{spki}\"\n"
+        "planner:\n  url: \"https://a2a.vendor/planner\"\n  pin:\n    mechanism: jws_issuer_key\n    key: \"{key_pin}\"\nother:\n  url: \"https://a2a.vendor/other\"\n  pin:\n    mechanism: jws_issuer_key\n    key: \"{key_pin}\"\n"
     ))
     .expect("a two-agent config");
     let plane = crate::a2a::plane::A2aPlane::from_config(&cfg, None).expect("a plane");

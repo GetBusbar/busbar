@@ -28,7 +28,7 @@ struct TransportPin(&'static str);
 
 impl PinnedArtifact for TransportPin {
     fn mechanism(&self) -> &'static str {
-        "cert_spki"
+        crate::a2a::config::PinMechanism::CertKeyPin.token()
     }
     fn digest(&self) -> String {
         self.0.to_string()
@@ -129,8 +129,8 @@ fn the_lifecycle_runs_over_a2a_production_artifacts() {
 #[test]
 fn the_same_lifecycle_runs_over_a_single_value_transport_pin() {
     run_the_lifecycle(
-        TransportPin("sha256/SPKI-A"),
-        TransportPin("sha256/SPKI-B"),
+        TransportPin("sha256/KEYPIN-A"),
+        TransportPin("sha256/KEYPIN-B"),
         "read_file",
         "write_file",
     );

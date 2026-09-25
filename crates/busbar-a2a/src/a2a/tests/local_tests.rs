@@ -1209,7 +1209,7 @@ fn every_a2a_method_is_read_identically_under_both_of_its_live_json_rpc_names() 
         });
         // The two readers that are not `verb_of`: the streaming classifier the catalogue filters
         // on, and the extended-card verb the ingress answers before it selects an agent.
-        let streams = crate::a2a::receive::reads_as_streaming_for_test(method);
+        let streams = crate::a2a::receive::reads_as_stream_for_test(method);
         let extended = matches!(
             method,
             "GetExtendedAgentCard" | "agent/getAuthenticatedExtendedCard"

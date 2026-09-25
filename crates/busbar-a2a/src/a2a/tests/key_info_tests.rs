@@ -16,7 +16,7 @@ use rcgen::{CertificateParams, KeyPair, PublicKeyData};
 use sha2::{Digest, Sha256};
 
 /// A self-signed certificate and, independently, the DER of the very key inside it.
-fn cert_and_its_spki() -> (Vec<u8>, Vec<u8>) {
+fn cert_and_its_key_pin() -> (Vec<u8>, Vec<u8>) {
     let kp = KeyPair::generate().expect("a key pair");
     let params = CertificateParams::new(vec!["a2a.vendor.test".to_string()]).expect("params");
     let cert = params.self_signed(&kp).expect("self-signed");
@@ -25,11 +25,12 @@ fn cert_and_its_spki() -> (Vec<u8>, Vec<u8>) {
 
 #[test]
 fn the_walk_lands_on_the_subject_public_key_info_and_not_on_the_member_beside_it() {
-    let (cert_der, expected_spki) = cert_and_its_spki();
-    let found = subject_public_key_info(&cert_der).expect("the SPKI of a well-formed certificate");
+    let (cert_der, expected_key_pin) = cert_and_its_key_pin();
+    let found = subject_public_key_info(&cert_der)
+        .expect("the public-key info of a well-formed certificate");
     assert_eq!(
         found,
-        expected_spki.as_slice(),
+        expected_key_pin.as_slice(),
         "the walk must produce the SAME bytes the certificate's own key encodes to. A walk that \
          stopped one member early would produce a stable, plausible and completely different value."
     );
@@ -37,20 +38,20 @@ fn the_walk_lands_on_the_subject_public_key_info_and_not_on_the_member_beside_it
 
 #[test]
 fn the_pin_is_the_sha256_of_those_bytes_in_the_planes_one_digest_spelling() {
-    let (cert_der, expected_spki) = cert_and_its_spki();
-    let pin = spki_pin(&cert_der).expect("a pin");
+    let (cert_der, expected_key_pin) = cert_and_its_key_pin();
+    let pin = pin_hash(&cert_der).expect("a pin");
     assert_eq!(
         pin,
         format!(
             "sha256/{}",
-            base64::engine::general_purpose::STANDARD.encode(Sha256::digest(&expected_spki))
+            base64::engine::general_purpose::STANDARD.encode(Sha256::digest(&expected_key_pin))
         ),
         "the pin is the operator-facing value; it must be exactly what `openssl … | openssl dgst \
          -sha256 -binary | base64` prints, or nobody can obtain it out of band"
     );
     assert_eq!(
         pin,
-        crate::a2a::card::sha256_tagged(&expected_spki),
+        crate::a2a::card::sha256_tagged(&expected_key_pin),
         "ONE digest rendering on this plane. A second spelling here is a second value an operator \
          has to know is the same one."
     );
@@ -79,15 +80,15 @@ fn two_certificates_over_the_same_key_pin_identically_and_a_new_key_does_not() {
         "the two certificates must genuinely differ, or this test proves nothing"
     );
     assert_eq!(
-        spki_pin(first.der()).expect("pin"),
-        spki_pin(second.der()).expect("pin"),
+        pin_hash(first.der()).expect("pin"),
+        pin_hash(second.der()).expect("pin"),
         "a renewal keeps the key, so it must keep the pin"
     );
 
-    let (other_cert, _) = cert_and_its_spki();
+    let (other_cert, _) = cert_and_its_key_pin();
     assert_ne!(
-        spki_pin(first.der()).expect("pin"),
-        spki_pin(&other_cert).expect("pin"),
+        pin_hash(first.der()).expect("pin"),
+        pin_hash(&other_cert).expect("pin"),
         "a different key must be a different pin, or the pin distinguishes nothing"
     );
 }
@@ -96,11 +97,11 @@ fn two_certificates_over_the_same_key_pin_identically_and_a_new_key_does_not() {
 
 #[test]
 fn a_truncated_certificate_refuses_rather_than_hashing_whatever_it_reached() {
-    let (cert_der, _) = cert_and_its_spki();
+    let (cert_der, _) = cert_and_its_key_pin();
     for cut in [1usize, 2, 8, cert_der.len() / 2, cert_der.len() - 1] {
         assert_eq!(
-            spki_pin(&cert_der[..cut]),
-            Err(SpkiError::Truncated),
+            pin_hash(&cert_der[..cut]),
+            Err(KeyInfoError::Truncated),
             "{cut} bytes of a certificate is not a certificate"
         );
     }
@@ -111,8 +112,8 @@ fn a_document_that_is_not_a_certificate_refuses_by_tag() {
     // An OCTET STRING where a SEQUENCE belongs. Refused by NAME rather than by falling off the end,
     // so an operator reading the log learns the peer sent something that is not a certificate.
     assert_eq!(
-        spki_pin(&[0x04, 0x02, 0xAA, 0xBB]),
-        Err(SpkiError::UnexpectedTag {
+        pin_hash(&[0x04, 0x02, 0xAA, 0xBB]),
+        Err(KeyInfoError::UnexpectedTag {
             want: 0x30,
             got: 0x04
         })
@@ -141,8 +142,8 @@ fn every_ber_length_form_that_gives_one_certificate_a_second_encoding_is_refused
         ),
     ] {
         assert_eq!(
-            spki_pin(&bytes),
-            Err(SpkiError::NotDer(why)),
+            pin_hash(&bytes),
+            Err(KeyInfoError::NotDer(why)),
             "{why} must be refused, not tolerated"
         );
     }
@@ -156,7 +157,7 @@ fn a_version_one_certificate_with_no_version_member_is_walked_correctly() {
     //
     // Built by hand rather than by `rcgen` (which always emits v3): a minimal TBSCertificate with
     // no version member, whose seventh-position element is a recognisable stand-in SPKI.
-    let spki: Vec<u8> = vec![0x30, 0x03, 0x02, 0x01, 0x2A];
+    let key_pin: Vec<u8> = vec![0x30, 0x03, 0x02, 0x01, 0x2A];
     let mut tbs: Vec<u8> = Vec::new();
     for member in [
         vec![0x02u8, 0x01, 0x01],     // serialNumber
@@ -167,7 +168,7 @@ fn a_version_one_certificate_with_no_version_member_is_walked_correctly() {
     ] {
         tbs.extend_from_slice(&member);
     }
-    tbs.extend_from_slice(&spki);
+    tbs.extend_from_slice(&key_pin);
 
     let mut tbs_element = vec![0x30, u8::try_from(tbs.len()).expect("short form")];
     tbs_element.extend_from_slice(&tbs);
@@ -175,22 +176,22 @@ fn a_version_one_certificate_with_no_version_member_is_walked_correctly() {
     cert.extend_from_slice(&tbs_element);
 
     assert_eq!(
-        subject_public_key_info(&cert).expect("the SPKI"),
-        spki.as_slice(),
+        subject_public_key_info(&cert).expect("the public-key info"),
+        key_pin.as_slice(),
         "a v1 certificate carries no version member, and the walk must not skip a member that is \
          not there"
     );
 }
 
 /// FAITHFULNESS: the HOST spelling of the pin (the neutral [`busbar_kernel::plane_host::spki::pin`] the egress
-/// seam hands back in the observed head) is the SAME string as the a2a plane's own [`spki_pin`], byte
+/// seam hands back in the observed head) is the SAME string as the a2a plane's own [`pin_hash`], byte
 /// for byte, over the same certificate DER. This is the whole reason the walk was lifted to one place:
 /// a governed hop must be able to return the pin the plane would have computed itself, so the plane's
 /// SPKI classification is unchanged whether the hop went through the seam or the plane's own transport.
 #[test]
 fn the_host_pin_equals_the_plane_pin_byte_for_byte() {
-    let (cert_der, _) = cert_and_its_spki();
-    let plane = spki_pin(&cert_der).expect("the plane pin");
+    let (cert_der, _) = cert_and_its_key_pin();
+    let plane = pin_hash(&cert_der).expect("the plane pin");
     let host = busbar_kernel::plane_host::spki::pin(&cert_der).expect("the host pin");
     assert_eq!(
         host.as_bytes(),

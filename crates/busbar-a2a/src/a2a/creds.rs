@@ -225,7 +225,8 @@ pub(crate) fn authorise_egress<'a>(
 pub(crate) enum CredentialPlacement {
     /// `Authorization: Bearer <secret>`.
     #[default]
-    Bearer,
+    #[serde(rename = "bearer")]
+    AuthorizationHeader,
     /// A named header carrying the secret verbatim (`X-API-Key: <secret>`), which is what several
     /// A2A vendors' `APIKey` security scheme means in practice.
     Header(String),
@@ -235,7 +236,7 @@ impl CredentialPlacement {
     /// The header this placement writes.
     pub(crate) fn header_name(&self) -> &str {
         match self {
-            CredentialPlacement::Bearer => "authorization",
+            CredentialPlacement::AuthorizationHeader => "authorization",
             CredentialPlacement::Header(name) => name.as_str(),
         }
     }
@@ -368,7 +369,7 @@ impl Lease {
             });
         }
         let value = match &self.placement {
-            CredentialPlacement::Bearer => format!("Bearer {}", self.secret),
+            CredentialPlacement::AuthorizationHeader => format!("Bearer {}", self.secret),
             CredentialPlacement::Header(_) => self.secret.clone(),
         };
         Ok((self.placement.header_name().to_string(), value))
