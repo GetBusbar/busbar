@@ -8,9 +8,9 @@ use crate::test_support::{LaneSpec, TestApp};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use busbar_contract::caps::KernelSeal;
+use busbar_kernel::governance::MemoryStore;
 use busbar_kernel::proxy::reqlog::{RequestRecord, REQUESTS};
 use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-use busbar_store_memory::MemoryStore;
 
 /// The one operation class these fixtures seal, as a plane names its own.
 const OP: OpClassId = OpClassId::new("chat");

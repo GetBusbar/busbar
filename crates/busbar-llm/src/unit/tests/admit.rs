@@ -6,8 +6,8 @@ use super::*;
 use crate::test_support::TestApp;
 use busbar_api::Store as _;
 use busbar_contract::caps::{step::Admit, Decision, KernelSeal, Pass, StepName};
+use busbar_kernel::governance::MemoryStore;
 use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-use busbar_store_memory::MemoryStore;
 use std::collections::BTreeMap;
 use std::time::Instant;
 

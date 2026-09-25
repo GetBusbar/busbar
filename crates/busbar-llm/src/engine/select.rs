@@ -604,7 +604,7 @@ impl busbar_kernel::failover::Order for SwrrOrder<'_> {
 /// True for content types that carry an incremental streamed response: SSE (text/event-stream,
 /// used by Anthropic/OpenAI/Gemini-SSE) and AWS event-stream (Bedrock ConverseStream). Both
 /// must engage the streaming body path rather than being buffered.
-pub(crate) fn is_streaming_content_type(ct: &str) -> bool {
+pub(crate) fn is_stream_content_type(ct: &str) -> bool {
     // A CT is "streaming" iff SOME declared protocol declared it as its streaming `Content-Type`
     // (SSE protocols → `text/event-stream`; Bedrock → `application/vnd.amazon.eventstream`). The
     // set is a registry aggregate folded once at boot from the declarations, so naming no

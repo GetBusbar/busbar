@@ -28,13 +28,14 @@
 //! `prev_hash` to `hash`, which is also the only way to prove the refusal was not written onto a
 //! second chain of its own.
 
+use super::auth_dispatch_tests::PresentCredential as _;
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+use busbar_kernel::governance::MemoryStore;
 use busbar_kernel::proxy::reqlog::{
     RequestRecord, OUTCOME_DISPATCHED, OUTCOME_REFUSED, PRINCIPAL_UNGOVERNED, REASON_NOT_GRANTED,
     REQUESTS,
 };
 use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-use busbar_store_memory::MemoryStore;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -127,7 +128,7 @@ async fn a_governed_deployment(
 async fn call(addr: std::net::SocketAddr, pool: &str, secret: &str) -> u16 {
     reqwest::Client::new()
         .post(format!("http://{addr}/{pool}/v1/messages"))
-        .bearer_auth(secret)
+        .credential(secret)
         .body(json!({"model": pool, "messages": [{"role": "user", "content": "hi"}]}).to_string())
         .send()
         .await

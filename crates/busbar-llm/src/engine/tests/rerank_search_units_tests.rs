@@ -26,7 +26,7 @@ fn cohere_rerank_body(units: u64) -> String {
 /// and return the key's derived spend in cents (`Err` = the read refused, #42).
 fn spend_cents_after(card_yaml: Option<&str>, body: &str) -> Result<i64, String> {
     crate::testkit::install_test_seams();
-    let store = Arc::new(busbar_store_memory::MemoryStore::new());
+    let store = Arc::new(busbar_kernel::governance::MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .expect("gov");
@@ -118,7 +118,7 @@ async fn same_protocol_rerank_books(protocol: &'static str, body: &str) -> TwoBo
     use http_body_util::BodyExt as _;
     crate::testkit::install_test_seams();
     busbar_kernel::metrics::init();
-    let store = Arc::new(busbar_store_memory::MemoryStore::new());
+    let store = Arc::new(busbar_kernel::governance::MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .expect("gov");

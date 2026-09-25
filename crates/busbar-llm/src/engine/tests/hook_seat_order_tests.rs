@@ -9,6 +9,7 @@
 //! request tap's payload carries the rewritten prompt, and a rejecting gate stops everything
 //! seated after it — so a request tap that still arrives was seated before the gate and a
 //! candidate tap that never arrives was seated after it.
+use super::auth_dispatch_tests::PresentCredential as _;
 use crate::test_support::{LaneSpec, TestApp};
 use busbar_api::{
     Candidate, PolicyResult, RewriteReply, RoutingContext, RoutingDecision, RoutingPolicy,
@@ -147,7 +148,7 @@ async fn rig(reject_at_gate: bool) -> (Rig, Arc<dyn Fn() -> Ledger + Send + Sync
     }
     let server = crate::test_support::MockServer::new(state).await;
 
-    let store: Arc<dyn busbar_api::Store> = Arc::new(busbar_store_memory::MemoryStore::new());
+    let store: Arc<dyn busbar_api::Store> = Arc::new(busbar_kernel::governance::MemoryStore::new());
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -242,7 +243,7 @@ async fn rig(reject_at_gate: bool) -> (Rig, Arc<dyn Fn() -> Ledger + Send + Sync
 async fn send(rig: &Rig) -> u16 {
     reqwest::Client::new()
         .post(format!("http://{}/p/v1/messages", rig.addr))
-        .bearer_auth(&rig.secret)
+        .credential(&rig.secret)
         .body(
             serde_json::json!({"model": "p", "max_tokens": 16,
                 "messages": [{"role": "user", "content": "the original prompt"}]})

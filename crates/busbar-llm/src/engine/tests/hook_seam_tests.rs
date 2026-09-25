@@ -1665,9 +1665,9 @@ async fn max_tokens_saturates_not_wraps() {
 #[tokio::test]
 async fn send_user_projects_governance_key_identity() {
     crate::testkit::install_test_seams();
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     let store = std::sync::Arc::new(MemoryStore::new());
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
@@ -1842,9 +1842,9 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
 #[tokio::test]
 async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
     crate::testkit::install_test_seams();
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     let store = std::sync::Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)

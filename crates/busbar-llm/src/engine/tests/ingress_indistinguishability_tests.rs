@@ -495,9 +495,9 @@ async fn test_cross_protocol_response_carries_ingress_ct_and_native_id() {
 #[tokio::test]
 async fn test_untranslatable_2xx_does_not_charge_tokens() {
     crate::testkit::install_test_seams();
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     busbar_kernel::metrics::init();
     let state = Arc::new(MockServerState::new());
     // OpenAI-shaped 2xx: a real `usage` block (so the tap WOULD count 7+3=10 tokens) but an EMPTY
@@ -713,9 +713,9 @@ async fn test_untranslatable_2xx_refunds_budget_and_trips_breaker() {
 async fn test_same_protocol_nonstream_multichunk_counts_usage() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
     busbar_kernel::metrics::init();
@@ -853,9 +853,9 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
 async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
 
@@ -996,9 +996,9 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
 async fn test_truncated_beyond_recovery_bills_nonzero_floor_not_zero() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
 
@@ -1158,9 +1158,9 @@ async fn test_truncated_beyond_recovery_bills_nonzero_floor_not_zero() {
 fn nonstream_tap_cap_is_read_once_per_decision() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     use bytes::Bytes;
     use futures::StreamExt;
     use std::panic::AssertUnwindSafe;
@@ -1477,9 +1477,9 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_anthropic_sse() {
 async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
     busbar_kernel::metrics::init();
@@ -1924,7 +1924,7 @@ async fn test_anthropic_ingress_success_carries_request_id_header() {
 /// `request-id` into `Message._request_id` on streamed responses too — an absent header is a proxy
 /// tell. Same-protocol anthropic stream (no upstream id supplied by the mock) → synthesized `req_`.
 #[tokio::test]
-async fn test_anthropic_ingress_streaming_carries_request_id_header() {
+async fn test_anthropic_ingress_stream_carries_request_id_header() {
     crate::testkit::install_test_seams();
     busbar_kernel::metrics::init();
     let state = Arc::new(MockServerState::new());
@@ -1985,7 +1985,7 @@ data: {"type":"message_stop"}"#
         .unwrap_or("");
     assert!(
         rid.starts_with("req_"),
-        "anthropic-ingress STREAMING 2xx MUST carry a `request-id` header in the native req_ \
+        "anthropic-ingress STREAMED 2xx MUST carry a `request-id` header in the native req_ \
              shape (proxy engine maybe_attach_response_request_id path); got {rid:?}"
     );
     server.shutdown().await;
@@ -3335,7 +3335,7 @@ async fn test_streaming_pre_first_byte_transport_error_refunds_budget() {
     // the fix the budget stays at 0 and this spend returns false.
     assert!(
         app.store.spend_budget(0),
-        "streaming pre-first-byte transport failure must refund the spent budget unit"
+        "stream-mode pre-first-byte transport failure must refund the spent budget unit"
     );
 
     // The pre-first-byte transport failure must ALSO record a breaker transient, reversing
@@ -3716,10 +3716,10 @@ async fn test_streaming_nonsse_post_first_byte_cut_refunds_the_lane_unit() {
 async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     use bytes::Bytes;
     use futures::StreamExt as _;
 
@@ -3875,10 +3875,10 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
 async fn test_cancel_drop_bills_partial_tokens() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::store::BreakerCfg;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     use bytes::Bytes;
     use futures::StreamExt as _;
 
@@ -3992,10 +3992,10 @@ async fn test_cancel_drop_bills_partial_tokens() {
 async fn test_cancel_drop_bills_streamed_tokens_on_aborted_translate() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::store::BreakerCfg;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     use bytes::Bytes;
     use futures::StreamExt as _;
 

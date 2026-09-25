@@ -140,7 +140,7 @@ fn egress_targets_encode_bedrock_model_id_like_the_wire() {
     );
     assert!(
         t.canonical_uri.contains("%253A0"),
-        "canonical URI must be double-encoded (non-S3 SigV4 rule), got {}",
+        "canonical URI must be double-encoded (non-S3 request-signing canonical-URI rule), got {}",
         t.canonical_uri
     );
 }

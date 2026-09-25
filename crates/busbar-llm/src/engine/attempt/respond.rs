@@ -74,7 +74,7 @@ pub(super) fn deliver<'a>(
             .map(|s| s.to_string());
         let is_sse = ct
             .as_ref()
-            .map(|h| is_streaming_content_type(h.to_str().unwrap_or("")))
+            .map(|h| is_stream_content_type(h.to_str().unwrap_or("")))
             .unwrap_or(false);
         let cross_protocol = hop.ingress_protocol != hop.egress_name;
 
@@ -115,7 +115,7 @@ pub(super) fn deliver<'a>(
             .await;
         }
 
-        deliver_streaming(
+        deliver_stream(
             hop,
             host,
             rt,
@@ -202,7 +202,7 @@ async fn deliver_buffered(
 /// here, handed off to the wrapper via `budget_spent`) and `rb_pre` is threaded so the RbPre span
 /// still closes at the exact point the inline code dropped it.
 #[allow(clippy::too_many_arguments)]
-async fn deliver_streaming(
+async fn deliver_stream(
     hop: &Hop<'_>,
     host: &Arc<dyn EngineHost>,
     rt: &Arc<NativeRuntime>,

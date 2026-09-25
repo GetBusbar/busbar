@@ -24,7 +24,7 @@ fn floor_for(delivered: usize) -> u64 {
 async fn billed_tokens_for(body: &str) -> u64 {
     crate::testkit::install_test_seams();
     busbar_kernel::metrics::init();
-    let store = Arc::new(busbar_store_memory::MemoryStore::new());
+    let store = Arc::new(busbar_kernel::governance::MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .expect("gov");
@@ -152,7 +152,7 @@ async fn stream_refused_usage_bills_the_floor_not_zero() {
     });
     let server = MockServer::new(state).await;
 
-    let store: Arc<dyn busbar_api::Store> = Arc::new(busbar_store_memory::MemoryStore::new());
+    let store: Arc<dyn busbar_api::Store> = Arc::new(busbar_kernel::governance::MemoryStore::new());
     let gov_kit = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .expect("governance");

@@ -65,7 +65,7 @@ fn test_api_key_auth_sends_api_key_header() {
 }
 
 #[test]
-fn test_default_auth_falls_back_to_protocol_bearer() {
+fn test_default_auth_falls_back_to_protocol_native_scheme() {
     crate::testkit::install_test_seams();
     // No/`bearer` auth override uses the protocol's native sign_request (openai → bearer).
     for auth in [None, Some("bearer")] {
@@ -73,7 +73,10 @@ fn test_default_auth_falls_back_to_protocol_bearer() {
         let headers = lane_auth_headers(&lane, "SECRETKEY", &ctx(b"{}"));
         assert_eq!(headers.len(), 1);
         assert_eq!(headers[0].0.as_str(), "authorization");
-        assert_eq!(headers[0].1.to_str().unwrap(), "Bearer SECRETKEY");
+        assert_eq!(
+            headers[0].1.to_str().unwrap(),
+            super::auth_dispatch_tests::credential_header_value("SECRETKEY")
+        );
     }
 }
 

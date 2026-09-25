@@ -269,7 +269,7 @@ async fn rig_inner(fixture: Fixture, billed: bool) -> Rig {
         );
     }
 
-    let store = Arc::new(busbar_store_memory::MemoryStore::new());
+    let store = Arc::new(busbar_kernel::governance::MemoryStore::new());
     if let Some(requests) = fixture.seeded_group_requests() {
         use busbar_api::Store as _;
         store

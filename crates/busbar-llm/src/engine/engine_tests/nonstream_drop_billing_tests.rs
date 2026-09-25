@@ -43,7 +43,7 @@ where
 {
     crate::testkit::install_test_seams();
     busbar_kernel::metrics::init();
-    let store = Arc::new(busbar_store_memory::MemoryStore::new());
+    let store = Arc::new(busbar_kernel::governance::MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .expect("gov");

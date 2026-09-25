@@ -2,6 +2,7 @@
 // (core's `ingress` module) is replaced by explicit imports now that this suite lives in the plane
 // crate: the engine namespace via the trait/fns it needs, the plane test_support harness, and the
 // common vocabulary core's `ingress` module re-exported into it.
+use super::auth_dispatch_tests::PresentCredential as _;
 use crate::engine::AppEngineExt as _;
 use crate::engine::WeightedLane;
 use crate::native_ingress::{affinity_header_for, operation_ingress_inner};
@@ -144,9 +145,9 @@ fn test_affinity_header_session_mode_without_name_uses_default() {
 /// Build a governance-enabled App with a single budgeted key, plus return the key so the test
 /// can pass a matching GovCtx to `finish`. Just assembles the App + key; it performs no charge.
 fn governed_app_with_key() -> (Arc<App>, busbar_api::VirtualKey) {
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     let store = Arc::new(MemoryStore::new());
     // 30 cents flat per request, no per-token fee (the fee now lives on the CostModel).
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
@@ -381,10 +382,10 @@ fn test_finish_outcome_mapping_503_is_exhausted() {
 #[test]
 fn test_flat_fee_charge_and_refund_use_charged_at_window() {
     crate::testkit::install_test_seams();
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::governance::SECS_PER_DAY;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     busbar_kernel::metrics::init();
 
     let store = std::sync::Arc::new(MemoryStore::new());
@@ -475,10 +476,10 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
 #[tokio::test]
 async fn test_admit_check_uses_charged_at_window_not_clock() {
     crate::testkit::install_test_seams();
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::governance::SECS_PER_DAY;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     busbar_kernel::metrics::init();
 
     let past_day: u64 = 1_700_000_000; // a fixed past day
@@ -648,7 +649,7 @@ async fn test_cohere_ingress_to_openai_backend() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v2/chat"))
-        .bearer_auth("t")
+        .credential("t")
         .body(
             json!({
                 "model": "co",
@@ -701,7 +702,7 @@ async fn test_responses_ingress_to_anthropic_backend() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/responses"))
-        .bearer_auth("t")
+        .credential("t")
         .body(
             json!({
                 "model": "re",
@@ -760,7 +761,7 @@ async fn test_gemini_path_resolves_model_and_stream() {
     // Non-stream action.
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1beta/models/foo:generateContent"))
-        .bearer_auth("t")
+        .credential("t")
         .body(
             json!({
                 "contents": [{"role": "user", "parts": [{"text": "hello"}]}]
@@ -835,7 +836,7 @@ async fn test_gemini_unknown_action_is_404() {
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1beta/models/foo:countTokens"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"contents": []}).to_string())
         .send()
         .await
@@ -884,7 +885,7 @@ async fn test_bedrock_converse_routes_and_returns_json() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/model/foo/converse"))
-        .bearer_auth("t")
+        .credential("t")
         .body(
             json!({
                 "messages": [{"role": "user", "content": [{"text": "hello"}]}]
@@ -986,7 +987,7 @@ async fn test_bedrock_converse_stream_returns_binary_eventstream() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/model/foo/converse-stream"))
-        .bearer_auth("t")
+        .credential("t")
         .body(
             json!({
                 "messages": [{"role": "user", "content": [{"text": "hello"}]}]
@@ -1009,7 +1010,7 @@ async fn test_bedrock_converse_stream_returns_binary_eventstream() {
         .to_string();
     assert!(
         ct.starts_with("application/vnd.amazon.eventstream"),
-        "streaming bedrock ingress is binary eventstream; got {ct}"
+        "stream-mode bedrock ingress is binary eventstream; got {ct}"
     );
 
     // Proxy engine streaming-success header emission: a real AWS Bedrock
@@ -1073,7 +1074,7 @@ async fn test_bedrock_converse_stream_returns_binary_eventstream() {
 /// relayed VERBATIM (no SSE→binary re-encode, no buffering) and the upstream's REAL
 /// `x-amzn-RequestId` forwarded as-is — never re-synthesized. The cross-protocol stream tests
 /// (OpenAI backend) only exercise the re-encode path; this one drives proxy engine's same-protocol
-/// branch (`is_streaming_content_type` on the eventstream CT, verbatim FirstByteBody relay with
+/// branch (`is_stream_content_type` on the eventstream CT, verbatim FirstByteBody relay with
 /// `translate=None`, upstream-CT preservation, and `upstream_amzn_id.or_else(synth)` taking the
 /// upstream value). Asserts: (a) CT is `application/vnd.amazon.eventstream`, (b) the body decodes
 /// via `drain_frames` with the buffer empty, (c) the response `x-amzn-RequestId` EQUALS the fixed
@@ -1121,7 +1122,7 @@ async fn test_bedrock_same_protocol_stream_passthrough_forwards_upstream_request
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/model/foo/converse-stream"))
-        .bearer_auth("t")
+        .credential("t")
         .body(
             json!({
                 "messages": [{"role": "user", "content": [{"text": "hello"}]}]
@@ -1260,7 +1261,7 @@ async fn test_bedrock_same_protocol_converse_non_stream_forwards_upstream_reques
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/model/foo/converse"))
-        .bearer_auth("t")
+        .credential("t")
         .body(
             json!({
                 "messages": [{"role": "user", "content": [{"text": "hello"}]}]
@@ -1354,7 +1355,7 @@ async fn test_bedrock_same_protocol_stream_mid_stream_transport_error_appends_bi
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/model/foo/converse-stream"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({ "messages": [{"role": "user", "content": [{"text": "hi"}]}] }).to_string())
         .send()
         .await
@@ -1438,7 +1439,7 @@ async fn test_bedrock_ingress_mid_stream_transport_error_appends_binary_exceptio
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/model/foo/converse-stream"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({ "messages": [{"role": "user", "content": [{"text": "hi"}]}] }).to_string())
         .send()
         .await
@@ -1504,7 +1505,7 @@ async fn test_openai_ingress_mid_stream_transport_error_appends_native_sse() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({ "model": "gpt-4o", "stream": true, "messages": [] }).to_string())
         .send()
         .await
@@ -1574,7 +1575,7 @@ async fn test_bedrock_same_protocol_passthrough_strips_shim_keys() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/model/foo/converse"))
-        .bearer_auth("t")
+        .credential("t")
         .body(
             json!({
                 "messages": [{"role": "user", "content": [{"text": "hello"}]}]
@@ -1646,7 +1647,7 @@ async fn test_gemini_same_protocol_passthrough_strips_shim_keys() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1beta/models/foo:generateContent"))
-        .bearer_auth("t")
+        .credential("t")
         .body(
             json!({
                 "contents": [{"role": "user", "parts": [{"text": "hello"}]}]
@@ -1704,7 +1705,7 @@ async fn test_gemini_stream_generate_content_alt_sse_is_event_stream() {
         .post(format!(
             "http://{addr}/v1beta/models/foo:streamGenerateContent?alt=sse"
         ))
-        .bearer_auth("t")
+        .credential("t")
         .body(
             json!({
                 "contents": [{"role": "user", "parts": [{"text": "hello"}]}]
@@ -1727,7 +1728,7 @@ async fn test_gemini_stream_generate_content_alt_sse_is_event_stream() {
         .to_string();
     assert!(
         ct.starts_with("text/event-stream"), // golden wire-contract literal (kept bare on purpose)
-        "gemini streaming ingress WITH ?alt=sse is SSE-framed; got {ct}"
+        "gemini stream-mode ingress WITH ?alt=sse is SSE-framed; got {ct}"
     );
     // Text/event-stream alone does not prove the SSE FRAMES carry the
     // native Gemini `GenerateContentResponse` vocabulary. A regression that relayed the raw
@@ -1794,7 +1795,7 @@ async fn test_gemini_alt_sse_mid_stream_transport_error_appends_native_sse_frame
         .post(format!(
             "http://{addr}/v1beta/models/foo:streamGenerateContent?alt=sse"
         ))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({ "contents": [{"role": "user", "parts": [{"text": "hello"}]}] }).to_string())
         .send()
         .await
@@ -1880,7 +1881,7 @@ async fn test_unresolved_model_uses_bounded_pool_label_not_raw_string() {
     let attacker_model = "zzz-unbounded-cardinality-probe-9f3a";
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
-        .bearer_auth("t")
+        .credential("t")
         .body(
             json!({
                 "model": attacker_model,
@@ -1958,7 +1959,7 @@ async fn test_body_model_parse_error_is_observable() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
-        .bearer_auth("t")
+        .credential("t")
         .body("{ this is not json ")
         .send()
         .await
@@ -2013,7 +2014,7 @@ async fn test_bedrock_invoke_unresolvable_body_is_observable() {
         .post(format!(
             "http://{addr}/model/amazon.titan-embed-text-v1/invoke"
         ))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"nonsense": 1}).to_string())
         .send()
         .await
@@ -2078,7 +2079,7 @@ async fn test_served_request_increments_hot_path_metrics() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
-        .bearer_auth("t")
+        .credential("t")
         .header("content-type", "application/json")
         .body(json!({"model": POOL, "messages": [{"role": "user", "content": "hi"}]}).to_string())
         .send()
@@ -2120,8 +2121,8 @@ async fn test_served_request_increments_hot_path_metrics() {
 #[tokio::test]
 async fn test_role_bound_principal_governed_like_a_virtual_key() {
     crate::testkit::install_test_seams();
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
     for _ in 0..3 {
@@ -2188,7 +2189,7 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
     let send = |tok: &'static str, model: &'static str| {
         client
             .post(format!("http://{addr}/v1/chat/completions"))
-            .bearer_auth(tok)
+            .credential(tok)
             .header("content-type", "application/json")
             .body(
                 json!({"model": model, "messages": [{"role": "user", "content": "hi"}]})
@@ -2271,7 +2272,7 @@ async fn timing_gate_hot_path_p50_p99() {
         let start = std::time::Instant::now();
         let resp = client
             .post(&url)
-            .bearer_auth("t")
+            .credential("t")
             .header("content-type", "application/json")
             .body(body.clone())
             .send()
@@ -2332,7 +2333,7 @@ async fn test_body_model_missing_model_is_observable() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
-        .bearer_auth("t")
+        .credential("t")
         // Valid JSON object, but no `model`.
         .body(json!({"messages": [{"role": "user", "content": "hi"}]}).to_string())
         .send()
@@ -2384,7 +2385,7 @@ async fn test_path_model_non_object_body_is_observable() {
     // Valid JSON, but a top-level ARRAY (not an object) — `as_object_mut` returns `None`.
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/model/foo/converse"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!([1, 2, 3]).to_string())
         .send()
         .await
@@ -2437,7 +2438,7 @@ async fn test_gemini_unsupported_action_is_observable() {
     // is NOT one of the two proxied generate actions → unsupported-action 404 in gemini_ingress.
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1beta/models/foo:countTokens"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"contents": []}).to_string())
         .send()
         .await
@@ -2523,7 +2524,7 @@ async fn test_gemini_stream_generate_content_no_alt_sse_is_json_array() {
         .post(format!(
             "http://{addr}/v1beta/models/foo:streamGenerateContent"
         ))
-        .bearer_auth("t")
+        .credential("t")
         .body(
             json!({
                 "contents": [{"role": "user", "parts": [{"text": "hello"}]}]
@@ -2542,7 +2543,7 @@ async fn test_gemini_stream_generate_content_no_alt_sse_is_json_array() {
         .to_string();
     assert!(
         ct.starts_with("application/json"), // golden wire-contract literal (kept bare on purpose)
-        "gemini streaming ingress WITHOUT ?alt=sse is JSON-array framed; got {ct}"
+        "gemini stream-mode ingress WITHOUT ?alt=sse is JSON-array framed; got {ct}"
     );
     let body = resp.text().await.unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&body)
@@ -2593,7 +2594,7 @@ async fn test_gemini_json_array_mid_stream_error_closes_array_no_sse() {
         .post(format!(
             "http://{addr}/v1beta/models/foo:streamGenerateContent"
         ))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({ "contents": [{"role": "user", "parts": [{"text": "hello"}]}] }).to_string())
         .send()
         .await
@@ -2669,7 +2670,7 @@ async fn test_gemini_json_array_shim_not_leaked_cross_protocol() {
         .post(format!(
             "http://{addr}/v1beta/models/foo:streamGenerateContent"
         ))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({ "contents": [{"role": "user", "parts": [{"text": "hello"}]}] }).to_string())
         .send()
         .await
@@ -2728,7 +2729,7 @@ async fn test_anthropic_cross_protocol_message_start_full_skeleton() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/foo/v1/messages"))
-        .bearer_auth("t")
+        .credential("t")
         .body(
             json!({ "model": "foo", "stream": true, "messages": [], "max_tokens": 16 }).to_string(),
         )
@@ -2798,7 +2799,7 @@ async fn test_passthrough_401_cross_protocol_reshaped_to_ingress() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/foo/v1/messages"))
-        .bearer_auth("caller-token")
+        .credential("caller-token")
         .body(json!({ "model": "foo", "messages": [], "max_tokens": 16 }).to_string())
         .send()
         .await
@@ -2837,7 +2838,7 @@ async fn test_gemini_malformed_path_no_colon_is_404() {
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1beta/models/gemini-flash"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"contents": []}).to_string())
         .send()
         .await
@@ -2871,7 +2872,7 @@ async fn test_gemini_empty_model_is_404() {
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1beta/models/:generateContent"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"contents": []}).to_string())
         .send()
         .await
@@ -2899,7 +2900,7 @@ async fn test_gemini_v1_surface_error_echoes_v1_not_v1beta() {
     // Unsupported-action branch on the v1 surface.
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/models/foo:countTokens"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"contents": []}).to_string())
         .send()
         .await
@@ -2929,7 +2930,7 @@ async fn test_gemini_v1_surface_error_echoes_v1_not_v1beta() {
     // carried by the unsupported-ACTION (`countTokens`) case above, which stays Gemini-shaped.
     let resp2 = reqwest::Client::new()
         .post(format!("http://{addr}/v1/models/gemini-flash"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"contents": []}).to_string())
         .send()
         .await
@@ -2960,7 +2961,7 @@ async fn test_gemini_v1beta_surface_error_still_echoes_v1beta() {
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1beta/models/foo:countTokens"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"contents": []}).to_string())
         .send()
         .await
@@ -3000,7 +3001,7 @@ async fn test_gemini_v1_no_action_returns_openai_shaped_404() {
     // surface), NOT a Gemini NOT_FOUND.
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/models/gpt-4o"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"contents": []}).to_string())
         .send()
         .await
@@ -3040,7 +3041,7 @@ async fn test_gemini_v1_no_action_returns_openai_shaped_404() {
         .post(format!(
             "http://{addr}/v1/models/ft:gpt-3.5-turbo:my-org::abc"
         ))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"contents": []}).to_string())
         .send()
         .await
@@ -3064,7 +3065,7 @@ async fn test_gemini_v1_no_action_returns_openai_shaped_404() {
     // for a colon-less path: its envelope carries the Gemini `status: NOT_FOUND`.
     let resp_beta = reqwest::Client::new()
         .post(format!("http://{addr}/v1beta/models/gemini-flash"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"contents": []}).to_string())
         .send()
         .await
@@ -3088,7 +3089,7 @@ async fn test_gemini_v1_no_action_returns_openai_shaped_404() {
     // falling through to the same not-found handling case (c) already proves.
     let resp_empty_model = reqwest::Client::new()
         .post(format!("http://{addr}/v1beta/models/:generateContent"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"contents": []}).to_string())
         .send()
         .await
@@ -3118,7 +3119,7 @@ async fn test_gemini_v1_no_action_returns_openai_shaped_404() {
 
     let resp_empty_action = reqwest::Client::new()
         .post(format!("http://{addr}/v1beta/models/gemini-flash:"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"contents": []}).to_string())
         .send()
         .await
@@ -3176,7 +3177,7 @@ async fn test_gemini_model_with_colon_splits_on_last_colon() {
         .post(format!(
             "http://{addr}/v1beta/models/tunedModels/abc:1:generateContent"
         ))
-        .bearer_auth("t")
+        .credential("t")
         .body(
             json!({
                 "contents": [{"role": "user", "parts": [{"text": "hello"}]}]
@@ -3249,7 +3250,7 @@ async fn test_unknown_model_404_uses_canonical_openai_type() {
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"model": "no-such-model", "messages": []}).to_string())
         .send()
         .await
@@ -3271,9 +3272,9 @@ async fn test_unknown_model_404_uses_canonical_openai_type() {
 /// Build a governance-enabled App whose only key is allowed ONLY on pool `allowed-only` (so a
 /// request to any other pool is pool-rejected with 403). Returns the key for the GovCtx.
 fn governed_app_pool_restricted() -> (Arc<App>, busbar_api::VirtualKey) {
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     let store = Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), None)
@@ -3542,9 +3543,9 @@ fn assert_leak_free(body: &str, key_id: &str, pool: &str) {
 
 /// Governance-enabled App whose only key has a zero budget cap, so it is immediately over budget.
 fn governed_app_over_budget() -> (Arc<App>, busbar_api::VirtualKey) {
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     let store = Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), None)
@@ -3588,9 +3589,9 @@ fn governed_app_over_budget() -> (Arc<App>, busbar_api::VirtualKey) {
 /// Governance-enabled App whose key binds to a group with `{ requests: 0, per: minute }`, so the
 /// first request is rate-limited (keys carry no caps; the group is the limiter).
 fn governed_app_rate_limited() -> (Arc<App>, busbar_api::VirtualKey) {
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     let store = Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), None)
@@ -3745,7 +3746,7 @@ async fn test_cohere_bad_json_is_400_native_envelope() {
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v2/chat"))
-        .bearer_auth("t")
+        .credential("t")
         .body("not json{".to_string())
         .send()
         .await
@@ -3780,7 +3781,7 @@ async fn test_responses_bad_json_is_400_native_envelope() {
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/responses"))
-        .bearer_auth("t")
+        .credential("t")
         .body("not json{".to_string())
         .send()
         .await
@@ -3805,7 +3806,7 @@ async fn test_openai_missing_model_is_400_native_envelope() {
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"messages": []}).to_string())
         .send()
         .await
@@ -3837,7 +3838,7 @@ async fn test_openai_empty_model_is_400_native_envelope() {
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"model": "", "messages": []}).to_string())
         .send()
         .await
@@ -3865,7 +3866,7 @@ async fn test_cohere_empty_model_is_400_native_envelope() {
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v2/chat"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"model": "", "messages": []}).to_string())
         .send()
         .await
@@ -3894,7 +3895,7 @@ async fn test_responses_empty_model_is_400_native_envelope() {
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/responses"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"model": "", "input": "hi"}).to_string())
         .send()
         .await
@@ -3930,7 +3931,7 @@ async fn test_openai_numeric_model_is_400_native_envelope() {
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"model": 42, "messages": []}).to_string())
         .send()
         .await
@@ -3964,7 +3965,7 @@ async fn test_cohere_numeric_model_is_400_native_envelope() {
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v2/chat"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"model": null, "messages": []}).to_string())
         .send()
         .await
@@ -3997,7 +3998,7 @@ async fn test_responses_numeric_model_is_400_native_envelope() {
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/responses"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"model": true, "input": "hi"}).to_string())
         .send()
         .await
@@ -4030,7 +4031,7 @@ async fn test_gemini_non_object_body_is_400() {
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1beta/models/foo:generateContent"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!([1, 2]).to_string())
         .send()
         .await
@@ -4070,7 +4071,7 @@ async fn test_bedrock_non_object_body_is_400() {
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/model/foo/converse"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!([1, 2]).to_string())
         .send()
         .await
@@ -4108,7 +4109,7 @@ async fn test_gemini_unknown_model_404_native_shape() {
         .post(format!(
             "http://{addr}/v1beta/models/no-such:generateContent"
         ))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"contents": []}).to_string())
         .send()
         .await
@@ -4136,7 +4137,7 @@ async fn test_bedrock_unknown_model_404_native_shape() {
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/model/no-such/converse"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"messages": []}).to_string())
         .send()
         .await
@@ -4168,7 +4169,7 @@ async fn test_cohere_unknown_model_404_native_shape() {
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v2/chat"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"model": "no-such-model", "messages": []}).to_string())
         .send()
         .await
@@ -4193,7 +4194,7 @@ async fn test_responses_unknown_model_404_native_shape() {
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/responses"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"model": "no-such-model", "input": "hi"}).to_string())
         .send()
         .await
@@ -4288,7 +4289,7 @@ async fn test_openai_ingress_stream_emits_native_openai_frames() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
-        .bearer_auth("t")
+        .credential("t")
         .body(
             json!({
                 "model": "gpt-4o",
@@ -4309,7 +4310,7 @@ async fn test_openai_ingress_stream_emits_native_openai_frames() {
         .to_string();
     assert!(
         ct.starts_with("text/event-stream"), // golden wire-contract literal (kept bare on purpose)
-        "openai streaming ingress is SSE; got {ct}"
+        "openai stream-mode ingress is SSE; got {ct}"
     );
     let text = resp.text().await.unwrap();
 
@@ -4378,7 +4379,7 @@ async fn test_cohere_ingress_stream_emits_native_cohere_frames() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v2/chat"))
-        .bearer_auth("t")
+        .credential("t")
         .body(
             json!({
                 "model": "co",
@@ -4399,7 +4400,7 @@ async fn test_cohere_ingress_stream_emits_native_cohere_frames() {
         .to_string();
     assert!(
         ct.starts_with("text/event-stream"), // golden wire-contract literal (kept bare on purpose)
-        "cohere streaming ingress is SSE; got {ct}"
+        "cohere stream-mode ingress is SSE; got {ct}"
     );
     let text = resp.text().await.unwrap();
 
@@ -4468,7 +4469,7 @@ async fn test_responses_ingress_stream_emits_native_responses_events() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/responses"))
-        .bearer_auth("t")
+        .credential("t")
         .body(
             json!({
                 "model": "re",
@@ -4489,7 +4490,7 @@ async fn test_responses_ingress_stream_emits_native_responses_events() {
         .to_string();
     assert!(
         ct.starts_with("text/event-stream"), // golden wire-contract literal (kept bare on purpose)
-        "responses streaming ingress is SSE; got {ct}"
+        "responses stream-mode ingress is SSE; got {ct}"
     );
     let text = resp.text().await.unwrap();
 
@@ -4559,7 +4560,7 @@ async fn test_bedrock_percent_encoded_model_id_converse_stream() {
         .post(format!(
             "http://{addr}/model/anthropic.claude-3%3Ahaiku/converse-stream"
         ))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"messages": [{"role": "user", "content": [{"text": "hi"}]}]}).to_string())
         .send()
         .await
@@ -4624,7 +4625,7 @@ async fn test_cohere_ingress_mid_stream_transport_error_appends_native_sse() {
 
     let resp = reqwest::Client::new()
             .post(format!("http://{addr}/v2/chat"))
-            .bearer_auth("t")
+            .credential("t")
             .body(
                 json!({ "model": "co", "stream": true, "messages": [{"role": "user", "content": "hi"}] })
                     .to_string(),
@@ -4700,7 +4701,7 @@ async fn test_responses_ingress_mid_stream_transport_error_appends_response_fail
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/responses"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({ "model": "re", "stream": true, "input": "hi" }).to_string())
         .send()
         .await
@@ -4819,7 +4820,7 @@ async fn test_real_failover_serves_second_member_after_first_5xx() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
-        .bearer_auth("t")
+        .credential("t")
         .header("content-type", "application/json")
         .body(json!({"model": POOL, "messages": [{"role": "user", "content": "hi"}]}).to_string())
         .send()
@@ -4906,7 +4907,7 @@ async fn test_real_mid_stream_failure_does_not_fail_over_to_second_member() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
-        .bearer_auth("t")
+        .credential("t")
         .header("content-type", "application/json")
         .body(
             json!({"model": POOL, "stream": true, "messages": [{"role": "user", "content": "hi"}]})
@@ -5041,7 +5042,7 @@ async fn test_no_client_error_message_carries_router_prefix() {
     for (url, payload) in cases {
         let resp = client
             .post(&url)
-            .bearer_auth("t")
+            .credential("t")
             .body(payload.clone())
             .send()
             .await
@@ -5082,8 +5083,8 @@ async fn governed_pool_acl_router(
     protocol: &'static str,
     provider: &str,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     // The lane needs a base_url, but the pool-ACL 403 short-circuits before any forward, so an
     // unreachable upstream is fine.
     let store = StdArc::new(MemoryStore::new());
@@ -5129,7 +5130,7 @@ async fn test_governance_pool_acl_403_cohere_native_envelope() {
         governed_pool_acl_router("co", crate::proto_codec::PROTO_OPENAI, "zai").await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v2/chat"))
-        .bearer_auth(secret)
+        .credential(secret)
         .body(json!({"model": "co", "messages": [{"role": "user", "content": "hi"}]}).to_string())
         .send()
         .await
@@ -5163,7 +5164,7 @@ async fn test_governance_pool_acl_403_responses_native_envelope() {
         governed_pool_acl_router("re", crate::proto_codec::PROTO_OPENAI, "zai").await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/responses"))
-        .bearer_auth(secret)
+        .credential(secret)
         .body(json!({"model": "re", "input": "hi"}).to_string())
         .send()
         .await
@@ -5204,7 +5205,7 @@ async fn test_governance_pool_acl_403_openai_native_envelope() {
         governed_pool_acl_router("gpt-4o", crate::proto_codec::PROTO_OPENAI, "openai").await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
-        .bearer_auth(secret)
+        .credential(secret)
         .body(
             json!({"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]}).to_string(),
         )
@@ -5243,7 +5244,7 @@ async fn test_governance_pool_acl_403_gemini_native_envelope() {
         governed_pool_acl_router("foo", crate::proto_codec::PROTO_OPENAI, "zai").await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1beta/models/foo:generateContent"))
-        .bearer_auth(secret)
+        .credential(secret)
         .body(json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}).to_string())
         .send()
         .await
@@ -5288,7 +5289,7 @@ async fn test_governance_pool_acl_403_bedrock_native_envelope() {
         governed_pool_acl_router("foo", crate::proto_codec::PROTO_OPENAI, "zai").await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/model/foo/converse"))
-        .bearer_auth(secret)
+        .credential(secret)
         .body(json!({"messages": [{"role": "user", "content": [{"text": "hi"}]}]}).to_string())
         .send()
         .await
@@ -5343,8 +5344,8 @@ async fn test_governance_pool_acl_403_bedrock_native_envelope() {
 #[tokio::test]
 async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
     crate::testkit::install_test_seams();
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     busbar_kernel::metrics::init();
 
     // Pool A's backend would succeed (200) if the request ever reached it — proving the 403 is
@@ -5409,7 +5410,7 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
     // is configured and the key is not allowed on B, so the request must be rejected upfront.
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/A/v1/messages"))
-        .bearer_auth(secret)
+        .credential(secret)
         .body(json!({"model": "A", "messages": [{"role": "user", "content": "hi"}]}).to_string())
         .send()
         .await
@@ -5439,8 +5440,8 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
 #[tokio::test]
 async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
     crate::testkit::install_test_seams();
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     busbar_kernel::metrics::init();
 
     let state = StdArc::new(MockServerState::new());
@@ -5499,7 +5500,7 @@ async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/A/v1/messages"))
-        .bearer_auth(&secret)
+        .credential(&secret)
         .body(json!({"model": "A", "messages": [{"role": "user", "content": "hi"}]}).to_string())
         .send()
         .await
@@ -5551,7 +5552,7 @@ async fn test_adhoc_success_round_trip_via_router() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/anthropic/claude-x/v1/messages"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"model": "claude-x", "messages": [], "max_tokens": 16}).to_string())
         .send()
         .await
@@ -5587,7 +5588,7 @@ async fn test_adhoc_provider_mismatch_400_anthropic_envelope_via_router() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/wrong-provider/claude-x/v1/messages"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"model": "claude-x", "messages": [], "max_tokens": 16}).to_string())
         .send()
         .await
@@ -5631,8 +5632,8 @@ async fn test_adhoc_provider_mismatch_400_anthropic_envelope_via_router() {
 #[tokio::test]
 async fn test_adhoc_governance_pool_acl_403_via_router() {
     crate::testkit::install_test_seams();
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     busbar_kernel::metrics::init();
     let store = StdArc::new(MemoryStore::new());
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
@@ -5672,7 +5673,7 @@ async fn test_adhoc_governance_pool_acl_403_via_router() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/anthropic/claude-x/v1/messages"))
-        .bearer_auth(&secret)
+        .credential(&secret)
         .body(json!({"model": "claude-x", "messages": [], "max_tokens": 16}).to_string())
         .send()
         .await
@@ -5743,7 +5744,7 @@ async fn test_gemini_model_not_found_uses_native_message() {
     ] {
         let resp = reqwest::Client::new()
             .post(format!("http://{addr}{path}"))
-            .bearer_auth("t")
+            .credential("t")
             .body(json!({"contents": []}).to_string())
             .send()
             .await
@@ -5806,7 +5807,7 @@ async fn test_gemini_v1_stable_stream_generate_content_alt_sse() {
         .post(format!(
             "http://{addr}/v1/models/foo:streamGenerateContent?alt=sse"
         ))
-        .bearer_auth("t")
+        .credential("t")
         .body(
             json!({
                 "contents": [{"role": "user", "parts": [{"text": "hello"}]}]
@@ -5829,7 +5830,7 @@ async fn test_gemini_v1_stable_stream_generate_content_alt_sse() {
         .to_string();
     assert!(
         ct.starts_with("text/event-stream"), // golden wire-contract literal (kept bare on purpose)
-        "stable v1 gemini streaming WITH ?alt=sse is SSE-framed; got {ct}"
+        "stable v1 gemini stream-mode WITH ?alt=sse is SSE-framed; got {ct}"
     );
     let body = resp.text().await.unwrap();
     let payloads: Vec<serde_json::Value> = body
@@ -5883,7 +5884,7 @@ async fn test_gemini_v1_stable_stream_generate_content_no_alt_sse() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/models/foo:streamGenerateContent"))
-        .bearer_auth("t")
+        .credential("t")
         .body(
             json!({
                 "contents": [{"role": "user", "parts": [{"text": "hello"}]}]
@@ -5906,7 +5907,7 @@ async fn test_gemini_v1_stable_stream_generate_content_no_alt_sse() {
         .to_string();
     assert!(
         ct.starts_with("application/json"), // golden wire-contract literal (kept bare on purpose)
-        "stable v1 gemini streaming WITHOUT ?alt=sse is JSON-array framed; got {ct}"
+        "stable v1 gemini stream-mode WITHOUT ?alt=sse is JSON-array framed; got {ct}"
     );
     let body = resp.text().await.unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&body)
@@ -5954,8 +5955,8 @@ async fn governed_limit_router(
     over: &'static str,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
     use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     let store = StdArc::new(MemoryStore::new());
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
@@ -6036,7 +6037,7 @@ async fn test_governance_rate_limit_429_native_envelope_all_ingress() {
         let (addr, handle, secret) = governed_limit_router("requests").await;
         let resp = reqwest::Client::new()
             .post(format!("http://{addr}{path}"))
-            .bearer_auth(secret)
+            .credential(secret)
             .body(payload.to_string())
             .send()
             .await
@@ -6054,7 +6055,7 @@ async fn test_governance_rate_limit_429_native_envelope_all_ingress() {
         let (addr, handle, secret) = governed_limit_router("requests").await;
         let resp = reqwest::Client::new()
             .post(format!("http://{addr}/v1beta/models/m:generateContent"))
-            .bearer_auth(secret)
+            .credential(secret)
             .body(json!({"contents": []}).to_string())
             .send()
             .await
@@ -6076,7 +6077,7 @@ async fn test_governance_rate_limit_429_native_envelope_all_ingress() {
         let (addr, handle, secret) = governed_limit_router("requests").await;
         let resp = reqwest::Client::new()
             .post(format!("http://{addr}/model/m/converse"))
-            .bearer_auth(secret)
+            .credential(secret)
             .body(json!({"messages": []}).to_string())
             .send()
             .await
@@ -6117,7 +6118,7 @@ async fn test_governance_over_budget_native_envelope_all_ingress() {
         let (addr, handle, secret) = governed_limit_router("budget").await;
         let resp = reqwest::Client::new()
             .post(format!("http://{addr}{path}"))
-            .bearer_auth(secret)
+            .credential(secret)
             .body(payload.to_string())
             .send()
             .await
@@ -6131,7 +6132,7 @@ async fn test_governance_over_budget_native_envelope_all_ingress() {
         let (addr, handle, secret) = governed_limit_router("budget").await;
         let resp = reqwest::Client::new()
             .post(format!("http://{addr}/model/m/converse"))
-            .bearer_auth(secret)
+            .credential(secret)
             .body(json!({"messages": []}).to_string())
             .send()
             .await
@@ -6188,7 +6189,7 @@ async fn test_named_by_model_fallback_round_trip_via_router() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/claude-x/v1/messages"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"model": "claude-x", "messages": [], "max_tokens": 16}).to_string())
         .send()
         .await
@@ -6278,7 +6279,7 @@ async fn test_forward_resolved_by_model_uses_lane_default_breaker_cell() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
-        .bearer_auth("t")
+        .credential("t")
         .body(json!({"model": model, "messages": [{"role": "user", "content": "hi"}]}).to_string())
         .send()
         .await
@@ -6314,9 +6315,9 @@ async fn test_forward_resolved_by_model_uses_lane_default_breaker_cell() {
 /// itself is uncapped - the CHAIN is what blocks. The 429 body must NAME the exhausted group.
 #[allow(clippy::field_reassign_with_default)]
 fn governed_app_group_blocked() -> (Arc<App>, busbar_api::VirtualKey) {
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     let store = Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), None)
@@ -6420,9 +6421,9 @@ async fn test_missing_group_fails_closed_at_ingress() {
 async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
     crate::testkit::install_test_seams();
     busbar_kernel::metrics::init();
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     let store = Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), None)
@@ -6489,9 +6490,9 @@ async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
 fn governed_app_downgrade(
     allowed_pools: Option<Vec<String>>,
 ) -> (Arc<App>, busbar_api::VirtualKey) {
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     let store = Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), None)
@@ -6577,9 +6578,9 @@ async fn test_budget_exhaustion_downgrades_pool() {
 #[tokio::test]
 async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
     crate::testkit::install_test_seams();
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     let store = Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), None)

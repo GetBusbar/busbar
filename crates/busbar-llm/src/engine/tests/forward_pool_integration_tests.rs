@@ -1,3 +1,4 @@
+use super::auth_dispatch_tests::{credential_header_value, PresentCredential as _};
 use crate::engine::forward_with_pool;
 use crate::engine::AppEngineExt as _;
 use crate::test_support::*;
@@ -392,8 +393,8 @@ async fn test_cross_protocol_nonstream_preserves_model() {
 #[tokio::test]
 async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
     crate::testkit::install_test_seams();
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     busbar_kernel::metrics::init();
 
     let state = Arc::new(MockServerState::new());
@@ -478,7 +479,7 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
     // First request: tokens-so-far is 0 (< 30) → admitted; consumes 160 tokens post-response.
     let r1 = client
         .post(&url)
-        .bearer_auth(secret)
+        .credential(secret)
         .body(req.clone())
         .send()
         .await
@@ -493,7 +494,7 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
     // Second request in the same 60s window: prior tokens (160) now exceed TPM 30 → 429.
     let r2 = client
         .post(&url)
-        .bearer_auth(secret)
+        .credential(secret)
         .body(req)
         .send()
         .await
@@ -521,8 +522,8 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
 #[tokio::test]
 async fn test_cross_protocol_stream_records_tokens_for_tpm() {
     crate::testkit::install_test_seams();
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     busbar_kernel::metrics::init();
 
     // OpenAI-protocol SSE stream whose final chunk carries usage totalling 160 tokens
@@ -614,7 +615,7 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
     // `FirstByteBody`'s stream-end handler fires and charges the 160 tokens via the UsageSink.
     let r1 = client
         .post(&url)
-        .bearer_auth(secret)
+        .credential(secret)
         .body(req.clone())
         .send()
         .await
@@ -622,7 +623,7 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
     assert_eq!(
         r1.status().as_u16(),
         200,
-        "first streaming request is under TPM"
+        "first stream-mode request is under TPM"
     );
     let b1 = r1.bytes().await.unwrap();
     assert!(
@@ -634,7 +635,7 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
     // proves the STREAM-end UsageSink charge landed (was the risk: streaming tokens stayed 0).
     let r2 = client
         .post(&url)
-        .bearer_auth(secret)
+        .credential(secret)
         .body(req)
         .send()
         .await
@@ -642,7 +643,7 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
     assert_eq!(
         r2.status().as_u16(),
         429,
-        "stream-recorded tokens must make TPM enforce on the next request (streaming charge path)"
+        "stream-recorded tokens must make TPM enforce on the next request (stream charge path)"
     );
 
     handle.abort();
@@ -994,7 +995,7 @@ async fn test_metrics_requires_auth_in_chain_mode() {
     // With the configured token, the scrape is admitted (200) — the gate is token-based.
     let authed = client
         .get(&url)
-        .bearer_auth(token)
+        .credential(token)
         .send()
         .await
         .expect("GET /metrics with token");
@@ -1016,8 +1017,8 @@ async fn test_metrics_requires_auth_in_chain_mode() {
 #[tokio::test]
 async fn test_governance_vkey_auth_and_pool_acl() {
     crate::testkit::install_test_seams();
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
 
     busbar_kernel::metrics::init();
     let store = Arc::new(MemoryStore::new());
@@ -1064,7 +1065,7 @@ async fn test_governance_vkey_auth_and_pool_acl() {
     // Valid vkey but a pool not in allowed_pools → 403.
     let r = client
         .post(format!("http://{addr}/somepool/v1/messages"))
-        .bearer_auth(secret)
+        .credential(secret)
         .body("{}")
         .send()
         .await
@@ -1079,7 +1080,7 @@ async fn test_governance_vkey_auth_and_pool_acl() {
     // proving the request got PAST the 403 gate.
     let r = client
         .post(format!("http://{addr}/allowedpool/v1/messages"))
-        .bearer_auth(secret)
+        .credential(secret)
         .body("{}")
         .send()
         .await
@@ -1098,8 +1099,8 @@ async fn test_governance_vkey_auth_and_pool_acl() {
 async fn test_governance_budget_over_quota() {
     crate::testkit::install_test_seams();
     use busbar_api::Store;
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
 
     busbar_kernel::metrics::init();
     let store = Arc::new(MemoryStore::new());
@@ -1174,7 +1175,7 @@ async fn test_governance_budget_over_quota() {
 
     let r = reqwest::Client::new()
         .post(format!("http://{addr}/anypool/v1/messages"))
-        .bearer_auth(secret)
+        .credential(secret)
         .body("{}")
         .send()
         .await
@@ -1222,8 +1223,8 @@ async fn test_governance_budget_over_quota() {
 /// needed — only a parseable body that carries `model` where the protocol expects it.
 async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
     use busbar_api::Store;
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
 
     let store = Arc::new(MemoryStore::new());
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
@@ -1305,7 +1306,7 @@ async fn test_budget_over_quota_openai_envelope() {
 
     let r = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
-        .bearer_auth(secret)
+        .credential(secret)
         .body(json!({"model": "anything", "messages": []}).to_string())
         .send()
         .await
@@ -1338,7 +1339,7 @@ async fn test_budget_over_quota_responses_envelope() {
 
     let r = reqwest::Client::new()
         .post(format!("http://{addr}/v1/responses"))
-        .bearer_auth(secret)
+        .credential(secret)
         .body(json!({"model": "anything", "input": "hi"}).to_string())
         .send()
         .await
@@ -1372,7 +1373,7 @@ async fn test_budget_over_quota_cohere_envelope() {
 
     let r = reqwest::Client::new()
         .post(format!("http://{addr}/v2/chat"))
-        .bearer_auth(secret)
+        .credential(secret)
         .body(json!({"model": "anything", "messages": []}).to_string())
         .send()
         .await
@@ -1403,7 +1404,7 @@ async fn test_budget_over_quota_gemini_envelope() {
         .post(format!(
             "http://{addr}/v1beta/models/anything:generateContent"
         ))
-        .bearer_auth(secret)
+        .credential(secret)
         .body(json!({"contents": []}).to_string())
         .send()
         .await
@@ -1439,7 +1440,7 @@ async fn test_budget_over_quota_bedrock_envelope() {
 
     let r = reqwest::Client::new()
         .post(format!("http://{addr}/model/anything/converse"))
-        .bearer_auth(secret)
+        .credential(secret)
         .body(json!({"messages": []}).to_string())
         .send()
         .await
@@ -1473,8 +1474,8 @@ async fn test_budget_over_quota_bedrock_envelope() {
 #[tokio::test]
 async fn test_governance_rate_limit_429() {
     crate::testkit::install_test_seams();
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
 
     busbar_kernel::metrics::init();
     let store = Arc::new(MemoryStore::new());
@@ -1551,7 +1552,7 @@ async fn test_governance_rate_limit_429() {
     for i in 0..2 {
         let r = client
             .post(&url)
-            .bearer_auth(secret)
+            .credential(secret)
             .body("{}")
             .send()
             .await
@@ -1564,7 +1565,7 @@ async fn test_governance_rate_limit_429() {
     }
     let r = client
         .post(&url)
-        .bearer_auth(secret)
+        .credential(secret)
         .body("{}")
         .send()
         .await
@@ -1587,8 +1588,8 @@ async fn test_governance_rate_limit_429() {
 /// `model` where the protocol expects it. An omitted `allowed_pools` admits every pool so the ACL
 /// never short-circuits the rate gate.
 async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
+    use busbar_kernel::governance::MemoryStore;
     use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
 
     let store = Arc::new(MemoryStore::new());
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
@@ -1652,7 +1653,7 @@ async fn test_rate_limit_429_openai_native_envelope() {
 
     let r = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
-        .bearer_auth(secret)
+        .credential(secret)
         .body(json!({"model": "anything", "messages": []}).to_string())
         .send()
         .await
@@ -1690,7 +1691,7 @@ async fn test_rate_limit_429_responses_native_envelope() {
 
     let r = reqwest::Client::new()
         .post(format!("http://{addr}/v1/responses"))
-        .bearer_auth(secret)
+        .credential(secret)
         .body(json!({"model": "anything", "input": "hi"}).to_string())
         .send()
         .await
@@ -1721,7 +1722,7 @@ async fn test_rate_limit_429_cohere_native_envelope() {
 
     let r = reqwest::Client::new()
         .post(format!("http://{addr}/v2/chat"))
-        .bearer_auth(secret)
+        .credential(secret)
         .body(json!({"model": "anything", "messages": []}).to_string())
         .send()
         .await
@@ -1755,7 +1756,7 @@ async fn test_rate_limit_429_gemini_native_envelope() {
         .post(format!(
             "http://{addr}/v1beta/models/anything:generateContent"
         ))
-        .bearer_auth(secret)
+        .credential(secret)
         .body(json!({"contents": []}).to_string())
         .send()
         .await
@@ -1794,7 +1795,7 @@ async fn test_rate_limit_429_bedrock_native_envelope() {
 
     let r = reqwest::Client::new()
         .post(format!("http://{addr}/model/anything/converse"))
-        .bearer_auth(secret)
+        .credential(secret)
         .body(json!({"messages": []}).to_string())
         .send()
         .await
@@ -2445,7 +2446,7 @@ async fn test_passthrough_forwards_caller_token() {
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     // Caller's Bearer token (NOT busbar's key)
-    let caller_bearer_token = "caller-specific-token-abc123";
+    let caller_token = "caller-specific-token-abc123";
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
 
     // Forward with caller's token (simulating what auth middleware would extract)
@@ -2458,7 +2459,7 @@ async fn test_passthrough_forwards_caller_token() {
             attempt_timeout_ms: None,
         }],
         req_body.into(),
-        Some(caller_bearer_token),
+        Some(caller_token),
         None,
     )
     .await;
@@ -2470,8 +2471,8 @@ async fn test_passthrough_forwards_caller_token() {
         .expect("mock should have recorded Authorization header");
     assert_eq!(
         recorded_auth,
-        format!("Bearer {}", caller_bearer_token),
-        "upstream should receive caller's Bearer token in passthrough mode"
+        credential_header_value(caller_token),
+        "upstream should receive caller's own credential in passthrough mode"
     );
 
     server.shutdown().await;
@@ -5042,8 +5043,8 @@ async fn test_openai_ingress_same_protocol_passthrough() {
     );
     assert_eq!(
         state.get_last_auth_header(),
-        Some("Bearer test-key".to_string()),
-        "same-protocol passthrough must forward the lane's api_key as the bearer token"
+        Some(credential_header_value("test-key")),
+        "same-protocol passthrough must forward the lane's api_key as the credential"
     );
 
     server.shutdown().await;

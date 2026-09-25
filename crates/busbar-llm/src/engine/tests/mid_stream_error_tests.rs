@@ -1,5 +1,5 @@
 use super::{
-    client_fault_kind, extract_error_message, is_streaming_content_type, mid_stream_error_bytes,
+    client_fault_kind, extract_error_message, is_stream_content_type, mid_stream_error_bytes,
     strip_router_shim_keys, strip_same_protocol_model_shim, MID_STREAM_GENERIC_DETAIL,
 };
 use busbar_substrate_values::breaker::StatusClass;
@@ -272,21 +272,17 @@ fn test_extract_error_message() {
     assert_eq!(extract_error_message(br#"{"foo":1}"#), None);
 }
 
-/// `is_streaming_content_type` recognizes exactly the registry's streaming CTs (SSE +
+/// `is_stream_content_type` recognizes exactly the registry's streaming CTs (SSE +
 /// AWS-event-stream) via prefix match, so a parameterized SSE CT (`; charset=utf-8`) still
 /// engages the streaming path, while non-streaming/empty CTs do not.
 #[test]
-fn test_is_streaming_content_type() {
+fn test_is_stream_content_type() {
     crate::testkit::install_test_seams();
-    assert!(is_streaming_content_type("text/event-stream")); // golden wire-contract literal (kept bare on purpose)
-    assert!(is_streaming_content_type(
-        "application/vnd.amazon.eventstream"
-    ));
-    assert!(is_streaming_content_type(
-        "text/event-stream; charset=utf-8"
-    ));
-    assert!(!is_streaming_content_type("application/json"));
-    assert!(!is_streaming_content_type(""));
+    assert!(is_stream_content_type("text/event-stream")); // golden wire-contract literal (kept bare on purpose)
+    assert!(is_stream_content_type("application/vnd.amazon.eventstream"));
+    assert!(is_stream_content_type("text/event-stream; charset=utf-8"));
+    assert!(!is_stream_content_type("application/json"));
+    assert!(!is_stream_content_type(""));
 }
 
 /// `strip_router_shim_keys` removes the NEVER-NATIVE shim keys on every branch: the gemini
