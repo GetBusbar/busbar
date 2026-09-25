@@ -40,6 +40,23 @@
 //! The register is read AS DATA, with `serde_json`, exactly as the oracle's golden ledger is. The
 //! oracle's code is never invoked from here, and the segregation gate's data allowlist is what says
 //! so out loud.
+//!
+//! THE REGISTER'S OWN SCHEMA (1.6.0 items 52 and 119, Law 10) is judged here too, three rows:
+//!
+//! * `entry-signed` — every entry carries `signoff: {who, when, ruling}`: WHO accepted it (the
+//!   owner; an agent cannot sign), WHEN (`YYYY-MM-DD`), and WHICH ruling. A flat `by:` string could
+//!   not tell "the owner signed this scope" from "an agent widened a scope the owner signed for
+//!   something narrower"; a sign-off that names its ruling can be checked against that ruling.
+//! * `entry-expires` — every entry carries `expires: {baseline, by}`: the golden baseline it
+//!   forgives against (which must exist in the golden history) and the date after which it lapses
+//!   and must be re-signed or retired. An acceptance with no end is a permanent blindfold.
+//! * `entry-premise` — every entry carries a `premise` in the grammar the pinned runner evaluates
+//!   against the build under test (busbar-release `src/premise.rs`: `all`/`any`/`not` over
+//!   `cell` probes), and every probed cell is a real corpus id. The runner WITHHOLDS an entry whose
+//!   premise is false or unevaluable, but it HONOURS an entry with no premise at all (reported
+//!   UNCHECKED-PREMISE); this row is what makes a missing premise red in this repository, and it
+//!   refuses a probe naming a cell the corpus does not have, which the runner could only ever
+//!   score unevaluable.
 
 use serde_json::Value;
 
@@ -58,6 +75,12 @@ pub const ROW_DECLARED: &str = "changelog-register:entry-declares-a-line";
 pub const ROW_PRESENT: &str = "changelog-register:line-present-verbatim";
 /// A `breaking` entry may never waive.
 pub const ROW_BREAKING: &str = "changelog-register:breaking-never-waives";
+/// Every entry is signed: who (the owner), when, and which ruling.
+pub const ROW_SIGNED: &str = "changelog-register:entry-signed";
+/// Every entry names the baseline it forgives against and the date it lapses, and has not lapsed.
+pub const ROW_EXPIRES: &str = "changelog-register:entry-expires";
+/// Every entry carries a well-formed premise the runner evaluates, over real corpus cells.
+pub const ROW_PREMISE: &str = "changelog-register:entry-premise";
 /// Emitted only by the release arm; see [`ChangelogRegisterGate::require_version`].
 pub const ROW_VERSION: &str = "changelog-register:release-section-is-the-version";
 
@@ -65,6 +88,10 @@ pub const ROW_VERSION: &str = "changelog-register:release-section-is-the-version
 pub const DEFAULT_REGISTER: &str = "testing/shadow-oracle/accepted-differences.json";
 /// The one JSON key the owed set comes from.
 const ACCEPTED_KEY: &str = "accepted";
+/// The oracle corpus: every premise probe must name a cell id it holds.
+pub const DEFAULT_CELLS: &str = "testing/shadow-oracle/cells.json";
+/// The golden history root: an entry's `expires.baseline` must be a version recorded under it.
+pub const GOLDEN_ROOT: &str = "testing/shadow-oracle/golden";
 
 pub struct ChangelogRegisterGate {
     pub register: String,
@@ -124,6 +151,9 @@ impl Gate for ChangelogRegisterGate {
             ROW_DECLARED.to_string(),
             ROW_PRESENT.to_string(),
             ROW_BREAKING.to_string(),
+            ROW_SIGNED.to_string(),
+            ROW_EXPIRES.to_string(),
+            ROW_PREMISE.to_string(),
         ];
         if self.require_version.is_some() {
             owed.push(ROW_VERSION.to_string());
@@ -200,6 +230,9 @@ impl Gate for ChangelogRegisterGate {
             rule_declared(&entries),
             rule_breaking(&entries),
             rule_present(&entries, &section),
+            rule_signed(&entries),
+            rule_expires(&entries, cx, &today()),
+            rule_premise(&entries, cx),
         ];
         if let Some(version) = &self.require_version {
             rows.push(rule_release_section(&section, version));
@@ -230,14 +263,117 @@ impl Gate for ChangelogRegisterGate {
         report.push(prove_green(
             &cx.with_overlay(plant(
                 &register(&[
-                    r#"{"id":"X-1","kind":"improvement","changelog":"the grass is now greener"}"#,
-                    r#"{"id":"X-2","kind":"breaking","changelog":"the sky is now a lovely green"}"#,
+                    &full(r#""id":"X-1","kind":"improvement","changelog":"the grass is now greener""#),
+                    &full(r#""id":"X-2","kind":"breaking","changelog":"the sky is now a lovely green""#),
                 ]),
                 "## [1.6.0], unreleased\n\n- the grass is now greener\n- the sky is now a lovely\n  green\n",
             )),
             &gate,
             "improvement and breaking entries named, one of them line-wrapped",
-            &[ROW_PRESENT, ROW_DECLARED, ROW_BREAKING],
+            &[
+                ROW_PRESENT,
+                ROW_DECLARED,
+                ROW_BREAKING,
+                ROW_SIGNED,
+                ROW_EXPIRES,
+                ROW_PREMISE,
+            ],
+        ));
+
+        // -- THE REGISTER'S OWN SCHEMA: sign-off, expiry, premise --------------------------------
+        report.push(prove_red(
+            cx,
+            &gate,
+            "entries unsigned, signed by an agent, undated, or naming no ruling",
+            &[ROW_SIGNED],
+            plant(
+                &register(&[
+                    r#"{"id":"S-1","kind":"improvement","changelog":"the grass is now greener"}"#,
+                    &full(
+                        r#""id":"S-2","kind":"improvement","changelog":"the grass is now greener""#,
+                    )
+                    .replace("\"who\":\"owner (fixture)\"", "\"who\":\"agent P9\""),
+                    &full(
+                        r#""id":"S-3","kind":"improvement","changelog":"the grass is now greener""#,
+                    )
+                    .replace("\"when\":\"2026-09-24\"", "\"when\":\"last tuesday\""),
+                    &full(
+                        r#""id":"S-4","kind":"improvement","changelog":"the grass is now greener""#,
+                    )
+                    .replace("\"ruling\":\"Q0 fixture\"", "\"ruling\":\" \""),
+                ]),
+                GOOD_CHANGELOG,
+            ),
+            &[
+                ROW_SIGNED,
+                "S-1",
+                "S-2",
+                "agent P9",
+                "S-3",
+                "last tuesday",
+                "S-4",
+            ],
+        ));
+
+        report.push(prove_red(
+            cx,
+            &gate,
+            "entries with no expiry, a lapsed one, or a baseline the golden history lacks",
+            &[ROW_EXPIRES],
+            plant(
+                &register(&[
+                    r#"{"id":"E-1","kind":"improvement","changelog":"the grass is now greener"}"#,
+                    &full(
+                        r#""id":"E-2","kind":"improvement","changelog":"the grass is now greener""#,
+                    )
+                    .replace("\"by\":\"2999-12-31\"", "\"by\":\"2020-01-01\""),
+                    &full(
+                        r#""id":"E-3","kind":"improvement","changelog":"the grass is now greener""#,
+                    )
+                    .replace("\"baseline\":\"1.5.5\"", "\"baseline\":\"0.0.1\""),
+                ]),
+                GOOD_CHANGELOG,
+            ),
+            &[ROW_EXPIRES, "E-1", "E-2", "LAPSED", "E-3", "0.0.1"],
+        ));
+
+        report.push(prove_red(
+            cx,
+            &gate,
+            "entries with no premise, a malformed one, or one probing a cell the corpus lacks",
+            &[ROW_PREMISE],
+            plant(
+                &register(&[
+                    r#"{"id":"P-1","kind":"improvement","changelog":"the grass is now greener"}"#,
+                    &full(
+                        r#""id":"P-2","kind":"improvement","changelog":"the grass is now greener""#,
+                    )
+                    .replace("\"status_not\":404", "\"status_nt\":404"),
+                    &full(
+                        r#""id":"P-3","kind":"improvement","changelog":"the grass is now greener""#,
+                    )
+                    .replace(FIXTURE_CELL, "no|such|cell"),
+                    &full(
+                        r#""id":"P-4","kind":"improvement","changelog":"the grass is now greener""#,
+                    )
+                    .replace(
+                        &format!("{{\"cell\":\"{FIXTURE_CELL}\",\"status_not\":404}}"),
+                        "{\"all\":[]}",
+                    ),
+                ]),
+                GOOD_CHANGELOG,
+            ),
+            &[
+                ROW_PREMISE,
+                "P-1",
+                "no `premise`",
+                "P-2",
+                "unrecognised premise probe",
+                "P-3",
+                "no|such|cell",
+                "P-4",
+                "non-empty list",
+            ],
         ));
 
         report.push(prove_red(
@@ -395,9 +531,9 @@ impl Gate for ChangelogRegisterGate {
         // the transition is measured from. The plant, the covered row and the offenders are
         // unchanged.
         let release_green = plant(
-            &register(&[
-                r#"{"id":"X-1","kind":"improvement","changelog":"the grass is now greener"}"#,
-            ]),
+            &register(&[&full(
+                r#""id":"X-1","kind":"improvement","changelog":"the grass is now greener""#,
+            )]),
             "## [1.7.0], 2026-09-01\n\n- the grass is now greener\n",
         );
         report.push(prove_red(
@@ -415,9 +551,9 @@ impl Gate for ChangelogRegisterGate {
         ));
         report.push(prove_green(
             &cx.with_overlay(plant(
-                &register(&[
-                    r#"{"id":"X-1","kind":"improvement","changelog":"the grass is now greener"}"#,
-                ]),
+                &register(&[&full(
+                    r#""id":"X-1","kind":"improvement","changelog":"the grass is now greener""#,
+                )]),
                 "## [1.7.0], 2026-09-01\n\n- the grass is now greener\n",
             )),
             &release,
@@ -633,6 +769,8 @@ struct Entry {
     /// What the `changelog` field says: absent, an explicit waiver, or a line.
     declares: Declares,
     reason: String,
+    /// The whole entry, for the schema rules (sign-off, expiry, premise).
+    raw: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -675,6 +813,7 @@ impl Entry {
             kind,
             declares,
             reason: s("changelog_reason"),
+            raw: value.clone(),
         }
     }
 }
@@ -857,9 +996,305 @@ fn rule_release_section(section: &Section, version: &str) -> Row {
     }
 }
 
+// ── the register's own schema: sign-off, expiry, premise ────────────────────────────────────────
+
+/// `YYYY-MM-DD`, digits in the right places. Compared as a string, which orders ISO dates.
+fn is_iso_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b.iter()
+            .enumerate()
+            .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+        && (1..=12).contains(&s[5..7].parse::<u32>().unwrap_or(0))
+        && (1..=31).contains(&s[8..10].parse::<u32>().unwrap_or(0))
+}
+
+/// Today's UTC date as `YYYY-MM-DD` (civil-from-days; no clock crate in xtask).
+fn today() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    iso_of_days((secs / 86_400) as i64)
+}
+
+fn iso_of_days(days: i64) -> String {
+    // Howard Hinnant's days-to-civil.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+fn str_field<'a>(v: &'a Value, k: &str) -> Option<&'a str> {
+    v.get(k)
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+}
+
+fn rule_signed(entries: &[Entry]) -> Row {
+    let mut offenders = Vec::new();
+    for e in entries {
+        let Some(so) = e.raw.get("signoff").filter(|v| v.is_object()) else {
+            offenders.push(format!(
+                "{}: no `signoff` object — an accepted difference names who accepted it, when, \
+                 and under which ruling",
+                e.id
+            ));
+            continue;
+        };
+        match str_field(so, "who") {
+            Some(w) if w.trim_start().starts_with("owner") => {}
+            Some(w) => offenders.push(format!(
+                "{}: `signoff.who` is `{w}` — only the owner accepts a difference (#59), so the \
+                 signer names the owner",
+                e.id
+            )),
+            None => offenders.push(format!("{}: `signoff.who` is missing or blank", e.id)),
+        }
+        match str_field(so, "when") {
+            Some(d) if is_iso_date(d) => {}
+            Some(d) => offenders.push(format!(
+                "{}: `signoff.when` is `{d}`, not a YYYY-MM-DD date",
+                e.id
+            )),
+            None => offenders.push(format!("{}: `signoff.when` is missing or blank", e.id)),
+        }
+        if str_field(so, "ruling").is_none() {
+            offenders.push(format!(
+                "{}: `signoff.ruling` is missing or blank — a signature that names no ruling \
+                 cannot be checked against one",
+                e.id
+            ));
+        }
+    }
+    if offenders.is_empty() {
+        Row::pass(
+            ROW_SIGNED,
+            "every accepted difference is signed: who, when, which ruling",
+            format!("{} entr(ies) signed by the owner", entries.len()),
+        )
+    } else {
+        Row::fail(
+            ROW_SIGNED,
+            "an accepted difference is not signed",
+            offenders.join(" | "),
+        )
+    }
+}
+
+fn rule_expires(entries: &[Entry], cx: &Ctx, today: &str) -> Row {
+    let mut offenders = Vec::new();
+    for e in entries {
+        let Some(ex) = e.raw.get("expires").filter(|v| v.is_object()) else {
+            offenders.push(format!(
+                "{}: no `expires` object — an acceptance with no end is a permanent blindfold",
+                e.id
+            ));
+            continue;
+        };
+        match str_field(ex, "baseline") {
+            Some(b) => {
+                let meta = format!("{GOLDEN_ROOT}/{b}/meta.json");
+                if !cx.exists(&meta) {
+                    offenders.push(format!(
+                        "{}: `expires.baseline` is `{b}`, but the golden history holds no \
+                         {meta} — the entry forgives against a baseline nobody can judge with",
+                        e.id
+                    ));
+                }
+            }
+            None => offenders.push(format!("{}: `expires.baseline` is missing or blank", e.id)),
+        }
+        match str_field(ex, "by") {
+            Some(d) if !is_iso_date(d) => offenders.push(format!(
+                "{}: `expires.by` is `{d}`, not a YYYY-MM-DD date",
+                e.id
+            )),
+            Some(d) if d < today => offenders.push(format!(
+                "{}: LAPSED — `expires.by` is {d} and today is {today}; re-sign it against its \
+                 ruling or retire it",
+                e.id
+            )),
+            Some(_) => {}
+            None => offenders.push(format!("{}: `expires.by` is missing or blank", e.id)),
+        }
+    }
+    if offenders.is_empty() {
+        Row::pass(
+            ROW_EXPIRES,
+            "every accepted difference names its baseline and an unlapsed expiry",
+            format!("{} entr(ies), none lapsed as of {today}", entries.len()),
+        )
+    } else {
+        Row::fail(
+            ROW_EXPIRES,
+            "an accepted difference has no expiry, a baseline the history lacks, or has lapsed",
+            offenders.join(" | "),
+        )
+    }
+}
+
+/// The corpus ids, or why they could not be read.
+fn corpus_ids(cx: &Ctx) -> Result<std::collections::BTreeSet<String>, String> {
+    let text = cx
+        .read(DEFAULT_CELLS)
+        .map_err(|e| format!("{DEFAULT_CELLS} could not be read: {e}"))?;
+    let v: Value = serde_json::from_str(&text)
+        .map_err(|e| format!("{DEFAULT_CELLS} did not parse as JSON: {e}"))?;
+    let ids: std::collections::BTreeSet<String> = v
+        .get("cells")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|c| c.get("id").and_then(Value::as_str).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    if ids.is_empty() {
+        return Err(format!(
+            "{DEFAULT_CELLS} yielded zero cell ids — no premise probe could be checked against it"
+        ));
+    }
+    Ok(ids)
+}
+
+/// The premise grammar of the pinned runner (busbar-release `src/premise.rs::validate`), mirrored
+/// so a premise the runner would refuse at load is refused here first. Collects every probed cell.
+fn premise_shape(p: &Value, probed: &mut Vec<String>) -> Result<(), String> {
+    let Some(o) = p.as_object() else {
+        return Err(format!("a premise must be an object, got {p}"));
+    };
+    if let Some(v) = o.get("all").or_else(|| o.get("any")) {
+        if o.len() != 1 {
+            return Err("`all`/`any` must be the premise's only key".into());
+        }
+        let Some(a) = v.as_array().filter(|a| !a.is_empty()) else {
+            return Err("`all`/`any` takes a non-empty list of premises".into());
+        };
+        return a.iter().try_for_each(|x| premise_shape(x, probed));
+    }
+    if let Some(v) = o.get("not") {
+        if o.len() != 1 {
+            return Err("`not` must be the premise's only key".into());
+        }
+        return premise_shape(v, probed);
+    }
+    let Some(cell) = o
+        .get("cell")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    else {
+        return Err(format!(
+            "a premise probe needs a non-empty `cell` (or is `all`/`any`/`not`): {p}"
+        ));
+    };
+    let mut rest: Vec<&str> = o
+        .keys()
+        .map(String::as_str)
+        .filter(|k| *k != "cell")
+        .collect();
+    rest.sort_unstable();
+    let ok = match rest.as_slice() {
+        ["recorded"] => o["recorded"].is_boolean(),
+        ["status"] => o["status"].is_u64(),
+        ["status_not"] => o["status_not"].is_u64(),
+        ["body_contains"] => o["body_contains"].is_string(),
+        ["exists", "pointer"] => o["pointer"].is_string() && o["exists"].is_boolean(),
+        ["equals", "pointer"] => o["pointer"].is_string(),
+        _ => false,
+    };
+    if !ok {
+        return Err(format!(
+            "unrecognised premise probe {p}: `cell` plus exactly one of `recorded` (bool), \
+             `status` (int), `status_not` (int), `body_contains` (string), `pointer`+`exists` \
+             (bool), `pointer`+`equals`"
+        ));
+    }
+    probed.push(cell.to_string());
+    Ok(())
+}
+
+fn rule_premise(entries: &[Entry], cx: &Ctx) -> Row {
+    let ids = match corpus_ids(cx) {
+        Ok(ids) => ids,
+        Err(why) => {
+            return Row::fail(
+                ROW_PREMISE,
+                "the corpus did not resolve, so no premise probe can be checked",
+                why,
+            )
+        }
+    };
+    let mut offenders = Vec::new();
+    let mut probes = 0usize;
+    for e in entries {
+        let Some(p) = e.raw.get("premise").filter(|v| !v.is_null()) else {
+            offenders.push(format!(
+                "{}: no `premise` — the runner honours it UNCHECKED, so nothing ties its \
+                 forgiveness to the build under test (Law 10)",
+                e.id
+            ));
+            continue;
+        };
+        let mut probed = Vec::new();
+        if let Err(why) = premise_shape(p, &mut probed) {
+            offenders.push(format!("{}: malformed premise — {why}", e.id));
+            continue;
+        }
+        for c in &probed {
+            if !ids.contains(c) {
+                offenders.push(format!(
+                    "{}: the premise probes `{c}`, which is not a cell in {DEFAULT_CELLS} — the \
+                     runner could only ever score it unevaluable",
+                    e.id
+                ));
+            }
+        }
+        probes += probed.len();
+    }
+    if offenders.is_empty() {
+        Row::pass(
+            ROW_PREMISE,
+            "every accepted difference carries a premise the runner evaluates",
+            format!(
+                "{} entr(ies), {probes} probe(s), every one over a corpus cell",
+                entries.len()
+            ),
+        )
+    } else {
+        Row::fail(
+            ROW_PREMISE,
+            "an accepted difference carries no premise, or one the runner cannot evaluate",
+            offenders.join(" | "),
+        )
+    }
+}
+
 // ── the fixtures the selftest plants ────────────────────────────────────────────────────────────
 
 const GOOD_CHANGELOG: &str = "## [1.6.0], unreleased\n\n- the grass is now greener\n";
+
+/// A real corpus cell the fixture premise probes, so the premise row's corpus check passes
+/// against the real `cells.json` without a 1 MB overlay.
+const FIXTURE_CELL: &str = "cli|--version";
+
+/// A COMPLETE entry around the given head fields: signed, expiring against the real 1.5.5
+/// baseline, and carrying a well-formed premise over a real cell. The green twins use it, and each
+/// schema RED case breaks exactly one part of it.
+fn full(head: &str) -> String {
+    format!(
+        r#"{{{head},"signoff":{{"who":"owner (fixture)","when":"2026-09-24","ruling":"Q0 fixture"}},"expires":{{"baseline":"1.5.5","by":"2999-12-31"}},"premise":{{"cell":"{FIXTURE_CELL}","status_not":404}}}}"#
+    )
+}
 
 /// A register document around the entry literals a case cares about.
 fn register(entries: &[&str]) -> String {
@@ -924,6 +1359,43 @@ mod tests {
             .find(|r| r.id == ROW_REGISTER)
             .expect("the register row is owed");
         assert!(row.detail.contains("zero entries"), "{}", row.detail);
+    }
+
+    #[test]
+    fn the_calendar_is_right_at_the_edges_the_expiry_rule_compares() {
+        assert_eq!(iso_of_days(0), "1970-01-01");
+        assert_eq!(iso_of_days(20_720), "2026-09-24");
+        assert_eq!(iso_of_days(11_016), "2000-02-29");
+        assert!(is_iso_date("2026-12-31"));
+        assert!(!is_iso_date("2026-13-01"));
+        assert!(!is_iso_date("26-12-31"));
+    }
+
+    #[test]
+    fn an_entry_missing_signoff_expiry_or_premise_is_red_on_each_row_by_name() {
+        let ov = plant(
+            &register(&[
+                r#"{"id":"BARE","kind":"improvement","changelog":"the grass is now greener"}"#,
+            ]),
+            GOOD_CHANGELOG,
+        );
+        let verdict = execute(&ChangelogRegisterGate::new(), &cx().with_overlay(ov));
+        for row in [ROW_SIGNED, ROW_EXPIRES, ROW_PREMISE] {
+            let r = verdict.rows.iter().find(|r| r.id == row).expect("owed row");
+            assert!(
+                r.status != crate::ledger::Status::Pass && r.detail.contains("BARE"),
+                "{row}: {}",
+                r.detail
+            );
+        }
+        let ok = plant(
+            &register(&[&full(
+                r#""id":"FULL","kind":"improvement","changelog":"the grass is now greener""#,
+            )]),
+            GOOD_CHANGELOG,
+        );
+        let verdict = execute(&ChangelogRegisterGate::new(), &cx().with_overlay(ok));
+        assert!(!verdict.red, "{:?}", verdict.rows);
     }
 
     #[test]

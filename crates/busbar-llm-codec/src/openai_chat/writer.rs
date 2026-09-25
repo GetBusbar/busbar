@@ -20,6 +20,21 @@ impl ProtocolWriter for OpenAiWriter {
     }
 
     fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value {
+        self.write_request_for_lane(req, "", &LaneCaps::default())
+    }
+
+    /// A hosted tool of a kind Chat has no built-in for (code execution, web fetch) is dropped by
+    /// the writer (IR-11); the seam records each as a dropped control.
+    fn dropped_egress_controls(&self, req: &crate::ir::IrRequest) -> Vec<&'static str> {
+        super::slots::dropped_hosted_kinds(req)
+    }
+
+    fn write_request_for_lane(
+        &self,
+        req: &crate::ir::IrRequest,
+        _model: &str,
+        caps: &LaneCaps,
+    ) -> serde_json::Value {
         let mut messages_array: Vec<serde_json::Value> = Vec::new();
 
         // Prepend system message as first message if present. OpenAI system messages carry plain
@@ -29,6 +44,11 @@ impl ProtocolWriter for OpenAiWriter {
         // text-less variants (ToolUse / ToolResult / Image) have no OpenAI system representation and
         // are projected to empty text — a documented lossy projection, not a silent drop. The match
         // is exhaustive (no `_ =>` catch-all) so a future IrBlock variant forces a compile error.
+        // IR-14: the folded system turn keeps the role the caller wrote it in (`developer` from a
+        // Chat / Responses developer message); absent, it is `system` as before.
+        let system_role = req
+            .system_role
+            .map_or("system", crate::ir::IrSystemRole::as_str);
         for block in &req.system {
             let text: &str = match block {
                 crate::ir::IrBlock::Text { text, .. } => text,
@@ -40,7 +60,7 @@ impl ProtocolWriter for OpenAiWriter {
                 | crate::ir::IrBlock::Json(_) => "",
             };
             messages_array.push(serde_json::json!({
-                "role": "system",
+                "role": system_role,
                 "content": text
             }));
         }
@@ -78,19 +98,36 @@ impl ProtocolWriter for OpenAiWriter {
 
                 for block in &msg.content {
                     match block {
+                        // IR-02: a refusal in replayed assistant history is Chat's `refusal` part
+                        // (assistant content only; any other role keeps it as text).
+                        crate::ir::IrBlock::Text {
+                            text,
+                            refusal: true,
+                            ..
+                        } if msg.role == crate::ir::IrRole::Assistant => {
+                            content_arr
+                                .push(serde_json::json!({ "type": "refusal", "refusal": text }));
+                        }
                         crate::ir::IrBlock::Text { text, .. } => {
                             content_arr.push(serde_json::json!({ "type": "text", "text": text }));
                         }
-                        crate::ir::IrBlock::Image { source, .. } => {
+                        crate::ir::IrBlock::Image { source, detail, .. } => {
                             // A URL is emitted verbatim, a base64 image re-wrapped as a data URI. A
                             // Responses `file_id` / Bedrock `s3Location` reference has no `image_url`
                             // projection (image_url_from_ir returns None) — SKIP it with a warn rather
                             // than corrupt the block.
                             match super::super::ir_encode::image_url_from_ir(source) {
-                                Some(url) => content_arr.push(serde_json::json!({
-                                    "type": "image_url",
-                                    "image_url": { "url": url }
-                                })),
+                                Some(url) => {
+                                    let mut image_url = serde_json::json!({ "url": url });
+                                    // IR-08: the image-fidelity ask, when the source stated one.
+                                    if let Some(d) = detail {
+                                        image_url["detail"] = serde_json::json!(d.as_str());
+                                    }
+                                    content_arr.push(serde_json::json!({
+                                        "type": "image_url",
+                                        "image_url": image_url
+                                    }))
+                                }
                                 None => tracing::warn!(
                                     "dropping unresolvable vendor-scoped image reference on OpenAI \
                                      egress: a Responses input_image.file_id or a Bedrock s3Location \
@@ -167,6 +204,9 @@ impl ProtocolWriter for OpenAiWriter {
             {
                 if let Some(o) = msg_obj.as_object_mut() {
                     for (k, v) in ex {
+                        if k == LEGACY_FUNCTION_ROLE_KEY {
+                            continue;
+                        }
                         o.entry(k.clone()).or_insert_with(|| v.clone());
                     }
                 }
@@ -199,7 +239,9 @@ impl ProtocolWriter for OpenAiWriter {
                     }
                 }
 
-                if !tool_calls_arr.is_empty() {
+                // A legacy assistant `function_call` re-attached from this dialect's own extras
+                // stash already carries the call (OAI-07); `tool_calls` would duplicate it.
+                if !tool_calls_arr.is_empty() && msg_obj.get("function_call").is_none() {
                     msg_obj["tool_calls"] = serde_json::Value::Array(tool_calls_arr);
                 }
             }
@@ -240,31 +282,35 @@ impl ProtocolWriter for OpenAiWriter {
                         if !content.is_empty() {
                             let text_parts: Vec<String> = content
                                 .iter()
-                                .filter_map(|b| {
-                                    if let crate::ir::IrBlock::Text { text, .. } = b {
-                                        Some(text.clone())
-                                    } else {
-                                        // A non-Text ToolResult block is a Bedrock json-tool-result
-                                        // sentinel (structured `{"json":...}` data) with no OpenAI
-                                        // analog. Drop it WITH a warn so the loss is observable
-                                        // (matches the drop-with-warn convention) rather than vanishing
-                                        // silently.
-                                        if super::super::ir_encode::is_json_tool_result_block(b) {
-                                            tracing::warn!(
-                                                "dropping structured json tool-result block on \
-                                                 OpenAI egress: a Bedrock `{{\"json\":...}}` \
-                                                 tool-result has no cross-protocol analog and is NOT \
-                                                 emitted"
-                                            );
-                                        }
-                                        None
-                                    }
+                                .filter_map(|b| match b {
+                                    crate::ir::IrBlock::Text { text, .. } => Some(text.clone()),
+                                    // A structured-json tool-result block (a Bedrock `{"json":…}`
+                                    // member) carries its value as JSON; the OpenAI tool message
+                                    // `content` is a string, and a serialized JSON document is the
+                                    // string form of exactly that value (OAI-04). Dropping it left
+                                    // the model an empty tool result.
+                                    crate::ir::IrBlock::Json(v) => Some(v.to_string()),
+                                    // An image / media / other block has no slot in a tool message's
+                                    // string content; it is not emitted.
+                                    _ => None,
                                 })
                                 .collect();
 
                             tool_result_obj["content"] = serde_json::json!(text_parts.concat());
                         }
 
+                        // A legacy `role:"function"` result this dialect's own reader marked
+                        // (OAI-07) is written back in its legacy shape, keyed by function name.
+                        if let Some(fname) = message_extras
+                            .and_then(|m| m.get(&msg_idx.to_string()))
+                            .and_then(|e| e.get(LEGACY_FUNCTION_ROLE_KEY))
+                        {
+                            tool_result_obj = serde_json::json!({
+                                "role": "function",
+                                "name": fname,
+                                "content": tool_result_obj["content"].clone(),
+                            });
+                        }
                         messages_array.push(tool_result_obj);
                         emitted_tool_result = true;
                     }
@@ -288,6 +334,22 @@ impl ProtocolWriter for OpenAiWriter {
             } else {
                 // No ToolResult content: add the message to the array directly (tool results are
                 // handled in the branch above, keyed on the presence of a ToolResult block).
+                //
+                // `content: null` is legal ONLY beside `tool_calls` (or a legacy `function_call`). A
+                // turn whose every block had no Chat projection — an assistant turn carrying only
+                // Thinking, or only an attachment this dialect cannot express — would otherwise go
+                // out as `{"role":"assistant","content":null}`, which OpenAI rejects with a 400
+                // (OAI-11). Send the empty string instead: the turn keeps its place in the
+                // conversation and says nothing, which is what it carried in Chat terms.
+                if let Some(o) = msg_obj.as_object_mut() {
+                    let content_null = o.get("content").is_some_and(|c| c.is_null());
+                    if content_null
+                        && !o.contains_key("tool_calls")
+                        && !o.contains_key("function_call")
+                    {
+                        o.insert("content".to_string(), serde_json::json!(""));
+                    }
+                }
                 messages_array.push(msg_obj);
             }
         }
@@ -305,21 +367,24 @@ impl ProtocolWriter for OpenAiWriter {
         );
 
         // Emit the modeled output-token cap. The reader promotes BOTH `max_tokens` and the modern
-        // `max_completion_tokens` into this one IR field (so a caller's limit survives the
-        // cross-protocol seam). Re-emit under the SOURCE spelling when the sentinel says the cap
-        // arrived as `max_completion_tokens` — OpenAI's o1/o3 reasoning models REQUIRE
-        // `max_completion_tokens` and 400 on `max_tokens`, so an OpenAI->OpenAI passthrough to such a
-        // model must preserve the modern key. The sentinel only survives the same-protocol path (extra
-        // is cleared cross-protocol), so a cross-protocol egress falls back to the canonical
-        // `max_tokens` (other protocols have no `max_completion_tokens`). For the common
-        // (non-reasoning) same-protocol case the sentinel is absent and we emit `max_tokens`.
+        // `max_completion_tokens` into this one IR field and marks a cap that arrived as
+        // `max_completion_tokens` with `MAX_COMPLETION_TOKENS_SENTINEL`, so an OpenAI-origin IR
+        // re-emits that key.
+        //
+        // A cap with NO sentinel (another dialect's — the seam clears `extra` — or the cap the seam
+        // injected) has a spelling that is a LANE fact this writer cannot see from the request: the
+        // o-series / gpt-5 models REJECT `max_tokens`, while an OpenAI-compatible host that does not
+        // know `max_completion_tokens` would run with NO output cap at all. So the lane's provider
+        // entry declares it (`max_output_key`, `LaneCaps::max_output_key`), and the default is
+        // `max_tokens` — what 1.5.5 wrote (OAI-01, architect ruling).
         if let Some(max_tokens) = req.max_tokens {
-            let key = if req
+            let completion_key = req
                 .extra
                 .get(MAX_COMPLETION_TOKENS_SENTINEL)
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
-            {
+                || caps.max_output_key == MaxOutputKey::MaxCompletionTokens;
+            let key = if completion_key {
                 "max_completion_tokens"
             } else {
                 "max_tokens"
@@ -388,7 +453,20 @@ impl ProtocolWriter for OpenAiWriter {
         }
         // The reasoning carry in chat-completions spelling: `reasoning_effort`. A numeric budget
         // (Anthropic/Gemini source) is bucketized through the effort table.
-        if let Some(ask) = req.reasoning {
+        //
+        // `Off` (IR-09) is matched FIRST: projected through the table it would read as the smallest
+        // ENABLE ask. Chat's `"none"` is accepted only by the newest reasoning models: a lane that
+        // declares it (`LaneCaps::reasoning_none`, round 3 item 12) gets `"none"`; on any other the
+        // ask is omitted (a lane that is not told to reason does not). An OpenAI-origin `"none"`
+        // still rides `extra` verbatim.
+        if req.reasoning == Some(crate::ir::IrReasoningAsk::Off) && caps.reasoning_none {
+            out.insert("reasoning_effort".to_string(), serde_json::json!("none"));
+        } else if req.reasoning == Some(crate::ir::IrReasoningAsk::Off) {
+            tracing::warn!(
+                "omitting reasoning OFF on OpenAI Chat egress: reasoning_effort \"none\" is not \
+                 accepted by every OpenAI reasoning model and this lane does not declare it"
+            );
+        } else if let Some(ask) = req.reasoning {
             let table = req
                 .reasoning_budgets
                 .unwrap_or(crate::ir::REASONING_BUDGET_DEFAULTS);
@@ -424,9 +502,31 @@ impl ProtocolWriter for OpenAiWriter {
         // 400 by every native Chat Completions backend and SDK since late 2023, and the off-spec shape
         // is itself a proxy tell. `read_openai_tool` already reads from the nested `function` object,
         // so this writer is the inverse of the reader.
-        if !req.tools.is_empty() {
+        // An OpenAI-origin request that declared its tools as legacy `functions` (OAI-07) carries
+        // that array verbatim in `extra`; emitting `tools` too would declare every function twice.
+        // OAI-09 (round 3 item 11): the typed custom tools, written after the function tools.
+        let custom_tools = super::slots::write_custom_tools(req);
+        if (!req.tools.is_empty() || !custom_tools.is_empty())
+            && !req.extra.contains_key("functions")
+        {
             let mut tools_arr: Vec<serde_json::Value> = Vec::new();
             for tool in &req.tools {
+                // A non-function tool this dialect's own reader carried as `hosted` (a Chat `custom`
+                // tool, OAI-09) is re-emitted verbatim. Any other hosted definition (a Responses
+                // built-in) has no Chat Completions shape; the cross-protocol seam removes those
+                // before a writer runs, and one that got here anyway is not emitted as a malformed
+                // empty-name function.
+                if let Some(hosted) = &tool.hosted {
+                    if hosted.get("type").and_then(|t| t.as_str()) == Some(TOOL_TYPE_CUSTOM) {
+                        tools_arr.push(hosted.clone());
+                    } else {
+                        tracing::warn!(
+                            "dropping a hosted tool on OpenAI Chat egress: it has no Chat \
+                             Completions tool shape"
+                        );
+                    }
+                    continue;
+                }
                 let mut function_obj = serde_json::Map::new();
                 function_obj.insert("name".to_string(), serde_json::json!(tool.name));
 
@@ -459,7 +559,10 @@ impl ProtocolWriter for OpenAiWriter {
 
                 tools_arr.push(serde_json::Value::Object(tool_obj));
             }
-            out.insert("tools".to_string(), serde_json::Value::Array(tools_arr));
+            tools_arr.extend(custom_tools.iter().cloned());
+            if !tools_arr.is_empty() {
+                out.insert("tools".to_string(), serde_json::Value::Array(tools_arr));
+            }
         }
 
         // Emit `tool_choice` in OpenAI's native shape when present so a forced/targeted tool
@@ -469,25 +572,27 @@ impl ProtocolWriter for OpenAiWriter {
         // a tool_choice with no accompanying tools — e.g. a cross-protocol request whose hosted
         // tools `prepare_for_egress` stripped (`ir/variant.rs`) — must degrade with a warn, not ship
         // a guaranteed 400.
-        if let Some(tc) = &req.tool_choice {
-            if req.tools.is_empty() {
+        // Likewise the legacy `function_call` directive rides `extra` verbatim on an OpenAI-origin IR.
+        // An allowed-tools subset (IR-10) is written as Chat's `{type:"allowed_tools", ...}` choice.
+        if let Some(v) = super::slots::write_tool_choice(req)
+            .filter(|_| !req.extra.contains_key("function_call"))
+        {
+            if req.tools.is_empty() && custom_tools.is_empty() {
                 tracing::warn!(
                     "dropping tool_choice on OpenAI egress: \"tool_choice\" is only allowed when \
                      \"tools\" are specified (likely because the hosted tools that carried it were \
                      stripped on the cross-protocol seam)"
                 );
             } else {
-                let v = match tc {
-                    crate::ir::IrToolChoice::Auto => serde_json::json!("auto"),
-                    crate::ir::IrToolChoice::None => serde_json::json!("none"),
-                    crate::ir::IrToolChoice::Required => serde_json::json!("required"),
-                    crate::ir::IrToolChoice::Tool { name } => {
-                        serde_json::json!({"type": TOOL_TYPE_FUNCTION, "function": {"name": name}})
-                    }
-                };
                 out.insert("tool_choice".to_string(), v);
             }
         }
+
+        // The Q57 typed request slots (metadata, service_tier, store, safety_identifier,
+        // prompt_cache_key, verbosity, modalities, web_search_options) — see `slots.rs`. Written
+        // before `extra`, which wins on the same dialect (the reader parks there only a raw member
+        // the slot cannot reproduce).
+        out.extend(super::slots::write_slot_members(req));
 
         // Add extra fields
         for (key, value) in &req.extra {
@@ -553,8 +658,18 @@ impl ProtocolWriter for OpenAiWriter {
                 });
                 Some(("".to_string(), chunk))
             }
-            IrStreamEvent::BlockStart { index, block } => match block {
-                crate::ir::IrBlockMeta::Text => None,
+            IrStreamEvent::BlockStart {
+                index,
+                block,
+                refusal,
+            } => match block {
+                // A refusal text block (IR-02): its deltas are written as `delta.refusal`.
+                crate::ir::IrBlockMeta::Text => {
+                    if *refusal {
+                        self.mark_refusal_block(*index);
+                    }
+                    None
+                }
                 crate::ir::IrBlockMeta::ToolUse { id, name } => {
                     // Stamp the CANONICAL IR block index here so parallel tool calls keep distinct,
                     // stable keys and each call's BlockStart + BlockDeltas share ONE value. This is
@@ -586,13 +701,17 @@ impl ProtocolWriter for OpenAiWriter {
                 }
                 // OpenAI Chat has no streamed thinking/redacted-thinking/image start; a redacted block
                 // is dropped exactly like plaintext thinking (no encrypted-reasoning output shape).
-                crate::ir::IrBlockMeta::Thinking
+                crate::ir::IrBlockMeta::Thinking { .. }
                 | crate::ir::IrBlockMeta::RedactedThinking
                 | crate::ir::IrBlockMeta::Image => None,
             },
             IrStreamEvent::BlockDelta { index, delta } => match delta {
                 crate::ir::IrDelta::TextDelta(text) => {
-                    let delta_obj = serde_json::json!({ "content": text });
+                    let delta_obj = if self.is_refusal_block(*index) {
+                        serde_json::json!({ "refusal": text })
+                    } else {
+                        serde_json::json!({ "content": text })
+                    };
                     let chunk_obj = serde_json::json!({
                         "object": OBJ_CHUNK,
                         "choices": [{
@@ -769,6 +888,13 @@ impl ProtocolWriter for OpenAiWriter {
                             }
                         }
                         obj.insert("usage".to_string(), usage_obj);
+                    }
+                }
+                // The serving tier rides the chunk's top level, as on a native stream (OAI-03).
+                if let Some(tier) = write_openai_service_tier(usage.detail.service_tier.as_deref())
+                {
+                    if let Some(obj) = chunk_obj.as_object_mut() {
+                        obj.insert("service_tier".to_string(), serde_json::json!(tier));
                     }
                 }
                 Some(("".to_string(), chunk_obj))
@@ -978,21 +1104,54 @@ impl ProtocolWriter for OpenAiWriter {
         }
 
         // `refusal` is a REQUIRED member of the published `ChatCompletionResponseMessage` schema
-        // (nullable string), so it is always present: JSON null when the model did not refuse.
-        // A refusal has no distinct wire shape anywhere else — Anthropic/Bedrock/Gemini/Cohere carry
-        // a refused turn as plain assistant text, and this dialect's own reader folds an upstream
-        // `message.refusal` into a Text block plus the `Refusal` stop reason — so the text is always
-        // surfaced under `content` and `refusal` stays null rather than guessing which text was the
-        // refusal message. Real OpenAI emits the key on every completion; omitting it failed strict
-        // spec validation and was a proxy tell.
+        // (nullable string), so it is always present. Real OpenAI emits the key on every completion;
+        // omitting it failed strict spec validation and was a proxy tell.
+        //
+        // When the turn ENDED in a refusal (`IrStopReason::Refusal` — an Anthropic `refusal` stop, or
+        // this dialect's own reader folding an upstream `message.refusal`), the assistant text IS the
+        // refusal message: it is written to `refusal` and `content` is null, which is exactly the
+        // shape a native OpenAI refusal takes (OAI-12). Every other turn keeps its text in `content`
+        // and `refusal: null`.
+        //
+        // EXACT carry (IR-02): when the IR flags which text IS the refusal message (a Chat
+        // `message.refusal`, a Responses `refusal` part), those blocks — and only those — go to
+        // `refusal`, and every other text block stays in `content`. The stop-reason rule above is
+        // the fallback for a source that states only that the turn was refused (Anthropic).
+        let flagged = resp
+            .content
+            .iter()
+            .any(|b| matches!(b, crate::ir::IrBlock::Text { refusal: true, .. }));
+        let (content_val, refusal_val) = if flagged {
+            let part = |want: bool| -> serde_json::Value {
+                let texts: Vec<&str> = resp
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        crate::ir::IrBlock::Text { text, refusal, .. } if *refusal == want => {
+                            Some(text.as_str())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                if texts.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::json!(texts.concat())
+                }
+            };
+            (part(false), part(true))
+        } else {
+            let refused = resp.stop_reason == Some(crate::ir::IrStopReason::Refusal);
+            match (!text_parts.is_empty()).then(|| text_parts.concat()) {
+                Some(text) if refused => (serde_json::Value::Null, serde_json::json!(text)),
+                Some(text) => (serde_json::json!(text), serde_json::Value::Null),
+                None => (serde_json::Value::Null, serde_json::Value::Null),
+            }
+        };
         let mut message_obj = serde_json::json!({
             "role": "assistant",
-            "content": if text_parts.is_empty() {
-                serde_json::Value::Null
-            } else {
-                serde_json::json!(text_parts.concat())
-            },
-            "refusal": serde_json::Value::Null,
+            "content": content_val,
+            "refusal": refusal_val,
         });
 
         // Add tool_calls only if present
@@ -1168,6 +1327,11 @@ impl ProtocolWriter for OpenAiWriter {
             }
         }
         obj.insert("usage".to_string(), serde_json::Value::Object(usage_map));
+        // The tier that served the request, in OpenAI's vocabulary (OAI-03). Omitted when the
+        // source named none, or a tier OpenAI has no response value for.
+        if let Some(tier) = write_openai_service_tier(resp.usage.detail.service_tier.as_deref()) {
+            obj.insert("service_tier".to_string(), serde_json::json!(tier));
+        }
 
         serde_json::Value::Object(obj)
     }

@@ -95,6 +95,9 @@ pools:
     breaker: { base_cooldown_secs: 15, max_cooldown_secs: 120, trip: { mode: consecutive, consecutive_n: 1 } }
     failover: { timeout_secs: 30, max_hops: 3 }
 YAML
+# The operator upgrade step (owner ruling Q42, docs/migration-1.6.md): the binary under test adds, at 0,
+# each billable class it names as unconfigured on this card. The 1.5.5 golden names none: its config runs as written.
+"${BUSBAR_ORACLE_BIN:?}" upgrade-config "$BIN" "$W/config.yaml" || exit 1
 
 eff='{}'
 step() { eff="$(jq -c --arg k "$1" --arg v "$2" '. + {($k): $v}' <<<"$eff")"; }

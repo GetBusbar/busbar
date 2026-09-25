@@ -513,6 +513,35 @@ fn the_sealed_digest_of_an_amendment_is_the_frozen_hex() {
     );
 }
 
+/// Q64/Q67: AN ADJUSTMENT NAMES ITS POOL, and one sealed before the field existed keeps its hash.
+/// The unscoped fixture still digests to the frozen `2efa7693…a940` above (so a stored adjustment
+/// still verifies, and still reads unscoped); the same correction naming `pool-a` digests to its
+/// own value, derived independently by `amend_digest.py` ("pooled adjust"), never captured from a
+/// run. The pool is on the record the chain seals.
+#[test]
+fn a_pooled_adjustment_digests_its_pool_and_an_unscoped_one_digests_as_sealed() {
+    let pooled = |pool: Option<&str>| {
+        let mut body = a_correction();
+        if let AmendBody::Adjust(a) = &mut body {
+            a.pool = pool.map(str::to_string);
+        }
+        let mut chain = AmendChain::new();
+        chain.append(an_access(), &token());
+        chain.append(body, &token())
+    };
+    assert_eq!(
+        pooled(None).hash,
+        "2efa76937dfebe0452c23ac8dee4a1293c9fcb2b6488dfd9ed9ae183cb9ea940",
+        "an unscoped adjustment digests exactly as it was sealed"
+    );
+    let sealed = pooled(Some("pool-a"));
+    assert_eq!(
+        sealed.hash, "3117c9fe26e2626ae153742164bb1b7874466e6c0f652b52ea4a35bd3bab64e7",
+        "the pooled digest is the independently derived one"
+    );
+    assert!(matches!(&sealed.body, AmendBody::Adjust(a) if a.pool.as_deref() == Some("pool-a")));
+}
+
 #[test]
 fn the_two_class_names_are_the_two_the_journal_knows() {
     assert_eq!(AmendClass::Access.as_str(), "access");

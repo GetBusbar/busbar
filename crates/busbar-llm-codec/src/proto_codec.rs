@@ -16,6 +16,8 @@
 use http::StatusCode;
 // The protocol registry runtime relocated DOWN to `busbar_substrate_values::proto` (the reverse-edge rule):
 // this crate resolves `decl_for` / `ProtocolDecl` through the neutral ABI, not back into `busbar-core`.
+/// A lane's request-shape capabilities, handed to [`ProtocolWriter::write_request_for_lane`].
+pub use busbar_substrate_values::ir::egress_prep::{LaneCaps, MaxOutputKey};
 use busbar_substrate_values::proto as registry;
 use busbar_substrate_values::proto::{ArrayStreamFramer, DialectCodec, IrError};
 
@@ -170,6 +172,18 @@ pub trait ProtocolReader: Send + Sync {
     /// Read a whole (non-streaming) response from wire JSON.
     fn read_response(&self, body: &serde_json::Value) -> Result<crate::ir::IrResponse, IrError>;
 
+    /// IR-18: the model family that minted the reasoning signatures this reader emits as
+    /// `IrDelta::SignatureDelta` on a stream (a delta has no origin of its own — the buffered
+    /// `IrBlock::Thinking.signature_origin` does). The stream seam uses it to envelope a foreign
+    /// signature for the client carrier (`ir::sig_envelope`). Default `None` (unknown: the
+    /// pre-slot behaviour, never enveloped).
+    fn stream_signature_origin(
+        &self,
+        _state: &crate::ir::StreamDecodeState,
+    ) -> Option<crate::ir::IrSignatureOrigin> {
+        None
+    }
+
     /// Clone this reader as a trait object.
     fn clone_box(&self) -> Box<dyn ProtocolReader>;
 }
@@ -224,6 +238,36 @@ pub trait ProtocolWriter: Send + Sync {
 
     /// Write an IR request to wire JSON.
     fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value;
+
+    /// THE PRODUCTION REQUEST WRITE: an IR request for a known egress lane — its resolved wire
+    /// `model` and its declared [`LaneCaps`]. Both request seams (the engine's cross-protocol hop via
+    /// `ChatReqHandle::write_egress_request`, the plane's `encode_egress`) call this. A dialect whose
+    /// wire shape depends on none of the capabilities keeps the default, which is exactly
+    /// [`Self::write_request_for_model`]; `write_request` itself is the default-capabilities,
+    /// model-blind write.
+    fn write_request_for_lane(
+        &self,
+        req: &crate::ir::IrRequest,
+        model: &str,
+        caps: &LaneCaps,
+    ) -> serde_json::Value {
+        let _ = caps;
+        self.write_request_for_model(req, model)
+    }
+
+    /// Write an IR request for a KNOWN egress model — the production write the cross-protocol seam
+    /// performs (`ChatReqHandle::write_egress_request`), where the resolved lane wire model is in
+    /// hand. A dialect whose native spelling of a control depends on the model FAMILY behind the
+    /// same wire (Bedrock Converse: Claude's `thinking` vs Nova's `reasoningConfig` in
+    /// `additionalModelRequestFields`) overrides this to decide per family; every other dialect
+    /// writes exactly what [`Self::write_request`] writes. Default: `write_request`, model ignored.
+    fn write_request_for_model(
+        &self,
+        req: &crate::ir::IrRequest,
+        _model: &str,
+    ) -> serde_json::Value {
+        self.write_request(req)
+    }
 
     /// Apply a hook's `rewrite` reply to an INGRESS body of THIS dialect, in place. Returns whether
     /// the body actually changed; `false` leaves it untouched (fail-safe — never a corrupted
@@ -286,12 +330,31 @@ pub trait ProtocolWriter: Send + Sync {
         Vec::new()
     }
 
+    /// [`Self::dropped_egress_controls`] for a lane with the declared [`LaneCaps`] — the set
+    /// [`Self::write_request_for_lane`] drops. Defaults to the capability-blind answer.
+    fn dropped_egress_controls_for_lane(
+        &self,
+        req: &crate::ir::IrRequest,
+        caps: &LaneCaps,
+    ) -> Vec<&'static str> {
+        let _ = caps;
+        self.dropped_egress_controls(req)
+    }
+
     /// PERFORM the `path_base` body reshape `ProtocolDecl::reshapes_body_at_path_base` promised, returning
     /// whether the body changed. The mutation is the protocol's own wire knowledge and lives with
     /// the writer, so the agnostic forward path applies "whatever this dialect needs at a path-model
     /// URL" without knowing that anything named `anthropic_version` exists. Default: no-op, `false`.
     fn reshape_for_path_base(&self, _body: &mut serde_json::Value) -> bool {
         false
+    }
+
+    /// IR-18: whether this dialect's signature carrier reads a signature minted by `origin` as its
+    /// OWN. A client-bound signature of any other origin is wrapped in the busbar provenance
+    /// envelope (`ir::sig_envelope`) so it survives the client round trip; this dialect's reader
+    /// unwraps it. Default `true` (a dialect with no signature carrier never envelopes).
+    fn reads_signature_origin_as_own(&self, _origin: crate::ir::IrSignatureOrigin) -> bool {
+        true
     }
 
     /// Write a response/stream event to wire (event_type, data).

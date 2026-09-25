@@ -163,7 +163,10 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
             );
         }
     }
-    // HOSTED-TOOL cross-protocol drop. A Responses hosted tool
+    // HOSTED-TOOL cross-protocol drop — of the RAW, same-protocol-only `IrTool::hosted` object.
+    // A hosted tool whose KIND a reader recognises crosses the seam untouched in the typed
+    // `IrRequest::hosted_tools` slot (IR-11); what is dropped here is only the verbatim Responses
+    // object no other writer can emit. A Responses hosted tool
     // (`{"type":"web_search"}` → `IrTool{ name:"", hosted:Some(..) }`) has NO function-tool
     // analog: ONLY the Responses writer honors `hosted`; every other egress writer projects
     // an `IrTool` as a function tool keyed on `name`, so a hosted tool becomes a malformed
@@ -298,15 +301,50 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
     ir.extra.clear();
 }
 
-/// Chat cross-protocol INGRESS preparation (verbatim from the former `IrResp::Chat` arm).
+/// Chat cross-protocol INGRESS preparation (from the former `IrResp::Chat` arm).
+///
+/// What it clears, and why each is a normalization rather than a drop (IR mapping Q57):
+/// - `id` — every dialect's id is a FORMAT (`chatcmpl-…`, `msg_…`, `resp_…`); the ingress writer
+///   mints its own native one (the synthesized-ID contract on [`IrResponse::id`]). The stream path
+///   clears the same field on `MessageStart`.
+/// - `system_fingerprint` — only the OpenAI Chat reader sets it and only the Chat writer emits it,
+///   and a cross-protocol response never has Chat on both ends; no target can carry it.
+///
+/// What it does NOT clear: `stop_sequence`, the matched stop string. The Anthropic writer emits it,
+/// and a Bedrock Converse body carries it (`additionalModelResponseFields.stop_sequence`) — the
+/// same fact, so it maps. Clearing it here nulled it for a Bedrock -> Anthropic buffered answer
+/// while the stream path (`MessageDelta.stop_sequence`) kept it: buffered and stream disagreed.
 pub fn chat_prepare_for_ingress(ir: &mut IrResponse, ingress_protocol: &str, now_epoch: u64) {
     ir.id = None;
     ir.system_fingerprint = None;
-    ir.stop_sequence = None;
     if ir.created.is_none() {
         ir.created = Some(now_epoch);
     }
     super::proto_codec::ToolIdRemap::default().remap_response(ingress_protocol, ir);
+    envelope_foreign_signatures(ir, ingress_protocol);
+}
+
+/// IR-18 (architect ruling, round 3 item 15): a reasoning signature another family minted is
+/// wrapped in the busbar provenance envelope before the ingress writer places it in a client
+/// carrier that has no origin field, so the client's next turn brings back the original bytes AND
+/// their origin (the ingress reader unwraps it) instead of a blob its own family would reject.
+fn envelope_foreign_signatures(ir: &mut IrResponse, ingress_protocol: &str) {
+    let Some(p) = super::proto_codec::protocol_for(ingress_protocol) else {
+        return;
+    };
+    let writer = p.writer();
+    for block in &mut ir.content {
+        if let crate::ir::IrBlock::Thinking {
+            signature: Some(sig),
+            signature_origin,
+            ..
+        } = block
+        {
+            *sig = crate::ir::sig_envelope::for_client(sig, *signature_origin, |o| {
+                writer.reads_signature_origin_as_own(o)
+            });
+        }
+    }
 }
 
 /// Chat token-usage billing projection (from the former `IrResp::Chat` `usage()` arm).
@@ -325,8 +363,9 @@ pub fn chat_usage(r: &IrResponse) -> Option<Billing> {
 
 // ─────────────────────────────── the handles ───────────────────────────────
 
-/// The chat REQUEST handle.
-pub struct ChatReqHandle(pub IrRequest);
+/// The chat REQUEST handle: the request, plus the egress lane's declared capabilities, which the
+/// seam hands over in the [`EgressPrep`] (`prepare_for_egress`) and the egress write hands to the writer.
+pub struct ChatReqHandle(pub IrRequest, pub super::proto_codec::LaneCaps);
 /// The chat RESPONSE handle.
 pub struct ChatRespHandle(pub IrResponse);
 
@@ -345,16 +384,23 @@ impl IrHandle for ChatReqHandle {
     }
     fn prepare_for_egress(&mut self, prep: &EgressPrep) {
         chat_prepare_for_egress(&mut self.0, prep);
+        self.1 = prep.lane_caps;
     }
     fn egress_dropped_controls(&self, egress_proto: &str) -> Vec<&'static str> {
         super::proto_codec::protocol_for(egress_proto)
-            .map(|p| p.writer().dropped_egress_controls(&self.0))
+            .map(|p| {
+                p.writer()
+                    .dropped_egress_controls_for_lane(&self.0, &self.1)
+            })
             .unwrap_or_default()
     }
-    fn write_egress_request(&mut self, egress_proto: &str, _model: &str) -> EgressWire {
-        // Chat is always a JSON body the router post-shapes (write_request_value == Some).
+    fn write_egress_request(&mut self, egress_proto: &str, model: &str) -> EgressWire {
+        // Chat is always a JSON body the router post-shapes (write_request_value == Some). The lane
+        // model rides along for the dialects whose spelling depends on the model family, and the
+        // lane's declared capabilities (recorded at `prepare_for_egress`) for the dialects whose
+        // spelling depends on what that model accepts.
         super::proto_codec::protocol_for(egress_proto)
-            .map(|p| EgressWire::Json(p.writer().write_request(&self.0)))
+            .map(|p| EgressWire::Json(p.writer().write_request_for_lane(&self.0, model, &self.1)))
             .unwrap_or_else(|| EgressWire::Bytes(Bytes::new()))
     }
 }
@@ -537,7 +583,7 @@ impl OperationHandler for ChatOperation {
             .ok_or_else(|| IngressReject::BadRequest(format!("unknown protocol {}", self.0)))?;
         p.reader()
             .read_request(v)
-            .map(|r| Box::new(ChatReqHandle(r)) as Box<dyn IrHandle>)
+            .map(|r| Box::new(ChatReqHandle(r, Default::default())) as Box<dyn IrHandle>)
             .map_err(|e| IngressReject::BadRequest(format!("{e:?}")))
     }
     fn read_response_value(&self, v: &Value) -> Result<Box<dyn IrHandle>, CodecError> {
@@ -561,7 +607,7 @@ impl OperationHandler for ChatOperation {
             .ok_or_else(|| IngressReject::BadRequest(format!("unknown protocol {}", self.0)))?;
         p.reader()
             .read_request(&v)
-            .map(|r| Box::new(ChatReqHandle(r)) as Box<dyn IrHandle>)
+            .map(|r| Box::new(ChatReqHandle(r, Default::default())) as Box<dyn IrHandle>)
             .map_err(|e| IngressReject::BadRequest(format!("{e:?}")))
     }
     fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {

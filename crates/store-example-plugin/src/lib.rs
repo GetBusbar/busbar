@@ -55,7 +55,12 @@ struct Cfg {
 /// downgrade is the dangerous shape: a stray trailing comma in `{"durable_path": "/var/lib/…"}`
 /// turned a durable store into an ephemeral one, the plugin loaded clean, and the rows only stopped
 /// existing at the next restart.
-fn open(cfg: &str) -> Result<Box<dyn Store>, String> {
+///
+/// `pub` because it is ALSO the COMPILED-IN door (DECISIONS #11): a host that links this crate's
+/// `rlib` holds the `Box<dyn Store>` this returns, while a host that `dlopen`s the `cdylib` reaches
+/// the same constructor through `busbar_open`. `plugin-loader`'s `store_scope_kind_conformance_tests`
+/// drives both and requires them to agree.
+pub fn open(cfg: &str) -> Result<Box<dyn Store>, String> {
     if cfg.trim().is_empty() {
         return Ok(Box::new(RamStore::new()));
     }

@@ -960,6 +960,15 @@
       "kind": "struct",
       "transparent": false
     },
+    "MaxOutputKeyCfg": {
+      "deny_unknown_fields": false,
+      "kind": "enum",
+      "transparent": false,
+      "variants": [
+        "max_completion_tokens",
+        "max_tokens"
+      ]
+    },
     "McpPinMechanism": {
       "deny_unknown_fields": false,
       "kind": "enum",
@@ -1084,6 +1093,29 @@
         "max_ttl": {
           "optional": true,
           "type": "String"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "ModelCapabilities": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "anthropic_adaptive_thinking": {
+          "optional": true,
+          "type": "bool"
+        },
+        "max_output_key": {
+          "optional": true,
+          "type": "MaxOutputKeyCfg"
+        },
+        "models": {
+          "optional": false,
+          "type": "Vec<String>"
+        },
+        "native_structured_output": {
+          "optional": true,
+          "type": "bool"
         }
       },
       "kind": "struct",
@@ -1516,6 +1548,10 @@
           "optional": true,
           "type": "Vec<String>"
         },
+        "anthropic_adaptive_thinking": {
+          "optional": true,
+          "type": "bool"
+        },
         "api_key": {
           "optional": false,
           "type": "SecretRef"
@@ -1535,6 +1571,18 @@
         "health": {
           "optional": true,
           "type": "HealthCfg"
+        },
+        "max_output_key": {
+          "optional": true,
+          "type": "MaxOutputKeyCfg"
+        },
+        "model_capabilities": {
+          "optional": true,
+          "type": "Vec<ModelCapabilities>"
+        },
+        "native_structured_output": {
+          "optional": true,
+          "type": "bool"
         },
         "path": {
           "optional": true,
@@ -1571,6 +1619,10 @@
           "optional": true,
           "type": "Vec<String>"
         },
+        "anthropic_adaptive_thinking": {
+          "optional": true,
+          "type": "bool"
+        },
         "auth": {
           "optional": true,
           "type": "ProviderAuth"
@@ -1586,6 +1638,18 @@
         "health": {
           "optional": true,
           "type": "HealthCfg"
+        },
+        "max_output_key": {
+          "optional": true,
+          "type": "MaxOutputKeyCfg"
+        },
+        "model_capabilities": {
+          "optional": true,
+          "type": "Vec<ModelCapabilities>"
+        },
+        "native_structured_output": {
+          "optional": true,
+          "type": "bool"
         },
         "path": {
           "optional": true,
@@ -1622,6 +1686,10 @@
           "optional": true,
           "type": "Vec<String>"
         },
+        "anthropic_adaptive_thinking": {
+          "optional": true,
+          "type": "bool"
+        },
         "api_key": {
           "optional": false,
           "type": "SecretRef"
@@ -1641,6 +1709,18 @@
         "health": {
           "optional": true,
           "type": "HealthCfg"
+        },
+        "max_output_key": {
+          "optional": true,
+          "type": "MaxOutputKeyCfg"
+        },
+        "model_capabilities": {
+          "optional": true,
+          "type": "Vec<ModelCapabilities>"
+        },
+        "native_structured_output": {
+          "optional": true,
+          "type": "bool"
         },
         "path": {
           "optional": true,

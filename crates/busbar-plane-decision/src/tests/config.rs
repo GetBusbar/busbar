@@ -33,11 +33,21 @@ fn a_good_decisions_config_passes_clean() {
 fn refuses_a_model_naming_an_undefined_provider() {
     let json = r#"{"models":{"jev":{"provider":"ghost"}}}"#;
     let section: DecisionsSection = serde_json::from_str(json).expect("valid shape parses");
-    let errors = validate_cross_refs(&section, &providers(&[("typesafe", JEV_PROTOCOL)]), &hooks(&[]));
+    let errors = validate_cross_refs(
+        &section,
+        &providers(&[("typesafe", JEV_PROTOCOL)]),
+        &hooks(&[]),
+    );
     assert_eq!(errors.len(), 1, "{errors:?}");
-    assert!(errors[0].contains("decisions.models.jev.provider"), "{errors:?}");
+    assert!(
+        errors[0].contains("decisions.models.jev.provider"),
+        "{errors:?}"
+    );
     assert!(errors[0].contains("ghost"), "{errors:?}");
-    assert!(errors[0].contains("typesafe"), "{errors:?}: must name the valid choices");
+    assert!(
+        errors[0].contains("typesafe"),
+        "{errors:?}: must name the valid choices"
+    );
 }
 
 /// DEFECT 2: `decisions.hooks` names a hook absent from the top-level `hooks:` registry.
@@ -49,7 +59,10 @@ fn refuses_a_hook_naming_an_undefined_hook() {
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(errors[0].contains("decisions.hooks"), "{errors:?}");
     assert!(errors[0].contains("ghost-hook"), "{errors:?}");
-    assert!(errors[0].contains("redact"), "{errors:?}: must name the valid choices");
+    assert!(
+        errors[0].contains("redact"),
+        "{errors:?}: must name the valid choices"
+    );
 }
 
 /// DEFECT 3 (#51, OWNER-LOCKED): a model whose provider resolves to a dialect the decision plane
@@ -59,9 +72,16 @@ fn refuses_a_hook_naming_an_undefined_hook() {
 fn refuses_a_model_whose_provider_speaks_a_non_jev_dialect() {
     let json = r#"{"models":{"jev":{"provider":"claude"}}}"#;
     let section: DecisionsSection = serde_json::from_str(json).expect("valid shape parses");
-    let errors = validate_cross_refs(&section, &providers(&[("claude", "anthropic")]), &hooks(&[]));
+    let errors = validate_cross_refs(
+        &section,
+        &providers(&[("claude", "anthropic")]),
+        &hooks(&[]),
+    );
     assert_eq!(errors.len(), 1, "{errors:?}");
-    assert!(errors[0].contains("decisions.models.jev.provider"), "{errors:?}");
+    assert!(
+        errors[0].contains("decisions.models.jev.provider"),
+        "{errors:?}"
+    );
     assert!(errors[0].contains("anthropic"), "{errors:?}");
     assert!(errors[0].contains(JEV_PROTOCOL), "{errors:?}");
 }

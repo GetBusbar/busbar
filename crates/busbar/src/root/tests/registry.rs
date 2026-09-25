@@ -101,15 +101,18 @@ fn seven_transports_and_five_planes_register() {
             "plane `{key}` is not registered"
         );
     }
-    // The decision plane is registered exactly when its crate edge is in the build.
-    assert_eq!(
+    // The decision plane is registered exactly when its crate edge is in the build. The key is the
+    // crate's own, so it can only be named on a build that links the crate; on a build without it,
+    // the plane count above (no fifth row beyond voice) is the statement that nothing registered.
+    #[cfg(feature = "plane-decision")]
+    assert!(
         registry
             .resolve(
                 PluginKind::Plane,
                 <busbar_plane_decision::DecisionPlane as PlaneMeta>::KEY
             )
             .is_some(),
-        DECISION
+        "the decision plane is linked and not registered"
     );
     // The voice plane and its transport are present exactly together: neither is a thing this
     // root registers without the other.

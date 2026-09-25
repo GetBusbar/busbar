@@ -23,6 +23,7 @@ fn prep<'a>() -> EgressPrep<'a> {
         reasoning_budgets: [0; 4],
         prompt_caching_allowed: true,
         cache_control_cap: None,
+        lane_caps: Default::default(),
         thought_signature_fill: false,
     }
 }

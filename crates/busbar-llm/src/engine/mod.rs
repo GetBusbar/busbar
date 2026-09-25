@@ -191,6 +191,9 @@ mod ingress_reject_response_tests;
 #[path = "tests/lane_availability_proptest_tests.rs"]
 mod lane_availability_proptest;
 #[cfg(test)]
+#[path = "tests/lane_caps_config_tests.rs"]
+mod lane_caps_config_tests;
+#[cfg(test)]
 #[path = "tests/mid_stream_error_tests.rs"]
 mod mid_stream_error_tests;
 #[cfg(test)]

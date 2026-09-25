@@ -65,10 +65,9 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 . "$(dirname "$0")/plane-keys.sh"
 
 # ── CORE_ROOTS — where "core's generic named-map machinery" LIVES TODAY ─────────────────────────────
-# `crates/busbar-core` was deleted 2026-09-20 (commit 673ecdaaa, "W4.a: absorb busbar-core INTO
-# busbar-kernel; delete busbar-core") — its ~130k LOC, `git mv`'d whole, module-for-module, into
-# `crates/busbar-kernel`. That move carried `config/`, `config_validate/` and every other module
-# along "TEMPORARILY per W4.b/W5.d" (the commit's own words) — nothing stranded, nothing deleted. So
+# `crates/busbar-core` was deleted: it was absorbed whole into `crates/busbar-kernel`, module-for-
+# module, `git mv`'d rather than rewritten. That move carried `config/`, `config_validate/` and
+# every other module along as-is — nothing stranded, nothing deleted. So
 # `crates/busbar-kernel/src` is not A candidate, it is THE direct, whole-crate successor: `DeployCfg`
 # (`crates/busbar-kernel/src/config/mod.rs`), `NamedMapSection` (`crates/busbar-kernel/src/config/
 # named_map.rs`) and `config_sections_from`/`parse_section` (`crates/busbar-kernel/src/plane/`) all
@@ -77,9 +76,9 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 # streams: StreamsSection` — four literal noun-bound fields, i.e. real, non-zero, parse-steering
 # debt sitting exactly where this meter is supposed to find it.
 #
-# A second, EARLIER split (commit 3cbe9b67f, pre-dating the busbar-core deletion) had already carved
+# A second, EARLIER split (pre-dating the busbar-core deletion) had already carved
 # the "config parse (neutral half)" out to `crates/busbar-core-config` — that crate's own header
-# names itself "the CONFIG ... home carved out of busbar-core" (DECISIONS #19/#20). It holds no
+# names itself "the CONFIG ... home carved out of busbar-core". It holds no
 # section-noun literal today (`parse_ceiling`/`parse_duration_secs` only — grepped, confirmed empty),
 # but it is explicitly billed as a config home of busbar-core's diaspora, so a noun landing there in
 # a future PR must not go unscanned. Included for that reason, not because it currently scores > 0.
@@ -105,7 +104,7 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 #   tree has, so the rejections could not be re-run as written.
 #   * `busbar-substrate-values` — the PURE value-family types a codec/plane names, not config
 #     parsing at all (a later split off `busbar-substrate`, itself split off busbar-core's session
-#     substrate, commit 7d23875b5). Zero grep hits.
+#     substrate). Zero grep hits.
 # Each plane's OWN crate (`busbar-mcp` etc.) also matches `"tools"`/`"agents"`/… freely — that is
 # EXPECTED (a plane naming its own section) and is not what this meter is about; scanning plane crates
 # here would conflate "a plane knows its own noun" with "core hard-coded a plane's noun".
@@ -113,10 +112,10 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 # A root that stops existing is a LOUD failure (`require_root`, below), not a silent narrowing of the
 # set — exactly the failure mode that let `crates/busbar-core` disappear under this gate unnoticed.
 #
-# `crates/busbar-core-config/src` WAS the second root and is DELETED HERE, in the reviewed diff this
-# paragraph is, with the crate's disappearance as its stated reason. DECISIONS #37 rules "no
-# `busbar-core-<kind>` ever"; commit 1059d3c36 took the directory off disk and 50d14fd44 finished the
-# kill, bringing its one landed file home as `crates/busbar-kernel/src/config/parse.rs`. That file is
+# `crates/busbar-core-config/src` WAS the second root and is DELETED HERE, with the crate's
+# disappearance as its stated reason: the policy is no `busbar-core-<kind>` crate ever; the
+# directory came off disk, and its one landed file came home as `crates/busbar-kernel/src/config/
+# parse.rs`. That file is
 # UNDER the root below, so the scan loses nothing by dropping the dead entry — it is the same bytes,
 # reached through the surviving root rather than through a path that stopped existing.
 CORE_ROOTS="crates/busbar-kernel/src"

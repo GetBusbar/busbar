@@ -459,14 +459,22 @@ fn read_bedrock_reasoning_block(reasoning: &serde_json::Value) -> Option<crate::
             .and_then(|t| t.as_str())
             .unwrap_or("")
             .to_string();
-        let signature = reasoning_text
-            .get("signature")
-            .and_then(|s| s.as_str().map(String::from));
+        // IR-18: a busbar provenance envelope (another family's signature handed to this client
+        // earlier) restores the original bytes and origin; a genuine Converse signature's origin
+        // is left for the caller to derive from the model id.
+        let (signature, signature_origin) = crate::ir::sig_envelope::read_carried_opt(
+            reasoning_text
+                .get("signature")
+                .and_then(|s| s.as_str().map(String::from)),
+            None,
+        );
         return Some(crate::ir::IrBlock::Thinking {
             text,
             signature,
             redacted: false,
             cache_control: None,
+            kind: None,
+            signature_origin,
         });
     }
     if let Some(redacted) = reasoning.get("redactedContent").and_then(|r| r.as_str()) {
@@ -475,6 +483,8 @@ fn read_bedrock_reasoning_block(reasoning: &serde_json::Value) -> Option<crate::
             signature: None,
             redacted: true,
             cache_control: None,
+            kind: None,
+            signature_origin: None,
         });
     }
     None
@@ -610,6 +620,16 @@ fn bedrock_media_block(
             media_type: bedrock_media_type_for_format(kind, format),
             data: bytes.to_string(),
         },
+        // BED-03: a TEXT document (`source.text`, or the chunked `source.content[].text`) is
+        // plain text every dialect can carry as an inline text document. It becomes a real
+        // base64-encoded text document (the IR's `Base64.data` contract), NOT a bedrock Vendor
+        // reference no foreign writer can re-emit.
+        None if bedrock_document_text(source).is_some() => crate::ir::IrImageSource::Base64 {
+            media_type: bedrock_text_media_type(format),
+            data: busbar_substrate_values::media::base64_encode(
+                bedrock_document_text(source).unwrap_or_default().as_bytes(),
+            ),
+        },
         // An `s3Location` names an object in the caller's own AWS account: no other backend can
         // fetch it, so it rides the opaque `Vendor` escape and only this writer re-emits it.
         None => crate::ir::IrImageSource::Vendor {
@@ -617,11 +637,58 @@ fn bedrock_media_block(
             value: source.cloned().unwrap_or_else(|| serde_json::json!({})),
         },
     };
+    // IR-12: a Converse `DocumentBlock` carries the same two attachment controls Anthropic's
+    // document block does — `citations: {enabled}` and a free-text `context`. `VideoBlock` has
+    // neither, so they are read off a document only.
+    let (citations, context) = if kind == crate::ir::IrMediaKind::Document {
+        (
+            value
+                .get("citations")
+                .and_then(|c| c.get("enabled"))
+                .and_then(|e| e.as_bool()),
+            value
+                .get("context")
+                .and_then(|c| c.as_str())
+                .map(String::from),
+        )
+    } else {
+        (None, None)
+    };
     crate::ir::IrBlock::Media {
         kind,
         source: ir_source,
         name,
         cache_control: None,
+        citations,
+        context,
+    }
+}
+
+/// The inline text of a Converse `DocumentSource` that carries text rather than bytes: `text` (a
+/// plain string) or `content` (an array of `{text}` chunks, joined by newlines). `None` for a
+/// bytes/s3 source.
+fn bedrock_document_text(source: Option<&serde_json::Value>) -> Option<String> {
+    let source = source?;
+    if let Some(t) = source.get("text").and_then(|t| t.as_str()) {
+        return Some(t.to_string());
+    }
+    let parts: Vec<&str> = source
+        .get("content")?
+        .as_array()?
+        .iter()
+        .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+        .collect();
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
+/// The mime type of a TEXT document source: the format's own text type when it names one (`md`,
+/// `csv`, `html`, `txt`), else `text/plain` — a text source is text whatever container it names.
+fn bedrock_text_media_type(format: &str) -> String {
+    let m = bedrock_media_type_for_format(crate::ir::IrMediaKind::Document, format);
+    if m.starts_with("text/") {
+        m
+    } else {
+        "text/plain".to_string()
     }
 }
 
@@ -663,6 +730,8 @@ fn bedrock_media_content_block(
     kind: crate::ir::IrMediaKind,
     source: &crate::ir::IrImageSource,
     name: Option<&str>,
+    citations: Option<bool>,
+    context: Option<&str>,
 ) -> Option<serde_json::Value> {
     let (wire_key, format) = match kind {
         crate::ir::IrMediaKind::Document => ("document", bedrock_document_format(source)?),
@@ -704,6 +773,25 @@ fn bedrock_media_content_block(
         block.insert("name".to_string(), serde_json::json!(n));
     }
     block.insert("source".to_string(), wire_source);
+    // IR-12: the document's citation switch and context ride Converse's `DocumentBlock` natively.
+    // A `VideoBlock` has no such members, so on a video they are dropped (with a warn when set).
+    if kind == crate::ir::IrMediaKind::Document {
+        if let Some(c) = context {
+            block.insert("context".to_string(), serde_json::json!(c));
+        }
+        if let Some(enabled) = citations {
+            block.insert(
+                "citations".to_string(),
+                serde_json::json!({ "enabled": enabled }),
+            );
+        }
+    } else if citations.is_some() || context.is_some() {
+        tracing::warn!(
+            media_kind = kind.as_str(),
+            "dropping attachment citations/context on Bedrock egress: Converse carries them on a \
+             document block only"
+        );
+    }
     Some(serde_json::json!({ wire_key: serde_json::Value::Object(block) }))
 }
 
@@ -785,13 +873,11 @@ fn bedrock_cache_point() -> serde_json::Value {
 /// set the streaming `ContentBlockDelta`'s `citation` member (`CitationsDelta`) carries, which is why
 /// one helper serves both paths.
 ///
-/// The union is `{ title, sourceContent: [{ text }], location }`, where `location` is
-/// `documentChar { documentIndex, start, end }` / `documentPage` / `documentChunk`. Note what is NOT
-/// in it: **there is no URL field anywhere in the Bedrock citation shape** — it models citations INTO
-/// the documents the caller attached, not out to the web. So a web citation's `url` has no native
-/// slot and degrades into `title` (the closest valid native form: the field a Bedrock client renders
-/// as the source's name), and when a real `title` is ALSO present the url cannot ride along and is
-/// dropped with a `warn!` rather than mangled into the title string.
+/// The shape is `{ title, source, sourceContent: [{ text }], location }`, where `location` is a
+/// UNION: `documentChar` / `documentPage` / `documentChunk` (`{ documentIndex, start, end }`),
+/// `searchResultLocation` (`{ searchResultIndex, start, end }`) and `web` (`{ url, domain }`). A
+/// neutral citation with character offsets takes `documentChar`; a search-result citation takes
+/// `searchResultLocation`; a url-bearing citation with no other location takes `web` (BED-14).
 ///
 /// Returns `None` when the citation projects to nothing at all (no title, no url, no quoted text, no
 /// resolvable location) — emitting `{}` would put a member-less union on the wire that a Bedrock SDK
@@ -801,26 +887,8 @@ fn write_bedrock_citation(c: &crate::ir::IrCitation) -> Option<serde_json::Value
 
     let title = c.title.as_deref().filter(|s| !s.is_empty());
     let url = c.url.as_deref().filter(|s| !s.is_empty());
-    match (title, url) {
-        (Some(t), Some(u)) => {
-            obj.insert("title".to_string(), serde_json::json!(t));
-            tracing::warn!(
-                url = %u,
-                "dropping citation `url` on a bedrock egress: the Converse `Citation` shape has no \
-                 url field (it cites the request's own documents, not the web), and `title` is \
-                 already carrying the source's name. Route web-search citations to a protocol that \
-                 models a source url (openai, anthropic, gemini, cohere) if the link is load-bearing"
-            );
-        }
-        // No title: the url IS the source's name as far as a reader is concerned, so it takes the
-        // slot rather than being dropped.
-        (None, Some(u)) => {
-            obj.insert("title".to_string(), serde_json::json!(u));
-        }
-        (Some(t), None) => {
-            obj.insert("title".to_string(), serde_json::json!(t));
-        }
-        (None, None) => {}
+    if let Some(t) = title {
+        obj.insert("title".to_string(), serde_json::json!(t));
     }
 
     if let Some(quoted) = c.cited_text.as_deref().filter(|s| !s.is_empty()) {
@@ -830,15 +898,16 @@ fn write_bedrock_citation(c: &crate::ir::IrCitation) -> Option<serde_json::Value
         );
     }
 
-    // `documentChar` is the only location variant the neutral IR can fill honestly: `start_index` /
-    // `end_index` are character offsets for every source that carries them EXCEPT an Anthropic
-    // `page_location` / `content_block_location`, whose `kind` says so — those are page/block
-    // numbers and would be a LIE inside `documentChar`, so they are left unlocated rather than
-    // mislabelled (the title and quoted text still cross).
+    // `documentChar` is filled from the neutral char offsets: `start_index` / `end_index` are
+    // character offsets for every source that carries them EXCEPT an Anthropic `page_location` /
+    // `content_block_location`, whose `kind` says so — those are page/block numbers and would be a
+    // LIE inside `documentChar`, so they are left unlocated rather than mislabelled (the title and
+    // quoted text still cross).
     let char_offsets = !matches!(
         c.kind.as_deref(),
-        Some("page_location") | Some("content_block_location")
+        Some("page_location") | Some("content_block_location") | Some("search_result_location")
     );
+    let mut located = false;
     if char_offsets {
         if let (Some(start), Some(end)) = (c.start_index, c.end_index) {
             if start >= 0 && end >= start {
@@ -852,11 +921,280 @@ fn write_bedrock_citation(c: &crate::ir::IrCitation) -> Option<serde_json::Value
                         }
                     }),
                 );
+                located = true;
             }
         }
     }
 
+    // An Anthropic `search_result_location` names the same coordinates Converse's
+    // `searchResultLocation` member carries (the search result's index and the block span in it).
+    // Written only when the result index is actually known — defaulting it to 0 would point at the
+    // wrong search result.
+    if !located && c.kind.as_deref() == Some("search_result_location") {
+        if let (Some(idx), Some(start), Some(end)) = (c.document_index, c.start_index, c.end_index)
+        {
+            if idx >= 0 && start >= 0 && end >= start {
+                obj.insert(
+                    "location".to_string(),
+                    serde_json::json!({
+                        "searchResultLocation": {
+                            "searchResultIndex": idx,
+                            "start": start,
+                            "end": end,
+                        }
+                    }),
+                );
+                located = true;
+            }
+        }
+    }
+
+    // BED-14: a web citation's source url has a native slot — the `web` member of the
+    // `CitationLocation` union (`{url, domain}`). `location` is a UNION (one member), so a citation
+    // already located by character offsets keeps that member and its url cannot ride along; that
+    // case alone drops the url, with a warn.
+    if let Some(u) = url {
+        if located {
+            tracing::warn!(
+                url = %u,
+                "dropping citation `url` on a bedrock egress: the Converse `CitationLocation` is a \
+                 union and this citation's `documentChar` member already fills it"
+            );
+        } else {
+            obj.insert(
+                "location".to_string(),
+                serde_json::json!({ "web": { "url": u } }),
+            );
+        }
+    }
+
     (!obj.is_empty()).then_some(serde_json::Value::Object(obj))
+}
+
+/// Read one Converse `Citation` (the buffered `citationsContent.citations[]` entry, and the streamed
+/// `contentBlockDelta.delta.citation` member — the same field set) into the neutral
+/// [`crate::ir::IrCitation`]: the inverse of [`write_bedrock_citation`] (BED-01).
+///
+/// `location` is a union: `documentChar` / `documentPage` / `documentChunk` carry
+/// `{documentIndex, start, end}` and map onto the three Anthropic document-location kinds whose
+/// offsets mean the same thing (char / page / block); `searchResultLocation` carries
+/// `{searchResultIndex, start, end}` (block positions in a search result); `web` carries
+/// `{url, domain}`. `sourceContent[].text` is the quoted source span. `raw` stays `None`: every
+/// member Converse defines lands in a neutral field, and a Bedrock-shaped `raw` would only invite a
+/// foreign writer's verbatim-passthrough check to misfire on it.
+fn read_bedrock_citation(c: &serde_json::Value) -> crate::ir::IrCitation {
+    let loc = c.get("location");
+    let member = |k: &str| loc.and_then(|l| l.get(k)).filter(|v| v.is_object());
+    let int =
+        |v: Option<&serde_json::Value>, k: &str| v.and_then(|o| o.get(k)).and_then(|n| n.as_i64());
+    let (kind, document_index, start_index, end_index, url) =
+        if let Some(m) = member("documentChar") {
+            (
+                Some("char_location"),
+                int(Some(m), "documentIndex"),
+                int(Some(m), "start"),
+                int(Some(m), "end"),
+                None,
+            )
+        } else if let Some(m) = member("documentPage") {
+            (
+                Some("page_location"),
+                int(Some(m), "documentIndex"),
+                int(Some(m), "start"),
+                int(Some(m), "end"),
+                None,
+            )
+        } else if let Some(m) = member("documentChunk") {
+            (
+                Some("content_block_location"),
+                int(Some(m), "documentIndex"),
+                int(Some(m), "start"),
+                int(Some(m), "end"),
+                None,
+            )
+        } else if let Some(m) = member("searchResultLocation") {
+            (
+                Some("search_result_location"),
+                int(Some(m), "searchResultIndex"),
+                int(Some(m), "start"),
+                int(Some(m), "end"),
+                None,
+            )
+        } else if let Some(m) = member("web") {
+            (
+                Some("web_search_result_location"),
+                None,
+                None,
+                None,
+                m.get("url").and_then(|u| u.as_str()).map(String::from),
+            )
+        } else {
+            (None, None, None, None, None)
+        };
+    let quoted: Vec<&str> = c
+        .get("sourceContent")
+        .and_then(|s| s.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                .collect()
+        })
+        .unwrap_or_default();
+    crate::ir::IrCitation {
+        kind: kind.map(String::from),
+        cited_text: (!quoted.is_empty()).then(|| quoted.concat()),
+        title: c.get("title").and_then(|t| t.as_str()).map(String::from),
+        url,
+        document_index,
+        start_index,
+        end_index,
+        encrypted_index: None,
+        raw: None,
+    }
+}
+
+/// Read a Converse `citationsContent` block (`{content: [{text}], citations: [Citation]}`) into ONE
+/// IR `Text` block carrying the cited answer text and its citations — the inverse of the buffered
+/// writer's `citationsContent` projection (BED-01). The answer text lives INSIDE this block, so a
+/// reader with no arm for it deleted the answer itself, not only its sources.
+fn read_bedrock_citations_content(v: &serde_json::Value) -> crate::ir::IrBlock {
+    let text: String = v
+        .get("content")
+        .and_then(|c| c.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .concat()
+        })
+        .unwrap_or_default();
+    let citations = v
+        .get("citations")
+        .and_then(|c| c.as_array())
+        .map(|a| a.iter().map(read_bedrock_citation).collect())
+        .unwrap_or_default();
+    crate::ir::IrBlock::Text {
+        text,
+        cache_control: None,
+        citations,
+        refusal: false,
+    }
+}
+
+/// Read a native reasoning ASK off a Converse `additionalModelRequestFields` object (BED-06). Two
+/// model-family spellings ride there:
+///   * Anthropic-on-Bedrock `thinking`, read exactly as the Anthropic reader reads its own:
+///     `{type: "enabled", budget_tokens: N}` → `Budget(N)`; `{type: "adaptive"}` → `Effort(<the
+///     output_config.effort word>)` when one is given, else `Dynamic`; no `thinking` but an
+///     `output_config.effort` word → `Effort(word)`; `{type: "disabled"}` → `Off` (IR-09).
+///   * Amazon Nova `reasoningConfig: {type: "enabled", maxReasoningEffort: "low"|"medium"|"high"}`
+///     → `Effort`, and `{type: "disabled"}` → `Off`.
+///
+/// Anything else (malformed, an unknown type) is no ask.
+fn read_bedrock_reasoning_ask(
+    amrf: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<crate::ir::IrReasoningAsk> {
+    use crate::ir::IrReasoningAsk as Ask;
+    let amrf = amrf?;
+    let type_of = |v: &serde_json::Value| v.get("type").and_then(|t| t.as_str()).map(String::from);
+    let effort = amrf
+        .get("output_config")
+        .and_then(|c| c.get("effort"))
+        .and_then(|e| e.as_str())
+        .and_then(read_bedrock_claude_effort_word);
+    if let Some(thinking) = amrf.get("thinking") {
+        return match type_of(thinking).as_deref() {
+            Some("enabled") => thinking
+                .get("budget_tokens")
+                .and_then(|v| v.as_u64())
+                .and_then(|v| u32::try_from(v).ok())
+                .map(Ask::Budget),
+            Some(THINKING_TYPE_ADAPTIVE) => Some(effort.map(Ask::Effort).unwrap_or(Ask::Dynamic)),
+            Some(THINKING_TYPE_DISABLED) => Some(Ask::Off),
+            _ => None,
+        };
+    }
+    if let Some(rc) = amrf.get("reasoningConfig") {
+        return match type_of(rc).as_deref() {
+            Some("enabled") => rc
+                .get("maxReasoningEffort")
+                .and_then(|e| e.as_str())
+                .and_then(crate::ir::IrReasoningEffort::parse)
+                .map(Ask::Effort),
+            Some(THINKING_TYPE_DISABLED) => Some(Ask::Off),
+            _ => None,
+        };
+    }
+    effort.map(Ask::Effort)
+}
+
+/// Claude's adaptive-thinking `thinking.type` (Anthropic-on-Bedrock spells it as Anthropic does).
+const THINKING_TYPE_ADAPTIVE: &str = "adaptive";
+/// Reasoning explicitly switched off (Claude `thinking.type`, Nova `reasoningConfig.type`).
+const THINKING_TYPE_DISABLED: &str = "disabled";
+
+/// Claude `output_config.effort` word (Anthropic-on-Bedrock) → IR effort. The Claude scale is
+/// `low` / `medium` / `high` / `xhigh` / `max` (IR-09 carries all five).
+fn read_bedrock_claude_effort_word(word: &str) -> Option<crate::ir::IrReasoningEffort> {
+    match word {
+        "minimal" => None,
+        other => crate::ir::IrReasoningEffort::parse_extended(other),
+    }
+}
+
+/// IR effort → Claude `output_config.effort` word. Claude has no `minimal`; the nearest is `low`.
+fn bedrock_claude_effort_word(effort: crate::ir::IrReasoningEffort) -> &'static str {
+    match effort {
+        crate::ir::IrReasoningEffort::Minimal => "low",
+        other => other.as_str(),
+    }
+}
+
+/// Read Converse's native structured-output directive, `outputConfig.textFormat` (`{type:
+/// "json_schema", structure: {jsonSchema: {schema: "<JSON as a string>", name, description}}}`),
+/// into the typed [`crate::ir::IrResponseFormat`] (BED-08). The schema travels as a STRING on this
+/// wire; an unparseable one yields no directive rather than a guessed one.
+fn read_bedrock_response_format(
+    body: &serde_json::Map<String, serde_json::Value>,
+) -> Option<crate::ir::IrResponseFormat> {
+    let tf = body.get("outputConfig")?.get("textFormat")?;
+    if tf.get("type").and_then(|t| t.as_str()) != Some("json_schema") {
+        return None;
+    }
+    let js = tf.get("structure")?.get("jsonSchema")?;
+    let schema: serde_json::Value = serde_json::from_str(js.get("schema")?.as_str()?).ok()?;
+    Some(crate::ir::IrResponseFormat {
+        json: true,
+        schema: Some(schema),
+        name: js.get("name").and_then(|n| n.as_str()).map(String::from),
+        strict: None,
+        description: js
+            .get("description")
+            .and_then(|d| d.as_str())
+            .map(String::from),
+    })
+}
+
+/// Project the typed [`crate::ir::IrResponseFormat`] into Converse's `outputConfig.textFormat`
+/// (BED-08), or `None` when Converse has no shape for it: its `OutputFormat.type` enum is
+/// `json_schema` only, so a schema-less JSON mode and plain-text mode have no native form.
+fn write_bedrock_text_format(rf: &crate::ir::IrResponseFormat) -> Option<serde_json::Value> {
+    if !rf.json {
+        return None;
+    }
+    let schema = rf.schema.as_ref()?;
+    let mut js = serde_json::Map::new();
+    js.insert("schema".to_string(), serde_json::json!(schema.to_string()));
+    if let Some(n) = rf.name.as_deref().filter(|s| !s.is_empty()) {
+        js.insert("name".to_string(), serde_json::json!(n));
+    }
+    if let Some(d) = rf.description.as_deref().filter(|s| !s.is_empty()) {
+        js.insert("description".to_string(), serde_json::json!(d));
+    }
+    Some(serde_json::json!({
+        "type": "json_schema",
+        "structure": { "jsonSchema": serde_json::Value::Object(js) }
+    }))
 }
 
 /// Read the `cache_control` off the LAST block pushed onto an IR content vector, used by the Bedrock
@@ -864,8 +1202,8 @@ fn write_bedrock_citation(c: &crate::ir::IrCitation) -> Option<serde_json::Value
 /// `cache_control` field (so a Bedrock->Bedrock and Bedrock->Anthropic round-trip preserves the
 /// prompt-cache boundary cross-protocol, not only via the positional `CACHE_POINTS_SENTINEL` stash
 /// which is dropped on the cross-protocol seam). Only the block kinds that carry a `cache_control`
-/// field (Text / ToolUse / ToolResult) can hold the boundary; a `cachePoint` following a block kind
-/// with no such field (Thinking / Image) is left to the positional stash alone. Setting the field is
+/// field (every kind but `Json`) can hold the boundary; a `cachePoint` following a `Json` block is
+/// left to the positional stash alone. Setting the field is
 /// idempotent and additive: it does NOT disable the same-protocol stash, so byte-identical
 /// same-protocol round-trips are unaffected (the writer suppresses the inline emission whenever the
 /// stash is present — see `write_request`).
@@ -875,16 +1213,19 @@ fn set_preceding_block_cache_control(blocks: &mut [crate::ir::IrBlock]) {
             kind: crate::ir::CacheKind::Ephemeral,
         });
         match last {
+            // BED-07: Thinking / Image / Media carry a first-class `cache_control` too, so a
+            // cachePoint after a reasoning block or an attachment is a boundary a foreign dialect
+            // can express — it lands on that block exactly as it does on Text.
             crate::ir::IrBlock::Text { cache_control, .. }
             | crate::ir::IrBlock::ToolUse { cache_control, .. }
-            | crate::ir::IrBlock::ToolResult { cache_control, .. } => {
+            | crate::ir::IrBlock::ToolResult { cache_control, .. }
+            | crate::ir::IrBlock::Thinking { cache_control, .. }
+            | crate::ir::IrBlock::Image { cache_control, .. }
+            | crate::ir::IrBlock::Media { cache_control, .. } => {
                 *cache_control = cc;
             }
-            // Thinking / Image have no `cache_control` field; the positional stash carries the marker.
-            crate::ir::IrBlock::Thinking { .. }
-            | crate::ir::IrBlock::Image { .. }
-            | crate::ir::IrBlock::Media { .. }
-            | crate::ir::IrBlock::Json(_) => {}
+            // Json is a tool-result member only; the positional stash carries the marker.
+            crate::ir::IrBlock::Json(_) => {}
         }
     }
 }
@@ -1035,6 +1376,7 @@ fn read_bedrock_image_block(image: &serde_json::Value) -> Option<crate::ir::IrBl
                 data: bytes.to_string(),
             },
             cache_control: None,
+            detail: None,
         });
     }
 
@@ -1052,11 +1394,51 @@ fn read_bedrock_image_block(image: &serde_json::Value) -> Option<crate::ir::IrBl
                     }),
                 },
                 cache_control: None,
+                detail: None,
             });
         }
     }
 
     None
+}
+
+/// Model a Converse `guardContent` block's CONTENT (BED-02): `{text: {text, qualifiers}}` is prompt
+/// text and `{image: {format, source}}` is a prompt image — the qualifiers (which spans a guardrail
+/// evaluates) have no neutral form and ride only the positional stash. `None` for a block with
+/// neither member.
+fn guard_content_block(guard: &serde_json::Value) -> Option<crate::ir::IrBlock> {
+    if let Some(t) = guard
+        .get("text")
+        .and_then(|t| t.get("text"))
+        .and_then(|t| t.as_str())
+    {
+        return Some(crate::ir::IrBlock::Text {
+            text: t.to_string(),
+            cache_control: None,
+            citations: Vec::new(),
+            refusal: false,
+        });
+    }
+    guard.get("image").and_then(read_bedrock_image_block)
+}
+
+/// The IR indices of the blocks the reader MODELLED out of a stashed wire block (the `b` member of a
+/// `guardContent` / `document` / `video` stash record), for one message (`Some(m)`) or for the
+/// `system` array (`None`). The writer suppresses its own emission of these blocks because the
+/// verbatim stash splice re-emits them — that is what keeps a same-protocol round-trip
+/// byte-identical while a cross-protocol IR (stash cleared) carries the modelled block.
+fn stashed_ir_indices<'a>(
+    stashes: impl IntoIterator<Item = Option<&'a Vec<serde_json::Value>>>,
+    msg: Option<usize>,
+) -> std::collections::BTreeSet<usize> {
+    stashes
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| msg.is_none_or(|m| e.get("m").and_then(|v| v.as_u64()) == Some(m as u64)))
+        .filter_map(|e| e.get("b").and_then(|v| v.as_u64()))
+        .map(|b| b as usize)
+        .collect()
 }
 
 /// Normalize Bedrock Converse's native `toolConfig.toolChoice` into the IR union.
@@ -1124,7 +1506,134 @@ fn stop_reason_map(ward: &str) -> crate::ir::IrStopReason {
         "stop_sequence" => S::StopSequence,
         // Both moderation outcomes fold to the canonical `Safety`.
         "content_filtered" | "guardrail_intervened" => S::Safety,
+        // BED-10: generation ended because the model's CONTEXT WINDOW filled — output was cut off by
+        // a token limit, which is what `MaxTokens` means to every client dialect (a dedicated
+        // context-window reason needs the IR-16 slot).
+        STOP_MODEL_CONTEXT_WINDOW_EXCEEDED => S::MaxTokens,
+        // BED-10: the model produced output Bedrock could not parse (text or a tool call) — an
+        // error termination, not a natural end.
+        "malformed_model_output" | "malformed_tool_use" => S::Error,
         _ => S::Other,
+    }
+}
+
+/// Whether a Bedrock model id names a Claude model: `anthropic.` / `claude`, which covers the bare
+/// model id, the regional and global inference profiles and their ARNs. The Converse body carries no
+/// model family, so the id is the only place it is visible (see `write_request_for_lane`).
+fn bedrock_model_is_claude(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    m.contains("anthropic.") || m.contains("claude")
+}
+
+/// Which family minted the reasoning signatures of a Bedrock conversation addressed to `model`
+/// (IR-18). Claude → `Anthropic` (Claude on Bedrock mints Anthropic signatures). A model id that
+/// visibly names another provider (`<provider>.<model>`, optionally behind a geographic inference
+/// profile prefix or an ARN) → `BedrockOther`. Anything the id does not reveal — no model, a
+/// busbar alias, an opaque application-inference-profile ARN — is `None` (unknown: every writer
+/// keeps its pre-slot behaviour), never a guess.
+fn bedrock_signature_origin(model: Option<&str>) -> Option<crate::ir::IrSignatureOrigin> {
+    let model = model?;
+    if bedrock_model_is_claude(model) {
+        return Some(crate::ir::IrSignatureOrigin::Anthropic);
+    }
+    let id = model
+        .rsplit('/')
+        .next()
+        .unwrap_or(model)
+        .to_ascii_lowercase();
+    let mut parts = id.split('.');
+    let first = parts.next().unwrap_or("");
+    let provider = match first {
+        "us" | "eu" | "apac" | "global" | "us-gov" | "jp" | "au" | "ca" => parts.next(),
+        _ => Some(first),
+    }?;
+    let names_provider = parts.next().is_some_and(|rest| !rest.is_empty())
+        && !provider.is_empty()
+        && provider
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+    names_provider.then_some(crate::ir::IrSignatureOrigin::BedrockOther)
+}
+
+/// Converse `requestMetadata` (string → string, filters the caller's invocation logs) → the typed
+/// [`crate::ir::IrRequest::metadata`] (IR-03). A non-string value is not a member Converse defines
+/// and is skipped. The raw object still rides `extra`, so a same-protocol hop re-emits it verbatim.
+fn read_bedrock_request_metadata(
+    body: &serde_json::Map<String, serde_json::Value>,
+) -> Option<Vec<(String, String)>> {
+    let m = body.get(FIELD_REQUEST_METADATA)?.as_object()?;
+    Some(
+        m.iter()
+            .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string())))
+            .collect(),
+    )
+}
+
+/// Converse's request-metadata member.
+const FIELD_REQUEST_METADATA: &str = "requestMetadata";
+/// Converse caps `requestMetadata` at 16 entries.
+const REQUEST_METADATA_MAX_ENTRIES: usize = 16;
+
+/// Whether `s` fits a Converse `requestMetadata` key/value: `min..=256` characters, each in
+/// `[a-zA-Z0-9\s:_@$#=/+,-.]` (the service model's pattern). OpenAI metadata allows 512-character
+/// values and any character, so a cross-protocol entry can fall outside it.
+fn bedrock_request_metadata_fits(s: &str, min: usize) -> bool {
+    let n = s.chars().count();
+    (min..=256).contains(&n)
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c.is_whitespace() || ":_@$#=/+,-.".contains(c))
+}
+
+/// The typed [`crate::ir::IrRequest::metadata`] → Converse `requestMetadata` (IR-03), same keys.
+/// An entry Converse would reject (the pattern / length above, or past the 16-entry cap) is dropped
+/// with a warn and the rest are kept — one bad entry must not cost the request a 400. `None` when
+/// nothing is left to write.
+fn write_bedrock_request_metadata(pairs: &[(String, String)]) -> Option<serde_json::Value> {
+    let mut out = serde_json::Map::new();
+    for (k, v) in pairs {
+        if !bedrock_request_metadata_fits(k, 1) || !bedrock_request_metadata_fits(v, 0) {
+            tracing::warn!(
+                key = %k,
+                "dropping a metadata entry on Bedrock egress: Converse requestMetadata keys and \
+                 values are at most 256 characters of [a-zA-Z0-9 whitespace :_@$#=/+,-.]"
+            );
+            continue;
+        }
+        if out.len() == REQUEST_METADATA_MAX_ENTRIES && !out.contains_key(k) {
+            tracing::warn!(
+                key = %k,
+                "dropping a metadata entry on Bedrock egress: Converse requestMetadata holds at \
+                 most 16 entries"
+            );
+            continue;
+        }
+        out.insert(k.clone(), serde_json::json!(v));
+    }
+    (!out.is_empty()).then_some(serde_json::Value::Object(out))
+}
+
+/// The refinement a Bedrock stopReason states beyond its coarse IR reason (IR-16, BED-10):
+/// `model_context_window_exceeded` is `MaxTokens` (the coarse reason `stop_reason_map` gives) PLUS
+/// [`crate::ir::IrStopDetail::ContextWindowExceeded`], so a dialect that names the refinement
+/// (Anthropic) receives it exactly. Every other stopReason states no detail.
+fn stop_detail_map(ward: &str) -> Option<crate::ir::IrStopDetail> {
+    (ward == STOP_MODEL_CONTEXT_WINDOW_EXCEEDED)
+        .then_some(crate::ir::IrStopDetail::ContextWindowExceeded)
+}
+
+/// Converse's `model_context_window_exceeded` stopReason (IR-16, BED-10).
+const STOP_MODEL_CONTEXT_WINDOW_EXCEEDED: &str = "model_context_window_exceeded";
+
+/// Canonical IR stop_reason (plus its [`crate::ir::IrStopDetail`]) → Bedrock stopReason. A
+/// context-window detail is written as Converse's own `model_context_window_exceeded` (IR-16,
+/// BED-10); every other detail has no Converse spelling, so the coarse reason is written.
+fn stop_reason_reverse_detailed(
+    canonical: crate::ir::IrStopReason,
+    detail: Option<&crate::ir::IrStopDetail>,
+) -> &'static str {
+    match detail {
+        Some(crate::ir::IrStopDetail::ContextWindowExceeded) => STOP_MODEL_CONTEXT_WINDOW_EXCEEDED,
+        _ => stop_reason_reverse(canonical),
     }
 }
 
@@ -1137,9 +1646,12 @@ fn stop_reason_reverse(canonical: crate::ir::IrStopReason) -> &'static str {
         S::MaxTokens => "max_tokens",
         S::StopSequence => "stop_sequence",
         S::Safety => "content_filtered",
-        // refusal / error / pause_turn / other have no valid Converse `stopReason` → degrade to
-        // end_turn rather than emit an off-spec value a strict Converse client rejects.
-        S::Refusal | S::Error | S::PauseTurn | S::Other => "end_turn",
+        // BED-09: a model REFUSAL is a content-policy stop; Converse's closed enum spells that
+        // `content_filtered` (the refusal text itself still rides the content).
+        S::Refusal => "content_filtered",
+        // error / pause_turn / other → end_turn rather than an off-spec value a strict Converse
+        // client rejects.
+        S::Error | S::PauseTurn | S::Other => "end_turn",
     }
 }
 
@@ -1363,6 +1875,7 @@ impl super::proto_codec::StreamFraming for BedrockStreamFraming {
                 cache_read_input_tokens: None,
                 detail: crate::ir::IrUsageDetail::default(),
             },
+            stop_detail: None,
         }];
         // Frame 2: `metadata` carrying the token usage — but a native ConverseStream emits EXACTLY ONE
         // `metadata`. Emit it ONLY if real usage rode WITH the stop (the native Bedrock→Bedrock case
@@ -1390,6 +1903,7 @@ impl super::proto_codec::StreamFraming for BedrockStreamFraming {
                     stop_reason: None,
                     stop_sequence,
                     usage: usage.clone(),
+                    stop_detail: None,
                 });
                 self.emitted = true;
                 self.pending = false;
@@ -1438,6 +1952,7 @@ impl super::proto_codec::StreamFraming for BedrockStreamFraming {
                 cache_read_input_tokens: None,
                 detail: crate::ir::IrUsageDetail::default(),
             },
+            stop_detail: None,
         })
     }
 }
@@ -1534,8 +2049,10 @@ pub fn bedrock_response_to_eventstream(
     let mut out: Vec<u8> = Vec::new();
     // Render one IR stream event through the bedrock writer and append the encoded frame (if the
     // writer maps it to a native frame; some IR events have no Bedrock analog and yield None).
+    // `write_response_events` (not the single-frame method): a multi-citation delta frames as one
+    // `citation` delta per citation, exactly as a native ConverseStream interleaves them.
     let push = |ev: &IrStreamEvent, out: &mut Vec<u8>| {
-        if let Some((event_type, mut payload)) = writer.write_response_event(ev) {
+        for (event_type, mut payload) in writer.write_response_events(ev) {
             // A native ConverseStream `metadata` frame ALWAYS carries a `metrics.latencyMs` (the SDK
             // surfaces it via `ConverseStreamMetadataEvent::metrics()`); the bedrock writer's
             // `MessageDelta` arm deliberately omits `metrics`, and the LIVE StreamTranslate path injects
@@ -1576,11 +2093,14 @@ pub fn bedrock_response_to_eventstream(
     let mut index = 0usize;
     for block in ir.content.iter() {
         match block {
-            IrBlock::Text { text, .. } => {
+            IrBlock::Text {
+                text, citations, ..
+            } => {
                 push(
                     &IrStreamEvent::BlockStart {
                         index,
                         block: IrBlockMeta::Text,
+                        refusal: false,
                     },
                     &mut out,
                 );
@@ -1591,6 +2111,18 @@ pub fn bedrock_response_to_eventstream(
                     },
                     &mut out,
                 );
+                // BED-12: the block's citations ride the same `contentBlockIndex` as its text, as
+                // `citation` deltas — the frames the live stream path emits, so a buffered answer
+                // synthesized as a ConverseStream carries the sources the buffered body carries.
+                if !citations.is_empty() {
+                    push(
+                        &IrStreamEvent::BlockDelta {
+                            index,
+                            delta: IrDelta::CitationsDelta(citations.clone()),
+                        },
+                        &mut out,
+                    );
+                }
                 push(&IrStreamEvent::BlockStop { index }, &mut out);
                 index += 1;
             }
@@ -1604,6 +2136,7 @@ pub fn bedrock_response_to_eventstream(
                             id: id.clone(),
                             name: name.clone(),
                         },
+                        refusal: false,
                     },
                     &mut out,
                 );
@@ -1628,12 +2161,14 @@ pub fn bedrock_response_to_eventstream(
                 text,
                 signature,
                 redacted,
+                kind,
                 ..
             } => {
                 push(
                     &IrStreamEvent::BlockStart {
                         index,
-                        block: IrBlockMeta::Thinking,
+                        block: IrBlockMeta::Thinking { kind: *kind },
+                        refusal: false,
                     },
                     &mut out,
                 );
@@ -1707,6 +2242,9 @@ pub fn bedrock_response_to_eventstream(
                 detail: crate::ir::IrUsageDetail::default(),
             },
             stop_sequence: None,
+            // IR-16: the refinement rides the stop-bearing frame, so a buffered context-window stop
+            // synthesizes the same `messageStop` a streamed one does (buffered == stream).
+            stop_detail: ir.stop_detail.clone(),
         },
         &mut out,
     );
@@ -1715,6 +2253,7 @@ pub fn bedrock_response_to_eventstream(
             stop_reason: None,
             usage: ir.usage.clone(),
             stop_sequence: None,
+            stop_detail: None,
         },
         &mut out,
     );
@@ -1943,3 +2482,21 @@ mod field_carry_tests;
 #[cfg(test)]
 #[path = "tests/usage_float_tests.rs"]
 mod usage_float_tests;
+
+#[cfg(test)]
+#[path = "tests/ir_mapping_tests.rs"]
+mod ir_mapping_tests;
+
+#[cfg(test)]
+#[path = "tests/ir_mapping_structured_tests.rs"]
+mod ir_mapping_structured_tests;
+
+/// IR mapping Q57 round 2 — the typed IR slots and the lane capabilities (BED-10, IR-03/10/11/12/18,
+/// IR-09, LaneCaps).
+#[cfg(test)]
+#[path = "tests/ir_slot_wiring_tests.rs"]
+mod ir_slot_wiring_tests;
+
+#[cfg(test)]
+#[path = "tests/ir_round3_tests.rs"]
+mod ir_round3_tests;

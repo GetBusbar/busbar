@@ -31,6 +31,12 @@
 //! reach. A correction that would take any count below zero is REFUSED ([`CorrectionRefused`]):
 //! a negative measurement is not a thing a meter reports.
 //!
+//! **An adjustment names the POOL its unit was dispatched through** (owner ruling Q64/Q67), so a
+//! pool-scoped budget bucket takes the correction as well as the group-wide ones. The field is
+//! OPTIONAL on the record and only in that one sense: an adjustment sealed before it existed cannot
+//! be rewritten (it is hash-chained), so it reads as UNSCOPED — group-wide buckets only, exactly as
+//! it always did — and its digest is the one it was sealed with. A new correction always names one.
+//!
 //! ## Why these are amendments rather than fields on the audit record
 //!
 //! Both happen at a different time from the unit they concern, and often more than once. Folding
@@ -169,6 +175,11 @@ pub struct Adjust {
     pub reason: String,
     /// When, in unix seconds.
     pub wall: u64,
+    /// The pool the corrected unit was dispatched through (owner ruling Q64/Q67): a pool-scoped
+    /// budget bucket for this pool takes the correction too. `None` only on an adjustment sealed
+    /// before the field existed — UNSCOPED, the group-wide buckets alone — and then it is not
+    /// digested, so that adjustment's sealed hash still verifies.
+    pub pool: Option<String>,
 }
 
 impl Adjust {
@@ -184,6 +195,16 @@ impl Adjust {
     pub fn delta(&self, class: &str) -> i128 {
         let side = |c: &ClassCounts| c.get(class).map_or(0, |n| n.micros());
         side(&self.now).saturating_sub(side(&self.was))
+    }
+
+    /// Whether this correction reaches a group budget bucket of scope `scope` (owner ruling
+    /// Q64/Q67). An UNSCOPED bucket (`None`) takes every correction of a unit it counted; a
+    /// pool-scoped one takes only a correction naming its own pool — by exact equality, the same
+    /// predicate the budget book's accrual walk uses (`ChainBucket::applies_to_pool`), so a
+    /// correction reaches exactly the buckets the unit was charged on. A correction sealed before
+    /// the pool was recorded names none and so reaches the unscoped buckets only.
+    pub fn reaches(&self, scope: Option<&busbar_contract::records::ScopeRef>) -> bool {
+        scope.is_none_or(|s| s.kind == "pool" && Some(s.value.as_str()) == self.pool.as_deref())
     }
 }
 
@@ -365,6 +386,11 @@ impl AmendChain {
                 d.text(&a.authorised_by);
                 d.text(&a.reason);
                 d.num(a.wall);
+                // Q64: LAST and only when present, so an unscoped adjustment digests exactly as it
+                // was sealed; length-prefixed, so a pooled one can never digest as an unscoped one.
+                if let Some(pool) = &a.pool {
+                    d.text(pool);
+                }
             }
         }
         d.finish()
@@ -502,6 +528,7 @@ pub fn correction(
         authorised_by: authorised_by.into(),
         reason,
         wall,
+        pool: None,
     }))
 }
 
@@ -749,6 +776,9 @@ pub struct CountCorrection<'a> {
     pub authorised_by: &'a str,
     /// Why.
     pub reason: &'a str,
+    /// The pool the unit was dispatched through (Q64/Q67). The admin verb always names one; `None`
+    /// seals an unscoped correction, the shape every adjustment sealed before the field had.
+    pub pool: Option<&'a str>,
 }
 
 /// Why a correction did not land.
@@ -780,7 +810,7 @@ pub fn correct_counts(
         return Err(CorrectionError::NotRoot);
     }
     let mut journal = node();
-    let body = correction(
+    let mut body = correction(
         c.amends,
         subject_of(c.principal),
         c.lane,
@@ -792,6 +822,9 @@ pub fn correct_counts(
         wall,
     )
     .map_err(CorrectionError::Refused)?;
+    if let AmendBody::Adjust(adj) = &mut body {
+        adj.pool = c.pool.map(str::to_string);
+    }
     Ok(seal(&mut journal, body, token))
 }
 

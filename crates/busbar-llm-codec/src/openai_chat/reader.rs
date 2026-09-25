@@ -115,6 +115,8 @@ impl ProtocolReader for OpenAiReader {
         // Count of `system`/`developer`-role entries folded out of `messages` below — restores the
         // 1.5.5 `message_count` semantics (the raw wire array length) onto `IrFacts::shape()`.
         let mut system_turns_folded: usize = 0;
+        // IR-14: which role the folded system entries were written in — `(saw system, saw developer)`.
+        let mut system_roles_seen = (false, false);
 
         // Extract scalar fields and extra
         let _model = obj.get("model").and_then(|v| v.as_str()).map(String::from);
@@ -178,6 +180,10 @@ impl ProtocolReader for OpenAiReader {
         // they drop there (named in the generic dropped-keys warn) — the correct scope, since no other
         // dialect models them. See that const for the full rationale.
         let mut message_extras = serde_json::Map::new();
+        // Legacy function calling (OAI-07): every assistant `function_call` gets a synthesized
+        // `call_…` id, and a later `role:"function"` result pairs with the most recent UNMATCHED
+        // call of the same name — the legacy wire correlates by name alone.
+        let mut legacy_calls: Vec<(String, String, bool)> = Vec::new();
         if let Some(messages_val) = obj.get("messages") {
             let msgs_arr = messages_val.as_array().ok_or(IrError {
                 class: StatusClass::ClientError,
@@ -215,7 +221,9 @@ impl ProtocolReader for OpenAiReader {
                     "developer" | "system" => crate::ir::IrRole::System,
                     "user" => crate::ir::IrRole::User,
                     "assistant" => crate::ir::IrRole::Assistant,
-                    "tool" => crate::ir::IrRole::Tool,
+                    // The legacy function-result turn (`{"role":"function","name","content"}`) is a
+                    // tool result correlated by name (OAI-07); it is read as one below.
+                    "tool" | "function" => crate::ir::IrRole::Tool,
                     _ => {
                         return Err(IrError {
                             class: StatusClass::ClientError,
@@ -235,6 +243,11 @@ impl ProtocolReader for OpenAiReader {
                 // never push a System IrMessage; we accumulate its content into system_blocks.
                 if role == crate::ir::IrRole::System {
                     system_turns_folded += 1;
+                    if role_str == "developer" {
+                        system_roles_seen.1 = true;
+                    } else {
+                        system_roles_seen.0 = true;
+                    }
                     let blocks_before = system_blocks.len();
                     if let Some(content) = content_val {
                         if let Some(text) = content.as_str() {
@@ -242,6 +255,7 @@ impl ProtocolReader for OpenAiReader {
                                 text: text.to_string(),
                                 cache_control: None,
                                 citations: Vec::new(),
+                                refusal: false,
                             });
                         } else if let Some(arr) = content.as_array() {
                             for block_val in arr {
@@ -258,6 +272,7 @@ impl ProtocolReader for OpenAiReader {
                             text: String::new(),
                             cache_control: None,
                             citations: Vec::new(),
+                            refusal: false,
                         });
                     }
                 } else {
@@ -277,6 +292,7 @@ impl ProtocolReader for OpenAiReader {
                                     text: text.to_string(),
                                     cache_control: None,
                                     citations: Vec::new(),
+                                    refusal: false,
                                 });
                             } else if let Some(arr) = cv.as_array() {
                                 for block_val in arr {
@@ -337,13 +353,54 @@ impl ProtocolReader for OpenAiReader {
                         }
                     }
 
+                    // The legacy single call on an assistant turn, `function_call{name, arguments}`
+                    // (pre-`tool_calls` API): a ToolUse with a synthesized id (OAI-07), so a legacy
+                    // conversation replayed to another dialect keeps its call. The raw member also
+                    // stays in this message's extras stash, which is what an OpenAI-origin
+                    // re-serialize writes back instead of `tool_calls`.
+                    if role == crate::ir::IrRole::Assistant && msg_val.get("tool_calls").is_none() {
+                        if let Some(fc) = msg_val.get("function_call").filter(|f| f.is_object()) {
+                            let name = fc
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let id = synth_response_tool_call_id(legacy_calls.len(), &name);
+                            legacy_calls.push((name.clone(), id.clone(), false));
+                            msg_content.push(crate::ir::IrBlock::ToolUse {
+                                id,
+                                name,
+                                input: tool_input_from_arguments(fc.get("arguments")),
+                                cache_control: None,
+                                thought_signature: None,
+                            });
+                        }
+                    }
+
                     // Handle tool results
                     if role == crate::ir::IrRole::Tool {
-                        let tool_call_id = msg_val
-                            .get("tool_call_id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
+                        let tool_call_id = if role_str == "function" {
+                            // Legacy result: pair by name with the latest unmatched legacy call; a
+                            // result with no such call keeps a synthesized id of its own.
+                            let fname = msg_val.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                            match legacy_calls
+                                .iter_mut()
+                                .rev()
+                                .find(|(n, _, matched)| n == fname && !matched)
+                            {
+                                Some((_, id, matched)) => {
+                                    *matched = true;
+                                    id.clone()
+                                }
+                                None => synth_response_tool_call_id(legacy_calls.len(), fname),
+                            }
+                        } else {
+                            msg_val
+                                .get("tool_call_id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string()
+                        };
                         // OpenAI tool-message `content` may be EITHER a plain string OR an array of
                         // content parts (e.g. `[{"type":"text","text":"..."}]`), both legal per the
                         // current Chat Completions spec. The prior `as_str().unwrap_or("")` handled
@@ -375,6 +432,7 @@ impl ProtocolReader for OpenAiReader {
                                 text: content_text,
                                 cache_control: None,
                                 citations: Vec::new(),
+                                refusal: false,
                             }],
                             is_error: false,
                             cache_control: None,
@@ -382,12 +440,12 @@ impl ProtocolReader for OpenAiReader {
                     }
 
                     // A message-level `refusal` string (an assistant turn OpenAI echoes into replayed
-                    // history) carries the same content as a `refusal` content PART: reason-neutral
-                    // assistant text. Map it to a Text block so it survives a CROSS-protocol hop
-                    // (Anthropic/Gemini/Bedrock have no distinct refusal part — it is plain assistant
-                    // text there), mirroring `read_openai_block`'s `"refusal"` content-part arm and the
-                    // response reader's `message.refusal` handling. A same-protocol re-serialize
-                    // reshapes it into `content` text (value preserved).
+                    // history) carries the same content as a `refusal` content PART. Map it to a Text
+                    // block flagged as a refusal (IR-02) so it survives a CROSS-protocol hop (plain
+                    // assistant text where the target has no refusal part), mirroring
+                    // `read_openai_block`'s `"refusal"` content-part arm and the response reader's
+                    // `message.refusal` handling. A same-protocol re-serialize writes it back as a
+                    // `refusal` content part (value preserved).
                     if let Some(refusal) = msg_val
                         .get("refusal")
                         .and_then(|v| v.as_str())
@@ -397,6 +455,7 @@ impl ProtocolReader for OpenAiReader {
                             text: refusal.to_string(),
                             cache_control: None,
                             citations: Vec::new(),
+                            refusal: true,
                         });
                     }
 
@@ -407,7 +466,7 @@ impl ProtocolReader for OpenAiReader {
                     if let Some(name) = msg_val
                         .get("name")
                         .and_then(|v| v.as_str())
-                        .filter(|s| !s.is_empty())
+                        .filter(|s| !s.is_empty() && role_str != "function")
                     {
                         message_names.insert(messages.len().to_string(), serde_json::json!(name));
                     }
@@ -433,6 +492,18 @@ impl ProtocolReader for OpenAiReader {
                                 this_extras.insert(k.clone(), v.clone());
                             }
                         }
+                        // A legacy `role:"function"` turn is remembered as one (its function
+                        // `name` included), so an OpenAI-origin re-serialize writes it back in the
+                        // legacy shape rather than as a `tool` message.
+                        if role_str == "function" {
+                            this_extras.insert(
+                                LEGACY_FUNCTION_ROLE_KEY.to_string(),
+                                msg_val
+                                    .get("name")
+                                    .cloned()
+                                    .unwrap_or(serde_json::Value::Null),
+                            );
+                        }
                         if !this_extras.is_empty() {
                             message_extras.insert(
                                 messages.len().to_string(),
@@ -450,6 +521,7 @@ impl ProtocolReader for OpenAiReader {
 
         // Handle tools array
         let mut tools: Vec<crate::ir::IrTool> = Vec::new();
+        let mut custom_tools: Vec<crate::ir::IrHostedTool> = Vec::new();
         if let Some(tools_val) = obj.get("tools") {
             // A PRESENT `tools` that is not an array is a malformed request — reject it (mirroring the
             // `messages` type-check) rather than coercing to empty, which would forward a tool-less
@@ -460,7 +532,24 @@ impl ProtocolReader for OpenAiReader {
                 retry_after: None,
             })?;
             for tool_val in tools_arr {
+                // OAI-09 (round 3 item 11): a `custom` tool (free-text / grammar input) crosses in
+                // the typed hosted-tool slot, so a Responses lane receives it; one carrying a member
+                // the IR cannot hold stays the raw same-protocol tool.
+                if let Some(custom) = super::slots::read_custom_tool(tool_val) {
+                    custom_tools.push(custom);
+                    continue;
+                }
                 tools.push(read_openai_tool(tool_val)?);
+            }
+        } else if let Some(functions) = obj.get("functions").and_then(|f| f.as_array()) {
+            // The legacy `functions` array (pre-`tools` API): each entry IS the body of a modern
+            // function tool, so it is read as one (OAI-07). `functions` also stays in `extra`, which
+            // is what an OpenAI-origin re-serialize writes back instead of `tools`.
+            for f in functions {
+                tools.push(read_openai_tool(&serde_json::json!({
+                    "type": TOOL_TYPE_FUNCTION,
+                    "function": f,
+                }))?);
             }
         }
 
@@ -516,7 +605,22 @@ impl ProtocolReader for OpenAiReader {
 
         // `tool_choice` is a first-class IR control so a forced/targeted directive survives
         // the cross-protocol seam instead of degrading to `auto`. Read it from the native shape here.
-        let tool_choice = read_openai_tool_choice(obj.get("tool_choice"));
+        // The legacy `function_call` directive (`"auto"` / `"none"` / `{"name":X}`) is the
+        // pre-`tools` spelling of `tool_choice` (OAI-07); read it when `tool_choice` is absent.
+        let tool_choice = read_openai_tool_choice(obj.get("tool_choice")).or_else(|| {
+            match obj.get("function_call")? {
+                serde_json::Value::String(s) if s == "auto" => Some(crate::ir::IrToolChoice::Auto),
+                serde_json::Value::String(s) if s == "none" => Some(crate::ir::IrToolChoice::None),
+                serde_json::Value::Object(o) => {
+                    o.get("name").and_then(|n| n.as_str()).map(|name| {
+                        crate::ir::IrToolChoice::Tool {
+                            name: name.to_string(),
+                        }
+                    })
+                }
+                _ => None,
+            }
+        });
 
         // Cross-protocol carries with an Anthropic analog: `user` <-> `metadata.user_id`,
         // `parallel_tool_calls` <-> `!tool_choice.disable_parallel_tool_use`.
@@ -529,9 +633,20 @@ impl ProtocolReader for OpenAiReader {
         // The reasoning ASK in chat-completions spelling: a top-level `reasoning_effort` word.
         // Promoted so it carries to Anthropic/Gemini thinking budgets via the effort table.
         let reasoning_effort_raw = obj.get("reasoning_effort").and_then(|v| v.as_str());
-        let reasoning = reasoning_effort_raw
-            .and_then(crate::ir::IrReasoningEffort::parse)
-            .map(crate::ir::IrReasoningAsk::Effort);
+        // IR-09 (OAI-10): `xhigh` (the gpt-5 family's step above `high`) is the IR's `XHigh`, and
+        // `none` is reasoning switched OFF (`IrReasoningAsk::Off` — not "the caller said nothing"),
+        // so a cross-protocol lane gets the top effort / thinking disabled instead of losing the ask.
+        // (`max` is not a Chat word and stays unmapped.) The raw word still rides `extra` (below) so
+        // an OpenAI-origin re-serialize writes it back verbatim.
+        let reasoning = reasoning_effort_raw.and_then(|raw| match raw {
+            "none" => Some(crate::ir::IrReasoningAsk::Off),
+            "xhigh" => Some(crate::ir::IrReasoningAsk::Effort(
+                crate::ir::IrReasoningEffort::XHigh,
+            )),
+            other => {
+                crate::ir::IrReasoningEffort::parse(other).map(crate::ir::IrReasoningAsk::Effort)
+            }
+        });
         // `reasoning_effort` is a MODELED key (in `modeled_request_keys()` below), so it is
         // excluded from the generic `extra` sweep — an unrecognised value (e.g. a `gpt-5`-family
         // spelling this build's `IrReasoningEffort::parse` doesn't know, like "none"/"xhigh")
@@ -539,13 +654,15 @@ impl ProtocolReader for OpenAiReader {
         // `OnceLock<HashSet>` behind `modeled_request_keys()` cannot be varied per request, so
         // re-inserting here — the reader's own escape hatch — is the only implementable rescue.
         if let Some(raw) = reasoning_effort_raw {
-            if reasoning.is_none() {
-                tracing::warn!(
-                    reasoning_effort = raw,
-                    "unrecognised reasoning_effort value; preserving it verbatim in extra so a \
-                     same-protocol OpenAI egress still carries it, though it carries no thinking \
-                     budget on a cross-protocol hop"
-                );
+            if crate::ir::IrReasoningEffort::parse(raw).is_none() {
+                if reasoning.is_none() {
+                    tracing::warn!(
+                        reasoning_effort = raw,
+                        "reasoning_effort value has no IR word; preserving it verbatim in extra so \
+                         a same-protocol OpenAI egress still carries it (a cross-protocol hop \
+                         carries no ask)"
+                    );
+                }
                 extra.insert(
                     "reasoning_effort".to_string(),
                     serde_json::Value::String(raw.to_string()),
@@ -561,7 +678,7 @@ impl ProtocolReader for OpenAiReader {
             .and_then(|v| v.as_u64())
             .and_then(|v| u32::try_from(v).ok());
 
-        Ok(crate::ir::IrRequest {
+        let mut ir = crate::ir::IrRequest {
             reasoning,
             reasoning_budgets: None,
             logprobs,
@@ -585,7 +702,28 @@ impl ProtocolReader for OpenAiReader {
             n,
             response_format,
             extra,
-        })
+            metadata: None,
+            service_tier: None,
+            store: None,
+            safety_identifier: None,
+            prompt_cache_key: None,
+            verbosity: None,
+            allowed_tools: None,
+            hosted_tools: custom_tools,
+            // IR-14: `developer` only when EVERY folded entry was one, `system` only when every one
+            // was; mixed (or none) says nothing.
+            system_role: match system_roles_seen {
+                (true, false) => Some(crate::ir::IrSystemRole::System),
+                (false, true) => Some(crate::ir::IrSystemRole::Developer),
+                _ => None,
+            },
+            output_modalities: None,
+        };
+        // The Q57 typed request slots (metadata, service_tier, store, safety_identifier,
+        // prompt_cache_key, verbosity, modalities, web_search_options, allowed_tools) — see
+        // `slots.rs`.
+        super::slots::read_request_slots(obj, &mut ir);
+        Ok(ir)
     }
 
     /// OpenAI's flat stream → IR block-structured events. One chat.completion.chunk
@@ -676,35 +814,47 @@ impl ProtocolReader for OpenAiReader {
         let choice0 = choices_arr.and_then(|a| a.first());
         let delta = choice0.and_then(|c| c.get("delta"));
 
-        // 2. Reasoning (chain-of-thought) → a Thinking block at index 0, ahead of the answer. When
-        //    present it shifts the text/tool indices up by one (`offset`) so the thinking block
-        //    precedes them. Reasoning streams before content on these models.
+        // 2. Reasoning (chain-of-thought) → a Thinking block. Reasoning that arrives before any
+        //    answer block opens at index 0, ahead of the answer, and `reasoning_seen` reserves that
+        //    slot (the claim counter starts at 1 after it).
         //
-        //    GATE: only honor a reasoning delta as a Thinking-at-index-0 block while the answer phase
-        //    has NOT started (no text block and no tool blocks opened yet). A late reasoning delta
-        //    arriving after text/tools have opened would otherwise flip `reasoning_seen`, bumping
-        //    `offset` from 0 to 1 and retroactively shifting the IR index of ALREADY-OPENED blocks —
-        //    corrupting BlockStart/BlockStop pairing downstream. Once the answer phase is underway,
-        //    index 0 is no longer available for a thinking block, so the stray reasoning is dropped.
+        //    Reasoning that arrives AFTER the answer phase began (a text or tool block already
+        //    opened — interleaved reasoning from OpenAI-compatible backends) is no longer dropped
+        //    (OAI-14): it closes an open text block and opens a NEW Thinking block at the next free
+        //    index from the monotone counter, so no already-opened index ever shifts. Its index is
+        //    recorded under `LATE_THINKING_KEY` so every later delta and its stop replay it.
         if let Some(reasoning) = delta
             .and_then(|d| d.get("reasoning_content").or_else(|| d.get("reasoning")))
             .and_then(|r| r.as_str())
-            .filter(|_| !state.text_block_open && state.open_tools.is_empty())
+            .filter(|r| !r.is_empty())
         {
-            if !reasoning.is_empty() {
-                state.reasoning_seen = true;
-                if !state.thinking_block_open {
-                    state.thinking_block_open = true;
-                    out.push(IrStreamEvent::BlockStart {
-                        index: 0,
-                        block: crate::ir::IrBlockMeta::Thinking,
-                    });
-                }
-                out.push(IrStreamEvent::BlockDelta {
-                    index: 0,
-                    delta: crate::ir::IrDelta::ThinkingDelta(reasoning.to_string()),
+            if !state.thinking_block_open {
+                let answer_started = state.text_block_open
+                    || state.text_block_closed
+                    || state.text_index.is_some()
+                    || !state.open_tools.is_empty()
+                    || state.next_ir_index > 0;
+                let index = if answer_started {
+                    close_text_block(state, &mut out);
+                    let i = state.claim_ir_index();
+                    state.tool_ir_index.insert(LATE_THINKING_KEY, i);
+                    i
+                } else {
+                    state.reasoning_seen = true;
+                    state.tool_ir_index.remove(&LATE_THINKING_KEY);
+                    0
+                };
+                state.thinking_block_open = true;
+                out.push(IrStreamEvent::BlockStart {
+                    index,
+                    block: crate::ir::IrBlockMeta::Thinking { kind: None },
+                    refusal: false,
                 });
             }
+            out.push(IrStreamEvent::BlockDelta {
+                index: thinking_index(state),
+                delta: crate::ir::IrDelta::ThinkingDelta(reasoning.to_string()),
+            });
         }
 
         // 3. Text content → close any open thinking block first, then open the text block + a
@@ -723,18 +873,37 @@ impl ProtocolReader for OpenAiReader {
         if refusal_delta.is_some() {
             state.refusal_seen = true;
         }
-        if let Some(content) = delta
+        let content_delta = delta
             .and_then(|d| d.get("content"))
-            .and_then(|c| c.as_str())
-            .or(refusal_delta)
-            // Gate on `!text_block_closed`: once a `tool_calls` chunk closed the text block (step 4),
-            // a later text delta must NOT reopen it — that would emit a duplicate `BlockStart` at the
-            // already-closed index. Drop the out-of-spec resumed text instead (Cohere's discipline).
-            .filter(|_| !state.text_block_closed)
+            .and_then(|c| c.as_str());
+        // IR-02: the refusal rides its OWN text block, opened with `refusal: true`, so a writer with a
+        // refusal slot (Chat `delta.refusal`, Responses refusal events) carries it exactly. A
+        // non-empty refusal wins over an empty `content` on the same chunk.
+        let (text_delta, is_refusal) = match (content_delta, refusal_delta) {
+            (Some(c), _) if !c.is_empty() => (Some(c), false),
+            (_, Some(r)) => (Some(r), true),
+            (c, None) => (c, false),
+        };
+        // A non-empty delta of the OTHER kind than the open text block closes it, so a refusal and
+        // ordinary content never share one block.
+        if state.text_block_open
+            && text_delta.is_some_and(|t| !t.is_empty())
+            && is_refusal != open_text_is_refusal(state)
         {
-            if state.thinking_block_open {
-                state.thinking_block_open = false;
-                out.push(IrStreamEvent::BlockStop { index: 0 });
+            close_text_block(state, &mut out);
+        }
+        if let Some(content) = text_delta
+            // An EMPTY delta after the text block closed carries nothing and must not open a new,
+            // empty text block.
+            .filter(|c| !(state.text_block_closed && c.is_empty()))
+        {
+            close_thinking_block(state, &mut out);
+            // Text that RESUMES after its block was closed (by a `tool_calls` chunk, or by late
+            // reasoning) opens a NEW text block at the next free index (OAI-14) — never a second
+            // `BlockStart` at the closed index, and never a silent drop of the model's answer.
+            if state.text_block_closed {
+                state.text_block_closed = false;
+                state.text_index = None;
             }
             let ti = match state.text_index {
                 Some(i) => i,
@@ -750,9 +919,13 @@ impl ProtocolReader for OpenAiReader {
             };
             if !state.text_block_open {
                 state.text_block_open = true;
+                if is_refusal {
+                    state.tool_ir_index.insert(REFUSAL_TEXT_KEY, ti);
+                }
                 out.push(IrStreamEvent::BlockStart {
                     index: ti,
                     block: crate::ir::IrBlockMeta::Text,
+                    refusal: is_refusal,
                 });
             }
             out.push(IrStreamEvent::BlockDelta {
@@ -780,10 +953,7 @@ impl ProtocolReader for OpenAiReader {
                 // the thinking block is open — e.g. a reasoning backend that streams logprobs). Without
                 // this the text block opens at `text_index` while the thinking block at 0 stays open,
                 // leaving two blocks open and an unbalanced IR stream — the same guard steps 3 and 4 have.
-                if state.thinking_block_open {
-                    state.thinking_block_open = false;
-                    out.push(IrStreamEvent::BlockStop { index: 0 });
-                }
+                close_thinking_block(state, &mut out);
                 state.text_block_open = true;
                 let ti = state.text_index.unwrap_or_else(|| {
                     let i = state.claim_ir_index();
@@ -793,6 +963,7 @@ impl ProtocolReader for OpenAiReader {
                 out.push(IrStreamEvent::BlockStart {
                     index: ti,
                     block: crate::ir::IrBlockMeta::Text,
+                    refusal: false,
                 });
             }
             out.push(IrStreamEvent::BlockDelta {
@@ -803,6 +974,50 @@ impl ProtocolReader for OpenAiReader {
             });
         }
 
+        // 3c. Grounding sources stream as `choices[].delta.annotations` (`url_citation` entries,
+        //     the same shape the buffered `message.annotations` carries and this dialect's own
+        //     stream writer emits). They annotate the answer text, so they ride a CitationsDelta on
+        //     the text block (OAI-02) — opening it when none has opened yet, exactly as a
+        //     logprobs-only chunk does. Offsets are not carried, for the reason
+        //     `read_url_annotations` gives (the buffered path drops them the same way).
+        let citations = delta
+            .and_then(|d| d.get("annotations"))
+            .map(super::super::openai_annotations::read_url_annotations)
+            .unwrap_or_default();
+        if !citations.is_empty() {
+            if state.text_block_closed && !state.text_block_open {
+                // The text these sources annotate is already closed (a tool call intervened), and
+                // a CitationsDelta at a closed index would un-balance the stream. Say so rather
+                // than detach the sources into a new, empty text block.
+                tracing::warn!(
+                    citations = citations.len(),
+                    "dropping streamed url_citation annotations that arrived after their text \
+                     block closed; they are NOT forwarded on this cross-protocol stream"
+                );
+            } else {
+                if !state.text_block_open {
+                    close_thinking_block(state, &mut out);
+                    state.text_block_open = true;
+                    let ti = state.text_index.unwrap_or_else(|| {
+                        let i = state.claim_ir_index();
+                        state.text_index = Some(i);
+                        i
+                    });
+                    out.push(IrStreamEvent::BlockStart {
+                        index: ti,
+                        block: crate::ir::IrBlockMeta::Text,
+                        refusal: false,
+                    });
+                }
+                if let Some(ti) = state.text_index {
+                    out.push(IrStreamEvent::BlockDelta {
+                        index: ti,
+                        delta: crate::ir::IrDelta::CitationsDelta(citations),
+                    });
+                }
+            }
+        }
+
         // 4. Tool calls → IR block index claimed from the MONOTONE counter, by order of first
         //    appearance, exactly like the text block above. `oai_idx` (the upstream `tool_calls[].
         //    index`) is a JOIN KEY that pairs this tool's id/name chunk with its later `arguments`
@@ -810,48 +1025,53 @@ impl ProtocolReader for OpenAiReader {
         //    `tool_calls[{index:1}]` with no index 0 (vLLM / Azure / OpenRouter re-index) would
         //    otherwise collide with, or leave a gap before, the text block. BlockStart on first
         //    sight (id+name present), InputJsonDelta for streamed arguments.
-        if let Some(tcs) = delta
+        //    The legacy single-call shape `delta.function_call{name, arguments}` (the pre-`tool_calls`
+        //    API, still spoken by older OpenAI-compatible backends) streams exactly like one tool call
+        //    with no id: it rides the same path under the reserved `LEGACY_FUNCTION_CALL_KEY` join key
+        //    with a synthesized `call_…` id (OAI-08), so its name and arguments reach the IR instead
+        //    of vanishing while `finish_reason: "function_call"` reports a tool use with no block.
+        let tool_items: Vec<(usize, Option<&str>, Option<&serde_json::Value>)> = match delta
             .and_then(|d| d.get("tool_calls"))
             .and_then(|t| t.as_array())
         {
+            Some(tcs) => tcs
+                .iter()
+                .map(|tc| {
+                    // Bound the upstream-supplied tool-call index before it touches `open_tools` /
+                    // `tool_ir_index` as a key. A crafted/proxied chunk can carry `"index":
+                    // u64::MAX`; OpenAI documents at most 128 parallel tool calls, so any larger
+                    // index is malformed. `claim_ir_index()` increments by 1 from 0 and is bounded by
+                    // the number of blocks the stream actually opens, so `oai_idx` no longer enters
+                    // index arithmetic and the old overflow hazard is structurally gone — this clamp
+                    // now exists solely to bound `oai_idx` as a map/set key.
+                    let oai_idx = tc
+                        .get("index")
+                        .and_then(|i| i.as_u64())
+                        .map_or(0, |v| v.min(MAX_TOOL_INDEX) as usize);
+                    (
+                        oai_idx,
+                        tc.get("id").and_then(|i| i.as_str()),
+                        tc.get("function"),
+                    )
+                })
+                .collect(),
+            None => delta
+                .and_then(|d| d.get("function_call"))
+                .filter(|f| f.is_object())
+                .map(|f| vec![(LEGACY_FUNCTION_CALL_KEY, None, Some(f))])
+                .unwrap_or_default(),
+        };
+        if !tool_items.is_empty() {
             // A tool call means the answer phase has begun; close any still-open thinking block.
-            if state.thinking_block_open {
-                state.thinking_block_open = false;
-                out.push(IrStreamEvent::BlockStop { index: 0 });
-            }
+            close_thinking_block(state, &mut out);
             // Also close a still-open TEXT block (a preamble-then-tool stream): otherwise the tool
             // block opens while the text block is still open, leaving two content blocks open at once
-            // — overlapping blocks that violate the strict bracketing asserted downstream. Mirrors
-            // the finish-path text close below and cohere's ET_TOOL_CALL_START handling.
-            if state.text_block_open {
-                state.text_block_open = false;
-                // Latch the text index CLOSED (mirroring the Cohere reader's `text_block_closed`
-                // discipline). Without this latch `text_index` stays `Some(ti)`, so a LATER
-                // `delta.content` (step 3) or `choices[].logprobs` (step 3b) chunk — reachable with
-                // OpenAI-compatible backends that stream preamble-text→tool_calls→more-text
-                // (vLLM/Azure/OpenRouter) — falls back to that still-`Some` index gated only on
-                // `!text_block_open` and emits a SECOND `BlockStart` at an index that already got
-                // `BlockStart`+`BlockStop`, un-balancing the IR (two `content_block_start` at one
-                // index on an Anthropic egress). The one-way latch makes any resumed text after
-                // tools a drop rather than an un-balancing reopen.
-                state.text_block_closed = true;
-                if let Some(ti) = state.text_index {
-                    out.push(IrStreamEvent::BlockStop { index: ti });
-                }
-            }
-            for tc in tcs {
-                // Bound the upstream-supplied tool-call index before it touches `open_tools` /
-                // `tool_ir_index` as a key. A crafted/proxied chunk can carry `"index": u64::MAX`;
-                // OpenAI documents at most 128 parallel tool calls, so any larger index is
-                // malformed. `claim_ir_index()` increments by 1 from 0 and is bounded by the
-                // number of blocks the stream actually opens, so `oai_idx` no longer enters index
-                // arithmetic and the old overflow hazard is structurally gone — this clamp now
-                // exists solely to bound `oai_idx` as a map/set key.
-                let oai_idx = tc
-                    .get("index")
-                    .and_then(|i| i.as_u64())
-                    .map_or(0, |v| v.min(MAX_TOOL_INDEX) as usize);
-                let func = tc.get("function");
+            // — overlapping blocks that violate the strict bracketing asserted downstream. The close
+            // LATCHES the text index (`text_block_closed`), so text that resumes after the tool calls
+            // (vLLM/Azure/OpenRouter stream preamble→tool_calls→more text) opens a NEW text block at
+            // the next free index instead of a second `BlockStart` at the closed one (OAI-14).
+            close_text_block(state, &mut out);
+            for (oai_idx, tc_id, func) in tool_items {
                 if let Some(name) = func.and_then(|f| f.get("name")).and_then(|n| n.as_str()) {
                     // Cap the number of DISTINCT open tool calls per stream. Without this, a
                     // pathological backend emitting unbounded unique indices would grow `open_tools`
@@ -862,11 +1082,13 @@ impl ProtocolReader for OpenAiReader {
                     // one. An already-open index is always honored so in-flight blocks keep flowing.
                     let already_open = state.open_tools.contains(&oai_idx);
                     if !already_open && state.open_tools.len() < MAX_OPEN_TOOLS {
-                        let id = tc
-                            .get("id")
-                            .and_then(|i| i.as_str())
-                            .unwrap_or("")
-                            .to_string();
+                        let id = match tc_id {
+                            Some(id) => id.to_string(),
+                            None if oai_idx == LEGACY_FUNCTION_CALL_KEY => {
+                                synth_response_tool_call_id(0, name)
+                            }
+                            None => String::new(),
+                        };
                         let ir_idx = state.claim_ir_index();
                         state.open_tools.insert(oai_idx);
                         // Record the IR index this tool's BlockStart was emitted with so every
@@ -880,6 +1102,7 @@ impl ProtocolReader for OpenAiReader {
                                 id,
                                 name: name.to_string(),
                             },
+                            refusal: false,
                         });
                     }
                 }
@@ -969,6 +1192,8 @@ impl ProtocolReader for OpenAiReader {
                         .get("completion_tokens_details")
                         .and_then(|d| d.get("rejected_prediction_tokens"))
                         .and_then(read_count_u64),
+                    // The serving tier rides the chunk's top level, beside `usage` (OAI-03).
+                    service_tier: super::read_openai_service_tier(data.get("service_tier")),
                     ..Default::default()
                 },
             })
@@ -986,11 +1211,8 @@ impl ProtocolReader for OpenAiReader {
             .and_then(|c| c.get("finish_reason"))
             .and_then(|r| r.as_str());
         if let Some(fr) = finish_reason {
-            // Close in order: thinking (0, if it never yielded to text), then text, then tools.
-            if state.thinking_block_open {
-                state.thinking_block_open = false;
-                out.push(IrStreamEvent::BlockStop { index: 0 });
-            }
+            // Close in order: thinking (if it never yielded to text), then text, then tools.
+            close_thinking_block(state, &mut out);
             if state.text_block_open {
                 state.text_block_open = false;
                 // `text_block_open == true` implies `text_index.is_some()` (both are set together
@@ -1025,13 +1247,18 @@ impl ProtocolReader for OpenAiReader {
                 output_tokens: 0,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
-                detail: crate::ir::IrUsageDetail::default(),
+                // A finish chunk without usage still names the serving tier (OAI-03).
+                detail: crate::ir::IrUsageDetail {
+                    service_tier: super::read_openai_service_tier(data.get("service_tier")),
+                    ..Default::default()
+                },
             });
             out.push(IrStreamEvent::MessageDelta {
                 stop_reason,
                 // OpenAI has no stop_sequence analog in its stream.
                 stop_sequence: None,
                 usage,
+                stop_detail: None,
             });
             out.push(IrStreamEvent::MessageStop);
         } else if let Some(usage) = chunk_usage {
@@ -1053,6 +1280,7 @@ impl ProtocolReader for OpenAiReader {
                     stop_reason: None,
                     stop_sequence: None,
                     usage,
+                    stop_detail: None,
                 });
             }
         }
@@ -1132,6 +1360,8 @@ impl ProtocolReader for OpenAiReader {
                         signature: None,
                         redacted: false,
                         cache_control: None,
+                        kind: None,
+                        signature_origin: None,
                     });
                     break;
                 }
@@ -1152,6 +1382,7 @@ impl ProtocolReader for OpenAiReader {
                         text: text.to_string(),
                         cache_control: None,
                         citations,
+                        refusal: false,
                     });
                 }
             } else if let Some(arr) = content_val.as_array() {
@@ -1185,10 +1416,13 @@ impl ProtocolReader for OpenAiReader {
         if let Some(text) = message_val.get("refusal").and_then(|v| v.as_str()) {
             if !text.is_empty() {
                 saw_refusal = true;
+                // Flagged as the refusal message (IR-02), so a dialect with a refusal slot carries it
+                // exactly; everywhere else it is plain assistant text.
                 content.push(crate::ir::IrBlock::Text {
                     text: text.to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: true,
                 });
             }
         }
@@ -1231,6 +1465,31 @@ impl ProtocolReader for OpenAiReader {
                         thought_signature: None,
                     });
                 }
+            }
+        }
+
+        // The legacy single-call shape `message.function_call{name, arguments}` (pre-`tool_calls`,
+        // still returned by older OpenAI-compatible backends with `finish_reason: "function_call"`)
+        // is a tool use exactly like a `tool_calls` entry, minus the id: read it as a ToolUse with
+        // a synthesized `call_…` id (OAI-08), so the call is not lost behind a ToolUse stop reason
+        // that has no block. Read only when there are no `tool_calls` (the two never coexist).
+        if !content
+            .iter()
+            .any(|b| matches!(b, crate::ir::IrBlock::ToolUse { .. }))
+        {
+            if let Some(fc) = message_val.get("function_call").filter(|f| f.is_object()) {
+                let name = fc
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                content.push(crate::ir::IrBlock::ToolUse {
+                    id: synth_response_tool_call_id(0, &name),
+                    input: tool_input_from_arguments(fc.get("arguments")),
+                    name,
+                    cache_control: None,
+                    thought_signature: None,
+                });
             }
         }
 
@@ -1316,6 +1575,8 @@ impl ProtocolReader for OpenAiReader {
                     .and_then(|u| u.get("completion_tokens_details"))
                     .and_then(|d| d.get("rejected_prediction_tokens"))
                     .and_then(read_count_u64),
+                // The tier that served the request: a top-level member beside `usage` (OAI-03).
+                service_tier: super::read_openai_service_tier(obj.get("service_tier")),
                 ..Default::default()
             },
         };
@@ -1350,7 +1611,58 @@ impl ProtocolReader for OpenAiReader {
             stop_sequence: None,
 
             request_echo: None,
+            stop_detail: None,
         })
+    }
+}
+
+/// The `tool_ir_index` key that records the IR index of a Thinking block opened AFTER the answer
+/// phase began (OAI-14). Tool keys are upstream `tool_calls[].index` values clamped to
+/// `MAX_TOOL_INDEX`, so this key can never collide with a tool.
+const LATE_THINKING_KEY: usize = usize::MAX;
+
+/// The `open_tools` / `tool_ir_index` join key of a streamed legacy `delta.function_call` (OAI-08).
+/// Real tool keys are clamped to `MAX_TOOL_INDEX`, so this can never collide with one.
+const LEGACY_FUNCTION_CALL_KEY: usize = usize::MAX - 1;
+
+/// The `tool_ir_index` key that records the IR index of the text block opened for `delta.refusal`
+/// (IR-02). Never an `open_tools` member, so no tool close replays it.
+const REFUSAL_TEXT_KEY: usize = usize::MAX - 2;
+
+/// Is the open text block the refusal block?
+fn open_text_is_refusal(state: &crate::ir::StreamDecodeState) -> bool {
+    state.text_block_open
+        && state.text_index.is_some()
+        && state.tool_ir_index.get(&REFUSAL_TEXT_KEY).copied() == state.text_index
+}
+
+/// The IR index of the open (or last) Thinking block: the recorded late index, else the reserved 0.
+fn thinking_index(state: &crate::ir::StreamDecodeState) -> usize {
+    state
+        .tool_ir_index
+        .get(&LATE_THINKING_KEY)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// Close the Thinking block if it is open, at the index it was opened with.
+fn close_thinking_block(state: &mut crate::ir::StreamDecodeState, out: &mut Vec<IrStreamEvent>) {
+    if state.thinking_block_open {
+        state.thinking_block_open = false;
+        out.push(IrStreamEvent::BlockStop {
+            index: thinking_index(state),
+        });
+    }
+}
+
+/// Close the text block if it is open and latch it closed, so later text opens a fresh block.
+fn close_text_block(state: &mut crate::ir::StreamDecodeState, out: &mut Vec<IrStreamEvent>) {
+    if state.text_block_open {
+        state.text_block_open = false;
+        state.text_block_closed = true;
+        if let Some(ti) = state.text_index {
+            out.push(IrStreamEvent::BlockStop { index: ti });
+        }
     }
 }
 

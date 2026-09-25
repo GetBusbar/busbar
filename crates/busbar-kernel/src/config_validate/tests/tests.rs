@@ -12,6 +12,7 @@ fn make_root_cfg(
         agent_defs: crate::plane::config::AgentsSection::default().0,
         tool_pools: Default::default(),
         agent_pools: Default::default(),
+        plane_sections: Default::default(),
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
         // No endpoint plane configured.
         endpoint_resources: Default::default(),
@@ -74,6 +75,10 @@ fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::P
         subject: None,
         auth: None,
         allow_metadata_hosts: Vec::new(),
+        max_output_key: None,
+        anthropic_adaptive_thinking: None,
+        native_structured_output: None,
+        model_capabilities: Vec::new(),
     }
 }
 

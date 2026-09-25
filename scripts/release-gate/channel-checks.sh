@@ -657,12 +657,16 @@ fi
 # datacenter ranges — real users are served fine. 404 or a non-503 5xx is broken for everybody and
 # stays a hard FAIL.
 INSTALL_URL="https://getbusbar.com/install.sh"
-code="$(http_code "$INSTALL_URL")"
+# Q39: a fork PR without SITE_VERIFY_TOKEN does not fetch at all (site_not_run records each row).
+code=not-run
+[ "$(site_token_state)" = fork-pr ] || code="$(http_code "$INSTALL_URL")"
 script_body=""
 if [ "$code" = "200" ]; then
   script_body="$(fetch "$INSTALL_URL" || true)"
 fi
-if [ -n "$script_body" ]; then
+if site_not_run install:script-live; then
+  :
+elif [ -n "$script_body" ]; then
   record "install:script-live" PASS "${INSTALL_URL} is served (HTTP 200, $(printf '%s' "$script_body" | wc -c | tr -d ' ') bytes)" ""
 elif is_cloudflare_block "$code"; then
   record "install:script-live" SKIP "${INSTALL_URL} is unreachable FROM THIS RUNNER (HTTP ${code})" \
@@ -676,7 +680,9 @@ fi
 # THE TRAP this exists for: a runner talks to api.github.com from a different rate-limit pool than a
 # user's laptop and usually has GITHUB_TOKEN in scope, so "it ran green in CI" proves nothing about
 # a user's shell. Only absence generalises.
-if [ -n "$script_body" ]; then
+if site_not_run install:no-api-github; then
+  :
+elif [ -n "$script_body" ]; then
   # COMMENTS ARE STRIPPED FIRST, AND THAT IS A CORRECTNESS FIX, NOT A LOOSENING.
   # The served install.sh carries a comment explaining that api.github.com is deliberately NOT used
   # ("The REST API (api.github.com) is deliberately NOT used here, not even as a fallback: ..."),
@@ -707,7 +713,9 @@ fi
 # install:e2e — run the LIVE script, with the environment scrubbed of GitHub credentials, and prove
 # a binary lands and reports the version under test. Deliberately not ./install.sh from the
 # checkout: a fix that merged and never deployed must still fail here.
-if pointer_unresolved install:e2e; then
+if site_not_run install:e2e; then
+  :
+elif pointer_unresolved install:e2e; then
   :
 elif [ -n "$script_body" ]; then
   ins="${WORK}/install"; mkdir -p "$ins"
@@ -736,8 +744,11 @@ fi
 # ANCHORED version match. The old unanchored substring grep passed v1.5.2 against a page
 # advertising v1.5.20, which is the shape of bug that only shows up once the minor rolls over.
 DL_URL="https://getbusbar.com/download/"
-dl_code="$(http_code "$DL_URL")"
-if pointer_unresolved site:download-page; then
+dl_code=not-run
+[ "$(site_token_state)" = fork-pr ] || dl_code="$(http_code "$DL_URL")"
+if site_not_run site:download-page; then
+  :
+elif pointer_unresolved site:download-page; then
   :
 elif [ "$dl_code" = "200" ]; then
   page="$(fetch "$DL_URL" || true)"

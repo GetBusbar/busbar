@@ -589,7 +589,7 @@ fn loop_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
     ));
 
     // Three RED proofs, all against `crates/busbar-kernel/src/teller.rs` — the rule's own `file`,
-    // since the REPOINT (ff61939db) moved it off the deleted busbar-substrate path. A minimal,
+    // since the REPOINT moved it off the deleted busbar-substrate path. A minimal,
     // same-line `units.step()` pair is enough to exercise `in_order` and `duplicate_findings`
     // without needing the real file's multi-line `units\n    .step(...)` chain style; the real
     // file's own GREEN (see `loop_cases` baseline coverage below and the construction gate run

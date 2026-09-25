@@ -35,6 +35,7 @@ fn per_model_then_global_then_4096() {
             reasoning_budgets: crate::ir::REASONING_BUDGET_DEFAULTS,
             prompt_caching_allowed: true,
             cache_control_cap: None,
+            lane_caps: Default::default(),
         }
     };
     let apply = |ir: IrRequest, lane_default: Option<u32>, global: u32| -> Option<u32> {
@@ -102,6 +103,7 @@ fn cache_control_breakpoints_clamped_to_four_on_anthropic_egress() {
         text: t.to_string(),
         cache_control: cc,
         citations: Vec::new(),
+        refusal: false,
     };
 
     // 6 breakpoints total: one on `system`, five spread across two user messages.
@@ -164,6 +166,7 @@ fn cache_control_breakpoints_clamped_to_four_on_anthropic_egress() {
         reasoning_budgets: crate::ir::REASONING_BUDGET_DEFAULTS,
         prompt_caching_allowed: true,
         cache_control_cap: Some(4),
+        lane_caps: Default::default(),
     };
 
     // The cache_control over-cap drop was reclassified benign-recurring (per-request cross-protocol

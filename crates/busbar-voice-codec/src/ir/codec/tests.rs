@@ -1059,7 +1059,7 @@ fn captured_response_done() -> Value {
 /// omit the split — so a real, answered turn METERED AT ZERO. That is silent under-billing: no error,
 /// no warning, a ledger row faithfully reporting that nothing happened.
 ///
-/// The Gemini Live dialect in this same crate already had this fallback (`usage_from_metadata`, D26).
+/// The Gemini Live dialect in this same crate already had this fallback (`usage_from_metadata`).
 /// Only the OpenAI twin was missing it, so the identical session metered correctly on one dialect and
 /// at zero on the other — which is why this is an oversight, not a decision.
 ///

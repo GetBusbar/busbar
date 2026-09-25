@@ -130,6 +130,9 @@ pub struct LaneInput {
     pub reasoning: bool,
     /// Operator-declared prompt-cache capability (model level).
     pub prompt_caching: bool,
+    /// The lane's declared request-shape capabilities, resolved from the provider entry and its
+    /// model patterns against the lane's wire model (all defaults when nothing is declared).
+    pub lane_caps: busbar_substrate_values::ir::egress_prep::LaneCaps,
     /// The realized concurrency cap (`Semaphore::MAX_PERMITS` for an omitted / unbounded cap).
     pub max_concurrent: usize,
     /// Whether this lane has a finite request budget (`max_requests >= 0`).

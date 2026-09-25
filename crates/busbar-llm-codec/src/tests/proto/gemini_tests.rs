@@ -235,7 +235,8 @@ fn test_gemini_read_response_events_stream_fanout() {
         events[1],
         IrStreamEvent::BlockStart {
             index: 0,
-            block: IrBlockMeta::Text
+            block: IrBlockMeta::Text,
+            refusal: _,
         }
     ));
 
@@ -323,6 +324,7 @@ fn test_gemini_write_response_event_message_delta() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
 
     let result = writer.write_response_event(&ev);
@@ -761,6 +763,7 @@ fn gemini_cached_content_warns_naming_truncation_and_billing() {
         reasoning_budgets: crate::ir::REASONING_BUDGET_DEFAULTS,
         prompt_caching_allowed: true,
         cache_control_cap: None,
+        lane_caps: Default::default(),
     };
 
     // The cachedContent drop was reclassified benign-recurring (per-request cross-protocol seam) and
@@ -871,6 +874,7 @@ fn gemini_writer_reemits_char_indices_as_bytes_for_foreign_citations() {
             text: text.to_string(),
             cache_control: None,
             citations: vec![citation],
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         stop_sequence: None,
@@ -887,6 +891,7 @@ fn gemini_writer_reemits_char_indices_as_bytes_for_foreign_citations() {
         system_fingerprint: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let gemini_writer = GeminiWriter;
     let out = gemini_writer.write_response(&resp);

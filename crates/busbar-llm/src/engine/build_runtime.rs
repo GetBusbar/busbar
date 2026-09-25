@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use busbar_kernel::config::providers::{ProviderCfg, ProviderDef, ProviderDeploy};
+pub(crate) use busbar_kernel::config::providers::{ProviderCfg, ProviderDef, ProviderDeploy};
 use busbar_kernel::plane_host::{AuthStyleInput, OnExhaustedInput, PlaneBuildInput, PlaneSlots};
 
 use busbar_kernel::egress_auth::{self, MetadataSsrfPolicy};
@@ -68,6 +68,19 @@ pub(crate) fn resolve_provider(def: &ProviderDef, deploy: &ProviderDeploy) -> Pr
             .allow_metadata_hosts
             .clone()
             .unwrap_or_else(|| def.allow_metadata_hosts.clone()),
+        // Lane capabilities: a deployment value overrides the catalog's; a deployment rule list
+        // replaces the catalog's.
+        max_output_key: deploy.max_output_key.or(def.max_output_key),
+        anthropic_adaptive_thinking: deploy
+            .anthropic_adaptive_thinking
+            .or(def.anthropic_adaptive_thinking),
+        native_structured_output: deploy
+            .native_structured_output
+            .or(def.native_structured_output),
+        model_capabilities: deploy
+            .model_capabilities
+            .clone()
+            .unwrap_or_else(|| def.model_capabilities.clone()),
     }
 }
 
@@ -232,6 +245,7 @@ pub(crate) fn build_runtime(
             attempt_timeout_ms: li.attempt_timeout_ms,
             reasoning: li.reasoning,
             prompt_caching: li.prompt_caching,
+            lane_caps: li.lane_caps,
             default_max_tokens: li.lane_default_max_tokens,
             upstream_model: li.upstream_model.clone(),
             egress_targets,

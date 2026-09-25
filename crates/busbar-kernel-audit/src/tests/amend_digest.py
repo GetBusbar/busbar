@@ -19,7 +19,11 @@ It prints three digests:
   old adjust  the adjustment as it was encoded when it carried one money figure; retired, kept so the
               change of shape is reproducible
   new adjust  the adjustment as it is encoded now, counts per class plus the card epoch (the second
-              constant in the test)
+              constant in the test). An adjustment that names no pool (every one sealed before
+              owner ruling Q64/Q67) still encodes exactly this way.
+  pooled adjust
+              the same adjustment naming the pool "pool-a" (Q64/Q67): the pool is one more text field,
+              LAST, present only when the adjustment names one (the third constant in the test)
 
 USAGE
     python3 amend_digest.py
@@ -80,7 +84,7 @@ def old_adjust(prev):
     return d.hex()
 
 
-def new_adjust(prev):
+def new_adjust(prev, pool=None):
     # Lane "gpt-4o", card epoch 1_700_000_000_000 ms,
     # was {input_tokens: 1000, output_tokens: 200}, now {input_tokens: 800, output_tokens: 200}.
     d = Digest()
@@ -103,6 +107,8 @@ def new_adjust(prev):
     d.text("operator")
     d.text("duplicate charge on a retried request")
     d.num(1_700_000_100)
+    if pool is not None:
+        d.text(pool)
     return d.hex()
 
 
@@ -111,6 +117,7 @@ def main():
     print("access", acc)
     print("old adjust", old_adjust(acc))
     print("new adjust", new_adjust(acc))
+    print("pooled adjust", new_adjust(acc, "pool-a"))
 
 
 if __name__ == "__main__":

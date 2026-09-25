@@ -66,6 +66,11 @@ busbar-plugin-example-plane = { path = "../plane-example" }
 # the test separately `dlopen`s. DECISIONS #11 says compiled-in ≡ dropped-in; `export_conformance_tests`
 # is what makes that checkable for the thing #11 was silently false about — what a plugin OBSERVES.
 busbar-export-example-plugin = { path = "../export-example-plugin" }
+# The `kind: store` BOTH-WAYS fixture, on the same terms: its `rlib` gives the test the COMPILED-IN
+# `Box<dyn Store>` (its `pub fn open`), its `cdylib` is `dlopen`ed. `store_scope_kind_conformance_tests`
+# requires the two to round-trip a plane scope grant (`mcp_tool`) identically — a dropped-in store's
+# copy of the scope-kind registry is never populated by the engine's boot registration.
+busbar-store-example-plugin = { path = "../store-example-plugin" }
 
 [target.'cfg(unix)'.dependencies]
 # memfd_create (Linux zero-disk loads) + kill(pid, 0) liveness for the dead-pid staging sweep.
@@ -74,7 +79,8 @@ libc = { workspace = true }
 # NOTE: the end-to-end tests load real plugin cdylibs (busbar-secret-example-plugin and
 # busbar-store-sqlite-plugin — the latter built from a sibling ../store-sqlite checkout, since
 # store-sqlite is fully extracted and no longer lives in this workspace), but a cdylib crate cannot
-# be a Rust dependency (no rlib to link). The tests instead locate the artifact on disk and skip if
-# it isn't built — under `cargo test --workspace` every in-tree member cdylib is present; the
-# sibling-built one is present only under dev-gate.yml (see store_fixture_plugin_path()'s doc
-# comment in src/lib.rs).
+# be a Rust dependency (no rlib to link). The tests instead locate the artifact on disk — under
+# `cargo test --workspace` every in-tree member cdylib is present, and the kind:store fixture falls
+# back to the in-tree busbar-store-example-plugin when the sqlite sibling is not built; under CI a
+# missing fixture is a hard failure, never a skip. The sibling-built one is required only under
+# qa-gate.yml's `loader` leg (see store_fixture_plugin_path()'s doc comment in src/lib.rs).

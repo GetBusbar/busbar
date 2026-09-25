@@ -1263,7 +1263,7 @@ of the kinds that today have gate rules but no implementor of their `busbar-cont
   `unpriced`, `recovered`, `voided`, `late_accrual`, `unposted`, `encode_failure_reversal`,
   `attempt_abandoned`, `replayed`, `in_flight`, `overdraft`, `stale_slice`, `stale_policy`,
   `session_facts_exhausted`, `restricted_empty`, `post_meter_amendment`, `fan_out_partial`, `handshake`, `discard`.
-- **Admin**: cells derived from the tag's HANDLERS (66 operations; `openapi.json` under-specifies the wire — no `security`, no `Idempotency-Key`, `201` vs `200`, the `Error` enum — and is pinned only as the served blob, PB-75) under `single`,
+- **Admin**: cells derived from the tag's HANDLERS (66 operations; `openapi.json` under-specifies the wire — no `security`, no `Idempotency-Key`, `201` vs `200`, the `Error` enum — and is pinned as the ONE generated document, served filtered to the configured planes, PB-75) under `single`,
   byte-identical, including body replay across two nodes at t = 500 s (same node: byte-identical replay; a second node MINTS TWICE, as 1.5.5) and t = 700 s (TTL expired: a fresh mint, compared after the minted-secret normalization); the 15 dev-tree
   additions have their own cells; the operator-key ceremony cell ("1.5.5 config, no operator key: boots;
   `commit_upgrade` refused; `set_operator_key` then `commit_upgrade` succeeds"). **Boot**: one cell per
@@ -1501,7 +1501,7 @@ deployment retains ledger history across a restart, so `/usage` after a restart 
 1.5.5 showed none. Without `data_dir` (the 1.5.5 shape) behaviour is identical. Default: identical
 (no `data_dir`); the owner may opt in.
 
-**Admin API — byte-identical.** Every 1.5.5 operation (66 at the tag) returns the same bytes for the same state — with the two stated exceptions, BOTH now version-reporting: `GET /admin/openapi.json` (PB-75, served byte-identical except `info.version`, which reports `CARGO_PKG_VERSION`) and `GET /admin/info` (ADM-042), whose `version` is `CARGO_PKG_VERSION` and whose `build { auth_modules, hook_plugins, weighted_floor }` reports the running binary, the same shape with the running values —
+**Admin API — byte-identical.** Every 1.5.5 operation (66 at the tag) returns the same bytes for the same state — with the two stated exceptions, BOTH now version-reporting: `GET /admin/openapi.json` (PB-75, ADM-052: ONE generated admin document describing every served operation, served filtered to the node's configured planes per Law 7, with `info.version` reporting `CARGO_PKG_VERSION`; no side-car document exists) and `GET /admin/info` (ADM-042), whose `version` is `CARGO_PKG_VERSION` and whose `build { auth_modules, hook_plugins, weighted_floor }` reports the running binary, the same shape with the running values —
 same request under `single` (the migrated posture): `/usage` carries NO additive lines (1.6.0 ledger
 facts live on new endpoints), the legacy projection reproduces the per-row truncate-then-sum and the
 admitted-request fee base, idempotency is per node. The 17 new verbs and the `required` posture are
@@ -1541,7 +1541,7 @@ injection is unified onto the degraded/fallback path so a fallback stream to an 
 longer bills zero tokens — registered as `improvement` (owner sign-off; money-affecting) ·
 busbar is a byte-governance router.
 
-### Decisions 2026-09-05 (orchestrator, resolving the consolidated contract gaps in `docs/design/1.6.0-contract-gaps.md`)
+### Contract rules decided 2026-09-05
 
 - **CG-20 `KernelSeal` means one thing.** The caps unit struct. The contract's trait of the same name
   cannot be removed — `busbar-caps` implements it on every token and sits above the contract, and Rust
@@ -1588,7 +1588,7 @@ busbar is a byte-governance router.
   different specificity overlap by the conservative rule and are resolved by the sealed most-specific-wins
   order; only an overlap at equal precedence between claims whose scheme sets are compatible is a boot
   refusal. Claims with disjoint scheme sets never overlap. **CG-63:** a claim on a transport that has no
-  crate is a boot refusal; the voice plane's telephony claim waits for its transport (Phase 0.5).
+  crate is a boot refusal; the voice plane's telephony claim is refused until its transport exists.
 - **CG-51 the network guard is the trust unit's check** over `VerifiedDestination`, applied before any
   transport `dial`; transports do no resolution policy of their own.
 - **CG-51 / CG-28 (2026-09-05, status): one address judgement, two spellings still.** The guard's
@@ -1784,7 +1784,7 @@ published 1.5.5 binary.
 | PB-72 | inventory precedence for bindings | where a binding paraphrases an inventory row, the row (and the code at the tag behind it) wins; a binding found to misread its row is corrected, never the row — the round-3 corrections to PB-1, PB-4, PB-22, PB-26, PB-35, PB-38, PB-39, PB-52, PB-57 are the precedent | 1.5.5-BEHAVIOUR precedence |
 | PB-73 | `advanced.response_headers` | `server_timing` / `route_policy` default `false`, RESTART-scoped; `Server-Timing` is a router middleware stamping EVERY response whenever `server_timing: true` (`main.rs:1404-1428`); `x-busbar-route-policy` / `x-busbar-route-target` are emitted only when `route_policy: true` AND a non-default ordering hook (not the SWRR floor registered at `Migration`) produced the order — exactly `proxy/wire.rs:77-112` | config CONF-165/166/167 (:302-304); proxy-hooks §2.12 row 11 |
 | PB-74 | reserved-name sets | `RESERVED_POOLS_SECTION_KEYS` (closed), `RESERVED_HOOK_NAMES` (frozen as of 1.5.3), `reserved_admin_name`, `EXPORT_MODULES` — frozen at their 1.5.5 membership; the three new planes add NO reserved word to any 1.5.5-parsed section (the `mcp:` / `a2a:` / `voice:` blocks live under `fleet:`, never top-level — PB-40), so no legal 1.5.5 `config.yaml` becomes a boot failure | config :181-184, :795-800 (BOOT-P07, BOOT-056) |
-| PB-75 | served OpenAPI document | `GET /admin/openapi.json` (ADM-052, one of the 66) returns the 1.5.5 blob byte-identical EXCEPT `info.version`: OWNER DECISION — `info.version` reports the running binary's version (`CARGO_PKG_VERSION`, 1.6.0), the same rule `GET /admin/info` (ADM-042) already applies, not a 1.5.5-verbatim pin; every other byte — every path, schema, description and the document's shape — is VERBATIM; the 1.6.0 verbs are described at a new path (`/api/v1/admin/ledger/openapi.json`) — "admin API a superset" means routes, not the legacy document's bytes | routes-admin ADM-052 (:409), :266-284 |
+| PB-75 | served OpenAPI document | `GET /admin/openapi.json` (ADM-052, one of the 66) serves ONE generated admin document that describes every operation the admin router serves — the 1.5.5 operations and the 1.6.0 kernel verbs alike — filtered to the node's configured planes (Law 7): an operation belonging to a plane the node does not configure is absent from the served document, exactly as its route is. There is no side-car document: nothing is served at `/api/v1/admin/ledger/openapi.json`. OWNER DECISION — `info.version` reports the running binary's version (`CARGO_PKG_VERSION`, 1.6.0), the same rule `GET /admin/info` (ADM-042) already applies, not a 1.5.5-verbatim pin | routes-admin ADM-052 (:409), :266-284 |
 | PB-76 | admin listener route set | the OUTER admin router has exactly its 1.5.5 route set and no fallback (an empty-bodied 404 outside `/api/v1/admin`); UNDER that prefix the nested router's fallbacks apply verbatim — unmatched path ⇒ `404 {"error":{"code":"not_found",…}}`, wrong method ⇒ the `method_not_allowed` envelope (`admin/v1/json/mod.rs:148-149`); `/stats`, `/metrics`, `/metrics/hooks`, `/v1/models` are data-listener verbs only (PB-43) | routes-admin §2 (:93; `build_split_routers_with_limits`) |
 | PB-77 | `POST /signing-key/rotate` | report-only exactly as at the tag: rotates nothing, audit action `signing_key.report`, `NothingToRotate` / `NoSigningKey`, the 200 body verbatim; a real 1.6.0 key ceremony lives on a new verb | routes-admin ADM-065 (:422; `M:1713-1760`) |
 | PB-78 | `revoke_key` on a tombstoned key | gated on `get_key().is_some()` (not `is_live()`): a tombstoned key returns `200 {"revoked":"<id>"}` and writes a `key.revoke` / `applied` audit row | auth-secrets :618-624 (`admin/mod.rs:1687`) |

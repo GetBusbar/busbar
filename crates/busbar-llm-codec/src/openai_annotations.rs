@@ -108,7 +108,19 @@ fn citation_title<'a>(c: &'a crate::ir::IrCitation, url: &'a str) -> &'a str {
 /// the offset rules cannot drift apart between them. `None` when the source genuinely carries no
 /// usable span; each caller decides what that means for its shape.
 fn citation_span(text: &str, base: usize, c: &crate::ir::IrCitation) -> Option<(i64, i64)> {
-    match (c.start_index, c.end_index) {
+    // Carried offsets are a span of the RESPONSE TEXT only for a citation whose kind says so: a
+    // url/web-search citation (OpenAI `url_citation`, Gemini `citationSources[]`, both read as
+    // `web_search_result_location`) or an untyped one. Anthropic's document kinds carry offsets
+    // too, but into the CITED DOCUMENT (`char_location` chars, `page_location` pages,
+    // `content_block_location` / `search_result_location` block indices) — emitting those as a
+    // span of the answer text would point at the wrong characters.
+    let text_span_kind = matches!(c.kind.as_deref(), None | Some("web_search_result_location"));
+    let carried = if text_span_kind {
+        (c.start_index, c.end_index)
+    } else {
+        (None, None)
+    };
+    match carried {
         // `saturating_add` (not `+`): `s`/`e` are upstream-controlled `i64` (only sign-checked
         // above), so `i64::MAX + base` would panic in debug / wrap in release — an
         // upstream-triggered crash on the response path. Same cure `billable_tokens` already
@@ -149,15 +161,14 @@ fn citation_span(text: &str, base: usize, c: &crate::ir::IrCitation) -> Option<(
 /// written in the flat shape the spec requires. The nested object wins when present, so a Chat entry
 /// is never re-read as a flat one.
 ///
-/// KNOWN LIMITATION — offsets are deliberately NOT carried. `IrCitation::start_index`/`end_index`
-/// are CHARACTER offsets by contract (`ir/mod.rs`), and OpenAI does not document whether its
-/// `start_index`/`end_index` count bytes or characters. Copying them across unconverted would
-/// silently assert one of the two, and on non-ASCII text that is a wrong span — the same class of
-/// defect the Gemini byte/char conversion (`gemini/mod.rs`) exists to prevent. Dropping an offset
-/// we cannot interpret is a gap; asserting a unit we cannot verify is a lie. Until the unit is
-/// established (one upstream response with a multi-byte character ahead of the cited span settles
-/// it), the url and title — which need no unit — are preserved and the span is left `None`, which
-/// every writer already treats as optional.
+/// OFFSETS ARE CARRIED (SHR-01, IR mapping Q57). `IrCitation::start_index`/`end_index` are
+/// CHARACTER offsets into the response text by contract, and OpenAI documents its own the same
+/// way: both the Chat `annotations[].url_citation` and the Responses `UrlCitationBody` define
+/// `start_index` as "the index of the first character of the URL citation in the message" — a
+/// character index, the IR's own unit — so both offsets copy across unconverted. Before this
+/// they were dropped, and because the Responses writer requires a span, every citation an OpenAI
+/// Chat backend returned vanished for a Responses client (and Responses -> Chat lost its offsets).
+/// A negative or inverted pair is not a span and is left `None` rather than repaired.
 pub fn read_url_annotations(annotations: &serde_json::Value) -> Vec<crate::ir::IrCitation> {
     let mut out = Vec::new();
     let Some(arr) = annotations.as_array() else {
@@ -167,7 +178,6 @@ pub fn read_url_annotations(annotations: &serde_json::Value) -> Vec<crate::ir::I
         if entry.get("type").and_then(|t| t.as_str()) != Some("url_citation") {
             continue;
         }
-        // Chat nests under `url_citation`; Responses (`UrlCitationBody`) flattens onto the entry.
         // Chat nests under `url_citation`; Responses (`UrlCitationBody`) flattens onto the entry.
         let citation = entry.get("url_citation").unwrap_or(entry);
         // Never invent a fact: an entry with no usable url is skipped, symmetric with
@@ -185,17 +195,53 @@ pub fn read_url_annotations(annotations: &serde_json::Value) -> Vec<crate::ir::I
             .and_then(|t| t.as_str())
             .filter(|t| !t.is_empty())
             .map(String::from);
+        let (start_index, end_index) = match (
+            citation.get("start_index").and_then(|v| v.as_i64()),
+            citation.get("end_index").and_then(|v| v.as_i64()),
+        ) {
+            (Some(s), Some(e)) if s >= 0 && e >= s => (Some(s), Some(e)),
+            _ => (None, None),
+        };
         out.push(crate::ir::IrCitation {
             kind: Some("web_search_result_location".to_string()),
             cited_text: None,
             title,
             url: Some(url.to_string()),
             document_index: None,
-            start_index: None,
-            end_index: None,
+            start_index,
+            end_index,
             encrypted_index: None,
             raw: None,
         });
     }
     out
 }
+
+/// The OpenAI Files API id an IR attachment references, if it references one (SHR-03).
+///
+/// OpenAI Chat (`file.file_id`) and Responses (`input_file.file_id`, `input_image.file_id`) name
+/// ONE namespace — the organisation's OpenAI Files uploads — but each reader tags the opaque
+/// [`crate::ir::IrImageSource::Vendor`] reference with its own dialect name (`"openai"`,
+/// `"responses"`), and each writer re-emitted only its own tag. So a Chat caller's uploaded PDF
+/// never reached a Responses lane (and back), although the id is valid on both. Both readers store
+/// the same `{"file_id": <id>}` value; this accepts either tag, so a writer calls this instead of
+/// comparing against its own tag and the id crosses between the two OpenAI dialects. Any other
+/// vendor (a Bedrock `s3Location`, an Anthropic Files id) is `None`: those namespaces do not
+/// resolve at OpenAI.
+pub fn openai_file_id(source: &crate::ir::IrImageSource) -> Option<&str> {
+    match source {
+        crate::ir::IrImageSource::Vendor { vendor, value }
+            if OPENAI_FILES_VENDOR_TAGS.contains(vendor) =>
+        {
+            value
+                .get("file_id")
+                .and_then(|i| i.as_str())
+                .filter(|id| !id.is_empty())
+        }
+        _ => None,
+    }
+}
+
+/// The `Vendor` tags that name the OpenAI Files namespace: the Chat and the Responses readers'.
+/// Kept in step with their `VENDOR_NAME` consts by `openai_file_vendor_tags_are_the_dialect_names`.
+pub const OPENAI_FILES_VENDOR_TAGS: [&str; 2] = ["openai", "responses"];

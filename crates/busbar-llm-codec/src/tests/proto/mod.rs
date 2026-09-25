@@ -74,6 +74,8 @@ pub use busbar_substrate_values::proto::{ArrayStreamFramer, DialectCodec};
 mod adversarial_tests;
 #[path = "billing_parity_tests.rs"]
 mod billing_parity_tests;
+#[path = "citation_stream_carriage_tests.rs"]
+mod citation_stream_carriage_tests;
 #[path = "context_length_tests.rs"]
 mod context_length_tests;
 #[path = "cross_protocol_extra_tests.rs"]

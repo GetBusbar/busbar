@@ -99,6 +99,7 @@ fn test_folded_usage_without_a_finish_reason_still_unfolds() {
                 cache_read_input_tokens: None,
                 detail: crate::ir::IrUsageDetail::default(),
             },
+            stop_detail: None,
         })
         .expect("a terminal MessageDelta with counts writes a chunk");
     assert!(
@@ -144,6 +145,7 @@ fn text_block(text: &str) -> IrBlock {
         text: text.to_string(),
         cache_control: None,
         citations: Vec::new(),
+        refusal: false,
     }
 }
 
@@ -158,6 +160,7 @@ fn stream_tool_use_block_start_uses_ir_index() {
             id: "call_b".to_string(),
             name: "lookup".to_string(),
         },
+        refusal: false,
     };
     let (_, chunk) = w
         .write_response_event(&ev)
@@ -192,6 +195,7 @@ fn stream_parallel_tool_calls_do_not_collide_at_index_zero() {
             id: id.to_string(),
             name: "f".to_string(),
         },
+        refusal: false,
     };
     let mk_delta = |idx: usize, frag: &str| IrStreamEvent::BlockDelta {
         index: idx,
@@ -380,6 +384,16 @@ fn write_request_tool_result_multi_text_concatenates_without_separator() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = openai_writer().write_request(&req);
     let tool_msg = out["messages"]
@@ -440,6 +454,16 @@ fn write_request_emits_max_tokens_from_modeled_cap() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = openai_writer().write_request(&req);
     assert_eq!(out["max_tokens"], serde_json::json!(512));
@@ -574,6 +598,16 @@ fn write_request_omits_token_cap_when_absent() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = openai_writer().write_request(&req);
     let obj = out.as_object().expect("object");
@@ -618,6 +652,16 @@ fn write_request_keeps_tool_use_on_user_message() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = openai_writer().write_request(&req);
     let msgs = out["messages"].as_array().expect("messages array");
@@ -671,6 +715,16 @@ fn write_request_pure_tool_result_message_emits_only_flat_entries() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = openai_writer().write_request(&req);
     let msgs = out["messages"].as_array().expect("messages array");
@@ -732,6 +786,16 @@ fn write_request_tool_role_mixed_content_not_dropped() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = openai_writer().write_request(&req);
     let msgs = out["messages"].as_array().expect("messages array");
@@ -806,6 +870,16 @@ fn write_request_tool_result_on_user_message_emits_tool_message() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = openai_writer().write_request(&req);
     let msgs = out["messages"].as_array().expect("messages array");
@@ -858,6 +932,7 @@ fn write_response_joins_text_blocks_and_keeps_tool_calls() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = openai_writer().write_response(&resp);
     let msg = &out["choices"][0]["message"];
@@ -896,6 +971,7 @@ fn write_response_content_null_when_no_text() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = openai_writer().write_response(&resp);
     assert_eq!(
@@ -1027,6 +1103,7 @@ fn cross_protocol_write_synthesizes_valid_id() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = openai_writer().write_response(&resp);
     let id = out["id"].as_str().expect("synthesized id is a string");
@@ -1073,6 +1150,7 @@ fn cross_protocol_write_response_emits_fallback_model() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = openai_writer().write_response(&resp);
     let obj = out.as_object().expect("response object");
@@ -1107,6 +1185,7 @@ fn write_response_preserves_upstream_model_over_fallback() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = openai_writer().write_response(&resp);
     assert_eq!(out["model"], serde_json::json!("gpt-4o-mini"));
@@ -1283,10 +1362,10 @@ fn text_then_tool_closes_text_block_before_opening_tool() {
 // block at that already-closed index (a second `content_block_start` at one index = an unbalanced IR
 // stream on an Anthropic egress). Reachable with OpenAI-compatible backends (vLLM/Azure/OpenRouter).
 // Pre-fix: `text_index` stays `Some` and the reopen fires on `!text_block_open`, emitting TWO
-// BlockStart at the same index. Post-fix: `text_block_closed` latches on the close and the resumed
-// text is dropped, leaving exactly one balanced text block.
+// BlockStart at the same index. `text_block_closed` latches on the close; the resumed text opens a
+// NEW text block at a fresh index (OAI-14), so both text blocks are balanced and nothing is dropped.
 #[test]
-fn preamble_text_then_tool_then_text_keeps_one_balanced_text_block() {
+fn preamble_text_then_tool_then_text_opens_a_fresh_balanced_text_block() {
     let reader = OpenAiReader;
     let mut st = crate::ir::StreamDecodeState::default();
     let mut events = Vec::new();
@@ -1335,25 +1414,33 @@ fn preamble_text_then_tool_then_text_keeps_one_balanced_text_block() {
             IrStreamEvent::BlockStart {
                 index,
                 block: IrBlockMeta::Text,
+                refusal: _,
             } => Some(*index),
             _ => None,
         })
         .collect();
+    // The resumed text is carried (OAI-14) in a SECOND text block at a FRESH index — never a
+    // second BlockStart at the closed index.
     assert_eq!(
         text_starts.len(),
-        1,
-        "the text block must be opened exactly once, never reopened at a closed index: {events:?}"
+        2,
+        "resumed text opens one new text block: {events:?}"
     );
-    let text_idx = text_starts[0];
-    // …and exactly one BlockStop at that text index, so the block is balanced.
-    let text_stops = events
-        .iter()
-        .filter(|e| matches!(e, IrStreamEvent::BlockStop { index } if *index == text_idx))
-        .count();
-    assert_eq!(
-        text_stops, 1,
-        "the text block index must be closed exactly once (balanced): {events:?}"
+    assert_ne!(
+        text_starts[0], text_starts[1],
+        "the resumed text block must not reopen the closed index: {events:?}"
     );
+    // …and each text index is closed exactly once, so both blocks are balanced.
+    for text_idx in text_starts {
+        let text_stops = events
+            .iter()
+            .filter(|e| matches!(e, IrStreamEvent::BlockStop { index } if *index == text_idx))
+            .count();
+        assert_eq!(
+            text_stops, 1,
+            "text block {text_idx} must be closed exactly once (balanced): {events:?}"
+        );
+    }
 }
 
 // --- total_tokens must saturate, never overflow-panic/wrap ---
@@ -1379,6 +1466,7 @@ fn write_response_total_tokens_saturates_on_overflow() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     // Must not panic (debug) or wrap (release); saturates at u64::MAX.
     let out = openai_writer().write_response(&resp);
@@ -1429,10 +1517,11 @@ fn read_request_preserves_sampling_params_in_extra() {
     assert_eq!(out["n"], serde_json::json!(2));
 }
 
-/// `reasoning_effort` values `IrReasoningEffort::parse` does not know (`"none"`,
-/// `"xhigh"` — real `gpt-5`-family spellings) must NOT be lost. `reasoning_effort` is a MODELED
-/// key, so it is excluded from the generic `extra` sweep; without a rescue, an unrecognised value
-/// is stripped from BOTH the typed field AND `extra` — total loss, even OpenAI->OpenAI same-lane.
+/// `reasoning_effort` values the IR has no word for (a spelling newer than this build) must NOT be
+/// lost (`"xhigh"` and `"none"` now map to `XHigh` / `Off`, OAI-10 / IR-09).
+/// `reasoning_effort` is a MODELED key, so it is excluded from the generic `extra` sweep; without a
+/// rescue, an unrecognised value is stripped from BOTH the typed field AND `extra` — total loss,
+/// even OpenAI->OpenAI same-lane.
 #[test]
 fn unknown_reasoning_effort_survives_in_extra() {
     use busbar_substrate_values::testkit::warn_capture::WarnCapture;
@@ -1441,7 +1530,7 @@ fn unknown_reasoning_effort_survives_in_extra() {
     let body = serde_json::json!({
         "model": "gpt-5",
         "messages": [{ "role": "user", "content": "hi" }],
-        "reasoning_effort": "xhigh"
+        "reasoning_effort": "ultra"
     });
 
     let cap = WarnCapture::default();
@@ -1456,19 +1545,19 @@ fn unknown_reasoning_effort_survives_in_extra() {
     );
     assert_eq!(
         ir.extra.get("reasoning_effort"),
-        Some(&serde_json::json!("xhigh")),
+        Some(&serde_json::json!("ultra")),
         "the raw value must survive in extra so it is not silently lost: {:?}",
         ir.extra
     );
     assert!(
-        cap.contains("xhigh"),
+        cap.contains("ultra"),
         "the unrecognised value must be warned about: {:?}",
         cap.messages()
     );
 
     // And it reaches the upstream body on a same-protocol write via the extra-forwarding loop.
     let out = openai_writer().write_request(&ir);
-    assert_eq!(out["reasoning_effort"], serde_json::json!("xhigh"));
+    assert_eq!(out["reasoning_effort"], serde_json::json!("ultra"));
 }
 
 // --- tool-call-only assistant turn → content: null, not [] ---
@@ -1508,6 +1597,16 @@ fn write_request_tool_call_only_assistant_has_null_content() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = openai_writer().write_request(&req);
     let msg = &out["messages"][0];
@@ -1755,6 +1854,7 @@ fn write_request_non_text_system_block_does_not_vanish_silently() {
                     data: "AAAB".to_string(),
                 },
                 cache_control: None,
+                detail: None,
             },
         ],
         system_turns_folded: 0,
@@ -1776,6 +1876,16 @@ fn write_request_non_text_system_block_does_not_vanish_silently() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = openai_writer().write_request(&req);
     let msgs = out["messages"].as_array().expect("messages");
@@ -1889,6 +1999,7 @@ fn stream_message_delta_none_stop_reason_serializes_null_not_empty_string() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let (_, chunk) = openai_writer()
         .write_response_event(&ev)
@@ -1920,6 +2031,7 @@ fn stream_message_delta_maps_stop_reasons_to_openai_enum() {
                 cache_read_input_tokens: None,
                 detail: crate::ir::IrUsageDetail::default(),
             },
+            stop_detail: None,
         };
         let (_, chunk) = openai_writer()
             .write_response_event(&ev)
@@ -1975,6 +2087,16 @@ fn write_request_assistant_tool_result_block_not_emitted_as_content() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = openai_writer().write_request(&req);
     let msgs = out["messages"].as_array().expect("messages array");
@@ -2017,6 +2139,8 @@ fn write_request_thinking_block_dropped_from_message_content() {
                     signature: None,
                     redacted: false,
                     cache_control: None,
+                    kind: None,
+                    signature_origin: None,
                 },
                 text_block("visible"),
             ],
@@ -2035,6 +2159,16 @@ fn write_request_thinking_block_dropped_from_message_content() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = openai_writer().write_request(&req);
     let content = out["messages"][0]["content"]
@@ -2131,6 +2265,7 @@ fn stream_trailing_usage_only_chunk_emits_message_delta_with_usage() {
             stop_reason,
             stop_sequence,
             usage,
+            stop_detail: _,
         } => {
             // In-progress finish per the chunk shape (no finish_reason on a usage-only chunk).
             assert_eq!(*stop_reason, None);
@@ -2263,6 +2398,7 @@ fn write_response_falls_back_to_stop_when_stop_reason_none() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = openai_writer().write_response(&resp);
     let choice = out["choices"][0].as_object().expect("choice object");
@@ -2311,6 +2447,7 @@ fn write_response_maps_finish_reason_enum_values() {
             stop_sequence: None,
 
             request_echo: None,
+            stop_detail: None,
         };
         let out = openai_writer().write_response(&resp);
         assert_eq!(
@@ -2441,6 +2578,7 @@ fn stream_tool_arg_delta_uses_recorded_block_start_index() {
             IrStreamEvent::BlockStart {
                 index,
                 block: crate::ir::IrBlockMeta::ToolUse { .. },
+                refusal: _,
             } => Some(*index),
             _ => None,
         })
@@ -2518,6 +2656,7 @@ fn stream_tool_only_yields_zero_based_tool_indices() {
             IrStreamEvent::BlockStart {
                 index,
                 block: IrBlockMeta::ToolUse { .. },
+                refusal: _,
             } => Some(*index),
             _ => None,
         })
@@ -2585,6 +2724,7 @@ fn stream_text_then_tool_keeps_text_at_zero_tool_after() {
             IrStreamEvent::BlockStart {
                 index,
                 block: IrBlockMeta::Text,
+                refusal: _,
             } => Some(*index),
             _ => None,
         })
@@ -2615,6 +2755,7 @@ fn stream_text_then_tool_keeps_text_at_zero_tool_after() {
             IrStreamEvent::BlockStart {
                 index,
                 block: IrBlockMeta::ToolUse { .. },
+                refusal: _,
             } => Some(*index),
             _ => None,
         })
@@ -2693,6 +2834,7 @@ fn stream_tool_then_text_no_index_collision_and_stops_pair() {
             IrStreamEvent::BlockStart {
                 index,
                 block: IrBlockMeta::ToolUse { .. },
+                refusal: _,
             } => Some(*index),
             _ => None,
         })
@@ -2721,6 +2863,7 @@ fn stream_tool_then_text_no_index_collision_and_stops_pair() {
             IrStreamEvent::BlockStart {
                 index,
                 block: IrBlockMeta::Text,
+                refusal: _,
             } => Some(*index),
             _ => None,
         })
@@ -2757,6 +2900,7 @@ fn stream_tool_then_text_no_index_collision_and_stops_pair() {
             IrStreamEvent::BlockStart {
                 index,
                 block: IrBlockMeta::ToolUse { .. },
+                refusal: _,
             } => Some(*index),
             _ => None,
         })
@@ -3046,6 +3190,7 @@ fn stream_message_delta_emits_usage_when_counts_nonzero() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let (_, chunk) = openai_writer()
         .write_response_event(&ev)
@@ -3075,6 +3220,7 @@ fn stream_message_delta_omits_usage_when_all_counts_zero() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let (_, chunk) = openai_writer()
         .write_response_event(&ev)
@@ -3124,6 +3270,16 @@ fn req_with_tool(
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     }
 }
 
@@ -3306,6 +3462,7 @@ fn write_response_safety_round_trips_to_content_filter() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = openai_writer().write_response(&resp);
     assert_eq!(
@@ -3326,6 +3483,7 @@ fn stream_message_delta_safety_round_trips_to_content_filter() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let (_, chunk) = openai_writer()
         .write_response_event(&ev)
@@ -3524,6 +3682,16 @@ fn write_request_string_tool_arguments_emitted_verbatim() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = openai_writer().write_request(&req);
     let args = &out["messages"][0]["tool_calls"][0]["function"]["arguments"];
@@ -3562,6 +3730,7 @@ fn write_response_string_tool_arguments_emitted_verbatim() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = openai_writer().write_response(&resp);
     let args = &out["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"];
@@ -3572,11 +3741,11 @@ fn write_response_string_tool_arguments_emitted_verbatim() {
     );
 }
 
-// Regression: a reasoning delta arriving AFTER the text block has opened must NOT be
-// honored as a Thinking-at-index-0 block. Doing so would flip `reasoning_seen`, bumping `offset`
-// from 0 to 1, and retroactively shift the IR index of the already-opened text block — corrupting
-// BlockStart/BlockStop pairing. The late reasoning delta must be dropped: no BlockStart{index:0},
-// no thinking BlockDelta, and `reasoning_seen`/`offset` must stay put.
+// Regression: a reasoning delta arriving AFTER the text block has opened must NOT be honored as a
+// Thinking-at-index-0 block — that would flip `reasoning_seen` and retroactively shift the IR index
+// of the already-opened text block, corrupting BlockStart/BlockStop pairing. It is carried instead
+// (OAI-14) as a Thinking block at the NEXT FREE index: the open text block closes at 0, the thinking
+// opens at 1, and resumed text opens a fresh text block at 2. No index is ever reused or shifted.
 #[test]
 fn late_reasoning_delta_after_text_does_not_shift_indices() {
     let mut state = crate::ir::StreamDecodeState::default();
@@ -3591,7 +3760,8 @@ fn late_reasoning_delta_after_text_does_not_shift_indices() {
             e,
             IrStreamEvent::BlockStart {
                 index: 0,
-                block: crate::ir::IrBlockMeta::Text
+                block: crate::ir::IrBlockMeta::Text,
+                refusal: _,
             }
         )),
         "text block must open at index 0, got {evs1:?}"
@@ -3599,42 +3769,50 @@ fn late_reasoning_delta_after_text_does_not_shift_indices() {
     assert!(state.text_block_open);
     assert!(!state.reasoning_seen);
 
-    // A late reasoning delta now arrives. It must be IGNORED (answer phase already started).
+    // A late reasoning delta: text closes at 0, thinking opens at the next free index (1).
     let c2 = serde_json::json!({
         "choices": [{"index": 0, "delta": {"reasoning_content": "late thought"}, "finish_reason": null}]
     });
     let evs2 = OpenAiReader.read_response_events("", &c2, &mut state);
     assert!(
-        !evs2.iter().any(|e| matches!(
-            e,
-            IrStreamEvent::BlockStart {
-                block: crate::ir::IrBlockMeta::Thinking,
-                ..
-            }
-        )),
-        "late reasoning must NOT open a thinking block, got {evs2:?}"
+        matches!(evs2.first(), Some(IrStreamEvent::BlockStop { index: 0 })),
+        "the open text block closes at its own index first, got {evs2:?}"
     );
     assert!(
-        !evs2.iter().any(|e| matches!(
+        evs2.iter().any(|e| matches!(
             e,
-            IrStreamEvent::BlockDelta {
-                delta: crate::ir::IrDelta::ThinkingDelta(_),
-                ..
+            IrStreamEvent::BlockStart {
+                index: 1,
+                block: crate::ir::IrBlockMeta::Thinking { kind: None },
+                refusal: _,
             }
         )),
-        "late reasoning must NOT emit a ThinkingDelta, got {evs2:?}"
+        "late reasoning opens a thinking block at the next free index, got {evs2:?}"
+    );
+    assert!(
+        evs2.iter().any(|e| matches!(
+            e,
+            IrStreamEvent::BlockDelta {
+                index: 1,
+                delta: crate::ir::IrDelta::ThinkingDelta(_),
+            }
+        )),
+        "late reasoning is carried as a ThinkingDelta, got {evs2:?}"
     );
     assert!(
         !state.reasoning_seen,
         "late reasoning must NOT flip reasoning_seen (which would shift already-opened indices)"
     );
-    assert!(!state.thinking_block_open);
 
-    // A subsequent text delta must still land on index 0 — proving the index was not shifted.
+    // Resumed text closes the thinking block and lands on a FRESH index (2), never 0 again.
     let c3 = serde_json::json!({
         "choices": [{"index": 0, "delta": {"content": " world"}, "finish_reason": null}]
     });
     let evs3 = OpenAiReader.read_response_events("", &c3, &mut state);
+    assert!(
+        matches!(evs3.first(), Some(IrStreamEvent::BlockStop { index: 1 })),
+        "the thinking block closes at its own index, got {evs3:?}"
+    );
     let text_idx = evs3.iter().find_map(|e| match e {
         IrStreamEvent::BlockDelta {
             index,
@@ -3644,8 +3822,8 @@ fn late_reasoning_delta_after_text_does_not_shift_indices() {
     });
     assert_eq!(
         text_idx,
-        Some(0),
-        "text must stay at index 0 after a stray late reasoning delta, got {evs3:?}"
+        Some(2),
+        "resumed text opens a fresh block past the thinking block, got {evs3:?}"
     );
 }
 
@@ -3664,7 +3842,8 @@ fn early_reasoning_delta_still_opens_thinking_at_index_0() {
             e,
             IrStreamEvent::BlockStart {
                 index: 0,
-                block: crate::ir::IrBlockMeta::Thinking
+                block: crate::ir::IrBlockMeta::Thinking { kind: None },
+                refusal: _,
             }
         )),
         "early reasoning must open a thinking block at index 0, got {evs:?}"
@@ -3887,6 +4066,16 @@ fn test_ir_request() -> crate::ir::IrRequest {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     }
 }
 
@@ -4139,6 +4328,7 @@ fn test_n_gt_1_clamped_to_one_on_cross_protocol_egress() {
             reasoning_budgets: crate::ir::REASONING_BUDGET_DEFAULTS,
             prompt_caching_allowed: true,
             cache_control_cap: None,
+            lane_caps: Default::default(),
         }
     }
 
@@ -4405,6 +4595,7 @@ fn test_write_request_file_id_image_dropped_not_corrupted() {
                     text: "describe this".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 },
                 crate::ir::IrBlock::Image {
                     source: crate::ir::IrImageSource::Vendor {
@@ -4412,6 +4603,7 @@ fn test_write_request_file_id_image_dropped_not_corrupted() {
                         value: serde_json::json!({ "file_id": "file-abc123" }),
                     },
                     cache_control: None,
+                    detail: None,
                 },
             ],
         }],
@@ -4429,6 +4621,16 @@ fn test_write_request_file_id_image_dropped_not_corrupted() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = writer.write_request(&req);
     let wire = serde_json::to_string(&out).unwrap();
@@ -4478,6 +4680,7 @@ fn test_write_request_image_s3_dropped_not_corrupted() {
                     text: "describe this".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 },
                 crate::ir::IrBlock::Image {
                     source: crate::ir::IrImageSource::Vendor {
@@ -4485,6 +4688,7 @@ fn test_write_request_image_s3_dropped_not_corrupted() {
                         value: serde_json::json!({ "format": "png", "s3Location": { "uri": "s3://bucket/key.png" } }),
                     },
                     cache_control: None,
+                    detail: None,
                 },
             ],
         }],
@@ -4502,6 +4706,16 @@ fn test_write_request_image_s3_dropped_not_corrupted() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = writer.write_request(&req);
     let wire = serde_json::to_string(&out).unwrap();
@@ -4624,6 +4838,7 @@ fn write_response_reconstructs_prompt_tokens_total_with_cached_details() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = openai_writer().write_response(&resp);
     assert_eq!(
@@ -4662,6 +4877,7 @@ fn write_response_omits_cached_details_when_no_cache_read() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = openai_writer().write_response(&resp);
     assert_eq!(out["usage"]["prompt_tokens"], serde_json::json!(7));
@@ -4813,8 +5029,9 @@ fn read_response_surfaces_a_refusal_as_text_and_promotes_the_stop_reason() {
             text: "I can't help with that.".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: true,
         }],
-        "the refusal text must not be dropped"
+        "the refusal text must not be dropped, and is flagged as the refusal (IR-02)"
     );
     assert_eq!(
         ir.stop_reason,
@@ -4856,7 +5073,8 @@ fn stream_refusal_deltas_open_a_text_block_and_promote_the_stop_reason() {
             e,
             IrStreamEvent::BlockStart {
                 index: 0,
-                block: IrBlockMeta::Text
+                block: IrBlockMeta::Text,
+                refusal: _,
             }
         )),
         "a refusal delta must open a text block, got {evs1:?}"
@@ -4925,6 +5143,7 @@ fn write_response_carries_citations_with_join_relative_offsets() {
         text: text.into(),
         cache_control: None,
         citations,
+        refusal: false,
     };
 
     let resp = crate::ir::IrResponse {
@@ -4955,6 +5174,7 @@ fn write_response_carries_citations_with_join_relative_offsets() {
         system_fingerprint: None,
 
         request_echo: None,
+        stop_detail: None,
     };
 
     let v = openai_writer().write_response(&resp);
@@ -5030,11 +5250,13 @@ fn url_annotation_base_accumulates_in_characters() {
                 text: first_block.to_string(),
                 cache_control: None,
                 citations: vec![],
+                refusal: false,
             },
             IrBlock::Text {
                 text: "claim.".to_string(),
                 cache_control: None,
                 citations: vec![cite("claim.", "https://b.test")],
+                refusal: false,
             },
         ],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
@@ -5049,6 +5271,7 @@ fn url_annotation_base_accumulates_in_characters() {
         system_fingerprint: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let v = openai_writer().write_response(&resp);
     let anns = v["choices"][0]["message"]["annotations"]
@@ -5106,6 +5329,7 @@ fn write_response_omits_annotations_when_there_are_no_citations() {
             text: "plain".into(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         stop_sequence: None,
@@ -5119,60 +5343,65 @@ fn write_response_omits_annotations_when_there_are_no_citations() {
         system_fingerprint: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let v = openai_writer().write_response(&resp);
     assert!(v["choices"][0]["message"].get("annotations").is_none());
 }
 
-/// `image_url.detail` is a cost/latency hint no `IrBlock::Image` field can carry
-/// (nested inside `messages`, a modeled key, so it cannot ride `extra` either — and only one
-/// protocol models it, so per owner decision no IR field is added). It must at least be
-/// diagnosable via a warn rather than silently vanishing, even OpenAI->OpenAI same-lane. `"auto"`
-/// is the default and must NOT warn (it is not information loss).
+/// `image_url.detail` is carried in the Image block's typed slot (IR-08) — `high` reaches the IR
+/// (and a same-lane re-serialize) without a drop warn. Only a word the IR does not know (a vendor
+/// adding e.g. `"original"`) is dropped, and that drop warns rather than vanishing.
 #[test]
-fn image_detail_warns_on_drop_except_auto() {
+fn image_detail_is_carried_and_only_an_unknown_word_warns() {
     use busbar_substrate_values::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
-    let body_high = serde_json::json!({
-        "model": "gpt-4o",
-        "messages": [{
-            "role": "user",
-            "content": [{
-                "type": "image_url",
-                "image_url": {"url": "https://example.com/x.png", "detail": "high"}
+    let body = |detail: &str| {
+        serde_json::json!({
+            "model": "gpt-4o",
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "image_url",
+                    "image_url": {"url": "https://example.com/x.png", "detail": detail}
+                }]
             }]
-        }]
-    });
+        })
+    };
     let cap = WarnCapture::default();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
-    let _ir = tracing::subscriber::with_default(subscriber, || {
-        OpenAiReader.read_request(&body_high).expect("parses")
+    let ir = tracing::subscriber::with_default(subscriber, || {
+        OpenAiReader.read_request(&body("high")).expect("parses")
     });
     assert!(
-        cap.contains("detail"),
-        "a non-auto detail must warn on drop: {:?}",
-        cap.messages()
+        matches!(
+            ir.messages[0].content[0],
+            IrBlock::Image {
+                detail: Some(crate::ir::IrImageDetail::High),
+                ..
+            }
+        ),
+        "{:?}",
+        ir.messages[0].content
+    );
+    assert!(!cap.contains("detail"), "{:?}", cap.messages());
+    let out = openai_writer().write_request(&ir);
+    assert_eq!(
+        out["messages"][0]["content"][0]["image_url"]["detail"],
+        serde_json::json!("high")
     );
 
-    let body_auto = serde_json::json!({
-        "model": "gpt-4o",
-        "messages": [{
-            "role": "user",
-            "content": [{
-                "type": "image_url",
-                "image_url": {"url": "https://example.com/x.png", "detail": "auto"}
-            }]
-        }]
-    });
     let cap2 = WarnCapture::default();
     let subscriber2 = tracing_subscriber::registry().with(cap2.clone());
     let _ir2 = tracing::subscriber::with_default(subscriber2, || {
-        OpenAiReader.read_request(&body_auto).expect("parses")
+        OpenAiReader
+            .read_request(&body("original"))
+            .expect("parses")
     });
     assert!(
-        !cap2.contains("detail"),
-        "the default 'auto' detail is not information loss and must not warn: {:?}",
+        cap2.contains("detail"),
+        "an unknown detail word must warn on drop: {:?}",
         cap2.messages()
     );
 }
@@ -5259,9 +5488,12 @@ fn chat_response_annotations_read_into_ir_citations() {
         Some("web_search_result_location"),
         "routes downstream writers to their web-search citation shape"
     );
-    assert!(
-        c.start_index.is_none() && c.end_index.is_none(),
-        "offsets must stay None until the byte-vs-character unit is established: {c:?}"
+    // SHR-01 (IR mapping Q57): OpenAI documents both offsets as CHARACTER indices into the
+    // message — the IR's unit — so they carry unconverted.
+    assert_eq!(
+        (c.start_index, c.end_index),
+        (Some(7), Some(20)),
+        "the url_citation span must carry: {c:?}"
     );
 }
 
@@ -5402,6 +5634,8 @@ fn openai_write_drops_thinking_observably() {
                 signature: None,
                 redacted: false,
                 cache_control: None,
+                kind: None,
+                signature_origin: None,
             },
             text_block("the answer"),
         ],
@@ -5421,6 +5655,7 @@ fn openai_write_drops_thinking_observably() {
         logprobs: Vec::new(),
 
         request_echo: None,
+        stop_detail: None,
     };
 
     let cap = WarnCapture::default();
@@ -5568,6 +5803,7 @@ fn plain_ir_response(logprobs: Vec<crate::ir::IrTokenLogprob>) -> crate::ir::IrR
         system_fingerprint: None,
         stop_sequence: None,
         request_echo: None,
+        stop_detail: None,
     }
 }
 

@@ -1277,38 +1277,6 @@ pub fn live_host_factory(
     })
 }
 
-/// A neutral, reusable HOST FACTORY: an owned closure that mints an `Arc<dyn EngineHost>` over any live
-/// `Arc<App>` handed to it. Threaded from a non-route transport's core BOOT boundary (e.g. the `busbar`
-/// binary's stdio start) into a plane that must re-mint the host over its per-frame LIVE snapshot, so the
-/// plane calls the neutral seam WITHOUT ever naming this `plane_host` factory. Each mint is one `Arc`
-/// clone; the transient `HostCtx` is minted per method call on the returned host, never here.
-pub type EngineHostFactory =
-    Arc<dyn Fn(&Arc<App>) -> Arc<dyn busbar_kernel::plane_host::EngineHost> + Send + Sync>;
-
-/// Mint the neutral [`EngineHostFactory`] — the closure a non-route transport boot threads into a plane.
-#[must_use]
-pub fn engine_host_factory() -> EngineHostFactory {
-    Arc::new(|app: &Arc<App>| engine_host(app))
-}
-
-/// Read the host wall clock in whole SECONDS through the wired [`clock_now`](vtable) seam using a
-/// [`HostCtx`] the caller ALREADY holds — the form a plane leg that was handed a raw host (over
-/// [`with_borrowed_host`] / a [`HostDispatch`]) but has no `&App` in scope to mint a fresh
-/// [`DispatchScope`] reaches the same clock through. It builds the host vtable and drives the
-/// `clock_now` slot against the caller's live host directly (the slot recovers and discards the
-/// [`HostState`], so no scope is minted); the value is identical to [`clock_now_secs_over`] and to
-/// reading `store::now` in place. A SAFE wrapper that keeps the raw fn-pointer read inside this
-/// audited module (busbar-core denies `unsafe` elsewhere).
-// Always compiled — the body drives only the neutral host vtable, so it needs no plane feature; a
-// build whose planes never hand a raw host to a hostless leg simply leaves it uncalled (dead-code
-// allowed).
-#[allow(dead_code)]
-#[must_use]
-pub fn clock_now_secs_via(host: HostCtx) -> u64 {
-    let vtable = build_plane_host_vtable();
-    (vtable.clock_now.expect("clock_now is a wired slot"))(host) / 1_000_000_000
-}
-
 // The request-admission gate verdict is a pure POD naming only `busbar_plugin::hot` + std, so it now
 // lives in the substrate beside the neutral `EngineHost` seam; core re-exports it so every in-core
 // caller (`gate_decide_over`, a2a) is unchanged.

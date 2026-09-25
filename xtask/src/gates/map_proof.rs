@@ -391,7 +391,7 @@ fn is_shell(lang: &str) -> bool {
 }
 
 /// A **printed figure** is an integer inside `**…**`. That is the corpus's own notation for "this
-/// is a measured number" — §2's reconciliation table, every `IN`/`OUT`/`Δ`, every headline count.
+/// is a measured number" — a reconciliation table, every `IN`/`OUT`/`Δ`, every headline count.
 /// Restricting to it keeps the census meaningful; counting every integer in the prose would drown
 /// the finding in section numbers and dates.
 fn collect_figures(line_no: usize, raw: &str, out: &mut Vec<(usize, i64)>) {
@@ -430,7 +430,7 @@ pub fn integers_in(s: &str) -> Vec<i64> {
     let mut i = 0usize;
     let glue =
         |ch: char| ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' || ch == '/' || ch == '-';
-    // `§12` is a cross-reference and `#58` is a decision id. Neither is a measurement, and
+    // `§N` is a cross-reference and `#N` is a decision id. Neither is a measurement, and
     // counting them as unbound figures buries the ones that are.
     let id_sigil = |ch: char| ch == '\u{a7}' || ch == '#';
     while i < c.len() {

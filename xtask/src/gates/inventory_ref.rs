@@ -36,7 +36,7 @@
 //!    that names no inventory file on purpose (a backticked source path, a `PB-N` self-reference):
 //!    those SAY where the evidence is and say it is not an inventory row. Blank says nothing.
 //!    MEASURED when this arm was closed (2026-09-23): 104 bindings, exactly one blank — `PB-38`,
-//!    whose Appendix B row cites `plugins-stores §3.5` and `governance 3.2.8` and lost both to a
+//!    whose row cited two other sections and lost both to a
 //!    `||` inside a backticked expression splitting the markdown row into extra cells. The pipes
 //!    are escaped at the source row now; the gate is what makes the next one impossible to ignore.
 

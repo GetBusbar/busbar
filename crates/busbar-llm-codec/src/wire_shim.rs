@@ -109,3 +109,7 @@ pub fn tier_usage(
     }
     busbar_substrate_values::billing::Usage { usage_units }
 }
+
+#[cfg(test)]
+#[path = "tests/wire_shim_tests.rs"]
+mod tests;

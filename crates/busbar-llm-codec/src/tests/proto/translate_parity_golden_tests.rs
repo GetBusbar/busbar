@@ -86,6 +86,7 @@ fn translate_request_a2o(body: &str) -> Vec<u8> {
             reasoning_budgets: crate::ir::REASONING_BUDGET_DEFAULTS,
             prompt_caching_allowed: true,
             cache_control_cap: None,
+            lane_caps: Default::default(),
         },
     );
     let ir = req;

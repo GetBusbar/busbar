@@ -56,7 +56,18 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) -> Result<(), String> {
         .as_ref()
         .map(|gov| crate::plane::store::PlaneStoreView::narrow(gov.store()));
     let ctx = crate::plane::registry::BootCtx::for_hydrate(plane_store, app);
-    run_hydrate_hooks(crate::plane::registry::plane_decls(), &ctx)
+    run_hydrate_hooks(&configured_decls(app), &ctx)
+}
+
+/// LAW 7 (BUSBAR-1.6.0.md: "Core loads a plugin **iff** its configuration section is present"): the
+/// linked planes this generation CONFIGURED, in plane-list order. An unconfigured plane's boot hooks
+/// never run — it restores nothing and starts nothing. One generic check, naming no plane.
+fn configured_decls(app: &crate::state::App) -> Vec<&'static crate::plane::registry::PlaneDecl> {
+    crate::plane::registry::plane_decls()
+        .iter()
+        .copied()
+        .filter(|d| app.plane_configured(d))
+        .collect()
 }
 
 /// THE HYDRATE FOLD. Split from [`hydrate_all`] and taking its decl list by argument for the reason
@@ -105,7 +116,7 @@ pub fn start_planes(app_handle: &Arc<crate::state::AppHandle>) -> Result<(), Str
         .as_ref()
         .and_then(|g| g.card_issuer());
     let ctx = crate::plane::registry::BootCtx::for_start(app_handle, card_issuer);
-    run_start_hooks(crate::plane::registry::plane_decls(), &ctx)
+    run_start_hooks(&configured_decls(&app_handle.load()), &ctx)
 }
 
 /// THE START FOLD. Split from [`start_planes`] and taking its decl list by argument, exactly as

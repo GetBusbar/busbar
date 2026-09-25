@@ -563,7 +563,7 @@ fn bedrock_document_is_modelled_without_double_emitting() {
 /// This is CONTENT INJECTION, not loss: `tool_plan` is the model's INTERNAL pre-tool-call plan, and
 /// reading it into a leading `IrBlock::Text` made every cross-protocol client render it as the
 /// answer's first paragraph — text the model never intended to show. It belongs in the IR's
-/// reasoning carrier, which is also what lets the Cohere writer put it back in its native slot.
+/// reasoning carrier, which the Cohere writer emits as a `thinking` content part (COH-08).
 #[test]
 fn cohere_tool_plan_is_reasoning_not_visible_text() {
     let entry = crate::proto_codec::protocol_for("cohere").expect("cohere");
@@ -595,10 +595,21 @@ fn cohere_tool_plan_is_reasoning_not_visible_text() {
          intend to show"
     );
 
-    // Same-protocol: it goes back into its native slot rather than into `content`.
+    // Written back as a Cohere RESPONSE, reasoning is a `{type:"thinking"}` content part ahead of
+    // the answer — never `message.tool_plan`, and never visible text (COH-08, IR mapping Q57). (A
+    // Cohere -> Cohere answer is relayed verbatim in production; this pins the writer's contract
+    // for a Thinking block, whichever dialect read it.)
     let out = entry.writer.write_response(&ir);
-    assert_eq!(out["message"]["tool_plan"], "I will search for it");
-    assert_eq!(out["message"]["content"][0]["text"], "hi");
+    assert!(
+        out["message"].get("tool_plan").is_none(),
+        "a response's reasoning is a thinking part, not tool_plan: {out}"
+    );
+    assert_eq!(out["message"]["content"][0]["type"], "thinking");
+    assert_eq!(
+        out["message"]["content"][0]["thinking"],
+        "I will search for it"
+    );
+    assert_eq!(out["message"]["content"][1]["text"], "hi");
 
     // Cross-protocol: an Anthropic client sees it as a `thinking` block, not as the answer.
     let anthropic = crate::proto_codec::protocol_for("anthropic").expect("anthropic");
@@ -608,7 +619,9 @@ fn cohere_tool_plan_is_reasoning_not_visible_text() {
 }
 
 /// A Cohere tool-result `document` content part must keep its STRUCTURE instead of being stringified
-/// into a literal JSON blob the model reads as escaped syntax.
+/// into a literal JSON blob the model reads as escaped syntax: its JSON `data` reaches the IR as the
+/// tool-output `Json` block (the ANT-17 follow-up — it rode the cohere `Vendor` escape, which every
+/// foreign writer dropped), so every target receives the tool's output.
 #[test]
 fn cohere_tool_result_document_is_not_stringified() {
     let entry = crate::proto_codec::protocol_for("cohere").expect("cohere");
@@ -635,30 +648,18 @@ fn cohere_tool_result_document_is_not_stringified() {
     let crate::ir::IrBlock::ToolResult { content, .. } = &tool_msg.content[0] else {
         panic!("expected a ToolResult, got {:?}", tool_msg.content[0]);
     };
-    assert!(
-        content.iter().any(|b| matches!(
-            b,
-            crate::ir::IrBlock::Media {
-                kind: crate::ir::IrMediaKind::Document,
-                ..
-            }
-        )),
-        "a tool-result document must reach the IR as a structured Media block, got {content:?}"
-    );
-    assert!(
-        !content.iter().any(|b| matches!(
-            b, crate::ir::IrBlock::Text { text, .. } if text.contains("\"type\":\"document\"")
-        )),
-        "the document must not be stringified into a JSON blob: the model then sees escaped JSON \
-         syntax instead of the document"
-    );
-    let out = entry.writer.write_request(&ir);
-    let tool_content = &out["messages"][2]["content"];
     assert_eq!(
-        tool_content[0]["type"], "document",
-        "the native document part must be re-emitted structurally, got {tool_content}"
+        content,
+        &vec![crate::ir::IrBlock::Json(json!({"t": "x"}))],
+        "a tool-result document's data must reach the IR as a structured Json block"
     );
-    assert_eq!(tool_content[0]["document"]["id"], "d1");
+    let anthropic = crate::proto_codec::protocol_for("anthropic").expect("anthropic");
+    let out = anthropic.writer.write_request(&ir);
+    assert_eq!(
+        out["messages"][2]["content"][0]["content"],
+        json!([{"type": "text", "text": "{\"t\":\"x\"}"}]),
+        "the document's data must reach a foreign backend as the tool result, got {out}"
+    );
 }
 
 /// Cohere's `billed_units.search_units` is a SEPARATELY BILLED unit that no token field can carry —
@@ -1281,6 +1282,7 @@ fn streamed_usage_sub_buckets_are_not_zeroed() {
                     ..Default::default()
                 },
             },
+            stop_detail: None,
         })
         .expect("terminal chunk");
     assert_eq!(
@@ -1334,6 +1336,7 @@ fn streamed_anthropic_cache_tiers_survive() {
                     ..Default::default()
                 },
             },
+            stop_detail: None,
         })
         .expect("message_delta");
     assert_eq!(
@@ -1388,6 +1391,7 @@ fn streamed_cohere_search_units_survive() {
                     ..Default::default()
                 },
             },
+            stop_detail: None,
         })
         .expect("message-end");
     assert_eq!(
@@ -1448,6 +1452,7 @@ fn bedrock_uncited_text_keeps_the_plain_shape() {
             text: "plain".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: crate::ir::IrUsage {
@@ -1465,6 +1470,7 @@ fn bedrock_uncited_text_keeps_the_plain_shape() {
         logprobs: Vec::new(),
 
         request_echo: None,
+        stop_detail: None,
     });
     assert_eq!(
         out["output"]["message"]["content"][0]["text"], "plain",

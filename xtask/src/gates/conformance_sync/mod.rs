@@ -25,7 +25,7 @@
 //! ## Why the website page is not a row here
 //!
 //! The certifications page fetches the PUBLISHED manifest pinned to a release tag and renders
-//! client-side from the shared `claim_for` logic (design §6.2, shape B) — it is out of the release
+//! client-side from the shared `claim_for` logic — it is out of the release
 //! build's tree, so there is no in-tree byte to diff. Its "cannot overstate" property is the same
 //! one this gate enforces on the manifest it renders from.
 

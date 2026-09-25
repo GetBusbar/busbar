@@ -839,6 +839,17 @@ pub fn build_app_from_config(
             attempt_timeout_ms: ld.attempt_timeout_ms,
             reasoning: ld.reasoning,
             prompt_caching: ld.prompt_caching,
+            // The provider entry's lane-capability keys, carried unread and resolved against the
+            // lane's wire model by `ir::lane_caps`, which owns them (architect ruling LANECAPS-MOVE).
+            lane_caps: busbar_substrate_values::ir::lane_caps::resolve_lane_caps(
+                busbar_substrate_values::ir::lane_caps::ProviderLaneCaps {
+                    max_output_key: provider_cfg.max_output_key,
+                    anthropic_adaptive_thinking: provider_cfg.anthropic_adaptive_thinking,
+                    native_structured_output: provider_cfg.native_structured_output,
+                },
+                &provider_cfg.model_capabilities,
+                ld.upstream_model.as_deref().unwrap_or(&ld.model),
+            ),
             max_concurrent: ld.max,
             limited: ld.limited,
             budget: ld.budget,
@@ -1490,8 +1501,10 @@ pub fn build_app_from_config(
             // receives below.
             prior: prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
         };
+        // LAW 7: an unconfigured plane builds no slot, so it claims, admits and mounts nothing.
         crate::plane::registry::plane_decls()
             .iter()
+            .filter(|decl| decl.fallback || cfg.plane_sections.contains(decl.config_section))
             .filter_map(|decl| (decl.build)(&ctx).map(|obj| (decl.key, obj)))
             .collect()
     };
@@ -1682,6 +1695,7 @@ pub fn build_app_from_config(
     crate::proxy::set_hook_content_max_bytes(cfg.limits.hook_content_max_bytes);
 
     let app = App {
+        plane_sections: Some(cfg.plane_sections.clone()),
         // Telemetry-bank slot table for this generation (built above as a local, BEFORE the
         // config-derived collections moved into the fallback plane's runtime bundle so its
         // `&lanes`/`&pools`/`&by_model` borrows ran first). Identical label sets across applies re-intern to the same

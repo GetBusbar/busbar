@@ -28,6 +28,7 @@ fn lane(api_key: &str) -> LaneInput {
         attempt_timeout_ms: None,
         reasoning: false,
         prompt_caching: false,
+        lane_caps: Default::default(),
         max_concurrent: 1,
         limited: false,
         budget: -1,

@@ -3508,6 +3508,10 @@ mod disposition_matrix_tests {
                     subject: None,
                     auth: None,
                     allow_metadata_hosts: Vec::new(),
+                    max_output_key: None,
+                    anthropic_adaptive_thinking: None,
+                    native_structured_output: None,
+                    model_capabilities: Vec::new(),
                 },
             );
             let mut models = HashMap::new();
@@ -3522,6 +3526,7 @@ mod disposition_matrix_tests {
                 agent_defs: busbar_kernel::plane::config::AgentsSection::default().0,
                 tool_pools: Default::default(),
                 agent_pools: Default::default(),
+                plane_sections: Default::default(),
                 upstream_credentials: busbar_api::UpstreamCreds::Own,
                 listen: "0.0.0.0:8080".into(),
                 public_url: None,

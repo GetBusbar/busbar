@@ -1093,8 +1093,8 @@ impl busbar_core_admin::v1::service::UsageRateHistory for RootUsageHistory {
 /// appends a dated entry. The DATE half answers the metering accrual asking when the entry it is
 /// serving under started, which is what gives a UTC-day cell an instant finer than the day. The
 /// READ half hands the history to the ledger read that prices against it. Any two without the
-/// third is a node that dates its prices and then reports them off the newest card anyway, which
-/// is the defect #79 names.
+/// third is a node that dates its prices and then reports them off the newest card anyway —
+/// exactly the defect this seam exists to rule out.
 pub fn install_card_repricer() {
     // Armed BEFORE the boot resolution, so the opening entry is held for the book to journal: the
     // boot's book rebuilds the dated history from its chain (#79) before it prices a posting.

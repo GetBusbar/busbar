@@ -183,6 +183,50 @@ HTTP-status failures (429, 5xx, 401, …) are classified by the circuit breaker 
 
 This is exactly why the shipped catalog is **verified, not scraped**: a wrong mapping makes the breaker mis-classify a failure. When you add a provider, check its error documentation and map the billing/rate-limit codes; leave `error_map` empty if it only uses standard HTTP statuses.
 
+## Lane capabilities
+
+When a request crosses from one protocol to another, busbar writes it in the target protocol's
+spelling. For three controls the correct spelling depends on the upstream **model**, and the request
+cannot tell busbar which one it is talking to. A provider entry declares them. Each one is optional,
+and when a key is omitted busbar sends what it sent before the key existed, so nothing you already run
+changes.
+
+| Key | Values | Default | What it changes |
+|---|---|---|---|
+| `max_output_key` | `max_tokens` \| `max_completion_tokens` | `max_tokens` | The key an **OpenAI-protocol** upstream receives a translated output-token cap under. OpenAI's own API deprecates `max_tokens`, and its o-series and gpt-5 models reject it. Many OpenAI-compatible hosts understand only `max_tokens`, and a host that ignored `max_completion_tokens` would run with no output cap at all. |
+| `anthropic_adaptive_thinking` | `true` \| `false` | `false` | How an **Anthropic-protocol** upstream receives a reasoning ask given as an effort word (OpenAI `reasoning_effort`, Responses `reasoning.effort`). `true`: `thinking: {type: adaptive}` plus `output_config.effort`. `false`: `thinking.budget_tokens`, from the `limits.reasoning_effort_budgets` table. Opus 4.7 and later, Sonnet 5 and Fable accept only adaptive thinking; older Claude models accept only `budget_tokens`. |
+| `native_structured_output` | `true` \| `false` | `false` | How an **Anthropic-protocol** upstream receives a JSON-schema `response_format`. `true`: native `output_config.format`. `false`: a forced tool whose input schema is the requested schema, with the answer mapped back to text. A schema-less JSON mode has no native form, so on a `true` lane it is dropped and recorded as an `egress.control_unrepresentable` audit event. |
+
+A provider that serves models of several generations declares per-model overrides under
+`model_capabilities`. The **first** rule whose `models` glob list matches the lane's wire model
+(`upstream_model`, else the model name) sets every key it names, on top of the provider-level values.
+The only wildcard is `*`, which matches any run of characters.
+
+```yaml
+anthropic:
+  protocol: anthropic
+  base_url: https://api.anthropic.com
+  error_map: {}
+  model_capabilities:
+    - models: ["claude-opus-4-7*", "claude-opus-5*", "claude-sonnet-5*", "claude-fable-5*"]
+      anthropic_adaptive_thinking: true
+      native_structured_output: true
+
+openai:
+  protocol: openai
+  base_url: https://api.openai.com
+  error_map: {}
+  max_output_key: max_completion_tokens
+```
+
+The shipped catalog already sets these for `openai`, and for the `anthropic` models listed above. The
+Azure OpenAI templates set `max_output_key: max_completion_tokens`. Every other catalog host keeps the
+defaults. A deployment in `config.yaml` can set any of the keys itself: a value overrides the
+catalog's, and a `model_capabilities` list replaces the catalog's list.
+
+The capabilities apply only when a request **crosses** protocols. A same-protocol request goes
+upstream as the bytes the client sent.
+
 ## Non-standard endpoints
 
 Some backends don't serve the protocol's default path or native auth:

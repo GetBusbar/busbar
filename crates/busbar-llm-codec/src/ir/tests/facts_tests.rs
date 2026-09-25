@@ -17,6 +17,7 @@ fn text(t: &str) -> IrBlock {
         text: t.to_string(),
         cache_control: None,
         citations: Vec::new(),
+        refusal: false,
     }
 }
 
@@ -84,6 +85,8 @@ fn every_opaque_reasoning_shape_projects_the_marker_and_never_its_payload() {
                 signature: None,
                 redacted: true,
                 cache_control: None,
+                kind: None,
+                signature_origin: None,
             },
             "OPAQUE_CIPHERTEXT_BYTES",
         ),
@@ -95,6 +98,8 @@ fn every_opaque_reasoning_shape_projects_the_marker_and_never_its_payload() {
                 signature: Some("sig".to_string()),
                 redacted: true,
                 cache_control: None,
+                kind: None,
+                signature_origin: None,
             },
             "OPAQUE_BEDROCK_BYTES",
         ),
@@ -106,6 +111,8 @@ fn every_opaque_reasoning_shape_projects_the_marker_and_never_its_payload() {
                 signature: Some("OPAQUE_BLOB_XYZ".to_string()),
                 redacted: false,
                 cache_control: None,
+                kind: None,
+                signature_origin: None,
             },
             "OPAQUE_BLOB_XYZ",
         ),
@@ -153,6 +160,8 @@ fn readable_reasoning_is_projected_as_text() {
                     signature: Some("sig".to_string()),
                     redacted: false,
                     cache_control: None,
+                    kind: None,
+                    signature_origin: None,
                 },
                 text("the answer"),
             ],
@@ -183,6 +192,7 @@ fn a_turn_with_no_projectable_content_still_appears() {
                 vec![IrBlock::Image {
                     source: IrImageSource::Url("https://example.test/a.png".to_string()),
                     cache_control: None,
+                    detail: None,
                 }],
             ),
             turn(IrRole::Assistant, vec![text("after")]),
@@ -314,6 +324,8 @@ fn text_chars_is_exactly_what_a_content_granted_hook_is_shown() {
                     signature: None,
                     redacted: true,
                     cache_control: None,
+                    kind: None,
+                    signature_origin: None,
                 }],
             ),
             turn(
@@ -321,6 +333,7 @@ fn text_chars_is_exactly_what_a_content_granted_hook_is_shown() {
                 vec![IrBlock::Image {
                     source: IrImageSource::Url("https://example.test/a.png".to_string()),
                     cache_control: None,
+                    detail: None,
                 }],
             ),
         ],
@@ -430,6 +443,7 @@ fn cache_breakpoints_do_not_change_what_is_projected() {
                     kind: CacheKind::Ephemeral,
                 }),
                 citations: Vec::new(),
+                refusal: false,
             }],
         )],
     );

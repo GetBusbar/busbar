@@ -111,11 +111,11 @@ SHAPES: list[tuple[str, str]] = [
     # A NOTE IS NOT A MIGRATION. A document that describes work instead of being it.
     ("note-not-work", r"\ba\s+NOTE,?\s+not\s+a\b|\bdescribes?\s+.{0,30}?rather\s+than\s+(?:does|doing|performing)\b"
                       r"|\brecommendation\s+is\s+to\b"),
-    # ── THE FOUR SHAPES ROUND 2 OF THE POSITIVE CONTROL FOUND MISSING ──────────────────
-    # Disclosed as tuned-against: these were added after Round 2 of `--selftest` drove four
+    # ── THE FOUR SHAPES A LATER BATCH OF THE POSITIVE CONTROL FOUND MISSING ──────────────────
+    # Disclosed as tuned-against: these were added after an earlier `--selftest` batch drove four
     # invented phrasings straight through both layers. Each is a CLASS of incompleteness,
     # not the words of the phrase that exposed it — which is the only kind of widening
-    # allowed here. Round 3 was then written fresh and never used to tune anything.
+    # allowed here. A further batch was then written fresh and never used to tune anything.
 
     # PARTIAL COVERAGE. "only handles the two-party case", "the happy path is wired". The
     # work is declared done for a subset, which is the subset-shaped deferral.
@@ -323,11 +323,11 @@ def main() -> int:
 # `expect_layer` records WHICH layer caught it, because "caught by Layer 2 only" means the
 # named-shape set is still a spelling list and this file must say so.
 # ─────────────────────────────────────────────────────────────────────────────────────────
-# ROUND 1 — written BEFORE the shape set was widened, and used to widen it. Two of these
+# BATCH 1 — written BEFORE the shape set was widened, and used to widen it. Two of these
 # fell through both layers on the first run; the fix was two new SHAPES (`negated-now`, and
 # Layer 2's obligation rule), never a new word. Keeping them here is a regression test, not
 # a proof — a control you tuned against is a transcript.
-CONTROL_R1 = [
+CONTROL_B1 = [
     # (text, expect_layer)  — expect_layer is "1" if a named shape must fire.
     ("// The remaining three call sites are left for a follow-on release once the engine split settles.", "1"),
     ("// We will circle back to the retry budget after the duplex landing.", "2"),
@@ -336,10 +336,10 @@ CONTROL_R1 = [
     ("// Not wiring this today — the shape is right and the cost is a day we do not have.", "1"),
 ]
 
-# ROUND 2 — written AFTER the widening and NEVER used to tune it. This is the honest test.
+# BATCH 2 — written AFTER the widening and NEVER used to tune it. This is the honest test.
 # Whatever these do is reported verbatim, pass or fail; a miss here is a finding about this
 # file, not a reason to edit the shape list again.
-CONTROL_R2 = [
+CONTROL_B2 = [
     ("// Shipping the single-slot read; the multi-slot lookup can wait for whoever owns tls next quarter.", "1"),
     ("// The reconciler only handles the two-party case. Three-party is a bigger lift than we have room for.", "2"),
     ("/// Approximate. Exactness here is a research project and the rig does not need it.", "2"),
@@ -347,9 +347,9 @@ CONTROL_R2 = [
     ("// Stubbed against the happy path so the battery goes green; real fault injection is a separate piece of work.", "1"),
 ]
 
-# ROUND 3 — written after the Round-2 widening, never used to tune anything. Whatever this
-# round does is the detector's real, untuned hit rate and is reported as such.
-CONTROL_R3 = [
+# BATCH 3 — written after the batch-2 widening, never used to tune anything. Whatever this
+# batch does is the detector's real, untuned hit rate and is reported as such.
+CONTROL_B3 = [
     ("// The window accounting rounds to the minute; per-second is more plumbing than this ticket bought.", "1"),
     ("// One provider is enough to prove the seam. The other two land when someone needs them.", "2"),
     ("// This assumes the config never reloads. It does, but not on any path we ship.", "1"),
@@ -357,22 +357,22 @@ CONTROL_R3 = [
     ("// Enough of the contract to compile. The invariants are documented and unenforced.", "1"),
 ]
 
-CONTROL = CONTROL_R1
+CONTROL = CONTROL_B1
 
 
 def selftest() -> int:
-    r1 = _run_control("ROUND 1 — used to widen the shape set (regression test)", CONTROL_R1)
-    r2 = _run_control("ROUND 2 — drove the four shape families marked 'tuned-against' above", CONTROL_R2)
-    r3 = _run_control("ROUND 3 — written after ALL widening, NEVER used to tune anything", CONTROL_R3)
+    r1 = _run_control("BATCH 1 — used to widen the shape set (regression test)", CONTROL_B1)
+    r2 = _run_control("BATCH 2 — drove the four shape families marked 'tuned-against' above", CONTROL_B2)
+    r3 = _run_control("BATCH 3 — written after ALL widening, NEVER used to tune anything", CONTROL_B3)
     print("=" * 89)
     if r3:
-        print(f"ROUND 3 (the untuned one): {r3} of {len(CONTROL_R3)} fell through.")
+        print(f"BATCH 3 (the untuned one): {r3} of {len(CONTROL_B3)} fell through.")
         print("That is the honest residue. Layer 1 is a SHAPE set, not a complete one; the")
         print("phrasings it misses are caught by Layer 2 or not at all, and Layer 2 is a")
-        print("reading list, not a gate. Do NOT close a Round-2 miss by adding its words —")
+        print("reading list, not a gate. Do NOT close a batch-2 miss by adding its words —")
         print("that turns the detector back into a transcript of what it was shown.")
     else:
-        print("ROUND 3 (the untuned one): every control phrase was caught at or above its layer.")
+        print("BATCH 3 (the untuned one): every control phrase was caught at or above its layer.")
     return 1 if (r1 or r2 or r3) else 0
 
 

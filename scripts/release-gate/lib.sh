@@ -280,13 +280,39 @@ retry() {
 # does not fail, it hangs, and a hang is the one outcome that is neither red nor green.
 CURL_OPTS=(--fail --silent --show-error --location --max-time 45 --retry 0)
 
+# OWNER RULING Q39: every getbusbar.com request carries X-Busbar-Verify (the Cloudflare WAF skip
+# rule's header), and ONLY getbusbar.com requests do -- site_curl scopes it by host and is plain
+# curl for everything else. http_code/fetch are the only way a check reads the site, so routing them
+# through site_curl covers every getbusbar.com row. An empty SITE_VERIFY_TOKEN is reported as the
+# code `no-token`, which is NOT a Cloudflare-block signature, so the row FAILs instead of SKIPping.
+# shellcheck source=scripts/release-gate/site-curl.sh
+. "$(dirname "${BASH_SOURCE[0]}")/site-curl.sh"
+
 http_code() {  # http_code <url> [extra curl args...]
-  local url="$1"; shift
-  curl --silent --show-error --location --max-time 45 -o /dev/null -w '%{http_code}' "$@" "$url" 2>/dev/null || echo 000
+  local url="$1" rc=0; shift
+  site_curl --silent --show-error --location --max-time 45 -o /dev/null -w '%{http_code}' "$@" "$url" 2>/dev/null || rc=$?
+  if [ "$rc" = "$SITE_CURL_NO_TOKEN" ]; then
+    echo "::error::${url} was NOT fetched: SITE_VERIFY_TOKEN is empty, so it cannot carry the X-Busbar-Verify header the Q39 Cloudflare WAF skip rule matches (OWNER RULING Q39)." >&2
+    echo no-token
+  elif [ "$rc" != 0 ]; then
+    echo 000
+  fi
 }
 
 fetch() {  # fetch <url> -> body on stdout, non-zero on any non-2xx
-  curl "${CURL_OPTS[@]}" "$1"
+  site_curl "${CURL_OPTS[@]}" "$1"
+}
+
+# site_not_run <id> -> 0 (and a SKIP row) when this is a fork PR with no SITE_VERIFY_TOKEN.
+# OWNER RULING Q39 (fork-PR follow-up): a fork's pull_request gets no secrets, and `release gate` is
+# a required status, so failing here would turn every external contributor's PR red for a secret
+# they cannot have. The row is a VISIBLE not-run instead: SKIP is only accepted by gate.sh for the
+# getbusbar.com set (SKIP_ALLOWED), record() prints it as a ::warning:: DID NOT VERIFY, and the
+# summary names it NOT VERIFIED. Any other empty token returns 1 here and the row FAILs (no-token).
+site_not_run() {  # site_not_run <id>
+  [ "$(site_token_state)" = fork-pr ] || return 1
+  record "$1" SKIP "not-run: fork PR has no SITE_VERIFY_TOKEN (Q39)" \
+    "GitHub gives a pull_request from a fork no secrets, so this getbusbar.com row cannot send the X-Busbar-Verify header the Cloudflare WAF skip rule matches (OWNER RULING Q39). NOT VERIFIED, not passed. It runs on the same-repo PR, on push to main and on every release."
 }
 
 # CLOUDFLARE, NAMED RATHER THAN GUESSED AT.

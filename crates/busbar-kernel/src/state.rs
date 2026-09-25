@@ -391,6 +391,9 @@ pub struct App {
     /// Absent from this map is the same fact as an unconfigured plane: a plane the operator did not
     /// configure contributes no slot (see [`crate::plane::registry::PlaneDecl::build`]).
     pub plane_slots: std::collections::BTreeMap<&'static str, Arc<dyn std::any::Any + Send + Sync>>,
+    /// LAW 7 — this generation's configured plane sections (`RootCfg::plane_sections`). `None` only on
+    /// a test fixture that states none, where every linked plane counts as configured.
+    pub plane_sections: Option<std::collections::BTreeSet<&'static str>>,
     /// The credential cache — Arc-shared ACROSS config swaps (like the
     /// mutation limiter): an apply/reload must not silently re-open every cached-allow window.
     pub credential_cache: Arc<crate::auth_cache::CredentialCache>,
@@ -503,6 +506,16 @@ pub struct App {
 }
 
 impl App {
+    /// LAW 7, the ONE generic check: is this linked plane configured in this generation? The fallback
+    /// plane always is; any other only when its declared `config_section` is present. Core names no plane.
+    pub fn plane_configured(&self, decl: &crate::plane::registry::PlaneDecl) -> bool {
+        decl.fallback
+            || self
+                .plane_sections
+                .as_ref()
+                .is_none_or(|s| s.contains(decl.config_section))
+    }
+
     /// Borrow this snapshot's data-plane routing tables through the NEUTRAL [`EngineTablesView`]
     /// (`busbar_kernel::plane_host`) read seam — the projection the core-resident scrape/discovery
     /// readers (`/metrics`, `/v1/models`, telemetry label bank) name so they need not know which plane

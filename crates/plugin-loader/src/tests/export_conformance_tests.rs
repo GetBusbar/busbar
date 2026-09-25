@@ -36,12 +36,13 @@
 //! ## Red-before-green, PERMANENTLY
 //!
 //! [`the_pre_envelope_path_loses_a_dropped_in_plugins_counters`] is the RED arm, and it stays in the
-//! file. It reproduces what the old arrangement did — a sink incrementing its own in-process
-//! registry — and shows the two builds diverging. A test that only ever passes cannot tell you what
+//! file. It replays what the old arrangement did over the production seam — the real cdylib answering
+//! the pre-envelope BARE response through the loader's real wire call, its counters left in a
+//! registry of its own — and shows the two builds diverging. A test that only ever passes cannot tell you what
 //! it is protecting you from.
 
 use super::*;
-use busbar_plugin::cold::export::ExportRequest;
+use busbar_plugin::cold::export::{ExportRequest, ExportResponse};
 
 /// The two arms are compared on `(kind, metrics, diagnostics)`.
 ///
@@ -231,45 +232,172 @@ fn the_reported_observations_are_the_ones_the_sink_produced() {
     }
 }
 
+/// The host-assigned name the RED arm's pre-envelope build loads under — its own filter, for the
+/// same reason [`COMPILED_IN`] and [`DROPPED_IN`] are.
+const PRE_ENVELOPE: &str = "#11-pre-envelope";
+
+/// What the pre-envelope build's plugin-side "registry" received: every metric the handler OBSERVED
+/// and the pre-envelope wire had no field to carry. Process-global only because a C-ABI `call` is a
+/// bare fn pointer with no closure; the RED arm is its only writer and reads it under
+/// [`crate::observe::testing::exclusive`].
+static PRE_ENVELOPE_PLUGIN_LOCAL: std::sync::Mutex<Vec<serde_json::Value>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// The pre-envelope build's op-dispatch: the SAME constructor's handler, reached through the SAME
+/// op-dispatch, set by the RED arm before its first call.
+type PreEnvelopeDispatch = Box<
+    dyn Fn(ExportRequest) -> busbar_plugin::cold::observe::Envelope<ExportResponse> + Send + Sync,
+>;
+static PRE_ENVELOPE_DISPATCH: std::sync::Mutex<Option<PreEnvelopeDispatch>> =
+    std::sync::Mutex::new(None);
+
+/// A `busbar_call` speaking the wire as it was BEFORE #85: the kind's response, BARE.
+///
+/// It runs the real example handler through its real op-dispatch, so the plugin genuinely observes
+/// what it observes on the other two arms. What it cannot do is put those observations on the wire:
+/// the pre-envelope response had no `metrics` field. So they go where a dropped-in cdylib's
+/// statically-linked `metrics` facade sent them — into a registry of the plugin's own
+/// ([`PRE_ENVELOPE_PLUGIN_LOCAL`]) that the host never scrapes.
+unsafe extern "C-unwind" fn pre_envelope_call(
+    _handle: *mut std::os::raw::c_void,
+    req: *const u8,
+    req_len: usize,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    let req: ExportRequest =
+        serde_json::from_slice(std::slice::from_raw_parts(req, req_len)).expect("decode request");
+    let envelope = {
+        let dispatch = PRE_ENVELOPE_DISPATCH
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        (dispatch
+            .as_ref()
+            .expect("the RED arm sets the dispatch first"))(req)
+    };
+    PRE_ENVELOPE_PLUGIN_LOCAL
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .extend(envelope.metrics);
+    let boxed: Box<[u8]> = serde_json::to_vec(&envelope.result)
+        .expect("encode the bare response")
+        .into_boxed_slice();
+    *out_len = boxed.len();
+    *out = Box::into_raw(boxed) as *mut u8;
+    STATUS_OK
+}
+
+/// Free a buffer [`pre_envelope_call`] allocated.
+unsafe extern "C-unwind" fn pre_envelope_free(ptr: *mut u8, len: usize) {
+    if !ptr.is_null() && len != 0 {
+        drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)));
+    }
+}
+
 /// **THE RED ARM — what the old arrangement did, kept as the witness.**
 ///
-/// A sink that reaches a recorder directly increments whichever registry its own object links. Two
-/// builds link two different objects, so they increment two different registries — and the host
-/// scrapes exactly one of them. Modelled here with two registries and one scrape, because that is
-/// the shape of the defect rather than an analogy for it: the numbers diverge, nothing errors, and
-/// nothing anywhere notices.
+/// Before #85 a dropped-in sink had no wire for what it observed: its response was the kind's answer
+/// BARE, and its counters went into the `metrics` facade its own object statically linked — a
+/// registry nobody scrapes. The compiled-in build of the same source linked the host's recorder, so
+/// the two builds diverged and nothing errored.
+///
+/// This arm REPLAYS that arrangement over the production seam rather than modelling it: the REAL
+/// export `cdylib` is staged and wired (`stage::load_library_from_bytes` + `wire_up_raw`, its real
+/// `busbar_open`), its `call` answers bare what the SAME constructor's real op-dispatch answered,
+/// and the host reads it through the loader's ONE wire seam, `RawPlugin::transport_call` — whose
+/// bare-shape arm is the production pre-envelope path (still live for plugins built before #85). The
+/// compiled-in arm is the real one. The fold log is the host's real observer.
+///
+/// So it is RED-capable in every direction the claim has: if the example sink stops observing, if
+/// the bare arm stops decoding (or starts inventing folds), or if the two builds stop diverging, one
+/// of the assertions below fails.
 ///
 /// The envelope makes this unrepresentable. A plugin has no symbol to call: it REPORTS, on a wire
 /// that goes to exactly one place, and the host is what increments.
 #[test]
 fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
-    // The host's registry — the one a scrape renders.
-    let host_registry = std::cell::Cell::new(0u64);
-    // The registry a dropped-in cdylib links: its own, reachable by nobody.
-    let plugin_local_registry = std::cell::Cell::new(0u64);
+    let _guard = crate::observe::testing::exclusive();
 
-    // Compiled-in: the plugin's `metrics::counter!` resolves to the HOST's recorder, because there
-    // is only one object and one linked facade.
-    for _ in 0..2 {
-        host_registry.set(host_registry.get() + 1);
+    // Compiled-in, as the equivalence test runs it: the host folds what the plugin reported.
+    run_compiled_in();
+    let compiled_in = compared(COMPILED_IN, crate::observe::testing::folds());
+
+    // Dropped-in, pre-envelope: the real cdylib wired over the real loader, answering bare.
+    let Some(path) = example_cdylib() else {
+        // Not built under this scoped run; `example_cdylib` hard-fails under CI.
+        return;
+    };
+    let bytes = std::fs::read(&path).expect("read the export example plugin cdylib");
+    let (lib, staged) = stage::load_library_from_bytes(&bytes, PRE_ENVELOPE)
+        .expect("stage the export example plugin cdylib");
+    let mut raw = wire_up_raw(
+        lib,
+        "{}",
+        PRE_ENVELOPE.to_string(),
+        busbar_plugin::cold::kind::EXPORT,
+        busbar_plugin::cold::kind::EXPORT,
+        Some(staged),
+    )
+    .expect("wire up the export example plugin");
+    let handler = busbar_export_example_plugin::open("{}").expect("the same constructor");
+    *PRE_ENVELOPE_DISPATCH
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = Some(Box::new(move |req| {
+        busbar_export_example_plugin::dispatch_compiled_in(handler.as_ref(), req)
+    }));
+    PRE_ENVELOPE_PLUGIN_LOCAL
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clear();
+    raw.call = pre_envelope_call;
+    raw.free = pre_envelope_free;
+    for req in script() {
+        match raw
+            .transport_call::<ExportRequest, ExportResponse>(&req)
+            .expect("the bare pre-envelope response decodes through the loader's wire seam")
+        {
+            ExportResponse::Delivered => {
+                assert!(matches!(req, ExportRequest::Deliver { .. }), "{req:?}")
+            }
+            ExportResponse::Streams(s) => assert_eq!(s, vec![ExportStream::Metrics]),
+            other => panic!("unexpected response {other:?}"),
+        }
     }
-    let compiled_in_scrape = host_registry.get();
+    drop(raw);
+    let dropped_in_pre_envelope = compared(PRE_ENVELOPE, crate::observe::testing::folds());
+    let plugin_local = std::mem::take(
+        &mut *PRE_ENVELOPE_PLUGIN_LOCAL
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()),
+    );
+    *PRE_ENVELOPE_DISPATCH
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = None;
 
-    // Dropped-in: the same source, the same two increments, into the copy of the facade the cdylib
-    // statically linked. The host's registry never moves.
-    host_registry.set(0);
-    for _ in 0..2 {
-        plugin_local_registry.set(plugin_local_registry.get() + 1);
-    }
-    let dropped_in_scrape = host_registry.get();
-
-    assert_eq!(compiled_in_scrape, 2);
+    // The compiled-in build's counters reached the host.
+    let host_saw: Vec<serde_json::Value> = compiled_in
+        .iter()
+        .flat_map(|(_, metrics, _)| metrics.clone())
+        .collect();
     assert_eq!(
-        dropped_in_scrape, 0,
-        "the defect: a dropped-in plugin's counters land where nothing scrapes"
+        host_saw.len(),
+        2,
+        "the compiled-in build must report both deliveries: {compiled_in:?}"
+    );
+    // The pre-envelope build OBSERVED exactly the same thing — the counters existed...
+    assert_eq!(
+        plugin_local, host_saw,
+        "the pre-envelope build must have observed what the compiled-in one reported, or the \
+         divergence below is a broken fixture rather than the defect"
+    );
+    // ...and the host received none of it.
+    assert!(
+        dropped_in_pre_envelope.is_empty(),
+        "the defect: a dropped-in plugin's counters land where nothing scrapes — the host folded \
+         {dropped_in_pre_envelope:?}"
     );
     assert_ne!(
-        compiled_in_scrape, dropped_in_scrape,
+        compiled_in, dropped_in_pre_envelope,
         "compiled-in ≡ dropped-in was ASSERTED and false for anything a plugin observes — this \
          inequality is what #85's envelope exists to remove, and \
          `compiled_in_and_dropped_in_report_identical_observations` is what proves it did"

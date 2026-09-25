@@ -298,22 +298,44 @@ fn scope_kinds_survive_store_round_trip() {
     assert!(rt.scope_allowed("pool", "fast"));
 }
 
-/// A scope kind with no registered wire field is a HARD serialize error - never silently
-/// remapped into `allowed_pools` (the pre-P0 behavior) and never silently dropped. When 1.6.0
-/// adds `agent`, this is the test that forces it to get its own named wire field before an
-/// `agent` grant can be persisted at all.
+/// A scope kind this process NEVER registered round-trips VERBATIM under its own
+/// `allowed_{kind}s` field (1.6.0 SDK-SCOPEKINDS) - never remapped into `allowed_pools` (the pre-P0
+/// escalation) and never dropped (which would widen the grant toward the `None` wildcard).
+///
+/// This replaces the old "unregistered kind is a hard serialize error" rule. That rule made the
+/// wire consult a process-global registry, and a dropped-in store plugin's copy of it is never
+/// populated, so the plugin could not hand back a key carrying a plane grant it had just stored.
+/// Kind validation is the engine's; the wire is an opaque carrier. The kind below is one no test
+/// in this crate registers, so this runs against an unregistered kind whatever the test order.
 #[test]
-fn unknown_scope_kind_is_a_hard_serialize_error() {
+fn unregistered_scope_kind_round_trips_verbatim_under_its_own_field() {
+    let kind = "sdk_scopekinds_never_registered";
+    assert!(
+        !scope_kinds::is_registered(kind),
+        "fixture precondition: the kind must be unregistered"
+    );
     let mut k = sample_key();
     k.allowed_scopes = Some(vec![ScopeRef {
-        kind: "agent".to_string(),
+        kind: kind.to_string(),
         value: "planner".to_string(),
     }]);
-    let err = serde_json::to_string(&k);
-    assert!(
-        err.is_err(),
-        "an unregistered scope kind must fail serialization, got: {err:?}"
+    let v = serde_json::to_value(&k).expect("an unregistered kind must serialize");
+    assert_eq!(
+        v["allowed_sdk_scopekinds_never_registereds"],
+        serde_json::json!(["planner"]),
+        "{v}"
     );
+    assert_eq!(
+        v["allowed_pools"],
+        serde_json::json!([]),
+        "never remapped into allowed_pools: {v}"
+    );
+    let rt: VirtualKey = serde_json::from_value(v.clone()).unwrap();
+    assert_eq!(rt.allowed_scopes, k.allowed_scopes, "{v}");
+    assert!(!rt.scope_allowed("pool", "planner"));
+    assert!(rt.scope_allowed(kind, "planner"));
+    // Byte-identical on a second trip: the carrier is stable.
+    assert_eq!(serde_json::to_value(&rt).unwrap(), v);
 }
 
 /// The MCP wire fields are ADDITIVE: absent from a pool-only key's wire shape (so the

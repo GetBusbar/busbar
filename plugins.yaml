@@ -2,12 +2,12 @@
 #
 # Every system that needs the plugin list derives it from this file rather than carrying its own
 # copy: scripts/plugin-registry-check.sh (the CI gate that keeps the consumers honest),
-# dev-gate.yml's sibling checkouts, scripts/release-check.sh's per-plugin phases, and the release
+# qa-gate.yml's sibling checkouts, scripts/release-check.sh's per-plugin phases, and the release
 # tooling. Found necessary during the 1.5.0 ship: the list was duplicated across at least five
 # places, and the copies had drifted — the "full plugin gate" silently covered 6 of 8 plugins.
 #
 # Adding a plugin = adding ONE entry here. The registry gate then goes RED until every consumer
-# actually covers it (dev-gate checkout present, release-check phase present, release published) —
+# actually covers it (qa-gate checkout present, release-check phase present, release published) —
 # coverage is enforced, not remembered.
 #
 # Fields:

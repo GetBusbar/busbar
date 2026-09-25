@@ -12,7 +12,8 @@ fn stop_reason_reverse_never_leaks_foreign_tokens() {
     // `stopReason` a strict client rejects. (A Bedrock `guardrail_intervened` read folds to
     // `Safety`, which writes back as `content_filtered`.)
     assert_eq!(read_bedrock_stop_reason_guardrail(), S::Safety);
-    assert_eq!(stop_reason_reverse(S::Refusal), "end_turn");
+    // A refusal is a content-policy stop, `content_filtered` (BED-09), not a natural end.
+    assert_eq!(stop_reason_reverse(S::Refusal), "content_filtered");
     assert_eq!(stop_reason_reverse(S::Error), "end_turn");
     assert_eq!(stop_reason_reverse(S::Other), "end_turn");
 }
@@ -159,6 +160,7 @@ fn test_write_request() {
             text: "You are a helpful assistant.".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         messages: vec![
             crate::ir::IrMessage {
@@ -167,6 +169,7 @@ fn test_write_request() {
                     text: "What is the weather in San Francisco?".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
             },
             crate::ir::IrMessage {
@@ -187,6 +190,7 @@ fn test_write_request() {
                         text: "Sunny, 72°F".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
+                        refusal: false,
                     }],
                     is_error: false,
                     cache_control: None,
@@ -216,6 +220,16 @@ fn test_write_request() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
 
     let writer = BedrockWriter;
@@ -563,7 +577,11 @@ fn test_stream_decode_sequence() {
     }
 
     match &events[1] {
-        IrStreamEvent::BlockStart { index, block } => {
+        IrStreamEvent::BlockStart {
+            index,
+            block,
+            refusal: _,
+        } => {
             assert_eq!(*index, 0);
             assert!(matches!(block, crate::ir::IrBlockMeta::Text));
         }
@@ -663,6 +681,7 @@ fn test_write_response_event() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
 
     if let Some((event_type, payload)) = writer.write_response_event(&delta_ev2) {
@@ -1015,6 +1034,7 @@ fn test_write_response_event_usage_delta_is_metadata_frame() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let (et, payload) = writer
         .write_response_event(&usage_only)
@@ -1054,6 +1074,7 @@ fn test_write_response_event_usage_delta_is_metadata_frame() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let (et2, payload2) = writer
         .write_response_event(&stop)
@@ -1076,6 +1097,7 @@ fn test_write_response_event_text_block_start_emits_no_frame() {
     let ev = IrStreamEvent::BlockStart {
         index: 0,
         block: crate::ir::IrBlockMeta::Text,
+        refusal: false,
     };
     assert!(
         writer.write_response_event(&ev).is_none(),
@@ -1273,6 +1295,7 @@ fn test_write_request_skips_system_role_message() {
                     text: "leaked system text".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
             },
             crate::ir::IrMessage {
@@ -1283,6 +1306,7 @@ fn test_write_request_skips_system_role_message() {
                         text: "ok".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
+                        refusal: false,
                     }],
                     is_error: false,
                     cache_control: None,
@@ -1303,6 +1327,16 @@ fn test_write_request_skips_system_role_message() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
 
     let json = writer.write_request(&req);
@@ -1353,6 +1387,7 @@ fn test_write_request_tool_result_preserves_non_text_content() {
                         data: "BASE64DATA".to_string(),
                     },
                     cache_control: None,
+                    detail: None,
                 }],
                 is_error: false,
                 cache_control: None,
@@ -1372,6 +1407,16 @@ fn test_write_request_tool_result_preserves_non_text_content() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
 
     let json = writer.write_request(&req);
@@ -1635,6 +1680,16 @@ fn test_write_request_tool_config_cross_protocol_and_empty() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = writer.write_request(&ir_tools);
     let tc = out
@@ -1675,6 +1730,16 @@ fn test_write_request_tool_config_cross_protocol_and_empty() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out_empty = writer.write_request(&ir_empty);
     assert!(
@@ -1731,6 +1796,7 @@ fn test_stream_text_block_after_tool_not_dropped() {
             IrStreamEvent::BlockStart {
                 index,
                 block: crate::ir::IrBlockMeta::Text,
+                refusal: _,
             } => Some(*index),
             _ => None,
         })
@@ -1882,6 +1948,7 @@ fn test_write_response_event_metadata_no_fabricated_metrics() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let (et, payload) = writer
         .write_response_event(&usage_only)
@@ -1919,6 +1986,7 @@ fn test_write_response_event_total_tokens_saturates() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let (et, payload) = writer
         .write_response_event(&ev)
@@ -1960,6 +2028,7 @@ fn bedrock_writer_image_block_stop_is_suppressed() {
             .write_response_event(&IrStreamEvent::BlockStart {
                 index: 0,
                 block: crate::ir::IrBlockMeta::Image,
+                refusal: false,
             })
             .is_none(),
         "Image BlockStart must stay suppressed"
@@ -1988,11 +2057,14 @@ fn eventstream_emits_reasoning_content_for_thinking_block() {
                 signature: Some("sigblob".to_string()),
                 redacted: false,
                 cache_control: None,
+                kind: None,
+                signature_origin: None,
             },
             crate::ir::IrBlock::Text {
                 text: "answer".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             },
         ],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
@@ -2010,6 +2082,7 @@ fn eventstream_emits_reasoning_content_for_thinking_block() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let bytes = bedrock_response_to_eventstream(&resp, Some(5));
     let text = String::from_utf8_lossy(&bytes);
@@ -2043,11 +2116,13 @@ fn eventstream_content_block_index_is_contiguous_when_a_block_is_skipped() {
                     data: "aGk=".to_string(),
                 },
                 cache_control: None,
+                detail: None,
             },
             crate::ir::IrBlock::Text {
                 text: "answer".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             },
         ],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
@@ -2065,6 +2140,7 @@ fn eventstream_content_block_index_is_contiguous_when_a_block_is_skipped() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let mut bytes = bedrock_response_to_eventstream(&resp, Some(5));
     let frames = busbar_substrate_values::eventstream::drain_frames(&mut bytes);
@@ -2110,17 +2186,21 @@ fn eventstream_every_content_block_start_has_exactly_one_stop() {
                     data: "aGk=".to_string(),
                 },
                 cache_control: None,
+                detail: None,
             },
             crate::ir::IrBlock::Thinking {
                 text: "let me think".to_string(),
                 signature: Some("sigblob".to_string()),
                 redacted: false,
                 cache_control: None,
+                kind: None,
+                signature_origin: None,
             },
             crate::ir::IrBlock::Text {
                 text: "answer".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             },
             crate::ir::IrBlock::ToolUse {
                 thought_signature: None,
@@ -2135,6 +2215,7 @@ fn eventstream_every_content_block_start_has_exactly_one_stop() {
                     text: "sunny".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
                 is_error: false,
                 cache_control: None,
@@ -2156,6 +2237,7 @@ fn eventstream_every_content_block_start_has_exactly_one_stop() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let mut bytes = bedrock_response_to_eventstream(&resp, Some(5));
     let frames = busbar_substrate_values::eventstream::drain_frames(&mut bytes);
@@ -2222,6 +2304,7 @@ fn test_write_response_total_tokens_saturates() {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: IrUsage {
@@ -2238,6 +2321,7 @@ fn test_write_response_total_tokens_saturates() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let body = writer.write_response(&resp);
     assert_eq!(
@@ -2278,6 +2362,7 @@ fn test_write_response_projects_image_block() {
                 text: "see image".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             },
             crate::ir::IrBlock::Image {
                 source: crate::ir::IrImageSource::Base64 {
@@ -2285,6 +2370,7 @@ fn test_write_response_projects_image_block() {
                     data: "aGVsbG8=".to_string(),
                 },
                 cache_control: None,
+                detail: None,
             },
         ],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
@@ -2302,6 +2388,7 @@ fn test_write_response_projects_image_block() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let body = writer.write_response(&resp);
     let content = body
@@ -2364,6 +2451,7 @@ fn test_write_response_empty_content_emits_placeholder() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let body = writer.write_response(&resp);
     let content = body
@@ -2472,6 +2560,7 @@ fn test_top_k_reaches_bedrock_via_additional_model_request_fields() {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         tools: vec![],
@@ -2488,6 +2577,16 @@ fn test_top_k_reaches_bedrock_via_additional_model_request_fields() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = writer.write_request(&ir);
     assert_eq!(
@@ -2628,6 +2727,7 @@ fn test_inference_config_typed_fields_override_raw_and_cross_protocol() {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         tools: vec![],
@@ -2644,6 +2744,16 @@ fn test_inference_config_typed_fields_override_raw_and_cross_protocol() {
         n: None,
         response_format: None,
         extra,
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = writer.write_request(&ir);
     assert_eq!(
@@ -2675,6 +2785,7 @@ fn test_inference_config_typed_fields_override_raw_and_cross_protocol() {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         tools: vec![],
@@ -2691,6 +2802,16 @@ fn test_inference_config_typed_fields_override_raw_and_cross_protocol() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out2 = writer.write_request(&ir2);
     assert_eq!(
@@ -2831,10 +2952,12 @@ fn test_write_request_url_sentinel_image_not_emitted_as_base64() {
                     text: "look".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 },
                 crate::ir::IrBlock::Image {
                     source: crate::ir::IrImageSource::Url(url.to_string()),
                     cache_control: None,
+                    detail: None,
                 },
             ],
         }],
@@ -2852,6 +2975,16 @@ fn test_write_request_url_sentinel_image_not_emitted_as_base64() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = writer.write_request(&req);
     let wire = serde_json::to_string(&out).unwrap();
@@ -2880,6 +3013,7 @@ fn test_write_request_url_sentinel_image_not_emitted_as_base64() {
                     data: "QkFTRTY0".to_string(),
                 },
                 cache_control: None,
+                detail: None,
             }],
         }],
         ..req.clone()
@@ -2926,6 +3060,7 @@ fn test_write_request_all_nonrepresentable_turn_kept_with_placeholder() {
                     text: "hello".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
             },
             // Assistant turn carrying ONLY a thinking block (now re-emitted as reasoningContent).
@@ -2936,6 +3071,8 @@ fn test_write_request_all_nonrepresentable_turn_kept_with_placeholder() {
                     signature: None,
                     redacted: false,
                     cache_control: None,
+                    kind: None,
+                    signature_origin: None,
                 }],
             },
             // User turn carrying ONLY a URL-sentinel image (also non-representable here).
@@ -2946,6 +3083,7 @@ fn test_write_request_all_nonrepresentable_turn_kept_with_placeholder() {
                         "https://example.com/cat.png".to_string(),
                     ),
                     cache_control: None,
+                    detail: None,
                 }],
             },
         ],
@@ -2963,6 +3101,16 @@ fn test_write_request_all_nonrepresentable_turn_kept_with_placeholder() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = writer.write_request(&req);
 
@@ -3250,10 +3398,12 @@ fn test_write_request_tool_result_url_sentinel_image_dropped() {
                         text: "result".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
+                        refusal: false,
                     },
                     crate::ir::IrBlock::Image {
                         source: crate::ir::IrImageSource::Url(url.to_string()),
                         cache_control: None,
+                        detail: None,
                     },
                 ],
                 is_error: false,
@@ -3274,6 +3424,16 @@ fn test_write_request_tool_result_url_sentinel_image_dropped() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = writer.write_request(&req);
     let wire = serde_json::to_string(&out).unwrap();
@@ -3717,6 +3877,7 @@ fn test_write_response_omits_absent_cache_tokens() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let written = writer.write_response(&resp);
     assert!(
@@ -3744,6 +3905,7 @@ fn test_write_stream_metadata_emits_cache_tokens() {
             cache_read_input_tokens: Some(20),
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let (et, payload) = writer
         .write_response_event(&usage_only)
@@ -4740,7 +4902,7 @@ fn test_stream_reasoning_content_round_trips() {
     assert!(
             events.iter().any(|e| matches!(
                 e,
-                IrStreamEvent::BlockStart { index: 0, block: IrBlockMeta::Thinking }
+                IrStreamEvent::BlockStart { index: 0, block: IrBlockMeta::Thinking { .. }, refusal: _, }
             )),
             "a Thinking BlockStart must be lazily opened on the first reasoningContent delta; got {events:?}"
         );
@@ -4774,7 +4936,8 @@ fn test_stream_reasoning_content_round_trips() {
         writer
             .write_response_event(&IrStreamEvent::BlockStart {
                 index: 0,
-                block: IrBlockMeta::Thinking,
+                block: IrBlockMeta::Thinking { kind: None },
+                refusal: false,
             })
             .is_none(),
         "a Thinking BlockStart must emit NO contentBlockStart frame; reasoning is streamed via \
@@ -4866,7 +5029,7 @@ fn test_stream_reasoning_redacted_round_trips() {
             e,
             IrStreamEvent::BlockStart {
                 index: 0,
-                block: IrBlockMeta::RedactedThinking
+                block: IrBlockMeta::RedactedThinking, refusal: _,
             }
         )),
         "a RedactedThinking BlockStart must open for a streamed redactedContent delta; got {events:?}"
@@ -5042,6 +5205,7 @@ fn consecutive_user_turns_coalesce_for_alternation() {
             text: t.to_string(),
             cache_control: None,
             citations: vec![],
+            refusal: false,
         }],
     };
     let req = crate::ir::IrRequest {
@@ -5075,6 +5239,7 @@ fn consecutive_user_turns_coalesce_for_alternation() {
                         text: "42".to_string(),
                         cache_control: None,
                         citations: vec![],
+                        refusal: false,
                     }],
                     is_error: false,
                     cache_control: None,
@@ -5096,6 +5261,16 @@ fn consecutive_user_turns_coalesce_for_alternation() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let writer = BedrockWriter;
     let out = writer.write_request(&req);
@@ -5165,6 +5340,16 @@ fn tool_choice_req(tc: Option<crate::ir::IrToolChoice>) -> crate::ir::IrRequest 
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     }
 }
 
@@ -5371,6 +5556,7 @@ fn test_bedrock_writer_clamps_temperature_above_one() {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         tools: vec![],
@@ -5387,6 +5573,16 @@ fn test_bedrock_writer_clamps_temperature_above_one() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let writer = BedrockWriter;
     let out = writer.write_request(&ir);
@@ -5432,6 +5628,16 @@ fn cache_ctrl_req(
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     }
 }
 
@@ -5455,11 +5661,13 @@ fn test_cache_control_on_message_block_emits_cache_point() {
                     text: "cache me".to_string(),
                     cache_control: ephemeral(),
                     citations: vec![],
+                    refusal: false,
                 },
                 crate::ir::IrBlock::Text {
                     text: "but not this".to_string(),
                     cache_control: None,
                     citations: vec![],
+                    refusal: false,
                 },
             ],
         }],
@@ -5502,6 +5710,7 @@ fn test_cache_control_on_system_block_emits_cache_point() {
             text: "long static preamble".to_string(),
             cache_control: ephemeral(),
             citations: vec![],
+            refusal: false,
         }],
         vec![],
         vec![],
@@ -5749,12 +5958,12 @@ fn test_malformed_media_type_warns_and_falls_back_to_png() {
     );
 }
 
-/// A cross-protocol IR carrying `response_format` reaching the Bedrock egress must be DROPPED
-/// (Converse has no native response_format field) — and the wire must contain NO `response_format`
-/// key (it would 400 the upstream). Mirrors the Anthropic-egress drop. The `warn!` itself is not
-/// asserted here (tracing capture is out of scope); the contract is "emits nothing".
+/// A cross-protocol IR carrying a JSON-schema `response_format` reaching a Bedrock lane that declares
+/// native structured outputs projects onto Converse's native `outputConfig.textFormat` (BED-08) — the
+/// schema as a JSON STRING, per the service model — and the wire carries NO foreign
+/// `response_format` key (it would 400 upstream). A lane that does not declare them sends neither.
 #[test]
-fn test_write_request_response_format_dropped() {
+fn test_write_request_response_format_projects_output_config() {
     let writer = BedrockWriter;
     let req = crate::ir::IrRequest {
         system_turns_folded: 0,
@@ -5771,6 +5980,7 @@ fn test_write_request_response_format_dropped() {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         tools: vec![],
@@ -5793,17 +6003,46 @@ fn test_write_request_response_format_dropped() {
             description: None,
         }),
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
-    let out = writer.write_request(&req);
+    let default_lane = writer.write_request(&req);
+    assert!(default_lane.get("outputConfig").is_none(), "{default_lane}");
+    let out = writer.write_request_for_lane(
+        &req,
+        "anthropic.claude-opus-4-7",
+        &LaneCaps {
+            native_structured_output: true,
+            ..Default::default()
+        },
+    );
     let wire = serde_json::to_string(&out).unwrap();
     assert!(
-        !wire.contains("response_format") && !wire.contains("json_schema"),
-        "response_format must not be emitted on the Bedrock wire; got {wire}"
+        !wire.contains("response_format"),
+        "no foreign response_format key may reach the Bedrock wire; got {wire}"
     );
     assert!(
         out.get("response_format").is_none(),
         "no top-level response_format key may be present; got {out}"
     );
+    let tf = &out["outputConfig"]["textFormat"];
+    assert_eq!(tf["type"], "json_schema", "{out}");
+    assert_eq!(tf["structure"]["jsonSchema"]["name"], "s", "{out}");
+    let schema: serde_json::Value = serde_json::from_str(
+        tf["structure"]["jsonSchema"]["schema"]
+            .as_str()
+            .expect("schema is a string"),
+    )
+    .expect("schema string parses");
+    assert_eq!(schema, serde_json::json!({"type": "object"}), "{out}");
 }
 
 #[test]
@@ -5910,6 +6149,7 @@ fn consecutive_tool_result_turns_coalesce_into_single_user_message() {
                     text: "run both tools".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
             },
             crate::ir::IrMessage {
@@ -5930,6 +6170,7 @@ fn consecutive_tool_result_turns_coalesce_into_single_user_message() {
                         text: "r1".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
+                        refusal: false,
                     }],
                     is_error: false,
                     cache_control: None,
@@ -5943,6 +6184,7 @@ fn consecutive_tool_result_turns_coalesce_into_single_user_message() {
                         text: "r2".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
+                        refusal: false,
                     }],
                     is_error: false,
                     cache_control: None,
@@ -6160,6 +6402,7 @@ fn total_tokens_includes_cache_tokens_on_both_write_paths() {
         stop_reason: None,
         stop_sequence: None,
         usage: resp.usage.clone(),
+        stop_detail: None,
     };
     let (et, payload) = writer
         .write_response_event(&usage_only)
@@ -6597,6 +6840,7 @@ fn buffered_to_eventstream_metadata_carries_metrics_even_without_timing() {
             text: "hi".into(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: IrUsage {
@@ -6613,6 +6857,7 @@ fn buffered_to_eventstream_metadata_carries_metrics_even_without_timing() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let mut bytes = bedrock_response_to_eventstream(&ir, None);
     let frames = busbar_substrate_values::eventstream::drain_frames(&mut bytes);

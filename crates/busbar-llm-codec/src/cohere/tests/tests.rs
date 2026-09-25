@@ -12,10 +12,13 @@ fn cohere_stop_reason_codec_round_trips_and_never_leaks() {
     );
     // `ERROR_TOXIC` is a v1 Generate-API token, not a member of v2 `/v2/chat`'s finish_reason enum
     // — the reader still accepts it as forward-compat, but the writer must never emit
-    // it. `S::Safety` maps to the same `ERROR` as `S::Error`: v2 genuinely cannot distinguish them.
-    assert_eq!(write_cohere_stop_reason(S::Safety), "ERROR"); // golden wire-contract literal (kept bare on purpose)
-                                                              // A reason with no Cohere analog (`refusal`) or an unknown native token (`ERROR_LIMIT` →
-                                                              // Other) degrades to the safe terminal COMPLETE rather than leak an off-spec finish_reason.
+    // it. `S::Safety` is a served, filtered answer, not a failure: it writes `COMPLETE` (COH-15),
+    // never the `ERROR` that reads as an infrastructure fault.
+    assert_eq!(write_cohere_stop_reason(S::Safety), "COMPLETE"); // golden wire-contract literal (kept bare on purpose)
+                                                                 // v2 `TIMEOUT` is the upstream failing to finish: `Error`, not `Other` (COH-16).
+    assert_eq!(read_cohere_stop_reason("TIMEOUT"), S::Error);
+    // A reason with no Cohere analog (`refusal`) or an unknown native token (`ERROR_LIMIT` →
+    // Other) degrades to the safe terminal COMPLETE rather than leak an off-spec finish_reason.
     assert_eq!(read_cohere_stop_reason("ERROR_LIMIT"), S::Other);
     assert_eq!(write_cohere_stop_reason(S::Refusal), "COMPLETE"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(write_cohere_stop_reason(S::Other), "COMPLETE"); // golden wire-contract literal (kept bare on purpose)
@@ -34,6 +37,7 @@ fn test_write_request() {
             text: "You are helpful.".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         system_turns_folded: 0,
         messages: vec![
@@ -43,6 +47,7 @@ fn test_write_request() {
                     text: "hi".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
             },
             crate::ir::IrMessage {
@@ -63,6 +68,7 @@ fn test_write_request() {
                         text: "result text".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
+                        refusal: false,
                     }],
                     is_error: false,
                     cache_control: None,
@@ -90,6 +96,16 @@ fn test_write_request() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
 
     let writer = CohereWriter;
@@ -146,6 +162,7 @@ fn test_read_request_roundtrip() {
                     text: "user msg".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
             },
             crate::ir::IrMessage {
@@ -154,6 +171,7 @@ fn test_read_request_roundtrip() {
                     text: "assistant msg".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
             },
         ],
@@ -171,6 +189,16 @@ fn test_read_request_roundtrip() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
 
     let writer = CohereWriter;
@@ -254,7 +282,8 @@ fn test_stream_fanout() {
         evs[0],
         crate::ir::IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::Text
+            block: crate::ir::IrBlockMeta::Text,
+            refusal: _,
         }
     ));
 
@@ -444,6 +473,7 @@ fn test_write_response_preserves_parallel_tool_calls() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
 
     let writer = CohereWriter;
@@ -499,6 +529,16 @@ fn test_write_request_sole_tooluse_omits_empty_content() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
 
     let writer = CohereWriter;
@@ -534,6 +574,7 @@ fn test_write_request_text_block_shapes() {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         tools: vec![],
@@ -550,6 +591,16 @@ fn test_write_request_text_block_shapes() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let writer = CohereWriter;
     let j = writer.write_request(&single);
@@ -567,11 +618,13 @@ fn test_write_request_text_block_shapes() {
                     text: "a".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 },
                 crate::ir::IrBlock::Text {
                     text: "b".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 },
             ],
         }],
@@ -902,6 +955,7 @@ fn test_cross_protocol_write_synthesizes_valid_id() {
             text: "hello".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: crate::ir::IrUsage {
@@ -918,6 +972,7 @@ fn test_cross_protocol_write_synthesizes_valid_id() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
 
     let writer = CohereWriter;
@@ -1087,12 +1142,13 @@ fn test_auth_headers_control_byte_key_omits_header() {
 }
 
 /// `ERROR_TOXIC` is a v1 Generate-API finish token, not a member of Cohere v2's
-/// `/v2/chat` `finish_reason` enum. The writer must emit the v2-legal `ERROR` for `IrStopReason::
-/// Safety` (the reader keeps accepting `ERROR_TOXIC` on the way IN, as v1-dialect forward-compat —
+/// `/v2/chat` `finish_reason` enum. The writer must emit the v2-legal `COMPLETE` for `IrStopReason::
+/// Safety` — a filtered answer is a served one, and `ERROR` reads as an infrastructure failure
+/// (COH-15) (the reader keeps accepting `ERROR_TOXIC` on the way IN, as v1-dialect forward-compat —
 /// that asymmetry is intentional). Covers both the non-streaming `write_response` and the
 /// streaming `message-end` paths.
 #[test]
-fn test_safety_finish_reason_writes_error_non_stream() {
+fn test_safety_finish_reason_writes_complete_non_stream() {
     let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
         role: crate::ir::IrRole::Assistant,
@@ -1100,6 +1156,7 @@ fn test_safety_finish_reason_writes_error_non_stream() {
             text: "moderated".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::Safety),
         usage: crate::ir::IrUsage {
@@ -1116,25 +1173,27 @@ fn test_safety_finish_reason_writes_error_non_stream() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let writer = CohereWriter;
     let body = writer.write_response(&resp);
     assert_eq!(
         body.get("finish_reason").and_then(|v| v.as_str()),
-        Some("ERROR"), // golden wire-contract literal (kept bare on purpose)
-        "IR safety must write back as the v2-legal ERROR, never the v1-only ERROR_TOXIC"
+        Some("COMPLETE"), // golden wire-contract literal (kept bare on purpose)
+        "IR safety must write back as the v2-legal COMPLETE (a served answer, COH-15), never the \
+         v1-only ERROR_TOXIC and never the ERROR that reads as an infrastructure failure"
     );
 
-    // Reading it back lands on `Error`, not `Safety` — the distinction is genuinely lost on the v2
-    // wire (a documented, accepted collision). This is NOT a round-trip.
+    // Reading it back lands on `EndTurn`, not `Safety` — the v2 enum has no filter token, so the
+    // distinction is genuinely lost on this wire. This is NOT a round-trip; it is also not a fault.
     let back = CohereReader
         .read_response(&body)
         .expect("read self-written body");
-    assert_eq!(back.stop_reason, Some(crate::ir::IrStopReason::Error));
+    assert_eq!(back.stop_reason, Some(crate::ir::IrStopReason::EndTurn));
 }
 
 #[test]
-fn test_safety_finish_reason_writes_error_stream() {
+fn test_safety_finish_reason_writes_complete_stream() {
     let ev = IrStreamEvent::MessageDelta {
         stop_reason: Some(crate::ir::IrStopReason::Safety),
         stop_sequence: None,
@@ -1145,6 +1204,7 @@ fn test_safety_finish_reason_writes_error_stream() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let writer = CohereWriter;
     let (_, frame) = writer
@@ -1155,8 +1215,8 @@ fn test_safety_finish_reason_writes_error_stream() {
             .get("delta")
             .and_then(|d| d.get("finish_reason"))
             .and_then(|v| v.as_str()),
-        Some("ERROR"), // golden wire-contract literal (kept bare on purpose)
-        "streamed safety stop must emit the v2-legal ERROR, never ERROR_TOXIC"
+        Some("COMPLETE"), // golden wire-contract literal (kept bare on purpose)
+        "streamed safety stop must emit the v2-legal COMPLETE (COH-15), never ERROR_TOXIC or ERROR"
     );
 }
 
@@ -1221,6 +1281,7 @@ fn test_generic_error_does_not_fold_into_safety_and_round_trips() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let err_out = writer.write_response(&err_resp);
     assert_eq!(
@@ -1635,6 +1696,7 @@ fn test_write_response_tool_calls_nested_and_roundtrip() {
                 text: "calling tools".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             },
             crate::ir::IrBlock::ToolUse {
                 thought_signature: None,
@@ -1666,6 +1728,7 @@ fn test_write_response_tool_calls_nested_and_roundtrip() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
 
     let writer = CohereWriter;
@@ -1830,6 +1893,7 @@ fn test_stream_tool_call_events_mapped() {
         crate::ir::IrStreamEvent::BlockStart {
             index,
             block: crate::ir::IrBlockMeta::ToolUse { id, name },
+            refusal: _,
         } => {
             assert_eq!(*index, 0);
             assert_eq!(id, "call_1");
@@ -1912,6 +1976,7 @@ fn test_stream_tool_before_text_no_index_collision() {
         crate::ir::IrStreamEvent::BlockStart {
             index,
             block: crate::ir::IrBlockMeta::ToolUse { id, name },
+            refusal: _,
         } => {
             assert_eq!(*index, 0, "the first-arriving tool claims IR index 0");
             assert_eq!(id, "call_1");
@@ -1931,6 +1996,7 @@ fn test_stream_tool_before_text_no_index_collision() {
         crate::ir::IrStreamEvent::BlockStart {
             index,
             block: crate::ir::IrBlockMeta::Text,
+            refusal: _,
         } => *index,
         other => panic!("expected text BlockStart, got {other:?}"),
     };
@@ -1999,7 +2065,8 @@ fn test_stream_tool_before_text_no_index_collision() {
         evs[0],
         crate::ir::IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::Text
+            block: crate::ir::IrBlockMeta::Text,
+            refusal: _,
         }
     ));
     let evs = reader.read_response_events(
@@ -2053,7 +2120,8 @@ fn test_stream_text_not_reopened_after_close() {
             evs[0],
             crate::ir::IrStreamEvent::BlockStart {
                 index: 0,
-                block: crate::ir::IrBlockMeta::Thinking
+                block: crate::ir::IrBlockMeta::Thinking { kind: None },
+                refusal: _,
             }
         ),
         "tool-plan opens the leading reasoning block at index 0, got {evs:?}"
@@ -2130,7 +2198,8 @@ fn test_stream_message_end_closes_dangling_text_block() {
             evs[0],
             crate::ir::IrStreamEvent::BlockStart {
                 index: 0,
-                block: crate::ir::IrBlockMeta::Thinking
+                block: crate::ir::IrBlockMeta::Thinking { kind: None },
+                refusal: _,
             }
         ),
         "tool-plan opens the reasoning block, got {evs:?}"
@@ -2161,10 +2230,146 @@ fn test_stream_unknown_event_is_noop() {
     let mut state = crate::ir::StreamDecodeState::default();
     let evs = CohereReader.read_response_events(
         "",
-        &serde_json::json!({"type": "citation-start", "index": 0}),
+        &serde_json::json!({"type": "debug", "index": 0}),
         &mut state,
     );
     assert!(evs.is_empty(), "unknown event types produce no IR events");
+}
+
+/// Item 301: a Cohere upstream's STREAMED grounding citation reaches the IR as a
+/// `CitationsDelta` on the text block — the same citations, on the same block, that the
+/// NON-streaming read of the same answer carries. Before the fix `citation-start` fell into the
+/// catch-all and a streamed Cohere answer lost every citation its buffered twin kept.
+#[test]
+fn test_stream_citations_match_non_stream() {
+    let citation = serde_json::json!({
+        "start": 0, "end": 5, "text": "Paris", "type": "TEXT_CONTENT",
+        "sources": [{"type": "document", "id": "doc:0",
+                     "document": {"title": "Capitals", "url": "https://example.com/capitals"}}]
+    });
+    let second = serde_json::json!({
+        "start": 9, "end": 16, "text": "capital", "type": "TEXT_CONTENT",
+        "sources": [{"type": "document", "id": "doc:1", "document": {"title": "Glossary"}}]
+    });
+
+    // Non-streaming read of the answer.
+    let buffered = CohereReader
+        .read_response(&serde_json::json!({
+            "id": "c1", "finish_reason": "COMPLETE",
+            "message": {"role": "assistant",
+                        "content": [{"type": "text", "text": "Paris is capital."}],
+                        "citations": [citation.clone(), second.clone()]},
+            "usage": {"tokens": {"input_tokens": 3, "output_tokens": 4}}
+        }))
+        .expect("buffered read");
+    let buffered_cits = buffered
+        .content
+        .iter()
+        .find_map(|b| match b {
+            crate::ir::IrBlock::Text { citations, .. } => Some(citations.clone()),
+            _ => None,
+        })
+        .expect("text block");
+    assert_eq!(
+        buffered_cits.len(),
+        2,
+        "buffered read carries both citations"
+    );
+
+    // Streaming read of the same answer, native Cohere v2 frame order.
+    let frames = [
+        serde_json::json!({"type": "message-start", "id": "c1",
+                           "delta": {"message": {"role": "assistant"}}}),
+        serde_json::json!({"type": "content-start", "index": 0,
+                           "delta": {"message": {"content": {"type": "text", "text": ""}}}}),
+        serde_json::json!({"type": "content-delta", "index": 0,
+                           "delta": {"message": {"content": {"text": "Paris is "}}}}),
+        serde_json::json!({"type": "content-delta", "index": 0,
+                           "delta": {"message": {"content": {"text": "capital."}}}}),
+        serde_json::json!({"type": "citation-start", "index": 0,
+                           "delta": {"message": {"citations": citation}}}),
+        serde_json::json!({"type": "citation-end", "index": 0}),
+        serde_json::json!({"type": "citation-start", "index": 1,
+                           "delta": {"message": {"citations": second}}}),
+        serde_json::json!({"type": "citation-end", "index": 1}),
+        serde_json::json!({"type": "content-end", "index": 0}),
+        serde_json::json!({"type": "message-end",
+                           "delta": {"finish_reason": "COMPLETE",
+                                     "usage": {"tokens": {"input_tokens": 3, "output_tokens": 4}}}}),
+    ];
+    let mut state = crate::ir::StreamDecodeState::default();
+    let events: Vec<crate::ir::IrStreamEvent> = frames
+        .iter()
+        .flat_map(|f| CohereReader.read_response_events("", f, &mut state))
+        .collect();
+
+    let text_idx = events
+        .iter()
+        .find_map(|e| match e {
+            crate::ir::IrStreamEvent::BlockStart {
+                index,
+                block: crate::ir::IrBlockMeta::Text,
+                refusal: _,
+            } => Some(*index),
+            _ => None,
+        })
+        .expect("text block opened");
+    let mut streamed_cits = Vec::new();
+    for e in &events {
+        if let crate::ir::IrStreamEvent::BlockDelta {
+            index,
+            delta: crate::ir::IrDelta::CitationsDelta(c),
+        } = e
+        {
+            assert_eq!(*index, text_idx, "citation rides the text block's index");
+            streamed_cits.extend(c.iter().cloned());
+        }
+    }
+    assert_eq!(
+        streamed_cits, buffered_cits,
+        "stream and non-stream reads of the same Cohere answer must carry the same citations"
+    );
+    // Every citation delta lands BEFORE the text block's stop (balanced egress).
+    let stop_pos = events
+        .iter()
+        .position(
+            |e| matches!(e, crate::ir::IrStreamEvent::BlockStop { index } if *index == text_idx),
+        )
+        .expect("text block closed");
+    let last_cit = events
+        .iter()
+        .rposition(|e| {
+            matches!(
+                e,
+                crate::ir::IrStreamEvent::BlockDelta {
+                    delta: crate::ir::IrDelta::CitationsDelta(_),
+                    ..
+                }
+            )
+        })
+        .expect("citation delta present");
+    assert!(last_cit < stop_pos, "citations precede the text block stop");
+}
+
+/// Item 301 positive control: a `citation-start` with no open text block (a stopped index) emits
+/// nothing — a delta into a closed block would unbalance the egress stream.
+#[test]
+fn test_stream_citation_after_content_end_is_dropped() {
+    let mut state = crate::ir::StreamDecodeState::default();
+    for f in [
+        serde_json::json!({"type": "content-delta", "index": 0,
+                           "delta": {"message": {"content": {"text": "hi"}}}}),
+        serde_json::json!({"type": "content-end", "index": 0}),
+    ] {
+        CohereReader.read_response_events("", &f, &mut state);
+    }
+    let evs = CohereReader.read_response_events(
+        "",
+        &serde_json::json!({"type": "citation-start", "index": 0,
+                            "delta": {"message": {"citations": {"start": 0, "end": 2, "text": "hi"}}}}),
+        &mut state,
+    );
+    assert!(evs.is_empty(), "no delta into a stopped block, got {evs:?}");
 }
 
 /// CF6 (wire-conformance): a streamed citation egressing into the Cohere v2 dialect must serialize
@@ -2386,6 +2591,7 @@ fn test_write_request_stream_field_conditional() {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         tools: vec![],
@@ -2402,6 +2608,16 @@ fn test_write_request_stream_field_conditional() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
 
     let writer = CohereWriter;
@@ -2458,6 +2674,7 @@ fn test_write_response_event_message_end_carries_usage() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let writer = CohereWriter;
     let (_, frame) = writer
@@ -2496,6 +2713,7 @@ fn test_write_response_event_message_end_zero_usage_present() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let writer = CohereWriter;
     let (_, frame) = writer
@@ -2530,6 +2748,7 @@ fn test_message_end_usage_stream_roundtrip() {
             stop_reason: Some(crate::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage.clone(),
+            stop_detail: None,
         })
         .expect("message-end must serialize");
 
@@ -2569,6 +2788,7 @@ fn test_tool_role_text_alongside_result_not_dropped() {
                     text: "note".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 },
                 crate::ir::IrBlock::ToolResult {
                     tool_use_id: "t1".to_string(),
@@ -2576,6 +2796,7 @@ fn test_tool_role_text_alongside_result_not_dropped() {
                         text: "result".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
+                        refusal: false,
                     }],
                     is_error: false,
                     cache_control: None,
@@ -2596,6 +2817,16 @@ fn test_tool_role_text_alongside_result_not_dropped() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let writer = CohereWriter;
     let out = writer.write_request(&ir);
@@ -2636,11 +2867,13 @@ fn test_tool_result_multi_block_content_joins_without_space() {
                         text: "foo".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
+                        refusal: false,
                     },
                     crate::ir::IrBlock::Text {
                         text: "bar".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
+                        refusal: false,
                     },
                 ],
                 is_error: false,
@@ -2661,6 +2894,16 @@ fn test_tool_result_multi_block_content_joins_without_space() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let writer = CohereWriter;
     let out = writer.write_request(&ir);
@@ -2692,6 +2935,7 @@ fn test_tool_role_text_without_result_not_dropped() {
                 text: "orphan tool text".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         tools: vec![],
@@ -2708,6 +2952,16 @@ fn test_tool_role_text_without_result_not_dropped() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let writer = CohereWriter;
     let out = writer.write_request(&ir);
@@ -2746,11 +3000,13 @@ fn test_tool_role_multi_text_without_result_is_string() {
                     text: "a".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 },
                 crate::ir::IrBlock::Text {
                     text: "b".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 },
             ],
         }],
@@ -2768,6 +3024,16 @@ fn test_tool_role_multi_text_without_result_is_string() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let writer = CohereWriter;
     let out = writer.write_request(&ir);
@@ -2857,22 +3123,19 @@ fn test_read_request_tool_content_object_array_preserved() {
     );
     // A `document` part is NO LONGER folded into this text join. Serializing it there is what put a
     // literal JSON string (`{"document":{"data":…}}`) in the message body, so the model read escaped
-    // JSON syntax instead of a document. It is carried STRUCTURALLY beside the text instead — still
-    // not dropped, which is what this assertion was protecting.
+    // JSON syntax instead of a document. It is carried beside the text instead — still not dropped,
+    // which is what this assertion was protecting: its string `data` as its own text block (the
+    // ANT-17 follow-up; a JSON `data` is a `Json` block).
     assert!(
         !text.contains("doc body"),
         "the document must not be stringified into the tool-result text: {text}"
     );
     assert!(
-        tool_result.iter().any(|b| matches!(
+        tool_result.iter().skip(1).any(|b| matches!(
             b,
-            crate::ir::IrBlock::Media {
-                kind: crate::ir::IrMediaKind::Document,
-                source: crate::ir::IrImageSource::Vendor { value, .. },
-                ..
-            } if busbar_substrate_values::json::to_string(value).unwrap_or_default().contains("doc body")
+            crate::ir::IrBlock::Text { text, .. } if text == "doc body"
         )),
-        "the document must be preserved as a structured Media block: {tool_result:?}"
+        "the document's data must be preserved as its own block: {tool_result:?}"
     );
 }
 
@@ -2989,6 +3252,7 @@ fn test_stream_two_sequential_tool_calls_get_distinct_indices() {
         crate::ir::IrStreamEvent::BlockStart {
             index,
             block: crate::ir::IrBlockMeta::ToolUse { id, .. },
+            refusal: _,
         } => {
             assert_eq!(id, "call_a");
             *index
@@ -3038,6 +3302,7 @@ fn test_stream_two_sequential_tool_calls_get_distinct_indices() {
         crate::ir::IrStreamEvent::BlockStart {
             index,
             block: crate::ir::IrBlockMeta::ToolUse { id, .. },
+            refusal: _,
         } => {
             assert_eq!(id, "call_b");
             *index
@@ -3228,7 +3493,8 @@ fn test_stream_tool_after_closed_text_block_does_not_reuse_index_zero() {
         &evs[0],
         crate::ir::IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::Text
+            block: crate::ir::IrBlockMeta::Text,
+            refusal: _,
         }
     ));
 
@@ -3261,6 +3527,7 @@ fn test_stream_tool_after_closed_text_block_does_not_reuse_index_zero() {
         crate::ir::IrStreamEvent::BlockStart {
             index,
             block: crate::ir::IrBlockMeta::ToolUse { .. },
+            refusal: _,
         } => *index,
         other => panic!("expected BlockStart ToolUse, got {other:?}"),
     };
@@ -3321,6 +3588,7 @@ fn test_write_response_event_emits_tool_call_frames() {
             id: "call_x".to_string(),
             name: "get_weather".to_string(),
         },
+        refusal: false,
     };
     let (_, frame) = writer
         .write_response_event(&start)
@@ -3388,6 +3656,7 @@ fn test_writer_tool_call_frames_roundtrip_through_reader() {
                 id: "call_z".to_string(),
                 name: "lookup".to_string(),
             },
+            refusal: false,
         })
         .expect("start frame");
     let (_, delta_frame) = writer
@@ -3420,36 +3689,49 @@ fn test_writer_tool_call_frames_roundtrip_through_reader() {
     }
 }
 
-/// A Thinking/Image stream BLOCK-START has no native Cohere v2 opening frame, so the writer
+/// A redacted-thinking/Image stream BLOCK-START has no native Cohere v2 opening frame, so the writer
 /// suppresses it rather than emitting a fabricated non-native frame.
 ///
-/// A reasoning DELTA is a different matter and is NOT suppressed: Cohere v2 has a native
-/// `tool-plan-delta` frame — the one this protocol's own reader consumes — so suppressing it made a
-/// streamed plan reach a Cohere-ingress client as nothing while the same turn non-streamed arrived.
+/// A plaintext reasoning block is a different matter and is NOT suppressed: a Cohere reasoning model
+/// streams its reasoning as a `thinking` content block — `content-start {type:"thinking"}` then
+/// `content-delta {thinking}` — the frames this protocol's own reader consumes (COH-09; it used to
+/// ride `tool-plan-delta`, the frame for the plan that precedes a tool call).
 #[test]
-fn test_write_response_event_thinking_and_image_blocks_suppressed() {
+fn test_write_response_event_redacted_thinking_and_image_blocks_suppressed() {
     let writer = CohereWriter;
     assert!(writer
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::Thinking,
+            block: crate::ir::IrBlockMeta::RedactedThinking,
+            refusal: false,
         })
         .is_none());
     assert!(writer
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 0,
             block: crate::ir::IrBlockMeta::Image,
+            refusal: false,
         })
         .is_none());
-    // The reasoning DELTA, by contrast, MUST emit — into Cohere's native `tool-plan-delta` frame.
+    // The plaintext reasoning block MUST open — as a native `thinking` content block.
+    let (_, start) = writer
+        .write_response_event(&IrStreamEvent::BlockStart {
+            index: 0,
+            block: crate::ir::IrBlockMeta::Thinking { kind: None },
+            refusal: false,
+        })
+        .expect("a reasoning block has a native Cohere opening frame");
+    assert_eq!(start["type"], ET_CONTENT_START);
+    assert_eq!(start["delta"]["message"]["content"]["type"], "thinking");
+    // The reasoning DELTA MUST emit — into the thinking content block, never `tool-plan-delta`.
     let (_, frame) = writer
         .write_response_event(&IrStreamEvent::BlockDelta {
             index: 0,
             delta: crate::ir::IrDelta::ThinkingDelta("x".to_string()),
         })
-        .expect("a reasoning delta has a native Cohere frame (`tool-plan-delta`)");
-    assert_eq!(frame["type"], ET_TOOL_PLAN_DELTA);
-    assert_eq!(frame["delta"]["message"]["tool_plan"], "x");
+        .expect("a reasoning delta has a native Cohere frame");
+    assert_eq!(frame["type"], ET_CONTENT_DELTA);
+    assert_eq!(frame["delta"]["message"]["content"]["thinking"], "x");
 }
 
 /// A Cohere `tool`-role message's `content` must be decoded
@@ -3813,6 +4095,7 @@ fn test_block_stop_closes_tool_block_with_tool_call_end() {
                 id: "call_1".to_string(),
                 name: "get_weather".to_string(),
             },
+            refusal: false,
         })
         .expect("tool-call-start must emit");
     assert_eq!(
@@ -3842,6 +4125,7 @@ fn test_block_stop_closes_text_block_with_content_end() {
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 0,
             block: crate::ir::IrBlockMeta::Text,
+            refusal: false,
         })
         .expect("content-start must emit");
     assert_eq!(
@@ -3870,6 +4154,7 @@ fn test_block_stop_mixed_text_and_tool_close_events() {
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 0,
             block: crate::ir::IrBlockMeta::Text,
+            refusal: false,
         })
         .expect("text start");
     // Tool block at index 1.
@@ -3880,6 +4165,7 @@ fn test_block_stop_mixed_text_and_tool_close_events() {
                 id: "call_2".to_string(),
                 name: "lookup".to_string(),
             },
+            refusal: false,
         })
         .expect("tool start");
 
@@ -3915,6 +4201,7 @@ fn test_tool_block_open_close_roundtrip_through_reader() {
                 id: "call_z".to_string(),
                 name: "lookup".to_string(),
             },
+            refusal: false,
         })
         .expect("start frame");
     let (_, stop_frame) = writer
@@ -3956,6 +4243,7 @@ fn test_block_stop_tool_index_consumed_on_close() {
                 id: "c".to_string(),
                 name: "f".to_string(),
             },
+            refusal: false,
         })
         .expect("start");
     let (_, first) = writer
@@ -3988,6 +4276,7 @@ fn test_write_response_stop_sequence_maps_to_stop_sequence() {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::StopSequence),
         usage: crate::ir::IrUsage {
@@ -4004,6 +4293,7 @@ fn test_write_response_stop_sequence_maps_to_stop_sequence() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let writer = CohereWriter;
     let out = writer.write_response(&resp);
@@ -4025,6 +4315,7 @@ fn test_write_response_end_turn_maps_to_complete() {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: crate::ir::IrUsage {
@@ -4041,6 +4332,7 @@ fn test_write_response_end_turn_maps_to_complete() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let writer = CohereWriter;
     let out = writer.write_response(&resp);
@@ -4066,6 +4358,7 @@ fn test_stream_message_delta_stop_sequence_maps_to_stop_sequence() {
                 cache_read_input_tokens: None,
                 detail: crate::ir::IrUsageDetail::default(),
             },
+            stop_detail: None,
         })
         .expect("message-end frame");
     assert_eq!(
@@ -4221,7 +4514,11 @@ fn test_text_block_normalized_to_ir_index_zero() {
         &mut state,
     );
     match cs.as_slice() {
-        [IrStreamEvent::BlockStart { index, block }] => {
+        [IrStreamEvent::BlockStart {
+            index,
+            block,
+            refusal: _,
+        }] => {
             assert_eq!(
                 *index, 0,
                 "text BlockStart must be normalized to IR index 0"
@@ -4350,30 +4647,42 @@ fn test_bad_request_body_mentioning_tokens_is_context_length() {
     assert_eq!(signal.class, StatusClass::ContextLength);
 }
 
-/// A cross-protocol `Thinking` block carries NO opening frame on the Cohere
-/// stream (its `BlockStart` maps to `None`), so its `BlockStop` must emit NOTHING — not an orphan
-/// `content-end` with no matching `content-start`. Against the old code the `BlockStop` fell
-/// through to an unconditional `content-end`.
+/// A cross-protocol REDACTED-thinking block carries NO opening frame on the Cohere stream (its
+/// `BlockStart` maps to `None`), so its `BlockStop` must emit NOTHING — not an orphan `content-end`
+/// with no matching `content-start`. Against the old code the `BlockStop` fell through to an
+/// unconditional `content-end`. A plaintext `Thinking` block DOES open (a `thinking` content block,
+/// COH-09), so its `BlockStop` closes it with the matching `content-end`.
 #[test]
 fn test_thinking_blockstop_emits_no_orphan_content_end() {
     let writer = CohereWriter;
 
-    // Thinking BlockStart → no frame.
+    // Redacted-thinking BlockStart → no frame.
     let start = writer.write_response_event(&IrStreamEvent::BlockStart {
         index: 0,
-        block: crate::ir::IrBlockMeta::Thinking,
+        block: crate::ir::IrBlockMeta::RedactedThinking,
+        refusal: false,
     });
     assert!(
         start.is_none(),
-        "a Thinking BlockStart must not emit an opening frame"
+        "a redacted-thinking BlockStart must not emit an opening frame"
     );
 
-    // Thinking BlockStop → no frame (the orphan-content-end defect).
+    // Its BlockStop → no frame (the orphan-content-end defect).
     let stop = writer.write_response_event(&IrStreamEvent::BlockStop { index: 0 });
     assert!(
         stop.is_none(),
-        "a Thinking BlockStop must emit no frame (no orphan content-end)"
+        "a redacted-thinking BlockStop must emit no frame (no orphan content-end)"
     );
+
+    // A plaintext Thinking block is balanced: content-start, then content-end.
+    let start = writer.write_response_event(&IrStreamEvent::BlockStart {
+        index: 1,
+        block: crate::ir::IrBlockMeta::Thinking { kind: None },
+        refusal: false,
+    });
+    assert_eq!(start.expect("thinking opens").1["type"], ET_CONTENT_START);
+    let stop = writer.write_response_event(&IrStreamEvent::BlockStop { index: 1 });
+    assert_eq!(stop.expect("thinking closes").1["type"], ET_CONTENT_END);
 }
 
 /// A normal Text block still emits a balanced `content-start` / `content-end` pair — the
@@ -4385,6 +4694,7 @@ fn test_text_block_emits_balanced_content_start_and_end() {
     let start = writer.write_response_event(&IrStreamEvent::BlockStart {
         index: 0,
         block: crate::ir::IrBlockMeta::Text,
+        refusal: false,
     });
     let (_, start_data) = start.expect("Text BlockStart must emit a content-start frame");
     assert_eq!(
@@ -4418,6 +4728,7 @@ fn ir_with_tool_choice(tc: Option<crate::ir::IrToolChoice>) -> crate::ir::IrRequ
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         tools: vec![crate::ir::IrTool {
@@ -4443,6 +4754,16 @@ fn ir_with_tool_choice(tc: Option<crate::ir::IrToolChoice>) -> crate::ir::IrRequ
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     }
 }
 
@@ -4760,6 +5081,7 @@ fn tool_choice_maps_to_cohere_native_strings() {
                     text: "hi".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
             }],
             // `tools` is required alongside `tool_choice` — omitting it would test
@@ -4864,6 +5186,7 @@ fn n_candidate_count_never_emitted_on_cohere() {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         ..Default::default()
@@ -4917,7 +5240,8 @@ fn test_stream_tool_plan_delta_becomes_leading_reasoning_before_tool_call() {
             &evs[0],
             crate::ir::IrStreamEvent::BlockStart {
                 index: 0,
-                block: crate::ir::IrBlockMeta::Thinking
+                block: crate::ir::IrBlockMeta::Thinking { kind: None },
+                refusal: _,
             }
         ),
         "first tool-plan-delta must open a leading reasoning block at index 0, got {evs:?}"
@@ -4973,7 +5297,7 @@ fn test_stream_tool_plan_delta_becomes_leading_reasoning_before_tool_call() {
             &evs[1],
             crate::ir::IrStreamEvent::BlockStart {
                 index: 1,
-                block: crate::ir::IrBlockMeta::ToolUse { id, name }
+                block: crate::ir::IrBlockMeta::ToolUse { id, name }, refusal: _,
             } if id == "t1" && name == "get_weather"
         ),
         "the tool must open at index 1, after the leading plan Text at index 0, got {evs:?}"
@@ -4994,6 +5318,7 @@ fn test_write_response_reemits_folded_tool_plan_as_content_not_tool_plan() {
                 text: "First I will check the weather.".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             },
             crate::ir::IrBlock::ToolUse {
                 thought_signature: None,
@@ -5019,6 +5344,7 @@ fn test_write_response_reemits_folded_tool_plan_as_content_not_tool_plan() {
         logprobs: Vec::new(),
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = writer.write_response(&resp);
     let message = out.get("message").expect("message");

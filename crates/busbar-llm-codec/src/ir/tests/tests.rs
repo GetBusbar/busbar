@@ -288,18 +288,23 @@ fn readable_blocks_are_not_opaque() {
             text: "hello".into(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         },
         IrBlock::Thinking {
             text: "step one".into(),
             signature: None,
             redacted: false,
             cache_control: None,
+            kind: None,
+            signature_origin: None,
         },
         IrBlock::Thinking {
             text: "step one".into(),
             signature: Some("SIG".into()),
             redacted: false,
             cache_control: None,
+            kind: None,
+            signature_origin: None,
         },
         // A wholly-EMPTY thinking block carries nothing at all — there is no hidden content to
         // warn a consumer about, so it is not opaque either. (Every writer already emits no item
@@ -309,6 +314,8 @@ fn readable_blocks_are_not_opaque() {
             signature: None,
             redacted: false,
             cache_control: None,
+            kind: None,
+            signature_origin: None,
         },
     ];
     for block in cases {
@@ -363,4 +370,77 @@ fn cohere_billed_units_win_over_raw_in_to_token_usage() {
         (u(busbar_api::UNIT_INPUT), u(busbar_api::UNIT_OUTPUT)),
         (90, 35)
     );
+}
+
+// ── Q57 IR-slot vocabulary: every neutral word round-trips, and an unknown word is refused rather
+// than coerced onto a neighbouring value (a coerced tier/detail/verbosity is a silent mis-map).
+#[test]
+fn q57_slot_vocabulary_round_trips_and_refuses_unknown_words() {
+    for t in [
+        IrServiceTier::Auto,
+        IrServiceTier::Default,
+        IrServiceTier::Flex,
+        IrServiceTier::Scale,
+        IrServiceTier::Priority,
+    ] {
+        assert_eq!(IrServiceTier::parse(t.as_str()), Some(t));
+    }
+    assert_eq!(IrServiceTier::parse("standard_only"), None);
+    for v in [IrVerbosity::Low, IrVerbosity::Medium, IrVerbosity::High] {
+        assert_eq!(IrVerbosity::parse(v.as_str()), Some(v));
+    }
+    assert_eq!(IrVerbosity::parse("max"), None);
+    for d in [IrImageDetail::Auto, IrImageDetail::Low, IrImageDetail::High] {
+        assert_eq!(IrImageDetail::parse(d.as_str()), Some(d));
+    }
+    assert_eq!(IrImageDetail::parse("original"), None);
+    // Gemini upper-cases modalities; OpenAI lower-cases them. Both are the same concept.
+    assert_eq!(IrModality::parse("AUDIO"), Some(IrModality::Audio));
+    assert_eq!(IrModality::parse("text"), Some(IrModality::Text));
+    assert_eq!(IrModality::parse("video"), None);
+    assert_eq!(IrSystemRole::Developer.as_str(), "developer");
+    assert_eq!(
+        IrHostedTool::WebSearch(IrWebSearch::default()).kind_str(),
+        "web_search"
+    );
+}
+
+// The `Default` impls exist so construction sites can spread `..Default::default()` and survive a
+// slot addition. They must describe an ABSENT value: nothing set, nothing a writer would emit.
+#[test]
+fn q57_defaults_are_absent_values() {
+    let r = IrResponse::default();
+    assert_eq!(r.role, IrRole::Assistant);
+    assert!(r.content.is_empty() && r.stop_reason.is_none() && r.logprobs.is_empty());
+    assert!(r.id.is_none() && r.model.is_none() && r.request_echo.is_none());
+    assert_eq!(r.usage, IrUsage::default());
+    assert_eq!(r.usage.billable_tokens(), 0);
+    let t = IrTool::default();
+    assert!(t.name.is_empty() && t.hosted.is_none() && t.strict.is_none());
+    assert_eq!(t.input_schema, Value::Null);
+    assert_eq!(IrCitation::default().raw, None);
+}
+
+// IR-09: the words above High and the OFF ask. `parse` stays the four historical words (no reader
+// changes bytes before it opts in); `parse_extended` adds the two; projections never turn OFF into
+// an enable ask and never emit an OpenAI word an older model 400s on.
+#[test]
+fn ir09_reasoning_off_and_effort_above_high() {
+    use IrReasoningAsk::*;
+    use IrReasoningEffort::*;
+    let table = [1000u32, 4000, 8000, 16000];
+    assert_eq!(IrReasoningEffort::parse("xhigh"), None);
+    assert_eq!(IrReasoningEffort::parse_extended("xhigh"), Some(XHigh));
+    assert_eq!(IrReasoningEffort::parse_extended("max"), Some(Max));
+    assert_eq!(IrReasoningEffort::parse_extended("high"), Some(High));
+    assert_eq!(XHigh.as_str(), "xhigh");
+    assert_eq!(Max.as_str(), "max");
+    assert_eq!(XHigh.as_openai_reasoning_effort(), "high");
+    assert_eq!(Max.as_openai_reasoning_effort(), "high");
+    assert_eq!(Effort(XHigh).to_budget(table), 16000);
+    assert_eq!(Effort(Max).to_budget(table), 16000);
+    assert_eq!(Off.to_budget(table), 0);
+    assert_eq!(Off.to_effort(table), Minimal);
+    // A budget never bucketizes above High: the table has no row there.
+    assert_eq!(Budget(u32::MAX).to_effort(table), High);
 }

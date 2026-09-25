@@ -3332,30 +3332,36 @@ fn every_1_6_0_row_names_a_kernel_verb_and_no_name_is_empty() {
     );
 }
 
-/// The additive document describes exactly the operations the closed table declares, and not one
-/// path the pinned 1.5.5 document already has.
+/// THE LEDGER VIEWS ARE DESCRIBED IN THE ONE DOCUMENT, and their own document path serves it.
 ///
-/// That second clause is the additivity claim itself. "Additive" is not a promise that the new
-/// document is small; it is the statement that nothing in it collides with a path a 1.5.5 client
-/// already knows, so the two documents can be read side by side without either contradicting the
-/// other.
+/// There used to be a side-car document here, hand-maintained so the served one's bytes need not
+/// move. It is gone (owner ruling Q41, items 45/46): the served document is generated from the code,
+/// and `GET /ledger/openapi.json` answers with exactly its bytes. What the side-car's test proved
+/// still has to hold of the one document — every ledger view is described, under the method the
+/// table declares, at the scope it is served at, with the table's own verb as its operationId — and
+/// the views are still NEW surface: none of their paths is in the pinned 1.5.5 document.
+#[cfg(feature = "root-admin")]
 #[test]
-fn the_additive_document_describes_the_ledger_views_and_nothing_the_pinned_one_has() {
-    let additive: serde_json::Value =
-        serde_json::from_str(LEDGER_OPENAPI_ADDITIVE).expect("the additive document is JSON");
-    let paths = additive["paths"].as_object().expect("it declares paths");
-
-    let mut declared: Vec<&str> = paths.keys().map(String::as_str).collect();
-    declared.sort_unstable();
-    let mut expected: Vec<&str> = LEDGER_PATHS.to_vec();
-    expected.sort_unstable();
+fn the_ledger_document_path_serves_the_one_document_and_it_describes_the_views() {
+    let answer = answer_over_seeded_ledger(a_ledger_request("/api/v1/admin/ledger/openapi.json"));
+    assert_eq!(answer.status, 200);
+    let served = String::from_utf8(answer.body).expect("the document is text");
     assert_eq!(
-        declared, expected,
-        "the document and the closed table declare different operations"
+        served,
+        busbar_core_admin::v1::json::openapi_document(),
+        "the ledger's document path must serve the one generated document, byte for byte"
+    );
+    let document: serde_json::Value = serde_json::from_str(&served).expect("it is JSON");
+    let paths = document["paths"].as_object().expect("it declares paths");
+    assert!(
+        paths.contains_key("/api/v1/admin/usage"),
+        "the ledger path serves a document that is not the administrative one"
     );
 
-    for (path, item) in paths {
-        let op = &item["get"];
+    for path in LEDGER_PATHS {
+        let op = &paths
+            .get(*path)
+            .unwrap_or_else(|| panic!("{path} is served and in no document"))["get"];
         assert!(
             op.is_object(),
             "{path} is described under a method the table does not declare"
@@ -3381,24 +3387,17 @@ fn the_additive_document_describes_the_ledger_views_and_nothing_the_pinned_one_h
     )))
     .expect("the pinned fixture is JSON");
     let pinned_paths = pinned["paths"].as_object().expect("it declares paths");
-    for path in paths.keys() {
-        assert!(
-            !pinned_paths.contains_key(path),
-            "{path} collides with a path the pinned 1.5.5 document already declares"
-        );
-    }
-    // And from the other side: the served 1.5.5 document has no ledger path at all, which is
-    // what leaving the released document's bytes alone means.
     assert!(
         !pinned_paths
             .keys()
             .any(|p| p.starts_with("/api/v1/admin/ledger/")),
-        "the pinned document has grown a ledger path"
+        "the ledger views are 1.6.0 surface; the pinned 1.5.5 document must not carry them"
     );
 }
 
 /// `GetLedgerTotals` -> `get_ledger_totals`, so the test above can compute the expected verb
 /// name rather than hand-transcribing a second copy of the five-row mapping.
+#[cfg(feature = "root-admin")]
 fn snake_of(operation_id: &str) -> String {
     let mut out = String::new();
     for (i, c) in operation_id.chars().enumerate() {
@@ -3896,86 +3895,75 @@ fn a_sealed_amendment_survives_a_restart_with_its_figures() {
         .expect("the recorded signature verifies over the recorded payload");
 }
 
-/// **A CELL THE SEALED CARD REFUSED STILL REFUSES AFTER A RESTART** (#42).
+/// **A CORRECTION'S RATE BECOMES THE CARD'S INTEGER EXACTLY, OR IS REFUSED** (architect ruling
+/// 2026-09-24, no-float-money).
 ///
-/// A correction naming a sub-quantum rate (`0.0001` micro-units a token, below the half-nano-unit
-/// quantum) seals a card on which that cell is UNPRICED: a hit on it refuses. The record used to
-/// write that cell as nanos 0, so the entry a restart rebuilt from the chain priced the class at
-/// ZERO where the live card refused it — a silent 0 after every restart. The rebuilt entry must
-/// refuse exactly the cell the live one refuses, and price the one it prices.
+/// The wire keeps the decimal micro-units-per-unit form (1.5.5's rate card took its rates as
+/// decimals); the edge turns it into integer nano-units by shifting decimal digits, never by float
+/// arithmetic. A figure the card can hold exactly is sealed as exactly that integer. A figure finer
+/// than one nano-unit used to be ROUNDED (half away from zero) or, below the half-nano quantum,
+/// sealed as an UNPRICED cell under a signature that covered a price — a card that was not the card
+/// its signer signed. It is now refused, and nothing is appended to the history or the journal.
 #[test]
-fn a_refused_cell_of_a_sealed_amendment_still_refuses_after_a_restart() {
-    let scratch = AmendScratch::new("refused-cell");
-    let live = {
+fn a_correction_rate_is_sealed_as_an_exact_integer_or_refused() {
+    for (micro, nanos) in [
+        (serde_json::json!(1.5), 1_500),
+        (serde_json::json!(0.001), 1),
+        (serde_json::json!(2e-3), 2),
+        (serde_json::json!(7), 7_000),
+        (serde_json::json!(0.0), 0),
+    ] {
+        let scratch = AmendScratch::new("exact-rate");
         let book = scratch.book();
-        let history = a_seeded_history();
         amend_rate_history_effect(
-            &history,
+            &a_seeded_history(),
             Some(&a_journal_over(&book)),
-            &signed_correction(serde_json::json!({
-                "effective_from": 4_000,
-                "effective_until": 9_000,
-                "per_request_fee": 0,
-                "rates": [
-                    { "lane": "gpt", "class": "input", "micro_per_unit": 1.5 },
-                    { "lane": "gpt", "class": "output", "micro_per_unit": 0.0001 },
-                ],
-                "reason": "a sub-quantum output rate",
-                "operator_fingerprint": a_test_operator_fingerprint(),
-            })),
+            &a_priced_correction(0, micro.clone()),
             6,
             a_sealed_operator(),
             &an_attribution(),
         )
-        .expect("the correction applies");
-        let history = history.history().expect("a history");
-        let (_, card) = history
-            .current()
-            .card_at(5_000)
-            .map(|(seq, card)| (seq, card.clone()))
-            .expect("the correction covers its window");
-        card
-    };
-    let live_rates = live
-        .lane_rates("gpt")
-        .expect("the live card names the lane");
-    assert!(
-        !live_rates.class_priced("output"),
-        "the live card refuses the sub-quantum cell"
-    );
-
-    // RESTART: the entry the boot rebuilds from the chain.
-    let restarted = scratch.book();
-    let records = restarted
-        .lock()
-        .unwrap()
-        .journal
-        .replay()
-        .expect("the journal reads back")
-        .expect("the journal verifies");
-    let rebuilt = crate::root::kernel::journalled_cards(&records)
-        .into_iter()
-        .find_map(|card| match card {
-            crate::root::kernel::JournalledCard::Amended(draft) => Some(draft.card),
-            crate::root::kernel::JournalledCard::Applied(_) => None,
-        })
-        .expect("the amendment is on the chain");
-    let rebuilt_rates = rebuilt
-        .lane_rates("gpt")
-        .expect("the rebuilt card names the lane");
-    assert!(
-        !rebuilt_rates.class_priced("output"),
-        "after a restart the sub-quantum cell priced at {} nanos where the live card refused it",
-        rebuilt_rates.nanos_per_unit("output")
-    );
-    assert_eq!(
-        (
-            rebuilt_rates.class_priced("input"),
-            rebuilt_rates.nanos_per_unit("input")
-        ),
-        (true, live_rates.nanos_per_unit("input")),
-        "the priced cell still prices at its sealed figure"
-    );
+        .unwrap_or_else(|e| panic!("{micro} is exactly {nanos} nano-units: {e:?}"));
+        let records = replayed_amendments(&book.lock().unwrap());
+        assert_eq!(
+            records[0].rates,
+            vec![("gpt".to_string(), "input".to_string(), Some(nanos))],
+            "{micro} micro per unit is sealed as exactly {nanos} nano per unit"
+        );
+    }
+    for micro in [
+        serde_json::json!(0.0001),
+        serde_json::json!(0.0015),
+        serde_json::json!(-1.0),
+        serde_json::json!(1e30),
+        serde_json::json!("1.5"),
+    ] {
+        let scratch = AmendScratch::new("inexact-rate");
+        let book = scratch.book();
+        let history = a_seeded_history();
+        let before = history.history().expect("a history").len();
+        let refused = amend_rate_history_effect(
+            &history,
+            Some(&a_journal_over(&book)),
+            &a_priced_correction(0, micro.clone()),
+            6,
+            a_sealed_operator(),
+            &an_attribution(),
+        );
+        assert!(
+            matches!(refused, Err(busbar_core_admin::GovernanceError::Validation)),
+            "{micro} is not an exact integer of nano-units and must be refused: {refused:?}"
+        );
+        assert_eq!(
+            history.history().expect("a history").len(),
+            before,
+            "{micro}: a refused correction appends nothing to the history"
+        );
+        assert!(
+            replayed_amendments(&book.lock().unwrap()).is_empty(),
+            "{micro}: a refused correction journals nothing"
+        );
+    }
 }
 
 /// **VOLUME DOES NOT ERASE AN AMENDMENT** (item 30). The legacy ring prunes at a thousand entries;
@@ -5011,6 +4999,7 @@ fn an_adjusting_binding(book: &crate::root::durability::NodeBook) -> AdminBindin
             legacy,
         )))
         .with_posture_view(Arc::new(CeremonyRun))
+        .with_pools(Arc::new(|pool| pool == "pool-a"))
 }
 
 /// What the recorded unit costs at its card epoch over the counts the node journal stands it at
@@ -5079,6 +5068,7 @@ fn an_admin_adjust_corrects_a_recorded_units_counts_and_its_money_follows() {
             "amends": digest,
             "now": { "input": "800" },
             "reason": "a retried request was metered twice",
+            "pool": "pool-a",
         }),
     )
     .expect("a root correction with a reason and a non-negative count is admitted");
@@ -5087,6 +5077,7 @@ fn an_admin_adjust_corrects_a_recorded_units_counts_and_its_money_follows() {
     assert_eq!(body["amends"], serde_json::json!(digest));
     assert_eq!(body["now"]["input"], serde_json::json!("800"));
     assert_eq!(body["card_epoch_ms"], serde_json::json!(ADJUST_ARRIVED_MS));
+    assert_eq!(body["pool"], serde_json::json!("pool-a"));
     assert!(
         body.get("amount_nanos").is_none(),
         "the answer carries counts, never money (Q9)"
@@ -5108,6 +5099,11 @@ fn an_admin_adjust_corrects_a_recorded_units_counts_and_its_money_follows() {
         "`was` is what the book recorded"
     );
     assert_eq!(sealed[0].authorised_by, "admin");
+    assert_eq!(
+        sealed[0].pool.as_deref(),
+        Some("pool-a"),
+        "the pool is sealed (Q64/Q67)"
+    );
     assert_eq!(
         priced_now_at_two_and_a_half_micro(lane, &digest, &recorded),
         2_000_000,
@@ -5131,7 +5127,8 @@ fn a_negative_reasonless_or_non_root_adjust_is_refused_and_seals_nothing() {
     let (book, digest) = a_book_with_one_recorded_unit("vk_adjust_refusals", "adjust-404-refusals");
     let binding = an_adjusting_binding(&book);
     let adjust = |granted, now: &str, reason: serde_json::Value| {
-        let mut body = serde_json::json!({ "amends": digest, "now": { "input": now } });
+        let mut body =
+            serde_json::json!({ "amends": digest, "now": { "input": now }, "pool": "pool-a" });
         if !reason.is_null() {
             body["reason"] = reason;
         }
@@ -5163,7 +5160,9 @@ fn a_negative_reasonless_or_non_root_adjust_is_refused_and_seals_nothing() {
         adjust_through_route(
             &binding,
             VerbScope::Full,
-            serde_json::json!({ "amends": "00".repeat(32), "now": { "input": "1" }, "reason": "x" }),
+            serde_json::json!({
+                "amends": "00".repeat(32), "now": { "input": "1" }, "reason": "x", "pool": "pool-a"
+            }),
         )
         .map(|a| a.status),
         Err(ReasonCode::NoDestination),
@@ -5172,9 +5171,10 @@ fn a_negative_reasonless_or_non_root_adjust_is_refused_and_seals_nothing() {
     // The kernel half's own scope check, reached directly: below `full` corrects nothing.
     assert!(matches!(
         adjust::adjust_effect(
-            br#"{"amends":"x","now":{"input":"1"},"reason":"y"}"#,
+            br#"{"amends":"x","now":{"input":"1"},"reason":"y","pool":"pool-a"}"#,
             busbar_contract::authz::Scope::ReadOnly,
             "admin",
+            &|_| true,
             |_| binding.ledger.recorded_counts(&digest),
         ),
         Err(busbar_core_admin::GovernanceError::Validation)
@@ -5189,6 +5189,66 @@ fn a_negative_reasonless_or_non_root_adjust_is_refused_and_seals_nothing() {
             )),
         "no refused correction was sealed"
     );
+}
+
+/// Q64/Q67 (OWNER RULING): AN `adjust` MUST NAME A CONFIGURED POOL. A body with no `pool`, a blank
+/// one, or one naming a pool this node has not configured is refused `400 invalid_request` with a
+/// message that says which, end to end through the admin route, and seals nothing; the same body
+/// naming a configured pool is admitted.
+#[cfg(feature = "root-admin")]
+#[test]
+fn an_adjust_naming_no_pool_or_an_unknown_pool_is_refused_and_seals_nothing() {
+    let (book, digest) = a_book_with_one_recorded_unit("vk_adjust_pool", "adjust-q64-pool");
+    let binding = an_adjusting_binding(&book);
+    let adjust = |pool: Option<&str>| {
+        let mut body = serde_json::json!({
+            "amends": digest, "now": { "input": "800" }, "reason": "metered twice"
+        });
+        if let Some(pool) = pool {
+            body["pool"] = serde_json::json!(pool);
+        }
+        let answer = adjust_through_route(&binding, VerbScope::Full, body).expect("an answer");
+        let body: serde_json::Value = serde_json::from_slice(&answer.body).expect("JSON");
+        (
+            answer.status,
+            body["error"]["code"].clone(),
+            body["error"]["message"].clone(),
+        )
+    };
+    let sealed = || {
+        busbar_kernel::audit::amend::node_corrections()
+            .iter()
+            .filter(|a| {
+                matches!(&a.body, busbar_kernel::audit::amend::AmendBody::Adjust(adj)
+                    if adj.amends_hash == digest)
+            })
+            .count()
+    };
+    let required = serde_json::json!(
+        "`pool` is required: name the pool the corrected unit was dispatched through"
+    );
+    for missing in [None, Some(""), Some("  ")] {
+        assert_eq!(
+            adjust(missing),
+            (400, serde_json::json!("invalid_request"), required.clone()),
+            "{missing:?}"
+        );
+    }
+    assert_eq!(
+        adjust(Some("pool-z")),
+        (
+            400,
+            serde_json::json!("invalid_request"),
+            serde_json::json!("`pool` names `pool-z`, which is not a configured pool")
+        ),
+    );
+    assert_eq!(sealed(), 0, "no refused correction was sealed");
+    assert_eq!(
+        adjust(Some("pool-a")).0,
+        200,
+        "a configured pool is admitted"
+    );
+    assert_eq!(sealed(), 1);
 }
 
 /// **THE EXIT TEST FOR ITEM 271's WRITER SIDE, AT THE ROOT.** An admin idempotency cache bound to

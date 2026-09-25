@@ -1410,17 +1410,24 @@ async fn run(data_workers: usize) {
     // because the access entry per secret read goes on the node's own chain; before either listener
     // binds, because a key resolved after a listener is accepting is a listener that accepted
     // without one.
+    // LAW 7: the unit is the voice plane's root wiring, so it runs only where that plane is
+    // configured — a 1.5.5 config resolves, journals and warns about nothing here.
     #[cfg(all(
         feature = "root-voice",
         any(feature = "root-admin", feature = "root-llm")
     ))]
-    provision_root_listeners(
-        &sealed_root,
-        &*tls_secret_resolver,
-        &book.durability,
-        (&listen, tls_cfg.as_ref()),
-        (&admin_listen, admin_tls_cfg.as_ref()),
-    );
+    if app_handle
+        .load()
+        .plane_configured(&busbar_voice::PLANE_DECL)
+    {
+        provision_root_listeners(
+            &sealed_root,
+            &*tls_secret_resolver,
+            &book.durability,
+            (&listen, tls_cfg.as_ref()),
+            (&admin_listen, admin_tls_cfg.as_ref()),
+        );
+    }
 
     // THE ROOT-DRIVEN LLM PLANE'S EXIT ARM, bound to that book. The loop already ended every unit
     // and handed back a posting; what this line adds is somewhere for the posting to go. Off, the
@@ -1458,6 +1465,13 @@ async fn run(data_workers: usize) {
             // structural change to the units.
             units.admin.posture =
                 std::sync::Arc::new(root::units_admin::SealedPosture::new(operator_key));
+            // Q64/Q67: an `adjust` names the pool its unit was dispatched through, checked against
+            // the pools this node has CONFIGURED — read off the live snapshot on every call, so a
+            // config apply that adds or removes a pool is what the check sees.
+            let live = std::sync::Arc::clone(&app_handle);
+            units.admin.pools = std::sync::Arc::new(move |pool: &str| {
+                busbar_kernel::governance::group_provision::pool_known(&live.load(), pool)
+            });
             // THE DEPLOYMENT'S OWN DOOR, in front of the authenticate step. Without these two lines
             // the assembly's open posture shipped: the step admitted every caller anonymously and
             // the only thing deciding was the surface mounted underneath — so a credential this node
@@ -1715,8 +1729,10 @@ fn serve_thread_per_core(
     // declares itself TLS-capable, so this can only fail on unresolvable/unparsable material —
     // exactly the boot failure `build_server_config` always reported here.
     if tls_cfg.is_some() {
+        // `FailClosed`'s Display already names the listener (`TLS configuration error for '<addr>':
+        // <reason>`, 1.5.5's line); wrapping it again printed that prefix twice.
         let _ = busbar_core_connsec::prepare(&addr, tls_cfg.as_ref(), &secret_resolver, true)
-            .unwrap_or_else(|e| die(format!("TLS configuration error for '{addr}': {e}")));
+            .unwrap_or_else(|e| die(e.to_string()));
     }
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
     let cores: Vec<Option<core_affinity::CoreId>> =
@@ -1895,8 +1911,9 @@ async fn serve_listener(
             // The built-in axum/hyper listener below always declares itself TLS-capable
             // (`transport_capable = true`); `prepare` still fails closed rather than silently
             // downgrading to plaintext if the material cannot be resolved/parsed (DECISIONS #40).
+            // Printed as `FailClosed` renders it — it already carries the label (see above).
             let security = busbar_core_connsec::prepare(label, Some(&tls), &secret_resolver, true)
-                .unwrap_or_else(|e| die(format!("TLS configuration error for '{label}': {e}")));
+                .unwrap_or_else(|e| die(e.to_string()));
             let mtls = tls.client_ca.is_some();
             if log_at_info {
                 tracing::info!(listen = %label, mtls, "busbar listening (TLS)");

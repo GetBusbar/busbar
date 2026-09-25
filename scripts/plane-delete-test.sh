@@ -10,10 +10,10 @@
 #   binary must still boot serving no P protocol. A protocol plane is a self-contained plugin merely
 #   compiled in for convenience; take its crate away and core is unmoved.
 #
-#   busbar-core and busbar-substrate NO LONGER EXIST BY THOSE NAMES: commit 673ecdaaa (2026-09-20)
-#   absorbed busbar-core's whole ~130k LOC into busbar-kernel, and commit 5fa320208 absorbed
-#   busbar-substrate's engine half into busbar-kernel too (its pure-value half had already split out
-#   to busbar-substrate-values, commit 06132b0b1). "The NEUTRAL crates" this test proves survive a
+#   busbar-core and busbar-substrate NO LONGER EXIST BY THOSE NAMES: busbar-core's whole ~130k LOC
+#   was absorbed into busbar-kernel, and busbar-substrate's engine half was absorbed into
+#   busbar-kernel too (its pure-value half had already split out
+#   to busbar-substrate-values). "The NEUTRAL crates" this test proves survive a
 #   plane's removal are therefore busbar-kernel, busbar-substrate-values and busbar-api today — see
 #   NEUTRAL_PKGS below, the one place that triple is named.
 #

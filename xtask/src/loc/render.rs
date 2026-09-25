@@ -2,7 +2,7 @@
 //!
 //! A gate reads the JSON; a person reads the table; NEITHER reads a single number. Every scope
 //! prints all five buckets, because "surface = 63,070" with no `test` figure beside it is exactly
-//! how a crate that is 64% proofs got sized in a design document as though it were production.
+//! how a crate that is 64% proofs got sized elsewhere as though it were all production.
 
 use serde_json::{json, Map, Value};
 

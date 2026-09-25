@@ -11,15 +11,39 @@ impl ProtocolWriter for CohereWriter {
         PATH_UPSTREAM
     }
 
+    /// The Q57 request slots Cohere v2 `/chat` has no form for (ir-slots-landed.md "N" for Cohere):
+    /// each one a request carries is dropped by [`Self::write_request`] with a warn and reported
+    /// here, so the seam audits the degradation. `service_tier` included: Cohere's `priority` is an
+    /// integer queue order, a different concept, so no tier is written.
+    fn dropped_egress_controls(&self, req: &crate::ir::IrRequest) -> Vec<&'static str> {
+        let mut dropped = Vec::new();
+        if req.metadata.is_some() {
+            dropped.push("metadata");
+        }
+        if req.service_tier.is_some() {
+            dropped.push("service_tier");
+        }
+        if req.store.is_some() {
+            dropped.push("store");
+        }
+        if req.safety_identifier.is_some() {
+            dropped.push("safety_identifier");
+        }
+        if req.prompt_cache_key.is_some() {
+            dropped.push("prompt_cache_key");
+        }
+        if req.verbosity.is_some() {
+            dropped.push("verbosity");
+        }
+        if cohere_drops_output_modalities(req) {
+            dropped.push("output_modalities");
+        }
+        dropped.extend(req.hosted_tools.iter().map(|h| h.kind_str()));
+        dropped
+    }
+
     fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value {
         let _t = busbar_timing::timeit!("cohere_write_request");
-        // The reasoning carry has no Cohere shape in this pass; dropped observably (matching
-        // the penalties/top_k convention) rather than silently.
-        if req.reasoning.is_some() {
-            tracing::warn!(
-                "dropping cross-protocol reasoning/thinking ask: no Cohere mapping in this release"
-            );
-        }
         let mut out = serde_json::Map::new();
         let mut messages_arr: Vec<serde_json::Value> = Vec::new();
 
@@ -46,6 +70,9 @@ impl ProtocolWriter for CohereWriter {
             messages_arr.push(serde_json::json!({ "role": "system", "content": system_text }));
         }
 
+        // Text documents lifted out of message content into the request's top-level `documents`
+        // (COH-18), in the order they were attached.
+        let mut documents: Vec<serde_json::Value> = Vec::new();
         for msg in &req.messages {
             let role_str = match msg.role {
                 crate::ir::IrRole::System => "system",
@@ -54,11 +81,78 @@ impl ProtocolWriter for CohereWriter {
                 crate::ir::IrRole::Tool => "tool",
             };
 
-            // Build content from the text blocks actually present. A single text block is sent as
-            // a bare string (Cohere's preferred shape); multiple text blocks become a text-part
-            // array. A message whose only block(s) are non-Text (e.g. a sole ToolUse, surfaced
-            // separately via `tool_calls`) must NOT emit `content: []` — Cohere may reject that —
-            // so we omit the `content` key entirely in that case.
+            // Cohere v2 multimodal output: an image block is written as an
+            // `{"type":"image_url","image_url":{"url":"<data-uri|https>"}}` content part — the SAME
+            // shape OpenAI v1 chat uses and this file's reader consumes. `image_url_from_ir` re-wraps
+            // the IR (media_type, data) pair into the original URL (a base64 image becomes a
+            // `data:<mime>;base64,<payload>` URI; an "image_url"-sentinel image emits its raw URL
+            // verbatim). When ANY image is present the message MUST use the array content shape (a
+            // bare string cannot carry an image part). ASSUMPTION (see report): the wire shape is
+            // OpenAI-style `image_url`; no Cohere v2 image fixture exists in-repo to confirm it.
+            //
+            // The parts are emitted in the IR's order (COH-19): all text used to go first and all
+            // images after, so "look at this [image] and compare it to [image]" reached the model
+            // as "look at this and compare it to [image] [image]".
+            let mut parts: Vec<serde_json::Value> = Vec::new();
+            let mut has_image = false;
+            for b in &msg.content {
+                match b {
+                    crate::ir::IrBlock::Text { text, .. } => {
+                        parts.push(serde_json::json!({ "type": "text", "text": text }));
+                    }
+                    // A URL/base64 image projects to an `image_url`; a Responses `file_id` or
+                    // Bedrock `s3Location` reference has no Cohere projection (returns None) and is
+                    // skipped with a warn rather than corrupting the block.
+                    crate::ir::IrBlock::Image { source, detail, .. } => {
+                        match super::super::ir_encode::image_url_from_ir(source) {
+                            Some(url) => {
+                                has_image = true;
+                                let mut image_url = serde_json::Map::new();
+                                image_url.insert("url".to_string(), serde_json::json!(url));
+                                // IR-08: the requested fidelity, Cohere's own `image_url.detail`.
+                                if let Some(d) = detail {
+                                    image_url.insert(
+                                        "detail".to_string(),
+                                        serde_json::json!(d.as_str()),
+                                    );
+                                }
+                                parts.push(serde_json::json!({
+                                    "type": "image_url", "image_url": image_url
+                                }));
+                            }
+                            None => tracing::warn!(
+                                "dropping unresolvable vendor-scoped image reference on Cohere \
+                                 egress: a file_id / s3Location has no cross-vendor analog"
+                            ),
+                        }
+                    }
+                    // A top-level `Media` attachment has NO Cohere v2 `/chat` message-content slot:
+                    // v2 message content carries text and `image_url` parts only. A TEXT document
+                    // (or this dialect's own document) does have a Cohere home, though — the
+                    // request's top-level `documents`, Cohere's grounding documents — so it is
+                    // lifted there (COH-18) instead of dropped. Anything else (a PDF's bytes,
+                    // audio, video, a URL or a foreign handle) has no Cohere form and is dropped
+                    // WITH the standard drop-with-warn, so the loss is operator-visible. Media
+                    // carried INSIDE a ToolResult is not a direct `msg.content` block, so it is not
+                    // caught (or double-warned) here.
+                    crate::ir::IrBlock::Media {
+                        kind, source, name, ..
+                    } => match (*kind == crate::ir::IrMediaKind::Document)
+                        .then(|| write_cohere_document(source, name.as_deref()))
+                        .flatten()
+                    {
+                        Some(doc) => documents.push(doc),
+                        None => tracing::warn!(
+                            media_kind = kind.as_str(),
+                            "dropping attachment on Cohere egress: Cohere v2 /chat message \
+                             content carries text and image parts only, and this attachment is \
+                             not a text document the request's `documents` can carry — it is NOT \
+                             emitted"
+                        ),
+                    },
+                    _ => {}
+                }
+            }
             let text_blocks: Vec<&String> = msg
                 .content
                 .iter()
@@ -71,79 +165,15 @@ impl ProtocolWriter for CohereWriter {
                 })
                 .collect();
 
-            // Cohere v2 multimodal output: an image block is written as an
-            // `{"type":"image_url","image_url":{"url":"<data-uri|https>"}}` content part — the SAME
-            // shape OpenAI v1 chat uses and this file's reader consumes. `image_url_from_ir` re-wraps
-            // the IR (media_type, data) pair into the original URL (a base64 image becomes a
-            // `data:<mime>;base64,<payload>` URI; an "image_url"-sentinel image emits its raw URL
-            // verbatim). When ANY image is present the message MUST use the array content shape (a
-            // bare string cannot carry an image part). ASSUMPTION (see report): the wire shape is
-            // OpenAI-style `image_url`; no Cohere v2 image fixture exists in-repo to confirm it.
-            let image_parts: Vec<serde_json::Value> = msg
-                .content
-                .iter()
-                .filter_map(|b| {
-                    if let crate::ir::IrBlock::Image { source, .. } = b {
-                        // A URL/base64 image projects to an `image_url`; a Responses `file_id` or
-                        // Bedrock `s3Location` reference has no Cohere projection (returns None) and
-                        // is skipped with a warn rather than corrupting the block.
-                        match super::super::ir_encode::image_url_from_ir(source) {
-                            Some(url) => Some(serde_json::json!({
-                                "type": "image_url", "image_url": { "url": url }
-                            })),
-                            None => {
-                                tracing::warn!(
-                                    "dropping unresolvable vendor-scoped image reference on Cohere \
-                                     egress: a file_id / s3Location has no cross-vendor analog"
-                                );
-                                None
-                            }
-                        }
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            // A top-level `Media` (document/audio/video) attachment has NO Cohere v2 `/chat`
-            // message-content slot: v2 message content carries text and `image_url` parts only
-            // (native `documents` RAG grounding is a SEPARATE top-level field, not an IR-modeled
-            // per-message part, and tool-result documents are handled on the ToolResult path
-            // below). Such a block is therefore unrepresentable here — drop it WITH the standard
-            // drop-with-warn `warn!` (mirroring the Image/ToolResult arms and the OpenAI/Gemini
-            // egress) so the loss is operator-visible, rather than letting it vanish silently and
-            // violate the IR Media contract. Media carried INSIDE a ToolResult is not a direct
-            // `msg.content` block, so it is not caught (or double-warned) here.
-            for block in &msg.content {
-                if let crate::ir::IrBlock::Media { kind, .. } = block {
-                    tracing::warn!(
-                        media_kind = kind.as_str(),
-                        "dropping attachment on Cohere egress: Cohere v2 /chat message content \
-                         carries text and image parts only — a document/audio/video block has no \
-                         message-content slot and is NOT emitted"
-                    );
-                }
-            }
-
-            let content_val: Option<serde_json::Value> = if image_parts.is_empty() {
-                match text_blocks.as_slice() {
-                    [] => None,
-                    [single] => Some(serde_json::Value::String((*single).clone())),
-                    many => Some(serde_json::Value::Array(
-                        many.iter()
-                            .map(|text| serde_json::json!({ "type": "text", "text": text }))
-                            .collect(),
-                    )),
-                }
-            } else {
-                // Mixed/image content: emit a parts array with text parts first (preserving the
-                // existing ordering of text before media), then the image parts.
-                let mut parts: Vec<serde_json::Value> = text_blocks
-                    .iter()
-                    .map(|text| serde_json::json!({ "type": "text", "text": text }))
-                    .collect();
-                parts.extend(image_parts);
-                Some(serde_json::Value::Array(parts))
+            // A single text block is sent as a bare string (Cohere's preferred shape); several text
+            // blocks, or any image, become a parts array. A message whose only block(s) are non-Text
+            // (e.g. a sole ToolUse, surfaced separately via `tool_calls`) must NOT emit
+            // `content: []` — Cohere may reject that — so the `content` key is omitted then.
+            let content_val: Option<serde_json::Value> = match text_blocks.as_slice() {
+                _ if has_image => Some(serde_json::Value::Array(parts)),
+                [] => None,
+                [single] => Some(serde_json::Value::String((*single).clone())),
+                _ => Some(serde_json::Value::Array(parts)),
             };
 
             // A `ToolResult` block can land on a `Tool`-role message (OpenAI/Cohere source) OR on a
@@ -188,22 +218,16 @@ impl ProtocolWriter for CohereWriter {
                         );
                         let mut text_parts: Vec<String> = content
                             .iter()
-                            .filter_map(|b| {
-                                if let crate::ir::IrBlock::Text { text, .. } = b {
-                                    Some(text.clone())
-                                } else {
-                                    // A non-Text ToolResult block is a Bedrock json-tool-result
-                                    // sentinel with no Cohere analog. Drop WITH a warn (drop-with-warn
-                                    // convention) instead of vanishing silently.
-                                    if super::super::ir_encode::is_json_tool_result_block(b) {
-                                        tracing::warn!(
-                                            "dropping structured json tool-result block on Cohere \
-                                             egress: a Bedrock `{{\"json\":...}}` tool-result has no \
-                                             cross-protocol analog and is NOT emitted"
-                                        );
-                                    }
-                                    None
+                            .filter_map(|b| match b {
+                                crate::ir::IrBlock::Text { text, .. } => Some(text.clone()),
+                                // A structured-JSON tool result (Bedrock `{"json": …}`) is the
+                                // tool's output as JSON; Cohere tool content is text, and JSON
+                                // serialized is that same output as text. It used to be dropped,
+                                // leaving the model an empty tool result (COH-20).
+                                crate::ir::IrBlock::Json(v) => {
+                                    busbar_substrate_values::json::to_string(v).ok()
                                 }
+                                _ => None,
                             })
                             .collect();
                         // Prepend any message-level text onto the first tool result so it survives,
@@ -314,8 +338,14 @@ impl ProtocolWriter for CohereWriter {
             // `tool_plan` slot. The reader reads request `tool_plan` into a LEADING Thinking block
             // (so it is not shown as content), and this is its inverse — folding every Thinking
             // block's text back into `tool_plan`. Assistant-only: no other role carries a plan.
+            //
+            // `tool_plan` is the plan that PRECEDES tool calls, so it is only the right slot on a turn
+            // that carries them. A turn with no tool calls replays its reasoning the way a Cohere
+            // reasoning model returned it: `{"type":"thinking"}` content parts ahead of the answer
+            // (COH-07). Writing that reasoning as a `tool_plan` on a turn with no tool call told the
+            // model it had planned a call it never made.
             if msg.role == crate::ir::IrRole::Assistant {
-                let plan: String = msg
+                let thinking: Vec<&str> = msg
                     .content
                     .iter()
                     .filter_map(|b| match b {
@@ -323,12 +353,32 @@ impl ProtocolWriter for CohereWriter {
                             text,
                             redacted: false,
                             ..
-                        } => Some(text.as_str()),
+                        } if !text.is_empty() => Some(text.as_str()),
                         _ => None,
                     })
                     .collect();
-                if !plan.is_empty() {
-                    msg_obj.insert("tool_plan".to_string(), serde_json::json!(plan));
+                let has_tool_calls = msg
+                    .content
+                    .iter()
+                    .any(|b| matches!(b, crate::ir::IrBlock::ToolUse { .. }));
+                if has_tool_calls {
+                    let plan: String = thinking.concat();
+                    if !plan.is_empty() {
+                        msg_obj.insert("tool_plan".to_string(), serde_json::json!(plan));
+                    }
+                } else if !thinking.is_empty() {
+                    let mut parts: Vec<serde_json::Value> = thinking
+                        .iter()
+                        .map(|t| serde_json::json!({ "type": "thinking", "thinking": t }))
+                        .collect();
+                    match msg_obj.remove("content") {
+                        Some(serde_json::Value::String(text)) => {
+                            parts.push(serde_json::json!({ "type": "text", "text": text }));
+                        }
+                        Some(serde_json::Value::Array(rest)) => parts.extend(rest),
+                        _ => {}
+                    }
+                    msg_obj.insert("content".to_string(), serde_json::Value::Array(parts));
                 }
             }
 
@@ -385,10 +435,31 @@ impl ProtocolWriter for CohereWriter {
             serde_json::Value::Array(messages_arr),
         );
 
-        super::super::ir_encode::warn_dropped_tool_strict(&req.tools, "cohere");
-        if !req.tools.is_empty() {
+        // Per-tool `strict` renders as Cohere's request-level `strict_tools` when every tool agrees
+        // (COH-12) — the same guarantee, spelled once. Tools that disagree have no Cohere form (the
+        // switch cannot be set for some tools and not others), so that case stays a drop-with-warn.
+        //
+        // IR-10: an allowed-tools SUBSET has no Cohere form of its own, so it is expressed by
+        // omission — only the listed tools are sent, and `tool_choice` carries the mode (`Required`
+        // → REQUIRED, `Auto` → Cohere's default). The same constraint, spelled the way Cohere can.
+        let tools: Vec<&crate::ir::IrTool> = match &req.allowed_tools {
+            Some(allowed) => req
+                .tools
+                .iter()
+                .filter(|t| allowed.contains(&t.name))
+                .collect(),
+            None => req.tools.iter().collect(),
+        };
+        let strict: Vec<Option<bool>> = tools.iter().map(|t| t.strict).collect();
+        match strict.first() {
+            Some(Some(first)) if strict.iter().all(|s| *s == Some(*first)) => {
+                out.insert("strict_tools".to_string(), serde_json::json!(first));
+            }
+            _ => super::super::ir_encode::warn_dropped_tool_strict(&req.tools, "cohere"),
+        }
+        if !tools.is_empty() {
             let mut tools_arr: Vec<serde_json::Value> = Vec::new();
-            for tool in &req.tools {
+            for tool in &tools {
                 let mut func_obj = serde_json::Map::new();
                 func_obj.insert("name".to_string(), serde_json::json!(tool.name));
                 if let Some(desc) = &tool.description {
@@ -423,7 +494,7 @@ impl ProtocolWriter for CohereWriter {
         // reachable case is a cross-protocol request whose hosted tools `prepare_for_egress`
         // stripped (`ir/variant.rs`) while the tool_choice directive survived.
         if let Some(tc) = &req.tool_choice {
-            if req.tools.is_empty() {
+            if tools.is_empty() {
                 tracing::warn!(
                     "dropping tool_choice on Cohere egress: tool_choice has no accompanying tools \
                      (likely because the hosted tools that carried it were stripped on the \
@@ -448,6 +519,14 @@ impl ProtocolWriter for CohereWriter {
             tracing::warn!(
                 "dropping parallel_tool_calls on Cohere egress: /v2/chat has no parallelism \
                  control, so the backend's default parallelism applies"
+            );
+        }
+        // The Q57 request slots with no Cohere form — the same set `dropped_egress_controls`
+        // reports for the seam's audit.
+        for control in self.dropped_egress_controls(req) {
+            tracing::warn!(
+                control = control,
+                "dropping a request control on Cohere egress: Cohere v2 /chat has no form for it"
             );
         }
 
@@ -530,10 +609,6 @@ impl ProtocolWriter for CohereWriter {
                 write_cohere_response_format(response_format),
             );
         }
-        // Cohere-native `documents` (RAG grounding) has no cross-protocol analog and is not
-        // modeled in the IR; on a same-protocol hop it flows through `extra` byte-exact below. The
-        // non-silent loss warn for the cross-protocol case lives in `read_request` (the only Cohere
-        // site that still sees an inbound `documents` before `extra` is cleared at the seam).
         // Only emit `stream` when streaming is requested. A native Cohere client omitting `stream`
         // (relying on the `false` default) produces a body WITHOUT the field; always injecting
         // `"stream": false` is a proxy tell and a same-protocol passthrough fidelity break (the
@@ -542,8 +617,31 @@ impl ProtocolWriter for CohereWriter {
         if req.stream {
             out.insert("stream".to_string(), serde_json::json!(true));
         }
+        // The reasoning ASK in Cohere v2's native `thinking` param (COH-06). It used to be dropped
+        // with a warn, as if Cohere had no reasoning control; it has `thinking.token_budget`.
+        if let Some(ask) = req.reasoning {
+            out.insert(
+                "thinking".to_string(),
+                write_cohere_reasoning(
+                    ask,
+                    req.reasoning_budgets
+                        .unwrap_or(crate::ir::REASONING_BUDGET_DEFAULTS),
+                ),
+            );
+        }
         for (key, value) in &req.extra {
             out.insert(key.clone(), value.clone());
+        }
+        // The lifted documents join any `documents` still riding `extra` (the reader promotes an
+        // array `documents` into the IR — IR-13 — so only an unreadable one is left there), after
+        // them.
+        if !documents.is_empty() {
+            match out.get_mut("documents").and_then(|d| d.as_array_mut()) {
+                Some(existing) => existing.extend(documents),
+                None => {
+                    out.insert("documents".to_string(), serde_json::Value::Array(documents));
+                }
+            }
         }
 
         serde_json::Value::Object(out)
@@ -574,10 +672,14 @@ impl ProtocolWriter for CohereWriter {
                 ))
             }
 
-            IrStreamEvent::BlockStart { index, block } => match block {
+            IrStreamEvent::BlockStart {
+                index,
+                block,
+                refusal: _,
+            } => match block {
                 crate::ir::IrBlockMeta::Text => {
                     // Record the open text index so its matching `BlockStop` emits `content-end`. A
-                    // cross-protocol block that carries NO opening frame (Thinking / Image, below)
+                    // cross-protocol block that carries NO opening frame (redacted thinking / Image, below)
                     // is never recorded, so its `BlockStop` stays silent rather than emitting an
                     // orphan `content-end` — see `open_text_indices`.
                     self.mark_text_open(*index);
@@ -622,12 +724,31 @@ impl ProtocolWriter for CohereWriter {
                         }),
                     ))
                 }
-                // Cohere v2 has no streamed thinking/redacted-thinking/image block shape. Emitting a
+                // A reasoning block opens as a Cohere reasoning model streams one: a `content-start`
+                // whose content part is `{"type":"thinking"}`, closed by the matching `content-end`
+                // (recorded like a text block so its `BlockStop` emits it). It used to open nothing
+                // and stream its deltas as `tool-plan-delta` — the frame for the plan that precedes a
+                // tool call — so a foreign model's reasoning reached a Cohere client as a plan
+                // (COH-09).
+                crate::ir::IrBlockMeta::Thinking { .. } => {
+                    self.mark_text_open(*index);
+                    Some((
+                        "".to_string(),
+                        serde_json::json!({
+                            "type": ET_CONTENT_START,
+                            "index": index,
+                            "delta": {
+                                "message": {
+                                    "content": { "type": "thinking", "thinking": "" }
+                                }
+                            }
+                        }),
+                    ))
+                }
+                // Cohere v2 has no streamed redacted-thinking or image block shape. Emitting a
                 // fabricated frame would be a non-native proxy tell, so these IR block kinds carry no
-                // opening frame (a redacted block is dropped exactly like plaintext thinking).
-                crate::ir::IrBlockMeta::Thinking
-                | crate::ir::IrBlockMeta::RedactedThinking
-                | crate::ir::IrBlockMeta::Image => None,
+                // opening frame.
+                crate::ir::IrBlockMeta::RedactedThinking | crate::ir::IrBlockMeta::Image => None,
             },
 
             IrStreamEvent::BlockDelta { index, delta } => match delta {
@@ -670,17 +791,16 @@ impl ProtocolWriter for CohereWriter {
                         }
                     }),
                 )),
-                // Cohere v2 DOES have a native streamed reasoning frame — `tool-plan-delta`, the
-                // one this file's own reader consumes — so a reasoning delta re-emits into it
-                // rather than being suppressed. Without this arm the streamed plan reached a
-                // Cohere-ingress client as nothing while the same turn non-streamed arrived, which
-                // is the stream/non-stream asymmetry this pass exists to remove.
+                // A reasoning delta streams into its thinking content block exactly as a Cohere
+                // reasoning model streams it: a `content-delta` whose content is
+                // `{ "thinking": "<chunk>" }` (no `type`, like the text delta above) — the buffered
+                // writer's `{"type":"thinking"}` part, streamed (COH-09).
                 crate::ir::IrDelta::ThinkingDelta(text) => Some((
                     "".to_string(),
                     serde_json::json!({
-                        "type": ET_TOOL_PLAN_DELTA,
+                        "type": ET_CONTENT_DELTA,
                         "index": index,
-                        "delta": { "message": { "tool_plan": text } }
+                        "delta": { "message": { "content": { "thinking": text } } }
                     }),
                 )),
                 crate::ir::IrDelta::SignatureDelta(_)
@@ -733,7 +853,7 @@ impl ProtocolWriter for CohereWriter {
                 // A tool-call index (recorded by its `tool-call-start`) closes with `tool-call-end`,
                 // consuming its marker. A text index (recorded by its `content-start`) closes with
                 // `content-end`, consuming its marker. An UNTRACKED index — a cross-protocol block
-                // that emitted no opening frame (Thinking / Image, whose `BlockStart` maps to `None`)
+                // that emitted no opening frame (redacted thinking / Image, whose `BlockStart` maps to `None`)
                 // — emits NOTHING: previously it fell through to an unconditional `content-end`,
                 // producing an orphan close with no matching `content-start`. This
                 // mirrors the Gemini writer's no-frame-for-untracked-index behavior.
@@ -756,6 +876,7 @@ impl ProtocolWriter for CohereWriter {
                 stop_reason,
                 usage,
                 stop_sequence: _,
+                stop_detail: _,
             } => {
                 let cohere_finish_reason = stop_reason
                     .map(write_cohere_stop_reason)
@@ -765,12 +886,19 @@ impl ProtocolWriter for CohereWriter {
                 // client tracking billing/rate-limit data from the stream is not silently zeroed.
                 // IrUsage is always present (not Option); when upstream supplied nothing it is
                 // zero-valued, which serializes here as a safe `{input_tokens:0,output_tokens:0}`.
+                // Cohere's `tokens.input_tokens` is the WHOLE prompt, cached share included, with the
+                // cache hit reported beside it as `cached_tokens` — see `cohere_prompt_tokens`.
                 let mut usage_obj = serde_json::json!({
                     "tokens": {
-                        "input_tokens": usage.input_tokens,
+                        "input_tokens": cohere_prompt_tokens(usage),
                         "output_tokens": usage.output_tokens
                     }
                 });
+                if let (Some(cached), Some(uo)) =
+                    (usage.cache_read_input_tokens, usage_obj.as_object_mut())
+                {
+                    uo.insert("cached_tokens".to_string(), serde_json::json!(cached));
+                }
                 // The separately-billed search units, in Cohere's native `billed_units` slot — the
                 // same field the buffered writer emits. `search_units` is not a token count at all,
                 // so its absence is invisible in a token total that reconciles perfectly; emitting
@@ -917,22 +1045,10 @@ impl ProtocolWriter for CohereWriter {
         let mut out = serde_json::Map::new();
         let mut content_arr: Vec<serde_json::Value> = Vec::new();
         let mut tool_calls_arr: Vec<serde_json::Value> = Vec::new();
-        let mut tool_plan: Option<String> = None;
 
         for block in &resp.content {
             match block {
                 crate::ir::IrBlock::Text { text, .. } => {
-                    // KNOWN LIMITATION: Cohere's `message.tool_plan` (the
-                    // assistant's pre-tool-call reasoning) is READ into a plain leading `IrBlock::Text`
-                    // by both cohere readers (non-stream `read_response`, streaming
-                    // `tool-plan-delta`). The IR has NO flag distinguishing that Text FROM an ordinary
-                    // content Text, so on an X→Cohere hop we cannot reliably tell which leading Text
-                    // was a `tool_plan` and reshape it back into the native `tool_plan` slot — a
-                    // heuristic ("the leading Text when tool_calls follow") would misclassify a genuine
-                    // leading assistant message as reasoning. The reasoning is therefore re-emitted as
-                    // `content` (lossless in text, but reshaped from `tool_plan` to `content`).
-                    // Faithful `tool_plan` round-tripping would require a first-class IR marker; until
-                    // one exists, preserving the text as content is the correct, non-lossy choice.
                     content_arr.push(serde_json::json!({ "type": "text", "text": text }));
                 }
                 crate::ir::IrBlock::ToolUse {
@@ -944,18 +1060,21 @@ impl ProtocolWriter for CohereWriter {
                     // key and silently drop all but the last call on parallel tool use.
                     tool_calls_arr.push(serde_json::json!({ "id": id, "type": "function", "function": { "name": name, "arguments": args_str }}));
                 }
-                // A reasoning block re-emits into Cohere's NATIVE `message.tool_plan` slot — the
-                // round trip the IR could not express while `tool_plan` was read as a plain leading
-                // Text (there was no marker to tell it apart from genuine content, so it came back
-                // as `content` and the model's internal plan was shown to the user). A REDACTED
-                // block is opaque ciphertext with no Cohere analog and is dropped.
+                // A reasoning block is the model's reasoning, and a Cohere reasoning model returns
+                // that as a `{"type":"thinking"}` content part, in place, ahead of the answer — the
+                // shape this dialect's reader reads and the streamed `content-start {thinking}`
+                // frames carry. It used to be written into `message.tool_plan`, the slot for the plan
+                // that precedes a tool call, so a foreign model's reasoning reached a Cohere client
+                // as a plan (COH-08). A REDACTED block is opaque ciphertext with no Cohere analog and
+                // is dropped.
                 crate::ir::IrBlock::Thinking {
                     text,
                     redacted: false,
                     ..
                 } => {
                     if !text.is_empty() {
-                        tool_plan.get_or_insert_with(String::new).push_str(text);
+                        content_arr
+                            .push(serde_json::json!({ "type": "thinking", "thinking": text }));
                     }
                 }
                 crate::ir::IrBlock::Thinking { .. } => {}
@@ -971,11 +1090,22 @@ impl ProtocolWriter for CohereWriter {
             .map(write_cohere_stop_reason)
             .unwrap_or(COHERE_FINISH_COMPLETE);
 
+        // A Cohere `LogprobItem` is keyed by the token ids the text decodes from, which no other
+        // dialect reports, so a foreign backend's log probabilities have no Cohere form. Dropped,
+        // observably.
+        if !resp.logprobs.is_empty() {
+            tracing::warn!(
+                "dropping response logprobs on Cohere egress: a Cohere logprobs item needs the token \
+                 ids, which the source dialect has no field for"
+            );
+        }
+
         // Cohere format: usage.tokens.input_tokens, usage.tokens.output_tokens
         let mut tokens_map = serde_json::Map::new();
+        // The WHOLE prompt, cached share included — see `cohere_prompt_tokens`.
         tokens_map.insert(
             "input_tokens".to_string(),
-            serde_json::json!(resp.usage.input_tokens),
+            serde_json::json!(cohere_prompt_tokens(&resp.usage)),
         );
         tokens_map.insert(
             "output_tokens".to_string(),
@@ -1002,9 +1132,6 @@ impl ProtocolWriter for CohereWriter {
         // a Cohere -> Cohere passthrough round-trip every parallel tool call.
         let mut message_obj = serde_json::Map::new();
         message_obj.insert("role".to_string(), serde_json::json!("assistant"));
-        if let Some(plan) = tool_plan {
-            message_obj.insert("tool_plan".to_string(), serde_json::json!(plan));
-        }
         message_obj.insert("content".to_string(), serde_json::Value::Array(content_arr));
         // Grounding citations, in Cohere's native `message.citations` slot. A citation READ from a
         // Cohere response carries the source object verbatim in `raw`, so a same-protocol path
@@ -1040,6 +1167,12 @@ impl ProtocolWriter for CohereWriter {
         // Wrap tokens under "tokens" key per Cohere API spec
         let mut usage_map = serde_json::Map::new();
         usage_map.insert("tokens".to_string(), serde_json::Value::Object(tokens_map));
+        // The prompt-cache hit, in Cohere's native `usage.cached_tokens` slot (beside `tokens`, the
+        // same member this dialect's reader reads it from). Emitted only when the source reported a
+        // cache read, so an uncached response does not acquire a fabricated `cached_tokens: 0`.
+        if let Some(cached) = resp.usage.cache_read_input_tokens {
+            usage_map.insert("cached_tokens".to_string(), serde_json::json!(cached));
+        }
         // Cohere's native `billed_units` slot: the separately-metered BILLED attribution, distinct
         // from the raw `tokens` bucket above. Each member is emitted only when the source actually
         // reported it (so a plain chat response does not acquire a fabricated `billed_units` object,

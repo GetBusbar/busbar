@@ -46,11 +46,10 @@ const NOUNS: &[&str] = &[
 /// These are the SUCCESSORS of the three this gate was written against on 2026-09-03
 /// (`busbar-core`, `busbar-substrate`, `busbar-api`). Both of the first two were deleted during
 /// 1.6.0 and their contents went to four places, so the successor set is four roots:
-///   * `busbar-core` was absorbed INTO `busbar-kernel` (673ecdaaa, #19/#37);
-///   * `busbar-substrate`'s ENGINE was absorbed into `busbar-kernel` too (5fa320208), its VALUE
-///     families went down to `busbar-substrate-values` (06132b0b1) and its civil/duration/audit
-///     vocabulary went to `busbar-contract` (eee77c488), which later also took the slice ABI
-///     (b544c8bbf);
+///   * `busbar-core` was absorbed INTO `busbar-kernel`;
+///   * `busbar-substrate`'s ENGINE was absorbed into `busbar-kernel` too, its VALUE
+///     families went down to `busbar-substrate-values` and its civil/duration/audit
+///     vocabulary went to `busbar-contract`, which later also took the slice ABI;
 ///   * `busbar-api` is unmoved.
 ///
 /// Naming all four is not a widening — it is what keeps the ORIGINAL surface covered. The
@@ -75,7 +74,7 @@ const NEUTRAL_ROOTS: &[&str] = &[
 /// gate landed on 2026-09-03 the `_` was NOT a word boundary, and its own self-test named this field
 /// as the thing that must NOT flag ("the underscore-joined `input_audio` debt"). Two days later the
 /// crate split carried the field out of the scanned roots; the day after that the `_` became a
-/// boundary (389d9a0e2) — a tightening that was right, and that never had to reckon with this field
+/// boundary — a tightening that was right, and that never had to reckon with this field
 /// because it was no longer in scope. Restoring the roots above puts it back in scope, so the
 /// judgement has to be made in the open rather than inherited from an accident of ordering.
 const NOUN_EXEMPTIONS: &[(&str, &str, &str)] = &[(

@@ -906,6 +906,7 @@ dependencies = [
  "busbar-kernel-wal",
  "busbar-plugin",
  "busbar-plugin-example-plane",
+ "busbar-store-example-plugin",
  "ed25519-dalek",
  "flate2",
  "getrandom 0.3.4",

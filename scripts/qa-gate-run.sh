@@ -242,8 +242,8 @@ cmd_build() {
   # THE PACKAGE SET MUST MATCH `qa/segments.toml` (the `export` and `hook-bindings` rows) EXACTLY: a
   # selection that differs by even one package resolves different features and shares nothing, so a
   # stale package name here does not red, it just silently stops prebuilding and the segments pay
-  # for the link themselves. It read `-p busbar-core` until the W4.a absorption (673ecdaaa) deleted
-  # that crate.
+  # for the link themselves. It read `-p busbar-core` until that crate was absorbed into
+  # busbar-kernel and deleted.
   # PROFILE MUST MATCH THE SEGMENTS. The first two gate runs failed here: the segments ran in DEBUG
   # while everything prebuilt here is RELEASE, so they shared nothing (export rebuilt from scratch,
   # 138s) AND the hook-test cdylib built above into target/release was invisible to a debug test

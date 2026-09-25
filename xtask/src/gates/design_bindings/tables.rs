@@ -425,7 +425,9 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
     ]),
     ("PB-75", &[
         ("test", "openapi_json_matches_committed_file", "the committed openapi.json byte-equals a fresh render"),
-        ("test", "served_openapi_equals_committed_file", "the served document byte-equals the committed file"),
+        ("test", "openapi_documents_every_served_admin_operation", "ONE generated document describes exactly the served admin operations (plane operations tagged x-busbar-plane, kernel verbs x-busbar-since 1.6.0) and the side-car document does not exist"),
+        ("test", "served_openapi_lists_only_the_configured_planes", "with a 1.5.5 config the served document's paths are the 1.5.5 golden's plus the always-served kernel verbs, no plane path; a configured plane's operations are served again"),
+        ("test", "admin_corpus_reconciles_with_the_served_router", "every served admin operation answers on a live listener and has admin.ops oracle cells"),
     ]),
     ("PB-76", &[
         ("test", "split_admin_listener_no_double_exposure", "admin routes are absent (hard 404) on the data listener"),
@@ -597,7 +599,6 @@ pub static NOTES: &[(&str, &str)] = &[
     ("PB-7", "Resolved 2026-09-05 in 1.5.5: the shed was restored; proven by crates/busbar/tests/inbound_concurrency_shed.rs, the admission layer test and the concurrency|inbound-shed|n8 cell."),
     ("PB-11", "CONTRADICTED in part by green tests: crates/plugin-loader/src/tests/registry_tests.rs store_abi_below_or_above_the_range_is_refused_naming_v2_to_v4 and supported_abi_store_floor_admits_v2 pin a store window of v2..=v4, where the binding requires v2..=v2 and refuses ABI 3/4. The plugins.load cells prove the trust/skip half only."),
     ("PB-84", "OWNER DECISION (1.6.0 rebuild, PR-0): the binding is AMENDED — an auth refusal on a hooked pool DOES fire the completion tap, with the synthetic outcome `rejected_by_auth` and the protocol-native status; hook_seam_tests.rs completion_tap_fires_synthetic_rejected_by_auth pins it and the oracle cell hooks|hooked-pool|unauth records 1.5.5 doing exactly that. Other pre-forward refusals (403/429/413/404) are unchanged."),
-    ("PB-75", "The mapped goldens pin served == committed today; openapi_doc_is_31_and_v1_prefixed asserts info.version tracks the crate version, which is the opposite of a 1.5.5-verbatim pin. Treat as partial."),
     ("PB-13", "data_dir, DataDirNotWritable, KeysetMissing and wal_capacity do not exist in crates/ yet; the tripwire is armed anyway: no_data_dir_neutrality.rs boots a 1.5.5-shaped config and asserts no ledger/journal/hold/WAL series and no keyset/data-dir boot line, and the ops.scrape no-ledger-series cell records the same absence against 1.5.5."),
     ("PB-15", "No WAL or high-water concept exists in crates/ yet; the neutrality tripwire (no_data_dir_neutrality.rs + the ops.scrape no-ledger-series cell) turns red the day a WAL series or boot line appears on a config without data_dir."),
     ("PB-48", "Resolved 2026-09-06: max_unit_duration DOES exist -- it is the fourth parameter of `sweep()` at crates/busbar-kernel/src/tick.rs:141, and Sweep::AlarmOnly is the verdict it returns when the protocol declares no idle bound. The old note was wrong on the fact and the row was carried unproven on it. The sweep half is compared by crates/busbar-kernel/tests/recovery_and_ticks.rs::a_slow_unit_is_not_a_lost_one, which drives sweep() past max_unit_duration with idle_bound_applies false, gets AlarmOnly, and shows sweep_settle takes no hold and ends no unit on it; nothing in crates/ calls sweep() on a production path at all, so the alarm is the most that can happen. The stream half is compared on the SHIPPED proxy path by crates/busbar-llm/src/engine/engine_tests/stream_deadline_tests.rs::a_proxied_stream_is_cut_at_the_configured_second_and_by_nothing_earlier: the same black-holed upstream is cut at 7 s under one configuration and at 23 s under another, so the timer that fires is the operator's total deadline and no idle timer exists to fire first. The binding's `main.rs:3179-3181` anchor was dead and is amended in Appendix B to busbar-substrate/src/config/limits.rs:22 and busbar-llm/src/engine/attempt/send.rs:63-76."),
@@ -696,7 +697,7 @@ pub static SUGGEST: &[(&str, &str)] = &[
     ("PB-72", "lint: every PB row's inventory column resolves to an existing inventory file and anchor (a docs consistency lint, red on a dangling ref)"),
     ("PB-73", "middleware unit test: Server-Timing on every response when enabled; route headers only with route_policy and a non-default ordering hook"),
     ("PB-74", "unit test that the reserved-name sets equal their pinned 1.5.5 membership and that no top-level mcp:/a2a:/voice: key is parsed"),
-    ("PB-75", "admin test: GET /admin/openapi.json body equals fixtures/openapi-1.5.5.json byte for byte (info.version included)"),
+    ("PB-75", "admin test: the served GET /admin/openapi.json lists exactly the operations the router serves for the configured planes, and info.version equals CARGO_PKG_VERSION"),
     ("PB-76", "http.crosscut admin cells cover outside-prefix and unknown; add a wrong-method cell asserting the method_not_allowed envelope"),
     ("PB-77", "admin unit test: POST /signing-key/rotate rotates nothing, audit action signing_key.report, body verbatim; admin.ops cell"),
     ("PB-78", "admin unit test: revoke on a tombstoned key returns 200 {revoked} and writes key.revoke/applied"),

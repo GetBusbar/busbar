@@ -706,6 +706,44 @@ pub const NEW_VERBS: &[KernelVerb] = &[
     KernelVerb::AmendRateHistory,
 ];
 
+/// WHETHER THIS BUILD BINDS AN EFFECT TO `verb` — the one question the administrative mount asks
+/// before it takes a request into the loop, and the one the generated document asks before it
+/// describes an operation.
+///
+/// A new verb whose effect is not bound is NOT SERVED: the mount hands it to the surface's own
+/// fallback, which answers the unmounted `404` byte for byte and seals no audit row, and the
+/// document does not describe it. Walking it through the gates to a `404` after its audit row was
+/// written told the operator that something was admitted and then did nothing. Every verb outside
+/// [`NEW_VERBS`] is answered by a surface that exists, so it is bound. Binding one of the others is
+/// a new arm here in the same commit that lands its effect (and strikes its
+/// `qa/unconstructed.toml` row).
+#[must_use]
+pub const fn effect_bound(verb: KernelVerb) -> bool {
+    match verb {
+        // Their effect lands on the store (`Verbs::chain_break` / `store_restore` /
+        // `reseal_epoch_floor`).
+        KernelVerb::ChainBreak | KernelVerb::StoreRestore | KernelVerb::ResealEpochFloor => true,
+        // Their effect lands on the node's amendment journal (the composition root's
+        // `execute_new_verb`).
+        KernelVerb::Adjust | KernelVerb::AmendRateHistory => true,
+        // Any other new verb is unbound until an arm above says otherwise: a verb added to
+        // `NEW_VERBS` is unserved by default, never served onto a surface with no handler for it.
+        _ => !is_new_verb(verb),
+    }
+}
+
+/// Whether `verb` is one of [`NEW_VERBS`] (a `const` membership test for [`effect_bound`]).
+const fn is_new_verb(verb: KernelVerb) -> bool {
+    let mut i = 0;
+    while i < NEW_VERBS.len() {
+        if NEW_VERBS[i] as u16 == verb as u16 {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
 /// The two of the seventeen the architecture document binds as `GET` — "POST for every mutating
 /// verb, GET for the two read-only verbs (`verify`, `plane_facts`)".
 ///

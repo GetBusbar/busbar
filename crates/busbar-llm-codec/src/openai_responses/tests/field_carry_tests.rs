@@ -87,6 +87,7 @@ fn mk_response(
         system_fingerprint: None,
         stop_sequence: None,
         request_echo: None,
+        stop_detail: None,
     }
 }
 
@@ -101,6 +102,7 @@ fn text_block(text: &str) -> crate::ir::IrBlock {
         text: text.to_string(),
         cache_control: None,
         citations: Vec::new(),
+        refusal: false,
     }
 }
 
@@ -359,27 +361,45 @@ fn responses_request_content_parts_survive_roundtrip() {
     );
 }
 
-/// responses/request/content[].type=input_image.detail — no IR slot and no cross-protocol analog, so
-/// carried as a DOCUMENTED DROP+WARN (never silently, never waived). The image itself still survives.
+/// responses/request/content[].type=input_image.detail — IR-08: the detail rides the IR
+/// `Image.detail` slot (Chat and Cohere carry the same three words), and an unknown word is dropped
+/// with a warn naming the field. The image itself survives either way.
 #[test]
-fn responses_request_input_image_detail_dropped_with_warn() {
+fn responses_request_input_image_detail_carried() {
     let body = serde_json::json!({
         "input": [{ "type": "input_image", "image_url": "data:image/png;base64,QUJD", "detail": "high" }]
     });
-    let (ir, cap) = with_warns(|| read_req(&body));
-
-    // The image survives (the detail hint is what drops).
+    let ir = read_req(&body);
     assert!(
         ir.messages
             .iter()
             .flat_map(|m| &m.content)
-            .any(|b| matches!(b, crate::ir::IrBlock::Image { .. })),
-        "the image block must survive even as detail drops: {:?}",
+            .any(|b| matches!(
+                b,
+                crate::ir::IrBlock::Image {
+                    detail: Some(crate::ir::IrImageDetail::High),
+                    ..
+                }
+            )),
+        "the image block must carry detail high: {:?}",
+        ir.messages
+    );
+
+    let unknown = serde_json::json!({
+        "input": [{ "type": "input_image", "image_url": "data:image/png;base64,QUJD", "detail": "original" }]
+    });
+    let (ir, cap) = with_warns(|| read_req(&unknown));
+    assert!(
+        ir.messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .any(|b| matches!(b, crate::ir::IrBlock::Image { detail: None, .. })),
+        "the image survives an unknown detail word: {:?}",
         ir.messages
     );
     assert!(
         cap.contains("detail"),
-        "dropping input_image.detail must warn, naming the field: {:?}",
+        "dropping an unknown input_image.detail must warn, naming the field: {:?}",
         cap.messages()
     );
 }
@@ -871,6 +891,8 @@ fn responses_response_output_items_emitted() {
             signature: Some("ENC".to_string()),
             redacted: false,
             cache_control: None,
+            kind: None,
+            signature_origin: None,
         },
     ];
     let out = write_response(&mk_response(
@@ -1002,6 +1024,7 @@ fn responses_stream_events_emitted_by_writer() {
         crate::ir::IrStreamEvent::BlockStart {
             index: 0,
             block: crate::ir::IrBlockMeta::Text,
+            refusal: false,
         },
     ));
     seen.extend(event_names(
@@ -1024,6 +1047,7 @@ fn responses_stream_events_emitted_by_writer() {
                 id: "call_s".to_string(),
                 name: "f".to_string(),
             },
+            refusal: false,
         },
     ));
     seen.extend(event_names(
@@ -1043,6 +1067,7 @@ fn responses_stream_events_emitted_by_writer() {
             stop_reason: Some(crate::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage(1, 1),
+            stop_detail: None,
         },
     ));
 
@@ -1090,6 +1115,7 @@ fn responses_duplicate_message_start_does_not_restart_stream() {
         w.write_response_events(&crate::ir::IrStreamEvent::BlockStart {
             index: 0,
             block: crate::ir::IrBlockMeta::Text,
+            refusal: false,
         }),
     );
     frames.extend(
@@ -1107,6 +1133,7 @@ fn responses_duplicate_message_start_does_not_restart_stream() {
             stop_reason: Some(crate::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage(1, 1),
+            stop_detail: None,
         }),
     );
 
@@ -1200,6 +1227,7 @@ fn responses_reset_clears_citation_and_logprob_accumulators() {
         w.write_response_events(&crate::ir::IrStreamEvent::BlockStart {
             index: 0,
             block: crate::ir::IrBlockMeta::Text,
+            refusal: false,
         }),
     );
     frames.extend(
@@ -1243,6 +1271,7 @@ fn responses_stream_incomplete_event_emitted() {
             stop_reason: Some(crate::ir::IrStopReason::MaxTokens),
             stop_sequence: None,
             usage: usage(1, 1),
+            stop_detail: None,
         },
     );
     assert!(

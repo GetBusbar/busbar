@@ -33,6 +33,7 @@ use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming
 
 pub mod handler;
 mod reader;
+mod slots;
 mod writer;
 
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
@@ -214,6 +215,36 @@ fn read_cache_write_tokens(
     )
 }
 
+/// OpenAI `service_tier` (the tier that SERVED the request, a top-level response / chunk member) →
+/// the IR's `IrUsageDetail::service_tier`, which speaks the Anthropic vocabulary
+/// (`standard` / `priority` / `batch`, see the field's doc). OpenAI's `default` IS the standard tier
+/// and `priority` is the same word on both wires (OAI-03). `flex` and `scale` are OpenAI-family
+/// tiers with no Anthropic word; they are carried in the IR tier vocabulary
+/// ([`crate::ir::IrServiceTier::as_str`]), which the Responses writer also speaks, so a flex/scale
+/// turn keeps its tier across the two OpenAI dialects.
+fn read_openai_service_tier(v: Option<&serde_json::Value>) -> Option<String> {
+    match v?.as_str()? {
+        "default" => Some("standard".to_string()),
+        "priority" => Some("priority".to_string()),
+        "flex" => Some(crate::ir::IrServiceTier::Flex.as_str().to_string()),
+        "scale" => Some(crate::ir::IrServiceTier::Scale.as_str().to_string()),
+        _ => None,
+    }
+}
+
+/// The inverse of [`read_openai_service_tier`]: the IR tier word → OpenAI's `service_tier` value,
+/// `None` when OpenAI has no response value for it (`batch` is a separate OpenAI API, not a tier a
+/// chat completion reports). The OpenAI-family words are accepted as-is.
+fn write_openai_service_tier(tier: Option<&str>) -> Option<&'static str> {
+    match tier? {
+        "standard" | "default" => Some("default"),
+        "priority" => Some("priority"),
+        "flex" => Some("flex"),
+        "scale" => Some("scale"),
+        _ => None,
+    }
+}
+
 /// Fallback `model` string stamped onto a cross-protocol OpenAI response when the egress backend
 /// supplied none. The native OpenAI `chat.completion` / `chat.completion.chunk` schemas define
 /// `model` as a REQUIRED non-nullable string, and the official `openai-python` (>=1.0) Pydantic
@@ -231,8 +262,8 @@ const DEFAULT_MODEL: &str = OPENAI_FAMILY_DEFAULT_MODEL;
 /// `max_completion_tokens` must re-emit `max_completion_tokens`, not `max_tokens`. The reader records
 /// the source spelling under this sentinel in `extra` so the writer can re-emit the SAME key on a
 /// same-protocol passthrough. `extra` is cleared on the cross-protocol seam, so the sentinel
-/// naturally vanishes there and a cross-protocol egress emits the canonical `max_tokens` — exactly
-/// the desired scope (other protocols have no `max_completion_tokens`). The `__busbar` prefix never
+/// naturally vanishes there and a cross-protocol egress writes the key the LANE declares
+/// (`LaneCaps::max_output_key`, default `max_tokens` — OAI-01). The `__busbar` prefix never
 /// collides with a real OpenAI field, and the writer consumes (does not leak) it.
 const MAX_COMPLETION_TOKENS_SENTINEL: &str = "__busbar_max_completion_tokens";
 
@@ -245,6 +276,12 @@ const MAX_COMPLETION_TOKENS_SENTINEL: &str = "__busbar_max_completion_tokens";
 /// naturally drop there — the correct scope, since no other dialect models them. The `__busbar` prefix
 /// never collides with a real OpenAI field, and the writer consumes (does not leak) it.
 const MESSAGE_EXTRAS_SENTINEL: &str = "__busbar_openai_message_extras";
+
+/// Busbar-internal key INSIDE one message's `MESSAGE_EXTRAS_SENTINEL` entry marking a legacy
+/// `role:"function"` result turn (value: its function `name`). The reader reads such a turn as a
+/// tool result (OAI-07); the writer uses the marker to write an OpenAI-origin re-serialize back in
+/// the legacy shape. Never reaches the wire.
+const LEGACY_FUNCTION_ROLE_KEY: &str = "__busbar_legacy_function_role";
 
 // `MESSAGE_NAMES_SENTINEL` — the `extra` key parking OpenAI's per-message `messages[].name` — lives
 // in the neutral `busbar_substrate_values::proto` leaf (core's `ir/variant.rs` names it there in the generic
@@ -283,6 +320,8 @@ const RESP_FORMAT_JSON_OBJECT: &str = "json_object";
 
 /// Tool `type` field value for all Chat Completions function tools.
 const TOOL_TYPE_FUNCTION: &str = "function";
+/// Tool `type` field value for a Chat Completions custom (free-text / grammar input) tool.
+const TOOL_TYPE_CUSTOM: &str = "custom";
 
 /// Fallback `json_schema.name` synthesized when the IR carries none.
 /// OpenAI REQUIRES this field and the SDK rejects it when absent.
@@ -614,6 +653,9 @@ fn modeled_request_keys() -> &'static std::collections::HashSet<&'static str> {
             "reasoning_effort",
         ]
         .into_iter()
+        // The Q57 typed request slots (`slots.rs`): metadata, service_tier, store,
+        // safety_identifier, prompt_cache_key, verbosity, modalities, web_search_options.
+        .chain(slots::SLOT_KEYS)
         .collect()
     })
 }
@@ -714,9 +756,10 @@ fn media_part_from_ir(
             }
             Some(serde_json::json!({ "type": "file", "file": serde_json::Value::Object(file) }))
         }
-        // This protocol's OWN uploads handle: re-emit the native `file_id` form verbatim.
-        (K::Document, S::Vendor { vendor, value }) if *vendor == VENDOR_NAME => {
-            let id = value.get("file_id").and_then(|i| i.as_str())?;
+        // An OpenAI Files handle — this dialect's own or a Responses `input_file.file_id`, the same
+        // namespace (SHR-03): re-emit the native `file_id` form.
+        (K::Document, source) if super::openai_annotations::openai_file_id(source).is_some() => {
+            let id = super::openai_annotations::openai_file_id(source)?;
             let mut file = serde_json::Map::new();
             file.insert("file_id".to_string(), serde_json::json!(id));
             if let Some(n) = name {
@@ -775,6 +818,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
                 text,
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             })
         }
         "image_url" => {
@@ -791,24 +835,21 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
             // url>`, which the Anthropic writer then emitted as a base64 source whose data was a
             // URL — an invalid Anthropic request. For a `data:<mime>;base64,<payload>` URI we now
             // split out the real MIME type and payload so the cross-protocol image is valid.
-            // `image_url.detail` (`low`/`high`/`auto`) is a cost/latency knob ONE
-            // vendor models — `IrBlock::Image` has no field for it (owner decision: an IR field is
-            // added only when at least TWO protocols model a knob; `detail` is OpenAI-family-only),
-            // and it is nested inside `"messages"`, a MODELED key, so it cannot ride `extra` either
-            // the way an unmodeled top-level field can. Warn so the loss is diagnosable rather than
-            // silent, even OpenAI->OpenAI same-lane.
-            if let Some(detail) = image_obj.get("detail").and_then(|v| v.as_str()) {
-                if detail != "auto" {
-                    tracing::warn!(
-                        detail,
-                        "dropping image_url.detail: no cross-protocol carrier exists for this \
-                         cost/latency hint (not even on a same-protocol OpenAI round-trip)"
-                    );
-                }
+            // `image_url.detail` (`low`/`high`/`auto`) is the image-fidelity ask the IR carries
+            // (IR-08; Responses and Cohere use the same words). An unknown word is dropped with a
+            // warn rather than coerced onto a fidelity the caller did not ask for.
+            let detail = image_obj.get("detail").and_then(|v| v.as_str());
+            let parsed = detail.and_then(crate::ir::IrImageDetail::parse);
+            if let (Some(word), None) = (detail, parsed) {
+                tracing::warn!(
+                    detail = word,
+                    "dropping an unknown image_url.detail word: the IR carries auto/low/high only"
+                );
             }
             Ok(crate::ir::IrBlock::Image {
                 source: super::ir_encode::parse_image_url(url),
                 cache_control: None,
+                detail: parsed,
             })
         }
         // An audio ATTACHMENT the caller sent for the model to listen to:
@@ -842,6 +883,8 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
                 },
                 name: None,
                 cache_control: None,
+                citations: None,
+                context: None,
             })
         }
         // A file ATTACHMENT: `{"type":"file","file":{"file_data":"data:application/pdf;base64,…",
@@ -867,7 +910,21 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
             {
-                Some(data_uri) => super::ir_encode::parse_image_url(data_uri),
+                Some(data_uri)
+                    if data_uri.starts_with("data:")
+                        || data_uri.starts_with("https://")
+                        || data_uri.starts_with("http://") =>
+                {
+                    super::ir_encode::parse_image_url(data_uri)
+                }
+                // `file_data` is documented as the base64-encoded file content, and clients send it
+                // BARE (no `data:` prefix) as well as wrapped. Parsed as a URL, a bare payload became
+                // an attachment every writer drops (OAI-06); it is the base64 payload itself, typed by
+                // the filename's extension (the only type signal a bare payload carries).
+                Some(bare_base64) => crate::ir::IrImageSource::Base64 {
+                    media_type: file_media_type_from_name(name.as_deref()).to_string(),
+                    data: bare_base64.to_string(),
+                },
                 None => {
                     let file_id = file_obj
                         .get("file_id")
@@ -893,12 +950,14 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
                 source,
                 name,
                 cache_control: None,
+                citations: None,
+                context: None,
             })
         }
         // OpenAI gpt-4o-and-later responses carry `refusal` content parts; a client replaying its
         // OpenAI conversation history through busbar will include them. Map a refusal to a Text block
-        // carrying the refusal string so the turn survives translation rather than being rejected with
-        // a 400 (the prior `_ => Err` behavior turned legitimate replayed history into a hard error).
+        // carrying the refusal string, flagged as a refusal (IR-02), so the turn survives translation
+        // rather than being rejected with a 400, and a dialect with a refusal part keeps it one.
         "refusal" => {
             let text = obj
                 .get("refusal")
@@ -909,6 +968,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
                 text,
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: true,
             })
         }
         // Forward-compatibility: an unknown/future content-part type (one OpenAI adds after this
@@ -922,8 +982,35 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
                 text: String::new(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             })
         }
+    }
+}
+
+/// The media type of a bare-base64 `file.file_data` payload, from its `filename` extension.
+/// `application/octet-stream` when there is no filename or the extension is not one listed here —
+/// the payload's type is then genuinely unknown, and no specific type is invented for it.
+fn file_media_type_from_name(name: Option<&str>) -> &'static str {
+    let ext = name
+        .and_then(|n| n.rsplit_once('.'))
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "pdf" => "application/pdf",
+        "txt" => "text/plain",
+        "md" => "text/markdown",
+        "csv" => "text/csv",
+        "html" | "htm" => "text/html",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "wav" => "audio/wav",
+        "mp3" => "audio/mpeg",
+        _ => "application/octet-stream",
     }
 }
 
@@ -934,6 +1021,26 @@ fn read_openai_tool(tool_val: &serde_json::Value) -> Result<crate::ir::IrTool, I
         provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
         retry_after: None,
     })?;
+
+    // A tool whose `type` is not `function` — today Chat's `custom` tool
+    // (`{"type":"custom","custom":{"name","description","format"}}`, free-text or grammar input, no
+    // JSON-schema parameters) — has no function-tool projection in any other dialect. Reading it as
+    // a function yielded an EMPTY-NAME, null-schema function tool that every foreign backend rejects
+    // (OAI-09). It is carried as a `hosted` tool instead: the raw definition rides verbatim, the
+    // cross-protocol seam drops it with its hosted-tool diagnostic, and this dialect's own writer
+    // re-emits it unchanged.
+    if let Some(kind) = obj.get("type").and_then(|t| t.as_str()) {
+        if kind != TOOL_TYPE_FUNCTION {
+            return Ok(crate::ir::IrTool {
+                name: String::new(),
+                description: None,
+                input_schema: serde_json::Value::Null,
+                cache_control: None,
+                hosted: Some(tool_val.clone()),
+                strict: None,
+            });
+        }
+    }
 
     // OpenAI nests the tool definition under `function` ({"type":"function","function":{...}}).
     // Read from there, falling back to the top level so a flattened/native-shaped tool still works.
@@ -1327,6 +1434,10 @@ pub struct OpenAiWriter {
     /// stream is single-threaded at any instant so contention is nil, and a poisoned lock degrades
     /// to minting fresh rather than panicking on the request path.
     chunk_id: std::sync::Mutex<Option<String>>,
+    /// The IR indices of THIS STREAM'S text blocks that opened as a refusal
+    /// (`BlockStart{refusal: true}`, IR-02). Their text deltas are written as `delta.refusal`, not
+    /// `delta.content` — the wire has no block frame to carry the flag, so the writer remembers it.
+    refusal_blocks: std::sync::Mutex<std::collections::BTreeSet<usize>>,
 }
 
 /// Value-namespace constructor for [`OpenAiWriter`], mirroring the identically-shaped consts on the
@@ -1344,6 +1455,7 @@ pub struct OpenAiWriter {
 #[allow(clippy::declare_interior_mutable_const)]
 pub const OpenAiWriter: OpenAiWriter = OpenAiWriter {
     chunk_id: std::sync::Mutex::new(None),
+    refusal_blocks: std::sync::Mutex::new(std::collections::BTreeSet::new()),
 };
 
 /// A FRESH writer as a VALUE, for the one-shot `write_request` / `write_response` calls the test
@@ -1366,6 +1478,12 @@ impl Clone for OpenAiWriter {
             chunk_id: std::sync::Mutex::new(
                 self.chunk_id.lock().map(|id| id.clone()).unwrap_or(None),
             ),
+            refusal_blocks: std::sync::Mutex::new(
+                self.refusal_blocks
+                    .lock()
+                    .map(|s| s.clone())
+                    .unwrap_or_default(),
+            ),
         }
     }
 }
@@ -1380,6 +1498,21 @@ impl OpenAiWriter {
             Ok(mut slot) => slot.get_or_insert_with(mint).clone(),
             Err(_) => mint(),
         }
+    }
+
+    /// Remember that the text block at `index` is a refusal (IR-02).
+    fn mark_refusal_block(&self, index: usize) {
+        if let Ok(mut set) = self.refusal_blocks.lock() {
+            set.insert(index);
+        }
+    }
+
+    /// Is the text block at `index` a refusal? A poisoned lock reads as "no" (ordinary content).
+    fn is_refusal_block(&self, index: usize) -> bool {
+        self.refusal_blocks
+            .lock()
+            .map(|set| set.contains(&index))
+            .unwrap_or(false)
     }
 }
 
@@ -1490,3 +1623,15 @@ mod field_carry_tests;
 #[cfg(test)]
 #[path = "tests/float_usage_tests.rs"]
 mod float_usage_tests;
+
+#[cfg(test)]
+#[path = "tests/ir_mapping_tests.rs"]
+mod ir_mapping_tests;
+
+#[cfg(test)]
+#[path = "tests/ir_slot_wiring_tests.rs"]
+mod ir_slot_wiring_tests;
+
+#[cfg(test)]
+#[path = "tests/ir_round3_tests.rs"]
+mod ir_round3_tests;

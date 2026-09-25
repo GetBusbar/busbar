@@ -33,6 +33,8 @@ pub mod plane;
 
 use busbar_contract::ids::LaneId;
 use busbar_contract::plugin::{AbiVersion, Kind, Plugin};
+/// A lane's declared request-shape capabilities (see [`Upstream::caps`]).
+pub use busbar_llm_codec::proto_codec::{LaneCaps, MaxOutputKey};
 
 /// One configured upstream this plane may name.
 ///
@@ -52,6 +54,11 @@ pub struct Upstream {
     pub dialect: &'static str,
     /// The model name the request is rewritten to carry.
     pub model: &'static str,
+    /// The upstream's declared request-shape capabilities (from its provider entry and model
+    /// patterns): which output-cap spelling, reasoning form and structured-output form it accepts.
+    /// A cross-protocol request is written for them; [`LaneCaps::NONE`] keeps every pre-capability
+    /// form.
+    pub caps: LaneCaps,
 }
 
 /// The LLM plane.

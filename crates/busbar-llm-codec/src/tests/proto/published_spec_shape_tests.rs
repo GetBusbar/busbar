@@ -23,6 +23,7 @@ fn resp(
             text: text.to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason,
         usage: IrUsage {
@@ -38,6 +39,7 @@ fn resp(
         system_fingerprint: None,
         stop_sequence: None,
         request_echo: None,
+        stop_detail: None,
     }
 }
 
@@ -159,6 +161,7 @@ fn anthropic_image_block_start_emits_no_frame() {
             .write_response_event(&crate::ir::IrStreamEvent::BlockStart {
                 index: 0,
                 block: crate::ir::IrBlockMeta::Image,
+                refusal: false,
             })
             .is_none(),
         "image is not a member of the content_block discriminator; emit no frame"
@@ -176,6 +179,7 @@ fn anthropic_image_block_stop_is_suppressed_with_its_start() {
             .write_response_event(&crate::ir::IrStreamEvent::BlockStart {
                 index: 0,
                 block: crate::ir::IrBlockMeta::Image,
+                refusal: false,
             })
             .is_none(),
         "image BlockStart stays suppressed"
@@ -197,6 +201,7 @@ fn anthropic_text_block_start_stop_pair_survives_the_guard() {
         .write_response_event(&crate::ir::IrStreamEvent::BlockStart {
             index: 0,
             block: crate::ir::IrBlockMeta::Text,
+            refusal: false,
         })
         .expect("a text block starts");
     assert_eq!(
@@ -227,6 +232,7 @@ fn anthropic_redacted_thinking_block_stop_follows_the_written_start() {
             .write_response_event(&crate::ir::IrStreamEvent::BlockStart {
                 index: 0,
                 block: crate::ir::IrBlockMeta::RedactedThinking,
+                refusal: false,
             })
             .is_none(),
         "the redacted start is deferred to its delta"
@@ -255,6 +261,7 @@ fn anthropic_redacted_thinking_block_stop_follows_the_written_start() {
             .write_response_event(&crate::ir::IrStreamEvent::BlockStart {
                 index: 0,
                 block: crate::ir::IrBlockMeta::RedactedThinking,
+                refusal: false,
             })
             .is_none(),
         "the redacted start is deferred to its delta"
@@ -313,6 +320,7 @@ fn responses_output_item_added_seeds_the_required_arguments_member() {
             id: "call_abc".to_string(),
             name: "get_weather".to_string(),
         },
+        refusal: false,
     });
     let added = evs
         .iter()

@@ -715,6 +715,13 @@ get code executed, and a compromised or replayed plugin must not load.
    deployment that crashes therefore accumulates one abandoned staging directory per crash under
    `%TEMP%`, to be cleared by the OS temp cleaner or by hand. This costs disk, not integrity —
    nothing on disk is ever trusted input, so an abandoned directory cannot be loaded from.
+   Location: every per-process staging directory (`busbar-plugins-<pid>-<random>`) lives under
+   ONE dedicated parent, `$TMPDIR/busbar-plugin-staging-<uid>` on unix
+   (`%TEMP%\busbar-plugin-staging` on Windows), created owner-only; busbar refuses to stage under
+   a parent that is a symlink or owned by another user. The boot sweep lists that parent only,
+   never the whole temp directory, so boot time does not grow with the size of `$TMPDIR`.
+   Staging directories left at the top of the temp directory by a pre-1.6.0 busbar are not swept;
+   the OS temp cleaner reaps them, or remove `$TMPDIR/busbar-plugins-*` by hand.
 7. **The engine stays memory-safe.** The engine crate compiles under `forbid(unsafe_code)`; all
    FFI lives in `busbar-plugin-loader`. The loader also bounds every plugin response (a buggy or
    hostile plugin cannot force an unbounded allocation).

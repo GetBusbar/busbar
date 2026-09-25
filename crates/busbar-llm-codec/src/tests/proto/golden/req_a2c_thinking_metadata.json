@@ -1,1 +1,1 @@
-{"k":40,"max_tokens":8192,"messages":[{"content":"Think hard about prime numbers.","role":"user"}],"model":"gpt-4o-mini","stream":true}
+{"k":40,"max_tokens":8192,"messages":[{"content":"Think hard about prime numbers.","role":"user"}],"model":"gpt-4o-mini","stream":true,"thinking":{"token_budget":2048,"type":"enabled"}}

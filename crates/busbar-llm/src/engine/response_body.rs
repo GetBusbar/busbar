@@ -166,10 +166,18 @@ fn estimate_usage_from_truncated_tail(
 /// or it holds a count the reader refuses), the conservative FLOOR over the bytes in hand. The
 /// truncated-tail arm and the refused-count arms share it, so the two can never bill differently.
 fn unrecovered_usage(protocol: &str, buf: &[u8]) -> busbar_substrate_values::billing::TokenUsage {
+    reported_usage(protocol, buf).unwrap_or_else(|| estimate_usage_from_truncated_tail(buf.len()))
+}
+
+/// THE USAGE THE UPSTREAM REPORTED in the bytes in hand — the dialect's own tail scan for its `usage`
+/// object, and nothing else: no floor. `None` when the bytes carry no readable usage.
+fn reported_usage(
+    protocol: &str,
+    buf: &[u8],
+) -> Option<busbar_substrate_values::billing::TokenUsage> {
     busbar_kernel::proto::decl_for(protocol)
         .and_then(|d| d.dialect())
         .and_then(|di| di.recover_truncated_usage(buf))
-        .unwrap_or_else(|| estimate_usage_from_truncated_tail(buf.len()))
 }
 
 /// The STREAM form of [`unrecovered_usage`]: a stream's reader refused a count after the bytes were
@@ -298,6 +306,12 @@ pub(crate) struct FirstByteBody<S, P> {
     /// terminal error is `ir_parse`), no usage was recovered, and the request bills the SAME floor
     /// the truncated-tail path bills — over the upstream bytes, the measure that floor is taken on.
     upstream_bytes: usize,
+    /// Set when the UPSTREAM's own transport failed after the first byte of a NON-SSE body — a
+    /// failed transfer, not busbar's stream ceiling and not the client going away. Such a body bills
+    /// only the usage the upstream reported in the bytes it sent (owner ruling Q31: a failed
+    /// upstream bills upstream-reported usage), never the byte floor — 1.5.5 billed 0 for it (oracle
+    /// cell `route.failover|fo|primary-cut-body`).
+    upstream_failed: bool,
     /// THE STREAM CEILING — the re-provision of reqwest's total-timeout envelope over the BODY:
     /// a `Sleep` polled BEFORE the inner stream on every wakeup, so expiry cuts the body exactly
     /// as reqwest's `TotalTimeoutBody` did, even while chunks are still flowing. The DEADLINE is
@@ -386,6 +400,7 @@ where
             nonstream_buf_truncated: false,
             stop_scan,
             upstream_bytes: 0,
+            upstream_failed: false,
             ceiling,
             tap,
         }
@@ -693,6 +708,7 @@ where
                         }
                         drop(this.permit.take());
                         this.ended = true;
+                        this.upstream_failed = had_first && matches!(e, StreamCut::Transport(_));
                         // THE REPORT-BACK, on the two cuts that reach this arm, and they are not the
                         // same end. A cut BEFORE the first byte delivered nothing at all: the
                         // transfer failed, and `Error` is what the plane says. A cut after the first
@@ -1125,11 +1141,21 @@ impl<S, P> FirstByteBody<S, P> {
     /// truncated-tail path bills when it cannot read the whole document: the dialect's own `usage`
     /// scan over the bytes in hand, else the conservative floor over them (`unrecovered_usage`), never
     /// 0 (item 367). An empty copy — nothing relayed, a flat-fee op, or no sink to bill — is `None`.
+    ///
+    /// An UPSTREAM transport failure mid-body (`upstream_failed`) is a failed transfer: it bills only
+    /// the usage the upstream itself reported in the bytes it sent, never the floor (owner ruling
+    /// Q31). The floor stays for the ends busbar or the client caused (the ceiling, a drop).
     fn incurred_usage(&self) -> Option<busbar_substrate_values::billing::TokenUsage> {
         match self.translate.as_ref() {
             Some(t) => t.usage(),
-            None => (!self.is_sse && !self.nonstream_buf.is_empty())
-                .then(|| unrecovered_usage(self.ingress_protocol, &self.nonstream_buf)),
+            None if self.is_sse || self.nonstream_buf.is_empty() => None,
+            None if self.upstream_failed => {
+                reported_usage(self.ingress_protocol, &self.nonstream_buf)
+            }
+            None => Some(unrecovered_usage(
+                self.ingress_protocol,
+                &self.nonstream_buf,
+            )),
         }
     }
 

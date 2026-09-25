@@ -194,6 +194,14 @@ impl ProtocolReader for AnthropicReader {
         Box::new(self.clone())
     }
 
+    /// IR-18: a `signature_delta` on the Anthropic wire is Claude's.
+    fn stream_signature_origin(
+        &self,
+        _state: &crate::ir::StreamDecodeState,
+    ) -> Option<crate::ir::IrSignatureOrigin> {
+        Some(crate::ir::IrSignatureOrigin::Anthropic)
+    }
+
     fn read_request(&self, body: &serde_json::Value) -> Result<crate::ir::IrRequest, IrError> {
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
@@ -216,6 +224,7 @@ impl ProtocolReader for AnthropicReader {
                     text,
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 });
             } else if let Some(arr) = system_val.as_array() {
                 for block_val in arr {
@@ -269,6 +278,9 @@ impl ProtocolReader for AnthropicReader {
 
         // Handle tools array
         let mut tools: Vec<crate::ir::IrTool> = Vec::new();
+        // IR-11 (ANT-13): an Anthropic server tool whose KIND the IR models (web search, web fetch,
+        // code execution) crosses the seam in the typed slot, NOT as a raw hosted `IrTool`.
+        let mut hosted_tools: Vec<crate::ir::IrHostedTool> = Vec::new();
         if let Some(tools_val) = obj.get("tools") {
             // A PRESENT `tools` that is not an array is a malformed request — reject it (mirroring the
             // `messages` type-check above) rather than coercing to empty, which would forward a
@@ -279,7 +291,10 @@ impl ProtocolReader for AnthropicReader {
                 retry_after: None,
             })?;
             for tool_val in tools_arr {
-                tools.push(read_tool(tool_val)?);
+                match read_hosted_tool(tool_val) {
+                    Some(hosted) => hosted_tools.push(hosted),
+                    None => tools.push(read_tool(tool_val)?),
+                }
             }
         }
 
@@ -322,19 +337,62 @@ impl ProtocolReader for AnthropicReader {
             .and_then(|m| m.get("user_id"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        // The request-level `thinking` param (the ASK, not the response content blocks):
-        // {type:"enabled", budget_tokens:N} promotes into the IR reasoning ask so it can carry to
-        // Gemini's thinkingBudget or OpenAI's reasoning_effort. Any other form ({type:"disabled"},
-        // malformed) stays in `extra` untouched: same-protocol fidelity, and foreign targets treat
-        // an absent ask as off anyway.
-        let reasoning = obj
+        // The request-level `thinking` param (the ASK, not the response content blocks), plus the
+        // effort word Anthropic carries in `output_config.effort`:
+        //   * `{type:"enabled", budget_tokens:N}` → `Budget(N)` (a straight number to Gemini's
+        //     thinkingBudget, bucketed to a word for OpenAI's reasoning_effort);
+        //   * `{type:"adaptive"}` → `Effort(<output_config.effort>)` when an effort word is given,
+        //     else `Dynamic` — "the model decides", Gemini's `thinkingBudget:-1` (ANT-09);
+        //   * no `thinking` but an `output_config.effort` word → `Effort(word)`: the caller asked for
+        //     that reasoning depth, and the adaptive-by-default models honour it;
+        //   * `{type:"disabled"}` → `Off` (IR-09, ANT-09): the caller switched reasoning OFF, which a
+        //     reasoning-by-default foreign model must hear (Chat/Responses `"none"`, Gemini
+        //     `thinkingBudget:0`) rather than read as "never said";
+        //   * a malformed `thinking` → no ask.
+        // Everything stays in `extra` too except a promoted budget-form `thinking` (removed below),
+        // so a same-protocol hop through the IR still re-emits the caller's exact objects.
+        let thinking_type = obj
             .get("thinking")
-            .filter(|t| t.get("type").and_then(|v| v.as_str()) == Some("enabled"))
-            .and_then(|t| t.get("budget_tokens"))
-            .and_then(|v| v.as_u64())
-            .and_then(|v| u32::try_from(v).ok())
-            .map(crate::ir::IrReasoningAsk::Budget);
+            .and_then(|t| t.get("type"))
+            .and_then(|v| v.as_str());
+        let effort = obj
+            .get("output_config")
+            .and_then(|c| c.get("effort"))
+            .and_then(|v| v.as_str())
+            .and_then(read_anthropic_effort_word);
+        let reasoning = match thinking_type {
+            Some("enabled") => obj
+                .get("thinking")
+                .and_then(|t| t.get("budget_tokens"))
+                .and_then(|v| v.as_u64())
+                .and_then(|v| u32::try_from(v).ok())
+                .map(crate::ir::IrReasoningAsk::Budget),
+            Some(THINKING_TYPE_ADAPTIVE) => Some(
+                effort
+                    .map(crate::ir::IrReasoningAsk::Effort)
+                    .unwrap_or(crate::ir::IrReasoningAsk::Dynamic),
+            ),
+            Some(THINKING_TYPE_DISABLED) => Some(crate::ir::IrReasoningAsk::Off),
+            None => effort.map(crate::ir::IrReasoningAsk::Effort),
+            Some(_) => None,
+        };
+        let reasoning_is_budget = matches!(reasoning, Some(crate::ir::IrReasoningAsk::Budget(_)));
+        // Native structured outputs: `output_config.format` (GA) or the deprecated top-level
+        // `output_format` of the same shape. Both used to ride `extra` and die at the seam, so an
+        // Anthropic caller's JSON schema never reached a foreign backend (ANT-06).
+        let output_format_legacy = obj.get("output_format");
+        let response_format = obj
+            .get("output_config")
+            .and_then(|c| c.get("format"))
+            .or(output_format_legacy)
+            .and_then(read_anthropic_output_format);
         let stream = obj.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+        // IR-04: Anthropic `service_tier` (`auto` / `standard_only`). It also rides `extra`, so a
+        // same-protocol hop re-emits the caller's exact value.
+        let service_tier = obj
+            .get("service_tier")
+            .and_then(|v| v.as_str())
+            .and_then(read_anthropic_service_tier);
 
         // Collect unmodeled top-level keys into `extra`. The set of modeled keys is a static,
         // never-changing list of `&'static str` literals, so it lives as a compile-time SORTED slice
@@ -367,8 +425,13 @@ impl ProtocolReader for AnthropicReader {
         }
         // A PROMOTED thinking ask must not also ride extra (the writer re-emits it from the typed
         // field; a duplicate from extra would double-emit on a translated same-protocol hop).
-        if reasoning.is_some() {
+        if reasoning_is_budget {
             extra.remove("thinking");
+        }
+        // The deprecated spelling is promoted to the typed field and re-emitted by the writer in its
+        // GA spelling; leaving it in `extra` too would put BOTH spellings on a same-protocol hop.
+        if response_format.is_some() && output_format_legacy.is_some() {
+            extra.remove("output_format");
         }
 
         // (No ingress sentinel scrub needed anymore: a client cannot forge a redacted-reasoning block.
@@ -398,8 +461,18 @@ impl ProtocolReader for AnthropicReader {
             presence_penalty: None,
             seed: None,
             n: None,
-            response_format: None,
+            response_format,
             extra,
+            metadata: None,
+            service_tier,
+            store: None,
+            safety_identifier: None,
+            prompt_cache_key: None,
+            verbosity: None,
+            allowed_tools: None,
+            hosted_tools,
+            system_role: None,
+            output_modalities: None,
         })
     }
 
@@ -475,7 +548,7 @@ impl ProtocolReader for AnthropicReader {
                 let block_type = block.get("type").and_then(|t| t.as_str())?;
                 let meta = match block_type {
                     "text" => IrBlockMeta::Text,
-                    "thinking" => IrBlockMeta::Thinking,
+                    "thinking" => IrBlockMeta::Thinking { kind: None },
                     STOP_TOOL_USE => {
                         let id = block.get("id").and_then(|i| i.as_str()).map(String::from)?;
                         let name = block
@@ -487,7 +560,11 @@ impl ProtocolReader for AnthropicReader {
                     "image" => IrBlockMeta::Image,
                     _ => return None,
                 };
-                Some(IrStreamEvent::BlockStart { index, block: meta })
+                Some(IrStreamEvent::BlockStart {
+                    index,
+                    block: meta,
+                    refusal: false,
+                })
             }
             EVT_CONTENT_BLOCK_DELTA => {
                 let index = read_clamped_block_index(data)?;
@@ -584,10 +661,17 @@ impl ProtocolReader for AnthropicReader {
                     Ok(usage) => usage,
                     Err(refusal) => return Some(IrStreamEvent::Error(refusal)),
                 };
+                // IR-16 / IR-02: the context-window refinement of a length stop (ANT-11) and a
+                // refusal's `stop_details` category, carried beside the coarse reason.
+                let stop_detail = read_anthropic_stop_detail(
+                    delta.get("stop_reason").and_then(|r| r.as_str()),
+                    delta.get("stop_details"),
+                );
                 Some(IrStreamEvent::MessageDelta {
                     stop_reason,
                     stop_sequence,
                     usage,
+                    stop_detail,
                 })
             }
             EVT_MESSAGE_STOP => Some(IrStreamEvent::MessageStop),
@@ -622,8 +706,38 @@ impl ProtocolReader for AnthropicReader {
         &self,
         event_type: &str,
         data: &serde_json::Value,
-        _state: &mut crate::ir::StreamDecodeState,
+        state: &mut crate::ir::StreamDecodeState,
     ) -> Vec<IrStreamEvent> {
+        // SUPPRESSED BLOCKS (ANT-14). A content block whose type the IR does not model on a stream
+        // (`server_tool_use`, `web_search_tool_result`, `mcp_tool_use`, a future type) produces no
+        // `BlockStart` — but its `input_json_delta`s and its `content_block_stop` still arrived at
+        // the same index and were translated, so a foreign client received tool-argument deltas and
+        // a block stop for a block it was never shown opening. Remember every index whose start was
+        // suppressed and drop everything that arrives at it. The index set lives in the per-stream
+        // decode state (`open_tools`, which no other part of this reader uses): the Anthropic
+        // reader's only per-stream memory, reset with the stream.
+        if event_type == EVT_CONTENT_BLOCK_START {
+            let block_type = data
+                .get("content_block")
+                .and_then(|b| b.get("type"))
+                .and_then(|t| t.as_str());
+            if let (Some(index), Some(t)) = (read_clamped_block_index(data), block_type) {
+                if !is_streamed_anthropic_block_type(t) {
+                    state.open_tools.insert(index);
+                    return vec![];
+                }
+            }
+        }
+        if event_type == EVT_CONTENT_BLOCK_DELTA || event_type == EVT_CONTENT_BLOCK_STOP {
+            if let Some(index) = read_clamped_block_index(data) {
+                if state.open_tools.contains(&index) {
+                    if event_type == EVT_CONTENT_BLOCK_STOP {
+                        state.open_tools.remove(&index);
+                    }
+                    return vec![];
+                }
+            }
+        }
         // A streamed `redacted_thinking` block carries its full opaque encrypted `data` INLINE on the
         // `content_block_start` event (Anthropic sends NO deltas for redacted blocks), so the 1:1
         // single-event reader dropped it entirely (`_ => return None`). Emit the pair the IR models
@@ -647,6 +761,7 @@ impl ProtocolReader for AnthropicReader {
                             IrStreamEvent::BlockStart {
                                 index,
                                 block: IrBlockMeta::RedactedThinking,
+                                refusal: false,
                             },
                             IrStreamEvent::BlockDelta {
                                 index,
@@ -698,6 +813,9 @@ impl ProtocolReader for AnthropicReader {
         }
 
         // Parse stop_reason (optional)
+        // A lane WITH native structured outputs (`LaneCaps::native_structured_output`) asks through
+        // `output_config.format`, so its answer is ordinary text. A lane without it asks through the
+        // synthetic forced tool (the pre-capability default), whose answer is mapped back here.
         let mut stop_reason = obj
             .get("stop_reason")
             .and_then(|r| r.as_str())
@@ -720,6 +838,7 @@ impl ProtocolReader for AnthropicReader {
                         text,
                         cache_control: None,
                         citations: Vec::new(),
+                        refusal: false,
                     };
                     mapped_forced_tool = true;
                 }
@@ -789,6 +908,11 @@ impl ProtocolReader for AnthropicReader {
             stop_sequence,
 
             request_echo: None,
+            // IR-16 / IR-02 (buffered twin of the `message_delta` read above).
+            stop_detail: read_anthropic_stop_detail(
+                obj.get("stop_reason").and_then(|r| r.as_str()),
+                obj.get("stop_details"),
+            ),
         })
     }
 }

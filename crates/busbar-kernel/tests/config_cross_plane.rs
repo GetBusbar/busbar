@@ -47,6 +47,10 @@ fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
         subject: None,
         auth: None,
         allow_metadata_hosts: Vec::new(),
+        max_output_key: None,
+        anthropic_adaptive_thinking: None,
+        native_structured_output: None,
+        model_capabilities: Vec::new(),
     }
 }
 
@@ -65,6 +69,10 @@ fn provider_deploy(env_var: &str) -> ProviderDeploy {
         subject: None,
         auth: None,
         allow_metadata_hosts: None,
+        max_output_key: None,
+        anthropic_adaptive_thinking: None,
+        native_structured_output: None,
+        model_capabilities: None,
         health: None,
     }
 }

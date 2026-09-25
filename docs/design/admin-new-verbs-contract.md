@@ -362,7 +362,7 @@ rendering a **decimal string** so no JSON consumer silently truncates at 2^53:
 | `CeilingView` | `set_overdraft_ceiling` | `bucket, dimension, scope, ceiling_nanos, previous_ceiling_nanos, window_cap_nanos, ceiling_bp_of_cap, unbounded: bool` |
 | `DisputeVerdictView` | `resolve_dispute` | `dispute_id, verdict, posted_amount_nanos, corrected_amount_nanos, delta_nanos: i128, above_threshold: bool, threshold_nanos, entry: EntryRef` |
 | `UnreconciledSliceView` | `resolve_slice` | `node, lease_epoch, bucket, dimension, scope, window_start, unreconciled_nanos, resolved_nanos, remaining_nanos, entry: EntryRef` |
-| `AdjustmentView` | `adjust` | `seq, hash, amends, lane, card_epoch_ms, now: { class: decimal-string }` — counts, never money (owner ruling Q9; §7.15) |
+| `AdjustmentView` | `adjust` | `seq, hash, amends, lane, card_epoch_ms, pool, now: { class: decimal-string }` — counts, never money (owner ruling Q9; §7.15); `pool` per Q64/Q67 |
 
 `EntryRef { node, node_seq, hash }` is §4.1's `refs` triple. The twelve verbs not listed here name no
 figure at all, and their response schemas below carry none.
@@ -832,20 +832,27 @@ the corrected counts at the unit's own card epoch (#79).
   carries no money figure to compare against a threshold, so no call is admitted below one.
 - **Request:**
   ```json
-  { "amends": "string", "now": { "<class>": "decimal-string", ... }, "reason": "string" }
+  { "amends": "string", "now": { "<class>": "decimal-string", ... }, "reason": "string",
+    "pool": "string" }
   ```
   `amends` is the digest (64 hex characters) of the journal record of the unit being corrected — a
   counts-era posting on the node's own chain. `now` is the unit's corrected count per billable class
   (#71), each an exact decimal TEXT (#81), never below zero. The principal, the lane, the card epoch
   and what the counts WERE are read from the book by that digest, never from the body, so a
-  correction cannot misstate what it corrects.
+  correction cannot misstate what it corrects. `pool` (OWNER RULING Q64/Q67) is REQUIRED and must
+  name a configured pool: the pool the unit was dispatched through, so a pool-scoped group budget
+  for that pool takes the correction as well as the unscoped (group-wide) buckets do. It is sealed
+  on the `Adjust` record (digested last, and only when present). An `Adjust` sealed before the field
+  existed cannot be rewritten (hash-chained); it keeps its digest and reads UNSCOPED — the
+  group-wide buckets only, as it always did.
 - **Success** `200`:
   `{ "seq": u64, "hash": "string", "amends": "string", "lane": "string", "card_epoch_ms": u64,
-  "now": { "<class>": "decimal-string" } }` — the sealed amendment's position and digest on the node
+  "pool": "string", "now": { "<class>": "decimal-string" } }` — the sealed amendment's position and digest on the node
   amendment journal, and the counts the unit now stands at. No money figure.
 - **Refusals** shared, plus
   `400 invalid_request` — a malformed body, a count that is not an exact decimal, a count below zero,
-  or a missing/blank `reason` (the kernel half, `audit::amend::correct_counts`, refuses the last two) ·
+  or a missing/blank `reason` (the kernel half, `audit::amend::correct_counts`, refuses the last two),
+  or a missing/blank `pool` or one naming no configured pool (Q64/Q67; the message names which) ·
   `404 not_found` — the book holds no counts-era entry with that digest ·
   `403 forbidden` — a credential below `full` (the verbs unit; the kernel half refuses the same scope
   again) · `403 forbidden` `OperatorUnset` · `403`/pending `ApprovalPending` · `409` in-flight ·
@@ -854,13 +861,15 @@ the corrected counts at the unit's own card epoch (#79).
   money bug. A second correction of the same entry names the first one's result as its `was`.
 - **Audit** `ADMIN_LOG` `action = adjust`. The correction is an **`Adjust`** amendment on the node
   amendment journal (§4.1:741 names the record): `amends`, subject, lane, card epoch, `was` and `now`
-  counts per class, who authorised it and why. The recorded entry is never rewritten; a read applies
+  counts per class, who authorised it and why, and the pool it names (Q64/Q67). The recorded entry is never rewritten; a read applies
   the latest correction (`counts_now`).
 - **Executes in** `busbar-unit-verbs` → `Governance::execute_new_verb` → the composition root's
   effect (`root/units_admin/adjust.rs`) → the kernel half. **Money view** none on the answer; the
   usage reads price `counts_now`.
 - **Cells (7)** `Adjust|ok` · `|negative-count` · `|no-reason` · `|read-only-scope` · `|not-found` ·
-  `|operator-unset` · `|second-correction-chains-was`.
+  `|operator-unset` · `|second-correction-chains-was`. (Q64/Q67's missing/unknown-pool refusal is
+  pinned by the root's unit test, not an oracle cell: the oracle's node is operator-unset, so every
+  `adjust` it sends stops at the ceremony gate before the body is read.)
 - **Cite** §4.1:741 (the `Adjust` record), §4.2:760 (Σ adjustments is a sealed checkpoint figure),
   :770 (Δ adjustments is a term of the identity), owner ruling Q9, #71, #79, #81.
 

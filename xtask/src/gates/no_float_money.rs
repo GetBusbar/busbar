@@ -1164,8 +1164,34 @@ fn zero_default_after(flat: &Flat, i: usize) -> Option<usize> {
     }
 }
 
-/// Every defaulted JSON-number read in one file, by shape.
-fn scan_count_reads(text: &str) -> Vec<CountHit> {
+/// Every defaulted JSON-number read in one file, by shape — MEMOISED on the file's bytes.
+///
+/// The reading is a pure function of the text, and it is the dearest thing this gate does: one
+/// byte-by-byte word scan per accessor per file. A self-test case IS a gate run over a tree one
+/// plant away from the last, so the battery used to re-read every count-read area's unchanged files
+/// once per case — 36 times. The verdict over the hits (which allowance each one uses, which file
+/// it is in) is still taken fresh on every run.
+fn scan_count_reads(text: &str) -> std::sync::Arc<Vec<CountHit>> {
+    use std::hash::{Hash, Hasher};
+    static MEMO: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::BTreeMap<u64, std::sync::Arc<Vec<CountHit>>>>,
+    > = std::sync::OnceLock::new();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    let key = h.finish();
+    let memo = MEMO.get_or_init(Default::default);
+    if let Some(found) = memo.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return std::sync::Arc::clone(found);
+    }
+    let hits = std::sync::Arc::new(read_count_hits(text));
+    memo.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, std::sync::Arc::clone(&hits));
+    hits
+}
+
+/// The reading [`scan_count_reads`] remembers.
+fn read_count_hits(text: &str) -> Vec<CountHit> {
     let flat = flatten(text);
     let mut hits = Vec::new();
     for &accessor in NUMBER_ACCESSORS.iter().chain(COUNT_HELPERS) {
@@ -1642,7 +1668,7 @@ impl Gate for NoFloatMoneyGate {
                 if rel == SUPERSEDED_SEAM {
                     continue;
                 }
-                for hit in scan_count_reads(&f.text) {
+                for hit in scan_count_reads(&f.text).iter() {
                     let allowed = ALLOWED_COUNT_READS
                         .iter()
                         .enumerate()
@@ -2372,6 +2398,24 @@ fn plant<'a>(
 
 #[cfg(test)]
 mod tests {
+    /// THE COUNT-READ SCAN IS READ ONCE PER FILE. It was re-run over every count-read area's
+    /// unchanged files on every gate run, so the 36-case battery paid for it 36 times.
+    #[test]
+    fn the_count_read_scan_reads_an_unchanged_file_once() {
+        let src = "fn zz_memo_probe(v: &Value) -> u64 { v.as_u64().unwrap_or(0) }\n";
+        let a = scan_count_reads(src);
+        let b = scan_count_reads(src);
+        assert!(
+            std::sync::Arc::ptr_eq(&a, &b),
+            "the second ask is answered from the memo"
+        );
+        let c = scan_count_reads("fn zz_memo_probe_two() {}\n");
+        assert!(
+            !std::sync::Arc::ptr_eq(&a, &c),
+            "changed bytes are a new reading"
+        );
+    }
+
     use super::*;
 
     fn cx() -> Ctx {

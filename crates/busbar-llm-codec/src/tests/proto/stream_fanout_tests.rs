@@ -29,7 +29,8 @@ fn test_openai_read_fanout_text() {
             },
             IrStreamEvent::BlockStart {
                 index: 0,
-                block: IrBlockMeta::Text
+                block: IrBlockMeta::Text,
+                refusal: false,
             },
             IrStreamEvent::BlockDelta {
                 index: 0,
@@ -50,6 +51,7 @@ fn test_openai_read_fanout_text() {
                     cache_read_input_tokens: None,
                     detail: crate::ir::IrUsageDetail::default(),
                 },
+                stop_detail: None,
             },
             IrStreamEvent::MessageStop,
         ]
@@ -85,7 +87,8 @@ fn test_openai_read_fanout_tool_call() {
                 block: IrBlockMeta::ToolUse {
                     id: "call_1".to_string(),
                     name: "get_weather".to_string()
-                }
+                },
+                refusal: false,
             },
             IrStreamEvent::BlockDelta {
                 index: 0,
@@ -106,6 +109,7 @@ fn test_openai_read_fanout_tool_call() {
                     cache_read_input_tokens: None,
                     detail: crate::ir::IrUsageDetail::default(),
                 },
+                stop_detail: None,
             },
             IrStreamEvent::MessageStop,
         ]
@@ -132,6 +136,7 @@ fn openai_sparse_tool_index_does_not_collide_text_onto_tool_block() {
         IrStreamEvent::BlockStart {
             index,
             block: IrBlockMeta::ToolUse { .. },
+            refusal: _,
         } => Some(*index),
         _ => None,
     });
@@ -139,6 +144,7 @@ fn openai_sparse_tool_index_does_not_collide_text_onto_tool_block() {
         IrStreamEvent::BlockStart {
             index,
             block: IrBlockMeta::Text,
+            refusal: _,
         } => Some(*index),
         _ => None,
     });
@@ -225,6 +231,7 @@ fn openai_sparse_tool_indices_are_dense_from_zero() {
         IrStreamEvent::BlockStart {
             index,
             block: IrBlockMeta::ToolUse { .. },
+            refusal: _,
         } => Some(*index),
         _ => None,
     });
@@ -264,6 +271,7 @@ fn openai_tool_after_finish_chunk_claims_a_fresh_index() {
         IrStreamEvent::BlockStart {
             index,
             block: IrBlockMeta::ToolUse { name, .. },
+            refusal: _,
         } if name == "get_weather" => Some(*index),
         _ => None,
     });
@@ -271,6 +279,7 @@ fn openai_tool_after_finish_chunk_claims_a_fresh_index() {
         IrStreamEvent::BlockStart {
             index,
             block: IrBlockMeta::Text,
+            refusal: _,
         } => Some(*index),
         _ => None,
     });
@@ -279,6 +288,7 @@ fn openai_tool_after_finish_chunk_claims_a_fresh_index() {
         IrStreamEvent::BlockStart {
             index,
             block: IrBlockMeta::ToolUse { name, .. },
+            refusal: _,
         } if name == "get_time" => Some(*index),
         _ => None,
     });

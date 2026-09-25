@@ -7,7 +7,7 @@
 //!
 //! ## WHY THIS FILE EXISTS
 //!
-//! BUSBAR-1.6.0 §11a gates the cut on *"`PlaneHost` (+ cost carrier) has REAL production riders
+//! `docs/design/BUSBAR-1.6.0.md` §11a gates the cut on *"`PlaneHost` (+ cost carrier) has REAL production riders
 //! (dogfooded) — no '0-caller ABI'"*. Both ends of that seam were built and neither crossed: the host
 //! table was exercised only host-to-itself inside `plane_host`, and the loader half was exercised only
 //! against a hand-built test table. A capability nothing calls is a capability nobody has checked, and
@@ -62,7 +62,7 @@ use std::sync::{Mutex, MutexGuard};
 /// under `deps`, newest wins). Mirrors the loader suite's `plane_example_cdylib()`.
 ///
 /// REFUSES TO SKIP UNDER CI. A dropped artifact would make every test in this file pass vacuously,
-/// and a vacuous pass on the ONE file that proves §11a's rider is worse than a red: it is a green that
+/// and a vacuous pass on the ONE file that proves `docs/design/BUSBAR-1.6.0.md` §11a's rider is worse than a red: it is a green that
 /// says the opposite of the truth. `.github/workflows/ci.yml` builds this cdylib by name for exactly
 /// that reason.
 fn plane_example_cdylib() -> Option<std::path::PathBuf> {
@@ -147,7 +147,7 @@ unsafe fn drive(
 // chain, its own `meter_charge` still reaches `plane_host::govern::charge`, its own `cost_reserve`
 // still mints into the process-global lease registry. What the tap adds is the ability to say HOW
 // MANY TIMES and WITH WHAT ARGUMENTS the plugin crossed — the two questions "`dispatch` returned Ok"
-// cannot answer, and the two questions §11a's "no 0-caller ABI" is actually about.
+// cannot answer, and the two questions `docs/design/BUSBAR-1.6.0.md` §11a's "no 0-caller ABI" is actually about.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// The tap's state is process-global (an `extern "C-unwind"` fn captures nothing), so every test that
@@ -453,7 +453,7 @@ fn the_real_host_vtable_is_crossed_once_per_slot_per_dispatch() {
                 n.load(Ordering::SeqCst),
                 1,
                 "one dispatch must cross `{slot}` exactly once. A zero here is literally the \
-                 '0-caller ABI' BUSBAR-1.6.0 §11a forbids."
+                 '0-caller ABI' docs/design/BUSBAR-1.6.0.md §11a forbids."
             );
         }
     });
@@ -516,7 +516,7 @@ fn withdrawing_one_real_host_slot_refuses_the_dispatch() {
                 StatusClass::Refused,
                 "withdrawing `{slot}` must refuse the dispatch. A slot whose absence changes \
                  nothing is a slot the plane never calls — and an ABI with no callers is what \
-                 §11a's cut gate is about."
+                 docs/design/BUSBAR-1.6.0.md §11a's cut gate is about."
             );
         }
     });
@@ -558,7 +558,7 @@ fn the_plane_reads_the_hosts_own_clock() {
 /// THE MONEY LEASE, THROUGH CORE'S OWN REGISTRY. `cost_reserve` mints into the process-global
 /// `CostHold` registry `plane_host::cost_host` owns; the plugin carries the opaque `CostLeaseId` back
 /// across the seam and settles against it. The settle succeeding is the proof that the id the PLUGIN
-/// held named a lease in the REAL registry — the reserve-then-settle carrier §11a names by name,
+/// held named a lease in the REAL registry — the reserve-then-settle carrier `docs/design/BUSBAR-1.6.0.md` §11a names by name,
 /// closed end to end by a dropped-in plugin.
 #[test]
 fn the_metering_lease_round_trips_through_the_real_registry() {

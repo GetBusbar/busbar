@@ -90,7 +90,7 @@
 //! `qa/kind-isolation.toml` is a record of what 1.6.0 still has to delete, not a shape it is
 //! allowed to keep.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ctx::{Ctx, WalkSpec};
 use crate::ledger::Row;
@@ -513,13 +513,14 @@ struct Resolved {
     parts: Vec<String>,
 }
 
-/// A crate's needles, plus the two-letter index into them and the fingerprint the per-file memo is
-/// keyed on — every spelling this crate is measured against, in order.
+/// A crate's needles — every spelling this crate is measured against, in order. The two-letter
+/// prefilter index is built per scan over the spellings that scan is for (see [`scan_needles`]).
 #[derive(Default)]
 struct Plan {
     needles: Vec<Resolved>,
-    by_bucket: BTreeMap<Bucket, Vec<usize>>,
-    fingerprint: String,
+    /// A hash of every `(kind, spelling)` in `needles`, in order — the key under which a file's
+    /// ASSEMBLED answer for this exact plan is remembered (see [`PLAN_MEMO`]).
+    key: u64,
 }
 
 type Measured = (Matrix, usize, Vec<String>);
@@ -539,14 +540,6 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
                 if parts.is_empty() {
                     continue;
                 }
-                p.by_bucket
-                    .entry(bucket_of(&parts[0]))
-                    .or_default()
-                    .push(p.needles.len());
-                p.fingerprint.push_str(kind);
-                p.fingerprint.push(':');
-                p.fingerprint.push_str(&n.word);
-                p.fingerprint.push('\n');
                 p.needles.push(Resolved {
                     kind,
                     word: n.word.clone(),
@@ -554,6 +547,15 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
                 });
             }
         }
+        p.key = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            for n in &p.needles {
+                n.kind.hash(&mut h);
+                n.word.hash(&mut h);
+            }
+            h.finish()
+        };
         plan.insert(c.dir.as_str(), p);
     }
 
@@ -684,33 +686,151 @@ struct Hit {
     confusable: bool,
 }
 
-/// THE PER-FILE MEMO, and the reason it exists is the SELF-TEST.
+/// THE PER-FILE, PER-NEEDLE MEMO, and the reason it exists is the SELF-TEST.
 ///
 /// Every planted case re-runs the whole gate, and a plant changes ONE file. Re-measuring 1 558 of
 /// them for each of thirty plants is the difference between a battery that runs in seconds and one
 /// that runs for ten minutes — and a battery nobody waits for is a battery somebody stops running.
 ///
-/// The key is a hash of everything the answer depends on: the crate's needle set (so a plant that
-/// registers a new plane invalidates every entry), the path, and the file's bytes. The scan is a
-/// pure function of those three, so a hit is a memo and never a stale reading.
-static FILE_MEMO: std::sync::OnceLock<std::sync::Mutex<BTreeMap<u64, std::sync::Arc<Vec<Hit>>>>> =
-    std::sync::OnceLock::new();
+/// IT IS KEYED PER NEEDLE, NOT PER NEEDLE SET. It used to be keyed on the crate's whole needle set,
+/// so a plant that ADDS A CRATE — and a census that walks the whole repository is proven by
+/// planting crates in it — added one spelling to every crate's set, changed every key, and re-ran
+/// every needle over every file under `crates/`: 24 cases of the `kind-isolation` battery paid a
+/// full cold scan each (706 s of the matrix's 948 s), to re-derive hits for spellings that had not
+/// changed in files that had not changed. What one needle finds on one line is a function of that
+/// line and that needle alone — the two-letter prefilter admits a needle on its own bucket, and
+/// every scanner reads only the line and the needle's segments — so the memo holds, per file
+/// `(path, bytes)`, one entry per SPELLING, and a new spelling costs a scan for that spelling only.
+static FILE_MEMO: std::sync::OnceLock<SpellingMemo> = std::sync::OnceLock::new();
+
+/// `(path, bytes)` key -> spelling -> what that spelling finds in that file.
+type SpellingMemo = std::sync::Mutex<BTreeMap<u64, BTreeMap<String, std::sync::Arc<Vec<WordHit>>>>>;
+
+/// What one spelling finds on one line of one file — a [`Hit`] without the kind, which is the
+/// plan's to say, not the file's.
+#[derive(Clone)]
+struct WordHit {
+    line: usize,
+    by_segments: usize,
+    by_windows: usize,
+    by_decoded: usize,
+    confusable: bool,
+}
+
+/// THE ASSEMBLED ANSWER for one file under one exact plan — the fast path, and the only one a case
+/// that did not change the vocabulary ever takes. Beneath it, [`FILE_MEMO`] is what a NEW plan is
+/// assembled from.
+static PLAN_MEMO: std::sync::OnceLock<PlanMemo> = std::sync::OnceLock::new();
+
+/// `((path, bytes) key, plan key)` -> the file's hits under that plan, in single-pass order.
+type PlanMemo = std::sync::Mutex<BTreeMap<(u64, u64), std::sync::Arc<Vec<Hit>>>>;
 
 fn scan_file(plan: &Plan, dir: &str, rel: &str, text: &str) -> std::sync::Arc<Vec<Hit>> {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    plan.fingerprint.hash(&mut h);
     rel.hash(&mut h);
+    dir.hash(&mut h);
     text.hash(&mut h);
     let key = h.finish();
-    let memo = FILE_MEMO.get_or_init(Default::default);
-    if let Some(found) = memo
+    let assembled = PLAN_MEMO.get_or_init(Default::default);
+    if let Some(found) = assembled
         .lock()
         .expect("the memo mutex is never poisoned")
-        .get(&key)
+        .get(&(key, plan.key))
     {
         return std::sync::Arc::clone(found);
     }
+    let memo = FILE_MEMO.get_or_init(Default::default);
+
+    // THE SPELLINGS THIS FILE HAS NEVER BEEN PUT TO, one needle index per spelling.
+    let missing: Vec<usize> = {
+        let guard = memo.lock().expect("the memo mutex is never poisoned");
+        let known = guard.get(&key);
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        (0..plan.needles.len())
+            .filter(|&i| {
+                let w = plan.needles[i].word.as_str();
+                seen.insert(w) && !known.is_some_and(|k| k.contains_key(w))
+            })
+            .collect()
+    };
+    if !missing.is_empty() {
+        let fresh = scan_needles(plan, &missing, dir, rel, text);
+        let mut guard = memo.lock().expect("the memo mutex is never poisoned");
+        let entry = guard.entry(key).or_default();
+        for (word, hits) in fresh {
+            entry
+                .entry(word)
+                .or_insert_with(|| std::sync::Arc::new(hits));
+        }
+    }
+
+    // ASSEMBLED IN THE ORDER THE SINGLE PASS PRODUCED: by line, then by needle index.
+    let guard = memo.lock().expect("the memo mutex is never poisoned");
+    let known = guard.get(&key);
+    let mut out: Vec<(usize, usize, Hit)> = Vec::new();
+    for (i, n) in plan.needles.iter().enumerate() {
+        let Some(hits) = known.and_then(|k| k.get(&n.word)) else {
+            continue;
+        };
+        for w in hits.iter() {
+            out.push((
+                w.line,
+                i,
+                Hit {
+                    kind: n.kind,
+                    word: n.word.clone(),
+                    line: w.line,
+                    by_segments: w.by_segments,
+                    by_windows: w.by_windows,
+                    by_decoded: w.by_decoded,
+                    confusable: w.confusable,
+                },
+            ));
+        }
+    }
+    drop(guard);
+    out.sort_by_key(|(line, i, _)| (*line, *i));
+    let out: std::sync::Arc<Vec<Hit>> =
+        std::sync::Arc::new(out.into_iter().map(|(_, _, h)| h).collect());
+    assembled
+        .lock()
+        .expect("the memo mutex is never poisoned")
+        .insert((key, plan.key), std::sync::Arc::clone(&out));
+    out
+}
+
+// How many spellings THIS THREAD has put to a file through [`scan_needles`] — the exit test's
+// probe for "a new spelling is scanned alone". Thread-local, so parallel tests cannot see each
+// other's scans.
+#[cfg(test)]
+thread_local! {
+    static SPELLINGS_SCANNED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The single pass over one file, for the needles named by `only` (indices into `plan.needles`, one
+/// per spelling). Every spelling in `only` gets an entry, found or not, so an empty answer is
+/// remembered as the answer it is.
+fn scan_needles(
+    plan: &Plan,
+    only: &[usize],
+    dir: &str,
+    rel: &str,
+    text: &str,
+) -> BTreeMap<String, Vec<WordHit>> {
+    #[cfg(test)]
+    SPELLINGS_SCANNED.with(|n| n.set(n.get() + only.len()));
+    let mut by_bucket: BTreeMap<Bucket, Vec<usize>> = BTreeMap::new();
+    for &i in only {
+        by_bucket
+            .entry(bucket_of(&plan.needles[i].parts[0]))
+            .or_default()
+            .push(i);
+    }
+    let mut out: BTreeMap<String, Vec<WordHit>> = only
+        .iter()
+        .map(|&i| (plan.needles[i].word.clone(), Vec::new()))
+        .collect();
 
     // THE PATH IS SCANNED FIRST, at line 0. `root/voice_serve.rs` names its plane before a byte of
     // it is read, and a filename is the first thing a reader of the tree sees. The crate's OWN
@@ -721,7 +841,6 @@ fn scan_file(plan: &Plan, dir: &str, rel: &str, text: &str) -> std::sync::Arc<Ve
             .enumerate()
             .map(|(i, l): (usize, &str)| (i + 1, l)),
     );
-    let mut out: Vec<Hit> = Vec::new();
     for (line, raw) in subject {
         let chars: Vec<char> = raw.chars().collect();
         // THE OTHER TWO READINGS OF THE SAME LINE, each computed only when the line carries the
@@ -749,7 +868,7 @@ fn scan_file(plan: &Plan, dir: &str, rel: &str, text: &str) -> std::sync::Arc<Ve
         .flatten()
         {
             for b in line_buckets(c) {
-                if let Some(idxs) = plan.by_bucket.get(&b) {
+                if let Some(idxs) = by_bucket.get(&b) {
                     candidates.extend(idxs);
                 }
             }
@@ -776,21 +895,17 @@ fn scan_file(plan: &Plan, dir: &str, rel: &str, text: &str) -> std::sync::Arc<Ve
             if plain == 0 && by_folded == 0 {
                 continue;
             }
-            out.push(Hit {
-                kind: n.kind,
-                word: n.word.clone(),
-                line,
-                by_segments,
-                by_windows,
-                by_decoded: by_decoded.max(by_folded),
-                confusable: by_folded > plain,
-            });
+            if let Some(v) = out.get_mut(&n.word) {
+                v.push(WordHit {
+                    line,
+                    by_segments,
+                    by_windows,
+                    by_decoded: by_decoded.max(by_folded),
+                    confusable: by_folded > plain,
+                });
+            }
         }
     }
-    let out = std::sync::Arc::new(out);
-    memo.lock()
-        .expect("the memo mutex is never poisoned")
-        .insert(key, std::sync::Arc::clone(&out));
     out
 }
 
@@ -2269,6 +2384,114 @@ pub fn selftest<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn plan_of(words: &[(&'static str, &str)]) -> Plan {
+        let mut p = Plan::default();
+        for (kind, word) in words {
+            p.needles.push(Resolved {
+                kind,
+                word: (*word).to_string(),
+                parts: needle_segments(word),
+            });
+        }
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for n in &p.needles {
+            n.kind.hash(&mut h);
+            n.word.hash(&mut h);
+        }
+        p.key = h.finish();
+        p
+    }
+
+    fn readable(hits: &[Hit]) -> Vec<(&'static str, String, usize, usize, usize, usize, bool)> {
+        hits.iter()
+            .map(|h| {
+                (
+                    h.kind,
+                    h.word.clone(),
+                    h.line,
+                    h.by_segments,
+                    h.by_windows,
+                    h.by_decoded,
+                    h.confusable,
+                )
+            })
+            .collect()
+    }
+
+    const MEMO_TEXT: &str = "use busbar_plane_llm::Thing;\n\
+                             let a = \"\\x6dcp\"; // mcp, llm and a2a\n\
+                             fn voiceServe() { concat!(\"a2\", \"a\"); }\n\
+                             let grpc = HTTPTransport::new(\"llm-grpc\");\n";
+
+    /// THE MEMO IS PER SPELLING: a plant that adds ONE spelling to a crate's plan — which every
+    /// crate-adding plant in the battery does, to every crate at once — costs a scan for that
+    /// spelling alone. It used to cost a scan for all of them: the memo was keyed on the whole
+    /// needle set, so 24 cases paid a cold scan of every file under `crates/` each.
+    #[test]
+    fn a_new_spelling_is_scanned_alone_and_the_rest_are_remembered() {
+        let dir = "crates/zz-memo-probe-one";
+        let rel = "crates/zz-memo-probe-one/src/lib.rs";
+        let before = plan_of(&[("plane", "llm"), ("plane", "mcp")]);
+        let after = plan_of(&[("plane", "llm"), ("plane", "mcp"), ("plane", "a2a")]);
+
+        let start = SPELLINGS_SCANNED.with(|n| n.get());
+        let _ = scan_file(&before, dir, rel, MEMO_TEXT);
+        let first = SPELLINGS_SCANNED.with(|n| n.get()) - start;
+        let _ = scan_file(&after, dir, rel, MEMO_TEXT);
+        let second = SPELLINGS_SCANNED.with(|n| n.get()) - start - first;
+        let _ = scan_file(&after, dir, rel, MEMO_TEXT);
+        let third = SPELLINGS_SCANNED.with(|n| n.get()) - start - first - second;
+
+        assert_eq!(
+            first, 2,
+            "a cold file is scanned for every spelling in the plan"
+        );
+        assert_eq!(
+            second, 1,
+            "a plan that gained ONE spelling scans that spelling and nothing else"
+        );
+        assert_eq!(
+            third, 0,
+            "an unchanged file under an unchanged plan is not scanned"
+        );
+    }
+
+    /// AND WHAT IT REMEMBERS IS THE SINGLE PASS'S ANSWER, EXACTLY: a plan assembled from spellings
+    /// learned across three different plans reads the same hits, in the same order, as the same
+    /// bytes scanned cold in one pass — including a spelling two kinds share.
+    #[test]
+    fn a_plan_assembled_from_the_memo_reads_exactly_what_a_cold_pass_reads() {
+        let full = plan_of(&[
+            ("plane", "llm"),
+            ("transport", "grpc"),
+            ("plane", "mcp"),
+            ("plane", "a2a"),
+            ("transport", "llm"),
+            ("transport", "http-transport"),
+        ]);
+        let warm_dir = "crates/zz-memo-probe-warm";
+        let warm_rel = "crates/zz-memo-probe-warm/src/lib.rs";
+        let _ = scan_file(&plan_of(&[("plane", "mcp")]), warm_dir, warm_rel, MEMO_TEXT);
+        let _ = scan_file(
+            &plan_of(&[("plane", "a2a"), ("transport", "grpc")]),
+            warm_dir,
+            warm_rel,
+            MEMO_TEXT,
+        );
+        let warm = scan_file(&full, warm_dir, warm_rel, MEMO_TEXT);
+
+        let cold_dir = "crates/zz-memo-probe-cold";
+        let cold_rel = "crates/zz-memo-probe-cold/src/lib.rs";
+        let cold = scan_file(&full, cold_dir, cold_rel, MEMO_TEXT);
+
+        assert!(
+            !cold.is_empty(),
+            "the probe text names the spellings it is scanned for"
+        );
+        assert_eq!(readable(&warm), readable(&cold));
+    }
 
     fn both(line: &str, needle: &str) -> (usize, usize) {
         let n = needle_segments(needle);

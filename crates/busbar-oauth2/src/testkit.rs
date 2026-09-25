@@ -13,6 +13,7 @@
 use std::sync::Arc;
 
 use busbar_kernel::oauth_as::config::{AsIdentity, OauthAsCfg};
+#[cfg(test)]
 use busbar_kernel::state::App;
 use busbar_kernel::test_support::TestApp;
 
@@ -22,6 +23,9 @@ use crate::plane::AsPlane;
 /// that hold an `App`/`Arc<App>` and need to reach the plane directly (register a client, introspect
 /// a token, swap the CIMD fetcher) rather than only through HTTP — the cross-crate analogue of the
 /// old `app.oauth_as.as_ref()` field reach, which stopped compiling once the field's type erased.
+/// Crate-private and read only by this crate's own tests, so it compiles with them: under the
+/// `test-support` feature alone (a dependent's test build) nothing here calls it.
+#[cfg(test)]
 pub(crate) fn oauth_as_plane(app: &App) -> Option<Arc<AsPlane>> {
     app.oauth_as_any()?.clone().downcast::<AsPlane>().ok()
 }

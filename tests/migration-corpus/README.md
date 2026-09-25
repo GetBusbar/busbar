@@ -23,9 +23,15 @@ the failure. A corpus finds every era's break at once, before a release, not aft
 tests/migration-corpus/refresh.sh
 ```
 
-Regenerates both directories from tags. Run it after cutting a release so the new version joins the
-corpus; the test discovers the directory, so no code changes. It is idempotent and rewrites from
-scratch, so a file removed upstream disappears here too.
+Regenerates `from-tags/` from the release (`vX.Y.Z`) tags and rewrites the tag-derived catalogs in
+`providers/` (hand-added companion catalogs there are kept). Run it after cutting a release so the new
+version joins the corpus; the test discovers the directory, so no code changes. It is idempotent and
+rewrites `from-tags/` from scratch, so a config removed upstream disappears here too.
+
+`tests/migration-corpus/refresh.sh --check` proves the corpus is whole against the tags: every file a
+release shipped is present byte-identical and `from-tags/` holds nothing no tag shipped. It is what
+caught v1.5.3, v1.5.4 and v1.5.5 never having joined (TODO item 48); `scripts/verify-1.6.0-done.sh
+--selftest` runs it, and refuses a corpus with the newest release's config removed.
 
 ## What the test actually asserts
 

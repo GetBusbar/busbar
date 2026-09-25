@@ -537,7 +537,10 @@ fn a_roleless_admitted_credential_is_refused_without_serving_a_frame() {
     write_configs(&dir, &governed_config(&dir, &token, ""));
     let mut child = spawn(&dir, Some(&token));
     let code = wait_bounded(&mut child.child, Duration::from_secs(120));
-    assert_ne!(code, 0, "an admitted credential that earned no key must not serve");
+    assert_ne!(
+        code, 0,
+        "an admitted credential that earned no key must not serve"
+    );
     let stderr = child.stderr_so_far();
     assert!(
         stderr.contains("role_bindings") && stderr.contains("insufficient_scope"),

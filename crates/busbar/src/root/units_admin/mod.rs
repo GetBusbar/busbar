@@ -902,6 +902,16 @@ fn render_audit_view(
     }
 }
 
+/// Whether a pool name is one this node has configured — the `adjust` verb's pool check (owner
+/// ruling Q64/Q67). A predicate rather than a list so a root can answer it from the LIVE
+/// configuration, which a config apply may change.
+pub type PoolKnown = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
+/// The pool check of a node no root bound a configuration to: it knows no pool.
+fn no_pools() -> PoolKnown {
+    Arc::new(|_| false)
+}
+
 /// The verbs unit's governance seam, bound to whatever executes an admin operation.
 ///
 /// Every one of the trait's methods is a delegation. `execute_legacy` is the one that carries the
@@ -940,6 +950,9 @@ pub struct CoreGovernance {
     /// refuses anything below `full` whatever the verbs unit decided. `ReadOnly` until a root says
     /// otherwise, so an unbound scope corrects nothing.
     granted: VerbScope,
+    /// Which pool names `adjust` accepts (Q64/Q67): the node's configured pools. Knows none until
+    /// a root binds them, so an unbound node refuses every correction's pool.
+    pools: PoolKnown,
 }
 
 impl CoreGovernance {
@@ -964,7 +977,15 @@ impl CoreGovernance {
                 dual_control: None,
             },
             granted: VerbScope::ReadOnly,
+            pools: no_pools(),
         }
+    }
+
+    /// Bind the pool names `adjust` accepts (Q64/Q67).
+    #[must_use]
+    pub fn pooled(mut self, pools: PoolKnown) -> Self {
+        self.pools = pools;
+        self
     }
 
     /// Bind the scope the caller was admitted under.
@@ -1075,10 +1096,11 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 VerbScope::Full => busbar_contract::authz::Scope::Full,
                 VerbScope::ReadOnly => busbar_contract::authz::Scope::ReadOnly,
             };
-            return adjust::adjust_effect(request, scope, &self.attribution.principal, |amends| {
+            let principal = &self.attribution.principal;
+            return adjust::adjust_effect(request, scope, principal, &*self.pools, |amends| {
                 self.ledger.recorded_counts(amends)
             })
-            .map(|body| json_answer(body).pack());
+            .map(|answer| answer.pack());
         }
         Ok(self.run())
     }
@@ -1246,7 +1268,7 @@ fn amend_rate_history_effect(
             Some(fee)
         }
     };
-    let mut entries: Vec<(busbar_kernel_ledger::cost::LaneClass, f64)> = Vec::new();
+    let mut entries: Vec<(busbar_kernel_ledger::cost::LaneClass, u64)> = Vec::new();
     if let Some(rates) = obj.get("rates") {
         for row in rates.as_array().ok_or(GovernanceError::Validation)? {
             let r = row.as_object().ok_or(GovernanceError::Validation)?;
@@ -1260,16 +1282,19 @@ fn amend_rate_history_effect(
                 .and_then(serde_json::Value::as_str)
                 .filter(|s| !s.is_empty())
                 .ok_or(GovernanceError::Validation)?;
-            let micro = r
-                .get("micro_per_unit")
-                .and_then(serde_json::Value::as_f64)
-                .ok_or(GovernanceError::Validation)?;
-            if !micro.is_finite() || micro < 0.0 {
-                return Err(GovernanceError::Validation);
+            // THE WIRE KEEPS ITS DECIMAL; THE CARD GETS AN INTEGER, EXACTLY OR NOT AT ALL. The rate
+            // is written in micro-units per unit — the decimal form 1.5.5's own rate card took — and
+            // becomes the card's integer nano-units here, at the edge, with no float arithmetic. A
+            // figure finer than one nano-unit, negative, or too large is REFUSED: rounding it would
+            // seal a price the signer did not sign.
+            let nanos = match r.get("micro_per_unit") {
+                Some(serde_json::Value::Number(n)) => exact_nano_rate(&n.to_string()),
+                _ => None,
             }
+            .ok_or(GovernanceError::Validation)?;
             entries.push((
                 busbar_kernel_ledger::cost::LaneClass::new(lane, class),
-                micro,
+                nanos,
             ));
         }
     }
@@ -1282,7 +1307,7 @@ fn amend_rate_history_effect(
         .iter()
         .map(|(cell, _)| (cell.lane.clone(), cell.class.clone()))
         .collect();
-    let card = busbar_kernel_ledger::cost::RateCard::from_micro_rates(
+    let card = busbar_kernel_ledger::cost::RateCard::from_nano_rates(
         entries,
         per_request_fee.unwrap_or(0),
     );
@@ -1454,7 +1479,7 @@ pub struct AmendmentRecord {
     /// [`busbar_kernel_ledger::cost::RateCard`] already resolved (`card.fee()`), never the
     /// operator's raw JSON field. Kept off the `per_request_fee`/`fee_cents` spellings on purpose —
     /// `[rules.one-pricing-site.fee_allowed.amend-rate-history]` reviews exactly four reads of that
-    /// wire name in this file (the parse, the shape refusal, the relay to `from_micro_rates`, and
+    /// wire name in this file (the parse, the shape refusal, the relay to `from_nano_rates`, and
     /// the signed payload's own key literal); a durable record's encode/decode is not one of them,
     /// and giving it the wire's own name would silently spend two of the grant's four slots on a
     /// binary journal format that was never reviewed as a wire reader.
@@ -1628,6 +1653,60 @@ impl AmendmentJournal {
     }
 }
 
+/// A rate in micro-units per unit, as its decimal TEXT, to the integer nano-units per unit the card
+/// holds — exactly, or `None`. `1.5` is `1500`, `0.001` is `1`, `2e-3` is `2`; `0.0015` (a
+/// half-nano-unit), a negative figure and one past `u64` are `None`. Decimal digits are shifted,
+/// never multiplied as a float, so no value is rounded into a price nobody wrote.
+fn exact_nano_rate(text: &str) -> Option<u64> {
+    let (mantissa, exponent) = match text.split_once(['e', 'E']) {
+        Some((m, e)) => (m, e.parse::<i32>().ok()?),
+        None => (text, 0),
+    };
+    let (negative, mantissa) = match mantissa.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, mantissa),
+    };
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    if whole.is_empty()
+        || !whole
+            .bytes()
+            .chain(fraction.bytes())
+            .all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let digits = format!("{whole}{fraction}");
+    let digits = digits.trim_start_matches('0');
+    if digits.is_empty() {
+        // Zero, however spelled (`-0.0` included): the operator configured the cell free.
+        return Some(0);
+    }
+    if negative {
+        return None;
+    }
+    // Nano-units are micro-units shifted three places left.
+    let shift = i64::from(exponent) + 3 - i64::try_from(fraction.len()).ok()?;
+    let digits = if shift < 0 {
+        let cut = usize::try_from(-shift).ok()?;
+        let keep = digits.len().checked_sub(cut)?;
+        if !digits[keep..].bytes().all(|b| b == b'0') {
+            return None;
+        }
+        &digits[..keep]
+    } else {
+        digits
+    };
+    let mut value: u64 = if digits.is_empty() {
+        0
+    } else {
+        digits.parse().ok()?
+    };
+    for _ in 0..shift.max(0) {
+        value = value.checked_mul(10)?;
+    }
+    Some(value)
+}
+
 /// The exact bytes the operator's detached signature is verified over.
 ///
 /// A domain-separated, order-fixed serialization of the correction's SEMANTIC fields — everything the
@@ -1713,27 +1792,16 @@ fn render_ledger_view(
         KernelVerb::GetLedgerMigration => {
             render_migration(view.migration_marker().as_ref()).into_bytes()
         }
-        KernelVerb::GetLedgerOpenapiJson => LEDGER_OPENAPI_ADDITIVE.as_bytes().to_vec(),
+        // THE ONE DOCUMENT, at the path the ledger views named for theirs. There used to be a
+        // second, hand-maintained side-car here so the served document's bytes need not move; the
+        // served document is now generated from the code and describes every operation this build
+        // can serve, these five included (owner ruling Q41, items 45/46).
+        KernelVerb::GetLedgerOpenapiJson => {
+            busbar_core_admin::v1::json::openapi_document().into_bytes()
+        }
         _ => return Err(busbar_core_admin::GovernanceError::NotFound),
     })
 }
-
-/// The document describing the 1.6.0 ledger operations.
-///
-/// A SECOND document, served at a path of its own, and that is the whole of the design's answer to
-/// how a new operation gets documented without moving a byte of the pinned one. The 1.5.5
-/// `openapi.json` is a fixed artefact: a client that fetched it before the upgrade and after it gets
-/// the same bytes, so nothing that reads it can be surprised by a path it does not know. An operator
-/// who wants the new surface asks for the new document by name.
-///
-/// It is `include_str!` of a committed file rather than a literal here for the same reason the
-/// verbs unit reads its conformance fixture that way: a document is an artefact somebody reviews as
-/// a document, and a test below parses this same file to check it describes exactly the operations
-/// the closed table declares.
-const LEDGER_OPENAPI_ADDITIVE: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../docs/openapi-1.6.0-additive.json"
-));
 
 /// One JSON string, quoted and escaped.
 ///
@@ -2304,6 +2372,10 @@ pub struct AdminBinding {
     /// `None` until a root binds one — a node with no data dir behaves exactly as it did before
     /// this seam existed.
     pub claims: Option<Arc<RootClaimJournal>>,
+    /// Which pool names an `adjust` may name (Q64/Q67): the node's CONFIGURED pools, read live.
+    /// Knows none until a root binds them, so a node composed without a configuration refuses every
+    /// correction's pool rather than accepting one it cannot check.
+    pub pools: PoolKnown,
     /// The requests currently being walked.
     pub units: AdminUnits,
 }
@@ -2435,8 +2507,16 @@ impl AdminBinding {
             posture: Arc::new(UnsealedPosture),
             amendments: None,
             claims: None,
+            pools: no_pools(),
             units: AdminUnits::new(),
         }
+    }
+
+    /// Bind the pool names an `adjust` may name to the node's configured pools (Q64/Q67).
+    #[must_use]
+    pub fn with_pools(mut self, pools: PoolKnown) -> Self {
+        self.pools = pools;
+        self
     }
 
     /// Bind the ledger views to the figures a node actually holds.
@@ -2800,7 +2880,8 @@ pub(crate) fn route(
                 dual_control: posture.map(|p| p.dual_control),
             },
         )
-        .granted(granted),
+        .granted(granted)
+        .pooled(Arc::clone(&binding.pools)),
         StoreRef(store),
         ArrivalNonce(request.at),
         PackedReplay,

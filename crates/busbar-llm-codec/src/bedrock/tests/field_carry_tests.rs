@@ -948,6 +948,7 @@ fn bedrock_carry_stream_frame_types() {
                     id: "t1".into(),
                     name: "go".into()
                 },
+                refusal: false,
             })
             .map(|(t, _)| t),
         Some("contentBlockStart".to_string()),
@@ -984,6 +985,7 @@ fn bedrock_carry_stream_frame_types() {
                     cache_read_input_tokens: None,
                     detail: crate::ir::IrUsageDetail::default(),
                 },
+                stop_detail: None,
             })
             .map(|(t, _)| t),
         Some("messageStop".to_string()),
@@ -1001,6 +1003,7 @@ fn bedrock_carry_stream_frame_types() {
                     cache_read_input_tokens: None,
                     detail: crate::ir::IrUsageDetail::default(),
                 },
+                stop_detail: None,
             })
             .map(|(t, _)| t),
         Some("metadata".to_string()),

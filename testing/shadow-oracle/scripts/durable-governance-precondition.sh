@@ -112,6 +112,9 @@ models:
 rate_card:
   m-openai-chat: { input_utok: 100000, output_utok: 200000 }
 EOF
+  # The operator upgrade step (owner ruling Q42, docs/migration-1.6.md): the binary under test adds, at 0,
+  # each billable class it names as unconfigured on this card. The 1.5.5 golden names none: its config runs as written.
+  "${BUSBAR_ORACLE_BIN:?}" upgrade-config "$BIN" "$1" || exit 1
 }
 
 GROUPS_ORACLE=$'groups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }'
@@ -136,7 +139,7 @@ i=0; while [ $i -lt 50 ] && ! assert_port_free "$LP"; do sleep 0.1; i=$((i+1)); 
 # artefact, not the cell's contract, so the driver removes any staging directory the first boot
 # left in the cell's own TMPDIR before the second boot looks. Only the recording's private tmp is
 # touched, and only the prefix busbar stages under.
-rm -rf "${TMPDIR:-/tmp}"/busbar-plugins-* 2>/dev/null || true
+rm -rf "${TMPDIR:-/tmp}"/busbar-plugin-staging-*/busbar-plugins-* "${TMPDIR:-/tmp}"/busbar-plugins-* 2>/dev/null || true
 
 # ---- corrupt/reconfigure between the two boots, per mode -------------------------------------------
 DB2="$DB"; cfg2_groups="$GROUPS_ORACLE"; cfg2_chain="keys"; expect_boot=refuse

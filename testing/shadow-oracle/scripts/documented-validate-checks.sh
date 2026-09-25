@@ -86,6 +86,9 @@ auth:
   admin_auth: [admin-tokens]
 ${BASE_TAIL}
 YAML
+# The operator upgrade step (owner ruling Q42, docs/migration-1.6.md): the binary under test adds, at 0,
+# each billable class it names as unconfigured on this card. The 1.5.5 golden names none: its config runs as written.
+"${BUSBAR_ORACLE_BIN:?}" upgrade-config "$BIN" "$W/s1/config.yaml" || exit 1
 # overwrite the provider's api_key with an unresolvable env ref
 python3 - "$W/s1/config.yaml" <<'PY'
 import sys
@@ -118,6 +121,9 @@ auth:
   admin_auth: [admin-tokens]
 ${BASE_TAIL}
 YAML
+# The operator upgrade step (owner ruling Q42, docs/migration-1.6.md): the binary under test adds, at 0,
+# each billable class it names as unconfigured on this card. The 1.5.5 golden names none: its config runs as written.
+"${BUSBAR_ORACLE_BIN:?}" upgrade-config "$BIN" "$W/s2a/config.yaml" || exit 1
 rc2a=0
 env BUSBAR_CONFIG="$W/s2a/config.yaml" BUSBAR_PROVIDERS="$W/s2a/providers.yaml" \
   ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN=shadow-oracle-admin RUST_LOG=warn \
@@ -140,6 +146,9 @@ auth:
   admin_auth: [admin-tokens]
 ${BASE_TAIL}
 YAML
+# The operator upgrade step (owner ruling Q42, docs/migration-1.6.md): the binary under test adds, at 0,
+# each billable class it names as unconfigured on this card. The 1.5.5 golden names none: its config runs as written.
+"${BUSBAR_ORACLE_BIN:?}" upgrade-config "$BIN" "$W/s2b/config.yaml" || exit 1
 rc2b=0
 env BUSBAR_CONFIG="$W/s2b/config.yaml" BUSBAR_PROVIDERS="$W/s2b/providers.yaml" \
   ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN=shadow-oracle-admin RUST_LOG=warn \
@@ -157,6 +166,9 @@ auth:
   signing_key: { file: "${W}/signing.key" }
 ${BASE_TAIL}
 YAML
+# The operator upgrade step (owner ruling Q42, docs/migration-1.6.md): the binary under test adds, at 0,
+# each billable class it names as unconfigured on this card. The 1.5.5 golden names none: its config runs as written.
+"${BUSBAR_ORACLE_BIN:?}" upgrade-config "$BIN" "$W/s3/config.yaml" || exit 1
 rc3=0
 env BUSBAR_CONFIG="$W/s3/config.yaml" BUSBAR_PROVIDERS="$W/s3/providers.yaml" \
   ORACLE_UPSTREAM_KEY=unused RUST_LOG=warn \
@@ -179,6 +191,9 @@ auth:
   admin_auth: [admin-tokens]
 ${BASE_TAIL}
 YAML
+# The operator upgrade step (owner ruling Q42, docs/migration-1.6.md): the binary under test adds, at 0,
+# each billable class it names as unconfigured on this card. The 1.5.5 golden names none: its config runs as written.
+"${BUSBAR_ORACLE_BIN:?}" upgrade-config "$BIN" "$W/s4/config.yaml" || exit 1
 rc4=0
 ( cd "$W/s4" && env BUSBAR_CONFIG="config.yaml" BUSBAR_PROVIDERS="providers.yaml" \
   ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN=shadow-oracle-admin RUST_LOG=warn \

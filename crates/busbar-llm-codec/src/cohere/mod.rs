@@ -340,6 +340,9 @@ const COHERE_FINISH_STOP_SEQUENCE: &str = "STOP_SEQUENCE";
 const COHERE_FINISH_TOOL_CALL: &str = "TOOL_CALL";
 /// Cohere v2 `finish_reason` for a max-tokens stop.
 const COHERE_FINISH_MAX_TOKENS: &str = "MAX_TOKENS";
+/// Cohere v2 `finish_reason` for a generation the upstream cut off on its own time limit — an
+/// upstream failure to finish, like `ERROR`.
+const COHERE_FINISH_TIMEOUT: &str = "TIMEOUT";
 
 // ── Cohere v2 tool_choice tokens ──────────────────────────────────────────────
 /// Cohere v2 `tool_choice` value requiring at least one tool call.
@@ -433,6 +436,235 @@ fn write_cohere_response_format(rf: &crate::ir::IrResponseFormat) -> serde_json:
     }
 }
 
+/// Read Cohere v2's request `thinking` param into the IR reasoning ask — see `read_request`.
+/// `{type:"enabled", token_budget:N}` is `Budget(N)`; `{type:"enabled"}` with no (or a `null`) budget
+/// is `Dynamic` ("the model decides"); `{type:"disabled"}` is `Off` (IR-09). Anything else — an
+/// unknown type, a budget that is not a `u32` — is no promotable ask (`None`).
+fn read_cohere_reasoning(v: Option<&serde_json::Value>) -> Option<crate::ir::IrReasoningAsk> {
+    let t = v?.as_object()?;
+    match t.get("type").and_then(|ty| ty.as_str()) {
+        Some("enabled") => {}
+        // IR-09: reasoning switched OFF — a reasoning-by-default model stops thinking. Not the
+        // same as saying nothing.
+        Some("disabled") => return Some(crate::ir::IrReasoningAsk::Off),
+        _ => return None,
+    }
+    match t.get("token_budget") {
+        None | Some(serde_json::Value::Null) => Some(crate::ir::IrReasoningAsk::Dynamic),
+        Some(b) => b
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .map(crate::ir::IrReasoningAsk::Budget),
+    }
+}
+
+/// Project the IR reasoning ask into Cohere v2's `thinking` param — the inverse of
+/// [`read_cohere_reasoning`]. A numeric budget is emitted as-is and a word-form effort goes through
+/// the operator's effort-budget table; `Dynamic` ("the model decides") is Cohere's own
+/// `{type:"enabled"}` with no budget, so it needs no table guess here.
+fn write_cohere_reasoning(ask: crate::ir::IrReasoningAsk, table: [u32; 4]) -> serde_json::Value {
+    match ask {
+        // IR-09: matched FIRST — `to_budget` gives `Off` 0, which as an enable ask would invert
+        // the caller's meaning.
+        crate::ir::IrReasoningAsk::Off => serde_json::json!({ "type": "disabled" }),
+        crate::ir::IrReasoningAsk::Dynamic => serde_json::json!({ "type": "enabled" }),
+        other => serde_json::json!({ "type": "enabled", "token_budget": other.to_budget(table) }),
+    }
+}
+
+/// Read a Cohere v2 document (`{"id"?: "…", "data": {…}}` — a user content part's `document`, or
+/// an entry of the request's top-level `documents`) into the IR's document
+/// [`crate::ir::IrBlock::Media`] (COH-04, IR-13).
+///
+/// Every readable document becomes a base64 `text/plain` document — the one form every dialect with
+/// a document slot carries (Anthropic `document`, Gemini `inlineData`, Bedrock `document`, OpenAI
+/// `file`):
+/// - a plain TEXT document (`data` holding a string `text` and at most a string `title`) carries its
+///   `text`;
+/// - a bare string (a top-level `documents` entry may be one) or a string `data` carries that string;
+/// - any other `data` is a JSON map of fields (`title`/`snippet`/`url`/…, which Cohere itself renders
+///   to the model as fields of text): it carries the map's JSON text. It used to ride the opaque
+///   cohere `Vendor` escape, which every foreign writer drops, so a grounding document never reached
+///   a foreign model (Q57 — "map where it can").
+///
+/// The name is the string `title`, else the `id`. Only a document with no readable content (no
+/// `data`, or a non-string non-object `data`) keeps the `Vendor` escape: this dialect's writer
+/// re-emits it, and a foreign writer drops it with a warn.
+fn read_cohere_document(doc: &serde_json::Value) -> crate::ir::IrBlock {
+    let text_document = |text: &str, name: Option<&str>| crate::ir::IrBlock::Media {
+        kind: crate::ir::IrMediaKind::Document,
+        source: crate::ir::IrImageSource::Base64 {
+            media_type: TEXT_PLAIN.to_string(),
+            data: busbar_substrate_values::media::base64_encode(text.as_bytes()),
+        },
+        name: name.filter(|s| !s.is_empty()).map(String::from),
+        cache_control: None,
+        citations: None,
+        context: None,
+    };
+    if let Some(text) = doc.as_str() {
+        return text_document(text, None);
+    }
+    let id = doc
+        .get("id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    match doc.get("data") {
+        Some(serde_json::Value::String(text)) => text_document(text, id),
+        Some(serde_json::Value::Object(d)) => {
+            let title = d
+                .get("title")
+                .and_then(|t| t.as_str())
+                .filter(|s| !s.is_empty());
+            let name = title.or(id);
+            let plain = d.iter().all(|(k, v)| match k.as_str() {
+                "text" | "title" => v.is_string(),
+                _ => false,
+            });
+            match d.get("text").and_then(|t| t.as_str()) {
+                Some(text) if plain => text_document(text, name),
+                _ => text_document(
+                    &busbar_substrate_values::json::to_string(&serde_json::Value::Object(
+                        d.clone(),
+                    ))
+                    .unwrap_or_default(),
+                    name,
+                ),
+            }
+        }
+        _ => crate::ir::IrBlock::Media {
+            kind: crate::ir::IrMediaKind::Document,
+            source: crate::ir::IrImageSource::Vendor {
+                vendor: VENDOR_NAME,
+                value: doc.clone(),
+            },
+            name: id.map(String::from),
+            cache_control: None,
+            citations: None,
+            context: None,
+        },
+    }
+}
+
+/// Whether a request's requested output modalities (IR-19) are lost on Cohere egress: Cohere v2
+/// `/chat` produces text only and has no modality control, so an ask for anything beyond text is
+/// dropped. A text-only ask is what Cohere does anyway — nothing is lost.
+fn cohere_drops_output_modalities(req: &crate::ir::IrRequest) -> bool {
+    req.output_modalities
+        .as_ref()
+        .is_some_and(|m| m.iter().any(|x| *x != crate::ir::IrModality::Text))
+}
+
+/// Read the `detail` of a Cohere v2 `image_url` object (`{"url": …, "detail": "auto"|"low"|"high"}`)
+/// into the IR's requested image fidelity (IR-08). An unknown word is `None`, with a warn: it is not
+/// coerced onto a fidelity the caller did not ask for.
+fn read_cohere_image_detail(
+    image_url: Option<&serde_json::Value>,
+) -> Option<crate::ir::IrImageDetail> {
+    let word = image_url?.get("detail")?.as_str()?;
+    let detail = crate::ir::IrImageDetail::parse(word);
+    if detail.is_none() {
+        tracing::warn!(
+            detail = %word,
+            "cohere: dropping an unknown image_url.detail word (not auto/low/high)"
+        );
+    }
+    detail
+}
+
+/// Read a Cohere v2 TOOL-RESULT `document` part (`{"id"?: "…", "data": …}`) into the IR (the ANT-17
+/// follow-up). A tool-result document is the tool's OUTPUT, so it takes the IR's tool-output
+/// carriers rather than an attachment slot: a JSON `data` (object / array / number / bool) is a
+/// [`crate::ir::IrBlock::Json`] block, a string `data` a `Text` block — the forms every writer
+/// projects inside a tool result (Anthropic / OpenAI / Responses / Gemini tool-result JSON as text,
+/// Bedrock `{"json": …}`, Cohere as its JSON text). The document `id` is a Cohere citation handle
+/// with no foreign analog. A document with no `data` keeps the opaque cohere `Vendor` escape.
+fn read_cohere_tool_result_document(doc: &serde_json::Value) -> crate::ir::IrBlock {
+    match doc.get("data") {
+        Some(serde_json::Value::String(text)) => crate::ir::IrBlock::Text {
+            text: text.clone(),
+            cache_control: None,
+            citations: Vec::new(),
+            refusal: false,
+        },
+        Some(data) if !data.is_null() => crate::ir::IrBlock::Json(data.clone()),
+        _ => crate::ir::IrBlock::Media {
+            kind: crate::ir::IrMediaKind::Document,
+            source: crate::ir::IrImageSource::Vendor {
+                vendor: VENDOR_NAME,
+                value: doc.clone(),
+            },
+            name: doc
+                .get("id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from),
+            cache_control: None,
+            citations: None,
+            context: None,
+        },
+    }
+}
+
+/// The document object Cohere's top-level `documents` carries for an IR document Media, when it has
+/// one (COH-18): this dialect's own `Vendor` document verbatim, or a base64 `text/*` document as
+/// `{"data": {"text": <decoded>, "title"?: <name>}}` (the inverse of [`read_cohere_document`]).
+/// `None` for anything with no Cohere document form — binary bytes (a PDF), a URL, a foreign vendor
+/// handle, undecodable base64.
+fn write_cohere_document(
+    source: &crate::ir::IrImageSource,
+    name: Option<&str>,
+) -> Option<serde_json::Value> {
+    match source {
+        crate::ir::IrImageSource::Vendor { vendor, value } if *vendor == VENDOR_NAME => {
+            Some(value.clone())
+        }
+        crate::ir::IrImageSource::Base64 { media_type, data }
+            if media_type
+                .get(..5)
+                .is_some_and(|p| p.eq_ignore_ascii_case("text/")) =>
+        {
+            let bytes = busbar_substrate_values::media::base64_decode(data)?;
+            let text = std::str::from_utf8(&bytes).ok()?;
+            let mut d = serde_json::Map::new();
+            d.insert("text".to_string(), serde_json::json!(text));
+            if let Some(n) = name.filter(|s| !s.is_empty()) {
+                d.insert("title".to_string(), serde_json::json!(n));
+            }
+            Some(serde_json::json!({ "data": serde_json::Value::Object(d) }))
+        }
+        _ => None,
+    }
+}
+
+/// The media type a plain-text document carries in the IR.
+const TEXT_PLAIN: &str = "text/plain";
+
+/// Read one Cohere v2 `LogprobItem` — `{"text": "<chunk>", "token_ids": [..], "logprobs": [..]}` —
+/// into the neutral [`crate::ir::IrTokenLogprob`] (COH-13 / COH-14).
+///
+/// Cohere reports log probabilities per decoded text chunk: the chunk's text, the ids of the tokens
+/// it decodes from, and one log probability per token. The IR's unit is a text span with its log
+/// probability, so a chunk maps with its `text` as the span and the SUM of its token log
+/// probabilities as the span's log probability — the joint log probability of exactly that text,
+/// which for the usual one-token chunk is its token's own figure. A chunk with no text, no
+/// log probabilities, or an unreadable one carries no span to report and is skipped (never
+/// invented). Cohere reports no alternatives, so `top` is empty.
+fn read_cohere_logprob(item: &serde_json::Value) -> Option<crate::ir::IrTokenLogprob> {
+    let text = item.get("text")?.as_str()?;
+    let lps = item.get("logprobs")?.as_array()?;
+    if lps.is_empty() {
+        return None;
+    }
+    let logprob = lps.iter().map(|v| v.as_f64()).sum::<Option<f64>>()?;
+    Some(crate::ir::IrTokenLogprob {
+        token: text.to_string(),
+        logprob,
+        bytes: None,
+        top: Vec::new(),
+    })
+}
+
 /// Cohere v2 native `finish_reason` → canonical [`crate::ir::IrStopReason`]. The ONLY place that knows
 /// Cohere's finish vocabulary on the read side; an unmodeled token maps to `Other`.
 fn read_cohere_stop_reason(token: &str) -> crate::ir::IrStopReason {
@@ -445,6 +677,11 @@ fn read_cohere_stop_reason(token: &str) -> crate::ir::IrStopReason {
         // `ERROR_TOXIC` is the content-moderation stop; generic `ERROR` is an infra failure.
         COHERE_FINISH_ERROR_TOXIC => S::Safety,
         COHERE_FINISH_ERROR => S::Error,
+        // `TIMEOUT`: the upstream stopped generating because it ran out of time — a failure to
+        // finish, not a natural stop. It used to fall to `Other`, which every writer renders as a
+        // natural end of turn, so a cut-off answer reached a foreign client as a complete one
+        // (COH-16).
+        COHERE_FINISH_TIMEOUT => S::Error,
         _ => S::Other,
     }
 }
@@ -459,14 +696,13 @@ fn read_cohere_stop_reason(token: &str) -> crate::ir::IrStopReason {
 /// EXHAUSTIVE: a reason with no Cohere analog (`refusal`, `pause_turn`, `other`) also falls back to
 /// `COMPLETE`.
 ///
-/// `S::Safety` maps to the SAME `ERROR` token as `S::Error`, deliberately: `ERROR_TOXIC` is a v1
-/// Generate-API value, not a member of v2 `/v2/chat`'s `finish_reason` enum
-/// (`COMPLETE|STOP_SEQUENCE|MAX_TOKENS|TOOL_CALL|ERROR`), and emitting it would be exactly the
-/// off-spec-token bug `IrStopReason` exists to prevent. This DOES cost a Cohere-dialect client the
-/// ability to distinguish a content-filter stop from an infra error on egress — accepted, because
-/// the v2 enum genuinely cannot express the distinction and an off-spec token a strict client
-/// rejects is strictly worse. The reader's `ERROR_TOXIC`→`S::Safety` stays asymmetric on purpose
-/// (forward-compat for a v1-dialect upstream); do not "fix" it back to match this writer arm.
+/// `S::Safety` maps to `COMPLETE` (COH-15). A safety/content-filter stop is a SERVED response — the
+/// model's answer, cut short or withheld by a filter — not an upstream failure, and v2 `/v2/chat`'s
+/// `finish_reason` enum (`COMPLETE|STOP_SEQUENCE|MAX_TOKENS|TOOL_CALL|ERROR|TIMEOUT`) has no token
+/// for it: `ERROR_TOXIC` is a v1 Generate-API value, off-spec here. It used to map to `ERROR`, which
+/// told a Cohere client its request had FAILED — an infrastructure error it might retry or alert on —
+/// when the upstream had answered. `COMPLETE` is the same projection `Refusal` (the model declining)
+/// already takes. The reader's `ERROR_TOXIC`→`S::Safety` stays for a v1-dialect upstream.
 fn write_cohere_stop_reason(reason: crate::ir::IrStopReason) -> &'static str {
     use crate::ir::IrStopReason as S;
     match reason {
@@ -474,10 +710,31 @@ fn write_cohere_stop_reason(reason: crate::ir::IrStopReason) -> &'static str {
         S::StopSequence => COHERE_FINISH_STOP_SEQUENCE,
         S::MaxTokens => COHERE_FINISH_MAX_TOKENS,
         S::ToolUse => COHERE_FINISH_TOOL_CALL,
-        S::Safety => COHERE_FINISH_ERROR,
         S::Error => COHERE_FINISH_ERROR,
-        S::Refusal | S::PauseTurn | S::Other => COHERE_FINISH_COMPLETE,
+        S::Safety | S::Refusal | S::PauseTurn | S::Other => COHERE_FINISH_COMPLETE,
     }
+}
+
+/// Cohere's `usage.tokens.input_tokens` for an IR usage: the WHOLE prompt.
+///
+/// The two sides count the prompt differently. The IR's `input_tokens` is the UNCACHED share only,
+/// with the cache read and the cache write carried ADDITIVELY beside it (`IrUsage`'s documented
+/// convention). Cohere's `tokens.input_tokens` is the whole prompt, the cached share included, and
+/// it reports the cache hit separately as `usage.cached_tokens` — which is exactly why this
+/// dialect's reader SUBTRACTS `cached_tokens` out of `tokens.input_tokens` on the way in.
+///
+/// The writer used to copy the IR's uncached count straight into `tokens.input_tokens`, so a
+/// Cohere-dialect client of a foreign backend was told a prompt SMALLER than the one it sent: an
+/// OpenAI turn of 10 prompt tokens, 4 of them cached, reached it as `input_tokens: 6` with no
+/// `cached_tokens`; an Anthropic turn of 10 uncached + 4 cache-read + 3 cache-written reached it as
+/// `input_tokens: 10` (COH-10). The inverse of the reader restores what the backend reported: the
+/// uncached, cache-read and cache-written shares summed. Cohere has no cache-WRITE tier, so a cache
+/// write is ordinary prompt input on this wire.
+fn cohere_prompt_tokens(usage: &crate::ir::IrUsage) -> u64 {
+    usage
+        .input_tokens
+        .saturating_add(usage.cache_read_input_tokens.unwrap_or(0))
+        .saturating_add(usage.cache_creation_input_tokens.unwrap_or(0))
 }
 
 /// The request keys this reader models explicitly (and therefore must NOT echo back through
@@ -662,6 +919,91 @@ fn cohere_text_ir_index(state: &mut crate::ir::StreamDecodeState) -> usize {
     ti
 }
 
+/// First key of the reserved range a streamed `thinking` CONTENT block is recorded under in
+/// `state.open_tools` / `state.tool_ir_index`.
+///
+/// A Cohere reasoning model streams its reasoning as its OWN content block — `content-start`
+/// `{type:"thinking"}`, `content-delta {thinking}`, `content-end` — BEFORE the answer's text content
+/// block, which arrives as a second `content-start {type:"text"}`. The reader used to treat every
+/// content block as THE text block: the thinking block claimed the one text slot, its `content-end`
+/// latched `text_block_closed`, and every answer frame after it was dropped, so a reasoning model's
+/// stream reached a foreign client with no answer text at all (COH-01). A thinking block therefore
+/// takes an IR index of its own, allocated through the SAME insertion-order seam the tool calls use
+/// (`cohere_assign_tool_ir_index`), so it can never collide with the text block or a tool block.
+///
+/// The keys sit far above `MAX_TOOL_FRAME_INDEX` (every genuine tool key is clamped to it) and
+/// below `TEXT_BLOCK_SEEN_SENTINEL`, so they collide with neither. The n-th thinking block of the
+/// stream is keyed `THINKING_FRAME_BASE + n`.
+const THINKING_FRAME_BASE: usize = usize::MAX / 2;
+
+/// The IR index of the `thinking` content block that is open right now, if one is. A thinking
+/// content block is open when `thinking_block_open` is set WITHOUT `text_block_open`; the two set
+/// together mean the leading `tool-plan-delta` block, which rides the text slot instead.
+fn cohere_open_thinking_index(state: &crate::ir::StreamDecodeState) -> Option<usize> {
+    if state.thinking_block_open && !state.text_block_open {
+        state
+            .tool_ir_index
+            .range(THINKING_FRAME_BASE..)
+            .next_back()
+            .map(|(_, ir)| *ir)
+    } else {
+        None
+    }
+}
+
+/// Open a new `thinking` content block: claim its IR index and emit its `BlockStart`. `None` (and
+/// nothing emitted) only when the per-stream frame cap is reached.
+fn cohere_open_thinking_block(
+    state: &mut crate::ir::StreamDecodeState,
+    out: &mut Vec<IrStreamEvent>,
+) -> Option<usize> {
+    let seen = state.tool_ir_index.range(THINKING_FRAME_BASE..).count();
+    let index = cohere_assign_tool_ir_index(state, THINKING_FRAME_BASE.saturating_add(seen))?;
+    state.thinking_block_open = true;
+    out.push(IrStreamEvent::BlockStart {
+        index,
+        block: crate::ir::IrBlockMeta::Thinking { kind: None },
+        refusal: false,
+    });
+    Some(index)
+}
+
+/// Close the open `thinking` content block, if there is one.
+fn cohere_close_thinking_block(
+    state: &mut crate::ir::StreamDecodeState,
+    out: &mut Vec<IrStreamEvent>,
+) {
+    if let Some(index) = cohere_open_thinking_index(state) {
+        state.thinking_block_open = false;
+        out.push(IrStreamEvent::BlockStop { index });
+    }
+}
+
+/// Close the text slot (the answer's text block, or the leading `tool-plan-delta` block that rides
+/// it) at the index it CLAIMED, and latch it closed so a later frame cannot reopen a stopped index.
+fn cohere_close_text_slot(state: &mut crate::ir::StreamDecodeState, out: &mut Vec<IrStreamEvent>) {
+    if state.text_block_open {
+        state.text_block_open = false;
+        state.text_block_closed = true;
+        // A tool plan open in the slot closes with it.
+        state.thinking_block_open = false;
+        out.push(IrStreamEvent::BlockStop {
+            index: state.text_index.unwrap_or(0),
+        });
+    }
+}
+
+/// The `thinking` text a Cohere content object carries, when the object IS a thinking part: its
+/// `type` says so, or (a real Cohere `content-delta`, which carries no `type`) it has a `thinking`
+/// member and no `text` member.
+fn cohere_thinking_part(content: &serde_json::Value) -> Option<&str> {
+    let obj = content.as_object()?;
+    let ty = obj.get("type").and_then(|t| t.as_str());
+    let is_thinking = ty == Some("thinking")
+        || (ty.is_none() && obj.contains_key("thinking") && !obj.contains_key("text"));
+    is_thinking.then(|| obj.get("thinking").and_then(|t| t.as_str()).unwrap_or(""))
+}
+
 #[derive(Clone)]
 pub struct CohereReader;
 
@@ -708,7 +1050,7 @@ pub struct CohereWriter {
     open_tool_indices: std::sync::Mutex<std::collections::BTreeSet<usize>>,
     /// Per-stream set of text-block indices that emitted a `content-start` frame, so the matching
     /// `BlockStop` emits `content-end` ONLY for a block that actually opened. Cross-protocol blocks
-    /// that carry no opening frame (Thinking / Image — see the `BlockStart` arm, which maps them to
+    /// that carry no opening frame (redacted thinking / Image — see the `BlockStart` arm, which maps them to
     /// `None`) are never recorded here, so their `BlockStop` emits NOTHING rather than an orphan
     /// `content-end` with no matching `content-start`. Mirrors the Gemini writer's
     /// no-frame-for-untracked-index behavior. Same `Mutex` / poison-degrades-to-no-op discipline as
@@ -805,7 +1147,7 @@ impl CohereWriter {
 
     /// Record that a `content-start` frame was emitted for text block `index`, so the matching
     /// `BlockStop` emits `content-end` for it. Cross-protocol blocks that emit no opening frame
-    /// (Thinking / Image) are never recorded, so their `BlockStop` stays silent. Lock poisoning
+    /// (redacted thinking / Image) are never recorded, so their `BlockStop` stays silent. Lock poisoning
     /// degrades to a no-op rather than panicking on the request path.
     fn mark_text_open(&self, index: usize) {
         if let Ok(mut set) = self.open_text_indices.lock() {
@@ -840,3 +1182,7 @@ mod egress_media_regression_tests;
 #[cfg(test)]
 #[path = "tests/field_carry_tests.rs"]
 mod field_carry_tests;
+
+#[cfg(test)]
+#[path = "tests/ir_mapping_tests.rs"]
+mod ir_mapping_tests;

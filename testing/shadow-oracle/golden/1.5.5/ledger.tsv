@@ -1115,6 +1115,24 @@ config.migrate|v1.5.2_examples_claude-code-bedrock|migrate	PASS	exit 0; listen: 
 config.migrate|v1.5.2_examples_claude-code-bedrock|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.5.2|migrate	PASS	exit 0; listen: 0.0.0.0:8080 pools:   haiku:     members:     - mode	
 config.migrate|v1.5.2|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 10 pool(s)  	
+config.migrate|v1.5.3_docker|migrate	PASS	exit 0; listen: 0.0.0.0:8080	
+config.migrate|v1.5.3_docker|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)	
+config.migrate|v1.5.3_examples_claude-code-bedrock|migrate	PASS	exit 0; listen: 127.0.0.1:8080	
+config.migrate|v1.5.3_examples_claude-code-bedrock|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)	
+config.migrate|v1.5.3|migrate	PASS	exit 0; listen: 0.0.0.0:8080	
+config.migrate|v1.5.3|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 10 pool(s)	
+config.migrate|v1.5.4_docker|migrate	PASS	exit 0; listen: 0.0.0.0:8080	
+config.migrate|v1.5.4_docker|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)	
+config.migrate|v1.5.4_examples_claude-code-bedrock|migrate	PASS	exit 0; listen: 127.0.0.1:8080	
+config.migrate|v1.5.4_examples_claude-code-bedrock|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)	
+config.migrate|v1.5.4|migrate	PASS	exit 0; listen: 0.0.0.0:8080	
+config.migrate|v1.5.4|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 10 pool(s)	
+config.migrate|v1.5.5_docker|migrate	PASS	exit 0; listen: 0.0.0.0:8080	
+config.migrate|v1.5.5_docker|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)	
+config.migrate|v1.5.5_examples_claude-code-bedrock|migrate	PASS	exit 0; listen: 127.0.0.1:8080	
+config.migrate|v1.5.5_examples_claude-code-bedrock|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)	
+config.migrate|v1.5.5|migrate	PASS	exit 0; listen: 0.0.0.0:8080	
+config.migrate|v1.5.5|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 10 pool(s)	
 config|rate-card|append-not-replace	PASS	HTTP 400; usage Δ {}	
 cooldown|trip-then-serve	PASS	script cooldown-trip.sh: status 200	
 crosscut.traps|exhausted-retry-after-floor	PASS	HTTP 503; usage Δ {"requests":1}	

@@ -205,7 +205,12 @@ fn openapi_operations_carry_stable_operation_ids() {
     // This assertion is why the two plane sections could not land on `dev` independently without
     // one of them noticing the other: 76 was correct for either section alone and wrong for both
     // together.
-    assert_eq!(checked, 81, "expected exactly 81 admin operations");
+    //
+    // 94 = those 81 + the 13 of the 26 operations the 1.6.0 closed verb table adds whose effect is
+    // bound (5 money-governance verbs, 5 ledger views, 3 audit-chain reads), which the node's
+    // administrative loop answers and which the one document describes (items 45/46: no side-car
+    // document). The other 13 declare no bound effect and are not served, so not described.
+    assert_eq!(checked, 94, "expected exactly 94 admin operations");
     // Spot-check the exact naming scheme against a few representative paths.
     assert_eq!(
         doc["paths"]["/api/v1/admin/keys"]["get"]["operationId"],
@@ -301,10 +306,62 @@ fn openapi_error_enum_matches_admin_error_codes() {
     ]
     .iter()
     .map(|e| e.code().to_string())
+    // The node's administrative loop answers `503 unavailable` (the root's `answer_for` /
+    // `unavailable_answer`) on every operation it walks, in the same envelope.
+    .chain(std::iter::once("unavailable".to_string()))
     .collect();
     assert_eq!(
         enum_codes, actual_codes,
         "openapi error-code enum drifted from AdminError::code"
+    );
+}
+
+/// THE LOOP'S `503 unavailable` IS DOCUMENTED WHEREVER THE LOOP CAN ANSWER IT (architect ruling
+/// 2026-09-24). Every operation the closed table declares is walked through the node's
+/// administrative loop, which answers `503` with code `unavailable` when it cannot take the unit or
+/// cannot record what the operation would do — legacy operations included. So each of them
+/// documents a `503` in the one `Error` envelope, and the enum names the code. An operation the
+/// loop never walks (a plane's section or trust verb) documents none.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_documents_the_loops_503_on_every_operation_it_walks() {
+    let doc = openapi_doc_seamed();
+    let codes =
+        &doc["components"]["schemas"]["Error"]["properties"]["error"]["properties"]["code"]["enum"];
+    assert!(
+        codes
+            .as_array()
+            .is_some_and(|c| c.iter().any(|v| v == "unavailable")),
+        "the Error code enum must name `unavailable`: {codes}"
+    );
+    let mut walked = 0usize;
+    for (path, item) in doc["paths"].as_object().expect("paths") {
+        for (method, op) in item.as_object().expect("path item") {
+            if method.starts_with("x-") {
+                continue;
+            }
+            let loop_walks =
+                crate::admin_codec::verbs::resolve(&method.to_ascii_uppercase(), path).is_some();
+            let documented = &op["responses"]["503"];
+            if loop_walks {
+                walked += 1;
+                assert_eq!(
+                    documented["content"]["application/json"]["schema"]["$ref"],
+                    "#/components/schemas/Error",
+                    "{method} {path}: the loop can answer `503 unavailable`, so the operation \
+                     documents it in the one Error envelope"
+                );
+            } else {
+                assert!(
+                    documented.is_null(),
+                    "{method} {path} is not walked through the loop but documents a 503"
+                );
+            }
+        }
+    }
+    assert!(
+        walked >= 66,
+        "only {walked} loop-walked operations were checked"
     );
 }
 
@@ -633,6 +690,13 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         // change what it does. Its sibling `POST /agents/{name}/approve` is NOT here — that one
         // carries the fingerprint the operator is attesting they saw, which is the whole trust root.
         ("post", "/api/v1/admin/agents/{name}/connect"),
+        // The 1.6.0 kernel verbs whose body the node's administrative loop never reads: the two
+        // recovery verbs are pure commands (the effect is the store's; the verb IS the argument).
+        // Their siblings that DO take one — `store-restore` (`backup_ref`), `adjust` (the count
+        // correction) and `ledger/amend-rate-history` (the signed correction) — are not here; the
+        // verbs with no effect bound are not served, so not documented at all.
+        ("post", "/api/v1/admin/chain-break"),
+        ("post", "/api/v1/admin/reseal-epoch-floor"),
     ];
 
     let doc = openapi_doc_seamed();
@@ -691,11 +755,12 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         "every BODYLESS entry must name a real operation; saw {bodyless_seen:?}"
     );
     assert_eq!(
-        declared, 27,
-        "27 mutating operations take a body; a change here is a deliberate API change. 27 = 22 \
+        declared, 30,
+        "30 mutating operations take a body; a change here is a deliberate API change. 30 = 22 \
          + each plane section's PUT and PATCH-settings (both DELETEs are bodyless, above) + the \
          A2A plane's approve verb, whose body carries the fingerprint the \
-         operator is attesting they read"
+         operator is attesting they read + the three 1.6.0 kernel verbs that read one \
+         (`store-restore`, `adjust`, `ledger/amend-rate-history`)"
     );
 }
 
@@ -762,3 +827,8 @@ fn openapi_summaries_do_not_advertise_forbidden_body_fields() {
         }
     }
 }
+
+/// The served admin surface reconciled against the oracle's admin corpus and the one generated
+/// OpenAPI document (1.6.0 items 44/45/46).
+#[path = "served_surface.rs"]
+mod served_surface;

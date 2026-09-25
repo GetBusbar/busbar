@@ -451,7 +451,11 @@ impl RouterDispatch {
 /// — those requests never carry the extension either, and the handlers' `Option<Extension<_>>`
 /// param already accounts for "not present" as `None`.
 #[cfg(feature = "root-admin")]
-async fn call(inner: axum::Router, request: &AdminRequest, claims: &ClaimJournalCell) -> AdminAnswer {
+async fn call(
+    inner: axum::Router,
+    request: &AdminRequest,
+    claims: &ClaimJournalCell,
+) -> AdminAnswer {
     use tower::ServiceExt;
 
     let mut builder = axum::http::Request::builder()
@@ -624,8 +628,11 @@ pub fn mount(
     // every call after, and it is filled exactly once, below, the instant the answer is known — long
     // before the router this dispatch drives can see a real request.
     let claims: ClaimJournalCell = Arc::new(std::sync::OnceLock::new());
-    let dispatch: Arc<dyn AdminDispatch> =
-        Arc::new(RouterDispatch::new(inner.clone(), &runtime, Arc::clone(&claims)));
+    let dispatch: Arc<dyn AdminDispatch> = Arc::new(RouterDispatch::new(
+        inner.clone(),
+        &runtime,
+        Arc::clone(&claims),
+    ));
     let node = Arc::new(AdminNode::new(kernel, build_units(dispatch)));
     let _ = claims.set(
         node.units
@@ -660,7 +667,7 @@ pub fn mount(
                 // for, and the whole point of the seam is that it never does that.
                 let declared =
                     busbar_core_admin::admin_codec::verbs::resolve(req.method().as_str(), &path)
-                        .is_some();
+                        .is_some_and(|resolved| served_here(&node.units.admin, &resolved));
                 if !claimed || !declared {
                     return inner.oneshot(req).await.unwrap_or_else(|e| match e {});
                 }
@@ -731,6 +738,36 @@ pub fn mount(
             }
         },
     ))
+}
+
+/// Whether THIS node serves the row `resolved` names, beyond the table declaring it.
+///
+/// A row whose verb this build binds no effect to (`busbar_core_admin::verb::effect_bound`) is
+/// served nowhere. One further row is conditional: `amend_rate_history` verifies an operator signature against the key the
+/// fleet sealed (`auth.operator_pub`), so a node with no sealed key has nothing to verify against
+/// and the operation does not exist there. Such a node is exactly a 1.5.5-shaped deployment, and it
+/// answers the path as 1.5.5 does — the surface's own `404 not_found`, no audit row — rather than
+/// running the unit to a `403` naming a scope the caller already holds (oracle cells
+/// `ledger|amend|adjusting-entries`, `|refused-unsigned`). With a key sealed, the row is the
+/// verb's and every refusal is the verb's own. A posture this node cannot read stays claimed, so
+/// the verbs unit refuses it rather than this seam guessing.
+#[cfg(feature = "root-admin")]
+pub(crate) fn served_here(binding: &AdminBinding, resolved: &ResolvedVerb) -> bool {
+    let verb = kernel_verb(resolved);
+    // A verb this build binds no effect to is not served at all (architect ruling 2026-09-24): the
+    // surface's own fallback answers it — the unmounted `404`, byte for byte, no audit row.
+    if !verb.is_none_or(busbar_core_admin::verb::effect_bound) {
+        return false;
+    }
+    if verb != Some(KernelVerb::AmendRateHistory) {
+        return true;
+    }
+    binding
+        .posture
+        .resolve(KernelVerb::AmendRateHistory, "")
+        .is_none_or(|(posture, _)| {
+            matches!(posture.operator, busbar_core_admin::OperatorState::Set(_))
+        })
 }
 
 /// Cells for THE ADMIN REQUEST CHAIN as a whole, end to end over this mount.

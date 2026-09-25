@@ -1929,7 +1929,12 @@ fn test_negative_fee_and_rate_clamp_to_zero() {
         "a negative token rate is an unpriced class, and the read refuses: {refused:?}"
     );
     let tokens: u64 = gov
-        .bucket_model_tokens("k1", crate::governance::WINDOW_TOTAL, 1_700_000_000)
+        .bucket_model_tokens(
+            &neg_rate,
+            "k1",
+            crate::governance::WINDOW_TOTAL,
+            1_700_000_000,
+        )
         .iter()
         .flat_map(|(_, units)| units.values())
         .sum();

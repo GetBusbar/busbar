@@ -52,7 +52,7 @@ pub const BADGE_BEGIN: &str =
     "<!-- BEGIN conformance-badges (generated from conformance/manifest.json — do not edit; regenerate with `cargo xtask gate conformance-sync --write`) -->";
 pub const BADGE_END: &str = "<!-- END conformance-badges -->";
 
-// ── TIERS — the CEILING a suite may ever claim, baked into the type, not the copy (§4) ─────────────
+// ── TIERS — the CEILING a suite may ever claim, baked into the type, not the copy ─────────────
 
 /// The honesty tiers, from `CONFORMANCE-MATRIX-RULING.md`. The `tier` is a registry constant and is
 /// the ceiling; the rendered claim string is a pure function of `(tier, status)` in [`claim_for`], so
@@ -134,7 +134,7 @@ pub fn alt_text(suite: &Suite) -> String {
     format!("{} {}", suite.label, suite.tier.word())
 }
 
-// ── THE REGISTRY — the only hand-authored input, and it holds NO status (§3.3) ─────────────────────
+// ── THE REGISTRY — the only hand-authored input, and it holds NO status ─────────────────────
 
 /// One registered suite. `tier` is the CEILING; `public` decides whether it renders when green.
 #[derive(Debug, Clone)]
@@ -209,7 +209,7 @@ pub fn parse_registry(cx: &Ctx) -> Result<Vec<Suite>, String> {
     Ok(suites)
 }
 
-// ── THE VERDICT ARTIFACT (§2) ──────────────────────────────────────────────────────────────────
+// ── THE VERDICT ARTIFACT ──────────────────────────────────────────────────────────────────
 
 /// One suite's arm-or-red fact, as the pipeline serialises it. Absent fields fail closed: no
 /// `armed` is unarmed, no `status` is not-run.
@@ -436,11 +436,11 @@ fn short(sha: &str) -> String {
     sha.chars().take(9).collect()
 }
 
-// ── THE MANIFEST RENDER (§3.4) ─────────────────────────────────────────────────────────────────
+// ── THE MANIFEST RENDER ─────────────────────────────────────────────────────────────────
 
 /// Assemble the manifest from the registry and the verdicts present. Byte-for-byte reproducible from
 /// committed inputs. A `certified` suite that is green but carries no `issuer`/`expires`/`cert_id` in
-/// its verdict is a HARD ERROR (§4): you cannot claim "certified" without the issued artifact.
+/// its verdict is a HARD ERROR: you cannot claim "certified" without the issued artifact.
 pub fn render_manifest(cx: &Ctx, suites: &[Suite]) -> Result<String, String> {
     let a = assess(cx, suites)?;
     let mut entries: Vec<Value> = Vec::new();
@@ -461,7 +461,7 @@ pub fn render_manifest(cx: &Ctx, suites: &[Suite]) -> Result<String, String> {
             if s.tier == Tier::Certified && (v.issuer.is_none() || v.expires.is_none()) {
                 return Err(format!(
                     "suite `{}` is tier=certified and green, but its verdict carries no \
-                     issuer/expires — a certified claim without the issued artifact is refused (§4)",
+                     issuer/expires — a certified claim without the issued artifact is refused",
                     s.id
                 ));
             }
@@ -494,7 +494,7 @@ pub fn render_manifest(cx: &Ctx, suites: &[Suite]) -> Result<String, String> {
     Ok(canonical(&Value::Object(doc)))
 }
 
-// ── THE README RENDER (§6.1) ─────────────────────────────────────────────────────────────────────
+// ── THE README RENDER ─────────────────────────────────────────────────────────────────────────
 
 /// The badge block, rendered from a parsed MANIFEST. A badge appears ONLY for a public suite whose
 /// `status == "pass"` and whose `claim` is non-null. Color and label are a pure function of
@@ -600,7 +600,7 @@ pub fn rewrite_readme(readme: &str, block: &str) -> Option<String> {
     Some(out)
 }
 
-// ── THE NO-ORPHAN-CLAIM BACKSTOP (§5, `conformance:no-orphan-claim`) ──────────────────────────────
+// ── THE NO-ORPHAN-CLAIM BACKSTOP (`conformance:no-orphan-claim`) ──────────────────────────────
 
 /// THE CLAIM VOCABULARY — the words a human-visible conformance/certification claim is made of.
 /// Outside the generated badge block NONE of them may appear: the block is the only place a claim

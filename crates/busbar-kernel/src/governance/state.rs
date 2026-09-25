@@ -1,7 +1,7 @@
 use super::*;
 use busbar_api::{UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
 use busbar_kernel_ledger::cost::{plane_fee_lane, split_plane_lane, Money, PER_REQUEST};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 // The wall clock, by name: the admission path reads it and never reaches a store handle for it.
 use crate::store::now_ms as wall_ms;
 
@@ -11,6 +11,12 @@ use crate::diagnostics::{
     REFRESH_SELF_CACHE_REFRESH_FAILED, REFRESH_SELF_INCONSISTENT_BINDING,
     ROTATE_KEY_CACHE_RECONCILE_FAILED,
 };
+
+/// The self-serve (token-exchange) keys: a second `impl GovState` block, split out for
+/// `structure-lint`'s file cap. A child module, so it reaches this module's private helpers
+/// (`caches_read`, `signing_material`, …) exactly as the methods did when they lived here.
+#[path = "self_serve.rs"]
+mod self_serve;
 
 /// Prefix on the DEGRADED-BUT-APPLIED error [`GovState::delete_key`] returns when the durable
 /// tombstone committed but the full cache reconcile did not. A stable, greppable marker so an
@@ -447,342 +453,6 @@ impl GovState {
     #[allow(dead_code)]
     pub fn signing_secret(&self) -> Option<[u8; 32]> {
         self.signing_material().map(|m| m.signer.secret_bytes())
-    }
-
-    // ── SELF-SERVE (token-exchange) deterministic keys — 1.5.2 "Model B" ─────────────────────────
-    //
-    // A principal that authenticates through the browser/`POST /auth/token` flow gets ONE key,
-    // bound to `user:<sub>`. The mechanism is DETERMINISTIC MINTING, NOT a new credential shape:
-    //
-    //   subject id = vk_<hex( HMAC-SHA256(signing-key seed, "user:<sub>#<epoch>")[..16] )>
-    //
-    // so the same (sub, epoch) always yields the SAME id → the binding upsert is idempotent (a
-    // re-login reuses the one row, never inserts a second). The credential itself is STILL a
-    // standard busbar signed token — minted ONLY by `TokenSigner::mint`, exactly like every other
-    // key — so `verify_token` is BYTE-FOR-BYTE unchanged: the HMAC is a mint-time id SELECTOR, never
-    // a verification step, and a token whose signature segment is a literal HMAC is rejected
-    // `BadSignature` like any other forgery. The `epoch` is carried as the binding GENERATION, so
-    // Refresh (epoch+1) rides the existing `generation_matches` gate to invalidate the prior token.
-    // Nothing recoverable is stored: the token is the credential, as today.
-
-    /// Derive the deterministic self-serve SUBJECT id for `(user_sub, epoch)` under this node's
-    /// signing-key seed. The HMAC output is a mint-time id selector (see the block comment); it is
-    /// NEVER the credential and is never recomputed on the verify path.
-    fn derive_self_subject(seed: &[u8; 32], user_sub: &str, epoch: u64) -> String {
-        use hmac::{Hmac, KeyInit, Mac};
-        let mut mac = <Hmac<sha2::Sha256>>::new_from_slice(seed)
-            .expect("HMAC-SHA256 accepts a key of any length");
-        mac.update(format!("{SELF_KEY_GROUP_PREFIX}{user_sub}#{epoch}").as_bytes());
-        let tag = mac.finalize().into_bytes();
-        format!("{VK_ID_PREFIX}{}", hex::encode(&tag[..16]))
-    }
-
-    /// The current ENABLED self-serve binding for `user_sub` (group `user:<sub>`), if any. At most
-    /// one exists — the mint is an idempotent upsert and Refresh tombstones the prior row.
-    fn current_self_binding(&self, user_sub: &str) -> Option<Arc<VirtualKey>> {
-        let group = format!("{SELF_KEY_GROUP_PREFIX}{user_sub}");
-        self.caches_read()
-            .by_id
-            .values()
-            .find(|k| {
-                k.enabled && k.deleted_at.is_none() && k.group.as_deref() == Some(group.as_str())
-            })
-            .cloned()
-    }
-
-    /// The first epoch at or after `from` whose derived id is not a tombstoned row, with that id.
-    /// See [`GovState::write_self_binding`] for why a tombstoned epoch must be skipped rather than
-    /// written over.
-    ///
-    /// The stride GROWS (0, +1, +2, +4, +8, …) rather than stepping one at a time, and that is
-    /// load-bearing rather than an optimization.
-    ///
-    /// Every successful [`GovState::refresh_self`] tombstones its predecessor, so after N refreshes
-    /// epochs `0..N-1` are a CONTIGUOUS run of tombstones with the single live binding at N. The
-    /// no-live-binding paths ([`GovState::issue_self`]'s `None` branch, and `refresh_self`'s) both
-    /// start from 0 — they have nothing else to start from, since the cache that would know the
-    /// highest epoch filters tombstoned rows out at load. So the moment that live binding is
-    /// deleted, the next login rescans the whole run from 0. A one-at-a-time scan under a fixed cap
-    /// therefore fails on ordinary use: 64 refreshes plus one admin deletion and the subject can
-    /// never mint again, in either door, permanently — a per-user 500 on `POST /auth/token` that
-    /// only manual store surgery clears. `refresh` is client-selected per call, so 64 is not an
-    /// exotic number for a long-lived account.
-    ///
-    /// Doubling turns that into ~log2(N) probes, and it is sound because ANY free epoch will do:
-    /// the epoch's only jobs are to derive a unique id and to seed the next refresh's `cur + 1`, so
-    /// nothing requires the LOWEST free one. The probe cap is now on the number of probes, not the
-    /// distance covered, and 64 doublings reach past 2^63 epochs — unreachable by anything short of
-    /// a corrupt store, which is the only thing the cap is still there to stop.
-    fn first_free_self_epoch(
-        &self,
-        seed: &[u8; 32],
-        user_sub: &str,
-        from: u64,
-    ) -> StoreResult<(String, u64)> {
-        const MAX_PROBES: u32 = 64;
-        let mut stride = 0u64;
-        for _ in 0..MAX_PROBES {
-            let epoch = from.saturating_add(stride);
-            let id = Self::derive_self_subject(seed, user_sub, epoch);
-            let tombstoned = self
-                .store
-                .get_key(&id)?
-                .is_some_and(|k| k.deleted_at.is_some());
-            if !tombstoned {
-                return Ok((id, epoch));
-            }
-            stride = if stride == 0 {
-                1
-            } else {
-                stride.saturating_mul(2)
-            };
-        }
-        Err(StoreError(format!(
-            "self-serve binding: {MAX_PROBES} probes from epoch {from} all landed on tombstoned \
-             rows; refusing to reissue a deleted key id"
-        )))
-    }
-
-    /// Write (upsert) a self-serve binding at `epoch` and issue the signed token over it. The id is
-    /// derived (not random), so `put_key` at the same `(sub, epoch)` is idempotent by id.
-    ///
-    /// A derived id whose row is TOMBSTONED is skipped, and the epoch advances until one is free.
-    /// Two distinct paths land on a tombstoned derived id, and reusing it would be wrong in both:
-    ///
-    /// - An admin deleted this user's self-serve key. The next login finds no live binding, so it
-    ///   arrives here at epoch 0 — the same epoch, therefore the same id, therefore the tombstoned
-    ///   row. Writing over it would silently undo the admin's deletion and revive every token
-    ///   minted before it. This is the live instance of the resurrection hazard
-    ///   [`busbar_api::Store::put_key`] now refuses at the row, and skipping is what makes the
-    ///   refusal a correct outcome here rather than a dead end.
-    /// - [`GovState::refresh_self`]'s documented rollback tombstones the just-written binding so
-    ///   the client keeps its working token and can retry. The retry re-derives that very id, so
-    ///   without this it would fail on every attempt, permanently.
-    ///
-    /// Skipping is also the semantically honest move: an epoch whose binding was tombstoned had its
-    /// tokens deliberately invalidated, and re-deriving that id would put them back in play.
-    fn write_self_binding(
-        &self,
-        material: &SigningMaterial,
-        user_sub: &str,
-        allowed_pools: Option<Vec<String>>,
-        epoch: u64,
-        exp: u64,
-        now: u64,
-    ) -> StoreResult<(VirtualKey, String)> {
-        let seed = material.signer.secret_bytes();
-        let (id, epoch) = self.first_free_self_epoch(&seed, user_sub, epoch)?;
-        let generation = epoch.to_string();
-        let binding = VirtualKey {
-            id: id.clone(),
-            generation_hash: binding_marker(&id, &generation),
-            name: format!("self-serve key ({user_sub})"),
-            // Intent carried intact: None = all pools; Some([]) = none.
-            allowed_scopes: allowed_pools
-                .map(|list| list.into_iter().map(busbar_api::ScopeRef::pool).collect()),
-            enabled: true,
-            created_at: now,
-            group: Some(format!("{SELF_KEY_GROUP_PREFIX}{user_sub}")),
-            labels: std::collections::BTreeMap::new(),
-            expires_at: None,
-            deleted_at: None,
-            revision: 0,
-            // A self-serve key IS the PERSONAL (user-bound) token: record the IdP subject for
-            // ATTRIBUTION (1.6.0) so per-user budget/audit resolves to a named person. This is the
-            // honest, buildable half of "user-bound" — it is recorded, NOT re-checked against the
-            // IdP on use (standard OIDC cannot provide a per-use subject floor; auth review C1).
-            // `verify_token`/enforcement never read these fields, so stamping them is behavior-
-            // preserving; they are pure attribution metadata.
-            idp_subject: Some(user_sub.to_string()),
-            binding_mode: Some(SELF_KEY_BINDING_MODE.to_string()),
-            ..Default::default()
-        };
-        self.store.put_key(&binding)?;
-        self.refresh()?;
-        let token = material.signer.mint(&id, exp, Some(&generation));
-        Ok((binding, token))
-    }
-
-    /// ISSUE the (single, idempotent) self-serve key for `user_sub`. If a binding already exists it
-    /// is REUSED verbatim (same id + generation) and only a fresh-`exp` token is re-minted over it —
-    /// so N logins produce exactly ONE binding row. Otherwise a fresh binding is minted at epoch 0.
-    /// `exp` is the token expiry (Unix secs); `now` the mint time.
-    pub fn issue_self(
-        &self,
-        user_sub: &str,
-        allowed_pools: Option<Vec<String>>,
-        exp: u64,
-        now: u64,
-    ) -> StoreResult<(VirtualKey, String)> {
-        let Some(material) = self.signing_material() else {
-            return Err(StoreError(
-                "signed-token minting is unavailable: no signing key is configured".to_string(),
-            ));
-        };
-        // Serialize the check→write against a concurrent issue/refresh for the same sub.
-        let _mint = self
-            .self_mint_lock
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        match self.current_self_binding(user_sub) {
-            Some(existing) => {
-                // The pools the caller resolved THIS login (from the possibly-changed binding).
-                let new_scopes = allowed_pools.clone().map(|list| {
-                    list.into_iter()
-                        .map(busbar_api::ScopeRef::pool)
-                        .collect::<Vec<_>>()
-                });
-                if new_scopes != existing.allowed_scopes {
-                    // allowed_pools CHANGED since the binding was created (an admin narrowed or
-                    // widened the group) — update THE EXISTING ROW in place with the fresh pools,
-                    // keeping its id and generation, and re-issue a token over them.
-                    //
-                    // It used to re-DERIVE the id by parsing an epoch back out of
-                    // `generation_hash`, on the reasoning that the same epoch yields the same
-                    // deterministic id and therefore still one row. That reasoning fails the moment
-                    // the generation is not a u64 — and `rotate_key` writes exactly that, a random
-                    // hex generation rather than an epoch counter. The parse then fell to
-                    // `unwrap_or(0)`, epoch 0 derived a DIFFERENT id from the live binding's, and
-                    // this wrote a SECOND enabled row: two valid self-serve tokens for one subject,
-                    // each with its own group and budget accounting, breaking the at-most-one
-                    // invariant `current_self_binding` depends on.
-                    //
-                    // Updating in place cannot reintroduce that, because it never derives an id at
-                    // all: whatever the generation looks like, there is exactly one row and it stays
-                    // the row that already existed.
-                    let mut updated = (*existing).clone();
-                    updated.allowed_scopes = new_scopes;
-                    self.store.put_key(&updated)?;
-                    self.refresh()?;
-                    let generation = binding_generation(&updated.generation_hash);
-                    let token = material.signer.mint(&updated.id, exp, generation);
-                    Ok((updated, token))
-                } else {
-                    // Idempotent re-show: reuse the one binding, re-issue a fresh-exp token over the
-                    // SAME id + generation. No new row, so the anti-sprawl cap can never trip.
-                    let generation = binding_generation(&existing.generation_hash);
-                    let token = material.signer.mint(&existing.id, exp, generation);
-                    Ok(((*existing).clone(), token))
-                }
-            }
-            None => self.write_self_binding(&material, user_sub, allowed_pools, 0, exp, now),
-        }
-    }
-
-    /// REFRESH (rotate) the self-serve key for `user_sub`: bump the epoch, mint the new binding, and
-    /// TOMBSTONE the prior one. The prior id no longer re-derives and its binding is disabled, so
-    /// every token minted before the refresh stops verifying (`verify_token` → `None`) — the
-    /// existing generation gate, reached through a normal delete. Returns the new (binding, token).
-    pub fn refresh_self(
-        &self,
-        user_sub: &str,
-        allowed_pools: Option<Vec<String>>,
-        exp: u64,
-        now: u64,
-    ) -> StoreResult<(VirtualKey, String)> {
-        let Some(material) = self.signing_material() else {
-            return Err(StoreError(
-                "signed-token minting is unavailable: no signing key is configured".to_string(),
-            ));
-        };
-        // Serialize against a concurrent issue/refresh for the same sub (see `self_mint_lock`).
-        let _mint = self
-            .self_mint_lock
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let (new_epoch, old_id) = match self.current_self_binding(user_sub) {
-            Some(existing) => {
-                let cur = binding_generation(&existing.generation_hash)
-                    .and_then(|g| g.parse::<u64>().ok())
-                    .unwrap_or(0);
-                (cur.saturating_add(1), Some(existing.id.clone()))
-            }
-            None => (0, None),
-        };
-        let out =
-            self.write_self_binding(&material, user_sub, allowed_pools, new_epoch, exp, now)?;
-        if let Some(old) = old_id {
-            if old != out.0.id {
-                // Tombstone the prior epoch's binding — its token now fails verify (disabled).
-                if let Err(delete_err) = self.store.delete_key(&old) {
-                    // The NEW binding is already live (written above) but the OLD one could not
-                    // be tombstoned. Returning Err here as-is would leave BOTH bindings enabled — two
-                    // valid tokens for one subject, and the caller-visible 500 would suggest nothing
-                    // happened. ROLL BACK the just-written new binding (delete it + refresh the
-                    // in-memory cache) so a failed refresh leaves EXACTLY the old binding valid: the
-                    // client keeps its working token and can retry the refresh.
-                    return Err(match self.delete_key(&out.0.id) {
-                        Ok(()) => StoreError(format!(
-                            "self-serve refresh for '{user_sub}' failed to tombstone the prior \
-                             binding '{old}' ({delete_err}); rolled back the newly-minted binding \
-                             '{}' so the prior token remains the sole valid credential — retry the \
-                             refresh",
-                            out.0.id
-                        )),
-                        Err(rollback_err) => {
-                            // Best effort exhausted: loudly flag the inconsistent state (TWO
-                            // possibly-live bindings for one subject) for operator/store inspection.
-                            diag_error!(
-                                REFRESH_SELF_INCONSISTENT_BINDING,
-                                user_sub = %user_sub,
-                                old_id = %old,
-                                new_id = %out.0.id,
-                                delete_err = %delete_err,
-                                rollback_err = %rollback_err,
-                                "refresh_self: failed to tombstone the prior self-serve binding AND \
-                                 failed to roll back the newly-written one — subject may now have \
-                                 TWO live bindings; manual store inspection required"
-                            );
-                            StoreError(format!(
-                                "self-serve refresh for '{user_sub}' left an INCONSISTENT store \
-                                 state: the prior binding '{old}' could not be tombstoned \
-                                 ({delete_err}) and the rollback of the new binding '{}' also failed \
-                                 ({rollback_err}) — both bindings may still be live; manual \
-                                 intervention required",
-                                out.0.id
-                            ))
-                        }
-                    });
-                }
-                if let Err(refresh_err) = self.refresh() {
-                    // The STORE already reflects the tombstone (`delete_key` above succeeded) —
-                    // only the cache reconcile (a `list_keys`/`list_credentials_since` round-trip)
-                    // failed. Left as a bare `?`, this would return an Err while silently leaving
-                    // the cache holding BOTH the old (still `enabled`) and the new binding — the
-                    // old token would keep verifying against a store that no longer agrees.
-                    //
-                    // Mirror the rollback discipline above: don't leave that inconsistency
-                    // silent. A full `refresh()` needs store I/O and just failed, but evicting ONE
-                    // known-stale id from the two cache indices needs none — it's a local map
-                    // mutation under `caches_write` (whose lock is poison-recovering, so this
-                    // cannot itself fail the way a store round-trip can). Do that surgical eviction
-                    // so the specific hazard (the OLD token still verifying) is closed immediately,
-                    // even though the rest of the cache may now be stale until the next successful
-                    // refresh.
-                    diag_error!(
-                        REFRESH_SELF_CACHE_REFRESH_FAILED,
-                        user_sub = %user_sub,
-                        old_id = %old,
-                        new_id = %out.0.id,
-                        refresh_err = %refresh_err,
-                        "refresh_self: cache refresh failed after tombstoning the prior self-serve \
-                         binding in the store; evicting the prior binding directly from the cache \
-                         so its token stops verifying immediately"
-                    );
-                    self.evict_key_from_caches(&old);
-                    return Err(StoreError(format!(
-                        "self-serve refresh for '{user_sub}' rotated the store successfully (the \
-                         prior binding '{old}' is tombstoned, the new binding '{}' is live) but \
-                         the cache reconcile failed ({refresh_err}); the prior binding was evicted \
-                         directly from the cache as a best-effort fix so its token no longer \
-                         verifies, but the cache may be stale for OTHER entries until the next \
-                         successful refresh — retry is safe",
-                        out.0.id
-                    )));
-                }
-            }
-        }
-        Ok(out)
     }
 
     /// Accrue one completed response's TIER-TOKEN split under `model` to EVERY bucket in the key's
@@ -1688,34 +1358,98 @@ impl GovState {
         now: u64,
     ) -> StoreResult<Result<DerivedUsage, busbar_kernel_ledger::cost::MoneyError>> {
         let window = budget_window(budget_period, now);
-        if let Some(cell) = self.budget.read(bucket_id).get(bucket_id) {
-            if cell.window_start == window {
-                // Fee derives from the BILLABLE (2xx-only) count; `requests` reports the
-                // admission count (the requests-limit truth).
-                let spend = cell
-                    .spend(cost, include_request_fee)
-                    .and_then(Money::minor_i64);
-                return Ok(spend.map(|spend_cents| DerivedUsage {
+        let live = (self.budget.read(bucket_id).get(bucket_id))
+            .filter(|c| c.window_start == window)
+            .cloned();
+        if let Some(mut cell) = live {
+            // Q51: the counts AS CORRECTED by every sealed `adjust` landing on this bucket. Fee
+            // derives from the BILLABLE (2xx-only) count; `requests` reports the admission count
+            // (the requests-limit truth).
+            let fixed =
+                self.corrected(cost, (bucket_id, budget_period, window), &mut cell.models)?;
+            let spend = fixed.and_then(|()| cell.spend(cost, include_request_fee));
+            return Ok(spend
+                .and_then(Money::minor_i64)
+                .map(|spend_cents| DerivedUsage {
                     spend_cents,
                     tokens: cell.total_tokens(),
                     requests: cell.requests,
                 }));
-            }
         }
         let ledger = self.store.get_usage(bucket_id, window)?;
-        let spend = cost.derive_spend_cents(
-            ledger
-                .models
-                .iter()
-                .map(|m| (m.model.as_str(), &m.usage_units)),
-            ledger.billable_requests,
-            include_request_fee,
-        );
+        let mut models = durable_segments(ledger.models);
+        let fixed = self.corrected(cost, (bucket_id, budget_period, window), &mut models)?;
+        let spend = fixed.and_then(|()| {
+            cost.derive_spend_cents(
+                models.iter().map(|m| (&*m.model, &m.cur)),
+                ledger.billable_requests,
+                include_request_fee,
+            )
+        });
         Ok(spend.map(|spend_cents| DerivedUsage {
             spend_cents,
-            tokens: super::token_total(ledger.models.iter().map(|m| &m.usage_units)),
+            tokens: super::token_total(models.iter().map(|m| &m.cur)),
             requests: ledger.requests,
         }))
+    }
+
+    /// **THE BUDGET BOOK'S COUNTS AS CORRECTED** (Q51, item 404, OWNER RULING Q9). An `adjust`
+    /// corrects a recorded unit's COUNTS on the node amendment journal; every read of this book
+    /// (key and group usage, the `/metrics` money gauges) prices `segments` only after this folds in
+    /// Σ (now − was) of each correction that lands on the bucket: its principal's own bucket, or a
+    /// bucket of that key's group chain the correction's pool participates in (Q64/Q67: an unscoped
+    /// bucket always, a pool-scoped one for its own pool; a sealed correction naming no pool reaches
+    /// the unscoped buckets only), whose window holds the unit's card epoch. The delta lands on the unit's lane in the latest era not after the epoch.
+    /// A correction leaving a count fractional or below zero REFUSES (`Overflow`), never clamps.
+    fn corrected(
+        &self,
+        cost: &crate::cost::CostModel,
+        (bucket_id, period, window): (&str, &str, u64),
+        segments: &mut Vec<ModelCell>,
+    ) -> StoreResult<Result<(), busbar_kernel_ledger::cost::MoneyError>> {
+        use crate::audit::amend::{node_corrections, AmendBody, Subject};
+        for amendment in node_corrections() {
+            let AmendBody::Adjust(adj) = &amendment.body else {
+                continue;
+            };
+            let Subject::PrincipalId(p) = &adj.subject else {
+                continue;
+            };
+            let lands = budget_window(period, adj.card_epoch_ms / 1_000) == window
+                && (p == bucket_id
+                    || self.store.get_key(p)?.is_some_and(|k| {
+                        (cost.chain_for(&k).ok()).is_some_and(|c| {
+                            c.iter()
+                                .any(|b| b.bucket_id == bucket_id && adj.reaches(b.scope))
+                        })
+                    }));
+            if !lands {
+                continue;
+            }
+            let at = adj.card_epoch_ms;
+            let seg = (segments.iter().enumerate())
+                .filter(|(_, m)| *m.model == *adj.lane && m.era <= at)
+                .max_by_key(|(_, m)| m.era)
+                .map(|(i, _)| i);
+            let i = seg.unwrap_or_else(|| {
+                segments.push(ModelCell {
+                    model: std::sync::Arc::from(adj.lane.as_str()),
+                    era: crate::rate_apply::effective_from_at(at),
+                    cur: BTreeMap::new(),
+                    flushed: BTreeMap::new(),
+                });
+                segments.len() - 1
+            });
+            for class in BTreeSet::from_iter(adj.was.keys().chain(adj.now.keys())) {
+                let (whole, frac) = (adj.delta(class) / 1_000_000, adj.delta(class) % 1_000_000);
+                let slot = segments[i].cur.entry(class.clone()).or_insert(0);
+                match (i128::from(*slot).checked_add(whole)).and_then(|n| u64::try_from(n).ok()) {
+                    Some(n) if frac == 0 => *slot = n,
+                    _ => return Ok(Err(busbar_kernel_ledger::cost::MoneyError::Overflow)),
+                }
+            }
+        }
+        Ok(Ok(()))
     }
 
     /// SCRAPE-TIME view of one bucket's per-(model, tier) token counters for its CURRENT window:
@@ -1723,29 +1457,32 @@ impl GovState {
     /// scrape); allocation here is fine.
     pub fn bucket_model_tokens(
         &self,
+        cost: &crate::cost::CostModel,
         bucket_id: &str,
         budget_period: &str,
         now: u64,
     ) -> Vec<(String, std::collections::BTreeMap<String, u64>)> {
         let window = budget_window(budget_period, now);
-        {
-            let map = self.budget.read(bucket_id);
-            if let Some(cell) = map.get(bucket_id) {
-                if cell.window_start == window {
-                    // One series per MODEL: a model's eras are one set of counts to the scrape.
-                    let models = cell.models.iter().map(|m| (&*m.model, m.cur.clone()));
-                    return busbar_kernel_ledger::usage::by_lane(models, u64::saturating_add);
-                }
-            }
+        let live = (self.budget.read(bucket_id).get(bucket_id))
+            .filter(|c| c.window_start == window)
+            .map(|c| c.models.clone());
+        let read = live.map_or_else(
+            || (self.store.get_usage(bucket_id, window)).map(|l| durable_segments(l.models)),
+            Ok,
+        );
+        let Ok(mut models) = read else {
+            return Vec::new();
+        };
+        // Q51: the counts AS CORRECTED; a refused correction skips the series, as a failed read does.
+        if !matches!(
+            self.corrected(cost, (bucket_id, budget_period, window), &mut models),
+            Ok(Ok(()))
+        ) {
+            return Vec::new();
         }
-        match self.store.get_usage(bucket_id, window) {
-            Ok(ledger) => ledger
-                .models
-                .into_iter()
-                .map(|m| (m.model, m.usage_units))
-                .collect(),
-            Err(_) => Vec::new(),
-        }
+        // One series per MODEL: a model's eras are one set of counts to the scrape.
+        let models = models.iter().map(|m| (&*m.model, m.cur.clone()));
+        busbar_kernel_ledger::usage::by_lane(models, u64::saturating_add)
     }
 
     /// The HOOK-SEAM projection: per-bucket budget state for the key + every ancestor group -
@@ -2475,4 +2212,15 @@ fn money_refusal(bucket_id: &str, e: &busbar_kernel_ledger::cost::MoneyError) ->
     StoreError(format!(
         "the spend of bucket `{bucket_id}` cannot be priced: {e}"
     ))
+}
+
+/// The durable ledger's per-model rows as undated segments (the row carries no era).
+fn durable_segments(rows: Vec<busbar_api::ModelTokens>) -> Vec<ModelCell> {
+    let segment = |m: busbar_api::ModelTokens| ModelCell {
+        model: std::sync::Arc::from(m.model),
+        era: 0,
+        cur: m.usage_units,
+        flushed: BTreeMap::new(),
+    };
+    rows.into_iter().map(segment).collect()
 }

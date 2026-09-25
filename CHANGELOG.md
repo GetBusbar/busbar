@@ -343,11 +343,10 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   still never refunded.
 - **The 1.6.0 ledger endpoints read money as of a rate-card history snapshot.** New reads
   `GET /api/v1/admin/ledger/{rate-history,repricings}`, a new operator-signed write
-  `POST /api/v1/admin/ledger/amend-rate-history`, and optional `?as_of=<history_seq>` and
-  `?currency=<CCY>` on the existing ledger reads. A card prices in one or more currencies natively,
-  with no pivot and no conversion. No 1.5.5 path, field or byte is touched; the new operations are
-  described at `docs/openapi-1.6.0-additive.json`, reached by name at
-  `GET /api/v1/admin/ledger/openapi.json`.
+  `POST /api/v1/admin/ledger/amend-rate-history`, and an optional `?as_of=<history_seq>`
+  on the existing ledger reads. Money stays unitless, exactly as in 1.5.5: a rate card is plain
+  numbers and busbar attaches no currency. No 1.5.5 path or field is changed; the new operations are
+  described in the one administrative OpenAPI document served at `GET /api/v1/admin/openapi.json`.
 - **A stream that dies mid-flight is no longer served, and billed, as a completed one.** Two
   upstream failure shapes reached the client as a clean success in 1.5.5. An OpenAI-compatible
   backend (OpenAI, Azure, vLLM, OpenRouter) that fails after its 200 headers are on the wire sends
@@ -424,10 +423,10 @@ identically, and every 1.5.5 key and minted secret carries over.
 - 1.6.0 Changed: the always-null `at` field on the hook view gives way to `fires_at` (rewritten for
   you by --migrate-config). Every hook object served by `GET /api/v1/admin/hooks[/{name}]`, and the
   follow-up read of a hook write, gains `fires_at` (the resolved stage set), `groups` and `phase`
-  and no longer carries `at`, which was always `null` in 1.5.5 and told a caller nothing.
+  beside `at`, which is still served exactly as in 1.5.5 (always `null`) and tells a caller nothing.
   **Migration:** `busbar --migrate-config` rewrites the single-stage tap `at: <stage>` config key
-  for you, and a persisted overlay auto-migrates it at boot; a client or dashboard that READ the
-  `at` field off a hook view must read `fires_at` instead. See
+  for you, and a persisted overlay auto-migrates it at boot; a client or dashboard that wants a
+  hook's stages reads `fires_at`, since `at` is always `null`. See
   [the 1.6.0 migration guide](docs/migration-1.6.md).
 - 1.6.0 Improvements: rotate refuses an overlong key id like its siblings. `POST
   /api/v1/admin/keys/{id}/rotate` was the one `/keys/{id}` handler that never enforced the 64-byte
@@ -454,6 +453,30 @@ identically, and every 1.5.5 key and minted secret carries over.
   `POST /api/v1/admin/ledger/amend-rate-history` verb rather than editing the live card. See [the
   1.6.0 migration guide](docs/migration-1.6.md).
 
+- 1.6.0 Changed: a request whose upstream fails is billed only the usage the upstream reports.
+  1.5.5 charged a request whose upstream was down as if it had completed (18 tokens, 250 cents on
+  the oracle's card); 1.6.0 charges nothing for it, because the upstream reported nothing. The
+  request is still counted. **Migration:** none; a request whose upstream answered nothing no longer adds to a key's spend.
+- 1.6.0 Changed: `busbar_lane_state` reads each pool's own breaker cell, so a lane tripped in a pool reads 2 there.
+  1.5.5 read a lane's state across every pool, so a tripped lane could read 1 (half-open). 1.6.0
+  reads 2 while tripped and 1 only during a real half-open probe. **Migration:** alerts keyed on
+  `busbar_lane_state == 1` for a tripped lane should key on `2`.
+- 1.6.0 Changed: every audit entry carries its `scheme`, the signing scheme of the record.
+  `GET /api/v1/admin/audit` items gain `scheme`, and `openapi.json` marks it required.
+  **Migration:** none; every 1.5.5 member is unchanged.
+- 1.6.0 Changed: a request served before a rate-card edit keeps the price of the card in force when it arrived.
+  1.5.5 priced every row of `GET /api/v1/admin/usage` at the card current at read time, so a card
+  edited to one micro-unit per token made requests served earlier under a dearer card read 18
+  micro-units each; 1.6.0 reads them at the card they were served under (2,500,000 each on the
+  oracle's card). **Migration:** none; to change what an earlier window was charged, post a signed
+  correction through `POST /api/v1/admin/ledger/amend-rate-history`.
+- 1.6.0 Changed: applying a config no longer reprices spend already recorded in the `/metrics` spend series.
+  In 1.5.5, `POST /api/v1/admin/config/apply` with a config that drops the rate card moved
+  `busbar_key_spend_cents` and `busbar_bucket_spend_cents` down by what the earlier requests were
+  charged (250 cents on the oracle's card) and `busbar_bucket_budget_remaining_cents` up; in 1.6.0
+  those series keep each earlier request at the card in force when it arrived. **Migration:** none;
+  dashboards that read a drop in these series after an apply as a refund will no longer see one.
+
 - 1.6.0 Breaking: a provider whose `api_key` reference does not resolve now refuses boot; keyless
   local upstreams must declare `api_key: none`. 1.5.5 logged
   `[warn] provider <name> api_key (<reference>) empty` and started the lane with an empty
@@ -477,8 +500,8 @@ Four retired 1.5.x spellings that were never the documented form are rewritten f
 than accepted: the hook `plugin:` key (the read-only alias of `module:`) and the single-stage tap
 `at: <stage>` key are rewritten by `busbar --migrate-config` and auto-migrated in a persisted
 overlay at boot; the accepted-then-ignored `persist:` field on `PUT /api/v1/admin/config/settings`
-is now a `400` naming the field; and the always-`null` `at` field on the hook view gives way to
-`fires_at`. Details in [the 1.6.0 migration guide](docs/migration-1.6.md).
+is now a `400` naming the field; and the always-`null` `at` field on the hook view is joined by
+`fires_at`, which carries the resolved stages (`at` itself is still served, as in 1.5.5). Details in [the 1.6.0 migration guide](docs/migration-1.6.md).
 
 ### Deprecated env vars still honoured
 
@@ -544,7 +567,12 @@ moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
 - **A 1.6.0 config is a 1.5.5 config plus whichever plane sections you write.** `mcp:`, `agents:`
   and `streams:` are new top-level keys; every 1.5.5 key keeps its 1.5.5 meaning and default, and a
   config with none of the three new keys boots and behaves exactly as it did under 1.5.5 (see
-  [Behaviour identical to 1.5.5](#behaviour-identical-to-155) above).
+  [Behaviour identical to 1.5.5](#behaviour-identical-to-155) above), with one exception below.
+- **A `rate_card` must price every billable class the build declares, or boot refuses.** An unpriced
+  class never silently bills 0. A 1.5.5 config with a `rate_card` needs each entry to gain
+  `units: { search_units: 0 }` (0 keeps search free), and a rate card written through
+  `PUT /api/v1/admin/config/settings` needs the same key or the write answers 400. `--validate`
+  names every class it wants.
 - **`busbar --migrate-config` leaves your 1.5.5 pool members exactly as written.** Only the four
   retired spellings named under [Breaking](#breaking) above are rewritten; nothing else in a pool,
   provider or model block is touched.
@@ -555,6 +583,41 @@ moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
 
 ### Added
 
+- **`POST /api/v1/admin/adjust` names the pool it corrects.** A count correction now carries a required
+  `pool` (a configured pool, else 400 `invalid_request`), sealed on the record, so a pool-scoped group
+  budget takes the correction and its `/groups` usage and `/metrics` bucket gauges agree with
+  `/admin/usage`. Adjusts sealed before this read exactly as they did (unscoped).
+- **One OpenAPI document describes every administrative operation, and a node serves only what
+  it mounts.** The document is generated from the code and now also describes the 26 operations
+  1.6.0 adds — the money-governance verbs, the five ledger views and the three audit-chain reads —
+  each marked `x-busbar-since: 1.6.0`. The `tools:`/`agents:` operations are marked
+  `x-busbar-plane`, and `GET /api/v1/admin/openapi.json` serves the document filtered to the planes
+  the node configured: a plane you did not configure contributes no operation and no schema, so a
+  node running a 1.5.5 config describes no `tools`/`agents` path. A verb this release resolves but
+  binds no effect to is marked `x-busbar-effect-bound: false` and documents the `404` it answers.
+  Every 1.5.5 operation's entry is unchanged; `info.x-busbar-marks` explains the marks. The full,
+  unfiltered document is the release asset and is served at
+  `GET /api/v1/admin/ledger/openapi.json`. See [the admin API guide](docs/admin-api.md).
+- 1.6.0 Added: every node's `GET /api/v1/admin/openapi.json` describes the 1.6.0 core admin verbs, each marked `x-busbar-since: 1.6.0`.
+  They are served whatever the config names, so a node running a 1.5.5 config serves 1.5.5's
+  operations plus these verbs; every 1.5.5 operation and schema member is still there with its
+  1.5.5 value. **Migration:** none; a client that reads only the operations it knows is unaffected.
+- 1.6.0 Added: the `identity-providers` and `export` overlay sections can be reset with `DELETE /api/v1/admin/overlay/{section}`.
+  An unknown section is still refused in 1.5.5's sentence, with the longer list:
+  "expected `groups`, `hooks`, `root`, `plugin_versions`, `identity-providers`, or `export`"
+  (`tools` and `agents` join the list when their plane is configured). **Migration:** none.
+- 1.6.0 Added: a rate-card entry takes a `units:` map that prices each billable class a plane declares beyond the four `*_utok` token tiers.
+  A rate card must configure every billable class its plane declares, so a 1.5.5 card adds
+  `units: { search_units: 0 }` (0 keeps search free). A rate-card entry with a key busbar does not
+  know is still refused in 1.5.5's sentence, with `units` now among the expected fields. Money stays
+  unitless: a `currency` key is refused, as in 1.5.5.
+- 1.6.0 Added: a provider entry takes four lane-capability keys, `max_output_key`, `anthropic_adaptive_thinking`, `native_structured_output` and `model_capabilities`.
+  They set how a request that crosses protocols is written for that upstream's models: the
+  output-token cap key an OpenAI-protocol upstream receives, and whether an Anthropic-protocol
+  upstream gets adaptive thinking and native structured outputs. Each key is optional, and an
+  omitted key sends what 1.5.5 sent. A provider key busbar does not know is still refused in 1.5.5's
+  sentence, with the four keys now among the expected fields. See
+  [Lane capabilities](docs/providers.md#lane-capabilities). **Migration:** none.
 - **Two 64-bit ARM Linux builds, and the default one got faster.** The default arm64 artifacts
   (the `busbar-aarch64-unknown-linux-gnu.tar.gz` download and the multi-arch image's `linux/arm64`
   entry) now target ARMv8.1+, using the CPU's native atomic instructions instead of the baseline's
@@ -682,6 +745,12 @@ moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
   identical to calling the provider directly. Cross-protocol, every modelled field arrives in the
   target's native shape, and what cannot cross is dropped with a log line naming it. See
   [the protocols guide](docs/protocols.md).
+- 1.6.0 Changed: citations a streamed Cohere or Responses upstream sends now reach the client.
+  1.5.5 dropped them from a streamed answer (Cohere grounding citations, Responses `url_citation`
+  annotations) while the buffered answer to the same request kept them. A streamed answer now
+  carries the citations the buffered one carries, in every client protocol with a citation member:
+  Anthropic, Bedrock, Gemini, Responses and Cohere. **Migration:** none; a streaming client that
+  does not read citation events is unaffected.
 
 ### Fixed
 

@@ -9,17 +9,19 @@ fn stop_reason_egress_never_leaks_foreign_tokens() {
     assert_eq!(write_anthropic_stop_reason(S::ToolUse), "tool_use"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(write_anthropic_stop_reason(S::PauseTurn), "pause_turn"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(write_anthropic_stop_reason(S::Refusal), "refusal"); // golden wire-contract literal (kept bare on purpose)
-                                                                    // `safety` has no Anthropic member, and `error`/`other` are off-enum → all degrade to
-                                                                    // end_turn rather than leak an off-spec value a strict Anthropic SDK rejects.
-    assert_eq!(write_anthropic_stop_reason(S::Safety), "end_turn"); // golden wire-contract literal (kept bare on purpose)
+                                                                    // `safety` has no Anthropic member: a content-filter stop is the provider declining,
+                                                                    // which Anthropic names `refusal` (ANT-12). `error`/`other` are off-enum → end_turn
+                                                                    // rather than leak an off-spec value a strict Anthropic SDK rejects.
+    assert_eq!(write_anthropic_stop_reason(S::Safety), "refusal"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(write_anthropic_stop_reason(S::Error), "end_turn"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(write_anthropic_stop_reason(S::Other), "end_turn"); // golden wire-contract literal (kept bare on purpose)
-                                                                   // The reader maps an unknown native token (e.g. the non-enum `model_context_window_exceeded`)
-                                                                   // to `Other`, which then degrades on egress — it is never carried verbatim.
+                                                                   // `model_context_window_exceeded` is a length cut-off, read as `MaxTokens` (ANT-11); an
+                                                                   // unknown native token maps to `Other`, which then degrades on egress — never verbatim.
     assert_eq!(
         read_anthropic_stop_reason("model_context_window_exceeded"),
-        S::Other
+        S::MaxTokens
     );
+    assert_eq!(read_anthropic_stop_reason("some_future_reason"), S::Other);
 }
 
 fn header_value(headers: &[(HeaderName, HeaderValue)], name: &str) -> Option<String> {
@@ -670,6 +672,7 @@ fn cross_protocol_write_synthesizes_valid_unique_id() {
             text: "x".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: crate::ir::IrUsage {
@@ -687,6 +690,7 @@ fn cross_protocol_write_synthesizes_valid_unique_id() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out1 = anthropic_writer().write_response(&make());
     let out2 = anthropic_writer().write_response(&make());
@@ -734,6 +738,7 @@ fn write_response_synthesizes_id_when_neither_id_nor_created() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = anthropic_writer().write_response(&resp);
     let id = out
@@ -1290,6 +1295,7 @@ fn write_block_image_url_sentinel_emits_native_url_source() {
     let block = crate::ir::IrBlock::Image {
         source: crate::ir::IrImageSource::Url("https://example.com/cat.png".to_string()),
         cache_control: None,
+        detail: None,
     };
     let out = write_block(&block);
     assert_eq!(out.get("type").and_then(|t| t.as_str()), Some("image"));
@@ -1324,6 +1330,7 @@ fn write_block_real_base64_image_unchanged() {
             data: "iVBORw0KGgo=".to_string(),
         },
         cache_control: None,
+        detail: None,
     };
     let out = write_block(&block);
     let source = out.get("source").expect("source present");
@@ -1487,6 +1494,7 @@ fn read_block_unmodeled_document_type_degrades_not_400() {
                 text,
                 cache_control,
                 citations,
+                refusal: _,
             } => {
                 assert_eq!(text, "", "unmodeled block degrades to an empty text block");
                 assert!(cache_control.is_none());
@@ -1609,7 +1617,8 @@ fn streaming_redacted_thinking_is_not_dropped() {
             &evs[0],
             IrStreamEvent::BlockStart {
                 index: 0,
-                block: IrBlockMeta::RedactedThinking
+                block: IrBlockMeta::RedactedThinking,
+                refusal: _,
             }
         ),
         "first event is a RedactedThinking BlockStart: {:?}",
@@ -1784,17 +1793,22 @@ fn write_message_drops_unsigned_thinking_block() {
                 signature: None,
                 redacted: false,
                 cache_control: None,
+                kind: None,
+                signature_origin: None,
             },
             crate::ir::IrBlock::Thinking {
                 text: "signed reasoning".to_string(),
                 signature: Some("sig-abc".to_string()),
                 redacted: false,
                 cache_control: None,
+                kind: None,
+                signature_origin: None,
             },
             crate::ir::IrBlock::Text {
                 text: "the answer".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             },
         ],
     };
@@ -1842,12 +1856,16 @@ fn write_message_emits_empty_array_when_all_blocks_dropped() {
                 signature: None,
                 redacted: false,
                 cache_control: None,
+                kind: None,
+                signature_origin: None,
             },
             crate::ir::IrBlock::Thinking {
                 text: "unsigned reasoning B".to_string(),
                 signature: None,
                 redacted: false,
                 cache_control: None,
+                kind: None,
+                signature_origin: None,
             },
         ],
     };
@@ -1877,6 +1895,7 @@ fn write_message_emits_array_for_surviving_block() {
             text: "kept".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
     };
     let out = write_message(&msg, 0, &[]);
@@ -1901,6 +1920,8 @@ fn write_response_keeps_unsigned_thinking_block() {
             signature: None,
             redacted: false,
             cache_control: None,
+            kind: None,
+            signature_origin: None,
         }],
         stop_reason: None,
         usage: crate::ir::IrUsage {
@@ -1917,6 +1938,7 @@ fn write_response_keeps_unsigned_thinking_block() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = anthropic_writer().write_response(&resp);
     let content = out
@@ -2020,6 +2042,7 @@ fn read_message_delta_without_usage_preserves_terminal_event() {
             stop_reason,
             stop_sequence,
             usage,
+            stop_detail: _,
         } => {
             assert_eq!(
                 stop_reason,
@@ -2088,6 +2111,7 @@ fn write_response_emits_empty_model_when_none() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = anthropic_writer().write_response(&resp);
     assert_eq!(
@@ -2120,6 +2144,7 @@ fn write_response_preserves_present_model() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = anthropic_writer().write_response(&resp);
     assert_eq!(
@@ -2168,6 +2193,7 @@ fn every_write_response_event_carries_matching_top_level_type() {
         IrStreamEvent::BlockStart {
             index: 0,
             block: IrBlockMeta::Text,
+            refusal: false,
         },
         IrStreamEvent::BlockDelta {
             index: 0,
@@ -2184,6 +2210,7 @@ fn every_write_response_event_carries_matching_top_level_type() {
                 cache_read_input_tokens: None,
                 detail: crate::ir::IrUsageDetail::default(),
             },
+            stop_detail: None,
         },
         IrStreamEvent::MessageStop,
         IrStreamEvent::Error(IrError {
@@ -2224,6 +2251,7 @@ fn write_response_emits_null_stop_sequence_when_absent() {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: crate::ir::IrUsage {
@@ -2240,6 +2268,7 @@ fn write_response_emits_null_stop_sequence_when_absent() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = anthropic_writer().write_response(&resp);
     let ss = out
@@ -2277,6 +2306,7 @@ fn write_response_emits_matched_stop_sequence_string() {
         stop_sequence: Some("STOP".to_string()),
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = anthropic_writer().write_response(&resp);
     assert_eq!(
@@ -2583,6 +2613,7 @@ fn write_request_never_emits_system_role_message() {
                     text: "be terse".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
             },
             crate::ir::IrMessage {
@@ -2591,6 +2622,7 @@ fn write_request_never_emits_system_role_message() {
                     text: "hi".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
             },
         ],
@@ -2608,6 +2640,16 @@ fn write_request_never_emits_system_role_message() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = anthropic_writer().write_request(&req);
     let messages = out
@@ -2649,6 +2691,7 @@ fn write_message_system_role_does_not_emit_system() {
             text: "x".to_string(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }],
     };
     let out = write_message(&msg, 0, &[]);
@@ -2951,9 +2994,9 @@ fn test_anthropic_tool_choice_tool_without_name_is_none() {
     );
 }
 
-// ---- IR `safety` stop_reason is not a native Anthropic stop_reason -> map to end_turn ----
+// ---- IR `safety` stop_reason is not a native Anthropic stop_reason -> map to `refusal` (ANT-12) ----
 #[test]
-fn test_anthropic_safety_stop_reason_maps_to_end_turn() {
+fn test_anthropic_safety_stop_reason_maps_to_refusal() {
     let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
         role: crate::ir::IrRole::Assistant,
@@ -2973,12 +3016,13 @@ fn test_anthropic_safety_stop_reason_maps_to_end_turn() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = anthropic_writer().write_response(&resp);
     assert_eq!(
         out["stop_reason"],
-        serde_json::json!("end_turn"), // golden wire-contract literal (kept bare on purpose)
-        "IR `safety` must collapse to the native `end_turn` on Anthropic egress; got {out}"
+        serde_json::json!("refusal"), // golden wire-contract literal (kept bare on purpose)
+        "IR `safety` must project to the native `refusal` on Anthropic egress; got {out}"
     );
     // A native reason still passes through verbatim.
     let resp2 = crate::ir::IrResponse {
@@ -2989,12 +3033,12 @@ fn test_anthropic_safety_stop_reason_maps_to_end_turn() {
     assert_eq!(out2["stop_reason"], serde_json::json!("max_tokens")); // golden wire-contract literal (kept bare on purpose)
 }
 
-// ---- Streaming egress: the SAME `safety` -> `end_turn` collapse must hold on the streaming
+// ---- Streaming egress: the SAME `safety` -> `refusal` projection must hold on the streaming
 // path (`write_response_event` / `MessageDelta`), not just the non-stream `write_response`.
 // A non-native IR `safety` reason must never leak into the wire
 // `message_delta.delta.stop_reason`. ----
 #[test]
-fn test_anthropic_streaming_safety_stop_reason_maps_to_end_turn() {
+fn test_anthropic_streaming_safety_stop_reason_maps_to_refusal() {
     let ev = IrStreamEvent::MessageDelta {
         stop_reason: Some(crate::ir::IrStopReason::Safety),
         stop_sequence: None,
@@ -3005,6 +3049,7 @@ fn test_anthropic_streaming_safety_stop_reason_maps_to_end_turn() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let (event, data) = anthropic_writer()
         .write_response_event(&ev)
@@ -3012,8 +3057,8 @@ fn test_anthropic_streaming_safety_stop_reason_maps_to_end_turn() {
     assert_eq!(event, "message_delta"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(
         data["delta"]["stop_reason"],
-        serde_json::json!("end_turn"), // golden wire-contract literal (kept bare on purpose)
-        "IR `safety` must collapse to native `end_turn` on the STREAMING Anthropic egress \
+        serde_json::json!("refusal"), // golden wire-contract literal (kept bare on purpose)
+        "IR `safety` must project to native `refusal` on the STREAMING Anthropic egress \
              (not leak `safety`); got {data}"
     );
 
@@ -3028,6 +3073,7 @@ fn test_anthropic_streaming_safety_stop_reason_maps_to_end_turn() {
             cache_read_input_tokens: None,
             detail: crate::ir::IrUsageDetail::default(),
         },
+        stop_detail: None,
     };
     let (_event2, data2) = anthropic_writer()
         .write_response_event(&ev2)
@@ -3057,6 +3103,7 @@ fn write_request_omits_unsupported_sampling_params() {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         max_tokens: Some(16),
@@ -3095,6 +3142,7 @@ fn write_request_downgrades_forced_tool_choice_to_auto_when_thinking_emitted() {
                     text: "hi".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 }],
             }],
             tools: vec![crate::ir::IrTool {
@@ -3173,15 +3221,16 @@ fn write_request_downgrades_forced_tool_choice_to_auto_when_thinking_emitted() {
     );
 }
 
-/// response_format → TOOL-FORCING (owner-reported bug fix). A cross-protocol IR carrying a
-/// `response_format` (structured-output / JSON-schema) directive reaching the Anthropic writer must
-/// be TRANSLATED to Anthropic tool-forcing — Anthropic's Messages API has no native
-/// `response_format`, so busbar synthesizes a tool whose `input_schema` IS the requested schema and
-/// pins `tool_choice` to it. Asserts (a) no bare `response_format` key leaks (would 400 the
-/// upstream), (b) a synthetic tool named `busbar_response_format` carries the schema, and (c)
-/// `tool_choice` forces that tool. DELIBERATE divergence from the 1.5.5 golden (which dropped it).
+/// response_format → NATIVE structured outputs (ANT-07) on a lane that declares them
+/// (`LaneCaps::native_structured_output`). A cross-protocol IR carrying a schema-bearing
+/// `response_format` reaching the Anthropic writer for such a lane is projected onto Anthropic's
+/// `output_config.format` (json_schema) — never a synthetic forced tool, which overwrote the caller's
+/// `tool_choice` and 400s on models that reject forced tool use. Asserts (a) no bare
+/// `response_format` key leaks, (b) no synthetic tool and no forced `tool_choice` are invented, and
+/// (c) the schema rides `output_config.format` with every object closed (`additionalProperties:
+/// false`, which Anthropic requires).
 #[test]
-fn write_request_translates_response_format_to_anthropic_tool_forcing() {
+fn write_request_projects_response_format_to_native_output_config() {
     let schema = serde_json::json!({
         "type": "object",
         "properties": {"answer": {"type": "string"}},
@@ -3194,6 +3243,7 @@ fn write_request_translates_response_format_to_anthropic_tool_forcing() {
                 text: "extract".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         max_tokens: Some(64),
@@ -3207,36 +3257,42 @@ fn write_request_translates_response_format_to_anthropic_tool_forcing() {
         ..Default::default()
     };
 
-    let out = anthropic_writer().write_request(&req);
+    let out = anthropic_writer().write_request_for_lane(
+        &req,
+        "claude-opus-5",
+        &busbar_substrate_values::ir::egress_prep::LaneCaps {
+            native_structured_output: true,
+            ..Default::default()
+        },
+    );
 
     assert!(
         !out.as_object().unwrap().contains_key("response_format"),
         "Anthropic egress must NOT emit a bare `response_format` (no native field); got {out}"
     );
-    // (b) the synthetic tool carries the requested schema under `input_schema`.
-    let tools = out["tools"].as_array().expect("tools array emitted");
-    let forced = tools
-        .iter()
-        .find(|t| t["name"] == serde_json::json!("busbar_response_format"))
-        .unwrap_or_else(|| panic!("synthetic response_format tool must be present; got {out}"));
+    assert!(
+        out.get("tools").is_none() && out.get("tool_choice").is_none(),
+        "no synthetic tool and no forced tool_choice may be invented for response_format; got {out}"
+    );
     assert_eq!(
-        forced.pointer("/input_schema/properties/answer/type"),
+        out.pointer("/output_config/format/type"),
+        Some(&serde_json::json!("json_schema")),
+        "response_format must ride native output_config.format; got {out}"
+    );
+    assert_eq!(
+        out.pointer("/output_config/format/schema/properties/answer/type"),
         Some(&serde_json::json!("string")),
-        "the synthetic tool's input_schema must be the requested JSON schema; got {out}"
-    );
-    // (c) tool_choice forces exactly that tool.
-    assert_eq!(
-        out.pointer("/tool_choice/type"),
-        Some(&serde_json::json!("tool")),
-        "tool_choice must be a forced (type:tool) choice; got {out}"
+        "the requested schema must be the output_config.format schema; got {out}"
     );
     assert_eq!(
-        out.pointer("/tool_choice/name"),
-        Some(&serde_json::json!("busbar_response_format")),
-        "tool_choice must pin the synthetic response_format tool; got {out}"
+        out.pointer("/output_config/format/schema/additionalProperties"),
+        Some(&serde_json::json!(false)),
+        "every object schema must be closed for Anthropic structured outputs; got {out}"
     );
 }
 
+/// Only a lane WITHOUT native structured outputs (the default) is sent the forced tool; a native
+/// lane's answer is ordinary text and never carries the sentinel name.
 /// response_format tool-forcing MAP-BACK. The Anthropic response reader must project a forced
 /// `tool_use` block named `busbar_response_format` back to a plain assistant TEXT block carrying the
 /// tool input as JSON (the structured output the caller expects), and normalize the `tool_use`
@@ -3294,14 +3350,12 @@ fn read_response_maps_forced_response_format_tool_use_back_to_text() {
     assert_eq!(resp.stop_reason, Some(crate::ir::IrStopReason::ToolUse));
 }
 
-/// LOW (json-tool-result drop observability + no-leak): a Bedrock `tool_result_json` sentinel
-/// block (JSON_BLOCK_SENTINEL) nested in a ToolResult reaching the Anthropic egress must (a) NOT
-/// leak a corrupt base64 image source (`media_type:"tool_result_json"`) onto the wire and (b) emit
-/// a `warn!` so the structured-payload loss is observable (drop-with-warn convention).
+/// A Bedrock structured-JSON tool result (`IrBlock::Json`) nested in a ToolResult reaching the
+/// Anthropic egress must (a) NOT leak a corrupt base64 image source (`media_type:"tool_result_json"`)
+/// onto the wire and (b) carry its CONTENT as a text block holding the serialized JSON — it used to
+/// be dropped, leaving the model a tool result with the answer removed (ANT-16).
 #[test]
-fn write_request_warns_and_drops_json_tool_result_block() {
-    use tracing_subscriber::layer::SubscriberExt as _;
-
+fn write_request_carries_json_tool_result_block_as_text() {
     let req = crate::ir::IrRequest {
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::User,
@@ -3312,6 +3366,7 @@ fn write_request_warns_and_drops_json_tool_result_block() {
                         text: "ok".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
+                        refusal: false,
                     },
                     crate::ir::IrBlock::Json(serde_json::json!({ "answer": 42 })),
                 ],
@@ -3323,20 +3378,20 @@ fn write_request_warns_and_drops_json_tool_result_block() {
         ..Default::default()
     };
 
-    let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
-    let out =
-        tracing::subscriber::with_default(subscriber, || anthropic_writer().write_request(&req));
+    let out = anthropic_writer().write_request(&req);
 
     let wire = serde_json::to_string(&out).unwrap();
     assert!(
         !wire.contains("tool_result_json"),
         "a json-tool-result sentinel must NOT leak onto the Anthropic wire; got {wire}"
     );
-    let msgs = cap.messages();
-    assert!(
-        msgs.iter().any(|m| m.contains("json tool-result")),
-        "a json-tool-result drop warning must fire on Anthropic egress; got {msgs:?}"
+    assert_eq!(
+        out.pointer("/messages/0/content/0/content"),
+        Some(&serde_json::json!([
+            {"type": "text", "text": "ok"},
+            {"type": "text", "text": "{\"answer\":42}"}
+        ])),
+        "the JSON tool result must ride as a text block of its JSON; got {out}"
     );
 }
 
@@ -3353,6 +3408,7 @@ fn write_request_no_response_format_warning_when_absent() {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             }],
         }],
         max_tokens: Some(16),
@@ -3433,11 +3489,14 @@ fn thinking_block_with_signature_survives_response_egress() {
                 signature: Some("sig-abc".to_string()),
                 redacted: false,
                 cache_control: None,
+                kind: None,
+                signature_origin: None,
             },
             crate::ir::IrBlock::Text {
                 text: "answer".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             },
         ],
         stop_reason: Some(crate::ir::IrStopReason::EndTurn),
@@ -3455,6 +3514,7 @@ fn thinking_block_with_signature_survives_response_egress() {
         stop_sequence: None,
 
         request_echo: None,
+        stop_detail: None,
     };
     let out = anthropic_writer().write_response(&resp);
     let content = out
@@ -3499,6 +3559,7 @@ fn test_write_request_file_id_image_dropped_not_corrupted() {
                     text: "describe this".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 },
                 crate::ir::IrBlock::Image {
                     source: crate::ir::IrImageSource::Vendor {
@@ -3506,6 +3567,7 @@ fn test_write_request_file_id_image_dropped_not_corrupted() {
                         value: serde_json::json!({ "file_id": "file-abc123" }),
                     },
                     cache_control: None,
+                    detail: None,
                 },
             ],
         }],
@@ -3523,6 +3585,16 @@ fn test_write_request_file_id_image_dropped_not_corrupted() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = writer.write_request(&req);
     let wire = serde_json::to_string(&out).unwrap();
@@ -3572,6 +3644,7 @@ fn test_write_request_image_s3_dropped_not_corrupted() {
                     text: "describe this".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
+                    refusal: false,
                 },
                 crate::ir::IrBlock::Image {
                     source: crate::ir::IrImageSource::Vendor {
@@ -3579,6 +3652,7 @@ fn test_write_request_image_s3_dropped_not_corrupted() {
                         value: serde_json::json!({ "format": "png", "s3Location": { "uri": "s3://bucket/key.png" } }),
                     },
                     cache_control: None,
+                    detail: None,
                 },
             ],
         }],
@@ -3596,6 +3670,16 @@ fn test_write_request_image_s3_dropped_not_corrupted() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
+        metadata: None,
+        service_tier: None,
+        store: None,
+        safety_identifier: None,
+        prompt_cache_key: None,
+        verbosity: None,
+        allowed_tools: None,
+        hosted_tools: Vec::new(),
+        system_role: None,
+        output_modalities: None,
     };
     let out = writer.write_request(&req);
     let wire = serde_json::to_string(&out).unwrap();
@@ -3743,6 +3827,7 @@ fn anthropic_writes_web_search_citation_from_neutral_fields() {
             encrypted_index: None,
             raw: None,
         }],
+        refusal: false,
     };
     let wire = write_block(&block);
     let c = wire
@@ -3769,6 +3854,7 @@ fn anthropic_empty_citations_text_block_unaffected() {
         text: "plain".to_string(),
         cache_control: None,
         citations: Vec::new(),
+        refusal: false,
     };
     let wire = write_block(&block);
     assert!(
@@ -3938,7 +4024,7 @@ fn cache_control_on_tool_definition_round_trips() {
         ir.cache_control.is_some(),
         "cache_control on a tool definition must be captured in IrTool"
     );
-    let out = write_tool(&ir);
+    let out = write_tool(&ir).expect("a function tool always projects");
     assert_eq!(
         out.pointer("/cache_control/type").and_then(|t| t.as_str()),
         Some("ephemeral"), // golden wire-contract literal (kept bare on purpose)
@@ -4047,11 +4133,14 @@ fn write_message_keeps_redacted_thinking_block() {
                 signature: None,
                 redacted: true,
                 cache_control: None,
+                kind: None,
+                signature_origin: None,
             },
             crate::ir::IrBlock::Text {
                 text: "the answer".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             },
         ],
     };
@@ -4103,6 +4192,7 @@ fn content_block_start_carries_seed_fields() {
         .write_response_event(&crate::ir::IrStreamEvent::BlockStart {
             index: 0,
             block: crate::ir::IrBlockMeta::Text,
+            refusal: false,
         })
         .expect("text block_start writes");
     assert_eq!(
@@ -4123,6 +4213,7 @@ fn content_block_start_carries_seed_fields() {
                 id: "toolu_01".to_string(),
                 name: "get_weather".to_string(),
             },
+            refusal: false,
         })
         .expect("tool_use block_start writes");
     assert_eq!(
@@ -4149,7 +4240,8 @@ fn content_block_start_carries_seed_fields() {
     let (_et, out) = anthropic_writer()
         .write_response_event(&crate::ir::IrStreamEvent::BlockStart {
             index: 2,
-            block: crate::ir::IrBlockMeta::Thinking,
+            block: crate::ir::IrBlockMeta::Thinking { kind: None },
+            refusal: false,
         })
         .expect("thinking block_start writes");
     assert_eq!(

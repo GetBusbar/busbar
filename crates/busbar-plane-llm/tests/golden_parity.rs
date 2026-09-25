@@ -31,6 +31,9 @@ use busbar_plane_llm::{LlmPlane, Upstream};
 /// The model the lane rewrites every outbound request to name.
 const LANE_MODEL: &str = "gpt-4o-mini";
 
+/// The Bedrock lane's model (see its `Upstream` entry).
+const BEDROCK_LANE_MODEL: &str = "anthropic.claude-sonnet-4-5";
+
 /// One configured upstream per dialect, each on its own lane.
 const UPSTREAMS: &[Upstream] = &[
     Upstream {
@@ -38,36 +41,45 @@ const UPSTREAMS: &[Upstream] = &[
         host: "anthropic.invalid",
         dialect: "anthropic",
         model: LANE_MODEL,
+        caps: busbar_plane_llm::LaneCaps::NONE,
     },
     Upstream {
         lane: LaneId::new("lane-openai"),
         host: "openai.invalid",
         dialect: "openai",
         model: LANE_MODEL,
+        caps: busbar_plane_llm::LaneCaps::NONE,
     },
     Upstream {
         lane: LaneId::new("lane-gemini"),
         host: "gemini.invalid",
         dialect: "gemini",
         model: LANE_MODEL,
+        caps: busbar_plane_llm::LaneCaps::NONE,
     },
     Upstream {
         lane: LaneId::new("lane-bedrock"),
         host: "bedrock.invalid",
         dialect: "bedrock",
-        model: LANE_MODEL,
+        // A CLAUDE model id: the plane now writes for the lane's model, and the Bedrock writer sends
+        // Claude's `thinking` only to a model that names Claude (BED-06) — which is what the frozen
+        // Bedrock goldens record. Bedrock carries the model in the URL, so no body byte names it.
+        model: BEDROCK_LANE_MODEL,
+        caps: busbar_plane_llm::LaneCaps::NONE,
     },
     Upstream {
         lane: LaneId::new("lane-responses"),
         host: "responses.invalid",
         dialect: "responses",
         model: LANE_MODEL,
+        caps: busbar_plane_llm::LaneCaps::NONE,
     },
     Upstream {
         lane: LaneId::new("lane-cohere"),
         host: "cohere.invalid",
         dialect: "cohere",
         model: LANE_MODEL,
+        caps: busbar_plane_llm::LaneCaps::NONE,
     },
 ];
 

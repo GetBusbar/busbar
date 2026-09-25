@@ -622,7 +622,7 @@ pub fn derive_scopes(root: &Path) -> Vec<Json> {
 /// passing answer to every question, not only to every ban. Twenty-four of this register's hundred
 /// and seventy scope paths were such phantoms when this rule landed, most of them crates that the
 /// 57 → 35 fold has since merged away, and the register reported GREEN across all of them: audited,
-/// clean, round 8, with a tree hash over nothing.
+/// clean, with a tree hash over nothing.
 ///
 /// It is deliberately NOT an auto-fix. Some of these are renames whose real target is still in the
 /// tree under a new name, and re-pointing one is a judgement about whether the audit that was taken

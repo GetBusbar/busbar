@@ -26,7 +26,7 @@
 //! `:unwaived` row means "every marker I look for is waived"; it never meant "there are no
 //! markers", and the gap between those two sentences was four tags wide.
 //!
-//! **SCOPE IS `crates/**/*.rs`, AND `xtask/` IS OUT ON PURPOSE.** The playbook's §1a file scope is
+//! **SCOPE IS `crates/**/*.rs`, AND `xtask/` IS OUT ON PURPOSE.** The intended file scope is
 //! `crates/**/*.rs` and the gate's single claim is about the SHIPPED source tree; `xtask/` is build
 //! tooling that ships to nobody. The census grep in `1.6.0-map-proof.md` §8.2 reads
 //! `crates/` + `xtask/`, which is the AUDITOR's scope, not the rule's — all 17 `todo!` and all 4

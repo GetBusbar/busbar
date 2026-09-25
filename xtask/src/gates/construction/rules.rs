@@ -806,7 +806,7 @@ pub fn duplicate_dispatch(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
 // self-test's green fixture, via [`token_sealed_scans`]): `(row id, pattern key, ceiling key, subject key,
 // ROOT KEY)`.
 //
-// THE ROOT IS PER SUB-ROW (X-178), because "sealed" does not mean "kernel" for every sealed
+// THE ROOT IS PER SUB-ROW, because "sealed" does not mean "kernel" for every sealed
 // constructor. `SecretOnce::mint(`'s own doc says "Verbs unit only" and its one production site
 // is the Verbs unit, so a row that judged it against `kernel_root` would stand RED on the single
 // call the design REQUIRES — and the only way to green it would be a waiver for a correct call,
@@ -870,7 +870,7 @@ pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     // EACH ROW OWNS A DISJOINT SET OF SITES: the dedicated sub-rows below scan symbols this
     // list would otherwise reach too, and one forged mint counted twice is not two proofs.
     //
-    // THE DELEGATION IS BY SITE, NOT BY PATTERN STRING (X-177). It used to drop a `patterns` entry
+    // THE DELEGATION IS BY SITE, NOT BY PATTERN STRING. It used to drop a `patterns` entry
     // whose literal text equalled a sub-rule's unescaped pattern — a test that no entry has ever
     // satisfied, and one that cannot work at all now that this rule also scans constructor
     // FAMILIES: a family regex is never string-equal to the one spelling a sub-row owns, so the
@@ -893,7 +893,7 @@ pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
         })
     };
 
-    // THE SCAN SET IS LITERALS PLUS FAMILIES (X-177). `patterns` are exact spellings, escaped and
+    // THE SCAN SET IS LITERALS PLUS FAMILIES. `patterns` are exact spellings, escaped and
     // word-anchored; `pattern_families` are REGEXES, because `Grant<C>::mint` and `Pass<S>::mint`
     // are one generic constructor each over a sealed marker set, and a list of per-marker literals
     // is blind to every marker nobody remembered to add to it.
@@ -979,7 +979,7 @@ pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
         offenders,
     )];
 
-    // THE SUBJECT IS READ BESIDE THE PATTERN, NEVER HARD-CODED HERE (X-177). These two strings used
+    // THE SUBJECT IS READ BESIDE THE PATTERN, NEVER HARD-CODED HERE. These two strings used
     // to be literals in this table, and `token-sealed:admit-token-mint` printed "`AdmitToken::mint(`
     // is spelled only inside crates/busbar-kernel/src" while its pattern scanned for
     // `Grant::<Admittance>::mint(` — the pre-#73 name the claim NAMED was the one spelling the row
@@ -987,7 +987,7 @@ pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     // row. `need_str` makes a missing subject a refusal, so the label cannot drift from the pattern
     // again without the gate saying so.
     for (sub_id, pat_key, ceil_key, subj_key, root_key) in SUB_ROWS {
-        // THE HOME IS READ BESIDE THE PATTERN TOO (X-178). Same argument as the subject one line
+        // THE HOME IS READ BESIDE THE PATTERN TOO. Same argument as the subject one line
         // down: a row that prints "is spelled only inside X" while filtering against Y is a row
         // whose claim and whose scan are two different assertions.
         let home = need_str(c, root_key, "token-sealed")?;

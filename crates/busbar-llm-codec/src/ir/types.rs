@@ -119,6 +119,45 @@ pub struct IrRequest {
     /// different location, so it carries between the two. `None` == caller never said, nothing
     /// emitted (both defaults are "parallel allowed", so absence round-trips as absence).
     pub parallel_tool_calls: Option<bool>,
+    // ── Q57 IR-slot wave (IR-CORE): typed request slots. Every one is ABSENT (`None`/empty) unless
+    // the source dialect carried the concept, and a writer emits nothing for an absent slot. The
+    // reader/writer contract for each is in ir-slots-landed.md and on the slot's type.
+    /// IR-03. Caller metadata map, in the caller's key order: OpenAI Chat / Responses `metadata`,
+    /// Bedrock `requestMetadata`, Gemini `labels` (all string -> string). `None` == absent; `Some`
+    /// of an empty vec == the caller sent `{}`. A writer that validates keys (Gemini label syntax)
+    /// drops the non-conforming ENTRIES with a warn, never the whole map.
+    pub metadata: Option<Vec<(String, String)>>,
+    /// IR-04. Requested capacity tier ([`IrServiceTier`]).
+    pub service_tier: Option<IrServiceTier>,
+    /// IR-05. OpenAI Chat / Responses `store`.
+    pub store: Option<bool>,
+    /// IR-06. OpenAI Chat / Responses `safety_identifier` (the successor of `user` for abuse
+    /// tracking; carried separately because a caller may send both).
+    pub safety_identifier: Option<String>,
+    /// IR-06. OpenAI Chat / Responses `prompt_cache_key`.
+    pub prompt_cache_key: Option<String>,
+    /// IR-07. OpenAI Chat `verbosity`, Responses `text.verbosity`.
+    pub verbosity: Option<IrVerbosity>,
+    /// IR-10. The tool SUBSET the model may call. Pairs with `tool_choice`: `Auto` (or absent) ==
+    /// "may call one of these", `Required` == "must call one of these". Chat / Responses
+    /// `tool_choice:{type:"allowed_tools", mode, tools}`, Gemini
+    /// `functionCallingConfig.allowedFunctionNames` (mode AUTO/ANY). A writer with no native subset
+    /// projects it by sending only the listed tools in `tools` — the same constraint, expressed by
+    /// omission. `None` == no restriction. Never set together with `tool_choice: Tool{..}`.
+    pub allowed_tools: Option<Vec<String>>,
+    /// IR-11. Provider-hosted tools that cross the seam ([`IrHostedTool`]). The raw Responses
+    /// object in [`IrTool::hosted`] is still same-protocol-only and still dropped on the seam; a
+    /// reader that recognises a hosted tool's KIND puts it HERE and does not also push the raw
+    /// `IrTool`. A writer with no analog for a kind drops that entry with a warn and reports it from
+    /// `dropped_egress_controls`.
+    pub hosted_tools: Vec<IrHostedTool>,
+    /// IR-14. `Some(Developer)` iff every system entry folded into `system` was written with the
+    /// `developer` role (Chat / Responses); `Some(System)` iff every one was `system`; `None` when
+    /// the dialect has no such distinction or the entries were mixed.
+    pub system_role: Option<IrSystemRole>,
+    /// IR-19. Requested output modalities ([`IrModality`]): Chat `modalities`, Gemini
+    /// `generationConfig.responseModalities`. `None` == absent (text).
+    pub output_modalities: Option<Vec<IrModality>>,
     pub stream: bool,
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -236,6 +275,10 @@ pub enum IrStreamEvent {
     BlockStart {
         index: usize,
         block: IrBlockMeta,
+        /// IR-02. `true` when this is a TEXT block whose deltas are a refusal message (Chat
+        /// `delta.refusal`, Responses `response.refusal.delta`); the streaming twin of
+        /// `IrBlock::Text::refusal`. Always `false` for a non-text block.
+        refusal: bool,
     },
     BlockDelta {
         index: usize,
@@ -252,6 +295,8 @@ pub enum IrStreamEvent {
         /// source carried it), so a same-protocol Anthropic passthrough stays byte-faithful while
         /// other protocols' output is unchanged.
         stop_sequence: Option<String>,
+        /// IR-16 / IR-02. The streaming twin of [`IrResponse::stop_detail`] (buffered == stream).
+        stop_detail: Option<IrStopDetail>,
         usage: IrUsage,
     },
     MessageStop,
@@ -333,7 +378,34 @@ pub struct IrResponse {
     /// spec's bare defaults. `None` on same-protocol (never reaches a writer — the body is relayed
     /// verbatim) and for every writer that echoes nothing (every non-Responses dialect ignores this
     /// field entirely). Additive: every reader that never sets it leaves prior behavior unchanged.
+    /// IR-16 / IR-02. Refinement of `stop_reason` ([`IrStopDetail`]); `stop_reason` is always set to
+    /// the nearest coarse variant beside it. `None` == no refinement.
+    pub stop_detail: Option<IrStopDetail>,
     pub request_echo: Option<Value>,
+}
+
+/// An empty assistant answer: no content, no stop reason, zero usage, no identity. Exists so a
+/// construction site can spread `..Default::default()` and stay source-compatible when the IR gains
+/// a response slot (Q57 IR-slot wave): a literal that names every field breaks on every addition,
+/// one that spreads the default does not. `role` is `Assistant` because every response the IR
+/// carries is the model's turn.
+impl Default for IrResponse {
+    fn default() -> Self {
+        IrResponse {
+            role: IrRole::Assistant,
+            content: Vec::new(),
+            stop_reason: None,
+            usage: IrUsage::default(),
+            model: None,
+            id: None,
+            created: None,
+            system_fingerprint: None,
+            stop_sequence: None,
+            logprobs: Vec::new(),
+            request_echo: None,
+            stop_detail: None,
+        }
+    }
 }
 
 /// The normalized reasoning/thinking ask (see [`IrRequest::reasoning`]).
@@ -347,15 +419,27 @@ pub enum IrReasoningAsk {
     /// verbatim; projected to protocols with no dynamic concept as the `medium` table entry
     /// (with a warn), since "model decides" has no closer analog than the middle of the road.
     Dynamic,
+    /// Reasoning explicitly switched OFF (IR-09): Anthropic / Cohere `thinking:{type:"disabled"}`,
+    /// OpenAI Chat / Responses effort `"none"`, Gemini `thinkingBudget: 0`. DIFFERENT from `None`
+    /// on [`IrRequest::reasoning`] ("the caller never said"): a reasoning-by-default model keeps
+    /// thinking when nothing is said and stops when this is said. A writer MUST match `Off` before
+    /// projecting through [`Self::to_budget`]/[`Self::to_effort`] — those return the smallest
+    /// value for it (0 / `Minimal`), which as an ENABLE ask would invert the caller's meaning.
+    Off,
 }
 
-/// The four effort words, ordered by ascending budget.
+/// The effort words, ordered by ascending budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IrReasoningEffort {
     Minimal,
     Low,
     Medium,
     High,
+    /// Above `High` (IR-09): OpenAI Chat / Responses `"xhigh"`, Anthropic `output_config.effort`
+    /// `"xhigh"`. Budget projection is the table's top entry (the table has no row above high).
+    XHigh,
+    /// The top of the scale (IR-09): Anthropic `output_config.effort` `"max"`.
+    Max,
 }
 
 /// The compiled-in effort table (mirrors the config defaults) — the writer fallback when the seam
@@ -370,8 +454,13 @@ impl IrReasoningAsk {
             IrReasoningAsk::Effort(IrReasoningEffort::Minimal) => table[0],
             IrReasoningAsk::Effort(IrReasoningEffort::Low) => table[1],
             IrReasoningAsk::Effort(IrReasoningEffort::Medium) => table[2],
-            IrReasoningAsk::Effort(IrReasoningEffort::High) => table[3],
+            // The table has no row above `high`: the two words above it take its top budget.
+            IrReasoningAsk::Effort(
+                IrReasoningEffort::High | IrReasoningEffort::XHigh | IrReasoningEffort::Max,
+            ) => table[3],
             IrReasoningAsk::Dynamic => table[2],
+            // Never an enable ask — see the variant doc; writers match `Off` first.
+            IrReasoningAsk::Off => 0,
         }
     }
 
@@ -382,6 +471,8 @@ impl IrReasoningAsk {
         match self {
             IrReasoningAsk::Effort(e) => e,
             IrReasoningAsk::Dynamic => IrReasoningEffort::Medium,
+            // Never an enable ask — see the variant doc; writers match `Off` first.
+            IrReasoningAsk::Off => IrReasoningEffort::Minimal,
             IrReasoningAsk::Budget(n) => {
                 if n >= table[3] {
                     IrReasoningEffort::High
@@ -405,9 +496,14 @@ impl IrReasoningEffort {
     /// model is operator-declared, not known here — emitting the universally-valid `"low"` upholds
     /// the never-cause-a-400 translation invariant. (Same-protocol OpenAI is byte-exact and never
     /// reaches this projection.)
+    ///
+    /// `XHigh`/`Max` project to `"high"` for the same reason: `"xhigh"` is accepted only by the
+    /// newest OpenAI reasoning models, and the lane's model is not known here. A writer that KNOWS
+    /// its lane accepts it may emit [`Self::as_str`] instead.
     pub fn as_openai_reasoning_effort(self) -> &'static str {
         match self {
             IrReasoningEffort::Minimal => "low",
+            IrReasoningEffort::XHigh | IrReasoningEffort::Max => "high",
             other => other.as_str(),
         }
     }
@@ -418,9 +514,14 @@ impl IrReasoningEffort {
             IrReasoningEffort::Low => "low",
             IrReasoningEffort::Medium => "medium",
             IrReasoningEffort::High => "high",
+            IrReasoningEffort::XHigh => "xhigh",
+            IrReasoningEffort::Max => "max",
         }
     }
 
+    /// The four words every reader has always accepted. Deliberately NOT widened to `xhigh`/`max`:
+    /// a reader opts into the words above `High` through [`Self::parse_extended`] once every
+    /// writer it can reach projects them (IR-09), so no path changes bytes before it is wired.
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "minimal" => Some(IrReasoningEffort::Minimal),
@@ -428,6 +529,15 @@ impl IrReasoningEffort {
             "medium" => Some(IrReasoningEffort::Medium),
             "high" => Some(IrReasoningEffort::High),
             _ => None,
+        }
+    }
+
+    /// [`Self::parse`] plus the words above `High` (`xhigh`, `max`) — IR-09.
+    pub fn parse_extended(s: &str) -> Option<Self> {
+        match s {
+            "xhigh" => Some(IrReasoningEffort::XHigh),
+            "max" => Some(IrReasoningEffort::Max),
+            other => Self::parse(other),
         }
     }
 }
@@ -475,6 +585,10 @@ pub enum IrBlock {
         text: String,
         cache_control: Option<CacheControl>,
         citations: Vec<IrCitation>,
+        /// IR-02. `true` when this text IS the model's refusal message (Chat `message.refusal`,
+        /// Responses `refusal` content part), not ordinary answer text. A writer with no refusal
+        /// shape emits it as ordinary text (the pre-slot behaviour).
+        refusal: bool,
     },
     Thinking {
         text: String,
@@ -493,6 +607,11 @@ pub enum IrBlock {
         /// the Anthropic reader populates it and only the Anthropic writer emits it; other protocols
         /// have no native analog and leave it `None`.
         cache_control: Option<CacheControl>,
+        /// IR-17. Full reasoning vs a summary of it ([`IrThinkingKind`]). `None` == unknown.
+        kind: Option<IrThinkingKind>,
+        /// IR-18. Which model family minted `signature` ([`IrSignatureOrigin`]). `None` == unknown
+        /// (every writer keeps its pre-slot behaviour for an unknown origin).
+        signature_origin: Option<IrSignatureOrigin>,
     },
     ToolUse {
         id: String,
@@ -535,6 +654,8 @@ pub enum IrBlock {
         /// vanishing — the dominant cache-on-image use case. Only the Anthropic reader populates it
         /// and only the Anthropic writer emits it; other protocols leave it `None`.
         cache_control: Option<CacheControl>,
+        /// IR-08. Requested fidelity ([`IrImageDetail`]): Chat / Responses / Cohere `detail`.
+        detail: Option<IrImageDetail>,
     },
     /// A non-image ATTACHMENT the caller sent for the model to reason over: a document (PDF, CSV,
     /// DOCX, …), an audio clip, or a video clip.
@@ -574,6 +695,10 @@ pub enum IrBlock {
         /// Anthropic cache breakpoint (`cache_control`) placed on a `document` block — same rationale
         /// as the `Image` field; documents are the largest thing anyone caches.
         cache_control: Option<CacheControl>,
+        /// IR-12. Document citations switch: Anthropic and Bedrock `citations:{enabled}`.
+        citations: Option<bool>,
+        /// IR-12. Document context string: Anthropic and Bedrock document `context`.
+        context: Option<String>,
     },
     /// Structured JSON content — a Bedrock Converse `{"json": <value>}` tool-result content block (an
     /// arbitrary-structured-data member of the `ToolResultContentBlock` union). It is NOT an image;
@@ -818,7 +943,7 @@ pub enum CacheKind {
 ///
 /// Neutral fields are the intersection that travels cross-protocol: a human-readable `kind` tag plus
 /// the location/source coordinates both Anthropic and Gemini expose.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct IrCitation {
     /// Citation-type discriminator. For Anthropic this is the `type` tag verbatim (`char_location`,
     /// `page_location`, `content_block_location`, `web_search_result_location`); for a Gemini
@@ -855,7 +980,7 @@ pub struct IrCitation {
     pub raw: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct IrTool {
     pub name: String,
     pub description: Option<String>,
@@ -889,14 +1014,15 @@ pub struct IrTool {
     /// accepted, so the failure surfaced later as a parse error on an argument object nobody had
     /// asked to be lenient about.
     ///
-    /// Carried across the OpenAI Chat ↔ Responses pair, which are the two dialects that model it.
-    /// Anthropic, Gemini, Bedrock and Cohere have no per-tool strict flag (Cohere's `strict_tools` is
-    /// a REQUEST-level switch, not a per-tool one), so their writers drop it with a `warn!` naming
-    /// the tools affected — a genuine target-protocol limit, signalled rather than silent.
+    /// Carried by every dialect that models it: OpenAI Chat and Responses `strict`, Anthropic
+    /// `tools[].strict` (ANT-04/05), Bedrock Converse `toolSpec.strict` (BED-08), and Cohere's
+    /// REQUEST-level `strict_tools` when every tool agrees (COH-11/12). Gemini has no strict flag,
+    /// and Cohere cannot express tools that disagree, so those writers drop it with a `warn!`
+    /// naming the tools affected — a genuine target-protocol limit, signalled rather than silent.
     pub strict: Option<bool>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct IrUsage {
     /// UNCACHED input tokens. Readers NORMALIZE to this convention: providers whose wire
     /// `input/prompt` total already INCLUDES the cached prefix (OpenAI, Gemini, Responses) subtract
@@ -1159,7 +1285,13 @@ impl IrUsage {
 #[derive(Debug, Clone, PartialEq)]
 pub enum IrBlockMeta {
     Text,
-    Thinking,
+    /// A plaintext reasoning block. `kind` (IR-17, round 3 item 16) says whether its text is the
+    /// full reasoning or a summary of it — the stream counterpart of `IrBlock::Thinking.kind`, so a
+    /// Responses writer puts a summary back into `summary[]` on the stream as it does buffered.
+    /// `None` == unknown (the pre-slot behaviour).
+    Thinking {
+        kind: Option<IrThinkingKind>,
+    },
     /// A streaming REDACTED (encrypted/opaque) reasoning block — the streaming counterpart of a
     /// buffered `IrBlock::Thinking { redacted: true }` (Anthropic `redacted_thinking`, Bedrock
     /// `reasoningContent.redactedContent`). Distinguished from plaintext `Thinking` at BLOCK-START
@@ -1237,7 +1369,8 @@ pub struct StreamDecodeState {
     /// a duplicate `BlockStart` at the same claimed index, an unbalanced stream (two `content_block_start`
     /// for one index) on an Anthropic egress. The open sites gate on `!text_block_closed` so an
     /// out-of-spec upstream that resumes text after tools is dropped rather than un-balancing the stream.
-    /// Cohere reader only; other readers leave it false.
+    /// Cohere and Gemini readers (Gemini keeps the closed block's index so a late citation still
+    /// annotates it, GEM-20); other readers leave it false.
     pub text_block_closed: bool,
     pub open_tools: std::collections::BTreeSet<usize>,
     /// Set once a reasoning (chain-of-thought) delta is seen on the stream. When true, the
@@ -1257,6 +1390,15 @@ pub struct StreamDecodeState {
     /// reader stashes the `messageStop` stop_reason here and pairs it with the usage when `metadata`
     /// arrives. Used by the Bedrock reader only; other protocols leave it `None`.
     pub pending_stop_reason: Option<IrStopReason>,
+    /// The matched stop string buffered across the same two Bedrock frames as
+    /// [`Self::pending_stop_reason`] (BED-11): Anthropic-on-Bedrock echoes it on the `messageStop`
+    /// frame (`additionalModelResponseFields.stop_sequence`), and the combined `MessageDelta` is
+    /// only emitted when `metadata` arrives. Bedrock reader only; other readers leave it `None`.
+    pub pending_stop_sequence: Option<String>,
+    /// The [`IrStopDetail`] buffered across the same two Bedrock frames (IR-16, BED-10): the
+    /// `messageStop` frame's `model_context_window_exceeded` is `MaxTokens` plus
+    /// `ContextWindowExceeded`, carried to the combined delta. Bedrock reader only.
+    pub pending_stop_detail: Option<IrStopDetail>,
     /// Maps each opened tool-call wire index (the OpenAI reader's `oai_idx` / the Cohere reader's
     /// `frame_idx`) to the IR block index its `BlockStart` was emitted with, giving O(log n)
     /// lookup/insert instead of a linear scan over `open_tools`. Every key inserted here is also
@@ -1308,6 +1450,13 @@ pub struct StreamDecodeState {
     /// delta stopped, so each chunk emits only the tail it ADDED. Gemini reader only; other readers
     /// leave it 0.
     pub citations_emitted: usize,
+    /// The answer text streamed so far, in arrival order (GEM-16 reader half). Gemini states a
+    /// streamed citation's `startIndex`/`endIndex` as UTF-8 BYTE offsets into the whole response
+    /// text, while [`IrCitation::start_index`] is a CHARACTER offset; converting needs the text the
+    /// offsets index into, which on a stream exists only as the deltas already emitted. The Gemini
+    /// reader appends each text delta here and converts a citation's offsets against it. Empty for
+    /// every other reader.
+    pub streamed_text: String,
 }
 
 impl StreamDecodeState {
@@ -1319,4 +1468,351 @@ impl StreamDecodeState {
         self.next_ir_index = idx + 1;
         idx
     }
+}
+
+// ─────────────────────────── Q57 IR-slot wave: the typed slot vocabulary ───────────────────────────
+//
+// Owner directive Q57 (2026-09-24): a field the source dialect carries, that the IR and the target
+// can carry, must map. The types below are the typed carriers for the concepts the IR-mapping audit
+// (`ir-mapping-audit.md` §4.8, IR-01..IR-21) found with NO IR slot even though two or more dialects
+// model them natively. Architect rule: a TYPED slot per concept, never a generic passthrough bag;
+// `IrRequest::extra` stays same-dialect-only and is still cleared on the cross-protocol seam.
+//
+// Every type here is protocol-neutral: the variant names are the concept, not a wire spelling. Where
+// the OpenAI family's word happens to be the most general spelling, `as_str`/`parse` use it (the same
+// convention [`IrReasoningEffort::as_str`] follows); a dialect with a different vocabulary maps in
+// its own module. A slot is `None`/empty when the source did not carry the concept, and a writer
+// emits NOTHING for an absent slot — so a request or response that never set a slot keeps its bytes.
+
+/// Which capacity tier the caller asks to be served from (IR-04). OpenAI Chat and Responses
+/// `service_tier`, Anthropic `service_tier`.
+///
+/// | IR          | OpenAI Chat / Responses | Anthropic        |
+/// |-------------|-------------------------|------------------|
+/// | `Auto`      | `"auto"`                | `"auto"`         |
+/// | `Default`   | `"default"`             | `"standard_only"`|
+/// | `Flex`      | `"flex"`                | — (not representable: omit + warn) |
+/// | `Scale`     | `"scale"`               | — (not representable: omit + warn) |
+/// | `Priority`  | `"priority"`            | `"auto"` (Anthropic serves priority capacity under `auto` when the org has it; closest honest ask) |
+///
+/// Cohere v2 `priority` is an integer queue ordering, not a capacity tier — a different concept, so
+/// it is NOT read into this slot. The RESPONSE-side "tier that actually served" stays on
+/// [`IrUsageDetail::service_tier`] (attribution), which is a different fact from this request ask.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrServiceTier {
+    Auto,
+    Default,
+    Flex,
+    Scale,
+    Priority,
+}
+
+impl IrServiceTier {
+    /// The OpenAI-family word (`auto`/`default`/`flex`/`scale`/`priority`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IrServiceTier::Auto => "auto",
+            IrServiceTier::Default => "default",
+            IrServiceTier::Flex => "flex",
+            IrServiceTier::Scale => "scale",
+            IrServiceTier::Priority => "priority",
+        }
+    }
+
+    /// Parse the OpenAI-family word. An unknown word is `None` — the reader leaves the key in
+    /// `extra` (same-dialect relay) rather than guessing a tier.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "auto" => Some(IrServiceTier::Auto),
+            "default" => Some(IrServiceTier::Default),
+            "flex" => Some(IrServiceTier::Flex),
+            "scale" => Some(IrServiceTier::Scale),
+            "priority" => Some(IrServiceTier::Priority),
+            _ => None,
+        }
+    }
+}
+
+/// Output verbosity ask (IR-07): OpenAI Chat `verbosity`, Responses `text.verbosity`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrVerbosity {
+    Low,
+    Medium,
+    High,
+}
+
+impl IrVerbosity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IrVerbosity::Low => "low",
+            IrVerbosity::Medium => "medium",
+            IrVerbosity::High => "high",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "low" => Some(IrVerbosity::Low),
+            "medium" => Some(IrVerbosity::Medium),
+            "high" => Some(IrVerbosity::High),
+            _ => None,
+        }
+    }
+}
+
+/// Image fidelity ask on an input image (IR-08): OpenAI Chat `image_url.detail`, Responses
+/// `input_image.detail`, Cohere `image_url.detail`. All three use the same three words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrImageDetail {
+    Auto,
+    Low,
+    High,
+}
+
+impl IrImageDetail {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IrImageDetail::Auto => "auto",
+            IrImageDetail::Low => "low",
+            IrImageDetail::High => "high",
+        }
+    }
+
+    /// An unknown word (a vendor adding e.g. `"original"`) is `None`: the reader drops it with a
+    /// warn rather than coercing it onto a different fidelity the caller did not ask for.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "auto" => Some(IrImageDetail::Auto),
+            "low" => Some(IrImageDetail::Low),
+            "high" => Some(IrImageDetail::High),
+            _ => None,
+        }
+    }
+}
+
+/// Which role a folded system prompt was written in (IR-14). OpenAI Chat and Responses accept both
+/// a `system` and a `developer` role and they are distinct wire spellings; every other dialect has
+/// only a system prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrSystemRole {
+    System,
+    Developer,
+}
+
+impl IrSystemRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IrSystemRole::System => "system",
+            IrSystemRole::Developer => "developer",
+        }
+    }
+}
+
+/// An output modality the caller asks the model to produce (IR-19): OpenAI Chat `modalities`
+/// (`"text"`, `"audio"`), Gemini `generationConfig.responseModalities` (`"TEXT"`, `"AUDIO"`,
+/// `"IMAGE"`). The produced audio/image rides the response as an [`IrBlock::Media`] /
+/// [`IrBlock::Image`] block, which already exist. Voice selection is NOT carried: voice names are
+/// vendor catalogues (`alloy` vs `Kore`) with no shared vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrModality {
+    Text,
+    Audio,
+    Image,
+}
+
+impl IrModality {
+    /// Lower-case neutral word (OpenAI spelling; Gemini upper-cases it).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IrModality::Text => "text",
+            IrModality::Audio => "audio",
+            IrModality::Image => "image",
+        }
+    }
+
+    /// Case-insensitive, so both the OpenAI and the Gemini spellings parse.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "text" => Some(IrModality::Text),
+            "audio" => Some(IrModality::Audio),
+            "image" => Some(IrModality::Image),
+            _ => None,
+        }
+    }
+}
+
+/// A provider-HOSTED (server-side, built-in) tool, neutral across the dialects that offer the same
+/// capability (IR-11). Distinct from [`IrTool::hosted`], which is the raw Responses object kept for a
+/// same-protocol re-emit and is still dropped on the cross-protocol seam: THIS type is what crosses.
+///
+/// | kind            | Anthropic                         | Responses                  | Gemini            | OpenAI Chat |
+/// |-----------------|-----------------------------------|----------------------------|-------------------|-------------|
+/// | `WebSearch`     | `web_search_<version>`            | `web_search` (`web_search_preview`) | `googleSearch` | `web_search_options` |
+/// | `CodeExecution` | `code_execution_<version>`        | `code_interpreter` (`container:{type:"auto"}`) | `codeExecution` | — |
+/// | `WebFetch`      | `web_fetch_<version>`             | —                          | `urlContext`      | — |
+///
+/// | `Custom`        | —                                 | `custom` (flat)            | —                 | `custom` (nested) |
+///
+/// The versioned Anthropic tool type is chosen by the WRITER (its current GA version), not carried:
+/// the version names Anthropic's own tool schema revision, which no other dialect has.
+#[derive(Debug, Clone, PartialEq)]
+pub enum IrHostedTool {
+    WebSearch(IrWebSearch),
+    CodeExecution,
+    WebFetch(IrWebFetch),
+    /// OAI-09 (round 3 item 11): an OpenAI CUSTOM tool — free-text input, optionally constrained by
+    /// a grammar — which OpenAI Chat and Responses both offer and no other dialect has.
+    Custom(IrCustomTool),
+}
+
+/// An OpenAI custom tool (OAI-09): Chat `{"type":"custom","custom":{name, description, format}}`,
+/// Responses `{"type":"custom", name, description, format}`. `format` (`{"type":"text"}` or
+/// `{"type":"grammar","grammar":{syntax, definition}}`) is the same object on both wires and rides
+/// verbatim.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct IrCustomTool {
+    pub name: String,
+    pub description: Option<String>,
+    pub format: Option<serde_json::Value>,
+}
+
+impl IrCustomTool {
+    /// Read the tool's members from the object that holds them (Chat's `custom` sub-object, or the
+    /// flat Responses tool). `None` without a non-empty string `name`, or when the object carries a
+    /// member the IR cannot hold (it then stays the dialect's raw same-protocol tool).
+    pub fn read_members(
+        obj: &serde_json::Map<String, serde_json::Value>,
+        extra_ok: &[&str],
+    ) -> Option<Self> {
+        if obj.keys().any(|k| {
+            !["name", "description", "format"].contains(&k.as_str())
+                && !extra_ok.contains(&k.as_str())
+        }) {
+            return None;
+        }
+        let name = obj
+            .get("name")?
+            .as_str()
+            .filter(|n| !n.is_empty())?
+            .to_string();
+        let description = match obj.get("description") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(d) => Some(d.as_str()?.to_string()),
+        };
+        let format = obj.get("format").filter(|f| !f.is_null()).cloned();
+        Some(IrCustomTool {
+            name,
+            description,
+            format,
+        })
+    }
+
+    /// The members as a JSON object (`name`, then `description` / `format` when set).
+    pub fn write_members(&self) -> serde_json::Map<String, serde_json::Value> {
+        let mut out = serde_json::Map::new();
+        out.insert("name".to_string(), serde_json::json!(self.name));
+        if let Some(d) = &self.description {
+            out.insert("description".to_string(), serde_json::json!(d));
+        }
+        if let Some(f) = &self.format {
+            out.insert("format".to_string(), f.clone());
+        }
+        out
+    }
+}
+
+impl IrHostedTool {
+    /// The neutral name for a drop `warn!` / `dropped_egress_controls` entry.
+    pub fn kind_str(&self) -> &'static str {
+        match self {
+            IrHostedTool::WebSearch(_) => "web_search",
+            IrHostedTool::CodeExecution => "code_execution",
+            IrHostedTool::WebFetch(_) => "web_fetch",
+            IrHostedTool::Custom(_) => "custom_tool",
+        }
+    }
+}
+
+/// Parameters of a hosted web search. Each field is `None`/empty when the source did not set it; a
+/// writer whose dialect cannot express a set field drops THAT field with a warn and keeps the tool.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct IrWebSearch {
+    /// Anthropic `max_uses`.
+    pub max_uses: Option<u32>,
+    /// Anthropic `allowed_domains`, Responses `filters.allowed_domains`.
+    pub allowed_domains: Vec<String>,
+    /// Anthropic `blocked_domains`.
+    pub blocked_domains: Vec<String>,
+    /// Anthropic / Responses / Chat `user_location` (`type:"approximate"` in all three).
+    pub user_location: Option<IrUserLocation>,
+    /// Responses `search_context_size`, Chat `web_search_options.search_context_size`
+    /// (`low`/`medium`/`high` — the [`IrVerbosity`] words, reused rather than a fourth copy).
+    pub search_context_size: Option<IrVerbosity>,
+}
+
+/// Parameters of a hosted URL fetch (Anthropic `web_fetch_*`, Gemini `urlContext`).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct IrWebFetch {
+    /// Anthropic `max_uses`.
+    pub max_uses: Option<u32>,
+    /// Anthropic `allowed_domains`.
+    pub allowed_domains: Vec<String>,
+    /// Anthropic `blocked_domains`.
+    pub blocked_domains: Vec<String>,
+}
+
+/// An approximate user location for a hosted web search. Anthropic, Responses and Chat all use the
+/// same `{type:"approximate", city, region, country, timezone}` members.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct IrUserLocation {
+    pub city: Option<String>,
+    pub region: Option<String>,
+    /// ISO 3166-1 alpha-2 country code.
+    pub country: Option<String>,
+    /// IANA timezone name.
+    pub timezone: Option<String>,
+}
+
+/// A refinement of [`IrStopReason`] that some dialects can state and others cannot (IR-16, and the
+/// refusal category half of IR-02). The coarse `stop_reason` stays authoritative and is always set
+/// to the nearest variant, so a writer that ignores this detail still emits a valid, close stop
+/// value; a writer whose dialect names the refinement emits it exactly.
+#[derive(Debug, Clone, PartialEq)]
+pub enum IrStopDetail {
+    /// The context window filled before the output cap (Anthropic and Bedrock
+    /// `model_context_window_exceeded`). Readers set `stop_reason = MaxTokens` beside it.
+    ContextWindowExceeded,
+    /// A refusal with the classifier's category / explanation where the dialect states them
+    /// (Anthropic `stop_details:{type:"refusal", category, explanation}`). Readers set
+    /// `stop_reason = Refusal` beside it.
+    Refusal {
+        category: Option<String>,
+        explanation: Option<String>,
+    },
+}
+
+/// Whether a thinking block's text is the model's full reasoning or a summary of it (IR-17):
+/// Responses `reasoning.summary[]` vs `reasoning.content[]`; Gemini thought parts and Anthropic
+/// `display:"summarized"` thinking are summaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrThinkingKind {
+    Full,
+    Summary,
+}
+
+/// Which model family issued an opaque reasoning signature (IR-18). A signature is only valid for
+/// the family that minted it: an Anthropic `signature` sent to Gemini as `thoughtSignature`, or to
+/// Responses as `encrypted_content`, is a foreign blob the backend rejects or misreads.
+///
+/// Bedrock-served Claude signatures are `Anthropic`: the family, not the transport, issued them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrSignatureOrigin {
+    /// Claude (first-party Anthropic, or Claude on Bedrock).
+    Anthropic,
+    /// Gemini `thoughtSignature`.
+    Gemini,
+    /// OpenAI Responses `reasoning.encrypted_content`.
+    OpenAi,
+    /// A non-Claude Bedrock reasoning model's signature.
+    BedrockOther,
 }

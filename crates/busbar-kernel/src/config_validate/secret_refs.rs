@@ -120,6 +120,8 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
         allow_metadata_hosts: _,
         allow_all_metadata: _,
         upstream_credentials: _,
+        // The configured plane section NAMES (Law 7): `&'static str` keys, no credential.
+        plane_sections: _,
         // ── OPAQUE MODULE SETTINGS BAGS (`serde_json::Value` trees, not typed config): `store`,
         // `secrets`, `hooks`, `export` and `export_defs` all carry a plugin's own `settings:`, which
         // MAY contain `SecretRef`-SHAPED documents. Those are NOT `SecretRef`-typed values and are
@@ -230,6 +232,10 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
             subject: _,
             auth: _,
             allow_metadata_hosts: _,
+            max_output_key: _,
+            anthropic_adaptive_thinking: _,
+            native_structured_output: _,
+            model_capabilities: _,
         } = p;
         refs.push((format!("providers.{name}.api_key"), api_key));
     }

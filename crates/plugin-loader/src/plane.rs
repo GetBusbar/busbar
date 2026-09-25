@@ -24,7 +24,7 @@
 //! `src/tests/plane_conformance_tests.rs` (this crate's half, against an instrumented table) and
 //! `crates/busbar-kernel/tests/plane_abi_rider.rs` (against the REAL vtable — unreachable from here,
 //! because this crate may not name `busbar-kernel`). So `PlaneDecl` + [`PlaneHostVtable`] are no
-//! longer the 0-caller ABI BUSBAR-1.6.0 §11a forbids.
+//! longer the 0-caller ABI `docs/design/BUSBAR-1.6.0.md` §11a forbids.
 //!
 //! WHAT IS GENUINELY NOT HERE, stated as a measurement rather than a filing: a dropped-in plane is
 //! driven through [`DynPlane`], not yet INSTALLED into `busbar_kernel::plane::registry` beside the

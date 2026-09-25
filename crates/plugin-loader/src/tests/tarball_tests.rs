@@ -44,6 +44,24 @@ fn garbage_is_refused() {
     assert!(unpack(&[]).is_err());
 }
 
+/// A tarball cut short inside its manifest member refuses with 1.5.5's words for it: `cannot read
+/// manifest member: unexpected end of file` (oracle cell `boot.refusal|BOOT-135|boot`, which cuts
+/// the published webrequest tarball to 200 bytes). flate2 1.1.10 words the same condition
+/// "incomplete deflate stream"; the surface prints the condition's kind, not a dependency's prose.
+#[test]
+fn a_tarball_cut_inside_the_manifest_refuses_in_1_5_5_words() {
+    let key = SigningKey::from_bytes(&[7u8; 32]);
+    let lib: Vec<u8> = (0..64 * 1024u32)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+        .collect();
+    let mut m = sign(&key, manifest(), &lib);
+    // A manifest long enough that 200 compressed bytes end inside it, as the real one's does.
+    m.description = (0..400).map(|i| format!("{i:x}")).collect();
+    let tarball = package(&m, "libbusbar_store_valkey.so", &lib).unwrap();
+    let err = unpack(&tarball[..200]).unwrap_err();
+    assert_eq!(err, "cannot read manifest member: unexpected end of file");
+}
+
 #[test]
 fn missing_manifest_or_lib_is_refused() {
     // Only a library, no manifest.

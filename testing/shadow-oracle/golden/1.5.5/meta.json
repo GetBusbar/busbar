@@ -1,9 +1,50 @@
 {
   "binary": "<oracle-cache>/1.5.5/busbar",
   "version": "busbar 1.5.5",
-  "recorded": 916,
+  "recorded": 934,
   "binary_sha256": "84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7",
   "harness_rev": "b3a611c252825abced4537b654f91ed02dae9d627c7625b16327a5f5c09645be",
   "host_triple": "x86_64-unknown-linux-gnu",
-  "at": "2026-09-16T22:22:15Z"
+  "at": "2026-09-16T22:22:15Z",
+  "merged_from": [
+    {
+      "part": "golden-part",
+      "recorded": 916,
+      "at": "2026-09-16T22:22:15Z",
+      "binary": "<oracle-cache>/1.5.5/busbar",
+      "harness_rev": "b3a611c252825abced4537b654f91ed02dae9d627c7625b16327a5f5c09645be"
+    },
+    {
+      "part": "rec-part",
+      "recorded": 18,
+      "at": null,
+      "binary": "<home>/Developer/tmp/wt/slot-P3A-record48-bin/busbar",
+      "harness_rev": "ad0ec53b31bdcec1dfaeed54b7d4bd9df5b5dc55d897b275f7ea3918af45f4f6"
+    }
+  ],
+  "binary_sha256_pins": [
+    {
+      "part": "golden-part",
+      "binary_sha256": "84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7",
+      "pinned_as": "busbar-x86_64-unknown-linux-gnu"
+    },
+    {
+      "part": "rec-part",
+      "binary_sha256": "48e2800cc1fbf229104d73c23039ba4d4a703c0a8db9e7872e22fec33f9b1e48",
+      "pinned_as": "busbar-aarch64-apple-darwin"
+    }
+  ],
+  "harness_rev_recorded": "b3a611c252825abced4537b654f91ed02dae9d627c7625b16327a5f5c09645be",
+  "harness_rev_history": [
+    "ad0ec53b31bdcec1dfaeed54b7d4bd9df5b5dc55d897b275f7ea3918af45f4f6"
+  ],
+  "host_triple_history": [
+    {
+      "host_triple": "aarch64-apple-darwin",
+      "part": "rec-part",
+      "binary_sha256": "48e2800cc1fbf229104d73c23039ba4d4a703c0a8db9e7872e22fec33f9b1e48"
+    }
+  ],
+  "host_triple_note": "owner ruling Q53 (2026-09-24): the 18 config.migrate cells for the configs v1.5.3, v1.5.4 and v1.5.5 shipped (tests/migration-corpus/from-tags, TODO item 48) recorded ADD-ONLY from the published v1.5.5 busbar-aarch64-apple-darwin build (pinned digest 48e2800c..., release asset digest verified) by busbar-oracle @3519882 on aarch64-apple-darwin; no existing cell re-recorded — the same build and engine reproduce all 138 existing config.migrate cells byte-identically",
+  "harness_rev_note": "owner ruling Q53 (2026-09-24): the 18 config.migrate cells for the configs v1.5.3, v1.5.4 and v1.5.5 shipped (tests/migration-corpus/from-tags, TODO item 48) recorded ADD-ONLY from the published v1.5.5 busbar-aarch64-apple-darwin build (pinned digest 48e2800c..., release asset digest verified) by busbar-oracle @3519882 on aarch64-apple-darwin; no existing cell re-recorded — the same build and engine reproduce all 138 existing config.migrate cells byte-identically"
 }

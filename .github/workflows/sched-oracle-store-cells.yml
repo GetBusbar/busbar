@@ -29,10 +29,10 @@
 # file into a `services:` block, so the literals must be duplicated; the lint is what makes the
 # duplication safe.
 #
-# EVERY ORACLE CALL GOES THROUGH ./bin/oracle. The shadow oracle left this tree on 2026-09-06
-# (c73ae4f66): record.sh, fetch-golden.sh, fetch-plugin.sh and merge-recordings.py were deleted and
+# EVERY ORACLE CALL GOES THROUGH ./bin/oracle. record.sh, fetch-golden.sh, fetch-plugin.sh and
+# merge-recordings.py were deleted, and
 # the tool ships as the pinned Rust `busbar-oracle` engine, obtained and exec'd by `bin/oracle`.
-# That commit repointed ci.yml, land.sh, verify-1.6.0-done.sh, teller-steps-check.py and
+# That change repointed ci.yml, land.sh, verify-1.6.0-done.sh, teller-steps-check.py and
 # full-gate.sh; this workflow was MISSED and went on invoking four files that are not in the tree,
 # so every run would have died at the first of them. The argv contract is unchanged, so each call
 # below is the same call it always was with `./bin/oracle <sub>` in front of it, exactly as

@@ -33,6 +33,9 @@ fn the_carried_a2a_verify_gate_prunes_dead_subjects_and_drops_with_the_plane() {
             "BUSBAR_TEST_NO_SUCH_KEY_A2A_PRUNE",
         ));
         c.agent_defs = Box::new(busbar_a2a::testkit::agents_cfg_with_one_receiving_agent());
+        // Law 7: the hand-built config states the section it configures, as `resolve` would.
+        c.plane_sections
+            .insert(busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3]);
         c
     };
     let prior = build_once(cfg_with_agents(), None).expect("boot with an agents: block");
@@ -176,6 +179,9 @@ fn plane_slot_mirrors_the_typed_mcp_and_a2a_fields_when_configured() {
         ) as std::sync::Arc<dyn std::any::Any + Send + Sync>,
     );
     cfg.agent_defs = Box::new(busbar_a2a::testkit::agents_cfg_with_one_receiving_agent());
+    // Law 7: the hand-built config states the sections it configures, as `resolve` would.
+    cfg.plane_sections
+        .extend(&busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2..]);
     cfg.public_url = Some("https://busbar.example".to_string());
     // `mcp:` refuses an open data-plane chain — close it with the test-only stand-in module.
     cfg.auth = Some(closed_auth_chain("test-groups-module"));

@@ -11,6 +11,7 @@ fn req_with_image(source: IrImageSource) -> crate::ir::IrRequest {
             content: vec![IrBlock::Image {
                 source,
                 cache_control: None,
+                detail: None,
             }],
         }],
         ..Default::default()

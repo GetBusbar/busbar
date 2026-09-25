@@ -535,6 +535,8 @@ pub struct LaneSpec {
     health: Option<crate::config::HealthCfg>,
     default_max_tokens: Option<u32>,
     upstream_model: Option<String>,
+    /// The lane's declared request-shape capabilities (default: none declared).
+    lane_caps: busbar_substrate_values::ir::egress_prep::LaneCaps,
     // LaneData-only runtime state (defaults = a fresh, healthy, unlimited lane):
     limited: bool,
     budget: i64,
@@ -568,6 +570,7 @@ impl LaneSpec {
             health: None,
             default_max_tokens: None,
             upstream_model: None,
+            lane_caps: busbar_substrate_values::ir::egress_prep::LaneCaps::NONE,
             limited: false,
             budget: -1,
             cooldown_until: 0,
@@ -622,6 +625,11 @@ impl LaneSpec {
     }
     pub fn upstream_model(mut self, n: &str) -> Self {
         self.upstream_model = Some(n.into());
+        self
+    }
+    /// Declare the lane's request-shape capabilities (what its provider entry would resolve to).
+    pub fn lane_caps(mut self, caps: busbar_substrate_values::ir::egress_prep::LaneCaps) -> Self {
+        self.lane_caps = caps;
         self
     }
     /// Mark the lane as budget-limited with `n` remaining requests (sets `limited = true`).
@@ -707,6 +715,7 @@ impl LaneSpec {
             attempt_timeout_ms: None,
             reasoning: false,
             prompt_caching: false,
+            lane_caps: self.lane_caps,
             max_concurrent: self.max,
             limited: self.limited,
             budget: self.budget,
@@ -829,6 +838,8 @@ pub struct TestApp {
     /// now lives one-way-dependent in `busbar-oauth2`); `busbar-oauth2`'s own `TestAppOauthExt`
     /// extension trait builds one and hands it in here type-erased.
     oauth_as: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+    /// LAW 7: the configured plane sections. `None` (default) = every linked plane counts configured.
+    plane_sections: Option<std::collections::BTreeSet<&'static str>>,
     mcp_durable_store: Option<std::sync::Arc<dyn busbar_api::Store>>,
     role_bindings: Option<crate::config::RoleBindings>,
     /// The resolved token-mint policy (`auth.policy:`) for the built App. `None` (default) = the empty
@@ -949,6 +960,12 @@ impl Default for TestApp {
 
 #[allow(dead_code)]
 impl TestApp {
+    /// LAW 7: build the App with exactly these plane sections configured (`[]` = a 1.5.5 config).
+    pub fn plane_sections(mut self, sections: &[&'static str]) -> Self {
+        self.plane_sections = Some(sections.iter().copied().collect());
+        self
+    }
+
     pub fn new() -> Self {
         // THE TEST-SIDE BOOT BINDING. In production the composition root (`busbar`'s `main`) installs
         // the core-backed hostless-egress driver once, before any plane dispatches. A plane's own test
@@ -972,6 +989,7 @@ impl TestApp {
             login_methods: None,
             public_url: None,
             oauth_as: None,
+            plane_sections: None,
             role_bindings: None,
             mint_policy: None,
             governance: None,
@@ -1924,6 +1942,7 @@ impl TestApp {
             // object, downcast by the plane's own accessor" property `build_app_from_config` gives
             // production, and `build()` names no slot key or plane runtime type.
             plane_slots,
+            plane_sections: self.plane_sections,
             spent_token_ledger: Default::default(),
             demotion_record: Default::default(),
             credential_cache: std::sync::Arc::new(crate::auth_cache::CredentialCache::new()),

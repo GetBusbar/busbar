@@ -34,6 +34,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub mod handler;
 mod reader;
+mod slots;
 mod writer;
 
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
@@ -256,15 +257,36 @@ const EVT_OUTPUT_TEXT_DELTA: &str = "response.output_text.delta";
 // The closing bracket of the `output_text.delta` run: a native stream emits `output_text.done`
 // (carrying the COMPLETE assembled text) after the last delta and before `content_part.done`.
 const EVT_OUTPUT_TEXT_DONE: &str = "response.output_text.done";
+// IR-02: a refusal part streams as `refusal.delta` frames closed by `refusal.done` (carrying the
+// assembled refusal), in place of the `output_text.delta`/`.done` pair.
+const EVT_REFUSAL_DELTA: &str = "response.refusal.delta";
+const EVT_REFUSAL_DONE: &str = "response.refusal.done";
+// A citation attached to the `output_text` part mid-stream: `{output_index, content_index,
+// annotation_index, annotation:{type:"url_citation", url, title, start_index, end_index}}`. It
+// arrives after the part's text deltas and before `output_text.done`, while the text block is open.
+const EVT_OUTPUT_TEXT_ANNOTATION_ADDED: &str = "response.output_text.annotation.added";
 const EVT_FUNCTION_CALL_ARGS_DELTA: &str = "response.function_call_arguments.delta";
 const EVT_REASONING_TEXT_DELTA: &str = "response.reasoning_text.delta";
 // The closing bracket of the `reasoning_text.delta` run (mirrors `output_text.done` for a text
 // part): carries the COMPLETE assembled reasoning text and precedes the reasoning item's
 // `output_item.done`.
 const EVT_REASONING_TEXT_DONE: &str = "response.reasoning_text.done";
+// IR-17 (round 3 item 16): a SUMMARY reasoning block streams as one `summary_text` part —
+// `reasoning_summary_part.added`, `reasoning_summary_text.delta` runs, then
+// `reasoning_summary_text.done` and `reasoning_summary_part.done` before the item's `output_item.done`.
+const EVT_REASONING_SUMMARY_PART_ADDED: &str = "response.reasoning_summary_part.added";
+const EVT_REASONING_SUMMARY_TEXT_DELTA: &str = "response.reasoning_summary_text.delta";
+const EVT_REASONING_SUMMARY_TEXT_DONE: &str = "response.reasoning_summary_text.done";
+const EVT_REASONING_SUMMARY_PART_DONE: &str = "response.reasoning_summary_part.done";
 const EVT_RESPONSE_COMPLETED: &str = "response.completed";
 const EVT_RESPONSE_FAILED: &str = "response.failed";
 const EVT_RESPONSE_INCOMPLETE: &str = "response.incomplete";
+/// The Responses stream's TOP-LEVEL mid-stream failure event (`{"type":"error","code","message",
+/// "param"}`), distinct from the terminal `response.failed`.
+const EVT_ERROR: &str = "error";
+/// The `include` entry that asks a Responses backend for per-token logprobs on every `output_text`
+/// part — the Responses spelling of the Chat Completions `logprobs: true` switch.
+const INCLUDE_OUTPUT_TEXT_LOGPROBS: &str = "message.output_text.logprobs";
 
 /// Internal `provider_signal` sentinel emitted when a `response.failed` event carries no recognizable
 /// `error.code`/`error.type`. Distinct from the `EVT_RESPONSE_FAILED` wire event type ("response.failed"):
@@ -574,6 +596,59 @@ fn write_responses_event_logprobs(lps: &[crate::ir::IrTokenLogprob]) -> serde_js
     serde_json::Value::Array(entries)
 }
 
+/// A Responses `logprobs` ARRAY — the `LogProb` entries on an `output_text` part, or the
+/// `ResponseLogProb` entries on an `output_text.delta` (the same entry minus `bytes`) — into the
+/// neutral IR entries. The entry is the Chat Completions entry, so the Chat decoder reads it; this
+/// only supplies the `{content: [...]}` envelope Chat wraps the array in. Absent, `null` or not an
+/// array yields no entries (the caller asked for none).
+fn read_responses_logprobs(v: Option<&serde_json::Value>) -> Vec<crate::ir::IrTokenLogprob> {
+    match v {
+        Some(arr @ serde_json::Value::Array(entries)) if !entries.is_empty() => {
+            super::openai_chat::read_openai_logprobs(Some(&serde_json::json!({ "content": arr })))
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The Responses `reasoning.effort` word → the IR reasoning ask (RSP-14, IR-09). `none` is
+/// reasoning switched OFF (`IrReasoningAsk::Off`, not "the caller said nothing"); `xhigh` is the
+/// IR's `XHigh`, above `high`; the other words map 1:1. An unknown word is `None`.
+fn read_responses_reasoning_effort(word: &str) -> Option<crate::ir::IrReasoningAsk> {
+    match word {
+        "none" => Some(crate::ir::IrReasoningAsk::Off),
+        other => crate::ir::IrReasoningEffort::parse_extended(other)
+            .map(crate::ir::IrReasoningAsk::Effort),
+    }
+}
+
+/// The Responses top-level `service_tier` (the tier that SERVED the response) → the IR attribution
+/// slot [`crate::ir::IrUsageDetail::service_tier`], whose vocabulary is the Anthropic one
+/// (`standard` / `priority` / `batch`). Only the tiers both vocabularies name are mapped: OpenAI's
+/// `default` IS the standard tier, and `priority` is `priority`. `flex` / `scale` have no word in
+/// the IR vocabulary and `auto` is a request-side instruction, not a served tier, so they are not
+/// carried (an invented equivalent would mis-state the tier). RSP-17.
+fn read_responses_service_tier(resp: &serde_json::Value) -> Option<String> {
+    match resp.get("service_tier").and_then(|t| t.as_str())? {
+        "default" => Some("standard".to_string()),
+        "priority" => Some("priority".to_string()),
+        _ => None,
+    }
+}
+
+/// The inverse of [`read_responses_service_tier`]: the IR served tier → the Responses
+/// `service_tier` word, or `None` (member omitted) for a tier the Responses vocabulary has no word
+/// for (Anthropic `batch`). The OpenAI-family words are accepted as-is so a tier that arrived in
+/// that vocabulary is not lost either.
+fn write_responses_service_tier(tier: Option<&str>) -> Option<&'static str> {
+    match tier? {
+        "standard" | "default" => Some("default"),
+        "priority" => Some("priority"),
+        "flex" => Some("flex"),
+        "scale" => Some("scale"),
+        _ => None,
+    }
+}
+
 /// Synthesize a protocol-correct Responses id (`resp_<opaque base62>`) for cross-protocol responses
 /// where the backend supplied none. Native OpenAI Responses ids are `resp_` followed by ~38+ chars
 /// of opaque random data with NO embedded structure; the previous form encoded the unix timestamp as
@@ -608,6 +683,7 @@ fn push_system_content(
                 text: text.to_string(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             });
         }
     };
@@ -638,6 +714,7 @@ fn message_content_blocks(content: Option<&serde_json::Value>) -> Option<Vec<cra
             text: s.clone(),
             cache_control: None,
             citations: Vec::new(),
+            refusal: false,
         }]),
         Some(serde_json::Value::Array(arr)) => {
             Some(arr.iter().filter_map(|b| responses_block(b).ok()).collect())
@@ -654,8 +731,26 @@ fn message_content_blocks(content: Option<&serde_json::Value>) -> Option<Vec<cra
 /// fallback) so a forced/targeted tool survives the cross-protocol seam instead of degrading to
 /// `auto`. Absent / unrecognized → `None` (omitted), so a request that never carried a directive does
 /// not gain a spurious one.
-fn read_responses_tool_choice(val: Option<&serde_json::Value>) -> Option<crate::ir::IrToolChoice> {
-    match val? {
+///
+/// IR-10 (RSP-15): the `allowed_tools` form returns the restricted SUBSET as the second member,
+/// with the directive `Auto` (`mode:"auto"`) or `Required` (`mode:"required"`).
+fn read_responses_tool_choice(
+    val: Option<&serde_json::Value>,
+) -> (Option<crate::ir::IrToolChoice>, Option<Vec<String>>) {
+    let Some(val) = val else {
+        return (None, None);
+    };
+    if let Some((choice, names)) = val.as_object().and_then(slots::read_allowed_tools) {
+        return (Some(choice), Some(names));
+    }
+    (read_responses_tool_choice_directive(val), None)
+}
+
+/// The single-directive forms of [`read_responses_tool_choice`].
+fn read_responses_tool_choice_directive(
+    val: &serde_json::Value,
+) -> Option<crate::ir::IrToolChoice> {
+    match val {
         serde_json::Value::String(s) => match s.as_str() {
             "auto" => Some(crate::ir::IrToolChoice::Auto),
             "none" => Some(crate::ir::IrToolChoice::None),
@@ -675,6 +770,15 @@ fn read_responses_tool_choice(val: Option<&serde_json::Value>) -> Option<crate::
                         name: name.to_string(),
                     })
             } else {
+                // RSP-15: a hosted-tool choice (`{"type":"web_search"}` …) and a `custom` tool
+                // choice have no IR carrier (`allowed_tools` does — IR-10, read above); the
+                // directive is not carried and the target applies its default. Say so rather than
+                // drop it silently.
+                tracing::warn!(
+                    tool_choice_type = o.get("type").and_then(|t| t.as_str()).unwrap_or(""),
+                    "dropping Responses tool_choice on ir parse: this tool_choice form has no IR \
+                     carrier; the backend's default tool choice applies"
+                );
                 None
             }
         }
@@ -773,9 +877,10 @@ fn responses_error_code(err: &busbar_substrate_values::proto::IrError) -> String
 /// pointless per-request allocation on the Responses ingress hot path.
 ///
 /// NOTE: `metadata` is deliberately NOT in this set. The Responses API accepts a top-level
-/// `metadata` object (user-defined key/value tagging); busbar does not model it on `IrRequest`,
-/// so it must flow through `extra` and be re-emitted verbatim. Listing it here would silently
-/// drop a stable public API field (a prior revision made exactly that mistake).
+/// `metadata` object (user-defined key/value tagging); it is read into `IrRequest.metadata` (IR-03)
+/// so it crosses the seam, AND kept in `extra` so a same-protocol write re-emits the caller's exact
+/// member. The same holds for `service_tier`, `store`, `safety_identifier`, `prompt_cache_key` and
+/// `text.verbosity` (IR-04..07): the typed slot carries them across, `extra` keeps them verbatim.
 fn responses_modeled_keys() -> &'static std::collections::HashSet<&'static str> {
     static MODELED_KEYS: OnceLock<std::collections::HashSet<&'static str>> = OnceLock::new();
     MODELED_KEYS.get_or_init(|| {
@@ -791,6 +896,8 @@ fn responses_modeled_keys() -> &'static std::collections::HashSet<&'static str> 
             "stream",
             "tool_choice",
             "parallel_tool_calls",
+            // RSP-05: read into `IrRequest.user`, written back from it.
+            "user",
         ]
         .iter()
         .cloned()
@@ -829,6 +936,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
                 text,
                 cache_control: None,
                 citations,
+                refusal: false,
             })
         }
         "input_image" => {
@@ -883,6 +991,56 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
                 source,
                 name,
                 cache_control: None,
+                citations: None,
+                context: None,
+            })
+        }
+        // RSP-09: an assistant-history `refusal` part (`{"type":"refusal","refusal":"..."}`) is the
+        // model's own prior refusal text. It is assistant text on every other surface — exactly
+        // what `read_response` makes of the same part — so it is carried as Text rather than
+        // degraded to an EMPTY text block (the refusal lost, and an Anthropic backend 400s on
+        // empty text).
+        // IR-02: the part IS a refusal, so the Text block says so — a Chat / Responses writer puts
+        // it back in its refusal slot; every other writer keeps it as ordinary assistant text.
+        "refusal" => Ok(crate::ir::IrBlock::Text {
+            text: obj
+                .get("refusal")
+                .and_then(|r| r.as_str())
+                .unwrap_or("")
+                .to_string(),
+            cache_control: None,
+            citations: Vec::new(),
+            refusal: true,
+        }),
+        // RSP-09: a user `input_audio` part (`{"type":"input_audio","input_audio":{"data":"<b64>",
+        // "format":"wav"|"mp3"}}`) is the same part Chat Completions carries, read the same way
+        // (`openai_chat`'s reader): the bare format token becomes the `audio/<format>` mime the
+        // neutral IR speaks, so a Gemini/Bedrock/Chat backend receives the clip.
+        "input_audio" => {
+            let audio_obj = obj.get("input_audio").ok_or(IrError {
+                class: StatusClass::ClientError,
+                provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+                retry_after: None,
+            })?;
+            let data = audio_obj
+                .get("data")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let format = audio_obj
+                .get("format")
+                .and_then(|v| v.as_str())
+                .unwrap_or("wav");
+            Ok(crate::ir::IrBlock::Media {
+                kind: crate::ir::IrMediaKind::Audio,
+                source: crate::ir::IrImageSource::Base64 {
+                    media_type: format!("audio/{format}"),
+                    data,
+                },
+                name: None,
+                cache_control: None,
+                citations: None,
+                context: None,
             })
         }
         // Forward-compatibility: a valid native Responses content-block type the IR does not model
@@ -903,6 +1061,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
                 text: String::new(),
                 cache_control: None,
                 citations: Vec::new(),
+                refusal: false,
             })
         }
     }
@@ -913,30 +1072,15 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
 /// uploaded-file reference becomes the typed `FileId` source so the writer reconstructs the native
 /// `file_id` form losslessly. Returns `None` when the block carries NEITHER (a degenerate reference).
 fn responses_input_image_block(item: &serde_json::Value) -> Option<crate::ir::IrBlock> {
-    // `detail` ("low"/"high"/"auto") is a per-image rendering-fidelity knob on the native Responses
-    // `input_image` part. The IR `Image` block has no slot for it (adding one is a cross-dialect
-    // blast-radius change on the shared `IrBlock::Image` variant, constructed by every reader), and
-    // no other protocol models an equivalent, so it is DROPPED — but drop-with-warn per this file's
-    // convention (the foreign-vendor-image / json-tool-result / top_k arms), never silently, so the
-    // loss is observable rather than an invisible floor-drop. Gated on presence so a request that
-    // omitted `detail` (the common case) emits no warn.
-    if item
-        .get("detail")
-        .and_then(|d| d.as_str())
-        .is_some_and(|d| !d.is_empty())
-    {
-        tracing::warn!(
-            detail = item.get("detail").and_then(|d| d.as_str()).unwrap_or(""),
-            "dropping input_image.detail on Responses ir parse: the IR Image block models no \
-             per-image detail knob and no target protocol has an equivalent; the image survives, \
-             its detail hint does not"
-        );
-    }
+    // IR-08: `detail` ("low"/"high"/"auto") is the per-image fidelity knob Chat and Cohere carry
+    // too; it rides the IR `Image.detail` slot (an unknown word is dropped with a warn).
+    let detail = slots::read_image_detail(item);
     let image_url = item.get("image_url").and_then(|u| u.as_str());
     if let Some(url) = image_url.filter(|u| !u.is_empty()) {
         return Some(crate::ir::IrBlock::Image {
             source: super::ir_encode::parse_image_url(url),
             cache_control: None,
+            detail,
         });
     }
     if let Some(file_id) = item
@@ -950,6 +1094,7 @@ fn responses_input_image_block(item: &serde_json::Value) -> Option<crate::ir::Ir
                 value: serde_json::json!({ "file_id": file_id }),
             },
             cache_control: None,
+            detail,
         });
     }
     None
@@ -1280,6 +1425,9 @@ pub struct ResponsesWriter {
     /// BlockStop emits the text terminal frames for THIS index only. Per-stream INSTANCE state for
     /// the same reason as the other fields; a poisoned lock degrades safely.
     open_text_indices: std::sync::Mutex<std::collections::BTreeSet<usize>>,
+    /// IR-02: the open text indices whose BlockStart said `refusal` — their part is a `refusal`
+    /// part, not an `output_text` part, from `content_part.added` to `output_item.done`.
+    refusal_indices: std::sync::Mutex<std::collections::BTreeSet<usize>>,
     /// Per-stream cache of synthesized opaque `item_id`s, keyed by `(kind-prefix, output_index)`.
     /// A native /v1/responses stream carries a CONSTANT `item_id` across the
     /// `output_item.added → delta* → output_item.done` lifecycle of one output item; the official
@@ -1347,12 +1495,26 @@ pub struct ResponsesWriter {
     /// THIS index, and so a reasoning BlockStop is never mistaken for a text/tool close. Per-stream
     /// INSTANCE state for the same reason as the other open-index sets; a poisoned lock degrades safely.
     open_reasoning_indices: std::sync::Mutex<std::collections::BTreeSet<usize>>,
+    /// IR-17 (round 3 item 16): the open reasoning items whose Thinking block is a SUMMARY. Their
+    /// text streams as `reasoning_summary_text` and lands in the item's `summary[]` (the buffered
+    /// `insert_reasoning_text` shape); every other reasoning item keeps `content[]`.
+    summary_reasoning_indices: std::sync::Mutex<std::collections::BTreeSet<usize>>,
     /// Per-stream accumulator of streamed reasoning TEXT, keyed by `output_index`. The terminal
     /// `response.output[]` reasoning item carries the COMPLETE reasoning text the stream delivered via
     /// `reasoning_text.delta`; the IR streams it as `ThinkingDelta` fragments, so the writer
     /// concatenates them here and drains the joined text into the finalized reasoning item at
     /// BlockStop. A poisoned lock degrades to empty text rather than panicking.
     reasoning_accum: std::sync::Mutex<std::collections::BTreeMap<usize, String>>,
+    /// Per-stream buffer of the thinking SIGNATURE streamed for the reasoning item at each
+    /// `output_index` (`IrDelta::SignatureDelta`). Responses has no signature delta frame: the blob is
+    /// the finalized reasoning item's `encrypted_content`, so it is buffered here until the matching
+    /// `BlockStop` builds that item (RSP-01). Bounded exactly as `reasoning_accum` is.
+    reasoning_sig_accum: std::sync::Mutex<std::collections::BTreeMap<usize, String>>,
+    /// Whether this stream has already written its `response.failed` terminal event. A Responses
+    /// stream ends at `response.failed`, so a `MessageDelta` arriving after it (a Cohere/Gemini
+    /// reader emits `Error` and THEN its `MessageDelta{Error}`) must write nothing rather than a
+    /// second, contradictory terminal (RSP-11). `AtomicBool` for the same `Sync` reason as `started`.
+    failed: AtomicBool,
     /// Per-stream request-echo context: the ORIGINAL ingress request body, captured via
     /// [`ProtocolWriter::set_request_echo`] before the first event is written. The pinned spec
     /// requires every `Response` object to MIRROR certain request members verbatim (`temperature`,
@@ -1399,6 +1561,7 @@ pub const ResponsesWriter: ResponsesWriter = ResponsesWriter {
     model: std::sync::Mutex::new(None),
     open_tool_indices: std::sync::Mutex::new(std::collections::BTreeSet::new()),
     open_text_indices: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+    refusal_indices: std::sync::Mutex::new(std::collections::BTreeSet::new()),
     item_ids: std::sync::Mutex::new(std::collections::BTreeMap::new()),
     tool_calls: std::sync::Mutex::new(std::collections::BTreeMap::new()),
     text_accum: std::sync::Mutex::new(std::collections::BTreeMap::new()),
@@ -1406,7 +1569,10 @@ pub const ResponsesWriter: ResponsesWriter = ResponsesWriter {
     logprob_accum: std::sync::Mutex::new(std::collections::BTreeMap::new()),
     output_items: std::sync::Mutex::new(std::collections::BTreeMap::new()),
     open_reasoning_indices: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+    summary_reasoning_indices: std::sync::Mutex::new(std::collections::BTreeSet::new()),
     reasoning_accum: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+    reasoning_sig_accum: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+    failed: AtomicBool::new(false),
     request_echo: std::sync::Mutex::new(None),
 };
 
@@ -1442,6 +1608,12 @@ impl Clone for ResponsesWriter {
             ),
             open_text_indices: std::sync::Mutex::new(
                 self.open_text_indices
+                    .lock()
+                    .map(|set| set.clone())
+                    .unwrap_or_default(),
+            ),
+            refusal_indices: std::sync::Mutex::new(
+                self.refusal_indices
                     .lock()
                     .map(|set| set.clone())
                     .unwrap_or_default(),
@@ -1503,12 +1675,27 @@ impl Clone for ResponsesWriter {
                     .map(|set| set.clone())
                     .unwrap_or_default(),
             ),
+            summary_reasoning_indices: std::sync::Mutex::new(
+                self.summary_reasoning_indices
+                    .lock()
+                    .map(|set| set.clone())
+                    .unwrap_or_default(),
+            ),
             reasoning_accum: std::sync::Mutex::new(
                 self.reasoning_accum
                     .lock()
                     .map(|m| m.clone())
                     .unwrap_or_default(),
             ),
+            // Carry the signature buffer and the failed latch across the same clone, for the same
+            // reason: a mid-stream clone is still the SAME stream.
+            reasoning_sig_accum: std::sync::Mutex::new(
+                self.reasoning_sig_accum
+                    .lock()
+                    .map(|m| m.clone())
+                    .unwrap_or_default(),
+            ),
+            failed: AtomicBool::new(self.failed.load(Ordering::Relaxed)),
             // Carry the captured request-echo context across a mid-stream `Protocol::clone` so the
             // cloned writer's remaining terminal events still answer with the client's actual
             // request values; a poisoned lock degrades to `None` (the spec defaults then apply).
@@ -1531,6 +1718,9 @@ impl ResponsesWriter {
             set.clear();
         }
         if let Ok(mut set) = self.open_text_indices.lock() {
+            set.clear();
+        }
+        if let Ok(mut set) = self.refusal_indices.lock() {
             set.clear();
         }
         // Clear the per-stream `item_id` cache so a reused/cloned writer mints fresh opaque ids for
@@ -1565,9 +1755,17 @@ impl ResponsesWriter {
         if let Ok(mut set) = self.open_reasoning_indices.lock() {
             set.clear();
         }
+        if let Ok(mut set) = self.summary_reasoning_indices.lock() {
+            set.clear();
+        }
         if let Ok(mut map) = self.reasoning_accum.lock() {
             map.clear();
         }
+        if let Ok(mut map) = self.reasoning_sig_accum.lock() {
+            map.clear();
+        }
+        // A new stream has not failed.
+        self.failed.store(false, Ordering::Relaxed);
         // Clear the carried `response.id` alongside the sequence counter: a reused/cloned writer
         // must not leak a previous stream's id onto a new stream's terminal events. The new id is
         // stored when this stream's `MessageStart` is written.
@@ -1903,6 +2101,29 @@ impl ResponsesWriter {
             .unwrap_or(false)
     }
 
+    /// IR-02: record that the text item at `index` is a refusal (its BlockStart said so).
+    fn mark_refusal(&self, index: usize) {
+        if let Ok(mut set) = self.refusal_indices.lock() {
+            set.insert(index);
+        }
+    }
+
+    /// IR-02: whether the open text item at `index` is a refusal.
+    fn is_refusal(&self, index: usize) -> bool {
+        self.refusal_indices
+            .lock()
+            .map(|set| set.contains(&index))
+            .unwrap_or(false)
+    }
+
+    /// IR-02: forget and return whether the text item at `index` was a refusal (at its BlockStop).
+    fn take_refusal(&self, index: usize) -> bool {
+        self.refusal_indices
+            .lock()
+            .map(|mut set| set.remove(&index))
+            .unwrap_or(false)
+    }
+
     /// Return true and forget `index` if a TEXT message item was open at it (so the matching
     /// `BlockStop` emits the text terminal frames for THIS index only). Returns false for a
     /// non-text index. Lock poisoning degrades to false.
@@ -1926,6 +2147,28 @@ impl ResponsesWriter {
                 set.insert(index);
                 true
             })
+            .unwrap_or(false)
+    }
+
+    /// IR-17: remember that the reasoning item at `index` is a summary (`mark`), or ask whether it
+    /// is. Lock poisoning degrades to "not a summary" (the pre-slot `content[]` shape).
+    fn mark_summary_reasoning(&self, index: usize) {
+        if let Ok(mut set) = self.summary_reasoning_indices.lock() {
+            set.insert(index);
+        }
+    }
+
+    fn is_summary_reasoning(&self, index: usize) -> bool {
+        self.summary_reasoning_indices
+            .lock()
+            .map(|set| set.contains(&index))
+            .unwrap_or(false)
+    }
+
+    fn take_summary_reasoning(&self, index: usize) -> bool {
+        self.summary_reasoning_indices
+            .lock()
+            .map(|mut set| set.remove(&index))
             .unwrap_or(false)
     }
 
@@ -1956,6 +2199,29 @@ impl ResponsesWriter {
             .ok()
             .and_then(|mut map| map.remove(&index))
             .unwrap_or_default()
+    }
+
+    /// Buffer a streamed thinking-signature fragment for the reasoning item at `index` until its
+    /// `BlockStop` writes it as the item's `encrypted_content` (RSP-01). Bounded on both axes, as
+    /// `append_reasoning` is. Lock poisoning degrades to a no-op.
+    fn append_reasoning_signature(&self, index: usize, fragment: &str) {
+        if fragment.is_empty() {
+            return;
+        }
+        if let Ok(mut map) = self.reasoning_sig_accum.lock() {
+            append_capped(&mut map, index, fragment);
+        }
+    }
+
+    /// Remove and return the buffered signature for the reasoning item at `index`; `None` when the
+    /// stream carried none (the item then has no `encrypted_content`, as a signature-less buffered
+    /// Thinking block has none).
+    fn take_reasoning_signature(&self, index: usize) -> Option<String> {
+        self.reasoning_sig_accum
+            .lock()
+            .ok()
+            .and_then(|mut map| map.remove(&index))
+            .filter(|s| !s.is_empty())
     }
 
     /// Return the stream-stable opaque `item_id` for the output item identified by
@@ -1993,3 +2259,24 @@ mod field_carry_tests;
 #[cfg(test)]
 #[path = "tests/float_usage_tests.rs"]
 mod float_usage_tests;
+
+// Item 305: streamed `output_text.annotation.added` citations equal the buffered read.
+#[cfg(test)]
+#[path = "tests/annotation_stream_tests.rs"]
+mod annotation_stream_tests;
+
+// IR mapping wave (owner directive Q57): one probe per RSP defect id, driving the production
+// reader → seam → writer steps and the stream translator on real bodies.
+#[cfg(test)]
+#[path = "tests/ir_mapping_tests.rs"]
+mod ir_mapping_tests;
+
+// IR mapping round 2 (Q57): the typed IR slots the Responses reader fills and writer emits
+// (ir-slots-landed.md) — RSP-13/15, SHR-03, IR-02/03..08/10/11/14/17/18.
+#[cfg(test)]
+#[path = "tests/ir_slot_wiring_tests.rs"]
+mod ir_slot_wiring_tests;
+
+#[cfg(test)]
+#[path = "tests/ir_round3_tests.rs"]
+mod ir_round3_tests;

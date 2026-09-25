@@ -291,22 +291,22 @@ fn gemini_request_provider_specific_fields_survive_same_proto() {
 
     // CROSS-PROTOCOL: the seam clears `extra`, so none of these Gemini-only fields leak onto a
     // foreign backend. (Simulate the seam by clearing extra, then re-emit to Gemini's own writer:
-    // with no typed carrier, each provider field is gone.)
+    // with no typed carrier, each provider field is gone.) `labels` and `responseModalities` DO
+    // have typed carriers now — the IR metadata map (IR-03) and output modalities (IR-19) — so
+    // they are rebuilt from those, not from the raw copy.
     ir.extra.clear();
     let dropped = Protocol::gemini().writer().write_request(&ir);
     assert!(
         dropped.get("safetySettings").is_none(),
         "safetySettings must drop cross-protocol"
     );
-    assert!(
-        dropped.get("labels").is_none(),
-        "labels must drop cross-protocol"
-    );
+    assert_eq!(dropped["labels"], labels, "labels carry typed (IR-03)");
     let gc = dropped.get("generationConfig");
     let has = |k: &str| gc.and_then(|g| g.get(k)).is_some();
-    assert!(
-        !has("responseModalities"),
-        "responseModalities must drop cross-protocol"
+    assert_eq!(
+        dropped["generationConfig"]["responseModalities"],
+        json!(["TEXT", "AUDIO"]),
+        "responseModalities carry typed (IR-19)"
     );
     assert!(
         !has("mediaResolution"),
@@ -369,12 +369,20 @@ fn gemini_request_content_parts_survive() {
         )),
         "parts[].functionCall name+args must reach the IR ToolUse carrier"
     );
-    // parts[].functionResponse.name / .response
+    // parts[].functionResponse.name / .response — the result carries the id of the call it
+    // answers (IR audit GEM-01), not the bare function name.
+    let call_id = model_turn
+        .iter()
+        .find_map(|b| match b {
+            crate::ir::IrBlock::ToolUse { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .expect("the model turn carries the call");
     let user_turn = &ir.messages[1].content;
     assert!(
         user_turn.iter().any(|b| matches!(
             b, crate::ir::IrBlock::ToolResult { tool_use_id, content, .. }
-            if tool_use_id == "search"
+            if tool_use_id == &call_id
                && content.iter().any(|c| matches!(c, crate::ir::IrBlock::Text { text, .. } if text.contains("\"hits\":3")))
         )),
         "parts[].functionResponse name+response must reach the IR ToolResult carrier: {user_turn:?}"
