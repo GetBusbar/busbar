@@ -619,7 +619,9 @@ fn cohere_tool_plan_is_reasoning_not_visible_text() {
 }
 
 /// A Cohere tool-result `document` content part must keep its STRUCTURE instead of being stringified
-/// into a literal JSON blob the model reads as escaped syntax.
+/// into a literal JSON blob the model reads as escaped syntax: its JSON `data` reaches the IR as the
+/// tool-output `Json` block (the ANT-17 follow-up — it rode the cohere `Vendor` escape, which every
+/// foreign writer dropped), so every target receives the tool's output.
 #[test]
 fn cohere_tool_result_document_is_not_stringified() {
     let entry = crate::proto_codec::protocol_for("cohere").expect("cohere");
@@ -646,30 +648,18 @@ fn cohere_tool_result_document_is_not_stringified() {
     let crate::ir::IrBlock::ToolResult { content, .. } = &tool_msg.content[0] else {
         panic!("expected a ToolResult, got {:?}", tool_msg.content[0]);
     };
-    assert!(
-        content.iter().any(|b| matches!(
-            b,
-            crate::ir::IrBlock::Media {
-                kind: crate::ir::IrMediaKind::Document,
-                ..
-            }
-        )),
-        "a tool-result document must reach the IR as a structured Media block, got {content:?}"
-    );
-    assert!(
-        !content.iter().any(|b| matches!(
-            b, crate::ir::IrBlock::Text { text, .. } if text.contains("\"type\":\"document\"")
-        )),
-        "the document must not be stringified into a JSON blob: the model then sees escaped JSON \
-         syntax instead of the document"
-    );
-    let out = entry.writer.write_request(&ir);
-    let tool_content = &out["messages"][2]["content"];
     assert_eq!(
-        tool_content[0]["type"], "document",
-        "the native document part must be re-emitted structurally, got {tool_content}"
+        content,
+        &vec![crate::ir::IrBlock::Json(json!({"t": "x"}))],
+        "a tool-result document's data must reach the IR as a structured Json block"
     );
-    assert_eq!(tool_content[0]["document"]["id"], "d1");
+    let anthropic = crate::proto_codec::protocol_for("anthropic").expect("anthropic");
+    let out = anthropic.writer.write_request(&ir);
+    assert_eq!(
+        out["messages"][2]["content"][0]["content"],
+        json!([{"type": "text", "text": "{\"t\":\"x\"}"}]),
+        "the document's data must reach a foreign backend as the tool result, got {out}"
+    );
 }
 
 /// Cohere's `billed_units.search_units` is a SEPARATELY BILLED unit that no token field can carry —
