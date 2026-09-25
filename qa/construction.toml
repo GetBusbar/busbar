@@ -296,7 +296,10 @@ busbar-voice = ["busbar-voice-codec"]
 # RE-ARMED 7414 -> 7418, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
 # f42d27d56 moved `sha256_hex` api -> contract under #83 (ARCHITECT P68-0 residue (b)). The +4 is
 # that function; the declared raise above carries the before/after measure.
-contract_caps = 7418
+# RATCHETED DOWN 7418 -> 7414, AT THE MEASUREMENT: rustfmt collapsed the transport-configuration
+# handle's constructor body in `transport/config_handle.rs` from five lines to one (-4), and
+# `ceiling-slack` asks for the room back. Downward only; its pair moves with it.
+contract_caps = 7414
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -849,7 +852,9 @@ contract_crate = "busbar-contract"
 # RE-ARMED 5652 -> 7414 with its pair, at the measurement after the plugin-contract merge. The
 # reason is the one over `[gate.surface_ceilings].contract_caps`, and both rows hold one number.
 # RE-ARMED 7414 -> 7418 with its pair (OWNER RULING Q68(3); the `sha256_hex` #83 move, f42d27d56).
-caps_contract_ceiling = 7418
+# RATCHETED DOWN 7418 -> 7414 with its pair, at the measurement (the rustfmt collapse over
+# `[gate.surface_ceilings].contract_caps` above).
+caps_contract_ceiling = 7414
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
