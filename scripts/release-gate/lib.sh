@@ -303,6 +303,18 @@ fetch() {  # fetch <url> -> body on stdout, non-zero on any non-2xx
   site_curl "${CURL_OPTS[@]}" "$1"
 }
 
+# site_not_run <id> -> 0 (and a SKIP row) when this is a fork PR with no SITE_VERIFY_TOKEN.
+# OWNER RULING Q39 (fork-PR follow-up): a fork's pull_request gets no secrets, and `release gate` is
+# a required status, so failing here would turn every external contributor's PR red for a secret
+# they cannot have. The row is a VISIBLE not-run instead: SKIP is only accepted by gate.sh for the
+# getbusbar.com set (SKIP_ALLOWED), record() prints it as a ::warning:: DID NOT VERIFY, and the
+# summary names it NOT VERIFIED. Any other empty token returns 1 here and the row FAILs (no-token).
+site_not_run() {  # site_not_run <id>
+  [ "$(site_token_state)" = fork-pr ] || return 1
+  record "$1" SKIP "not-run: fork PR has no SITE_VERIFY_TOKEN (Q39)" \
+    "GitHub gives a pull_request from a fork no secrets, so this getbusbar.com row cannot send the X-Busbar-Verify header the Cloudflare WAF skip rule matches (OWNER RULING Q39). NOT VERIFIED, not passed. It runs on the same-repo PR, on push to main and on every release."
+}
+
 # CLOUDFLARE, NAMED RATHER THAN GUESSED AT.
 # getbusbar.com is behind Cloudflare's bot protection, which serves 403 (occasionally 503) to
 # GitHub Actions' datacenter address space while serving every real visitor normally. Treating that

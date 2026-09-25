@@ -730,6 +730,81 @@ def c_q39(tree):
     if site_jobs < 3:
         bad.append("found only %d jobs reading getbusbar.com (floor 3: pointers, verify-site, the release "
                    "gate's channels) -- the reader is broken" % site_jobs)
+    bad += _q39_fork_arms(tree, helper)
+    return bad
+
+
+FORK_NOT_RUN = "not-run: fork PR has no SITE_VERIFY_TOKEN (Q39)"
+SITE_ROWS = ("install:script-live", "install:no-api-github", "install:e2e", "site:download-page")
+
+
+def _bash(script, env, cwd):
+    import subprocess
+    full = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": cwd}
+    full.update(env)
+    p = subprocess.run(["bash", "-c", script], cwd=cwd, env=full, capture_output=True, text=True, timeout=60)
+    return p.returncode, p.stdout + p.stderr
+
+
+def _q39_fork_arms(tree, helper):
+    """Q39 fork-PR ruling, EXECUTED rather than read: with SITE_VERIFY_TOKEN empty, a pull_request from
+    a fork is a visible not-run (the guard warns and exits 0; each site row records the SKIP verdict)
+    while a same-repo PR and a push FAIL (the guard exits 1 with an ::error::; no SKIP is recorded)."""
+    import tempfile
+    bad = []
+    ls = lines(tree, FLEET)
+    job = next(((k, s, e) for k, s, e in job_spans(ls)
+                if "release-gate/channel-checks.sh" in "\n".join(ls[s:e])), None)
+    if not job:
+        return ["%s: no job runs channel-checks.sh" % FLEET]
+    _, js, je = job
+    if not any(re.match(r"^      PR_HEAD_FORK: \$\{\{ github\.event\.pull_request\.head\.repo\.fork \}\}\s*$", ls[q])
+               for q in range(js, je)):
+        bad.append("%s job `%s`: no job env `PR_HEAD_FORK: ${{ github.event.pull_request.head.repo.fork }}` "
+                   "-- the fork arm cannot be told apart" % (FLEET, job[0]))
+    guard = next((b for st, b, _ in run_blocks(ls) if js < st <= je
+                  and any('if [ -z "${SITE_VERIFY_TOKEN:-}" ]; then' in x for x in b)), None)
+    lib = tree.get(LIB, "")
+    snr = _fn_body(lib, "site_not_run")
+    if not snr:
+        bad.append("%s: no site_not_run() -- the fork-PR rows have no verdict" % LIB)
+    ch = tree.get(CHANNELS, "")
+    for rid in SITE_ROWS:
+        if not re.search(r"^(el)?if site_not_run %s; then$" % re.escape(rid), ch, re.M):
+            bad.append("%s: row %s does not ask site_not_run first -- a fork PR FAILs it" % (CHANNELS, rid))
+    allowed = re.search(r'^SKIP_ALLOWED="([^"]*)"', tree.get(RG + "/gate.sh", ""), re.M)
+    if not allowed or not set(SITE_ROWS) <= set(allowed.group(1).split()):
+        bad.append("%s/gate.sh: SKIP_ALLOWED does not hold every site row, so a fork not-run fails the gate" % RG)
+    if guard is None:
+        return bad + ["%s job `%s`: no Q39 empty-token guard step" % (FLEET, job[0])]
+    body = "\n".join(x[indent(guard[0]) if x.strip() else 0:] for x in guard)
+    arms = [("fork PR", {"GITHUB_EVENT_NAME": "pull_request", "PR_HEAD_FORK": "true"}, True),
+            ("same-repo PR", {"GITHUB_EVENT_NAME": "pull_request", "PR_HEAD_FORK": "false"}, False),
+            ("push", {"GITHUB_EVENT_NAME": "push", "PR_HEAD_FORK": "true"}, False),
+            ("workflow_call", {"GITHUB_EVENT_NAME": "workflow_call", "PR_HEAD_FORK": ""}, False)]
+    with tempfile.TemporaryDirectory() as d:
+        os.makedirs(os.path.join(d, RG))
+        with open(os.path.join(d, SITE_CURL), "w") as f:
+            f.write(helper)
+        for name, env, fork in arms:
+            env = dict(env, SITE_VERIFY_TOKEN="")
+            rc, out = _bash(body, env, d)
+            if fork and (rc != 0 or "::warning::" + FORK_NOT_RUN not in out):
+                bad.append("%s Q39 guard, %s + empty token: want exit 0 and a `::warning::%s`, got exit %d"
+                           % (FLEET, name, FORK_NOT_RUN, rc))
+            if not fork and (rc != 1 or "::error::" not in out or "SITE_VERIFY_TOKEN" not in out):
+                bad.append("%s Q39 guard, %s + empty token: want exit 1 and an ::error:: naming "
+                           "SITE_VERIFY_TOKEN, got exit %d" % (FLEET, name, rc))
+            if snr:
+                rec = 'record() { printf "RECORD|%s|%s|%s\\n" "$1" "$2" "$3"; }\n'
+                rc, out = _bash('. %s\n%s%s\nsite_not_run install:e2e; echo "rc=$?"' % (SITE_CURL, rec, snr), env, d)
+                want = "RECORD|install:e2e|SKIP|%s" % FORK_NOT_RUN
+                if fork and (want not in out or "rc=0" not in out):
+                    bad.append("%s site_not_run, %s + empty token: want the row recorded `SKIP %s`, got %r"
+                               % (LIB, name, FORK_NOT_RUN, out.strip()[:160]))
+                if not fork and ("RECORD|" in out or "rc=1" not in out):
+                    bad.append("%s site_not_run, %s + empty token: must record nothing and return 1 (the row "
+                               "FAILs), got %r" % (LIB, name, out.strip()[:160]))
     return bad
 
 
@@ -847,6 +922,15 @@ PLANTS = [
     ("q39", "(k) calling site_curl without sourcing the helper",
      _sub(VD, '          . "$RUNNER_TEMP/site-curl.sh"  # OWNER RULING Q39: site_curl, written by the Q39 step above\n          fail=0\n          # These back',
           '          fail=0\n          # These back')),
+    ("q39", "fork-PR ruling: a SAME-REPO PR with no token treated as a fork (not-run instead of FAIL)",
+     lambda tree: _sub(VD, '[ "${PR_HEAD_FORK:-}" = true ]', '[ -n "${GITHUB_EVENT_NAME:-}" ]', 2)(
+         _sub(SITE_CURL, '[ "${PR_HEAD_FORK:-}" = true ]', '[ -n "${GITHUB_EVENT_NAME:-}" ]')(tree))),
+    ("q39", "fork-PR ruling: the guard's fork arm removed (every fork PR turns the required gate red)",
+     _sub(FLEET, '          if [ "$(site_token_state)" = fork-pr ]; then\n', '          if false; then\n')),
+    ("q39", "fork-PR ruling: a site row not asking site_not_run (a fork PR FAILs it)",
+     _sub(CHANNELS, "if site_not_run install:e2e; then\n  :\nelif ", "if ")),
+    ("q39", "fork-PR ruling: site_not_run recording FAIL instead of the not-run SKIP",
+     _sub(LIB, 'record "$1" SKIP "not-run: fork PR', 'record "$1" FAIL "not-run: fork PR')),
     ("owed-a", "the prove-remote selftest unwired",
      _sub(CI, "        run: ./scripts/prove-remote.sh --selftest\n", "        run: 'true'\n")),
 ]

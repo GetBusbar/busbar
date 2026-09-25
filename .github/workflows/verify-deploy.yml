@@ -346,6 +346,23 @@ jobs:
 
           SITE_CURL_NO_TOKEN=125
 
+          # site_token_state -> present | fork-pr | missing   (the Q39 fork-PR ruling, 2026-09-24)
+          # A pull_request from a FORK is given no secrets by GitHub, so an empty token there is expected and
+          # says nothing about the site: the caller records the site rows as a VISIBLE `not-run` (a SKIP with
+          # a ::warning::), never a fail and never a pass. Every other empty token -- push, release, dispatch,
+          # workflow_call, schedule, a same-repo PR -- is `missing` and FAILS. The fork bit reaches the shell
+          # as PR_HEAD_FORK (job env from github.event.pull_request.head.repo.fork), never spliced into script
+          # text; GITHUB_EVENT_NAME is the runner's own. Only the literal pair (pull_request, true) is fork-pr.
+          site_token_state() {
+            if [ -n "${SITE_VERIFY_TOKEN:-}" ]; then
+              echo present
+            elif [ "${GITHUB_EVENT_NAME:-}" = pull_request ] && [ "${PR_HEAD_FORK:-}" = true ]; then
+              echo fork-pr
+            else
+              echo missing
+            fi
+          }
+
           site_host() {  # site_host <url> -> 0 when the URL's host is getbusbar.com or a subdomain of it
             local a="$1"
             case "$a" in *://*) a="${a#*://}" ;; esac
@@ -1681,6 +1698,23 @@ jobs:
           # moment a copy drifts from this file.
 
           SITE_CURL_NO_TOKEN=125
+
+          # site_token_state -> present | fork-pr | missing   (the Q39 fork-PR ruling, 2026-09-24)
+          # A pull_request from a FORK is given no secrets by GitHub, so an empty token there is expected and
+          # says nothing about the site: the caller records the site rows as a VISIBLE `not-run` (a SKIP with
+          # a ::warning::), never a fail and never a pass. Every other empty token -- push, release, dispatch,
+          # workflow_call, schedule, a same-repo PR -- is `missing` and FAILS. The fork bit reaches the shell
+          # as PR_HEAD_FORK (job env from github.event.pull_request.head.repo.fork), never spliced into script
+          # text; GITHUB_EVENT_NAME is the runner's own. Only the literal pair (pull_request, true) is fork-pr.
+          site_token_state() {
+            if [ -n "${SITE_VERIFY_TOKEN:-}" ]; then
+              echo present
+            elif [ "${GITHUB_EVENT_NAME:-}" = pull_request ] && [ "${PR_HEAD_FORK:-}" = true ]; then
+              echo fork-pr
+            else
+              echo missing
+            fi
+          }
 
           site_host() {  # site_host <url> -> 0 when the URL's host is getbusbar.com or a subdomain of it
             local a="$1"

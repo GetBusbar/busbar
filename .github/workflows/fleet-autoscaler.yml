@@ -257,8 +257,11 @@ jobs:
     # OWNER RULING Q39: the install.sh and site rows read getbusbar.com through lib.sh's
     # http_code/fetch, which route via site_curl (scripts/release-gate/site-curl.sh) and send the
     # Cloudflare WAF skip rule's X-Busbar-Verify header -- to getbusbar.com hosts only.
+    # PR_HEAD_FORK: a fork's pull_request gets no secrets; the Q39 fork-PR ruling turns the site rows
+    # into a visible not-run there (site_token_state in site-curl.sh). Env, never spliced.
     env:
       SITE_VERIFY_TOKEN: ${{ secrets.SITE_VERIFY_TOKEN }}
+      PR_HEAD_FORK: ${{ github.event.pull_request.head.repo.fork }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # helm:render is a hard FAIL if helm is absent (a defect in this workflow, not a release fact),
@@ -268,9 +271,16 @@ jobs:
           version: v3.16.2
       # An empty token is refused HERE, by name, and the channel sweep below still runs (every
       # non-site row is still worth recording); its getbusbar.com rows then read `no-token`, which
-      # is not a Cloudflare-block signature, so they FAIL rather than SKIP.
+      # is not a Cloudflare-block signature, so they FAIL rather than SKIP. The ONE exception (Q39
+      # fork-PR ruling): a pull_request from a fork has no secrets by construction, so it warns and
+      # the site rows record a visible `not-run` SKIP that does not fail the required gate.
       - name: "Q39: SITE_VERIFY_TOKEN is present"
         run: |
+          . scripts/release-gate/site-curl.sh
+          if [ "$(site_token_state)" = fork-pr ]; then
+            echo "::warning::not-run: fork PR has no SITE_VERIFY_TOKEN (Q39). GitHub gives a fork's pull_request no secrets, so the getbusbar.com rows (install.sh, the download page) are recorded NOT VERIFIED for this PR; they run on the same-repo PR, on push to main and on every release."
+            exit 0
+          fi
           if [ -z "${SITE_VERIFY_TOKEN:-}" ]; then
             echo "::error::SITE_VERIFY_TOKEN is empty in this job, so no getbusbar.com request can carry the X-Busbar-Verify header the Q39 Cloudflare WAF skip rule matches (OWNER RULING Q39). The install.sh and site rows FAIL rather than being sent bare into the 403/429. Fix: the repo secret SITE_VERIFY_TOKEN must exist on GetBusbar/busbar and reach this job (job env maps secrets.SITE_VERIFY_TOKEN; a workflow_call caller needs secrets: inherit; a fork pull_request gets no secrets)."
             exit 1
