@@ -675,10 +675,11 @@ fn stale_host_ctx_through_a_real_vtable_slot_fails_closed() {
 #[test]
 fn a_committed_invoke_rewrite_installs_any_json_object_verbatim() {
     // The arguments as the plane handed them to the seam: a locked field the hook never names, plus
-    // the one it does.
-    let mut args = serde_json::json!({ "instructions": "locked by the plane", "voice": "alloy" });
+    // the one it does. `persona` stands in for any string-typed field of a plane's typed config
+    // (the doc above names the concrete one); core never learns which plane's type it is.
+    let mut args = serde_json::json!({ "instructions": "locked by the plane", "persona": "alloy" });
     let rw = busbar_api::RewriteReply {
-        messages: vec![serde_json::json!({ "role": "user", "content": { "voice": 7 } })],
+        messages: vec![serde_json::json!({ "role": "user", "content": { "persona": 7 } })],
         tools: Vec::new(),
     };
     assert!(
@@ -689,9 +690,9 @@ fn a_committed_invoke_rewrite_installs_any_json_object_verbatim() {
     assert_eq!(
         String::from_utf8(serde_json::to_vec(&args).expect("a Value always serializes"))
             .expect("json is utf-8"),
-        r#"{"voice":7}"#,
-        "these are the bytes `transform_over_over` hands back. (1) They are not a valid voice \
-         `SessionConfig` — `voice` is a string on that type — so a plane decoding into a typed \
+        r#"{"persona":7}"#,
+        "these are the bytes `transform_over_over` hands back. (1) They are not a valid typed \
+         config whose `persona` is a string — so a plane decoding into a typed \
          config CAN be handed a committed rewrite it cannot read. (2) `instructions` is GONE: the \
          commit replaced the arguments wholesale rather than patching the one named field."
     );

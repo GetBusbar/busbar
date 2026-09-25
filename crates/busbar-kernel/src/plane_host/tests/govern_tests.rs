@@ -319,7 +319,7 @@ fn charge_over_usage_matches_record_metering() {
     gov.record_metering(
         "vk_faithful_meter",
         "tool:fs",
-        "plane:mcp",
+        "plane:tools",
         Some(&crate::billing::TokenUsage {
             input: 100,
             ..Default::default()
@@ -339,7 +339,7 @@ fn charge_over_usage_matches_record_metering() {
             AdmissionId(7),
             b"vk_faithful_meter",
             b"tool:fs",
-            b"plane:mcp",
+            b"plane:tools",
         );
         assert_eq!(
             (vt.meter_charge.unwrap())(host, &*usage as *const Usage),
@@ -443,7 +443,7 @@ fn billing_off_charge_still_appends_the_counts_to_the_ledger() {
             AdmissionId(36),
             b"vk_billing_off",
             b"tool:fs",
-            b"plane:mcp",
+            b"plane:tools",
         );
         assert_eq!(
             (vt.meter_charge.unwrap())(host, &*usage as *const Usage),

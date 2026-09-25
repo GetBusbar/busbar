@@ -11,7 +11,7 @@
 use super::{inspect_bearer, Binding};
 use base64::Engine as _;
 
-const RESOURCE: &str = "https://gateway.example.com/mcp";
+const RESOURCE: &str = "https://gateway.example.com/plane";
 
 /// Build a JWT-shaped token whose payload is `claims`. The signature is garbage on purpose: this
 /// module never verifies one, and a test that supplied a real signature would imply it did.
@@ -95,13 +95,13 @@ fn a_token_minted_for_somebody_else_is_refused() {
 #[test]
 fn near_miss_audiences_are_not_treated_as_this_resource() {
     for near in [
-        "https://gateway.example.com/mcp-staging",
-        "https://gateway.example.com/mcp/",
-        "https://gateway.example.com/mc",
+        "https://gateway.example.com/plane-staging",
+        "https://gateway.example.com/plane/",
+        "https://gateway.example.com/plan",
         "https://gateway.example.com",
-        "HTTPS://GATEWAY.EXAMPLE.COM/MCP",
-        "http://gateway.example.com/mcp",
-        "https://gateway.example.com.evil.test/mcp",
+        "HTTPS://GATEWAY.EXAMPLE.COM/PLANE",
+        "http://gateway.example.com/plane",
+        "https://gateway.example.com.evil.test/plane",
     ] {
         assert_eq!(
             inspect_bearer(&jwt(serde_json::json!({ "aud": near })), RESOURCE),
