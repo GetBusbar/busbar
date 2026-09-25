@@ -15,6 +15,8 @@
 //! into a signed tarball and dropped into `plugins/`. Both are registered by the one admission and
 //! loaded by the one load over [`BUSBAR_COLD_ENTRY`] or the library's symbols — the same functions.
 
+#![deny(unsafe_code)]
+
 use busbar_plugin_sdk::{
     render_exposition, ExportHandler, ExportStream, MetricFamily, Route, RouteAuth, RouteMethod,
     TEXT_EXPOSITION,
