@@ -334,6 +334,15 @@ impl ProtocolReader for CohereReader {
                                                 });
                                             }
                                         }
+                                        // A `{"type":"document","document":{id?, data}}` part:
+                                        // a document the user attached. It used to be dropped
+                                        // silently (COH-04); it now reads into the IR's document
+                                        // Media — see `read_cohere_document`.
+                                        Some("document") => {
+                                            if let Some(doc) = block_obj.get("document") {
+                                                msg_content.push(read_cohere_document(doc));
+                                            }
+                                        }
                                         // An assistant turn replaying a reasoning model's
                                         // `{"type":"thinking"}` part: the IR's Thinking block, in
                                         // place (COH-04).
@@ -1381,6 +1390,16 @@ impl ProtocolReader for CohereReader {
                     }
                 }
             }
+        }
+        // Citations with no text block to ride — a grounded turn whose `content` carried no text
+        // part — used to be lost with the pending list (COH-17). They ride an EMPTY text block
+        // after the content (ahead of the tool calls), so the grounding still reaches the client.
+        if !citations_pending.is_empty() {
+            content.push(crate::ir::IrBlock::Text {
+                text: String::new(),
+                cache_control: None,
+                citations: std::mem::take(&mut citations_pending),
+            });
         }
 
         if let Some(tool_calls_arr) = message_val.get("tool_calls").and_then(|t| t.as_array()) {

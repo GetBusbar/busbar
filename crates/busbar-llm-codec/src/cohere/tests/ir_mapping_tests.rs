@@ -751,3 +751,152 @@ fn coh16_timeout_is_an_upstream_error() {
         "COH-16: {evs:?}"
     );
 }
+
+// ── COH-04 / COH-17 / COH-18 / COH-19 / COH-20: content ──────────────────────────────────────────
+
+/// COH-04 (document half): a user `document` part used to be dropped silently. A plain text document
+/// reaches a foreign backend as a text/plain document; any other document is carried as this
+/// dialect's own document (which only a Cohere writer can emit) instead of vanishing.
+#[test]
+fn coh04_request_user_document_part_is_carried() {
+    let body = json!({
+        "model": "m",
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "summarise"},
+            {"type": "document", "document": {"id": "d1", "data": {"title": "t", "text": "doc text"}}}
+        ]}]
+    });
+    let out = translate_request("cohere", "gemini", &body);
+    let parts = &out["contents"][0]["parts"];
+    assert_eq!(parts[0], json!({"text": "summarise"}), "{out}");
+    assert_eq!(
+        parts[1]["inlineData"],
+        json!({
+            "mimeType": "text/plain",
+            "data": busbar_substrate_values::media::base64_encode(b"doc text")
+        }),
+        "COH-04: {out}"
+    );
+
+    let rich = json!({
+        "model": "m",
+        "messages": [{"role": "user", "content": [
+            {"type": "document", "document": {"id": "d2", "data": {"title": "t", "snippet": "s"}}}
+        ]}]
+    });
+    let ir = crate::proto_codec::protocol_for("cohere")
+        .expect("cohere")
+        .reader()
+        .read_request(&rich)
+        .expect("read");
+    assert!(
+        matches!(
+            &ir.messages[0].content[..],
+            [crate::ir::IrBlock::Media {
+                source: crate::ir::IrImageSource::Vendor {
+                    vendor: "cohere",
+                    ..
+                },
+                ..
+            }]
+        ),
+        "COH-04: {:?}",
+        ir.messages[0].content
+    );
+}
+
+/// COH-17: grounding citations on a response whose content carried no text part used to be lost;
+/// they now ride an empty text block to the client.
+#[test]
+fn coh17_citations_without_a_text_part_still_reach_the_client() {
+    let body = json!({
+        "id": "c-1", "finish_reason": "TOOL_CALL",
+        "message": {
+            "role": "assistant",
+            "tool_calls": [{"id": "t1", "type": "function",
+                            "function": {"name": "f", "arguments": "{}"}}],
+            "citations": [{"start": 0, "end": 5, "text": "hello", "type": "TEXT_CONTENT",
+                           "sources": [{"type": "document", "id": "d1", "document": {"title": "t"}}]}]
+        },
+        "usage": {"tokens": {"input_tokens": 3, "output_tokens": 1}}
+    });
+    let out = translate_response("cohere", "anthropic", &body);
+    let cited = out["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|b| b["type"] == "text" && b["citations"][0]["cited_text"] == "hello");
+    assert!(cited, "COH-17: {out}");
+    assert_eq!(out["content"][1]["type"], json!("tool_use"), "{out}");
+}
+
+/// COH-18: a foreign text document (OpenAI `file` part, text/plain) is lifted into Cohere's
+/// top-level `documents`; a PDF still has no Cohere form and is dropped.
+#[test]
+fn coh18_text_document_lifts_into_cohere_documents() {
+    let data = busbar_substrate_values::media::base64_encode(b"the doc");
+    let body = json!({
+        "model": "gpt",
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "read it"},
+            {"type": "file", "file": {"filename": "notes.txt",
+                                      "file_data": format!("data:text/plain;base64,{data}")}},
+            {"type": "file", "file": {"filename": "a.pdf",
+                                      "file_data": "data:application/pdf;base64,JVBERi0="}}
+        ]}]
+    });
+    let out = translate_request("openai", "cohere", &body);
+    assert_eq!(
+        out["documents"],
+        json!([{"data": {"text": "the doc", "title": "notes.txt"}}]),
+        "COH-18: {out}"
+    );
+    assert_eq!(out["messages"][0]["content"], json!("read it"), "{out}");
+}
+
+/// COH-19: content parts keep their order; all text used to be emitted ahead of all images.
+#[test]
+fn coh19_content_parts_keep_their_order() {
+    let body = json!({
+        "model": "gpt",
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "compare"},
+            {"type": "image_url", "image_url": {"url": "https://x/a.png"}},
+            {"type": "text", "text": "with"},
+            {"type": "image_url", "image_url": {"url": "https://x/b.png"}}
+        ]}]
+    });
+    let out = translate_request("openai", "cohere", &body);
+    assert_eq!(
+        out["messages"][0]["content"],
+        json!([
+            {"type": "text", "text": "compare"},
+            {"type": "image_url", "image_url": {"url": "https://x/a.png"}},
+            {"type": "text", "text": "with"},
+            {"type": "image_url", "image_url": {"url": "https://x/b.png"}}
+        ]),
+        "COH-19: {out}"
+    );
+}
+
+/// COH-20: a Bedrock `{"json": …}` tool result is the tool's output; it reaches a Cohere backend as
+/// that JSON's text instead of an empty tool result.
+#[test]
+fn coh20_json_tool_result_reaches_cohere_as_text() {
+    let body = json!({
+        "messages": [
+            {"role": "user", "content": [{"text": "q"}]},
+            {"role": "assistant", "content": [{"toolUse": {"toolUseId": "t1", "name": "f", "input": {}}}]},
+            {"role": "user", "content": [{"toolResult": {"toolUseId": "t1", "content": [{"json": {"x": 1}}]}}]}
+        ]
+    });
+    let out = translate_request("bedrock", "cohere", &body);
+    let tool = out["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|m| m["role"] == "tool")
+        .cloned()
+        .unwrap_or_else(|| panic!("no tool message: {out}"));
+    assert_eq!(tool["content"], json!("{\"x\":1}"), "COH-20: {out}");
+}

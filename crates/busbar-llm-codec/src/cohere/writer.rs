@@ -39,6 +39,9 @@ impl ProtocolWriter for CohereWriter {
             messages_arr.push(serde_json::json!({ "role": "system", "content": system_text }));
         }
 
+        // Text documents lifted out of message content into the request's top-level `documents`
+        // (COH-18), in the order they were attached.
+        let mut documents: Vec<serde_json::Value> = Vec::new();
         for msg in &req.messages {
             let role_str = match msg.role {
                 crate::ir::IrRole::System => "system",
@@ -47,11 +50,69 @@ impl ProtocolWriter for CohereWriter {
                 crate::ir::IrRole::Tool => "tool",
             };
 
-            // Build content from the text blocks actually present. A single text block is sent as
-            // a bare string (Cohere's preferred shape); multiple text blocks become a text-part
-            // array. A message whose only block(s) are non-Text (e.g. a sole ToolUse, surfaced
-            // separately via `tool_calls`) must NOT emit `content: []` — Cohere may reject that —
-            // so we omit the `content` key entirely in that case.
+            // Cohere v2 multimodal output: an image block is written as an
+            // `{"type":"image_url","image_url":{"url":"<data-uri|https>"}}` content part — the SAME
+            // shape OpenAI v1 chat uses and this file's reader consumes. `image_url_from_ir` re-wraps
+            // the IR (media_type, data) pair into the original URL (a base64 image becomes a
+            // `data:<mime>;base64,<payload>` URI; an "image_url"-sentinel image emits its raw URL
+            // verbatim). When ANY image is present the message MUST use the array content shape (a
+            // bare string cannot carry an image part). ASSUMPTION (see report): the wire shape is
+            // OpenAI-style `image_url`; no Cohere v2 image fixture exists in-repo to confirm it.
+            //
+            // The parts are emitted in the IR's order (COH-19): all text used to go first and all
+            // images after, so "look at this [image] and compare it to [image]" reached the model
+            // as "look at this and compare it to [image] [image]".
+            let mut parts: Vec<serde_json::Value> = Vec::new();
+            let mut has_image = false;
+            for b in &msg.content {
+                match b {
+                    crate::ir::IrBlock::Text { text, .. } => {
+                        parts.push(serde_json::json!({ "type": "text", "text": text }));
+                    }
+                    // A URL/base64 image projects to an `image_url`; a Responses `file_id` or
+                    // Bedrock `s3Location` reference has no Cohere projection (returns None) and is
+                    // skipped with a warn rather than corrupting the block.
+                    crate::ir::IrBlock::Image { source, .. } => {
+                        match super::super::ir_encode::image_url_from_ir(source) {
+                            Some(url) => {
+                                has_image = true;
+                                parts.push(serde_json::json!({
+                                    "type": "image_url", "image_url": { "url": url }
+                                }));
+                            }
+                            None => tracing::warn!(
+                                "dropping unresolvable vendor-scoped image reference on Cohere \
+                                 egress: a file_id / s3Location has no cross-vendor analog"
+                            ),
+                        }
+                    }
+                    // A top-level `Media` attachment has NO Cohere v2 `/chat` message-content slot:
+                    // v2 message content carries text and `image_url` parts only. A TEXT document
+                    // (or this dialect's own document) does have a Cohere home, though — the
+                    // request's top-level `documents`, Cohere's grounding documents — so it is
+                    // lifted there (COH-18) instead of dropped. Anything else (a PDF's bytes,
+                    // audio, video, a URL or a foreign handle) has no Cohere form and is dropped
+                    // WITH the standard drop-with-warn, so the loss is operator-visible. Media
+                    // carried INSIDE a ToolResult is not a direct `msg.content` block, so it is not
+                    // caught (or double-warned) here.
+                    crate::ir::IrBlock::Media {
+                        kind, source, name, ..
+                    } => match (*kind == crate::ir::IrMediaKind::Document)
+                        .then(|| write_cohere_document(source, name.as_deref()))
+                        .flatten()
+                    {
+                        Some(doc) => documents.push(doc),
+                        None => tracing::warn!(
+                            media_kind = kind.as_str(),
+                            "dropping attachment on Cohere egress: Cohere v2 /chat message \
+                             content carries text and image parts only, and this attachment is \
+                             not a text document the request's `documents` can carry — it is NOT \
+                             emitted"
+                        ),
+                    },
+                    _ => {}
+                }
+            }
             let text_blocks: Vec<&String> = msg
                 .content
                 .iter()
@@ -64,79 +125,15 @@ impl ProtocolWriter for CohereWriter {
                 })
                 .collect();
 
-            // Cohere v2 multimodal output: an image block is written as an
-            // `{"type":"image_url","image_url":{"url":"<data-uri|https>"}}` content part — the SAME
-            // shape OpenAI v1 chat uses and this file's reader consumes. `image_url_from_ir` re-wraps
-            // the IR (media_type, data) pair into the original URL (a base64 image becomes a
-            // `data:<mime>;base64,<payload>` URI; an "image_url"-sentinel image emits its raw URL
-            // verbatim). When ANY image is present the message MUST use the array content shape (a
-            // bare string cannot carry an image part). ASSUMPTION (see report): the wire shape is
-            // OpenAI-style `image_url`; no Cohere v2 image fixture exists in-repo to confirm it.
-            let image_parts: Vec<serde_json::Value> = msg
-                .content
-                .iter()
-                .filter_map(|b| {
-                    if let crate::ir::IrBlock::Image { source, .. } = b {
-                        // A URL/base64 image projects to an `image_url`; a Responses `file_id` or
-                        // Bedrock `s3Location` reference has no Cohere projection (returns None) and
-                        // is skipped with a warn rather than corrupting the block.
-                        match super::super::ir_encode::image_url_from_ir(source) {
-                            Some(url) => Some(serde_json::json!({
-                                "type": "image_url", "image_url": { "url": url }
-                            })),
-                            None => {
-                                tracing::warn!(
-                                    "dropping unresolvable vendor-scoped image reference on Cohere \
-                                     egress: a file_id / s3Location has no cross-vendor analog"
-                                );
-                                None
-                            }
-                        }
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            // A top-level `Media` (document/audio/video) attachment has NO Cohere v2 `/chat`
-            // message-content slot: v2 message content carries text and `image_url` parts only
-            // (native `documents` RAG grounding is a SEPARATE top-level field, not an IR-modeled
-            // per-message part, and tool-result documents are handled on the ToolResult path
-            // below). Such a block is therefore unrepresentable here — drop it WITH the standard
-            // drop-with-warn `warn!` (mirroring the Image/ToolResult arms and the OpenAI/Gemini
-            // egress) so the loss is operator-visible, rather than letting it vanish silently and
-            // violate the IR Media contract. Media carried INSIDE a ToolResult is not a direct
-            // `msg.content` block, so it is not caught (or double-warned) here.
-            for block in &msg.content {
-                if let crate::ir::IrBlock::Media { kind, .. } = block {
-                    tracing::warn!(
-                        media_kind = kind.as_str(),
-                        "dropping attachment on Cohere egress: Cohere v2 /chat message content \
-                         carries text and image parts only — a document/audio/video block has no \
-                         message-content slot and is NOT emitted"
-                    );
-                }
-            }
-
-            let content_val: Option<serde_json::Value> = if image_parts.is_empty() {
-                match text_blocks.as_slice() {
-                    [] => None,
-                    [single] => Some(serde_json::Value::String((*single).clone())),
-                    many => Some(serde_json::Value::Array(
-                        many.iter()
-                            .map(|text| serde_json::json!({ "type": "text", "text": text }))
-                            .collect(),
-                    )),
-                }
-            } else {
-                // Mixed/image content: emit a parts array with text parts first (preserving the
-                // existing ordering of text before media), then the image parts.
-                let mut parts: Vec<serde_json::Value> = text_blocks
-                    .iter()
-                    .map(|text| serde_json::json!({ "type": "text", "text": text }))
-                    .collect();
-                parts.extend(image_parts);
-                Some(serde_json::Value::Array(parts))
+            // A single text block is sent as a bare string (Cohere's preferred shape); several text
+            // blocks, or any image, become a parts array. A message whose only block(s) are non-Text
+            // (e.g. a sole ToolUse, surfaced separately via `tool_calls`) must NOT emit
+            // `content: []` — Cohere may reject that — so the `content` key is omitted then.
+            let content_val: Option<serde_json::Value> = match text_blocks.as_slice() {
+                _ if has_image => Some(serde_json::Value::Array(parts)),
+                [] => None,
+                [single] => Some(serde_json::Value::String((*single).clone())),
+                _ => Some(serde_json::Value::Array(parts)),
             };
 
             // A `ToolResult` block can land on a `Tool`-role message (OpenAI/Cohere source) OR on a
@@ -181,22 +178,16 @@ impl ProtocolWriter for CohereWriter {
                         );
                         let mut text_parts: Vec<String> = content
                             .iter()
-                            .filter_map(|b| {
-                                if let crate::ir::IrBlock::Text { text, .. } = b {
-                                    Some(text.clone())
-                                } else {
-                                    // A non-Text ToolResult block is a Bedrock json-tool-result
-                                    // sentinel with no Cohere analog. Drop WITH a warn (drop-with-warn
-                                    // convention) instead of vanishing silently.
-                                    if super::super::ir_encode::is_json_tool_result_block(b) {
-                                        tracing::warn!(
-                                            "dropping structured json tool-result block on Cohere \
-                                             egress: a Bedrock `{{\"json\":...}}` tool-result has no \
-                                             cross-protocol analog and is NOT emitted"
-                                        );
-                                    }
-                                    None
+                            .filter_map(|b| match b {
+                                crate::ir::IrBlock::Text { text, .. } => Some(text.clone()),
+                                // A structured-JSON tool result (Bedrock `{"json": …}`) is the
+                                // tool's output as JSON; Cohere tool content is text, and JSON
+                                // serialized is that same output as text. It used to be dropped,
+                                // leaving the model an empty tool result (COH-20).
+                                crate::ir::IrBlock::Json(v) => {
+                                    busbar_substrate_values::json::to_string(v).ok()
                                 }
+                                _ => None,
                             })
                             .collect();
                         // Prepend any message-level text onto the first tool result so it survives,
@@ -584,6 +575,16 @@ impl ProtocolWriter for CohereWriter {
         }
         for (key, value) in &req.extra {
             out.insert(key.clone(), value.clone());
+        }
+        // The lifted documents join any `documents` the request already carried (a same-protocol
+        // body keeps its own in `extra`), after them.
+        if !documents.is_empty() {
+            match out.get_mut("documents").and_then(|d| d.as_array_mut()) {
+                Some(existing) => existing.extend(documents),
+                None => {
+                    out.insert("documents".to_string(), serde_json::Value::Array(documents));
+                }
+            }
         }
 
         serde_json::Value::Object(out)

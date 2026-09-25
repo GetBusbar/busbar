@@ -465,6 +465,86 @@ fn write_cohere_reasoning(ask: crate::ir::IrReasoningAsk, table: [u32; 4]) -> se
     }
 }
 
+/// Read a Cohere v2 document object (`{"id"?: "…", "data": {…}}`, a user content part's `document`)
+/// into the IR's document [`crate::ir::IrBlock::Media`] (COH-04).
+///
+/// A plain TEXT document — `data` holding a string `text` and at most a string `title` — IS a
+/// text/plain document, the one every dialect with a document slot carries (Anthropic `document`,
+/// Gemini `inlineData`, Bedrock `document`, OpenAI `file`): it maps to base64 `text/plain` bytes named
+/// by its `title` (else its `id`). Any other `data` is an arbitrary map of fields with no neutral form,
+/// so it rides the opaque `Vendor` escape exactly as a tool-result document does: this dialect's
+/// writer re-emits it, and a foreign writer, which could only mangle it, drops it with a warn.
+fn read_cohere_document(doc: &serde_json::Value) -> crate::ir::IrBlock {
+    let id = doc
+        .get("id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    let data = doc.get("data").and_then(|d| d.as_object());
+    let text = data.and_then(|d| d.get("text")).and_then(|t| t.as_str());
+    let title = data.and_then(|d| d.get("title")).and_then(|t| t.as_str());
+    let plain = data.is_some_and(|d| {
+        d.iter().all(|(k, v)| match k.as_str() {
+            "text" => v.is_string(),
+            "title" => v.is_string(),
+            _ => false,
+        })
+    });
+    match text {
+        Some(text) if plain => crate::ir::IrBlock::Media {
+            kind: crate::ir::IrMediaKind::Document,
+            source: crate::ir::IrImageSource::Base64 {
+                media_type: TEXT_PLAIN.to_string(),
+                data: busbar_substrate_values::media::base64_encode(text.as_bytes()),
+            },
+            name: title.filter(|s| !s.is_empty()).or(id).map(String::from),
+            cache_control: None,
+        },
+        _ => crate::ir::IrBlock::Media {
+            kind: crate::ir::IrMediaKind::Document,
+            source: crate::ir::IrImageSource::Vendor {
+                vendor: VENDOR_NAME,
+                value: doc.clone(),
+            },
+            name: id.map(String::from),
+            cache_control: None,
+        },
+    }
+}
+
+/// The document object Cohere's top-level `documents` carries for an IR document Media, when it has
+/// one (COH-18): this dialect's own `Vendor` document verbatim, or a base64 `text/*` document as
+/// `{"data": {"text": <decoded>, "title"?: <name>}}` (the inverse of [`read_cohere_document`]).
+/// `None` for anything with no Cohere document form — binary bytes (a PDF), a URL, a foreign vendor
+/// handle, undecodable base64.
+fn write_cohere_document(
+    source: &crate::ir::IrImageSource,
+    name: Option<&str>,
+) -> Option<serde_json::Value> {
+    match source {
+        crate::ir::IrImageSource::Vendor { vendor, value } if *vendor == VENDOR_NAME => {
+            Some(value.clone())
+        }
+        crate::ir::IrImageSource::Base64 { media_type, data }
+            if media_type
+                .get(..5)
+                .is_some_and(|p| p.eq_ignore_ascii_case("text/")) =>
+        {
+            let bytes = busbar_substrate_values::media::base64_decode(data)?;
+            let text = std::str::from_utf8(&bytes).ok()?;
+            let mut d = serde_json::Map::new();
+            d.insert("text".to_string(), serde_json::json!(text));
+            if let Some(n) = name.filter(|s| !s.is_empty()) {
+                d.insert("title".to_string(), serde_json::json!(n));
+            }
+            Some(serde_json::json!({ "data": serde_json::Value::Object(d) }))
+        }
+        _ => None,
+    }
+}
+
+/// The media type a plain-text document carries in the IR.
+const TEXT_PLAIN: &str = "text/plain";
+
 /// Read one Cohere v2 `LogprobItem` — `{"text": "<chunk>", "token_ids": [..], "logprobs": [..]}` —
 /// into the neutral [`crate::ir::IrTokenLogprob`] (COH-13 / COH-14).
 ///
