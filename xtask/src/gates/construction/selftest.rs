@@ -668,6 +668,42 @@ fn loop_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         ov,
         &["install_planted_seam"],
     ));
+
+    // THE EXEMPTION'S BOUNDARY, both sides. The kernel's test kit (`test_support`, compiled only
+    // under `cfg(any(test, feature = "test-support"))`) may define a fixture install hook that no
+    // production code calls — that is not a production promise and must not count. The SAME seam
+    // one directory up, in production source, must still go red: the exemption names the kit, not
+    // the kernel.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar-kernel/src/test_support/zz_planted_seam.rs",
+        "static PLANTED_KIT_SEAM_CELL: OnceLock<u32> = OnceLock::new();\n\npub fn \
+         install_planted_kit_seam(v: u32) {\n    let _ = PLANTED_KIT_SEAM_CELL.set(v);\n}\n",
+    );
+    r.push(prove_rows_green(
+        cx,
+        gate,
+        "a fixture install hook defined in the kernel's test kit (`test_support`) is not a \
+         production seam",
+        &["no-uninstalled-seam"],
+        ov,
+    ));
+
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar-kernel/src/zz_test_support_named.rs",
+        "static PLANTED_NEAR_KIT_CELL: OnceLock<u32> = OnceLock::new();\n\npub fn \
+         install_planted_near_kit_seam(v: u32) {\n    let _ = PLANTED_NEAR_KIT_CELL.set(v);\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a production file whose NAME contains test_support (not under the kit directory) is \
+         still scanned",
+        &["no-uninstalled-seam"],
+        ov,
+        &["install_planted_near_kit_seam"],
+    ));
     r
 }
 

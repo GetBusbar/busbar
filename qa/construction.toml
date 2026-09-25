@@ -390,7 +390,20 @@ seam_name_pattern = '^(install_[a-z0-9_]+|set_[a-z0-9_]+_factory)$'
 non_production_path_fragments = ["testkit", "test_support", "plugin-testkit", "fixtures.rs"]
 # A seam DEFINED under the substrate's own test kit is a fixture install hook, never a production
 # promise, so it is not counted at all.
-exempt_seam_path_fragments = ["/testkit/", "/testkit.rs"]
+#
+# `/test_support/` IS THE KERNEL'S TEST KIT UNDER ITS CURRENT NAME — a REPOINT following a rename,
+# not a widening. `e8d4e7120` carries `R100 crates/busbar-kernel/src/testkit/mod.rs ->
+# crates/busbar-kernel/src/test_support/seam.rs` (Locked Decision #33: the kernel ships no
+# "testkit"), and `crates/busbar-kernel/src/lib.rs` declares the module
+# `#[cfg(any(test, feature = "test-support"))] pub mod test_support;` — nothing under it exists in a
+# production build, so a seam defined there is a promise production cannot make or break. The
+# CALLER side of this rule already reads `test_support` as non-production
+# (`non_production_path_fragments`); without the definition-side twin, a fixture hook there
+# (`install_test_mcp_runtime_factory`) could only be satisfied by a FAKE production installer. It
+# read green until 87ec372e2 only because its one caller sat in a `#[cfg(test)] fn` of
+# busbar-core-admin/src/lib.rs, which this scanner (it tracks `#[cfg(test)] mod`, not fns) took
+# for production. A seam anywhere else under `seam_root` is still counted; the selftest holds both.
+exempt_seam_path_fragments = ["/testkit/", "/testkit.rs", "/test_support/"]
 max_uninstalled = 0
 
 # ── 5. neutral-no-dialect ────────────────────────────────────────────────────────────────────────
