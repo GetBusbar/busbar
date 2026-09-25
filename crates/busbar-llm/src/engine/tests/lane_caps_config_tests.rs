@@ -146,7 +146,7 @@ fn shipped_catalog_declares_the_lane_capabilities() {
     }
 }
 
-/// Item 12 (Q57) at the CATALOG: the shipped providers.yaml declares `thinking_always_on` for the
+/// At the CATALOG: the shipped providers.yaml declares `thinking_always_on` for the
 /// Claude models that cannot switch thinking off (Opus 5.5, Fable 5.x) on the first-party
 /// `anthropic` entry and on `bedrock`, keeping adaptive thinking + native structured output; and
 /// `reasoning_none` for the GPT-5.1 / 5.2 ids on `openai` and `responses`. Every id outside those

@@ -120,8 +120,7 @@ Its two siblings are gone (K2c DEAD-UNITS), each after the port-check this docum
 served path):
 
 - `root/units_mcp.rs` declared no `impl … Units for` at all; its one live part, the boot `seal`
-  over four of the plane's own constants, is now `crates/busbar-plane-mcp/tests/declarations_agree.rs`
-  (035b6ebd8).
+  over four of the plane's own constants, is now `crates/busbar-plane-mcp/tests/declarations_agree.rs`.
 - `root/units_a2a.rs` held the three 2026-09-22 money faults (denomination, `rate_card_version: 0`,
   `UnitKey::new(0)`); `A2aUnits` was built only at its own constructor and in its tests, and its
   `seal` checked a table nothing read.
@@ -131,7 +130,7 @@ Their coverage was re-pointed, not retired: the mcp and a2a root legs of
 `root/tests/gauntlet_kernel.rs`'s `served_rider_*` tests, which run each plane's own served-leg
 witnesses (`testkit::SERVED`) through the kernel-loop runner `gauntlet_install::install()` registers
 and require the plane's `drive` to have run inside the loop; the money witness
-(`crates/busbar/tests/plane_meter_seam_reachability.rs`) asks the same served leg (R6).
+(`crates/busbar/tests/plane_meter_seam_reachability.rs`) asks the same served leg.
 
 ---
 

@@ -299,8 +299,8 @@ fn no_abort_the_shipped_kernel_can_raise_carries_a_money_reason() {
 /// "nothing refuses with" claim below is asserted over.
 ///
 /// The floor sits AT the population, with no headroom: one lost site is red. It was armed at one
-/// hundred (bea770849), the population grew to one hundred and one, and 04135c892 (UC-STRIKE, owner
-/// ruling 2026-09-08) deleted `posture::check_approve` and
+/// hundred, the population grew to one hundred and one, and the strike under the owner ruling of
+/// 2026-09-08 deleted `posture::check_approve` and
 /// `posture::check_set_dual_control_required` — the removed `approve` / `set_dual_control` verbs'
 /// own checks, zero production callers — taking their three `RefusalStep::Approve` sites
 /// (`SelfApproval`, `PayloadMismatch`, `InsufficientApprovers`) with them. None is a money reason and

@@ -18,7 +18,7 @@ fn lane_caps_glob_matches_star_runs_only() {
     assert!(!glob_match("a*b*c", "acb"));
 }
 
-/// Item 12 (Q57): a `model_capabilities` rule's `reasoning_none` / `thinking_always_on` reach the
+/// A `model_capabilities` rule's `reasoning_none` / `thinking_always_on` reach the
 /// resolved LaneCaps for a matching model only; a rule that omits them, and a model no rule matches,
 /// keep the pre-capability defaults (today's bytes).
 #[test]

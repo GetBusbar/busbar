@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **`kind: secret`, BOTH WAYS** (DECISIONS #2 rule (1), K5). The secret kind's in-tree fixture
+//! **`kind: secret`, BOTH WAYS** (DECISIONS #2 rule (1)). The secret kind's in-tree fixture
 //! registered through the LINKED door (its `rlib`'s `BUSBAR_COLD_ENTRY`) and the DROPPED-IN door
 //! (its `cdylib`, signed into `plugins/`) resolves to the byte-identical registry row, and the
 //! module each door's `open_secret` opens resolves one script byte-identically — a hit, a miss and

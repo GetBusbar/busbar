@@ -200,7 +200,7 @@ pub struct Declares {
     /// first-party plugin only — see [`busbar_plugin::cold::observe::SeriesDecl`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub metrics: Vec<busbar_plugin::cold::observe::SeriesDecl>,
-    /// The `BUSBAR-NNNN` diagnostics the plugin raises (S3): registered into the host's catalogue
+    /// The `BUSBAR-NNNN` diagnostics the plugin raises: registered into the host's catalogue
     /// for a first-party plugin — see [`busbar_plugin::cold::observe::DiagnosticDecl`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub diagnostics: Vec<busbar_plugin::cold::observe::DiagnosticDecl>,

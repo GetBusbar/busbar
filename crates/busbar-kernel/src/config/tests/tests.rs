@@ -4030,7 +4030,7 @@ static RAW_SECTION_PLANE: crate::plane::registry::PlaneDecl = crate::plane::regi
     ..crate::test_support::NEUTRAL_FALLBACK
 };
 
-/// THE GENERIC CARRIER (item 63, K7): a registered plane's declaring section that no carrier holds is
+/// THE GENERIC CARRIER: a registered plane's declaring section that no carrier holds is
 /// lifted RAW onto `DeployCfg::plane_raw` — its core-owned `rate_card`/`fees` stripped and banked
 /// under the plane's key like any plane's — and `resolve` makes it both LAW 7's "this plane is
 /// configured" and that plane's section-keyed resource, `(section, value)`, the bytes its `build` is

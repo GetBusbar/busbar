@@ -3,7 +3,7 @@
 //! The census counts a noun wherever code or a string literal spells it, and that is right: a
 //! plane key in a `"…"` is the crate naming the plane as surely as an identifier is. One kind of
 //! literal is not a coupling a drain may touch: FROZEN customer- or operator-visible text (a
-//! diagnostics catalog entry, an error string, a wire string), which §9.5 forbids changing. It gets
+//! diagnostics catalog entry, an error string, a wire string), which a customer or operator reads and so must not change. It gets
 //! a marker of the SAME SHAPE as plane-purity-strict's frozen-wire carve-out — per line, reasoned,
 //! and checked rather than trusted:
 //!

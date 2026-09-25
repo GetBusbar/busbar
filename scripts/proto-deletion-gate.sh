@@ -739,7 +739,7 @@ grep -rq 'PLANE_KEY: &str = "mcp"' $MCP_DECL_SRC \
 # shellcheck disable=SC2086
 grep -rq 'ProtocolDecl::named(busbar_plane_mcp::PLANE_KEY)' $MCP_DECL_SRC \
   || die "the MCP protocol crates must build their ProtocolDecl over that key (ProtocolDecl::named(busbar_plane_mcp::PLANE_KEY))"
-# REGISTERED BY THE COMPOSITION ROOT, through its linked table (K1): the root's source names no
+# REGISTERED BY THE COMPOSITION ROOT, through its linked table: the root's source names no
 # plugin, so the registration is DATA in its manifest — `plane-mcp` maps to `busbar-mcp` in
 # `[package.metadata.busbar.linked]`, the feature's `linked-axes` row puts it on the `protocols` axis,
 # and the crate's `linked` entry module exports its ProtocolDecl on that axis (`linked::PROTOCOLS`).

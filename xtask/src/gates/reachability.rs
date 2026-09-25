@@ -64,8 +64,8 @@
 //!     row's `crate::root::<module>`, else the plugin crate's `linked` module) declares and builds
 //!     in an item its `linked-axes` row puts in the generated table, or one that item reaches.
 //!
-//!   `root/units_<plane>.rs` IS NOT THE TEST. That module predates the unification; on `fc4900bbe`
-//!   three of the four were rustc-dead while the rider served their planes (K2-0 §2, §5), so a row
+//!   `root/units_<plane>.rs` IS NOT THE TEST. That module predates the unification; three of the
+//!   four were rustc-dead while the rider served their planes, so a row
 //!   that asked about the module was asking about the wrong code. A green row still names a
 //!   superseded module beside the live path when one is on disk, so green never reads as a statement
 //!   about it. **A plane with neither is RED** (item 180), however many modules it has.
@@ -123,7 +123,7 @@
 //!   that declares it before it becomes an edge — `stem::name` into that module, a bare name into
 //!   its own file or the file a `use` imports it from, a method or `Type::name` into its own file
 //!   only, any other crate path to nothing. It used to key on simple names, which over-approximated:
-//!   on `fc4900bbe` it called 52 of the 96 rustc-dead items of `units_mcp.rs` reached (K2-0 §0).
+//!   it once called 52 of the 96 rustc-dead items of `units_mcp.rs` reached.
 //!   An edge this cannot resolve (a method call through a type in another file) is MISSING — a FALSE
 //!   RED somebody reads and answers, never a dead function read as live. The own-constructor
 //!   exclusion still applies: a `-> Self` body building its own type is never evidence that anything
@@ -235,7 +235,7 @@ struct Plane {
     /// The on-disk spelling, where it differs. `streaming`'s crates and modules are still spelled
     /// `voice` (the #18 rename has not landed), and pretending otherwise would scan nothing.
     on_disk: &'static str,
-    /// The pre-unification `root/<module>.rs` named for this plane. NOT its unit path (R1): it is
+    /// The pre-unification `root/<module>.rs` named for this plane. NOT its unit path: it is
     /// what `reachability:roster` maps `root/units_*` onto, and what a green unit-path row names as
     /// superseded while it is still on disk. Checked for existence, never assumed.
     module: &'static str,
@@ -1179,7 +1179,7 @@ fn is_word_char(c: char) -> bool {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// THE LIVE UNIT PATH (R1) — the kernel-loop runner registered for a plane's key, or a `Units`
+// THE LIVE UNIT PATH — the kernel-loop runner registered for a plane's key, or a `Units`
 // impl its linked entry exports
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -2062,7 +2062,7 @@ impl Gate for ReachabilityGate {
             // flipped per key by `gauntlet_install::install()` from `fn main()` (the #28 rider) — or a
             // `Units` impl its linked entry exports. `root/units_<plane>.rs` is not the test: it
             // predates the unification, and three of the four were rustc-dead while the rider served
-            // their planes (K2-0 §5). Every link is read off CONSTRUCTION SITES and the precise graph
+            // their planes. Every link is read off CONSTRUCTION SITES and the precise graph
             // — never off simple names — and an absent unit path is still a finding (item 180).
             let ident = p.linked_crate.replace('-', "_");
             let axes = axes_of(&manifest, p.linked_crate);
@@ -2537,7 +2537,7 @@ impl Gate for ReachabilityGate {
             ));
         }
 
-        // ── THE LIVE UNIT PATH (R1): each link of the rider, and the linked export, planted away ────
+        // ── THE LIVE UNIT PATH: each link of the rider, and the linked export, planted away ─────────
         //
         // Every case below is the GREEN fixture — where all five planes have a live unit path — with
         // ONE link broken, so the transition is the plant's.
@@ -2856,7 +2856,7 @@ impl Gate for ReachabilityGate {
             "NO LIVE UNIT PATH",
         ));
 
-        // ── THE LINKED TABLE (K1): each registration route, and the generated table's reach ──────
+        // ── THE LINKED TABLE: each registration route, and the generated table's reach ───────────
         //
         // The green fixture registers every plane twice over — a linked-table row folded by
         // `register_planes()`, and a plane type in `plane_claims()`. Each route is taken away in
@@ -3359,7 +3359,7 @@ mod tests {
             .collect()
     }
 
-    /// ITEM 180, RE-SCOPED TO THE LIVE PATH (R1): A ROSTER PLANE WITH NO UNIT PATH IS RED ON BOTH ROWS
+    /// ITEM 180, RE-SCOPED TO THE LIVE PATH: A ROSTER PLANE WITH NO UNIT PATH IS RED ON BOTH ROWS
     /// ABOUT IT, NOT GREEN. The real tree's decision plane has a linked entry that is declaration
     /// only and no key flipped onto a runner; both rows must be RED naming that, and the evidence row
     /// must stay green, because the evidence writes the entry module up.

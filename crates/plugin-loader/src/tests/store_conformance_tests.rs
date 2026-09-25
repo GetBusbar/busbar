@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **`kind: store`, BOTH WAYS** (DECISIONS #2 rule (1), K5). The store kind's in-tree fixture
+//! **`kind: store`, BOTH WAYS** (DECISIONS #2 rule (1)). The store kind's in-tree fixture
 //! registered through the LINKED door (its `rlib`'s `BUSBAR_COLD_ENTRY`) and the DROPPED-IN door
 //! (its `cdylib`, signed into `plugins/`) resolves to the byte-identical registry row, and the
 //! store each door's `open_store` opens answers one script byte-identically. See
