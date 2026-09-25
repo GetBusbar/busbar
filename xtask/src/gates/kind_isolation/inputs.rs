@@ -381,11 +381,21 @@ const INCLUDE_MARKERS: &[(&str, &str, &str)] = &[
 ///   times over, and it is also the spelling a red team used to reach
 ///   `"/../busbar-plane-mcp/src/lib.rs"` — so it is RESOLVED rather than refused, which is
 ///   strictly stronger than either reading it wrong or declining to read it.
+/// * `concat!(env!("OUT_DIR"), "…")` resolves to the crate's OWN build output: cargo gives each
+///   build script a private `OUT_DIR`, and its one writer is this crate's `build.rs`, every read of
+///   which `build_script_reach` scores line by line. Resolved only when that build script EXISTS
+///   (with none, nothing in the tree wrote the file, so it is unscored) and only for a tail that does
+///   not climb out with `..`; otherwise it is refused like any other splice.
 /// * Anything else spliced — `format!`, `stringify!`, `option_env!`, a `concat!` of some other
 ///   variable — is an `Err`, and the caller reds on it. An input this gate cannot resolve is an
 ///   input it cannot score, and `quoted_after` took the FIRST literal, so
 ///   `concat!(env!("X"), "…")` used to resolve to a path inside the crate and be dropped.
-fn include_targets(tail: &str, crate_dir: &str, here: &str) -> Vec<Result<String, String>> {
+fn include_targets(
+    tail: &str,
+    crate_dir: &str,
+    here: &str,
+    has_build_script: bool,
+) -> Vec<Result<String, String>> {
     let t = tail.trim_start();
     // `#[path = "…"]` — an `=` and a literal, never a call.
     let Some(rest) = t.strip_prefix('(') else {
@@ -415,6 +425,12 @@ fn include_targets(tail: &str, crate_dir: &str, here: &str) -> Vec<Result<String
     if ident == "concat" && lits.first().is_some_and(|l| l == "CARGO_MANIFEST_DIR") {
         let joined: String = lits[1..].concat();
         return vec![Ok(resolve(crate_dir, &joined))];
+    }
+    if ident == "concat" && lits.first().is_some_and(|l| l == "OUT_DIR") {
+        let joined: String = lits[1..].concat();
+        if has_build_script && !joined.split('/').any(|s| s == "..") {
+            return vec![Ok(resolve(crate_dir, &format!("OUT_DIR/{joined}")))];
+        }
     }
     vec![Err(format!("{ident}!(…)"))]
 }
@@ -844,6 +860,11 @@ pub fn rule_inputs(
             )
         }
     };
+    let build_scripts: BTreeSet<String> = files
+        .iter()
+        .map(|f| f.rel_str())
+        .filter(|r| r.ends_with("/build.rs"))
+        .collect();
     let mut scanned = 0usize;
     for f in &files {
         let rel = f.rel_str();
@@ -873,7 +894,10 @@ pub fn rule_inputs(
                     let end = (at + 400..=f.text.len())
                         .find(|i| f.text.is_char_boundary(*i))
                         .unwrap_or(f.text.len());
-                    for target in include_targets(&f.text[at..end], &me.dir, &here) {
+                    let has_build_script = build_scripts.contains(&format!("{}/build.rs", me.dir));
+                    for target in
+                        include_targets(&f.text[at..end], &me.dir, &here, has_build_script)
+                    {
                         // A PATH THIS GATE CANNOT RESOLVE IS RED, NOT SKIPPED. Splicing is not a
                         // spelling this row is allowed to read past: an input it cannot resolve is
                         // one it cannot score, and the softest possible failure of the rule that

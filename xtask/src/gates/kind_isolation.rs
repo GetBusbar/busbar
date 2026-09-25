@@ -6844,6 +6844,57 @@ impl Gate for KindIsolationGate {
             &["unresolvable-include", "concat", "busbar-transport-tcp"],
         ));
 
+        // `OUT_DIR` IS RESOLVED ONLY WHERE A BUILD SCRIPT WROTE IT. A crate with no `build.rs` has
+        // no writer for the file, so an `OUT_DIR` splice there names an input nothing scored.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-tcp/src/planted_out_dir.rs",
+            "include!(concat!(env!(\"OUT_DIR\"), \"/linked.rs\"));\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "an OUT_DIR include in a crate with no build script is refused",
+            &[ROW_INPUTS],
+            ov,
+            &["unresolvable-include", "concat", "busbar-transport-tcp"],
+        ));
+
+        // …AND AN `OUT_DIR` TAIL THAT CLIMBS IS REFUSED EVEN WHERE ONE EXISTS: `..` out of the build
+        // output is a path this gate cannot place, whatever the build script wrote.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar/src/planted_out_dir.rs",
+            "include!(concat!(env!(\"OUT_DIR\"), \"/../../x.rs\"));\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "an OUT_DIR include that climbs out with `..` is refused",
+            &[ROW_INPUTS],
+            ov,
+            &[
+                "unresolvable-include",
+                "concat",
+                "crates/busbar/src/planted_out_dir.rs",
+            ],
+        ));
+
+        // THE CONTROL: the same splice, not climbing, in a crate whose build script wrote it, is the
+        // crate's own file and stays green.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar/src/planted_out_dir.rs",
+            "include!(concat!(env!(\"OUT_DIR\"), \"/linked.rs\"));\n",
+        );
+        report.push(prove_rows_green(
+            cx,
+            subject,
+            "an OUT_DIR include in a crate with a build script is its own build output",
+            &[ROW_INPUTS],
+            ov,
+        ));
+
         // A LOCK FILE NAMING AN EDGE NO MANIFEST HAS. Nothing in the tree read `Cargo.lock` at all,
         // so the file that says what cargo COMPILES was never compared with the files that say what
         // was asked for.
