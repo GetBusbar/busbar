@@ -11,8 +11,11 @@ use crate::ledger::Status;
 
 use super::{row_id, InstanceNounNeutralityGate, BASELINE, ROW_FROZEN_LITERAL, ROW_PRAGMA_CEILING};
 
+// qa-names: crates/busbar-core/src/lib.rs -- xtask/src/gates/instance_noun_neutrality/cases.rs -- an overlay-only fixture file every case plants a neutral body into; the crate is absent from the tree on purpose, so the only noun the scan meets is the planted one
 const CORE: &str = "crates/busbar-core/src/lib.rs";
+// qa-names: crates/busbar-core/src/frozen.rs -- xtask/src/gates/instance_noun_neutrality/cases.rs -- the overlay-only file each case plants its frozen literal into; it exists only inside the self-test overlay, never on the tree
 const PLANT: &str = "crates/busbar-core/src/frozen.rs";
+// qa-names: docs/pin.md -- xtask/src/gates/instance_noun_neutrality/cases.rs -- the overlay-only pinning document a planted frozen-literal marker cites; one case deletes it to prove a cited pin that does not exist is refused
 const PIN: &str = "docs/pin.md";
 const NEUTRAL: &str = "pub fn install() {}\n";
 const GOOD: &str = "pub const DOOR: &str = \"the mcp door\"; \
