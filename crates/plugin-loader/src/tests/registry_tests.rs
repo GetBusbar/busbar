@@ -575,33 +575,16 @@ fn inventory_reports_every_row_class_without_loading() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Locate the REAL `busbar-store-sqlite-plugin` cdylib built from a SIBLING checkout of
-/// `GetBusbar/store-sqlite` (mirrors the loader tests' `store_fixture_plugin_path` in
-/// `crate::tests` exactly — see that function's doc comment for the full sibling-checkout
-/// rationale). Used here purely to prove the tarball PIPELINE's mechanics (sign, package, scan,
-/// resolve-by-alias, open), never sqlite-specific behavior (which is that repo's own job).
+/// The REAL `kind: store` cdylib — exactly the loader tests' `store_fixture_plugin_path` in
+/// `crate::tests` (the sibling-built store-sqlite plugin, else the in-tree store-example one; see
+/// that function's doc for where a missing cdylib is a hard failure: ci.yml's `check` job on every
+/// push, qa-gate.yml's `loader` job on `qa`). Used here purely to prove the tarball PIPELINE's
+/// mechanics (sign, package, scan, resolve-by-alias, open), never store-specific behavior.
 fn store_fixture_cdylib() -> Option<PathBuf> {
-    let candidate = {
-        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")); // .../busbarAI/crates/plugin-loader
-        let sibling_root = manifest_dir.join("../../../store-sqlite"); // sibling of busbarAI
-        let name = crate::plugin_library_filename("busbar_store_sqlite_plugin");
-        let candidate = sibling_root.join("target/release").join(&name);
-        candidate.exists().then_some(candidate)
-    };
-    if candidate.is_none()
-        && std::env::var_os("CI").is_some()
-        && std::env::var_os("DEV_GATE").is_some()
-    {
-        panic!(
-            "the store-sqlite-plugin cdylib is not built from the ../store-sqlite sibling \
-                 checkout under dev-gate.yml: refusing to silently skip the end-to-end tarball \
-                 pipeline coverage"
-        );
-    }
-    candidate
+    crate::tests::store_fixture_plugin_path()
 }
 
-/// END-TO-END, REAL CODE: package the real store-sqlite-plugin cdylib into a SIGNED tarball, run
+/// END-TO-END, REAL CODE: package the real kind:store fixture cdylib into a SIGNED tarball, run
 /// the full three-phase pipeline, resolve by ALIAS, and open a live `dyn Store` through the
 /// memfd (Linux) / private-temp loader - exercising put/get over the C ABI. This is the exact
 /// seam the engine sees: verified bytes in, `Box<dyn Store>` out, indistinguishable from a
@@ -610,12 +593,11 @@ fn store_fixture_cdylib() -> Option<PathBuf> {
 fn end_to_end_open_store_from_signed_tarball() {
     let Some(path) = store_fixture_cdylib() else {
         eprintln!(
-            "skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p \
-                 busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)"
+            "skip: no kind:store cdylib built (run under --workspace, or build ../store-sqlite)"
         );
         return;
     };
-    let lib = std::fs::read(&path).expect("read sibling store-sqlite-plugin cdylib");
+    let lib = std::fs::read(&path).expect("read the kind:store fixture cdylib");
     let acme = key(3);
     let dir = tmpdir("e2e");
     let m = sign(&acme, manifest("acme-store-sqlite", "sqlite", "acme"), &lib);
