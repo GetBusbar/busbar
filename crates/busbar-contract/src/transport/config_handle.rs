@@ -62,11 +62,7 @@ impl TransportConfigHandle {
         role: ConfigRole,
         config: Arc<C>,
     ) -> Self {
-        Self {
-            slot,
-            role,
-            config,
-        }
+        Self { slot, role, config }
     }
 
     /// The node-local slot this configuration is registered under — the same slot number a
