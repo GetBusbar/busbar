@@ -172,7 +172,8 @@ fn an_unset_body_cap_resolves_to_the_transport_default() {
     );
     assert_eq!(
         settings.request_body_max_bytes,
-        busbar_transport_http::DEFAULT_REQUEST_BODY_MAX_BYTES
+        32 * 1024 * 1024,
+        "the transport's own default body cap is the 32 MiB this deployment has always had"
     );
 }
 

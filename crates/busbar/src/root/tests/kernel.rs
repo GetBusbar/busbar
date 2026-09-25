@@ -700,11 +700,8 @@ fn the_boot_install_raises_both_halves_of_the_rate_seam_and_main_calls_it() {
     );
     // The call: a root unit's configuration step runs it, `main.rs` runs every enabled unit's
     // configuration step, and the generated table this binary compiles carries that unit.
-    let unit = include_str!("../units_llm.rs");
-    assert!(
-        unit.contains("on_config: Some(|_| crate::root::kernel::install_card_repricer())"),
-        "no root unit's configuration step calls the boot install, so neither half is ever raised"
-    );
+    // The unit is found through the manifest's root-unit table (the data every build's table is
+    // generated from), not by name: some module that table lists must make the call.
     let main = include_str!("../../main.rs");
     assert!(
         main.contains("ROOT_UNITS.iter().filter_map(|u| u.on_config)"),
@@ -712,11 +709,39 @@ fn the_boot_install_raises_both_halves_of_the_rate_seam_and_main_calls_it() {
          called"
     );
     let manifest = include_str!("../../../Cargo.toml");
+    let callers: Vec<String> = root_unit_modules(manifest)
+        .into_iter()
+        .filter(|module| {
+            let path = format!("{}/src/root/{module}.rs", env!("CARGO_MANIFEST_DIR"));
+            std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("the manifest lists root unit `{module}`: {path}: {e}"))
+                .contains("on_config: Some(|_| crate::root::kernel::install_card_repricer())")
+        })
+        .collect();
     assert!(
-        manifest.contains("= \"units_llm\""),
-        "the unit that calls the boot install is not a root unit the manifest lists, so no build's \
-         table carries it"
+        !callers.is_empty(),
+        "no root unit the manifest lists has a configuration step that calls the boot install, so \
+         neither half is ever raised (or the unit that does is not a root unit the manifest lists, \
+         so no build's table carries it)"
     );
+}
+
+/// The module names `[package.metadata.busbar.root-units]` lists, in manifest order.
+fn root_unit_modules(manifest: &str) -> Vec<String> {
+    let mut in_table = false;
+    let mut modules = Vec::new();
+    for line in manifest.lines() {
+        let code = line.split('#').next().unwrap_or("").trim();
+        if code.starts_with('[') {
+            in_table = code == "[package.metadata.busbar.root-units]";
+            continue;
+        }
+        if let (true, Some((_, module))) = (in_table, code.split_once('=')) {
+            modules.push(module.trim().trim_matches('"').to_string());
+        }
+    }
+    assert!(!modules.is_empty(), "the manifest lists no root unit");
+    modules
 }
 
 // ---------------------------------------------------------------------------------------------

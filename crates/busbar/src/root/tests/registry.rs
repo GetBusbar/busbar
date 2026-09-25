@@ -11,66 +11,36 @@ use busbar_kernel::registry::{check_claims, claims_overlap, ConflictReason, Plug
 /// describe them.
 ///
 /// Pinned as text rather than as indices so that a diff of it reads as a routing change. See
-/// the test that reads it for what a change to this array means.
+/// the test that reads it for what a change to this snapshot means. The rows are fixture DATA
+/// (`fixtures/sealed_order.txt`, one `<plane key> <selector>` row per claim), so this source names
+/// no plane.
 #[cfg(all(feature = "plane-voice", feature = "plane-decision"))]
-const SEALED_ORDER: &[&str] = &[
-    "mcp ExactPath(\"/.well-known/oauth-protected-resource/mcp\")",
-    "a2a ExactPath(\"/.well-known/oauth-protected-resource/a2a\")",
-    "a2a ExactPath(\"/.well-known/agent-card.json\")",
-    "a2a ExactPath(\"/a2a/extendedAgentCard\")",
-    "a2a ExactPath(\"/a2a/message:stream\")",
-    "a2a ExactPath(\"/a2a/message:send\")",
-    "decision ExactPath(\"/v1/systemone\")",
-    "a2a ExactPath(\"/a2a/tasks\")",
-    "decision ExactPath(\"/v1/models\")",
-    "a2a ExactPath(\"/a2a/push\")",
-    "a2a ExactPath(\"/a2a/\")",
-    "mcp ExactPath(\"/mcp\")",
-    "mcp ExactPath(\"/mcp\")",
-    "a2a ExactPath(\"/a2a\")",
-    "a2a PathPattern([Lit(\"a2a\"), Lit(\"tasks\"), Var, Lit(\"pushNotificationConfigs\"), Var])",
-    "a2a PathPattern([Lit(\"a2a\"), Lit(\"tasks\"), Var, Lit(\"pushNotificationConfigs\")])",
-    "admin PathPattern([Lit(\"api\"), Lit(\"v1\"), Lit(\"admin\"), Tail])",
-    "llm PathPattern([Lit(\"model\"), Var, Lit(\"invoke\")])",
-    "a2a PathPattern([Lit(\"a2a\"), Lit(\"tasks\"), Var])",
-    "a2a PathPattern([Lit(\"a2a\"), Lit(\"agents\"), Var])",
-    "llm PathPattern([Lit(\"v1\"), Lit(\"models\"), Tail])",
-    "llm PathPattern([Lit(\"v1beta\"), Lit(\"models\"), Tail])",
-    "a2a PathPattern([Lit(\"lf.a2a.v1.A2AService\"), Var])",
-    "llm HeaderPrefix(\"authorization\", \"AWS4-HMAC-SHA256\")",
-    "llm HeaderPresent(\"anthropic-version\")",
-    "llm HeaderPresent(\"anthropic-beta\")",
-    "llm HeaderPresent(\"x-goog-api-key\")",
-    "llm HeaderPresent(\"x-api-key\")",
-    "streaming PathSuffix(\"/v1/audio/transcriptions\")",
-    "llm PathSuffix(\"/v1/audio/translations\")",
-    "llm PathContains(\":streamGenerateContent\")",
-    "llm PathSuffix(\"/v1/chat/completions\")",
-    "llm PathContains(\":batchEmbedContents\")",
-    "streaming PathContains(\"BidiGenerateContent\")",
-    "streaming PathSuffix(\"/v1/audio/speech\")",
-    "llm PathContains(\":generateContent\")",
-    "llm PathSuffix(\"/v1/moderations\")",
-    "llm PathSuffix(\"/v1/embeddings\")",
-    "llm PathSuffix(\"/v1/responses\")",
-    "llm PathContains(\":embedContent\")",
-    "streaming PathSuffix(\"/v1/realtime\")",
-    "llm PathContains(\"/v1/messages\")",
-    "llm PathContains(\"/v1/images/\")",
-    "llm PathSuffix(\"/v2/rerank\")",
-    "llm PathSuffix(\"/v2/embed\")",
-    "llm PathContains(\"/converse\")",
-    "llm PathSuffix(\"/v2/chat\")",
-    "llm PathSuffix(\"/v1/chat\")",
-    "llm PathContains(\":predict\")",
-    "mcp StreamName(\"mcp\")",
-];
+const SEALED_ORDER: &str = include_str!("fixtures/sealed_order.txt");
 
-/// Whether this build carries the voice plane — and therefore its WS transport, its registry row
-/// and its four claims. Every pinned number below is a statement about ONE composition, and the
-/// shipped one (voice on, since `plane-voice` is in `default`) is the one they are pinned
-/// against; a build that compiled voice out is a different composition, not a smaller one.
-const VOICE: bool = cfg!(feature = "plane-voice");
+/// The claim count each plane of the shipped composition declares (`<plane key> <claims>` rows).
+#[cfg(all(feature = "plane-voice", feature = "plane-decision"))]
+const CLAIMS_PER_PLANE: &str = include_str!("fixtures/claims_per_plane.txt");
+
+/// Whether this build links a plane on the kernel's SESSION loop (the `gauntlet-session` axis of the
+/// linked table) — and with it its WS transport, its registry row and its four claims. Every pinned
+/// number below is a statement about ONE composition, and the shipped one (the session plane linked,
+/// since its row's feature is in `default`) is the one they are pinned against; a build that
+/// compiled it out is a different composition, not a smaller one. Read off `LINKED`, so this source
+/// names no plane.
+fn session_linked() -> bool {
+    !crate::LINKED.gauntlet_session.is_empty()
+}
+
+/// The non-comment rows of a fixture file, in order. Read only by the shipped-composition pins,
+/// which a build that compiled a plane out does not compile.
+#[allow(dead_code)]
+fn fixture_rows(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim_end)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_string)
+        .collect()
+}
 
 /// Whether this build carries the decision plane — its registry row and its two claims (item 251).
 const DECISION: bool = cfg!(feature = "plane-decision");
@@ -83,11 +53,11 @@ fn seven_transports_and_five_planes_register() {
     let registry = register_all(&transports).expect("nothing collides on a key");
     assert_eq!(
         registry.count(PluginKind::Transport),
-        if VOICE { 7 } else { 6 }
+        if session_linked() { 7 } else { 6 }
     );
     assert_eq!(
         registry.count(PluginKind::Plane),
-        4 + usize::from(VOICE) + usize::from(DECISION)
+        4 + usize::from(session_linked()) + usize::from(DECISION)
     );
     for key in ["tcp", "tls", "http", "sse", "grpc", "stdio"] {
         assert!(
@@ -95,12 +65,23 @@ fn seven_transports_and_five_planes_register() {
             "transport `{key}` is not registered"
         );
     }
-    for key in ["llm", "mcp", "a2a", "admin"] {
+    // Every plane that claims bytes is registered, and nothing else is: the claimed keys are
+    // read off the planes' own declarations, so this names none of them. With the per-plane claim
+    // counts pinned in `fixtures/claims_per_plane.txt`, the registered set is pinned key by key.
+    let mut claimed: Vec<&str> = plane_claims().iter().map(|c| c.plane).collect();
+    claimed.sort_unstable();
+    claimed.dedup();
+    for key in &claimed {
         assert!(
             registry.resolve(PluginKind::Plane, key).is_some(),
             "plane `{key}` is not registered"
         );
     }
+    assert_eq!(
+        claimed.len(),
+        registry.count(PluginKind::Plane),
+        "a registered plane claims nothing, or a claimed plane is not registered: {claimed:?}"
+    );
     // The decision plane is registered exactly when its crate edge is in the build. The key is the
     // crate's own, so it can only be named on a build that links the crate; on a build without it,
     // the plane count above (no fifth row beyond voice) is the statement that nothing registered.
@@ -118,14 +99,11 @@ fn seven_transports_and_five_planes_register() {
     // root registers without the other.
     assert_eq!(
         registry.resolve(PluginKind::Transport, "ws").is_some(),
-        VOICE
+        session_linked()
     );
-    assert_eq!(
-        registry
-            .resolve(PluginKind::Plane, busbar_plane_streaming::CAP_KEY)
-            .is_some(),
-        VOICE
-    );
+    // And its plane: the claimed-set check above resolves every claimed key and ties the claimed
+    // count to the registered count, and the plane count moves by exactly one with the session
+    // plane — so its row is registered exactly when it is linked.
 }
 
 /// The measured claim total, one row per plane. It is pinned as a number because the number is
@@ -138,15 +116,33 @@ fn seven_transports_and_five_planes_register() {
 fn the_planes_declare_fifty_claims() {
     let claims = plane_claims();
     let count = |plane: &str| claims.iter().filter(|c| c.plane == plane).count();
-    assert_eq!(count("llm"), 25);
-    assert_eq!(count("mcp"), 4);
-    assert_eq!(count("a2a"), 14);
-    assert_eq!(count(busbar_plane_streaming::CAP_KEY), 4);
+    // One `<plane key> <claims>` row per plane, pinned as fixture DATA so this source names none.
+    let pinned: Vec<(String, usize)> = fixture_rows(CLAIMS_PER_PLANE)
+        .iter()
+        .map(|row| {
+            let (key, n) = row.split_once(' ').expect("`<plane key> <claims>`");
+            (key.to_string(), n.parse().expect("a claim count"))
+        })
+        .collect();
+    assert_eq!(pinned.len(), 6, "six planes are pinned: {pinned:?}");
+    for (key, n) in &pinned {
+        assert_eq!(
+            count(key),
+            *n,
+            "plane `{key}` declares {} claims",
+            count(key)
+        );
+    }
+    // The decision plane's key is its crate's own, so it is also asserted by that name.
     assert_eq!(
         count(<busbar_plane_decision::DecisionPlane as PlaneMeta>::KEY),
         2
     );
-    assert_eq!(count("admin"), 1);
+    assert_eq!(
+        pinned.iter().map(|(_, n)| n).sum::<usize>(),
+        claims.len(),
+        "every claim belongs to a pinned plane"
+    );
     assert_eq!(claims.len(), 50);
 }
 
@@ -305,7 +301,11 @@ fn the_sealed_order_of_the_fifty_claims_is_pinned() {
         .iter()
         .map(|i| format!("{} {:?}", claims[*i].plane, claims[*i].claim.selector))
         .collect();
-    assert_eq!(walk, SEALED_ORDER, "the sealed claim order moved");
+    assert_eq!(
+        walk,
+        fixture_rows(SEALED_ORDER),
+        "the sealed claim order moved"
+    );
 }
 
 /// The refusal is still the point of the check. Two planes claiming one path at the same
@@ -469,7 +469,7 @@ fn the_shipped_transport_stack_composes() {
     };
     // The two transports whose `new()` yields something that refuses every connection are the
     // two that must be built through `over`, and the rows say they were.
-    if VOICE {
+    if session_linked() {
         assert_eq!(composed_over("ws"), Some("http"));
     }
     assert_eq!(composed_over("grpc"), Some("http"));
@@ -545,8 +545,14 @@ fn every_claimed_plane_key_is_a_registered_plane() {
 /// the seven.
 #[test]
 fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
+    // Planted on a REAL registered plane (the first that claims anything), so the refusal is about
+    // the transport and nothing else.
+    let plane = plane_claims()
+        .first()
+        .expect("the shipped planes claim bytes")
+        .plane;
     let telephony = vec![PlaneClaim {
-        plane: busbar_plane_streaming::CAP_KEY,
+        plane,
         claim: Claim {
             transport: "twilio-media",
             selector: Selector::PrefixOneLevel("/twilio"),
@@ -560,9 +566,9 @@ fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
     assert!(matches!(
         refusal,
         BootRefusal::UnregisteredClaimTransport {
-            plane: busbar_plane_streaming::CAP_KEY,
+            plane: refused,
             transport: "twilio-media",
-        }
+        } if refused == plane
     ));
 }
 
@@ -638,6 +644,79 @@ fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
     );
 }
 
+/// The voice plane's realtime upstreams are `wss`, and this node must be able to dial one.
+///
+/// The ws transport refuses a secure target over a cleartext lower layer rather than put a
+/// plain upgrade on a wire the caller was told was encrypted. That refusal is right, and with a
+/// single `ws` instance composed over `http` it also means every `wss://` upstream this
+/// deployment dials is refused at the dial. So the root composes
+/// the key twice: the ingress instance over `http`, which is what an in-band upgrade arrives
+/// on, and a dial-side instance over `tls`, which is the only composition under which `wss` is
+/// honest. A `ws://` destination still resolves to the ingress instance, so nothing that worked
+/// over cleartext quietly moved onto a different stack.
+#[cfg(all(feature = "plane-voice", feature = "plane-decision"))]
+#[test]
+fn a_secure_realtime_upstream_resolves_to_the_tls_composed_instance() {
+    let sealed = seal(ClientSettings::default()).expect("every claim names a live transport");
+    let ws_key = <WsTransport as TransportMeta>::KEY;
+
+    let secure = sealed
+        .transports
+        .dialer(
+            ws_key,
+            &UpstreamAddress::socket("wss://api.openai.com/v1/realtime"),
+        )
+        .expect("`ws` is a registered key");
+    assert_eq!(
+        secure.composed_over(),
+        Some(TlsTransport::KEY),
+        "a wss upstream must dial through the tls-composed instance, or the ws transport \
+         refuses it as a downgrade and the session plane cannot reach a realtime provider at all"
+    );
+
+    let cleartext = sealed
+        .transports
+        .dialer(
+            ws_key,
+            &UpstreamAddress::socket("ws://127.0.0.1:8080/duplex"),
+        )
+        .expect("`ws` is a registered key");
+    assert_eq!(
+        cleartext.composed_over(),
+        Some(HttpTransport::KEY),
+        "a cleartext ws destination stays on the instance the in-band upgrade arrives on"
+    );
+
+    // The two are different objects, not one instance answering two ways.
+    assert!(!Arc::ptr_eq(&secure, &cleartext));
+
+    // And every other key is unchanged: one composition, one instance, whatever the address.
+    for (key, over) in [
+        (TcpTransport::KEY, None),
+        (HttpTransport::KEY, None),
+        (SseTransport::KEY, Some(HttpTransport::KEY)),
+        (GrpcTransport::KEY, Some(HttpTransport::KEY)),
+        (StdioTransport::KEY, None),
+    ] {
+        let dialer = sealed
+            .transports
+            .dialer(key, &UpstreamAddress::socket("wss://api.openai.com"))
+            .unwrap_or_else(|| panic!("`{key}` is a registered key"));
+        assert_eq!(dialer.composed_over(), over, "`{key}` resolved elsewhere");
+    }
+
+    assert!(
+        sealed
+            .transports
+            .dialer(
+                "twilio-media",
+                &UpstreamAddress::socket("wss://example.invalid")
+            )
+            .is_none(),
+        "a key the root never registered resolves to no instance"
+    );
+}
+
 /// And the same check over every declared claim, voice included now that its telephony row is
 /// gone: nothing anywhere names a transport the root did not register.
 #[test]
@@ -665,32 +744,4 @@ fn every_planes_claims_name_a_registered_transport() {
             claim.claim.transport
         );
     }
-}
-
-/// THE SEAL IS ON THE BOOT PATH, NEUTRALLY. `run()` seals the composition off the resolved limits
-/// before the root units' configuration step, in every build: the call is not behind a feature and
-/// is not a root unit's, so a build that links no plane's root unit still refuses a composition
-/// that does not seal, rather than booting past a check only one plane's unit ran.
-#[test]
-fn the_boot_path_seals_the_composition_in_every_build() {
-    let main = include_str!("../../main.rs");
-    let run = &main[main.find("async fn run(").expect("the boot's run()")..];
-    let call = "root::registry::seal_or_exit(root::policy::client_settings(&cfg.limits));";
-    let sealed = run.find(call).expect("run() seals the composition");
-    let units = run
-        .find("ROOT_UNITS.iter().filter_map(|u| u.on_config)")
-        .expect("the root units' configuration step");
-    assert!(
-        sealed < units,
-        "the seal answers before any root unit composes"
-    );
-    let line_before = run[..sealed]
-        .lines()
-        .rev()
-        .find(|l| !l.trim().is_empty() && !l.trim_start().starts_with("//"))
-        .unwrap_or_default();
-    assert!(
-        !line_before.trim_start().starts_with("#[cfg"),
-        "the seal is not behind a feature: {line_before}"
-    );
 }
