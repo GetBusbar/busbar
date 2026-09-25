@@ -88,8 +88,7 @@ pub trait HistoryArchive {
 /// It holds cards and nothing else. The TIER is not here, and that is the rule rather than an
 /// omission: a tier is a property of the chain a request was admitted through, the line records it
 /// as it records its quantities (the ledger is what happened), and the statement
-/// ([`crate::totals_as_of`]) and the adjusting entries ([`crate::adjusting_entries`]) both price at
-/// the line's own tier. An archive-held tier was a second source of the same fact that nothing in
+/// ([`crate::totals_as_of`]) prices at the line's own tier. An archive-held tier was a second source of the same fact that nothing in
 /// production ever filled, so the recompute — the arbiter — priced by a different rule from the
 /// bill it arbitrates, and an archive built with no tiers repriced every discounted line at full
 /// price and wrote that figure back into the cache (item 435).
@@ -175,8 +174,8 @@ impl Default for DerivedPrice {
 /// One booked ledger line, as the journal holds it.
 ///
 /// **A booked line is never rewritten.** Everything above [`Posting::cached`] is what happened, and
-/// what happened does not change: an amendment to the history moves money by emitting an adjusting
-/// entry against this line, not by editing it. The one field this crate ever writes back is the
+/// what happened does not change: an amendment to the history reprices this line as a dated view
+/// (#77(3)), never by editing it and never by booking an adjusting line beside it (#77(2)). The one field this crate ever writes back is the
 /// cache, and that is because the cache was never the record in the first place.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Posting {
@@ -216,8 +215,8 @@ impl Posting {
     ///
     /// It travels with the price rather than beside it because it is a fact ABOUT the price. What
     /// the line was ORIGINALLY priced under, once an amendment has moved it, is not lost either —
-    /// it is on the adjusting entry, which carries both card numbers and both figures and is never
-    /// collapsed into the lines it describes.
+    /// the dated history keeps the entry the amendment out-ranks, so the earlier snapshot still
+    /// resolves to it.
     pub fn history_seq(&self) -> HistorySeq {
         self.cached.history_seq
     }
@@ -616,7 +615,7 @@ pub fn recheck(posting: &Posting, archive: &dyn HistoryArchive) -> Recheck {
         return refuse(Divergence::HistoryMissing { seq: head });
     };
 
-    // The line's own tier, as the statement and the adjusting entries price it: the arbiter judges
+    // The line's own tier, as the statement prices it: the arbiter judges
     // the cache by the rule the bill is computed with. A tier edited by hand under an unmoved head
     // still alarms, through the priced figure, exactly as an edited quantity does.
     let priced = match price_line(posting, &view, posting.tier_bp) {

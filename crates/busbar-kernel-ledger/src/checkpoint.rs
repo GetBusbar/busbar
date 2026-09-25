@@ -176,8 +176,9 @@ pub struct Checkpoint {
     ///
     /// `None` on a checkpoint sealed before the history existed, and that is not a defect: such a
     /// checkpoint is digested under the encoding it was sealed with, so it still verifies, byte for
-    /// byte, forever. A sealed body is never rewritten — including by an amendment, which is
-    /// expressed forward as an adjusting entry precisely so that it does not have to be.
+    /// byte, forever. A sealed body is never rewritten — including by an amendment, which is a dated
+    /// card entry the corrected window reprices against as a view, precisely so that it does not
+    /// have to be.
     pub history_seq: Option<HistorySeq>,
     /// The digest of the sealed body.
     pub body_hash: [u8; 32],

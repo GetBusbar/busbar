@@ -210,16 +210,10 @@ why       = "Durability is built with checkpoints: Vec::new() and the one functi
 unshipped = true
 switch    = "STRIKE THIS ROW in the commit that calls journal_checkpoint on a real schedule or seam, together with ledger-checkpoint-seal."
 
-# LEDGER — a signed rate-history amendment books no adjusting entry.
-[[capability]]
-id        = "ledger-adjusting-entries"
-built     = "crates/busbar-kernel-ledger/src/settle.rs"
-symbol    = "adjusting_entries"
-construct = ["adjusting_entries("]
-scope     = ["crates"]
-why       = "The admin verb that amends rate history appends a card entry and books nothing, so the adjustments/drawn journal pair that would make a correction legible beside the original bill is never written. MONEY: PARKED-OWNER, an owner signs this, not an agent."
-unshipped = true
-switch    = "STRIKE THIS ROW when the amend-rate-history effect books the adjusting entries it derives. This is a BILLED-BYTE change and needs an owner signature before it lands."
+# LEDGER — `ledger-adjusting-entries` STRUCK 2026-09-25 (UC-STRIKE; #77(2) "no adjusting lines",
+# #77(3) "price is NEVER stored", #79, Q36/Q9): `adjusting_entries`, `Repricing` and
+# `Ledger::record_repricing` had no production caller and are DELETED — an amendment reprices its
+# window as a dated view over stored counts, and books nothing.
 
 # MONEY — the #79 exact pricing view has no production producer.
 # `money-one-function-view` STRUCK 2026-09-24 by owner ruling: the one function is the production

@@ -17,11 +17,10 @@
 //! re-derives every figure from the quantities; it never sums the caches, so its answer does not
 //! depend on whether the recompute has been round yet.
 //!
-//! **A booked line is never rewritten.** An amendment to the history moves money by emitting an
-//! adjusting entry — one [`Repricing`] per affected balance and window, carrying both figures and
-//! the delta — which rides the `adjustments` cell the identity already has. `settled` does not
-//! move, no term is added to the identity, and a window already sealed into a signed checkpoint is
-//! corrected forward rather than edited backward.
+//! **A booked line is never rewritten, and no adjusting line is booked beside it** (#77(2)). An
+//! amendment to the history is a dated card entry; the window it corrects reprices as a VIEW over
+//! the stored quantities (#77(3), #79), so `settled` does not move, no term is added to the
+//! identity, and a window already sealed into a signed checkpoint is never edited.
 //!
 //! ## The five things in here, and why each is separate
 //!
@@ -110,7 +109,7 @@ pub use recompute::{
     Finding as RecomputeFinding, HistoryArchive, Pass, Posting, PostingOrigin, PricedLine, Recheck,
     SealedHistory, Verdict, Watermark, BASIS_POINTS,
 };
-pub use settle::{adjusting_entries, Figures, Ledger, Overdraft, Repricing, Settlement};
+pub use settle::{Figures, Ledger, Overdraft, Settlement};
 pub use totals::{
     totals_as_of, Book, BucketId, BucketScope, CapDimension, Statement, StatementRow, Totals,
     TotalsKey, Unpriced, WindowStart,

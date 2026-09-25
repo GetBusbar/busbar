@@ -153,7 +153,8 @@ pub const KNOWN_UNSHIPPED: &[&str] = &[
     "budget-pricer-card",
     "ledger-checkpoint-seal",
     "ledger-checkpoint-journal",
-    "ledger-adjusting-entries",
+    // `ledger-adjusting-entries` STRUCK 2026-09-25 (#77(2)(3), Q36/Q9): the adjusting-entry code
+    // is deleted; an amendment reprices as a view.
     // `money-one-function-view` STRUCK 2026-09-24 (owner ruling Q12/Q25c; item 421).
     "voice-denied-destinations",
     "plane-plugin-open",
