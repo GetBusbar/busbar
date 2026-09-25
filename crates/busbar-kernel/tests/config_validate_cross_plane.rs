@@ -2,16 +2,17 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! CROSS-PLANE `config_validate::validate_unified_pool_names` AGREEMENT TESTS, relocated here from
-//! `src/config_validate/tests/tests.rs` (the A6/HostCtx dev-dependency-cycle cleanup): each builds a
-//! REAL `busbar_mcp::mcp::config::ToolsCfg` and hands it to core's own validator through
-//! `RootCfg::tool_defs` (`Box<dyn PlaneCfg>`), which only type-checks with ONE `busbar_kernel` in the
-//! graph — see `plane_integration.rs`'s header for the full rationale, and `config_cross_plane.rs`'s
-//! header for the twin move out of `src/config/tests/tests.rs`.
+//! `src/config_validate/tests/tests.rs`: each hands core's own validator a REAL `tools:` registry
+//! (`RootCfg::tool_defs`, `Box<dyn PlaneCfg>`) lifted by whichever test-linked plane declares that
+//! section (`tests/linked/mod.rs`), which only type-checks with ONE `busbar_kernel` in the graph —
+//! see `plane_integration.rs`'s header. This file names no plane crate and no plane type.
 //!
 //! `validate_unified_pool_names` was widened from private to `pub` (in `busbar_kernel::config_validate`)
 //! for exactly this move — the test still drives the real function directly, not the aggregate
 //! `validate`/`validate_with_unset` entry point (one of these three tests asserts `errors.is_empty()`,
 //! so routing through the full validator risked an unrelated rule firing on the shared minimal fixture).
+
+mod linked;
 
 use busbar_kernel::config::{self, RootCfg};
 use busbar_kernel::config_validate::validate_unified_pool_names;
@@ -76,16 +77,19 @@ fn make_model_unbounded(provider: &str) -> config::ModelCfg {
     }
 }
 
-/// A minimal `tools:` registry holding one server id, for the collision tests below — byte-identical
-/// to `src/config_validate/tests/tests.rs::tools_with`.
-fn tools_with(id: &str) -> busbar_mcp::mcp::config::ToolsCfg {
-    let mut td = busbar_mcp::mcp::config::ToolsCfg::default();
-    td.servers.insert(
-        id.to_string(),
-        serde_yaml::from_str("{url: 'https://x.example/mcp', pin: {mechanism: unpinned}}")
-            .expect("a minimal server"),
+/// A minimal `tools:` registry holding one server id, for the collision tests below — CONFIG-DRIVEN:
+/// the section is parsed through the kernel's own config entry point (`deploy_from_yaml_str`), so the
+/// plane that declares `tools:` (a test-linked plane, `tests/linked/mod.rs`) lifts it into its own
+/// type-erased config exactly as boot does; this file names no plane type.
+fn tools_with(id: &str) -> Box<dyn busbar_kernel::plane::config::PlaneCfg> {
+    linked::install();
+    let text = format!(
+        "providers: {{}}\nmodels: {{}}\ntools:\n  {id}: {{ url: \"https://x.example/t\", pin: {{ mechanism: unpinned }} }}\n"
     );
-    td
+    config::deploy_from_yaml_str(&text)
+        .unwrap_or_else(|e| panic!("a minimal server parses: {e}\n{text}"))
+        .tools
+        .0
 }
 
 /// A name defined in TWO nouns makes a bare member ambiguous — the router could not tell which plane
@@ -95,7 +99,7 @@ fn a_name_defined_in_two_nouns_is_refused() {
     let mut models = HashMap::new();
     models.insert("shared".to_string(), make_model_unbounded("prov"));
     let mut cfg = make_root_cfg(HashMap::new(), models, HashMap::new());
-    cfg.tool_defs = Box::new(tools_with("shared"));
+    cfg.tool_defs = tools_with("shared");
 
     let mut errors = Vec::new();
     validate_unified_pool_names(&cfg, &mut errors);
@@ -113,7 +117,7 @@ fn a_name_defined_in_two_nouns_is_refused() {
 #[test]
 fn a_pool_named_like_a_tools_registration_is_refused() {
     let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
-    cfg.tool_defs = Box::new(tools_with("search"));
+    cfg.tool_defs = tools_with("search");
     cfg.tool_pools.insert(
         "search".to_string(),
         CandidatePoolCfg {
@@ -138,7 +142,7 @@ fn distinct_names_across_nouns_and_pools_pass() {
     let mut models = HashMap::new();
     models.insert("gpt".to_string(), make_model_unbounded("prov"));
     let mut cfg = make_root_cfg(HashMap::new(), models, HashMap::new());
-    cfg.tool_defs = Box::new(tools_with("fs-server"));
+    cfg.tool_defs = tools_with("fs-server");
 
     let mut errors = Vec::new();
     validate_unified_pool_names(&cfg, &mut errors);

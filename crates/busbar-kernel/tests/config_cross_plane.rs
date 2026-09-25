@@ -1,35 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! CROSS-PLANE `config::resolve` AGREEMENT TESTS, relocated here from `src/config/tests/tests.rs`
-//! (the A6/HostCtx dev-dependency-cycle cleanup): each of these calls a REAL plane crate's function
-//! or constructs a REAL plane crate's config type and hands it to core's OWN `resolve`/
-//! `merge_provider_fallback`, so the busbar_kernel type on both sides of the call must be the SAME
-//! instance — which only an integration-test target gives (busbar_kernel links as an ordinary
-//! dependency, the same instance the plane crates link), never a `#[cfg(test)]` unit module in
-//! `src/`, which Cargo's dev-dependency back-edge (busbar-kernel dev-depends on busbar-llm/-mcp,
-//! which normal-depend on busbar-kernel) compiles as a SECOND, distinct `busbar_kernel` instance.
-//! See `plane_integration.rs`'s header for the same rationale, first written there.
-//!
-//! `merge_provider_fallback` (in `busbar_kernel::config`) and `validate_unified_pool_names` (in
-//! `busbar_kernel::config_validate`, used by `config_validate_cross_plane.rs`) were widened from
-//! private to `pub` for exactly this move — nothing about the tests themselves changed; they still
-//! drive the real functions directly, not a shim.
+//! CROSS-PLANE `config::resolve` AGREEMENT TESTS, relocated here from `src/config/tests/tests.rs`:
+//! each drives core's OWN `resolve` / `merge_provider_fallback` against the REAL planes this binary
+//! links (the test-linked table, `tests/linked/mod.rs`), so the busbar_kernel instance on both sides
+//! of the call is the one the planes link — which only an integration-test target gives. The
+//! configuration is CONFIG-DRIVEN: a YAML document parsed through the kernel's own entry point, so
+//! the sections are lifted by whichever registered plane declares them and this file names no plane
+//! crate and no plane type.
+
+mod linked;
 
 use busbar_kernel::config::{
-    merge_provider_fallback, resolve, AdvancedCfg, ConfigMgmtCfg, DeployCfg, HealthDefaultsCfg,
-    LimitsCfg, PoolCfg, ProviderDef, ProviderDeploy, RoutingCfg, SecretRef,
-    DEFAULT_ADMIN_LISTEN_ADDR, DEFAULT_LISTEN_ADDR,
+    deploy_from_yaml_str, merge_provider_fallback, resolve, DeployCfg, ProviderDef, ProviderDeploy,
+    SecretRef,
 };
 use std::collections::HashMap;
 
-/// Register the real MCP/A2A planes in the process registry, idempotent (first-wins) — needed
-/// because `resolve()` refuses a non-default `tools:`/`agents:` section as "compiled without the
-/// plane that owns it" unless that plane is actually registered. `src/config/tests/tests.rs` got
-/// this for free from the removed `TEST_BUILTIN_PLANE_DECLS`; here it is explicit, per-test.
+/// Register every test-linked plane in the process registry, idempotent (first-wins) — needed
+/// because the kernel lifts a `tools:`/`agents:` section only when a registered plane declares it.
 fn register_planes() {
-    busbar_mcp::testkit::install_test_seams();
-    busbar_a2a::testkit::install_test_seams();
+    linked::install();
 }
 
 /// A minimal ProviderDef for resolve() tests — byte-identical to the fixture this test used before
@@ -77,46 +68,14 @@ fn provider_deploy(env_var: &str) -> ProviderDeploy {
     }
 }
 
-/// An all-default DeployCfg for struct-literal resolve() tests (DeployCfg has no Default because
-/// providers/models are required in YAML) — byte-identical to `src/config/tests/tests.rs::base_deploy`.
-fn base_deploy() -> DeployCfg {
-    DeployCfg {
-        tools: Default::default(),
-        agents: Default::default(),
-        streams: Default::default(),
-        decisions: Default::default(),
-        listen: DEFAULT_LISTEN_ADDR.into(),
-        endpoint: Default::default(),
-        oauth_as: None,
-        public_url: None,
-        tls: None,
-        admin_listen: DEFAULT_ADMIN_LISTEN_ADDR.into(),
-        admin_tls: None,
-        admin_require_mtls: true,
-        config: ConfigMgmtCfg::default(),
-        providers_file: None,
-        auth: None,
-        identity_providers: Default::default(),
-        providers: HashMap::new(),
-        models: HashMap::new(),
-        pools: Default::default(),
-        hooks: Default::default(),
-        groups: Default::default(),
-        rate_card: None,
-        per_request_fee: 0,
-        plane_rate_cards: Default::default(),
-        plane_fees: Default::default(),
-        plane_raw: Default::default(),
-        store: None,
-        secrets: Default::default(),
-        advanced: AdvancedCfg::default(),
-        plugins: Default::default(),
-        security: None,
-        limits: LimitsCfg::default(),
-        export: Default::default(),
-        health: HealthDefaultsCfg::default(),
-        routing: RoutingCfg::default(),
-    }
+/// A DeployCfg parsed from `sections` through the kernel's own config entry point
+/// (`deploy_from_yaml_str`, the boot path's lift), after the linked planes are installed — so a
+/// section is lifted exactly when a registered plane declares it, as in a shipped binary. Empty
+/// `providers:`/`models:` stand in for the required keys this file's refusals do not concern.
+fn deploy_yaml(sections: &str) -> DeployCfg {
+    register_planes();
+    let text = format!("providers: {{}}\nmodels: {{}}\n{sections}");
+    deploy_from_yaml_str(&text).unwrap_or_else(|e| panic!("the test config parses: {e}\n{text}"))
 }
 
 /// THE HOOK-PATH / FALLBACK-PATH EQUIVALENCE (1.6.0 pools stage-B). `resolve`'s provider merge runs
@@ -133,57 +92,63 @@ fn resolve_provider_hook_and_core_fallback_agree() {
         .insert("1302".to_string(), "rate_limit".to_string());
     let deploy_cfg = provider_deploy("ZAI_KEY");
 
-    let hook = busbar_llm::PLANE_HOOKS
-        .resolve_provider
-        .expect("the LLM plane declares `resolve_provider`");
-    let via_hook = hook(&def, &deploy_cfg);
-    let via_fallback = merge_provider_fallback(&def, &deploy_cfg);
-
-    assert_eq!(via_hook.protocol, via_fallback.protocol);
-    assert_eq!(via_hook.base_url, via_fallback.base_url);
-    assert_eq!(via_hook.api_key.env_var(), via_fallback.api_key.env_var());
-    assert_eq!(via_hook.error_map, via_fallback.error_map);
-    assert_eq!(via_hook.health.is_some(), via_fallback.health.is_some());
-    assert_eq!(via_hook.path, via_fallback.path);
-    assert_eq!(via_hook.path_base, via_fallback.path_base);
-    assert_eq!(via_hook.token_url, via_fallback.token_url);
-    assert_eq!(via_hook.scope, via_fallback.scope);
-    assert_eq!(via_hook.subject, via_fallback.subject);
-    assert_eq!(via_hook.auth, via_fallback.auth);
-    assert_eq!(
-        via_hook.allow_metadata_hosts,
-        via_fallback.allow_metadata_hosts
+    // Every linked plane that implements the hook, read back from the registry — at least one (the
+    // shipped fallback plane does), each proven equal to core's fallback.
+    let hooks: Vec<_> = linked::planes()
+        .iter()
+        .filter_map(|d| d.resolve_provider.map(|h| (d.key, h)))
+        .collect();
+    assert!(
+        !hooks.is_empty(),
+        "a test-linked plane declares `resolve_provider`"
     );
+    let via_fallback = merge_provider_fallback(&def, &deploy_cfg);
+    for (key, hook) in hooks {
+        let via_hook = hook(&def, &deploy_cfg);
+        assert_eq!(via_hook.protocol, via_fallback.protocol, "{key}");
+        assert_eq!(via_hook.base_url, via_fallback.base_url, "{key}");
+        assert_eq!(
+            via_hook.api_key.env_var(),
+            via_fallback.api_key.env_var(),
+            "{key}"
+        );
+        assert_eq!(via_hook.error_map, via_fallback.error_map, "{key}");
+        assert_eq!(
+            via_hook.health.is_some(),
+            via_fallback.health.is_some(),
+            "{key}"
+        );
+        assert_eq!(via_hook.path, via_fallback.path, "{key}");
+        assert_eq!(via_hook.path_base, via_fallback.path_base, "{key}");
+        assert_eq!(via_hook.token_url, via_fallback.token_url, "{key}");
+        assert_eq!(via_hook.scope, via_fallback.scope, "{key}");
+        assert_eq!(via_hook.subject, via_fallback.subject, "{key}");
+        assert_eq!(via_hook.auth, via_fallback.auth, "{key}");
+        assert_eq!(
+            via_hook.allow_metadata_hosts, via_fallback.allow_metadata_hosts,
+            "{key}"
+        );
+    }
 }
 
-/// THE PUBLISHED-NAME COLLISION IS A `resolve` ERROR, which is what makes it a `--validate` error.
-///
-/// `busbar --validate`, boot, the admin config-apply rebuild and the admin dry-run validate endpoint
-/// all reach `resolve`, and none of them reaches `mcp::config::validate_published_names` any other
-/// way. If the check were wired only into the `ToolsCfg` `Deserialize` it would never see a server
-/// the admin API applied, and a config that validated would not be the config that boots. So the
-/// wiring itself is the thing under test here, not the rule.
 #[test]
 fn resolve_refuses_a_publish_as_collision_so_validate_and_boot_agree() {
     register_planes();
     // The SUBTLE collision — an override against a namespaced default nobody typed — because it is
     // the one that survives a partial implementation of the rule.
-    let tools: busbar_mcp::mcp::config::ToolsCfg = serde_yaml::from_str(
+    let deploy = deploy_yaml(
         r#"
-foo:
-  url: "https://foo/"
-  pin: { mechanism: unpinned }
-  tools_allow: { bar: {} }
-other:
-  url: "https://other/"
-  pin: { mechanism: unpinned }
-  tools_allow: { anything: { publish_as: foo_bar } }
+tools:
+  foo:
+    url: "https://foo/"
+    pin: { mechanism: unpinned }
+    tools_allow: { bar: {} }
+  other:
+    url: "https://other/"
+    pin: { mechanism: unpinned }
+    tools_allow: { anything: { publish_as: foo_bar } }
 "#,
-    )
-    .expect("both servers are individually valid");
-
-    let mut deploy = base_deploy();
-    deploy.tools = busbar_kernel::plane::config::ToolsSection(Box::new(tools));
+    );
     let errors = resolve(&deploy, &HashMap::new())
         .expect_err("resolve must refuse a config whose published names are not unique");
     assert!(
@@ -192,21 +157,19 @@ other:
     );
 
     // GREEN, same shape, one name changed: the refusal is about the collision and nothing else.
-    let ok: busbar_mcp::mcp::config::ToolsCfg = serde_yaml::from_str(
+    let deploy = deploy_yaml(
         r#"
-foo:
-  url: "https://foo/"
-  pin: { mechanism: unpinned }
-  tools_allow: { bar: {} }
-other:
-  url: "https://other/"
-  pin: { mechanism: unpinned }
-  tools_allow: { anything: { publish_as: other_name } }
+tools:
+  foo:
+    url: "https://foo/"
+    pin: { mechanism: unpinned }
+    tools_allow: { bar: {} }
+  other:
+    url: "https://other/"
+    pin: { mechanism: unpinned }
+    tools_allow: { anything: { publish_as: other_name } }
 "#,
-    )
-    .unwrap();
-    let mut deploy = base_deploy();
-    deploy.tools = busbar_kernel::plane::config::ToolsSection(Box::new(ok));
+    );
     resolve(&deploy, &HashMap::new()).expect("distinct published names must resolve");
 }
 
@@ -216,18 +179,14 @@ other:
 #[test]
 fn a_tool_pool_member_that_names_no_server_is_refused() {
     register_planes();
-    let mut deploy = base_deploy();
-    let mut tools = busbar_mcp::mcp::config::ToolsCfg::default();
-    tools.servers.insert(
-        "search-eu".to_string(),
-        serde_yaml::from_str("{url: 'https://eu.example/mcp', pin: {mechanism: unpinned}}")
-            .expect("a minimal server"),
-    );
-    deploy.tools = busbar_kernel::plane::config::ToolsSection(Box::new(tools));
-    deploy.pools.pools.insert(
-        "search".to_string(),
-        serde_yaml::from_str::<PoolCfg>("{members: [search-eu, search-us]}")
-            .expect("a bare-name pool"),
+    let deploy = deploy_yaml(
+        r#"
+tools:
+  search-eu: { url: "https://eu.example/t", pin: { mechanism: unpinned } }
+pools:
+  search:
+    members: [search-eu, search-us]
+"#,
     );
     let errs = resolve(&deploy, &HashMap::new()).expect_err("a dangling member must refuse boot");
     assert!(
@@ -242,25 +201,16 @@ fn a_tool_pool_member_that_names_no_server_is_refused() {
 #[test]
 fn a_pool_may_not_straddle_two_planes() {
     register_planes();
-    let mut deploy = base_deploy();
-    let mut agents = busbar_a2a::a2a::config::AgentsCfg::default();
-    agents.agents.insert(
-        "planner".to_string(),
-        serde_yaml::from_str("{url: 'https://a.example/card', pin: {mechanism: unpinned}}")
-            .expect("a minimal agent"),
-    );
-    deploy.agents = busbar_kernel::plane::config::AgentsSection(Box::new(agents));
-    let mut tools = busbar_mcp::mcp::config::ToolsCfg::default();
-    tools.servers.insert(
-        "search-eu".to_string(),
-        serde_yaml::from_str("{url: 'https://eu.example/mcp', pin: {mechanism: unpinned}}")
-            .expect("a minimal server"),
-    );
-    deploy.tools = busbar_kernel::plane::config::ToolsSection(Box::new(tools));
-    deploy.pools.pools.insert(
-        "mixed".to_string(),
-        serde_yaml::from_str::<PoolCfg>("{members: [planner, search-eu]}")
-            .expect("a bare-name pool"),
+    let deploy = deploy_yaml(
+        r#"
+agents:
+  planner: { url: "https://a.example/card", pin: { mechanism: unpinned } }
+tools:
+  search-eu: { url: "https://eu.example/t", pin: { mechanism: unpinned } }
+pools:
+  mixed:
+    members: [planner, search-eu]
+"#,
     );
     let errs =
         resolve(&deploy, &HashMap::new()).expect_err("a cross-plane member must refuse boot");
@@ -275,17 +225,14 @@ fn a_pool_may_not_straddle_two_planes() {
 #[test]
 fn a_failover_pool_needs_two_members() {
     register_planes();
-    let mut deploy = base_deploy();
-    let mut agents = busbar_a2a::a2a::config::AgentsCfg::default();
-    agents.agents.insert(
-        "only-one".to_string(),
-        serde_yaml::from_str("{url: 'https://a.example/card', pin: {mechanism: unpinned}}")
-            .expect("a minimal agent"),
-    );
-    deploy.agents = busbar_kernel::plane::config::AgentsSection(Box::new(agents));
-    deploy.pools.pools.insert(
-        "planner".to_string(),
-        serde_yaml::from_str::<PoolCfg>("{members: [only-one]}").expect("a bare-name pool"),
+    let deploy = deploy_yaml(
+        r#"
+agents:
+  only-one: { url: "https://a.example/card", pin: { mechanism: unpinned } }
+pools:
+  planner:
+    members: [only-one]
+"#,
     );
     let errs = resolve(&deploy, &HashMap::new()).expect_err("a one-member pool must refuse boot");
     assert!(

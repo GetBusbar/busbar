@@ -12,6 +12,8 @@
 //! admitted. These drive the core folds over a probe plane that counts every hook it is handed: an
 //! unconfigured probe must be handed NOTHING, a configured one everything.
 
+mod linked;
+
 use busbar_kernel::plane::registry::{PlaneDecl, PlaneDeclaration, TestRegistryIsolation};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -117,8 +119,9 @@ fn a_configured_plane_still_hydrates_and_starts() {
 /// never gated.
 #[test]
 fn only_a_configured_plane_builds_its_slot() {
-    busbar_llm::testkit::install_test_seams();
-    let _iso = TestRegistryIsolation::seeded(&[&LLM_PLANE, &PROBE]);
+    // The test-linked fallback plane, read back from the registry BEFORE the isolation seeds it.
+    let fallback = linked::fallback();
+    let _iso = TestRegistryIsolation::seeded(&[fallback, &PROBE]);
     let build = |sections: &[&'static str]| {
         let mut cfg = busbar_kernel::test_support::cfg_with_provider_api_key(
             busbar_kernel::config::SecretRef::none(),
@@ -130,7 +133,7 @@ fn only_a_configured_plane_builds_its_slot() {
             BUILT.load(Ordering::SeqCst) - b0,
             app.plane_slots.contains_key(PROBE.key),
             app.plane_configured(&PROBE),
-            app.plane_configured(&LLM_PLANE),
+            app.plane_configured(fallback),
         )
     };
     assert_eq!(
@@ -146,13 +149,16 @@ fn only_a_configured_plane_builds_its_slot() {
 }
 
 /// `resolve` derives the configured set from the document itself: a 1.5.5-shaped config (no plane
-/// section) configures none; each plane section — and the `mcp:` endpoint door, owned by the
-/// `tools:` plane — configures its own.
+/// section) configures none; each plane section — and the endpoint door the `tools:` plane declares
+/// it owns (read back from its declaration) — configures its own.
 #[test]
 fn resolve_reads_the_configured_plane_sections_off_the_config() {
-    busbar_llm::testkit::install_test_seams();
-    busbar_mcp::testkit::install_test_seams();
-    busbar_a2a::testkit::install_test_seams();
+    let tools_plane = linked::owning("tools");
+    let door = linked::door_section(tools_plane);
+    assert_ne!(
+        door, tools_plane.config_section,
+        "the `tools:` plane declares an endpoint door of its own"
+    );
     let sections = |extra: &str| {
         let yaml = format!(
             "providers:\n  acme: {{ api_key: none }}\nmodels:\n  m: {{ provider: acme }}\n{extra}"
@@ -177,24 +183,17 @@ fn resolve_reads_the_configured_plane_sections_off_the_config() {
     );
     assert_eq!(
         sections(
-            "tools:\n  t1: { url: \"https://t.example/mcp\", pin: { mechanism: unpinned } }\n\
-             agents:\n  a1: { url: \"https://a.example/a2a\", pin: { mechanism: unpinned } }\n"
+            "tools:\n  t1: { url: \"https://t.example/t\", pin: { mechanism: unpinned } }\n\
+             agents:\n  a1: { url: \"https://a.example/a\", pin: { mechanism: unpinned } }\n"
         ),
         vec!["agents", "tools"]
     );
     assert_eq!(
-        sections(
-            "mcp:\n  canonical_uri: \"https://gw.example.com/mcp\"\n  authorization_servers: [\"https://as.example.com\"]\n"
-        ),
-        vec!["tools"],
-        "the `mcp:` door configures the plane that owns it"
+        sections(&format!(
+            "{door}:\n  canonical_uri: \"https://gw.example.com/{}\"\n  authorization_servers: [\"https://as.example.com\"]\n",
+            tools_plane.key
+        )),
+        vec![tools_plane.config_section],
+        "the `{door}:` door configures the plane that owns it"
     );
 }
-
-/// The llm plane's registry row, assembled kernel-side from its contract declaration
-/// and its behaviour table.
-static LLM_PLANE: busbar_kernel::plane::registry::PlaneDecl =
-    busbar_kernel::plane::registry::PlaneDecl::assemble(
-        busbar_llm::PLANE_DECLARATION,
-        busbar_llm::PLANE_HOOKS,
-    );

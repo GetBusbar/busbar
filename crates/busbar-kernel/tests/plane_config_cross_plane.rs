@@ -1,35 +1,45 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ONE PARSE-TIME PLANE-BOUNDARY RULE, proven on the REAL plane crates.
+//! THE ONE PARSE-TIME PLANE-BOUNDARY RULE, proven on the REAL planes this binary links.
 //!
-//! Relocated here from `src/plane/tests/config_tests.rs` (the A6/HostCtx dev-dependency-cycle
-//! cleanup): it registers the real `busbar_llm`/`busbar_mcp`/`busbar_a2a` planes and drives their
-//! REAL config validators (`busbar_a2a::a2a::config::validate_agent`, `busbar_mcp::mcp::config::
-//! validate_server`) against core's own `config_sections()`/`refuse_cross_plane_reference` grammar —
-//! which only type-checks (`register_test_plane(&LLM_PLANE)` takes core's OWN
-//! `PlaneDecl`) with ONE `busbar_kernel` in the graph. See `plane_integration.rs`'s header for the
-//! full rationale. The other tests in `config_tests.rs`/`sections_tests.rs` name no real plane crate
-//! and stay there.
-//!
-//! `the_resolve_time_refusal_fires_on_a_bare_name_that_binds_across_the_boundary` (from
-//! `src/plane/tests/config_tests.rs`) and `the_refusal_message_is_actionable` (from
-//! `src/plane/tests/sections_tests.rs`) joined this file in the "fix the 38" pass: both assert that
-//! [`RefError`]'s rendered Display PROSE contains a real plane's own config-section name
-//! (`"tools"`/`"agents"`), which `cargo xtask gate construction`'s `neutral-no-dialect` rule (ceiling
-//! 0) forbids a `#[cfg(test)]` fixture inside `busbar-kernel` itself from asserting — core may name
-//! no plane, real or synthetic-under-a-real-key. An integration target that already depends on the
-//! real plane crates is exactly where that prose is licensed to be pinned.
+//! Relocated here from `src/plane/tests/config_tests.rs` / `sections_tests.rs`: the planes come from
+//! the test-linked table (`tests/linked/mod.rs`) and are addressed by the config section each
+//! declares, so this file names no plane crate, key or type. Each plane's REAL validator is reached
+//! CONFIG-DRIVEN — the section is parsed and resolved through the kernel's own config entry points,
+//! exactly as boot does — against core's own `config_sections()`/`refuse_cross_plane_reference`
+//! grammar. The rendered prose pinned below names config sections (`tools`, `agents`), which is
+//! what an operator reads at boot.
+
+mod linked;
 
 use busbar_kernel::plane::config::{config_sections, refuse_cross_plane_reference};
 use busbar_kernel::plane::{PlaneSections, RefError};
 
-/// Register the real `[llm, mcp, a2a]` roster in the process registry — idempotent (first-wins), so
-/// every test can call it unconditionally regardless of run order.
+/// Register every test-linked plane in the process registry — idempotent (first-wins), so every
+/// test can call it unconditionally regardless of run order.
 fn register_planes() {
-    busbar_mcp::testkit::install_test_seams();
-    busbar_a2a::testkit::install_test_seams();
-    busbar_kernel::plane::registry::register_test_plane(&LLM_PLANE);
+    linked::install();
+}
+
+/// The refusal a named-definition section's own validator gives for entry `x` carrying one hook
+/// reference `hook`, reached CONFIG-DRIVEN: the section is parsed through the kernel's lift
+/// (`deploy_from_yaml_str`, where the declaring plane parses its own section) and then resolved, and
+/// the one message naming the hook is returned — from whichever of the two stages refused.
+fn refusal_for(section: &str, hook: &str) -> String {
+    let yaml = format!(
+        "providers: {{}}\nmodels: {{}}\n{section}:\n  x:\n    url: \"https://vendor.example/x\"\n    pin: {{ mechanism: unpinned }}\n    hooks: [\"{hook}\"]\n"
+    );
+    let errors: Vec<String> = match busbar_kernel::config::deploy_from_yaml_str(&yaml) {
+        Err(e) => vec![e.to_string()],
+        Ok(deploy) => busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
+            .err()
+            .unwrap_or_default(),
+    };
+    errors
+        .into_iter()
+        .find(|e| e.contains(hook))
+        .unwrap_or_else(|| panic!("the `{section}:` plane must refuse `{hook}`"))
 }
 
 /// EVERY section the grammar declares is refused BY BOTH PLANES' production validators, and the two
@@ -46,27 +56,29 @@ fn every_section_the_grammar_declares_is_refused_on_both_planes() {
     // this is a no-op past the first run.
     register_planes();
 
+    let agents = linked::owning("agents").config_section;
+    let tools = linked::owning("tools").config_section;
     for section in config_sections() {
         let hook = format!("{section}.some-hook");
 
-        let a2a = busbar_a2a::a2a::config::validate_agent("x", &agent_with_hook(&hook))
-            .expect_err(&format!("the `agents:` plane must refuse `{hook}`"));
-        let mcp = busbar_mcp::mcp::config::validate_server("x", &server_with_hook(&hook))
-            .expect_err(&format!("the `tools:` plane must refuse `{hook}`"));
+        let on_agents = refusal_for(agents, &hook);
+        let on_tools = refusal_for(tools, &hook);
 
-        let a2a_body = a2a
-            .strip_prefix("`agents.x`")
-            .expect("the a2a plane keeps its own wording for WHERE");
-        let mcp_body = mcp
-            .strip_prefix("`tools.x`")
-            .expect("the mcp plane keeps its own wording for WHERE");
+        let agents_body = on_agents
+            .split_once(&format!("`{agents}.x`"))
+            .map(|(_, body)| body)
+            .expect("the `agents:` plane keeps its own wording for WHERE");
+        let tools_body = on_tools
+            .split_once(&format!("`{tools}.x`"))
+            .map(|(_, body)| body)
+            .expect("the `tools:` plane keeps its own wording for WHERE");
         assert_eq!(
-            a2a_body, mcp_body,
+            agents_body, tools_body,
             "one rule, one sentence: the planes may differ only in the site they name"
         );
         assert!(
-            a2a_body.contains(&format!("reaches onto the `{section}:` plane")),
-            "the refusal must NAME the section reached onto, got: {a2a}"
+            agents_body.contains(&format!("reaches onto the `{section}:` plane")),
+            "the refusal must NAME the section reached onto, got: {on_agents}"
         );
     }
 }
@@ -81,22 +93,24 @@ fn every_section_the_grammar_declares_is_refused_on_both_planes() {
 #[test]
 fn the_resolve_time_refusal_fires_on_a_bare_name_that_binds_across_the_boundary() {
     register_planes();
+    let agents = linked::owning("agents").key;
+    let tools = linked::owning("tools").key;
     let mut sections: PlaneSections<u8> = PlaneSections::default();
-    sections.insert("a2a", "planner", 1);
+    sections.insert(agents, "planner", 1);
 
     // The parse-time rule has NO objection to this name.
     refuse_cross_plane_reference("`tools.search`", "planner", &config_sections())
         .expect("a bare name is legal in shape; the boundary it crosses is a binding, not a shape");
 
     let err = sections
-        .resolve("mcp", "planner")
+        .resolve(tools, "planner")
         .expect_err("a name defined on a sibling plane is a boundary violation");
     assert_eq!(
         err,
         RefError::CrossPlane {
             name: "planner".to_string(),
-            referenced_from: "mcp",
-            defined_in: "a2a",
+            referenced_from: tools,
+            defined_in: agents,
         }
     );
     assert!(
@@ -113,12 +127,15 @@ fn the_resolve_time_refusal_fires_on_a_bare_name_that_binds_across_the_boundary(
 #[test]
 fn the_refusal_message_is_actionable() {
     register_planes();
+    let models = linked::fallback().key;
+    let tools = linked::owning("tools").key;
+    let agents = linked::owning("agents").key;
     let mut s: PlaneSections<&'static str> = PlaneSections::default();
-    s.insert("llm", "fast", "a pool");
-    s.insert("mcp", "filesystem", "an mcp server");
-    s.insert("a2a", "planner", "an agent");
+    s.insert(models, "fast", "a pool");
+    s.insert(tools, "filesystem", "a tool server");
+    s.insert(agents, "planner", "an agent");
 
-    let msg = s.resolve("mcp", "planner").unwrap_err().to_string();
+    let msg = s.resolve(tools, "planner").unwrap_err().to_string();
     assert!(msg.contains("planner"), "names the entry: {msg}");
     assert!(
         msg.contains("tools"),
@@ -126,7 +143,7 @@ fn the_refusal_message_is_actionable() {
     );
     assert!(msg.contains("agents"), "names the defining section: {msg}");
 
-    let unknown = s.resolve("mcp", "nowhere").unwrap_err().to_string();
+    let unknown = s.resolve(tools, "nowhere").unwrap_err().to_string();
     assert!(unknown.contains("nowhere"));
     assert!(unknown.contains("tools"));
     assert!(
@@ -134,42 +151,3 @@ fn the_refusal_message_is_actionable() {
         "an unknown name must not invent a plane it lives on: {unknown}"
     );
 }
-
-/// A minimal, otherwise-VALID `agents:` entry carrying one hook reference — so the only thing that
-/// can fail the validator is the hook.
-fn agent_with_hook(hook: &str) -> busbar_a2a::a2a::config::AgentDefCfg {
-    serde_yaml::from_str::<busbar_a2a::a2a::config::AgentsCfg>(
-        "x:\n  url: \"https://a2a.vendor/x\"\n  pin: { mechanism: unpinned }\n",
-    )
-    .expect("the fixture entry must parse")
-    .agents
-    .shift_remove("x")
-    .map(|mut def| {
-        def.hooks = vec![hook.to_string()];
-        def
-    })
-    .expect("the fixture entry must be present")
-}
-
-/// The same, for the `tools:` plane.
-fn server_with_hook(hook: &str) -> busbar_mcp::mcp::config::McpServerDefCfg {
-    serde_yaml::from_str::<busbar_mcp::mcp::config::ToolsCfg>(
-        "x:\n  url: \"https://mcp.internal/x\"\n  pin: { mechanism: unpinned }\n",
-    )
-    .expect("the fixture entry must parse")
-    .servers
-    .shift_remove("x")
-    .map(|mut def| {
-        def.hooks = vec![hook.to_string()];
-        def
-    })
-    .expect("the fixture entry must be present")
-}
-
-/// The llm plane's registry row, assembled kernel-side from its contract declaration
-/// and its behaviour table.
-static LLM_PLANE: busbar_kernel::plane::registry::PlaneDecl =
-    busbar_kernel::plane::registry::PlaneDecl::assemble(
-        busbar_llm::PLANE_DECLARATION,
-        busbar_llm::PLANE_HOOKS,
-    );
