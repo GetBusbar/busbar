@@ -462,10 +462,7 @@ fn the_card_signing_domain_derives_the_exact_pinned_bytes() {
             "9e3cc179e80446fc289701e3f0996a2305eedf7747bc082053f417f22bfbc14b",
         ),
     ] {
-        let token = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
-            &[seed; 32],
-            "pinned-card-domain",
-        );
+        let token = TokenSigner::from_secret_bytes(&[seed; 32], "pinned-card-domain");
         assert_eq!(
             hex::encode(token.derived_subkey_seed(crate::a2a::sign::CARD_SIGNING_DOMAIN)),
             expected,

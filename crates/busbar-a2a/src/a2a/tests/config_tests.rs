@@ -33,7 +33,7 @@ use crate::testkit::engine_boot::engine;
 /// to another plane, never about which plane that is. Idempotent by key, registered process-wide.
 static POOLS_PLANE_STANDIN: busbar_kernel::plane::registry::PlaneDecl =
     busbar_kernel::plane::registry::PlaneDecl {
-        declaration: busbar_kernel::plane::registry::PlaneDeclaration {
+        declaration: busbar_contract::plane::PlaneDeclaration {
             key: "pools_standin",
             // Stands in for the plane that owns `pools:`.
             fallback: true,
