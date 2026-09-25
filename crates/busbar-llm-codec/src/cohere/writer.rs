@@ -404,7 +404,16 @@ impl ProtocolWriter for CohereWriter {
             serde_json::Value::Array(messages_arr),
         );
 
-        super::super::ir_encode::warn_dropped_tool_strict(&req.tools, "cohere");
+        // Per-tool `strict` renders as Cohere's request-level `strict_tools` when every tool agrees
+        // (COH-12) — the same guarantee, spelled once. Tools that disagree have no Cohere form (the
+        // switch cannot be set for some tools and not others), so that case stays a drop-with-warn.
+        let strict: Vec<Option<bool>> = req.tools.iter().map(|t| t.strict).collect();
+        match strict.first() {
+            Some(Some(first)) if strict.iter().all(|s| *s == Some(*first)) => {
+                out.insert("strict_tools".to_string(), serde_json::json!(first));
+            }
+            _ => super::super::ir_encode::warn_dropped_tool_strict(&req.tools, "cohere"),
+        }
         if !req.tools.is_empty() {
             let mut tools_arr: Vec<serde_json::Value> = Vec::new();
             for tool in &req.tools {

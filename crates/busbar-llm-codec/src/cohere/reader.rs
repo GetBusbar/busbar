@@ -694,6 +694,20 @@ impl ProtocolReader for CohereReader {
         // Cohere caller's reasoning ask never reached a foreign reasoning model (COH-05). Any other
         // form (`disabled`, an unreadable budget) stays in `extra` untouched, as the Anthropic reader
         // does.
+        // `strict_tools` is Cohere's strict-schema switch for EVERY tool of the request: the IR
+        // carries the same guarantee per tool (`IrTool.strict`, OpenAI `tools[].function.strict`),
+        // so it is set on each tool (COH-11). It used to ride `extra` and die at the seam, turning
+        // the caller's schema guarantee off on a foreign backend. Promoted only when there are
+        // tools to carry it; a bare flag stays in `extra`.
+        if !tools.is_empty() {
+            if let Some(strict) = obj.get("strict_tools").and_then(|v| v.as_bool()) {
+                for tool in &mut tools {
+                    tool.strict = Some(strict);
+                }
+                extra.remove("strict_tools");
+            }
+        }
+
         let reasoning = read_cohere_reasoning(obj.get("thinking"));
         if reasoning.is_some() {
             // Promoted: the writer re-emits it from the typed field, so it must not also ride extra.

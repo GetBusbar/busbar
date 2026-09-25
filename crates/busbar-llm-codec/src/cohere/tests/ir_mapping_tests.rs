@@ -567,3 +567,56 @@ fn coh06_foreign_reasoning_ask_reaches_a_cohere_backend() {
     let out = translate_request("gemini", "cohere", &gemini);
     assert_eq!(out["thinking"], json!({"type": "enabled"}), "COH-06: {out}");
 }
+
+// ── COH-11 / COH-12: strict tool schemas ──────────────────────────────────────────────────────────
+
+/// COH-11: Cohere `strict_tools: true` is the strict-schema guarantee for every tool; it reaches an
+/// OpenAI backend as `strict: true` on each tool (it used to die in `extra`).
+#[test]
+fn coh11_strict_tools_reaches_every_foreign_tool() {
+    let body = json!({
+        "model": "m", "messages": [{"role": "user", "content": "hi"}],
+        "strict_tools": true,
+        "tools": [
+            {"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}},
+            {"type": "function", "function": {"name": "g", "parameters": {"type": "object"}}}
+        ]
+    });
+    let out = translate_request("cohere", "openai", &body);
+    assert_eq!(
+        out["tools"][0]["function"]["strict"],
+        json!(true),
+        "COH-11: {out}"
+    );
+    assert_eq!(
+        out["tools"][1]["function"]["strict"],
+        json!(true),
+        "COH-11: {out}"
+    );
+    let out = translate_request("cohere", "responses", &body);
+    assert_eq!(out["tools"][0]["strict"], json!(true), "COH-11: {out}");
+}
+
+/// COH-12: OpenAI tools that are all `strict` render as Cohere `strict_tools: true`; tools that
+/// disagree have no Cohere form and emit no switch.
+#[test]
+fn coh12_all_strict_foreign_tools_render_as_strict_tools() {
+    let body = json!({
+        "model": "gpt", "messages": [{"role": "user", "content": "hi"}],
+        "tools": [
+            {"type": "function", "function": {"name": "f", "parameters": {"type": "object"}, "strict": true}},
+            {"type": "function", "function": {"name": "g", "parameters": {"type": "object"}, "strict": true}}
+        ]
+    });
+    let out = translate_request("openai", "cohere", &body);
+    assert_eq!(out["strict_tools"], json!(true), "COH-12: {out}");
+    let mixed = json!({
+        "model": "gpt", "messages": [{"role": "user", "content": "hi"}],
+        "tools": [
+            {"type": "function", "function": {"name": "f", "parameters": {"type": "object"}, "strict": true}},
+            {"type": "function", "function": {"name": "g", "parameters": {"type": "object"}}}
+        ]
+    });
+    let out = translate_request("openai", "cohere", &mixed);
+    assert!(out.get("strict_tools").is_none(), "{out}");
+}
