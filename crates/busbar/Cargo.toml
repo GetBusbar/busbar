@@ -350,16 +350,16 @@ plane-a2a = "busbar-a2a"
 plane-voice = "busbar-voice"
 plane-decision = "busbar-plane-decision"
 
-# What each linked crate registers, axis by axis: `plane` (PLANE_DECLARATION + PLANE_HOOKS, joined
+# What each linked feature's crate registers (keyed by the feature, as the linked row is), axis by axis: `plane` (PLANE_DECLARATION + PLANE_HOOKS, joined
 # kernel-side), `protocols`, `path-ingress`, `body-ingress`, `protocol-seams`, `diagnostics`,
 # `ws-arrivals`, `on-host`, `compose`, `stdio-serve` — each an item of the crate's `linked` entry
 # module — and the root-bound seams it drives: `egress`, `plane-sections`, `admin-envelope`.
 [package.metadata.busbar.linked-axes]
-busbar-llm = "plane protocols path-ingress body-ingress protocol-seams on-host"
-busbar-mcp = "plane protocols diagnostics egress stdio-serve"
-busbar-a2a = "plane diagnostics egress plane-sections admin-envelope"
-busbar-voice = "plane diagnostics ws-arrivals compose"
-busbar-plane-decision = "plane"
+proto-llm = "plane protocols path-ingress body-ingress protocol-seams on-host"
+plane-mcp = "plane protocols diagnostics egress stdio-serve"
+plane-a2a = "plane diagnostics egress plane-sections admin-envelope"
+plane-voice = "plane diagnostics ws-arrivals compose"
+plane-decision = "plane"
 
 # A linked crate whose entry module is not `<crate>::linked`: the decision plane is a PURE plane
 # crate whose manifest names `busbar-contract` and nothing else (#40), so its kernel-typed hooks are

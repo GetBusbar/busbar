@@ -190,9 +190,9 @@ two = "busbar-second"
 three = "busbar-third"
 
 [package.metadata.busbar.linked-axes]
-busbar-first = "plane protocols"
-busbar-second = "plane egress"
-busbar-third = "plane diagnostics egress"
+one = "plane protocols"
+two = "plane egress"
+three = "plane diagnostics egress"
 
 [package.metadata.busbar.linked-entry]
 busbar-third = "crate::root::third_half"
@@ -235,7 +235,7 @@ unit-b = "beta"
 
     for broken in [
         manifest.replace("three = []\n", ""),
-        manifest.replace("busbar-third = \"plane diagnostics egress\"\n", ""),
+        manifest.replace("three = \"plane diagnostics egress\"\n", ""),
         manifest.replace("plane diagnostics egress", "plane diagnostics teleport"),
     ] {
         let refused = std::panic::catch_unwind(|| linked_source(&broken, &enabled));

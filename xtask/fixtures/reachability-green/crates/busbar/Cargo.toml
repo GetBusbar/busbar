@@ -16,8 +16,8 @@ plane-decision = "busbar-plane-decision"
 
 # The axes each linked crate registers on; the plane axis is what `register_planes()` folds.
 [package.metadata.busbar.linked-axes]
-busbar-llm = "plane protocols"
-busbar-mcp = "plane protocols diagnostics"
-busbar-a2a = "plane diagnostics"
-busbar-voice = "plane diagnostics"
-busbar-plane-decision = "plane"
+proto-llm = "plane protocols"
+plane-mcp = "plane protocols diagnostics"
+plane-a2a = "plane diagnostics"
+plane-voice = "plane diagnostics"
+plane-decision = "plane"

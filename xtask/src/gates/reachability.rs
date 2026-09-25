@@ -1014,12 +1014,18 @@ const AXIS_ITEMS: &[(&str, &[&str])] = &[
     ("stdio-serve", &["stdio_serve"]),
 ];
 
-/// The registration axes the manifest's `[package.metadata.busbar.linked-axes]` row lists for
-/// `krate` (space-separated), or none.
+/// The registration axes the manifest's `[package.metadata.busbar.linked-axes]` row lists for the
+/// linked feature that links `krate` (space-separated; the axes row is keyed by the feature, as the
+/// linked row is), or none.
 fn axes_of(manifest: &str, krate: &str) -> Vec<String> {
+    let features: Vec<String> = manifest_table(manifest, "package.metadata.busbar.linked")
+        .into_iter()
+        .filter(|(_, k)| k == krate)
+        .map(|(f, _)| f)
+        .collect();
     manifest_table(manifest, "package.metadata.busbar.linked-axes")
         .into_iter()
-        .find(|(k, _)| k == krate)
+        .find(|(f, _)| features.contains(f))
         .map(|(_, v)| v.split_whitespace().map(str::to_string).collect())
         .unwrap_or_default()
 }
@@ -1954,7 +1960,7 @@ impl Gate for ReachabilityGate {
                 ov.set(
                     CRATE_MANIFEST,
                     &FIXTURE_LINKED_MANIFEST
-                        .replace("busbar-voice = \"plane diagnostics\"", "busbar-voice = \"diagnostics\""),
+                        .replace("plane-voice = \"plane diagnostics\"", "plane-voice = \"diagnostics\""),
                 );
                 ov
             },

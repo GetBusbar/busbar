@@ -9,7 +9,7 @@
 // The composition root names no plugin. Which plugins a build links is DATA in `Cargo.toml`:
 //
 //   [package.metadata.busbar.linked]        <cargo feature> = "<plugin crate>"   (registration order)
-//   [package.metadata.busbar.linked-axes]   "<plugin crate>" = "<axis> <axis> …" (what it registers)
+//   [package.metadata.busbar.linked-axes]   <cargo feature> = "<axis> <axis> …"  (what it registers)
 //   [package.metadata.busbar.linked-entry]  "<plugin crate>" = "<entry module>"  (when the entry is
 //                                            not `<crate>::linked`: its kernel-typed half lives in
 //                                            the root)
@@ -105,9 +105,9 @@ pub(crate) fn seam_cfgs() -> Vec<&'static str> {
 }
 
 /// THE GENERATED SOURCE, and the seam cfgs to set, for the rows whose feature `enabled` answers
-/// true. Every table keeps manifest order. A feature the manifest does not declare, a linked crate
-/// with no axes row, an axis nobody knows and an axes/entry row for a crate that is not linked are
-/// all refused: each would drop a registration out of every build silently.
+/// true. Every table keeps manifest order. A feature the manifest does not declare, a linked feature
+/// with no axes row, an axis nobody knows and an axes/entry row for nothing linked are all refused:
+/// each would drop a registration out of every build silently.
 pub(crate) fn linked_source(
     manifest: &str,
     enabled: &dyn Fn(&str) -> bool,
@@ -123,17 +123,22 @@ pub(crate) fn linked_source(
             "Cargo.toml: linked feature `{feature}` is not declared under [features]"
         );
     }
-    for (krate, _) in axes.iter().chain(&entries) {
+    for (feature, _) in &axes {
         assert!(
-            plugins.iter().any(|(_, k)| k == krate),
-            "Cargo.toml: `{krate}` has a linked-axes/linked-entry row but no linked row"
+            plugins.iter().any(|(f, _)| f == feature),
+            "Cargo.toml: `{feature}` has a linked-axes row but no linked row"
         );
     }
-    let axes_of = |krate: &str| -> Vec<String> {
-        let row = axes
-            .iter()
-            .find(|(k, _)| k == krate)
-            .unwrap_or_else(|| panic!("Cargo.toml: linked crate `{krate}` has no linked-axes row"));
+    for (krate, _) in &entries {
+        assert!(
+            plugins.iter().any(|(_, k)| k == krate),
+            "Cargo.toml: `{krate}` has a linked-entry row but no linked row"
+        );
+    }
+    let axes_of = |feature: &str, krate: &str| -> Vec<String> {
+        let row = axes.iter().find(|(f, _)| f == feature).unwrap_or_else(|| {
+            panic!("Cargo.toml: linked feature `{feature}` ({krate}) has no linked-axes row")
+        });
         let list: Vec<String> = row.1.split_whitespace().map(str::to_string).collect();
         for axis in &list {
             assert!(
@@ -155,13 +160,13 @@ pub(crate) fn linked_source(
     // (entry module, axes) per enabled crate, in manifest order.
     let linked: Vec<(String, Vec<String>)> = on
         .iter()
-        .map(|(_, krate)| {
+        .map(|(feature, krate)| {
             let entry = entries
                 .iter()
                 .find(|(k, _)| k == krate)
                 .map(|(_, path)| path.clone())
                 .unwrap_or_else(|| format!("{}::linked", ident(krate)));
-            (entry, axes_of(krate))
+            (entry, axes_of(feature, krate))
         })
         .collect();
     let on_axis = |axis: &str| -> Vec<&String> {
