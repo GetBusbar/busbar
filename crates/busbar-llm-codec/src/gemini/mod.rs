@@ -2409,11 +2409,12 @@ fn gemini_error_status_class(status: Option<&str>, code: Option<u64>) -> StatusC
 /// empty buffer) for each stream, so this state is stream-scoped by construction — exactly the
 /// precedent `ResponsesWriter`'s per-stream `sequence`/`response_id` fields established.
 /// One open streaming tool call in [`GeminiWriter::open_tools`]: the IR block `index` its
-/// `BlockStart` opened, its function `name` and every `InputJsonDelta` fragment concatenated into
-/// `args`.
+/// `BlockStart` opened, the call's `id` (re-emitted as `functionCall.id`, GEM-08), its function `name`
+/// and every `InputJsonDelta` fragment concatenated into `args`.
 #[derive(Clone, Debug)]
 struct GeminiOpenTool {
     index: usize,
+    id: String,
     name: String,
     args: String,
 }
@@ -2422,7 +2423,7 @@ pub struct GeminiWriter {
     /// The currently open streaming tool calls, one [`GeminiOpenTool`] per OPEN tool block:
     /// - `index` is the IR block index from the opening `BlockStart`, used to match subsequent
     ///   `BlockDelta`/`BlockStop` events to THE RIGHT tool block (parallel tool calls share no slot).
-    /// - `name` is the function name buffered off the `BlockStart`.
+    /// - `id` and `name` are the call id and function name buffered off the `BlockStart`.
     /// - `args` is every `InputJsonDelta` fragment for this block CONCATENATED, so a multi-chunk
     ///   streamed `arguments` JSON reassembles into one string parsed once on `BlockStop`. An empty
     ///   string (no delta arrived) flushes `args:{}` for a zero-argument tool call.

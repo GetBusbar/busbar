@@ -156,17 +156,22 @@ impl ProtocolWriter for GeminiWriter {
                         parts_arr.push(serde_json::json!({ "text": text }))
                     }
                     crate::ir::IrBlock::ToolUse {
-                        id: _,
+                        id,
                         name,
                         input,
                         thought_signature,
                         ..
                     } => {
-                        // ToolUse → functionCall{name, args}. `args` MUST be a JSON OBJECT (Gemini
-                        // Struct); coerce any non-object input (array/scalar/null/unparseable string)
-                        // the same way `functionResponse.response` is coerced below.
+                        // ToolUse → functionCall{id?, name, args}. `args` MUST be a JSON OBJECT
+                        // (Gemini Struct); coerce any non-object input (array/scalar/null/unparseable
+                        // string) the same way `functionResponse.response` is coerced below. The
+                        // call's id rides Gemini's optional `functionCall.id` (GEM-08), paired with
+                        // the same id on its `functionResponse`.
                         let args_val = coerce_tool_args(input);
                         let mut fc_obj = serde_json::Map::new();
+                        if !id.is_empty() {
+                            fc_obj.insert("id".to_string(), serde_json::json!(id));
+                        }
                         fc_obj.insert("name".to_string(), serde_json::json!(name));
                         fc_obj.insert("args".to_string(), args_val);
                         let mut part_obj = serde_json::Map::new();
@@ -192,7 +197,7 @@ impl ProtocolWriter for GeminiWriter {
                         content,
                         ..
                     } => {
-                        // ToolResult → functionResponse{name, response, parts?}. Resolve the
+                        // ToolResult → functionResponse{id?, name, response, parts?}. Resolve the
                         // REAL function name from the id→name map built above so the emitted
                         // `functionResponse.name` matches the `functionCall.name` Gemini correlates
                         // against. Fall back to the `tool_use_id` itself when it is not a known call
@@ -257,6 +262,11 @@ impl ProtocolWriter for GeminiWriter {
                             serde_json::json!({ "output": payload })
                         };
                         let mut fr_obj = serde_json::Map::new();
+                        // Gemini's optional `functionResponse.id`, the pair of `functionCall.id`
+                        // (GEM-08) — only for a result whose id names a call in this request.
+                        if known_call.is_some() && !tool_use_id.is_empty() {
+                            fr_obj.insert("id".to_string(), serde_json::json!(tool_use_id));
+                        }
                         fr_obj.insert("name".to_string(), serde_json::json!(name));
                         fr_obj.insert("response".to_string(), response_val);
                         // An image / document the tool returned rides Gemini's multimodal
@@ -816,11 +826,12 @@ impl ProtocolWriter for GeminiWriter {
             // BlockStarts are not strictly interleaved with their BlockStops) never clobber each
             // other. Text blocks have no Gemini block-start frame (inline parts) → None.
             IrStreamEvent::BlockStart { index, block } => match block {
-                crate::ir::IrBlockMeta::ToolUse { name, .. } => {
+                crate::ir::IrBlockMeta::ToolUse { id, name } => {
                     if let Ok(mut guard) = self.open_tools.lock() {
                         let open_count = guard.len();
                         match guard.iter_mut().find(|t| t.index == *index) {
                             Some(entry) => {
+                                entry.id = id.clone();
                                 entry.name = name.clone();
                                 entry.args.clear();
                             }
@@ -836,6 +847,7 @@ impl ProtocolWriter for GeminiWriter {
                             None if open_count >= MAX_GEMINI_TOOL_FRAMES => {}
                             None => guard.push(GeminiOpenTool {
                                 index: *index,
+                                id: id.clone(),
                                 name: name.clone(),
                                 args: String::new(),
                             }),
@@ -1048,11 +1060,11 @@ impl ProtocolWriter for GeminiWriter {
                 let flushed = match self.open_tools.lock() {
                     Ok(mut guard) => guard.iter().position(|t| t.index == *index).map(|pos| {
                         let t = guard.remove(pos);
-                        (t.name, t.args)
+                        (t.id, t.name, t.args)
                     }),
                     Err(_) => None,
                 };
-                flushed.map(|(name, args_str)| {
+                flushed.map(|(id, name, args_str)| {
                     // Parse the fully reassembled arg string. An empty buffer (zero-arg call) or an
                     // unparseable accumulation degrades to `{}` rather than panicking — the args are
                     // best-effort, but the single-part `{name, ...}` shape and the name are always
@@ -1064,6 +1076,10 @@ impl ProtocolWriter for GeminiWriter {
                             .unwrap_or_else(|_| serde_json::json!({}))
                     };
                     let mut fc_obj = serde_json::Map::new();
+                    // The streamed call's id, as on the buffered path (GEM-08).
+                    if !id.is_empty() {
+                        fc_obj.insert("id".to_string(), serde_json::json!(id));
+                    }
                     fc_obj.insert("name".to_string(), serde_json::json!(name));
                     fc_obj.insert("args".to_string(), args);
                     let mut part_obj = serde_json::Map::new();
@@ -1250,7 +1266,7 @@ impl ProtocolWriter for GeminiWriter {
                 // coerce any non-object input (array/scalar/null/unparseable string) the same way
                 // `write_request` does.
                 crate::ir::IrBlock::ToolUse {
-                    id: _,
+                    id,
                     name,
                     input,
                     thought_signature,
@@ -1258,6 +1274,11 @@ impl ProtocolWriter for GeminiWriter {
                 } => {
                     let args_val = coerce_tool_args(input);
                     let mut fc_obj = serde_json::Map::new();
+                    // The call's id rides Gemini's optional `functionCall.id` (GEM-08), so the
+                    // client answers it with a `functionResponse.id` busbar pairs back to the call.
+                    if !id.is_empty() {
+                        fc_obj.insert("id".to_string(), serde_json::json!(id));
+                    }
                     fc_obj.insert("name".to_string(), serde_json::json!(name));
                     fc_obj.insert("args".to_string(), args_val);
                     let mut part_obj = serde_json::Map::new();

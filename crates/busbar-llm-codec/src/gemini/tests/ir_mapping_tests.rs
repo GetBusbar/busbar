@@ -494,3 +494,55 @@ fn gem01_tool_results_pair_with_their_calls_without_ids() {
         "{out}"
     );
 }
+
+/// GEM-08 (writer): an IR call id reaches Gemini as `functionCall.id` — on a request (with the
+/// matching `functionResponse.id`), a buffered response and a stream — so the pair survives a
+/// round-trip through a Gemini client or backend.
+#[test]
+fn gem08_call_ids_reach_gemini() {
+    let body = json!({"model": "m", "max_tokens": 100, "messages": [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_1", "name": "f", "input": {}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"}]}
+    ]});
+    let out = xreq("anthropic", "gemini", &body);
+    assert_eq!(
+        out["contents"][1]["parts"][0]["functionCall"]["id"],
+        json!("toolu_1"),
+        "{out}"
+    );
+    assert_eq!(
+        out["contents"][2]["parts"][0]["functionResponse"]["id"],
+        json!("toolu_1"),
+        "{out}"
+    );
+
+    let resp = json!({"id": "chatcmpl-1", "object": "chat.completion", "created": 1, "model": "gpt",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": null, "tool_calls": [
+            {"id": "call_1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
+            "finish_reason": "tool_calls"}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}});
+    let out = xresp("openai", "gemini", &resp);
+    assert_eq!(
+        out["candidates"][0]["content"]["parts"][0]["functionCall"]["id"],
+        json!("call_1"),
+        "{out}"
+    );
+
+    let writer = GeminiWriter;
+    let _ = writer.write_response_event(&IrStreamEvent::BlockStart {
+        index: 0,
+        block: crate::ir::IrBlockMeta::ToolUse {
+            id: "call_9".to_string(),
+            name: "f".to_string(),
+        },
+    });
+    let (_, frame) = writer
+        .write_response_event(&IrStreamEvent::BlockStop { index: 0 })
+        .expect("functionCall frame");
+    assert_eq!(
+        frame["candidates"][0]["content"]["parts"][0]["functionCall"]["id"],
+        json!("call_9"),
+        "{frame}"
+    );
+}
