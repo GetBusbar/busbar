@@ -247,7 +247,7 @@ fn only_the_held_stream_opens_a_unit() {
     let rows = rows_of(ops::Sender::Client);
     assert_eq!(rows.len(), CLIENT_ROWS);
     for row in rows {
-        match (decode(&plane, &request("1", row.method)), row.streaming) {
+        match (decode(&plane, &request("1", row.method)), row.event_framed) {
             (Ok(Ingress::Open(_)), true) | (Ok(Ingress::OneShot(_)), false) => {}
             (other, _) => panic!("{} decoded as {other:?}", row.method),
         }
