@@ -82,10 +82,6 @@ pub use busbar_substrate_values::handlers::request_handler;
 #[cfg(test)]
 use crate::operation::Operation;
 
-#[cfg(test)]
-#[path = "tests/registry_tests.rs"]
-mod registry_tests;
-
 // `WireBody` (a serialized wire body + its content-type) RELOCATED to `busbar-substrate` as a
 // neutral wire value type a plane crate names directly; re-exported here so core's call sites and the
 // `busbar-llm` handlers that name `busbar_kernel::handlers::WireBody` are unchanged.

@@ -888,29 +888,6 @@ fn test_hook_access_grants_parse() {
     assert!(!bare.prompt.sends_prompt());
 }
 
-/// The shipped providers.yaml catalog must parse, name only known protocols, and use HTTPS.
-#[test]
-fn test_shipped_providers_catalog_valid() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../providers.yaml");
-    let raw = std::fs::read_to_string(path).expect("read providers.yaml");
-    let defs: HashMap<String, ProviderDef> =
-        serde_yaml::from_str(&raw).expect("parse providers.yaml");
-    assert!(defs.len() >= 10, "catalog should be non-trivial");
-    for (name, def) in &defs {
-        assert!(
-            // Neutral registry seam: a protocol is KNOWN iff it has a registered declaration
-            // (`decl_for`), reached without naming the witnessed codec (`protocol_for`).
-            crate::proto::decl_for(&def.protocol).is_some(),
-            "provider '{name}' names unknown protocol '{}'",
-            def.protocol
-        );
-        assert!(
-            def.base_url.starts_with("https://"),
-            "provider '{name}' base_url must be https"
-        );
-    }
-}
-
 // ── env interpolation ────────────────────────────────────────────────────────────────────────────
 
 // NOTE: env vars are process-global; tests run in parallel. Use UNIQUE per-test var

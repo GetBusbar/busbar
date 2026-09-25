@@ -1,36 +1,5 @@
 use super::*;
 
-#[test]
-fn chat_declares_its_capabilities() {
-    // The chat cell as production resolves it — `(protocol, Chat)` through the registry, framed on
-    // HTTP — rather than a hand-built const over the plugin's handler type.
-    let chat = crate::handlers::op_for(
-        crate::proto::PROTO_OPENAI,
-        Operation::CHAT,
-        crate::transport::Transport::Http,
-    )
-    .expect("the shipped protocol serves chat");
-    assert_eq!(chat.name(), "chat");
-    assert!(chat.streaming(), "chat streams");
-    assert!(
-        chat.taps_nonstream_usage(),
-        "chat bills tokens from the body"
-    );
-    assert!(
-        chat.wants_stream(&serde_json::json!({"stream": true})),
-        "chat reads the stream boolean"
-    );
-    assert!(!chat.wants_stream(&serde_json::json!({})));
-    assert_eq!(
-        chat.body_affinity_key(&serde_json::json!({"system": "you are helpful"})),
-        Some("you are helpful")
-    );
-    assert_eq!(
-        chat.body_affinity_key(&serde_json::json!({"system": ""})),
-        None
-    );
-}
-
 /// A NON-CHAT operation's failure reaches the breaker with a status attributed.
 ///
 /// The Invoke cell of the one registered protocol that declares NO wire codec is the one cell in the

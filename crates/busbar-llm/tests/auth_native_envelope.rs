@@ -740,3 +740,84 @@ async fn test_gemini_ingress_wrong_token_is_native_bad_key_envelope() {
     handle.abort();
     server.shutdown().await;
 }
+
+// Relocated from core's `src/auth/tests/tests.rs` (batch 60 S10 residue): its assertion is the
+// anthropic native envelope, a dialect fact core's synthetic protocol set does not carry.
+/// Regression for the over-broad admin-prefix detection: a path that merely STARTS WITH the
+/// bytes `/api` but is not a registered `/api/...` route (e.g. `/apix/...`) must NOT be
+/// classified as admin. Under TOKEN mode with a wrong token it should be rejected by the normal
+/// auth branch with the inferred-protocol native 401 envelope — never routed down the admin
+/// branch (which would early-return without the `CallerToken` extension and 500 in a non-admin
+/// handler). `/apix/v1/messages` infers the anthropic protocol via the `/v1/messages` suffix.
+#[tokio::test]
+async fn test_admin_prefix_is_boundary_safe() {
+    install_llm_registrations();
+    use busbar_kernel::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    busbar_kernel::metrics::init();
+
+    let state = Arc::new(MockServerState::new());
+    let server = MockServer::new(state).await;
+
+    let auth_cfg = chain_cfg(&["test-groups-module"]);
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "test-model",
+                busbar_kernel::proto::PROTO_ANTHROPIC,
+                &server.base_url(),
+            )
+            .api_key("busbar-upstream-key"),
+        )
+        .pool("apix", &[(0, 1)])
+        .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
+        .build();
+
+    let router = busbar_kernel::test_support::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let body =
+        json!({"model": "apix", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16})
+            .to_string();
+
+    // Wrong token to `/apix/v1/messages`: rejected by the NORMAL auth branch, not the admin
+    // branch — a normal-protocol native 401 (anthropic), NOT the admin "admin unauthorized"
+    // path and NOT a 500 from a missing CallerToken extension.
+    let r = client
+        .post(format!("http://{addr}/apix/v1/messages"))
+        .header("x-api-key", "wrong-token")
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        401,
+        "an /apix path with a wrong token must be a normal 401, not 500/admin-500 (got {})",
+        r.status()
+    );
+    assert_eq!(
+        r.headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("application/json"),
+    );
+    let env: serde_json::Value = r.json().await.unwrap();
+    // Anthropic native envelope (inferred from the `/v1/messages` suffix), proving the path was
+    // shaped by the normal ingress branch rather than the admin branch.
+    assert_eq!(
+        env["type"], "error",
+        "expected the /v1/messages native envelope: {env}"
+    );
+    assert_eq!(
+        env["error"]["type"], "authentication_error",
+        "expected the /v1/messages authentication_error: {env}"
+    );
+
+    handle.abort();
+    server.shutdown().await;
+}

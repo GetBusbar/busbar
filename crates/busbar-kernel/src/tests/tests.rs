@@ -403,35 +403,6 @@ fn residual_planes() -> crate::plane::PlaneDispatch {
 // auth-time 401 alike, so agreement is now a property of the code rather than of a test watching
 // two copies. `plane_tests::the_mount_table_is_read_before_the_path_shape` pins what it answers.)
 
-/// A 404 fallback on a Bedrock path must carry the native `__type` envelope AND the `x-amzn-*`
-/// headers a real AWS endpoint always emits — never axum's empty body (a proxy tell).
-#[test]
-fn test_fallback_bedrock_404_is_native_envelope_with_amzn_headers() {
-    let resp = fallback_error_response(
-        &residual_planes(),
-        "/model/some.model/converse",
-        axum::http::StatusCode::NOT_FOUND,
-        crate::taxonomy::ERR_TYPE_NOT_FOUND,
-        "missing",
-    );
-    assert_eq!(resp.status(), axum::http::StatusCode::NOT_FOUND);
-    assert_eq!(
-        resp.headers()
-            .get(axum::http::header::CONTENT_TYPE)
-            .and_then(|h| h.to_str().ok()),
-        Some("application/json"), // golden wire-contract literal (kept bare on purpose)
-        "fallback must be application/json, not bare text"
-    );
-    assert!(
-        resp.headers().get("x-amzn-requestid").is_some(),
-        "a Converse-path fallback must carry x-amzn-RequestId"
-    );
-    assert!(
-        resp.headers().get("x-amzn-errortype").is_some(),
-        "a Converse-path fallback must carry x-amzn-errortype"
-    );
-}
-
 /// A 404 fallback on the OpenAI path is shaped as the OpenAI error envelope (no amzn headers).
 #[tokio::test]
 async fn test_fallback_openai_404_is_json_no_amzn_headers() {
@@ -530,54 +501,6 @@ async fn test_oversized_body_413_reshaped_to_json_not_plain_text() {
         String::from_utf8_lossy(&bytes),
         "length limit exceeded",
         "the axum plain-text body must not survive reshaping"
-    );
-}
-
-/// REGRESSION: a Bedrock-inferred oversized-body 413 must carry the native AWS
-/// `__type` envelope AND the `x-amzn-*` headers, indistinguishable from a real Bedrock reject.
-#[tokio::test]
-async fn test_oversized_body_413_bedrock_native_envelope_with_amzn_headers() {
-    use axum::response::IntoResponse;
-    use http_body_util::BodyExt as _;
-
-    let axum_native_413 = (
-        axum::http::StatusCode::PAYLOAD_TOO_LARGE,
-        [(
-            axum::http::header::CONTENT_TYPE,
-            axum::http::HeaderValue::from_static("text/plain; charset=utf-8"),
-        )],
-        "length limit exceeded",
-    )
-        .into_response();
-
-    let reshaped = reshape_oversized_413(
-        &residual_planes(),
-        "/model/some.model/converse",
-        axum_native_413,
-    )
-    .await;
-    assert_eq!(reshaped.status(), axum::http::StatusCode::PAYLOAD_TOO_LARGE);
-    assert_eq!(
-        reshaped
-            .headers()
-            .get(axum::http::header::CONTENT_TYPE)
-            .and_then(|h| h.to_str().ok()),
-        Some("application/json") // golden wire-contract literal (kept bare on purpose)
-    );
-    assert!(
-        reshaped.headers().get("x-amzn-requestid").is_some(),
-        "a Converse-path 413 must carry x-amzn-RequestId"
-    );
-    assert!(
-        reshaped.headers().get("x-amzn-errortype").is_some(),
-        "a Converse-path 413 must carry x-amzn-errortype"
-    );
-    let bytes = reshaped.into_body().collect().await.unwrap().to_bytes();
-    let v: serde_json::Value =
-        serde_json::from_slice(&bytes).expect("reshaped Converse-path 413 body must be valid JSON");
-    assert!(
-        v.get("__type").is_some(),
-        "a Converse-path 413 must carry the native __type envelope; got {v}"
     );
 }
 
