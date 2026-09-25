@@ -98,7 +98,7 @@ mod transport;
 
 pub mod mount;
 
-// THE FOLD (dep-wall §6.5 ruling 1): gRPC is HTTP/2 framing, a dialect of this wire, so its
+// THE FOLD: gRPC is HTTP/2 framing, a dialect of this wire, so its
 // transport is a module of this crate rather than a crate beside it. It still registers as its own
 // transport under its own key (`grpc`), so the registry and boot matching see what they saw before.
 pub mod grpc;

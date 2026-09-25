@@ -19,7 +19,7 @@ use futures::StreamExt;
 /// forging kernel evidence in order to test something else, and it read as if that were the
 /// ordinary way to obtain one. Minting the capability crate's own token instead named core from a
 /// transport's tests, which this crate's `tests/no_plane_names.rs` refuses since `sse` folded into
-/// it (dep-wall §6.5 ruling 1); the blessed fixture is what every other battery here uses.
+/// it; the blessed fixture is what every other battery here uses.
 fn fixture_seal() -> busbar_contract::plugin::TestKernelSeal {
     busbar_contract::plugin::TestKernelSeal
 }

@@ -133,7 +133,7 @@ const FAM_DECISION: &[&str] = &["busbar-plane-decision"];
 
 // ── TRANSPORTS (each concrete transport is its own crate, except the HTTP dialects) ────────────
 // `sse` (an HTTP response body) and `grpc` (HTTP/2 framing) were FOLDED INTO
-// `busbar-transport-http` (dep-wall §6.5 ruling 1, owner Q68): the crate that may name each
+// `busbar-transport-http`: the crate that may name each
 // instance is the one that holds it now.
 const FAM_HTTP: &[&str] = &["busbar-transport-http"];
 const FAM_WS: &[&str] = &["busbar-transport-ws"];

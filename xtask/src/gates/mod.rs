@@ -319,7 +319,7 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // a crate the rule scores as an automatic RED — `busbar-transport-tls` path-depends on
     // `busbar-unit-transport-key` (a unit crate; #36/#40 kernel-side machinery). `-grpc` and `-sse`
     // were the other two, each path-depending on `busbar-transport-http`: both FOLDED INTO it
-    // (dep-wall §6.5 ruling 1), so their rows have no crate left to score and grpc's third-party
+    // (the transport fold), so their rows have no crate left to score and grpc's third-party
     // deps (`tonic`, `tower`) are `-http`'s row's now. Drain: the owner reviews the third-party
     // deps into `[rules.manifest-allowlist.reviewed_extra]` and the #40 opaque-handle work removes
     // the tls → unit edge; each name is struck here AND in scripts/land.sh as its row goes green.

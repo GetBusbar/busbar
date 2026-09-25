@@ -237,7 +237,7 @@ fn vocabulary(crates: &[CrateInfo]) -> BTreeMap<&'static str, Vec<Needle>> {
             id: String::new(),
         });
         // A WIRE A CRATE DECLARES IS VOCABULARY LIKE ONE IT IS NAMED FOR (#50). `http` holds
-        // `grpc` and `sse` as modules since the dep-wall §6.5 fold, each registering under its own
+        // `grpc` and `sse` as modules since they folded into it, each registering under its own
         // key, so each key is a transport instance's bare and kind-qualified id, owned by the crate
         // that declares it — exactly the needles a crate named for that wire contributed.
         for key in &c.declared_keys {
