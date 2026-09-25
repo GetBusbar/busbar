@@ -384,7 +384,7 @@ extern "C-unwind" fn tap_cost_settle(
 
 /// THE HEADLINE. A plane cdylib — dlopened, its decl read through the airlock, its vocabulary
 /// materialised — is handed the UNMODIFIED `build_plane_host_vtable()` and serves a work item end to
-/// end. No tap, no substitute, no hand-built table: core's own 44 slots, and a plugin calling five of
+/// end. No tap, no substitute, no hand-built table: core's own 44 slots, and a plugin calling six of
 /// them from the far side of a `dlopen`.
 #[test]
 fn dropped_in_plane_rides_the_real_host_vtable() {
@@ -472,12 +472,13 @@ fn withdrawing_one_real_host_slot_refuses_the_dispatch() {
         return;
     };
     type Withdraw = (&'static str, fn(&mut PlaneHostVtable));
-    const WITHDRAWABLE: [Withdraw; 5] = [
+    const WITHDRAWABLE: [Withdraw; 6] = [
         ("clock_now", |vt| vt.clock_now = None),
         ("govern_admit", |vt| vt.govern_admit = None),
         ("meter_charge", |vt| vt.meter_charge = None),
         ("cost_reserve", |vt| vt.cost_reserve = None),
         ("cost_settle", |vt| vt.cost_settle = None),
+        ("journal_append", |vt| vt.journal_append = None),
     ];
 
     let app = TestApp::new().build();

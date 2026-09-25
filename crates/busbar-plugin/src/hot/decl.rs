@@ -55,8 +55,8 @@ impl IngressCarrier {
 /// inbound [`PlaneHostVtable`] the plane will call back through, plus the validated config bytes.
 ///
 /// # Safety / discipline
-/// All borrowed ranges (`config_*`, `resolved_refs_*`) MUST be live for the duration of the `build`
-/// call; `host` MUST point at a live vtable that outlives the built plane.
+/// All borrowed ranges (`config_*`, `resolved_refs_*`, `public_url_*`) MUST be live for the duration
+/// of the `build` call; `host` MUST point at a live vtable that outlives the built plane.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct BuildCtx {
@@ -80,6 +80,12 @@ pub struct BuildCtx {
     pub resolved_refs_ptr: *const u64,
     /// Number of entries in the resolved-refs array.
     pub resolved_refs_len: usize,
+    // ── appended at minor 23 ──
+    /// Borrowed UTF-8 bytes of the deployment's PUBLIC base URL (the operator's `public_url:`), the
+    /// origin a plane derives its admission audience from; NULL = the deployment states none.
+    pub public_url_ptr: *const u8,
+    /// Length of the public-URL range.
+    pub public_url_len: usize,
 }
 
 // ── core→plane fn-pointer signatures (cold/build-time; still `extern "C-unwind"`) ────────────────
@@ -110,6 +116,25 @@ pub type AdminRoutesFn = extern "C-unwind" fn(
 /// Serialize the plane's OpenAPI contribution into a caller buffer; sets `out_written`. Subject to
 /// the same non-vacuity invariant as [`AdminRoutesFn`].
 pub type OpenApiFn = extern "C-unwind" fn(
+    state: *mut c_void,
+    buf: *mut u8,
+    buf_cap: usize,
+    out_written: *mut usize,
+) -> RawStatus;
+/// Serialize what the built plane ANSWERS ON into a caller buffer; sets `out_written`. One claim per
+/// line, `<METHOD> <path> <wire>` separated by single spaces (UTF-8, `\n`-terminated or not). Zero
+/// bytes written = the plane mounts nothing this generation. Same buffer discipline as
+/// [`AdminRoutesFn`].
+pub type ClaimsFn = extern "C-unwind" fn(
+    state: *mut c_void,
+    buf: *mut u8,
+    buf_cap: usize,
+    out_written: *mut usize,
+) -> RawStatus;
+/// Serialize the admission facts the built plane binds into a caller buffer; sets `out_written`:
+/// `<audience>\n<resource_metadata>` (UTF-8). Zero bytes written = the plane binds no audience (it
+/// has no receiving side). Same buffer discipline as [`AdminRoutesFn`].
+pub type AdmissionFn = extern "C-unwind" fn(
     state: *mut c_void,
     buf: *mut u8,
     buf_cap: usize,
@@ -262,6 +287,14 @@ pub struct PlaneDecl {
     pub fee_units_ptr: *const DeclStr,
     /// Number of entries in the fee-units list.
     pub fee_units_len: usize,
+
+    // ── THE PLANE'S DOOR (appended at minor 23): what a BUILT plane answers on and who it admits,
+    //    computed from its own state, so the host mounts and admits a dropped-in plane exactly as it
+    //    does a linked one. ──
+    /// The paths the built plane answers on (see [`ClaimsFn`]).
+    pub claims: Option<ClaimsFn>,
+    /// The audience the built plane binds (see [`AdmissionFn`]).
+    pub admission: Option<AdmissionFn>,
 }
 
 // SAFETY: `PlaneDecl` holds `AbiPreamble` scalars, `Option<extern "C-unwind" fn>` slots — and,
@@ -325,6 +358,8 @@ impl PlaneDecl {
         billable_classes_len: 0,
         fee_units_ptr: core::ptr::null(),
         fee_units_len: 0,
+        claims: Some(stub::claims),
+        admission: Some(stub::admission),
     };
 }
 
@@ -374,6 +409,24 @@ pub mod stub {
         _out_written: *mut usize,
     ) -> RawStatus {
         unimplemented!("PlaneDecl::openapi — stub")
+    }
+    /// Stub: see module docs.
+    pub extern "C-unwind" fn claims(
+        _state: *mut c_void,
+        _buf: *mut u8,
+        _buf_cap: usize,
+        _out_written: *mut usize,
+    ) -> RawStatus {
+        unimplemented!("PlaneDecl::claims — stub")
+    }
+    /// Stub: see module docs.
+    pub extern "C-unwind" fn admission(
+        _state: *mut c_void,
+        _buf: *mut u8,
+        _buf_cap: usize,
+        _out_written: *mut usize,
+    ) -> RawStatus {
+        unimplemented!("PlaneDecl::admission — stub")
     }
     /// Stub: see module docs.
     pub extern "C-unwind" fn dispatch(

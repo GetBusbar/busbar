@@ -22,7 +22,7 @@
 //!
 //! * the POSITIVE drive asserts exact per-slot call counts (`assert_eq!(…, 1)`, not `> 0`);
 //! * the EMPTY-host drive asserts the plane REFUSES when the table grants nothing;
-//! * the PER-SLOT drive withdraws exactly one of the five granted slots at a time and asserts the
+//! * the PER-SLOT drive withdraws exactly one of the six granted slots at a time and asserts the
 //!   plane refuses each time, naming the withdrawn slot — which is what proves it calls each one.
 //!
 //! The REAL host — `busbar_kernel::plane_host::build_plane_host_vtable()`, 44 of 44 slots over live
@@ -95,7 +95,8 @@ fn vocab(ptr: *const u8, len: usize) -> String {
 mod test_host {
     use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
     use busbar_plugin::hot::pod::{
-        CostLeaseId, CostSettleOut, Decision, Facts, MeterOutcome, StatusClass, Usage, POD_VERSION,
+        CostLeaseId, CostSettleOut, Decision, Facts, FramingDesc, MeterOutcome, Seq, StatusClass,
+        Usage, POD_VERSION,
     };
     use core::mem::MaybeUninit;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -106,7 +107,7 @@ mod test_host {
     /// disable every later one.
     static SERIALIZE: Mutex<()> = Mutex::new(());
 
-    /// Per-slot call counts. `dispatch` is REQUIRED to move all five; `start` moves `CLOCK_NOW` once
+    /// Per-slot call counts. `dispatch` is REQUIRED to move all six; `start` moves `CLOCK_NOW` once
     /// more.
     pub static CLOCK_NOW: AtomicU64 = AtomicU64::new(0);
     /// See [`CLOCK_NOW`].
@@ -117,6 +118,8 @@ mod test_host {
     pub static COST_RESERVE: AtomicU64 = AtomicU64::new(0);
     /// See [`CLOCK_NOW`].
     pub static COST_SETTLE: AtomicU64 = AtomicU64::new(0);
+    /// See [`CLOCK_NOW`].
+    pub static JOURNAL_APPEND: AtomicU64 = AtomicU64::new(0);
 
     /// THE MONEY BYTES, READ OFF THE WIRE. What the plane actually wrote into the `Usage` /
     /// `cost_reserve` / `cost_settle` arguments, captured verbatim so a test can assert the
@@ -137,6 +140,7 @@ mod test_host {
             &METER_CHARGE,
             &COST_RESERVE,
             &COST_SETTLE,
+            &JOURNAL_APPEND,
         ] {
             c.store(0, Ordering::SeqCst);
         }
@@ -224,9 +228,23 @@ mod test_host {
         StatusClass::Ok
     }
 
-    /// The instrumented host: `EMPTY` (every capability withheld) plus exactly the five slots the
+    extern "C-unwind" fn journal_append(
+        _host: HostCtx,
+        _scope: u32,
+        content_ptr: *const u8,
+        _content_len: usize,
+        framing: *const FramingDesc,
+    ) -> Seq {
+        let n = JOURNAL_APPEND.fetch_add(1, Ordering::SeqCst);
+        if content_ptr.is_null() || framing.is_null() {
+            return Seq::NONE; // fail-closed, as the real host does
+        }
+        Seq(n + 1)
+    }
+
+    /// The instrumented host: `EMPTY` (every capability withheld) plus exactly the six slots the
     /// example plane requires. Granting only what is needed is the point — a plane that called a
-    /// sixth would hit a `None` and refuse, which is the behaviour, not a bug.
+    /// seventh would hit a `None` and refuse, which is the behaviour, not a bug.
     pub fn vtable() -> PlaneHostVtable {
         PlaneHostVtable {
             clock_now: Some(clock_now),
@@ -234,6 +252,7 @@ mod test_host {
             meter_charge: Some(meter_charge),
             cost_reserve: Some(cost_reserve),
             cost_settle: Some(cost_settle),
+            journal_append: Some(journal_append),
             ..PlaneHostVtable::EMPTY
         }
     }
@@ -241,15 +260,16 @@ mod test_host {
     /// One granted slot's name, paired with a withdrawer that nulls exactly that slot.
     pub type Withdrawal = (&'static str, fn(&mut PlaneHostVtable));
 
-    /// The five slot names this host grants, paired with a withdrawer that nulls exactly that one.
+    /// The six slot names this host grants, paired with a withdrawer that nulls exactly that one.
     /// Drives the per-slot negative control: the plane must REFUSE when any single one is absent,
     /// which is what proves it CALLS each of them rather than merely holding the table.
-    pub const WITHDRAWABLE: [Withdrawal; 5] = [
+    pub const WITHDRAWABLE: [Withdrawal; 6] = [
         ("clock_now", |vt| vt.clock_now = None),
         ("govern_admit", |vt| vt.govern_admit = None),
         ("meter_charge", |vt| vt.meter_charge = None),
         ("cost_reserve", |vt| vt.cost_reserve = None),
         ("cost_settle", |vt| vt.cost_settle = None),
+        ("journal_append", |vt| vt.journal_append = None),
     ];
 }
 
@@ -424,6 +444,7 @@ fn dropped_in_example_plane_rides_the_host_vtable_end_to_end() {
         ("meter_charge", &test_host::METER_CHARGE),
         ("cost_reserve", &test_host::COST_RESERVE),
         ("cost_settle", &test_host::COST_SETTLE),
+        ("journal_append", &test_host::JOURNAL_APPEND),
     ] {
         assert_eq!(
             counter.load(Ordering::SeqCst),
@@ -516,7 +537,7 @@ fn dropped_in_example_plane_refuses_when_the_host_grants_nothing() {
 }
 
 /// THE NEGATIVE CONTROL, PER SLOT — the sharpest form of the same question. Withdraw EXACTLY ONE of
-/// the five granted slots and drive again: the plane must refuse, every time, for every slot. A slot
+/// the six granted slots and drive again: the plane must refuse, every time, for every slot. A slot
 /// whose withdrawal changes nothing is a slot the plane never called, and this is the assertion that
 /// says so by name.
 #[test]
@@ -714,7 +735,7 @@ fn write_plane_tarball(dir: &std::path::Path, file: &str, m: &Manifest, lib: &[u
 
 /// Drive an opened `DynPlane` end to end (config_validate → build → hydrate → start → dispatch) over
 /// the instrumented `test_host`, asserting every hop returns `Ok` AND that the plane crossed each of
-/// the five granted host slots.
+/// the six granted host slots.
 ///
 /// The counter assertions are what make this a proof about the SEAM rather than about the loader. A
 /// `DynPlane` the registry produced that returned `Ok` without ever calling back would be a plane the
@@ -744,6 +765,7 @@ fn drive_opened_plane(plane: &crate::DynPlane) {
     assert_eq!(test_host::METER_CHARGE.load(Ordering::SeqCst), 1);
     assert_eq!(test_host::COST_RESERVE.load(Ordering::SeqCst), 1);
     assert_eq!(test_host::COST_SETTLE.load(Ordering::SeqCst), 1);
+    assert_eq!(test_host::JOURNAL_APPEND.load(Ordering::SeqCst), 1);
     // The money bytes, on the registry path too: a raw count, and not one priced nanodollar.
     assert_eq!(test_host::LAST_AMOUNT.load(Ordering::SeqCst), 4);
     assert_eq!(test_host::LAST_UNIT_COST_MICROS.load(Ordering::SeqCst), 0);
@@ -1047,4 +1069,66 @@ fn relink_for_this_platform(bytes: &[u8], tag: &str) -> Option<Vec<u8>> {
         }
         Some(std::fs::read(&file).expect("read the re-signed image back"))
     }
+}
+
+/// ONE PLANE SERVES THE SAME, LINKED OR DROPPED IN (minor 23). The example plane is admitted both
+/// ways — [`crate::link_plane`] over the rlib's `PLANE_DECL`, [`crate::load_plane`] over the cdylib —
+/// and each is BUILT to serve through [`crate::DynPlane::serve`] with the same section bytes and public
+/// URL. The two must state the same door (`claims`), bind the same audience (`admission`) and answer
+/// one work item with the same status and the same reply bytes — a reply that quotes the section, so
+/// the section demonstrably crossed `build`. Without a public URL the plane has no audience and claims
+/// no path.
+#[test]
+fn a_linked_and_a_dropped_in_plane_serve_identically_over_the_abi() {
+    let Some(lib) = plane_example_cdylib() else {
+        eprintln!("skip: plane example cdylib not built (run under --workspace)");
+        return;
+    };
+    let linked: &'static crate::DynPlane = Box::leak(Box::new(
+        crate::link_plane(&COMPILED_IN, "linked").expect("links"),
+    ));
+    let dropped: &'static crate::DynPlane =
+        Box::leak(Box::new(crate::load_plane(&lib).expect("loads")));
+    let host: &'static PlaneHostVtable = Box::leak(Box::new(test_host::vtable()));
+    let section = br#"{"greeting":"hi"}"#;
+    let url = Some("https://gw.example.com");
+
+    let _guard = test_host::reset();
+    let serve = |plane: &'static crate::DynPlane| {
+        let served = plane.serve(host, section, url).expect("builds");
+        let (status, reply) = served.dispatch(host, HostCtx::NULL, b"ping");
+        (
+            served.claims().expect("claims"),
+            served.admission().expect("admission"),
+            status,
+            String::from_utf8(reply).expect("utf-8 reply"),
+        )
+    };
+    let (a, b) = (serve(linked), serve(dropped));
+    assert_eq!(a, b, "the two doors must serve byte-identically");
+    assert_eq!(
+        a.0,
+        vec![crate::HotClaim {
+            method: "POST".into(),
+            path: "/example".into(),
+            wire: "http+json".into(),
+        }]
+    );
+    assert_eq!(
+        a.1,
+        Some((
+            "https://gw.example.com/example".to_string(),
+            "https://gw.example.com/.well-known/oauth-protected-resource/example".to_string(),
+        ))
+    );
+    assert_eq!(a.2, StatusClass::Ok);
+    assert_eq!(
+        a.3, r#"{"plane":"example","bytes":4,"section":{"greeting":"hi"}}"#,
+        "the reply quotes the section the plane was built with"
+    );
+
+    // No public URL: no audience to be admitted under, so no door either.
+    let bare = dropped.serve(host, section, None).expect("builds");
+    assert_eq!(bare.claims().expect("claims"), Vec::new());
+    assert_eq!(bare.admission().expect("admission"), None);
 }

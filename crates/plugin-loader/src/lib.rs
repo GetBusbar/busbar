@@ -70,7 +70,9 @@ pub use busbar_plugin::hot::PlaneDecl as HotPlaneDecl;
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
 pub use highwater::{HighWaterMarks, HIGH_WATER_FILE};
 pub use hook::DlopenPolicy;
-pub use plane::{link_plane, load_plane, load_plane_from_bytes, DynPlane, HotDeclaration};
+pub use plane::{
+    link_plane, load_plane, load_plane_from_bytes, DynPlane, HotClaim, HotDeclaration, ServedPlane,
+};
 pub use registry::{
     inventory as inventory_tarballs, scan_and_validate, supported_abi, InventoryEntry,
     LoadablePlugin, PluginRegistry, SkippedPlugin,

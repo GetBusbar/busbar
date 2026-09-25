@@ -31,16 +31,18 @@
 //! a [`DynPlane`] through [`link_plane`] — the same airlock, the same size bound, the same vocabulary
 //! reads, with no library behind it. The root adapts either onto the plane axis through one function
 //! (`crates/busbar/src/root/linked.rs`, `register_planes`), so a registry row cannot tell which door
-//! its plane came in by (#2 rule (1)). What the row does NOT yet carry is the plane's DRIVE: the
-//! kernel's request loop still runs every plane through `&dyn EngineHost`, not `&PlaneHostVtable`
-//! (`docs/design/1.6.0-TRACKER.md` H6 part 1, in this release, with an owner).
+//! its plane came in by (#2 rule (1)). The DRIVE is the same too: [`DynPlane::serve`] builds either
+//! into a [`ServedPlane`], whose `claims`, `admission` and `dispatch` slots are what the root mounts,
+//! admits and serves through (minor 23) — one path over the HOT-lane vtable, whichever door.
 
 use crate::stage;
 use busbar_plugin::hot::decl::{
-    AdminRoutesFn, BuildFn, ConfigValidateFn, DispatchFn, HydrateFn, OpenApiFn, StartFn,
+    AdminRoutesFn, AdmissionFn, BuildFn, ClaimsFn, ConfigValidateFn, DispatchFn, HydrateFn,
+    OpenApiFn, StartFn,
 };
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::pod::{OpaqueState, RawStatus, StatusClass, POD_VERSION};
+use busbar_plugin::hot::workitem::{EmitHandle, EmitKind, InboundHandle};
 use busbar_plugin::hot::{
     BuildCtx, DeclBillableClass, DeclStr, IngressCarrier, PlaneDecl, PlaneDeclFn, PlaneHostVtable,
     WorkItem,
@@ -211,6 +213,13 @@ impl DynPlane {
         busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, openapi)
             .flatten()
     }
+    fn slot_claims(&self) -> Option<ClaimsFn> {
+        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, claims).flatten()
+    }
+    fn slot_admission(&self) -> Option<AdmissionFn> {
+        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, admission)
+            .flatten()
+    }
 
     /// [`config_validate`](Self::config_validate), with the parsed handle OWNED: it is freed through
     /// the plane's own `free` when the returned [`PlaneState`] drops, and it cannot outlive this
@@ -286,6 +295,22 @@ impl DynPlane {
         config: &[u8],
         resolved_refs: &[u64],
     ) -> (StatusClass, Option<OpaqueState>) {
+        // SAFETY: forwarded from this fn's own contract.
+        unsafe { self.build_at(host, host_ctx, config, resolved_refs, None) }
+    }
+
+    /// [`build`](Self::build), stating the deployment's public URL in the build context.
+    ///
+    /// # Safety
+    /// As [`build`](Self::build).
+    unsafe fn build_at(
+        &self,
+        host: *const PlaneHostVtable,
+        host_ctx: HostCtx,
+        config: &[u8],
+        resolved_refs: &[u64],
+        public_url: Option<&str>,
+    ) -> (StatusClass, Option<OpaqueState>) {
         let Some(f) = self.slot_build() else {
             return (StatusClass::Unsupported, None);
         };
@@ -300,6 +325,8 @@ impl DynPlane {
             config_len: config.len(),
             resolved_refs_ptr: resolved_refs.as_ptr(),
             resolved_refs_len: resolved_refs.len(),
+            public_url_ptr: public_url.map_or(core::ptr::null(), str::as_ptr),
+            public_url_len: public_url.map_or(0, str::len),
         };
         let mut out = MaybeUninit::<OpaqueState>::uninit();
         let ctx_ptr: *const BuildCtx = &ctx;
@@ -432,6 +459,34 @@ impl DynPlane {
         Ok(buf)
     }
 
+    /// A `claims`/`admission` answer: the slot's bytes as UTF-8. Unlike a [`contribution`](Self::contribution)
+    /// an empty answer is a valid one; a non-`Ok` status, a caught panic, a claimed length past the
+    /// buffer or non-UTF-8 bytes are refused.
+    fn answer(
+        &self,
+        op: &str,
+        state: *mut std::os::raw::c_void,
+        f: ClaimsFn,
+    ) -> Result<String, String> {
+        let mut buf = vec![0u8; MAX_PLANE_CONTRIBUTION_LEN];
+        let mut written = 0usize;
+        let (buf_ptr, cap) = (buf.as_mut_ptr(), buf.len());
+        let written_ptr: *mut usize = &mut written;
+        let status =
+            crate::ffi_guard(&self.path, op, || f(state, buf_ptr, cap, written_ptr))?.class();
+        let path = &self.path;
+        if status != StatusClass::Ok {
+            return Err(format!("plane '{path}' {op} answered {status:?}"));
+        }
+        if written > cap {
+            return Err(format!(
+                "plane '{path}' {op} claims {written} bytes written into a {cap}-byte buffer"
+            ));
+        }
+        buf.truncate(written);
+        String::from_utf8(buf).map_err(|_| format!("plane '{path}' {op} answered non-UTF-8 bytes"))
+    }
+
     /// Shared shape for the two `fn(*mut c_void) -> RawStatus` boot hooks (`hydrate`/`start`).
     unsafe fn drive_state(
         &self,
@@ -448,6 +503,172 @@ impl DynPlane {
         }
     }
 }
+
+impl DynPlane {
+    /// BUILD this plane to SERVE one config generation: its `build` slot, handed `host` (the host's
+    /// `'static` vtable, which outlives the built plane as the `build` contract requires), the plane's
+    /// raw config `section` bytes and the deployment's `public_url`. The built state is OWNED by the
+    /// returned [`ServedPlane`] and freed through the plane's own `free` when it drops. No host call
+    /// is live at build, so the build context carries the null `HostCtx`; every dispatch is handed
+    /// the one minted for it.
+    pub fn serve(
+        &'static self,
+        host: &'static PlaneHostVtable,
+        section: &[u8],
+        public_url: Option<&str>,
+    ) -> Result<ServedPlane, String> {
+        // SAFETY: `host` is a live `'static` vtable, so it outlives the built plane.
+        let (class, state) =
+            unsafe { self.build_at(host, HostCtx::NULL, section, &[], public_url) };
+        match state {
+            Some(raw) if class == StatusClass::Ok => Ok(ServedPlane { plane: self, raw }),
+            _ => Err(format!("plane '{}' did not build: {class:?}", self.path)),
+        }
+    }
+}
+
+/// A HOT-lane plane BUILT for one config generation: the `'static` plane and the state its `build`
+/// produced, owned. It is what the host mounts ([`claims`](Self::claims)), admits
+/// ([`admission`](Self::admission)) and drives ([`dispatch`](Self::dispatch)) — the same three calls
+/// for a linked plane and a dropped-in one, because both are a [`DynPlane`].
+pub struct ServedPlane {
+    plane: &'static DynPlane,
+    raw: OpaqueState,
+}
+
+// SAFETY: the plane-state handle is `Send + Sync` by the ABI's own soundness rule (the plane seam's
+// "opaque plane-state handle `Send+Sync`"): a plane's `claims`/`admission`/`dispatch` may be called
+// from any thread, concurrently, and its state synchronises itself (the example plane's counters are
+// atomics). The host never dereferences the handle; it only hands it back to the plane.
+unsafe impl Send for ServedPlane {}
+// SAFETY: see the `Send` impl above.
+unsafe impl Sync for ServedPlane {}
+
+/// One path a built plane answers on, as its `claims` slot states it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HotClaim {
+    /// The HTTP method, upper-case.
+    pub method: String,
+    /// The exact path.
+    pub path: String,
+    /// The wire format the path is spoken in.
+    pub wire: String,
+}
+
+impl ServedPlane {
+    /// The plane this state was built from.
+    #[must_use]
+    pub fn plane(&self) -> &'static DynPlane {
+        self.plane
+    }
+
+    /// What the built plane answers on, read through its `claims` slot. An absent slot or an empty
+    /// answer claims nothing; a non-`Ok` status, a caught panic, an overlong answer or a line that
+    /// is not `<METHOD> <path> <wire>` is refused, never read as "no claims".
+    pub fn claims(&self) -> Result<Vec<HotClaim>, String> {
+        let Some(f) = self.plane.slot_claims() else {
+            return Ok(Vec::new());
+        };
+        let text = self.plane.answer("plane_claims", self.raw.ptr, f)?;
+        text.lines()
+            .filter(|line| !line.is_empty())
+            .map(|line| match line.split(' ').collect::<Vec<_>>()[..] {
+                [method, path, wire] if !method.is_empty() && path.starts_with('/') => {
+                    Ok(HotClaim {
+                        method: method.to_string(),
+                        path: path.to_string(),
+                        wire: wire.to_string(),
+                    })
+                }
+                _ => Err(format!(
+                    "plane '{}' claims `{line}`, not `<METHOD> <path> <wire>`",
+                    self.plane.path
+                )),
+            })
+            .collect()
+    }
+
+    /// The audience the built plane binds and its resource-metadata URL, read through its
+    /// `admission` slot; `None` = it binds none. Refused on the same terms as [`claims`](Self::claims),
+    /// and when the answer is not exactly two lines.
+    pub fn admission(&self) -> Result<Option<(String, String)>, String> {
+        let Some(f) = self.plane.slot_admission() else {
+            return Ok(None);
+        };
+        let text = self.plane.answer("plane_admission", self.raw.ptr, f)?;
+        if text.is_empty() {
+            return Ok(None);
+        }
+        match text.split('\n').collect::<Vec<_>>()[..] {
+            [audience, metadata] if !audience.is_empty() => {
+                Ok(Some((audience.to_string(), metadata.to_string())))
+            }
+            _ => Err(format!(
+                "plane '{}' admission is not `<audience>\\n<resource_metadata>`",
+                self.plane.path
+            )),
+        }
+    }
+
+    /// DISPATCH one request-response work item: `inbound` as the finite buffer, a reply channel of
+    /// [`MAX_PLANE_REPLY_LEN`] bytes, and the dispatch's own `host` + `host_ctx` (minted for this
+    /// call; the plane calls back through them). Returns the plane's status and the reply it wrote;
+    /// a caught panic fails closed (`Fault`, no reply), and a claimed reply length past the channel
+    /// is a `Fault`.
+    pub fn dispatch(
+        &self,
+        host: &PlaneHostVtable,
+        host_ctx: HostCtx,
+        inbound: &[u8],
+    ) -> (StatusClass, Vec<u8>) {
+        // The channel is reserved, not zeroed: the plane writes into it and the host reads back only
+        // the prefix the plane says it wrote.
+        let mut reply: Vec<u8> = Vec::with_capacity(MAX_PLANE_REPLY_LEN);
+        let mut written = 0usize;
+        let mut work = WorkItem::new(
+            InboundHandle::finite_buffer(inbound),
+            EmitHandle::new(EmitKind::Reply, 0),
+        )
+        .with_host(host, host_ctx);
+        work.reply_ptr = reply.as_mut_ptr();
+        work.reply_cap = reply.capacity();
+        work.reply_written = &mut written;
+        // SAFETY: `raw.ptr` is the live state this plane's `build` produced (owned by `self`); every
+        // borrow the work item carries (`inbound`, `host`, the reply channel) outlives the call.
+        let class = unsafe { self.plane.dispatch(self.raw.ptr, &work) };
+        if written > reply.capacity() {
+            return (StatusClass::Fault, Vec::new());
+        }
+        // SAFETY: the plane initialized the first `written` bytes of the channel (the reply
+        // discipline), and `written` is within the reserved capacity (checked above).
+        unsafe { reply.set_len(written) };
+        (class, reply)
+    }
+}
+
+impl std::fmt::Debug for ServedPlane {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServedPlane")
+            .field("plane", &self.plane.name)
+            .finish()
+    }
+}
+
+impl Drop for ServedPlane {
+    fn drop(&mut self) {
+        // The same guarded, confined teardown an owned `PlaneState` runs.
+        drop(PlaneState {
+            plane: self.plane,
+            raw: OpaqueState {
+                ptr: self.raw.ptr,
+                free: self.raw.free,
+            },
+        });
+    }
+}
+
+/// Cap on one dispatch's reply: the channel the host hands the plane.
+const MAX_PLANE_REPLY_LEN: usize = 1024 * 1024;
 
 /// A plane handle (`config_validate`'s parsed config or `build`'s plane state) OWNED by the host.
 ///

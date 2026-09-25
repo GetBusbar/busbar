@@ -16,8 +16,9 @@
 //! ## IT RIDES THE HOST VTABLE — THAT IS THE WHOLE POINT
 //!
 //! This plane is deliberately trivial in what it *computes* and deliberately NOT trivial in what it
-//! *crosses*: every dispatch makes FIVE real inbound calls back through the
-//! [`PlaneHostVtable`](busbar_plugin::hot::PlaneHostVtable) it was handed at `build`, and a sixth at
+//! *crosses*: every dispatch makes SIX real inbound calls back through the
+//! [`PlaneHostVtable`](busbar_plugin::hot::PlaneHostVtable) — the one its work item carries (minted
+//! for that dispatch), or, from an older host, the one it was handed at `build` — and a seventh at
 //! `start`. It is the tree's proof that the plane ABI is crossed in both directions by a real
 //! dropped-in artifact rather than exercised host-to-itself.
 //!
@@ -40,6 +41,15 @@
 //! | `dispatch` | `meter_charge` | the one-shot raw-count fact (see the money note below) |
 //! | `dispatch` | `cost_reserve` | open the metering LEASE for the item |
 //! | `dispatch` | `cost_settle` | settle the lease and read back exhaustion |
+//! | `dispatch` | `journal_append` | one audit row per dispatch, framed and chained by the host |
+//!
+//! ## IT SERVES — THE SAME WAY LINKED OR DROPPED IN
+//!
+//! Built with the deployment's public URL, the plane states one door through its `claims` slot
+//! (`POST /example`, `http+json`) and the audience it binds through `admission` (the public URL joined
+//! to that path). Every dispatch that carries a reply channel answers one JSON object: the raw count
+//! it metered and the config section it was built with, quoted verbatim — the proof the operator's
+//! `example:` section reached `build` over the ABI.
 //!
 //! ## MONEY: THIS PLANE IS PRICING-BLIND, AND EVERY NANODOLLAR IT HANDS OVER IS LITERALLY ZERO
 //!
@@ -70,8 +80,8 @@ use busbar_plugin::hot::decl::{
 };
 use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
 use busbar_plugin::hot::pod::{
-    AdmissionId, CostLeaseId, CostSettleOut, Decision, Facts, MeterOutcome, OpaqueState, RawStatus,
-    StatusClass, Usage, UsageComponent,
+    AdmissionId, CostLeaseId, CostSettleOut, Decision, Facts, Framing, FramingDesc, MeterOutcome,
+    OpaqueState, RawFraming, RawStatus, StatusClass, Usage, UsageComponent, POD_VERSION,
 };
 use busbar_plugin::hot::{PlaneDecl, WorkItem};
 use busbar_plugin::{host_slot, write_out, AbiPreamble};
@@ -101,6 +111,18 @@ static BILLABLE_CLASSES: [DeclBillableClass; 1] = [DeclBillableClass {
 }];
 /// The fee unit this plane counts: once per billable request.
 static FEE_UNITS: [DeclStr; 1] = [DeclStr::new("per_request")];
+
+/// THE PATH THIS PLANE ANSWERS ON, the method it takes and the wire format it speaks — what its
+/// `claims` slot states once it is built with a public URL to be admitted under.
+const CLAIM_METHOD: &str = "POST";
+/// See [`CLAIM_METHOD`].
+const CLAIM_PATH: &str = "/example";
+/// See [`CLAIM_METHOD`].
+const CLAIM_WIRE: &str = "http+json";
+
+/// The journal scope this plane writes one audit row per dispatch into, through the host's
+/// `journal_append` — the host frames, chains and digests it; the plane supplies the content only.
+const AUDIT_SCOPE: u32 = 0x0045_5850;
 
 /// The neutral pool name this plane admits against. A pool is the HOST's routing/limit bucket; the
 /// plane names its own section key so an operator's limits land where they expect. Borrowed by the
@@ -137,6 +159,13 @@ struct PlaneState {
     /// The running RAW COUNT this plane has reported through `meter_charge`: inbound bytes. A COUNT,
     /// never a value — see the module's money note.
     metered_units: AtomicU64,
+    /// The raw config section bytes the host built this plane with — the operator's `example:`
+    /// section as the host lifted it, copied out of the build context (whose range is live only for
+    /// the `build` call). Every reply quotes it, which is how a caller sees the section arrived.
+    section: Vec<u8>,
+    /// The deployment's public URL, when the host stated one. Without it the plane has no audience
+    /// to be admitted under, so it claims no path (a mounted door with no lock is refused at boot).
+    public_url: Option<String>,
 }
 
 /// NEVER-PANICS free for a [`ParsedConfig`] handle (the catch-guarded shape a real plane's `free`
@@ -216,6 +245,19 @@ extern "C-unwind" fn build(
             // A ctx too short to carry the capability seam cannot build a plane that rides it.
             return StatusClass::Refused;
         };
+        // The borrowed ranges are live for this call only, so each is COPIED out. The section is the
+        // config range; the public URL is the minor-23 tail, absent from an older host's ctx.
+        let config_ptr = busbar_plugin::read_sized_field!(ctx, advertised, BuildCtx, config_ptr);
+        let config_len = busbar_plugin::read_sized_field!(ctx, advertised, BuildCtx, config_len);
+        let url_ptr = busbar_plugin::read_sized_field!(ctx, advertised, BuildCtx, public_url_ptr);
+        let url_len = busbar_plugin::read_sized_field!(ctx, advertised, BuildCtx, public_url_len);
+        let section = borrowed(
+            config_ptr.unwrap_or(core::ptr::null()),
+            config_len.unwrap_or(0),
+        );
+        let public_url = url_ptr
+            .filter(|p| !p.is_null())
+            .and_then(|p| String::from_utf8(borrowed(p, url_len.unwrap_or(0))).ok());
         if host.is_null() {
             return StatusClass::Refused;
         }
@@ -235,6 +277,8 @@ extern "C-unwind" fn build(
                 dispatched: AtomicU64::new(0),
                 started_at_nanos: AtomicU64::new(0),
                 metered_units: AtomicU64::new(0),
+                section,
+                public_url,
             })) as *mut c_void,
             free: Some(free_state),
         };
@@ -292,11 +336,12 @@ extern "C-unwind" fn start(state: *mut c_void) -> RawStatus {
 
 /// `dispatch` — THE ingress entry point, and THE cross-ABI round trip.
 ///
-/// Recovers the built [`PlaneState`], then makes FIVE REQUIRED calls back through the host vtable:
-/// `clock_now` → `govern_admit` → `meter_charge` → `cost_reserve` → `cost_settle`. Any absent slot,
-/// any fail-closed reading, any `Deny`/`Rejected`/non-`Ok` and any exhausted lease answers
-/// [`StatusClass::Refused`]; only a full round trip answers `Ok`. See the module docs for the money
-/// posture — every nanodollar this fn hands the host is a literal `0`.
+/// Recovers the built [`PlaneState`], then makes SIX REQUIRED calls back through the host vtable:
+/// `clock_now` → `govern_admit` → `meter_charge` → `cost_reserve` → `cost_settle` →
+/// `journal_append`. Any absent slot, any fail-closed reading, any `Deny`/`Rejected`/non-`Ok`, any
+/// exhausted lease and any unwritten audit row answers [`StatusClass::Refused`]; only a full round
+/// trip answers `Ok` (and writes the reply, when the work item carries a channel). See the module
+/// docs for the money posture — every nanodollar this fn hands the host is a literal `0`.
 extern "C-unwind" fn dispatch(state: *mut c_void, work: *const WorkItem) -> RawStatus {
     let class = catch_unwind(AssertUnwindSafe(|| {
         if state.is_null() || work.is_null() {
@@ -306,9 +351,24 @@ extern "C-unwind" fn dispatch(state: *mut c_void, work: *const WorkItem) -> RawS
         // call (ABI dispatch discipline). Neither is mutated through a shared ref except the atomics.
         let st = unsafe { &*(state as *const PlaneState) };
         let w = unsafe { &*work };
-        let host = st.host;
-        let host_size = st.host_size;
-        let ctx = st.host_ctx;
+        // THE DISPATCH'S OWN HOST, when the work item carries one (minor 23): a serving host mints a
+        // fresh `HostCtx` per dispatch, live only for this call, so the plane calls back through it
+        // and `check`s that table as it checked the build-time one. An older host's work item carries
+        // none, and the plane rides the seam it was handed at build.
+        let advertised = w.size;
+        let (host, host_size, ctx) = match (
+            busbar_plugin::read_sized_field!(work, advertised, WorkItem, host),
+            busbar_plugin::read_sized_field!(work, advertised, WorkItem, host_ctx),
+        ) {
+            (Some(host), Some(ctx)) if !host.is_null() => {
+                // SAFETY: a non-null work-item host addresses a live `PlaneHostVtable` for the call.
+                let Ok(size) = (unsafe { PlaneHostVtable::check(host) }) else {
+                    return StatusClass::Refused;
+                };
+                (host, size, ctx)
+            }
+            _ => (st.host, st.host_size, st.host_ctx),
+        };
 
         // THE RAW COUNT this item consumed: the inbound byte length. Touching `inbound.len` also
         // proves the borrowed `(ptr,len)` crossed the seam intact rather than being silently dropped.
@@ -388,9 +448,132 @@ extern "C-unwind" fn dispatch(state: *mut c_void, work: *const WorkItem) -> RawS
             return StatusClass::Refused;
         }
 
+        // ── 6. AUDIT — one row saying what this dispatch was, appended to the host's hash-chained
+        //    journal. The host frames the prelude, mints the sequence and digests; the plane states
+        //    only the content. A `Seq::NONE` (no row written) refuses the item: a dispatch that left
+        //    no record is not one this plane answers. ────────────────────────────────────────────────
+        let Some(journal_append) = host_slot!(host, host_size, journal_append) else {
+            return StatusClass::Refused;
+        };
+        let framing = FramingDesc {
+            size: core::mem::size_of::<FramingDesc>() as u32,
+            version: POD_VERSION,
+            framing: RawFraming::of(Framing::PipeSeparated),
+            digests_scope: 1,
+        };
+        let row = format!("example|dispatch|bytes={units}");
+        if journal_append(ctx, AUDIT_SCOPE, row.as_ptr(), row.len(), &framing).is_none() {
+            return StatusClass::Refused;
+        }
+
         st.dispatched.fetch_add(1, Ordering::Relaxed);
         st.metered_units.fetch_add(units, Ordering::Relaxed);
+
+        // ── 7. REPLY — when the work item carries a reply channel (minor 23): the section this plane
+        //    was built with and the raw count it metered, as one JSON object. ────────────────────────
+        let reply_ptr = busbar_plugin::read_sized_field!(work, advertised, WorkItem, reply_ptr);
+        let reply_cap = busbar_plugin::read_sized_field!(work, advertised, WorkItem, reply_cap);
+        let written = busbar_plugin::read_sized_field!(work, advertised, WorkItem, reply_written);
+        if let (Some(buf), Some(cap), Some(written)) = (reply_ptr, reply_cap, written) {
+            if !buf.is_null() && !written.is_null() {
+                let section = if st.section.is_empty() {
+                    &b"null"[..]
+                } else {
+                    &st.section[..]
+                };
+                let mut body =
+                    format!("{{\"plane\":\"example\",\"bytes\":{units},\"section\":").into_bytes();
+                body.extend_from_slice(section);
+                body.push(b'}');
+                if body.len() > cap {
+                    return StatusClass::Refused;
+                }
+                // SAFETY: `buf` is the host's live reply channel of `cap` bytes and `written` its
+                // live count slot, both for this call (the reply discipline); `body` fits.
+                unsafe {
+                    core::ptr::copy_nonoverlapping(body.as_ptr(), buf, body.len());
+                    *written = body.len();
+                }
+            }
+        }
         StatusClass::Ok
+    }))
+    .unwrap_or(StatusClass::Fault);
+    RawStatus::of(class)
+}
+
+/// Copy a borrowed `(ptr, len)` range out (empty for NULL). Safe only on a range the caller's ABI
+/// contract makes live for the call, which is every range this plane reads.
+fn borrowed(ptr: *const u8, len: usize) -> Vec<u8> {
+    if ptr.is_null() || len == 0 {
+        return Vec::new();
+    }
+    // SAFETY: a non-null borrowed ABI range is live and initialized for the call.
+    unsafe { core::slice::from_raw_parts(ptr, len) }.to_vec()
+}
+
+/// Write `text` into a caller buffer and its length into `out_written`; `Refused` when it does not
+/// fit or the caller handed no buffer.
+fn answer(text: &str, buf: *mut u8, buf_cap: usize, out_written: *mut usize) -> StatusClass {
+    if out_written.is_null() || (buf.is_null() && !text.is_empty()) || text.len() > buf_cap {
+        return StatusClass::Refused;
+    }
+    // SAFETY: `buf` is a live caller range of `buf_cap` bytes and `out_written` a live slot (the
+    // buffer discipline); `text` fits.
+    unsafe {
+        if !text.is_empty() {
+            core::ptr::copy_nonoverlapping(text.as_ptr(), buf, text.len());
+        }
+        *out_written = text.len();
+    }
+    StatusClass::Ok
+}
+
+/// `claims` — the one path this plane answers on, once it has an audience to be admitted under.
+extern "C-unwind" fn claims(
+    state: *mut c_void,
+    buf: *mut u8,
+    buf_cap: usize,
+    out_written: *mut usize,
+) -> RawStatus {
+    let class = catch_unwind(AssertUnwindSafe(|| {
+        if state.is_null() {
+            return StatusClass::Refused;
+        }
+        // SAFETY: `state` is the live `PlaneState` `build` produced.
+        let st = unsafe { &*(state as *const PlaneState) };
+        let text = match st.public_url {
+            Some(_) => format!("{CLAIM_METHOD} {CLAIM_PATH} {CLAIM_WIRE}"),
+            None => String::new(),
+        };
+        answer(&text, buf, buf_cap, out_written)
+    }))
+    .unwrap_or(StatusClass::Fault);
+    RawStatus::of(class)
+}
+
+/// `admission` — the audience a token presented at this plane's door must carry (the public URL
+/// joined to its path) and where a refused caller finds the authorization server.
+extern "C-unwind" fn admission(
+    state: *mut c_void,
+    buf: *mut u8,
+    buf_cap: usize,
+    out_written: *mut usize,
+) -> RawStatus {
+    let class = catch_unwind(AssertUnwindSafe(|| {
+        if state.is_null() {
+            return StatusClass::Refused;
+        }
+        // SAFETY: `state` is the live `PlaneState` `build` produced.
+        let st = unsafe { &*(state as *const PlaneState) };
+        let text = match st.public_url.as_deref() {
+            Some(url) => {
+                let url = url.trim_end_matches('/');
+                format!("{url}{CLAIM_PATH}\n{url}/.well-known/oauth-protected-resource{CLAIM_PATH}")
+            }
+            None => String::new(),
+        };
+        answer(&text, buf, buf_cap, out_written)
     }))
     .unwrap_or(StatusClass::Fault);
     RawStatus::of(class)
@@ -436,6 +619,8 @@ pub static PLANE_DECL: PlaneDecl = PlaneDecl {
     billable_classes_len: BILLABLE_CLASSES.len(),
     fee_units_ptr: FEE_UNITS.as_ptr(),
     fee_units_len: FEE_UNITS.len(),
+    claims: Some(claims),
+    admission: Some(admission),
 };
 
 // Emit the `cdylib` boundary symbols (`busbar_abi`, `busbar_plugin_kind() == "plane"`,

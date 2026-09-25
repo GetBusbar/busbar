@@ -448,7 +448,23 @@ fn compute_layout() -> String {
     // The WorkItem keystone + its tagged handles.
     record!(s, InboundHandle, [kind, _reserved, id, ptr, len]);
     record!(s, EmitHandle, [kind, _reserved, id]);
-    record!(s, WorkItem, [size, version, _reserved, inbound, emit]);
+    record!(
+        s,
+        WorkItem,
+        [
+            size,
+            version,
+            _reserved,
+            inbound,
+            emit,
+            // The dispatch's own host and reply (minor 23).
+            host,
+            host_ctx,
+            reply_ptr,
+            reply_cap,
+            reply_written
+        ]
+    );
 
     // The two vtable headers (preamble + sized header), then the slots themselves. (Slot offsets do
     // NOT "follow deterministically" from the header — every slot is one pointer wide, so the
@@ -526,7 +542,10 @@ fn compute_layout() -> String {
             config_ptr,
             config_len,
             resolved_refs_ptr,
-            resolved_refs_len
+            resolved_refs_len,
+            // The deployment's public URL (minor 23).
+            public_url_ptr,
+            public_url_len
         ]
     );
     record!(
@@ -570,7 +589,10 @@ fn compute_layout() -> String {
             billable_classes_ptr,
             billable_classes_len,
             fee_units_ptr,
-            fee_units_len
+            fee_units_len,
+            // The plane's door (minor 23).
+            claims,
+            admission
         ]
     );
     record!(s, DeclStr, [ptr, len]);

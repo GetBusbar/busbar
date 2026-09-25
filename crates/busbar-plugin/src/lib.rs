@@ -92,7 +92,13 @@ pub const ABI_MAJOR: u32 = 2;
 /// config sections, billable classes and fee units), so a dropped-in plane states every fact a linked
 /// plane's declaration holds. The loader refuses a decl that does not reach the end of that tail: a
 /// plane that cannot state its declaration is not installed with one invented for it.
-pub const ABI_MINOR: u32 = 22;
+///
+/// 22→23 (1.6.0, item 63 / TRACKER H6 part 1): a dropped-in plane SERVES. `hot::PlaneDecl` gains
+/// the `claims` and `admission` slots (what a built plane answers on and the audience it binds),
+/// `hot::BuildCtx` gains the deployment's public URL, and `hot::WorkItem` gains the dispatch's own
+/// host vtable + `HostCtx` and a reply buffer — so the host mounts, admits and drives a plane over
+/// the ABI exactly as it does a linked one. All append-only.
+pub const ABI_MINOR: u32 = 23;
 
 /// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,
 /// `abi_minor` at 12 — is a permanent contract: it may NEVER be reordered, resized, extended, or
