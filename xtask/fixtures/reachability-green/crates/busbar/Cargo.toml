@@ -6,6 +6,14 @@ version = "0.0.0"
 name = "busbar"
 path = "src/main.rs"
 
+# The plugin crates' directories — where the gate looks for a plane's own `linked` entry module.
+[dependencies]
+busbar-llm = { path = "../busbar-llm", optional = true }
+busbar-mcp = { path = "../busbar-mcp", optional = true }
+busbar-a2a = { path = "../busbar-a2a", optional = true }
+busbar-voice = { path = "../busbar-voice", optional = true }
+busbar-plane-decision = { path = "../busbar-plane-decision", optional = true }
+
 # The linked table the real root's build script turns into the `LINKED` table `main.rs` includes.
 [package.metadata.busbar.linked]
 proto-llm = "busbar-llm"
@@ -21,3 +29,7 @@ plane-mcp = "plane protocols diagnostics"
 plane-a2a = "plane diagnostics"
 plane-voice = "plane diagnostics"
 plane-decision = "plane"
+
+# The decision plane's entry module is in the composition root, as on the real tree.
+[package.metadata.busbar.linked-entry]
+busbar-plane-decision = "crate::root::plane_decision"

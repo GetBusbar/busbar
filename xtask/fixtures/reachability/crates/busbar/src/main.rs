@@ -4,7 +4,9 @@ mod root;
 // A doc comment naming every plane, which is exactly what must NOT count as a registration or as a
 // reach: `busbar_llm::PLANE_DECL`, `McpPlane`, `busbar_a2a::PLANE_DECL`, `StreamingPlane`,
 // `DecisionPlane`, and `root::units_llm`, `root::units_mcp`, `root::units_a2a`, `root::units_voice`,
-// `root::money_book`. Doc comments lie; this gate reads code.
+// `root::money_book` — and a flip of every key onto the kernel loop,
+// `flip_one_shot_to_kernel(busbar_mcp::PLANE_KEY)`, `register_gauntlet_runner(busbar_a2a::PLANE_KEY,
+// kernel_one_shot)`. Doc comments lie; this gate reads code.
 fn register_planes() {
     let installed: Vec<u8> = Vec::new();
     install_planes(installed);
