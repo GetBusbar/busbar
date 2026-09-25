@@ -21,8 +21,12 @@ use crate::ir::usage::IrDuplexUsage;
 use crate::runtime::metering::TurnMeter;
 use crate::testkit::fixture_host::FixtureHost;
 use busbar_kernel::{
-    config, config_validate::validate, cost::CostModel, governance::PLANE_LANE_SEP,
-    plane::registry::TestRegistryIsolation, plane_host::EngineHost,
+    config,
+    config_validate::validate,
+    cost::CostModel,
+    governance::PLANE_LANE_SEP,
+    plane::registry::{PlaneDecl, TestRegistryIsolation},
+    plane_host::EngineHost,
 };
 use busbar_plane_streaming::session::TurnCounters;
 use std::sync::Arc;
@@ -220,8 +224,4 @@ fn streams_fees_per_request_refuses_and_per_session_boots_and_charges() {
 
 /// This plane's registry row, assembled kernel-side from its contract declaration
 /// and its behaviour table.
-static PLANE_ROW: busbar_kernel::plane::registry::PlaneDecl =
-    busbar_kernel::plane::registry::PlaneDecl::assemble(
-        crate::PLANE_DECLARATION,
-        crate::PLANE_HOOKS,
-    );
+static PLANE_ROW: PlaneDecl = PlaneDecl::assemble(crate::PLANE_DECLARATION, crate::PLANE_HOOKS);

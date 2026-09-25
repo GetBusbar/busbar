@@ -671,8 +671,8 @@ fn the_usage_seam_answers_with_the_process_history() {
 /// The apply half without the read half is precisely the defect this seam rules out: a node that dates its
 /// prices and then reports them off the newest card anyway. The date half without the other two
 /// stamps an instant nothing reads. And any of them without a caller is dead code that looks live.
-/// So the body of `install_card_repricer` is read for all three names, and `main.rs` is read for
-/// the call — four facts that have to hold together for the seam to be reachable in the shipped
+/// So the body of `install_card_repricer` is read for all three names, and the root unit, `main.rs`
+/// and the manifest's root-unit table are read for the call — four facts that have to hold together for the seam to be reachable in the shipped
 /// binary, and no one of which implies the others.
 #[test]
 fn the_boot_install_raises_both_halves_of_the_rate_seam_and_main_calls_it() {
@@ -698,10 +698,24 @@ fn the_boot_install_raises_both_halves_of_the_rate_seam_and_main_calls_it() {
         "the boot install stopped raising the READ half — the usage read would price off the \
          newest card again (#79): {body}"
     );
+    // The call: a root unit's configuration step runs it, `main.rs` runs every enabled unit's
+    // configuration step, and the generated table this binary compiles carries that unit.
+    let unit = include_str!("../units_llm.rs");
+    assert!(
+        unit.contains("on_config: Some(|_| crate::root::kernel::install_card_repricer())"),
+        "no root unit's configuration step calls the boot install, so neither half is ever raised"
+    );
     let main = include_str!("../../main.rs");
     assert!(
-        main.contains("install_card_repricer()"),
-        "nothing in the binary calls the boot install, so neither half is ever raised"
+        main.contains("ROOT_UNITS.iter().filter_map(|u| u.on_config)"),
+        "main.rs no longer runs the root units' configuration steps, so the boot install is never \
+         called"
+    );
+    let manifest = include_str!("../../../Cargo.toml");
+    assert!(
+        manifest.contains("= \"units_llm\""),
+        "the unit that calls the boot install is not a root unit the manifest lists, so no build's \
+         table carries it"
     );
 }
 

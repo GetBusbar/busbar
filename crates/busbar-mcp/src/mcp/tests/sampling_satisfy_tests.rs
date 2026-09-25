@@ -28,6 +28,7 @@ use crate::mcp::test_engine::*;
 use crate::testkit::loopback_http::{MockResponse, MockServer, MockServerState};
 use crate::testkit::TestAppMcpExt;
 use axum::http::StatusCode;
+use busbar_kernel::plane::registry::{register_test_plane, PlaneDecl};
 use std::sync::Arc;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";
@@ -101,7 +102,7 @@ async fn app_with_provider(
     // reads `lanes`/`by_model` through (R3/R4 sub-phase B moved those off the flat `App.llm_runtime`
     // field into that slot, populated only when a fallback LLM plane is registered).
     busbar_kernel::proto::register_test_protocols(busbar_llm::DECLS);
-    busbar_kernel::plane::registry::register_test_plane(&LLM_PLANE);
+    register_test_plane(&LLM_PLANE);
     // The resolved-completion synthesizer the sampling re-entry drives (`EngineHost::synthesize_
     // completion`) — the same seam the composition root installs via `install_completion_ingress`,
     // seeded here as a test through the neutral `set_test_completion_ingress` hook.
@@ -305,7 +306,7 @@ async fn an_ungranted_sampling_ask_is_still_refused_and_spends_nothing() {
     // reads `lanes`/`by_model` through (R3/R4 sub-phase B moved those off the flat `App.llm_runtime`
     // field into that slot, populated only when a fallback LLM plane is registered).
     busbar_kernel::proto::register_test_protocols(busbar_llm::DECLS);
-    busbar_kernel::plane::registry::register_test_plane(&LLM_PLANE);
+    register_test_plane(&LLM_PLANE);
     // The resolved-completion synthesizer the sampling re-entry drives (`EngineHost::synthesize_
     // completion`) — the same seam the composition root installs via `install_completion_ingress`,
     // seeded here as a test through the neutral `set_test_completion_ingress` hook.
@@ -371,7 +372,7 @@ async fn a_granted_ask_with_no_policy_refuses_and_names_the_key() {
     // reads `lanes`/`by_model` through (R3/R4 sub-phase B moved those off the flat `App.llm_runtime`
     // field into that slot, populated only when a fallback LLM plane is registered).
     busbar_kernel::proto::register_test_protocols(busbar_llm::DECLS);
-    busbar_kernel::plane::registry::register_test_plane(&LLM_PLANE);
+    register_test_plane(&LLM_PLANE);
     // The resolved-completion synthesizer the sampling re-entry drives (`EngineHost::synthesize_
     // completion`) — the same seam the composition root installs via `install_completion_ingress`,
     // seeded here as a test through the neutral `set_test_completion_ingress` hook.
@@ -491,8 +492,5 @@ fn the_sampling_policy_is_refused_at_boot_when_it_cannot_mean_what_it_says() {
 
 /// The llm plane's registry row, assembled kernel-side from its contract declaration
 /// and its behaviour table.
-static LLM_PLANE: busbar_kernel::plane::registry::PlaneDecl =
-    busbar_kernel::plane::registry::PlaneDecl::assemble(
-        busbar_llm::PLANE_DECLARATION,
-        busbar_llm::PLANE_HOOKS,
-    );
+static LLM_PLANE: PlaneDecl =
+    PlaneDecl::assemble(busbar_llm::PLANE_DECLARATION, busbar_llm::PLANE_HOOKS);

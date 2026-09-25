@@ -328,6 +328,55 @@ hooks-ranking = ["busbar-kernel/hooks-ranking", "busbar-core-admin/hooks-ranking
 openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
 loom-model = ["busbar-kernel/loom-model"]
 
+# ── THE LINKED PLUGINS (K1, #2 rule (1)) ─────────────────────────────────────────────────────────────
+# The composition root's source names no plugin: WHICH plugins a build links is this data. build.rs
+# (src/linked_gen.rs) reads the three tables below and writes `$OUT_DIR/linked.rs`, which main.rs
+# includes: `extern crate <crate> as _;` for every row whose cargo feature is ENABLED, `LINKED` — one
+# table per registration axis over each linked crate's `linked` entry module (the contract
+# PLANE_DECLARATION joined kernel-side to its kernel-typed PLANE_HOOKS, protocol declarations,
+# arrivals, diagnostics, installers …) — a `linked_*` cfg per root-bound seam an enabled entry drives,
+# and the `ROOT_UNITS` table of each enabled root module's `ROOT_UNIT`. `src/root/linked.rs` folds
+# them into the kernel's registration seams, axis by axis, in table order — the same path an entry
+# adapted from a plugin dropped into `plugins/` feeds.
+#
+# THE ORDER IS THE REGISTRATION ORDER on every axis (protocols, planes, diagnostics, WS arrivals, the
+# root-bound seams): appending a row keeps every existing protocol's index; inserting one renumbers
+# them. `crates/busbar/tests/composition_root_names_no_linked_plugin.rs` refuses a `main.rs` that
+# names any crate or root module listed here.
+[package.metadata.busbar.linked]
+proto-llm = "busbar-llm"
+plane-mcp = "busbar-mcp"
+plane-a2a = "busbar-a2a"
+plane-voice = "busbar-voice"
+plane-decision = "busbar-plane-decision"
+
+# What each linked crate registers, axis by axis: `plane` (PLANE_DECLARATION + PLANE_HOOKS, joined
+# kernel-side), `protocols`, `path-ingress`, `body-ingress`, `protocol-seams`, `diagnostics`,
+# `ws-arrivals`, `on-host`, `compose`, `stdio-serve` — each an item of the crate's `linked` entry
+# module — and the root-bound seams it drives: `egress`, `plane-sections`, `admin-envelope`.
+[package.metadata.busbar.linked-axes]
+busbar-llm = "plane protocols path-ingress body-ingress protocol-seams on-host"
+busbar-mcp = "plane protocols diagnostics egress stdio-serve"
+busbar-a2a = "plane diagnostics egress plane-sections admin-envelope"
+busbar-voice = "plane diagnostics ws-arrivals compose"
+busbar-plane-decision = "plane"
+
+# A linked crate whose entry module is not `<crate>::linked`: the decision plane is a PURE plane
+# crate whose manifest names `busbar-contract` and nothing else (#40), so its kernel-typed hooks are
+# written in the composition root and its entry module is that root module.
+[package.metadata.busbar.linked-entry]
+busbar-plane-decision = "crate::root::plane_decision"
+
+# The root's own unit modules (the kernel-loop halves of planes that still live in the root), each
+# compiled under its cargo feature and exporting a `ROOT_UNIT` (`root::linked::RootUnit`). Order is
+# the order their boot steps run in: seals, then the configuration step, then the book step.
+[package.metadata.busbar.root-units]
+plane-decision = "plane_decision"
+root-mcp = "units_mcp"
+root-a2a = "units_a2a"
+root-voice = "units_voice"
+root-llm = "units_llm"
+
 [dev-dependencies]
 # The loop-unify shadow-compare test (`root::gauntlet_kernel`) implements a deterministic
 # `GauntletPlane` to drive both the substrate gauntlet and the kernel rider on one input; the trait

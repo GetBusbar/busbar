@@ -644,6 +644,38 @@ pub fn scope_policy(base: crate::root::policy::ScopePolicy) -> crate::root::poli
     })
 }
 
+/// THE A2A PLANE'S ROOT UNIT, addressed through the composition root's generated table: the scope
+/// entries the approve step reads for this plane's operation classes, checked at boot. It diverts
+/// no byte — the serving path is the one the plane registration mounted — so the conformance battery
+/// and the neutrality cells read identically with this unit and without it. No config key, no
+/// environment variable, no boot line.
+pub const ROOT_UNIT: crate::root::linked::RootUnit = crate::root::linked::RootUnit {
+    seal: Some(every_operation_class_is_declared),
+    path_ingress: &[],
+    body_ingress: &[],
+    on_config: None,
+    opens_book: false,
+    on_book: None,
+};
+
+/// A BOOT REFUSAL, not a debug assertion. The scope unit reads silence as a denial, so a policy that
+/// is short by an entry is a plane whose remaining operations answer 403 for the life of the process
+/// — and a `debug_assert_eq!` compiled the check out of the only build that ever serves anybody. The
+/// MCP seal answers this way too, and this is the same class of fact: a composition that disagrees
+/// with itself must not bind a listener, because the alternative is finding out from a customer.
+fn every_operation_class_is_declared() -> Result<(), String> {
+    let policy = scope_policy(crate::root::policy::ScopePolicy::new());
+    if policy.len() != ops::OP_CLASSES.len() {
+        return Err(format!(
+            "the composition root did not seal: the A2A scope policy declares {} of the plane's {} \
+             operation classes, and the scope unit reads an undeclared class as a refusal",
+            policy.len(),
+            ops::OP_CLASSES.len()
+        ));
+    }
+    Ok(())
+}
+
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //   THE BINDINGS
 // ═════════════════════════════════════════════════════════════════════════════════════════════════

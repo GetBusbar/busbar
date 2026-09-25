@@ -2104,6 +2104,178 @@ pub const fn handshake_scope() -> &'static str {
     TRANSPORT_HANDSHAKE
 }
 
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// THE ROOT UNIT — the switch-over's mount, addressed through the composition root's generated table
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// THE VOICE PLANE'S ROOT UNIT: once the deployment's limits are resolved the root is sealed and this
+/// plane mounted onto it ([`mount_root`], then its governed-call table composed); once the node's book
+/// is open, every configured listener's TLS material is provisioned through the transport-key unit
+/// ([`crate::root::transports::provision_root_listeners`]) — LAW 7: only where this plane is configured.
+pub const ROOT_UNIT: crate::root::linked::RootUnit = crate::root::linked::RootUnit {
+    seal: None,
+    path_ingress: &[],
+    body_ingress: &[],
+    on_config: Some(|limits| {
+        // The sealed registry is what the book step provisions into; sealing a second one to read
+        // it would be a second composition disagreeing with the first about what this boot is.
+        let _ = SEALED_ROOT.set(mount_root(limits));
+    }),
+    opens_book: false,
+    on_book: Some(|ctx| {
+        // LAW 7: the unit is this plane's root wiring, so it runs only where the plane is configured
+        // — a 1.5.5 config resolves, journals and warns about nothing here.
+        if !ctx.app.plane_configured(&busbar_voice::PLANE_DECLARATION) {
+            return;
+        }
+        if let Some(sealed) = SEALED_ROOT.get() {
+            crate::root::transports::provision_root_listeners(
+                sealed,
+                ctx.resolver,
+                &ctx.book.durability,
+                ctx.data,
+                ctx.admin,
+            );
+        }
+    }),
+};
+
+/// The registry [`mount_root`] sealed at boot, kept for the book step.
+static SEALED_ROOT: std::sync::OnceLock<crate::root::registry::BootRegistry> =
+    std::sync::OnceLock::new();
+
+/// SEAL THE COMPOSITION ROOT AND MOUNT THE VOICE PLANE ONTO IT — the switch-over, behind
+/// `root-voice`, which the shipped binary carries.
+///
+/// The root is built before any plane is switched onto it, and this is where one is. Sealing is the
+/// whole mount: seven transports composed bottom-up, five planes registered over them, every claim
+/// checked against every other claim and against the transports that exist, and the walk order
+/// answered once. A composition that does not seal is a node that must not bind a listener, so the
+/// answer is a refusal on the standard error stream and a non-zero exit — not a warning, and not a
+/// log line, because a node that refused to boot has no boot to log.
+///
+/// Nothing is emitted on the success path. That is the point: a deployment cannot tell from its logs
+/// which way this binary was built, so the boot-line set, the series list and the route list are the
+/// same either way, and the neutrality cells compare like with like.
+///
+/// ## Why the deployment's limits are an argument
+///
+/// The transports the seal composes are the ones a switched-over plane serves through, and the
+/// http one carries the operator's `limits.request_body_max_bytes` as its accumulation ceiling —
+/// the SAME number the served door builds its inbound body limit from. A seal that took the
+/// transport crate's `Default` would compose a node whose door and whose transport disagree about
+/// which bodies exist on every deployment that set the knob. So this takes the resolved limits, and
+/// takes them from the one place they are resolved, which is why it is called from `run()` (after
+/// the config loads) rather than beside the axis registrations in `main()`: the axes are installed
+/// before any reader because `--validate` reads them, and this reads configuration instead. It
+/// still answers before any listener is bound, which is the property the refusal is for.
+///
+/// Hands the sealed [`crate::root::registry::BootRegistry`] back to the caller, which is what lets `run()`
+/// reach the composed transports again later — the TLS sink a listener's provisioned config lands
+/// in is one of them, and sealing a second registry just to read it would be a second composition
+/// disagreeing with the first about what this boot is.
+fn mount_root(
+    limits: &busbar_kernel::config::limits::LimitsResolved,
+) -> crate::root::registry::BootRegistry {
+    let sealed = match crate::root::registry::seal(crate::root::policy::client_settings(limits)) {
+        Ok(sealed) => {
+            // A BOOT REFUSAL for the same reason the seal's own `Err` arm is one, and it was a
+            // `debug_assert!`: a seal that reported success without the plane this function exists
+            // to mount is a composition that did not do what it says, and the shipped build was the
+            // one that never looked. Serving on it would bind a listener for a plane no registry can
+            // resolve — every streaming session refused at the first frame, from a node that booted
+            // clean.
+            if sealed
+                .registry
+                .resolve(
+                    busbar_kernel::registry::PluginKind::Plane,
+                    <busbar_plane_streaming::StreamingPlane as busbar_contract::plane::PlaneMeta>::KEY,
+                )
+                .is_none()
+            {
+                eprintln!(
+                    "busbar: the composition root did not seal: it reported success without the \
+                     voice plane, so the seal is not the composition it claims to be"
+                );
+                std::process::exit(2);
+            }
+            sealed
+        }
+        Err(refusal) => {
+            eprintln!("busbar: the composition root did not seal: {refusal}");
+            std::process::exit(2);
+        }
+    };
+    // THE OTHER HALF OF THE MOUNT: the node this root serves the plane's units on, and the one seam
+    // the half of the plane that owns sockets reaches it through. Without this the seal composed a
+    // node nothing on a socket could name — a client-served tool call's wait was entered where the
+    // leg was planned, and no frame arriving on any session could wake it and no tick could sweep it.
+    compose_voice_governed_calls();
+    sealed
+}
+
+/// COMPOSE THE VOICE NODE'S OPEN-CALL TABLE onto the served door — the composition root's one write
+/// of the governed-call port, and the moment a served voice session becomes a governed one.
+///
+/// The node is built here rather than passed in because nothing about the table configuration
+/// decides: [`OpenToolCalls`] is empty at boot and its whole contents are what the
+/// sessions running on this node have opened since. What the served path reaches through the port is
+/// that table and nothing else — two questions, `replied` and `expired`, neither of which reads the
+/// node's door, its pricer, its auth chain or its journal.
+///
+/// So the parts below are the ones the table's own two answers need, and the rest are the root's
+/// unbound posture: the plane with the upstream list configuration composed (none today — the
+/// `streams:` reader that fills it is the same work that switches the serving path onto these units),
+/// a flat pricer, an unbound auth chain, and a memory-buffered journal. That posture is honest for
+/// exactly as long as this node serves no unit, which is the window `root-voice` exists to hold open;
+/// the switch that routes a frame through it is the one that has to thread the deployment's real
+/// auth, rate cards and data directory in, and it fails to compile until it does.
+///
+/// NONE OF A SERVED SESSION'S MONEY PASSES THROUGH THIS NODE (OWNER RULING Q21b). The served path
+/// meters on the streaming plane's units: each turn's raw counts per class go to the kernel's
+/// session account over the live host, which ledgers them through the one metering path and closes
+/// the carrier off the kernel's own budget view; the view prices them at read with the `streams`
+/// card. The flat pricer below prices this node's own door, which admits no served frame.
+///
+/// Set-once on the plane's side: a second call is a no-op rather than a silent swap of the table
+/// this node's live sessions are already keyed into.
+pub(crate) fn compose_voice_governed_calls() {
+    let durability = match crate::root::durability::build(
+        &crate::root::durability::DurabilityConfig { data_dir: None },
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+    ) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("busbar: the voice node's journal did not open: {e}");
+            std::process::exit(2);
+        }
+    };
+    let node = std::sync::Arc::new(VoiceNode::new(VoiceNodeParts {
+        plane: busbar_plane_streaming::StreamingPlane::new(&[]),
+        // No group reaches this node's door: the table's two answers read no cap, and the served
+        // sessions' admissions are the sealed root's, not this stub's.
+        groups: crate::root::policy::group_table(
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
+        ),
+        pricer: busbar_kernel_budget::Pricer::flat(0),
+        auth: busbar_kernel_identity::Auth::new(busbar_kernel_identity::AuthChain::new(
+            Vec::new(),
+            false,
+        )),
+        auth_bindings: crate::root::kernel::auth_bindings::AuthBindings::without_directory(),
+        scope: scope_policy(),
+        meter_policy: crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
+        durability,
+        io: VoiceIo::default(),
+        // Minted from the root's own kernel, which is the only place a sealed origin can come from:
+        // a unit is lent its audit token and nothing else, so it cannot mint one where it is used.
+        origin: crate::root::kernel::new_kernel().origin(busbar_contract::caps::OriginKind::Client),
+    }));
+    busbar_voice::mount::install_governed_calls(std::sync::Arc::new(NodeCalls::new(node)));
+}
+
 #[cfg(test)]
 #[path = "tests/units_voice.rs"]
 mod tests;

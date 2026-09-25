@@ -332,14 +332,14 @@ fn the_handle_carries_no_material() {
 // ── the audit journal actually gets written on a real listener bring-up ────────────────────────
 //
 // Everything above proves `provision_servers` against recording doubles. Neither proves the thing
-// this module exists for: that `crate::provision_root_listeners` — the function `run()` actually
+// this module exists for: that `crate::root::transports::provision_root_listeners` — the function `run()` actually
 // calls before either listener binds — writes onto the node's REAL journal when it runs. A double
 // standing in for the journal would pass even if the real `BookAccessJournal` never got wired to
 // the real `Durability` book at all, which is exactly the defect this closes.
 
 /// The whole wiring `main.rs` boots with: an env-backed [`busbar_kernel::config::secret::SecretResolver`]
 /// (not a map double), a real sealed [`crate::root::registry::BootRegistry`], and a real
-/// [`crate::root::durability::Durability`] book, all handed to `crate::provision_root_listeners` the
+/// [`crate::root::durability::Durability`] book, all handed to `crate::root::transports::provision_root_listeners` the
 /// same way `run()` hands them. What is asserted afterward is that node's own journal.
 #[cfg(all(
     feature = "root-voice",
@@ -364,7 +364,7 @@ fn a_real_listener_bring_up_journals_the_access_the_boot_path_makes() {
         client_ca: None,
     };
 
-    crate::provision_root_listeners(
+    crate::root::transports::provision_root_listeners(
         &sealed,
         &resolver,
         &book.durability,
@@ -423,7 +423,7 @@ fn a_plain_boot_with_no_tls_configured_journals_nothing() {
     let book = crate::root::durability::node_book();
     let resolver = busbar_kernel::config::secret::SecretResolver::builtins_only();
 
-    crate::provision_root_listeners(
+    crate::root::transports::provision_root_listeners(
         &sealed,
         &resolver,
         &book.durability,

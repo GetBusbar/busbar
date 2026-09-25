@@ -409,7 +409,12 @@ fn the_module_doc_names_the_only_bindings_production_reaches() {
 
     let needle = format!("{stem}::");
     let mut reached = std::collections::BTreeSet::new();
-    let mut sources = vec![root.join("main.rs")];
+    // The composition root's generated table is part of what `main.rs` compiles (it `include!`s it),
+    // so the names it reaches count as reached from the root.
+    let mut sources = vec![
+        root.join("main.rs"),
+        std::path::PathBuf::from(env!("OUT_DIR")).join("linked.rs"),
+    ];
     for entry in std::fs::read_dir(root.join("root")).expect("the composition root") {
         let path = entry.expect("a directory entry").path();
         if path.extension().is_some_and(|e| e == "rs")
@@ -431,8 +436,9 @@ fn the_module_doc_names_the_only_bindings_production_reaches() {
             }
         }
     }
-    // `seal` is the boot check the doc names; `Provenance` is a type, carried and never driven.
-    let named: std::collections::BTreeSet<String> = ["seal", "Provenance"]
+    // `ROOT_UNIT` is the boot entry the doc names and `seal` the check it runs; `Provenance` is a
+    // type, carried and never driven.
+    let named: std::collections::BTreeSet<String> = ["ROOT_UNIT", "seal", "Provenance"]
         .into_iter()
         .map(String::from)
         .collect();
@@ -442,8 +448,13 @@ fn the_module_doc_names_the_only_bindings_production_reaches() {
          the disclosure with the wiring"
     );
     assert!(
-        reached.contains("seal"),
-        "boot seals the plane's declarations"
+        reached.contains("ROOT_UNIT"),
+        "boot reaches the plane's root unit"
+    );
+    assert!(
+        own.contains("seal: Some(seal_at_boot)")
+            && own.contains("fn seal_at_boot() -> Result<(), String> {\n    seal(&"),
+        "the root unit's one boot step seals the plane's declarations"
     );
 }
 

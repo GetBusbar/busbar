@@ -108,7 +108,7 @@ fn safe_mode_requested(mut args: impl Iterator<Item = String>) -> bool {
 /// process's own stdin/stdout (see `mcp::stdio_serve`). A scanner like `safe_mode_requested`
 /// rather than a `handle_cli_flags` exit arm, because it modifies how `run()` serves rather than
 /// replacing the run.
-fn mcp_stdio_requested(mut args: impl Iterator<Item = String>) -> bool {
+fn stdio_serve_requested(mut args: impl Iterator<Item = String>) -> bool {
     args.any(|a| a == "--mcp-stdio") // noun-neutrality: frozen-literal pinned-by=crates/busbar/tests/mcp_stdio_serve.rs operator CLI flag (CHANGELOG 1.6.0)
 }
 
@@ -179,177 +179,40 @@ fn validate_worker_threads_config(wt: Option<usize>) -> Result<Option<usize>, St
     }
 }
 
-/// REGISTER THE LINKED PROTOCOL CRATES — the composition root's one write into the protocol axis
-/// (`busbar_kernel::proto::install_protocols`). Each linked dialect contributes its `&DECL`
-/// here and nowhere else; core's own built-in table keeps the dialects that have not been extracted
-/// yet. Feature-gated per crate so a deletion build (`--no-default-features`, or default minus one
-/// `proto-*` feature) drops the dependency edge AND the registration line together — which is what
-/// makes `cargo build -p busbar` without a dialect a complete deletion, not a link error.
+// THE LINKED TABLES. `build.rs` emits them from `Cargo.toml` — `[package.metadata.busbar.linked]`
+// (cargo feature → plugin crate), `linked-axes` (crate → the registration axes it fills),
+// `linked-entry` and `root-units` (cargo feature → root module) — as `extern crate <crate> as _;` per
+// ENABLED feature, `LINKED` (one table per registration axis over each linked crate's `linked` entry
+// module, in manifest order), a `linked_*` cfg per root-bound seam an enabled entry drives, and
+// `ROOT_UNITS` (each enabled root module's `ROOT_UNIT`). This file names no plugin: which plugins a
+// build carries is data in the manifest, and a build with a feature off has no row for it, so every
+// axis below gets nothing from it — the deletion build (`--no-default-features`, or default minus one
+// feature) drops the crate edge and the registration together, exactly as the feature-gated line per
+// crate this replaced did.
+include!(concat!(env!("OUT_DIR"), "/linked.rs"));
+
+/// REGISTER THE LINKED PROTOCOLS — the composition root's one write into the protocol axis, over
+/// every entry in [`LINKED`] (see [`root::linked::register_protocols`]).
+///
+/// THE ORDER IS OPERATOR-VISIBLE. `merged_boot_decls` folds this set AHEAD of whatever built-in
+/// declarations core still carries, and the resulting sequence is both the "must be one of:" tail on
+/// a bad `protocol:` and the list `telemetry` indexes its per-protocol metric families by POSITION
+/// in. The set is the table's order, which is the manifest's: appending a row keeps every existing
+/// index; inserting one renumbers them.
 fn register_protocols() {
-    // ONE ENTRY PER PROTOCOL, and the LLM protocol's entry is a SLICE because that protocol has six
-    // dialects. `busbar_llm::DECLS` states their order (see its doc); the MCP protocol contributes
-    // its single declaration after them. Concatenated here rather than in core, because the ORDER
-    // of the whole installed set is the composition root's statement and nobody else's.
-    //
-    // THE ORDER IS OPERATOR-VISIBLE. `merged_boot_decls` folds this set AHEAD of whatever built-in
-    // declarations core still carries, and the resulting sequence is both the "must be one of:"
-    // tail on a bad `protocol:` and the list `telemetry` indexes its per-protocol metric families
-    // by POSITION in. Appending keeps every existing index; inserting renumbers them.
-    // `mut` is used only under the protocol features below; with every protocol compiled out
-    // (`--no-default-features`) nothing pushes, so the binding is legitimately unmutated there.
-    #[allow(unused_mut)]
-    let mut installed: Vec<&'static busbar_kernel::proto::ProtocolDecl> = Vec::new();
-    // THE SECOND SEAM, FOLDED IN (Batch C-6): a path-model dialect's arrival split off `ProtocolDecl`
-    // when the decl relocated to `busbar-substrate`, so each protocol crate contributes its
-    // `(name, arrival)` pairs BESIDE its declarations here — the ONE composition-root write into both
-    // seams. `install_protocols_with_path_ingress` asserts at boot that every `has_model_in_url` decl
-    // has an arrival, so the two registrations cannot drift into a silent 404-shaped fall-through.
-    #[allow(unused_mut)]
-    let mut path_ingress: Vec<(&'static str, busbar_kernel::ingress::PathIngress)> = Vec::new();
-    #[cfg(feature = "proto-llm")]
-    {
-        installed.extend_from_slice(busbar_llm::DECLS);
-        // THE ROOT-DRIVEN URL-MODEL SURFACE (composition-root switch-over S2), default off — the
-        // path-axis twin of the `BODY_INGRESS` swap below. The table is the same two dialects under
-        // the same two names and the answers are the plane's own; what the swap changes is the PATH a
-        // request takes to reach one. Off, this arm does not exist and the surface is the one it was.
-        #[cfg(not(feature = "root-llm"))]
-        path_ingress.extend_from_slice(busbar_llm::PATH_INGRESS);
-        #[cfg(feature = "root-llm")]
-        path_ingress.extend_from_slice(root::units_llm::PATH_INGRESS);
-    }
-    #[cfg(feature = "plane-mcp")]
-    installed.push(&busbar_mcp::PROTO_DECL);
-    busbar_kernel::proto::install_protocols_with_path_ingress(installed, path_ingress);
-
-    // THE BODY-MODEL ARRIVAL SEAM — the body-axis twin of `path_ingress`. The `named`/`adhoc`
-    // (`/v1/messages`) convenience surfaces and the generic body-model dispatch arm resolve a dialect's
-    // universal ingress by name through `body_ingress_for`; each protocol crate contributes its
-    // `(name, arrival)` pairs so the composition root registers the whole set once. Without this a
-    // body-model request would resolve no arrival and 404 (the fall-through the LLM plane's
-    // `BODY_INGRESS` exists to close).
-    #[allow(unused_mut)]
-    let mut body_ingress: Vec<(&'static str, busbar_kernel::ingress::arrival::BodyIngress)> =
-        Vec::new();
-    #[cfg(all(feature = "proto-llm", not(feature = "root-llm")))]
-    body_ingress.extend_from_slice(busbar_llm::BODY_INGRESS);
-    // THE ROOT-DRIVEN LLM SURFACE (composition-root switch-over S2), default off. The table is the
-    // same six dialects under the same six names and the answers are the plane's own; what the swap
-    // changes is the PATH a request takes to reach one — through the kernel's loop, over the plane's
-    // nine step files, past the two audit doors and out through the one exit, instead of through the
-    // plane's own shell. Off, this line does not exist and the surface is the one it was.
-    #[cfg(all(feature = "proto-llm", feature = "root-llm"))]
-    body_ingress.extend_from_slice(root::units_llm::BODY_INGRESS);
-    busbar_kernel::ingress::arrival::install_body_ingress(body_ingress);
-
-    // THE RESOLVED-COMPLETION SYNTHESIZER — the LLM plane's single re-entry the MCP sampling path drives
-    // a synthesized chat completion through (`EngineHost::synthesize_completion`). Installed here beside
-    // the body arrivals, gated on the LLM plane exactly as they are: with no LLM plane linked there is
-    // no chat dialect to synthesize, and core returns the honest "no default chat protocol" error.
-    #[cfg(feature = "proto-llm")]
-    busbar_kernel::ingress::arrival::install_completion_ingress(
-        busbar_llm::native_ingress::synthesize_completion,
-    );
-
-    // THE STREAMING-TRANSLATOR FACTORY — the LLM plane's cross-protocol stream translator, installed
-    // once at boot so the neutral construction seam resolves it in production exactly as the test kit
-    // does. Both engine forward paths name the concrete factory directly today, so this line changes
-    // no bytes on the wire; it makes the seam's production installer exist (set-once, first writer wins).
-    #[cfg(feature = "proto-llm")]
-    busbar_kernel::proto::install_stream_translator_factory(
-        busbar_llm::proto_stream::new_stream_translator,
-    );
+    root::linked::register_protocols(&LINKED, ROOT_UNITS);
 }
 
-/// REGISTER THE LINKED PLANE CRATES — the composition root's one write into the plane axis
-/// (`busbar_kernel::plane::registry::install_planes`), exactly `register_protocols`' shape on the
-/// plane axis. The MCP plane is now a crate (`busbar-mcp`), so it contributes its declaration here
-/// under the `plane-mcp` feature; core's PRODUCTION build carries no MCP built-in row (it dual-compiles
-/// the plane back in for its own test builds only), and `merged_boot_plane_decls` folds this installed
-/// copy into its canonical slot. The LLM, A2A, voice and decision planes are pushed here the same way,
-/// each behind its own feature (see the rows below). Leaked so the installed set is `'static`, exactly
-/// as `register_protocols` does — this runs once at startup and lives for the process.
-// `Vec::new()` then a FEATURE-GATED push (not `vec![]`): the one element is present only under
-// `plane-mcp`, and with every plane compiled out (`--no-default-features`) nothing pushes — the same
-// shape `register_protocols` has, minus its unconditional `extend`.
-#[allow(clippy::vec_init_then_push)]
+/// REGISTER THE LINKED PLANES — the composition root's one write into the plane axis
+/// (`busbar_kernel::plane::registry::install_planes`), over the plane table of [`LINKED`]: each
+/// entry's contract declaration joined kernel-side to its behaviour (`PlaneDecl::assemble`). `merged_boot_plane_decls` normalises the
+/// installed set to canonical layering order, so each row lands in its own slot regardless of the
+/// table's order. Then the two unconditional seams, then every root unit's seal.
 fn register_planes() {
-    #[allow(unused_mut)]
-    let mut installed: Vec<&'static busbar_kernel::plane::registry::PlaneDecl> = Vec::new();
-    // A plane REGISTERS its contract `PLANE_DECLARATION` — plain data, naming no kernel type — and
-    // hands its `PLANE_HOOKS` behaviour table beside it; the KERNEL joins the two into the registry
-    // row (`PlaneDecl::assemble`). One `static` per row, so the installed set is `'static`.
-    #[allow(unused_macros)]
-    macro_rules! row {
-        ($declaration:path, $hooks:path) => {{
-            static ROW: busbar_kernel::plane::registry::PlaneDecl =
-                busbar_kernel::plane::registry::PlaneDecl::assemble($declaration, $hooks);
-            &ROW
-        }};
-    }
-    // The LLM plane, now its own crate (`busbar-llm`), contributes its declaration here behind the
-    // SAME `proto-llm` feature that carries its dependency edge and its protocol `DECLS` — one switch
-    // for the LLM protocol and the LLM plane, never two. `merged_boot_plane_decls` normalises the
-    // installed set to canonical layering order, so this lands in the `llm` slot regardless of push
-    // order. A build with `proto-llm` off drops the crate edge and this line together, and core serves
-    // no LLM plane (the plane-split deletion test).
-    #[cfg(feature = "proto-llm")]
-    installed.push(row!(busbar_llm::PLANE_DECLARATION, busbar_llm::PLANE_HOOKS));
-    #[cfg(feature = "plane-mcp")]
-    installed.push(row!(busbar_mcp::PLANE_DECLARATION, busbar_mcp::PLANE_HOOKS));
-    // The A2A plane, now its own crate (`busbar-a2a`, PLANE-ONLY — no PROTO_DECL). Same slot and
-    // reason as the MCP row: `--validate` reads the plane list, so the axis is installed before any
-    // reader. Present only under `plane-a2a`; a build with A2A compiled out pushes nothing.
-    #[cfg(feature = "plane-a2a")]
-    installed.push(row!(busbar_a2a::PLANE_DECLARATION, busbar_a2a::PLANE_HOOKS));
-    // The VOICE plane (Plane 4), now its own crate (`busbar-voice`). Same slot and reason as the A2A
-    // row: `--validate` reads the plane list, so the axis is installed before any reader. Present
-    // under `plane-voice`, which is IN `default` — voice ships armed (default-on + deletable, exactly
-    // like plane-mcp/plane-a2a), so the shipped build installs it and claims its `streams:` section; a
-    // build with voice compiled out (`--no-default-features`) pushes nothing.
-    #[cfg(feature = "plane-voice")]
-    installed.push(row!(
-        busbar_voice::PLANE_DECLARATION,
-        busbar_voice::PLANE_HOOKS
-    ));
-    // THE DECISION PLANE (jev), #48's fifth. Same slot and the same reason as the rows above, and
-    // ONE difference: the declaration and hooks it pushes are not the plane crate's. Its hooks are
-    // typed by `busbar-kernel` seams and `busbar-plane-decision` is a PURE plane whose manifest may
-    // name `busbar-contract` and nothing else (DECISIONS #40), so both halves are written in the
-    // composition root — `root::plane_decision`, which reads
-    // the plane's own `PlaneMeta` for its identity rather than restating it. Present under
-    // `plane-decision`, which is IN `default`; a build with it off pushes nothing and drops the
-    // crate edge with it.
-    #[cfg(feature = "plane-decision")]
-    installed.push(row!(
-        root::plane_decision::PLANE_DECLARATION,
-        root::plane_decision::PLANE_HOOKS
-    ));
-    busbar_kernel::plane::registry::install_planes(installed.leak());
-
-    // THE DECISION PLANE, READ BACK OUT OF THE AXIS IT WAS JUST INSTALLED INTO. Every other plane
-    // is installed under a key its own crate wrote; this one is installed under a key the ROOT
-    // wrote, and the fold between the push above and the registry below dedups by key and
-    // normalises order — so "the root pushed it" and "the process serves it" are two facts here and
-    // one everywhere else. This is the line that makes them one again, and it is the only reader
-    // that asks the plane itself (`PlaneMeta::KEY`) what to look for. A boot refusal, for the same
-    // reason the MCP seal below is one: a composition that disagrees with itself must not bind a
-    // listener.
-    #[cfg(feature = "plane-decision")]
-    {
-        let key = <busbar_plane_decision::DecisionPlane as busbar_contract::plane::PlaneMeta>::KEY;
-        if busbar_kernel::plane::registry::plane_decl_for(key).is_none() {
-            eprintln!(
-                "busbar: the composition root did not seal: the decision plane was installed but \
-                 the plane axis answers no declaration for `{key}`, so nothing it declares — \
-                 including its `decisions:` section — is in front of any reader"
-            );
-            std::process::exit(2);
-        }
-    }
+    root::linked::register_planes(&LINKED);
 
     // THE AUTHORIZATION-SERVER PLANE'S SEAM, registered UNCONDITIONALLY (no feature flag — see the
-    // manifest note on the `busbar-oauth2` dependency above), before any config loads. Mirrors
+    // manifest note on the `busbar-oauth2` dependency), before any config loads. Mirrors
     // `install_planes` immediately above for the same reason: one composition root, one
     // registration, before the first `App` is built.
     busbar_oauth2::install();
@@ -359,287 +222,28 @@ fn register_planes() {
     // through the seam whenever this (mandatory) sibling is linked, which is every real build.
     busbar_core_admin::install();
 
-    // THE MCP PLANE'S KERNEL BINDINGS, SEALED. Behind `root-mcp`, which is default-ON: the bindings
-    // are built and checked against the real unit traits before any byte is served through them, so
-    // this reads the plane's own declarations and compares them against each other and against
-    // nothing else. It binds no listener, opens no store, reads no configuration and writes no line —
-    // a build with the feature on and a build with it off answer identically on the wire, which is
-    // what the plane rigs are run both ways to prove. A refusal here is a boot refusal for the same
-    // reason a claim overlap is: a plane whose own declarations disagree cannot serve, and finding
-    // that out on the first request would be finding it out from a customer.
-    #[cfg(feature = "root-mcp")]
-    if let Err(refusal) = root::units_mcp::seal(&busbar_plane_mcp::McpPlane::EMPTY) {
-        eprintln!("busbar: {refusal}");
-        std::process::exit(2);
-    }
+    // THE ROOT UNITS' SEALS. Each reads what its unit composes against the axes installed above and
+    // against nothing else — it binds no listener, opens no store, reads no configuration and writes
+    // no line on success. A refusal is a boot refusal for the same reason a claim overlap is: a
+    // composition that disagrees with itself must not bind a listener, and finding that out on the
+    // first request would be finding it out from a customer.
+    root::linked::seal(ROOT_UNITS);
 }
 
 /// REGISTER THE LINKED PLANES' DIAGNOSTICS — the composition root's one write into the diagnostics
-/// axis (`busbar_substrate_values::diagnostics::install_diagnostics`), exactly `register_planes`' shape on
-/// the diagnostics axis. Each extracted plane crate OWNS its `Diagnostic` consts and exposes them as
-/// `DIAGNOSTICS`; core carries no plane-specific diagnostic (the neutral catalog is the plane-agnostic
-/// half). The neutral `REGISTRY ∪ installed` fold makes these codes resolve through `by_code` and land
-/// in a rendered catalog. Installed BEFORE any reader; a build with a plane compiled out contributes
-/// nothing, so its diagnostics never join the catalog. Leaked so the installed set is `'static`.
-// `Vec::new()` then a FEATURE-GATED `extend` per plane (not `vec![]`): each plane's rows are present
-// only under its feature, and with every plane compiled out (`--no-default-features`) nothing is
-// installed — the same shape `register_planes` has.
-#[allow(clippy::vec_init_then_push)]
+/// axis (`busbar_substrate_values::diagnostics::install_diagnostics`). The neutral
+/// `REGISTRY ∪ installed` fold makes these codes resolve through `by_code` and land in a rendered
+/// catalog. Installed BEFORE any reader; a build with a plane compiled out contributes nothing.
 fn register_diagnostics() {
-    #[allow(unused_mut)]
-    let mut installed: Vec<&'static busbar_substrate_values::diagnostics::Diagnostic> = Vec::new();
-    #[cfg(feature = "plane-mcp")]
-    installed.extend_from_slice(busbar_mcp::DIAGNOSTICS);
-    #[cfg(feature = "plane-a2a")]
-    installed.extend_from_slice(busbar_a2a::DIAGNOSTICS);
-    #[cfg(feature = "plane-voice")]
-    installed.extend_from_slice(busbar_voice::DIAGNOSTICS);
-    busbar_substrate_values::diagnostics::install_diagnostics(installed.leak());
+    root::linked::register_diagnostics(&LINKED);
 }
 
 /// REGISTER THE LINKED DUPLEX PLANES' INBOUND WS-ACCEPT ARRIVALS — the composition root's one write
-/// into the neutral WS-accept registry (`busbar_kernel::ingress::duplex_ws::install_ws_arrivals`),
-/// exactly `register_planes`' shape on the WS-accept axis. Each duplex plane crate OWNS its
-/// `WsArrivalSpec`s (path + audience + a neutral gauntlet-gated accept fn) and exposes them as
-/// `voice_ws_arrivals()`; core carries none. Installed BEFORE the router is built (in `run()`), so
+/// into the neutral WS-accept registry. Installed BEFORE the router is built (in `run()`), so
 /// `take_ws_arrivals` drains a populated set; a build with no duplex plane installs nothing and the
-/// router mounts no WS-accept route. Voice is the only duplex plane today, so this is a single
-/// feature-gated push — with `plane-voice` off, nothing installs, exactly as the plane row is absent.
+/// router mounts no WS-accept route.
 fn register_ws_arrivals() {
-    #[cfg(feature = "plane-voice")]
-    {
-        let installed = busbar_voice::mount::voice_ws_arrivals();
-        busbar_kernel::ingress::duplex_ws::install_ws_arrivals(installed);
-    }
-}
-
-/// SEAL THE COMPOSITION ROOT AND MOUNT THE VOICE PLANE ONTO IT — the switch-over, behind
-/// `root-voice`, which the shipped binary carries.
-///
-/// The root is built before any plane is switched onto it, and this is where one is. Sealing is the
-/// whole mount: seven transports composed bottom-up, five planes registered over them, every claim
-/// checked against every other claim and against the transports that exist, and the walk order
-/// answered once. A composition that does not seal is a node that must not bind a listener, so the
-/// answer is a refusal on the standard error stream and a non-zero exit — not a warning, and not a
-/// log line, because a node that refused to boot has no boot to log.
-///
-/// Nothing is emitted on the success path. That is the point: a deployment cannot tell from its logs
-/// which way this binary was built, so the boot-line set, the series list and the route list are the
-/// same either way, and the neutrality cells compare like with like.
-///
-/// ## Why the deployment's limits are an argument
-///
-/// The transports the seal composes are the ones a switched-over plane serves through, and the
-/// http one carries the operator's `limits.request_body_max_bytes` as its accumulation ceiling —
-/// the SAME number the served door builds its inbound body limit from. A seal that took the
-/// transport crate's `Default` would compose a node whose door and whose transport disagree about
-/// which bodies exist on every deployment that set the knob. So this takes the resolved limits, and
-/// takes them from the one place they are resolved, which is why it is called from `run()` (after
-/// the config loads) rather than beside the axis registrations in `main()`: the axes are installed
-/// before any reader because `--validate` reads them, and this reads configuration instead. It
-/// still answers before any listener is bound, which is the property the refusal is for.
-///
-/// Hands the sealed [`root::registry::BootRegistry`] back to the caller, which is what lets `run()`
-/// reach the composed transports again later — the TLS sink a listener's provisioned config lands
-/// in is one of them, and sealing a second registry just to read it would be a second composition
-/// disagreeing with the first about what this boot is.
-#[cfg(feature = "root-voice")]
-fn mount_root_voice(
-    limits: &busbar_kernel::config::limits::LimitsResolved,
-) -> root::registry::BootRegistry {
-    let sealed = match root::registry::seal(root::policy::client_settings(limits)) {
-        Ok(sealed) => {
-            // A BOOT REFUSAL for the same reason the seal's own `Err` arm is one, and it was a
-            // `debug_assert!`: a seal that reported success without the plane this function exists
-            // to mount is a composition that did not do what it says, and the shipped build was the
-            // one that never looked. Serving on it would bind a listener for a plane no registry can
-            // resolve — every streaming session refused at the first frame, from a node that booted
-            // clean.
-            if sealed
-                .registry
-                .resolve(
-                    busbar_kernel::registry::PluginKind::Plane,
-                    <busbar_plane_streaming::StreamingPlane as busbar_contract::plane::PlaneMeta>::KEY,
-                )
-                .is_none()
-            {
-                eprintln!(
-                    "busbar: the composition root did not seal: it reported success without the \
-                     voice plane, so the seal is not the composition it claims to be"
-                );
-                std::process::exit(2);
-            }
-            sealed
-        }
-        Err(refusal) => {
-            eprintln!("busbar: the composition root did not seal: {refusal}");
-            std::process::exit(2);
-        }
-    };
-    // THE OTHER HALF OF THE MOUNT: the node this root serves the plane's units on, and the one seam
-    // the half of the plane that owns sockets reaches it through. Without this the seal composed a
-    // node nothing on a socket could name — a client-served tool call's wait was entered where the
-    // leg was planned, and no frame arriving on any session could wake it and no tick could sweep it.
-    compose_voice_governed_calls();
-    sealed
-}
-
-/// COMPOSE THE VOICE NODE'S OPEN-CALL TABLE onto the served door — the composition root's one write
-/// of the governed-call port, and the moment a served voice session becomes a governed one.
-///
-/// The node is built here rather than passed in because nothing about the table configuration
-/// decides: [`root::units_voice::OpenToolCalls`] is empty at boot and its whole contents are what the
-/// sessions running on this node have opened since. What the served path reaches through the port is
-/// that table and nothing else — two questions, `replied` and `expired`, neither of which reads the
-/// node's door, its pricer, its auth chain or its journal.
-///
-/// So the parts below are the ones the table's own two answers need, and the rest are the root's
-/// unbound posture: the plane with the upstream list configuration composed (none today — the
-/// `streams:` reader that fills it is the same work that switches the serving path onto these units),
-/// a flat pricer, an unbound auth chain, and a memory-buffered journal. That posture is honest for
-/// exactly as long as this node serves no unit, which is the window `root-voice` exists to hold open;
-/// the switch that routes a frame through it is the one that has to thread the deployment's real
-/// auth, rate cards and data directory in, and it fails to compile until it does.
-///
-/// NONE OF A SERVED SESSION'S MONEY PASSES THROUGH THIS NODE (OWNER RULING Q21b). The served path
-/// meters on the streaming plane's units: each turn's raw counts per class go to the kernel's
-/// session account over the live host, which ledgers them through the one metering path and closes
-/// the carrier off the kernel's own budget view; the view prices them at read with the `streams`
-/// card. The flat pricer below prices this node's own door, which admits no served frame.
-///
-/// Set-once on the plane's side: a second call is a no-op rather than a silent swap of the table
-/// this node's live sessions are already keyed into.
-#[cfg(feature = "root-voice")]
-fn compose_voice_governed_calls() {
-    use root::units_voice::{NodeCalls, VoiceNode, VoiceNodeParts};
-
-    let durability = match root::durability::build(
-        &root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-    ) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("busbar: the voice node's journal did not open: {e}");
-            std::process::exit(2);
-        }
-    };
-    let node = std::sync::Arc::new(VoiceNode::new(VoiceNodeParts {
-        plane: busbar_plane_streaming::StreamingPlane::new(&[]),
-        // No group reaches this node's door: the table's two answers read no cap, and the served
-        // sessions' admissions are the sealed root's, not this stub's.
-        groups: root::policy::group_table(
-            &std::collections::BTreeMap::new(),
-            &std::collections::BTreeMap::new(),
-        ),
-        pricer: busbar_kernel_budget::Pricer::flat(0),
-        auth: busbar_kernel_identity::Auth::new(busbar_kernel_identity::AuthChain::new(
-            Vec::new(),
-            false,
-        )),
-        auth_bindings: root::kernel::auth_bindings::AuthBindings::without_directory(),
-        scope: root::units_voice::scope_policy(),
-        meter_policy: root::policy::build(&root::policy::MeterPolicyConfig::default()),
-        durability,
-        io: root::units_voice::VoiceIo::default(),
-        // Minted from the root's own kernel, which is the only place a sealed origin can come from:
-        // a unit is lent its audit token and nothing else, so it cannot mint one where it is used.
-        origin: root::kernel::new_kernel().origin(busbar_contract::caps::OriginKind::Client),
-    }));
-    busbar_voice::mount::install_governed_calls(std::sync::Arc::new(NodeCalls::new(node)));
-}
-
-/// PROVISION EVERY CONFIGURED LISTENER'S TLS MATERIAL THROUGH THE TRANSPORT-KEY UNIT.
-///
-/// The unit resolves the material, journals the access, and registers the config in the slot the
-/// root allocated — data at 0, admin at 1 — and hands back a handle carrying a slot number, a
-/// fingerprint, and no bytes at all. Before this had a caller, the only thing in the tree that ever
-/// registered a listener's TLS config was the transport's own tests, so whatever bound a listener
-/// bypassed the unit entirely and the deployment's private key was resolved somewhere the journal
-/// never saw.
-///
-/// WHY NOTHING IS BOUND HERE, AND WHERE THAT ENDS. This boot does not call `listen_all`, and it is
-/// not an oversight: `serve_listener` below binds the data and admin addresses over its own
-/// `busbar_core_connsec::prepare` path, so a second bind here would refuse the address and take
-/// the node down. What this function does is everything up to the bind — resolve, journal, register
-/// — so the commit that moves serving onto the root's transports is a change of who accepts, not a
-/// change of where the key comes from. Until then, this is a second resolution of the same
-/// references `serve_listener` resolves for itself: the bytes the transport-key unit reads are not
-/// the bytes rustls loads, but they are read from the same configured location, and this is the one
-/// place that read is journaled.
-///
-/// A PROVISIONING FAILURE IS NOT A BOOT REFUSAL, for the same reason nothing is bound here: nothing
-/// serves through these slots yet, and the path that does serve resolves the same references for
-/// itself and fails on its own terms if they are unusable. Refusing here would take down a
-/// deployment for a slot nobody is reading.
-#[cfg(all(
-    feature = "root-voice",
-    any(feature = "root-admin", feature = "root-llm")
-))]
-fn provision_root_listeners(
-    sealed: &root::registry::BootRegistry,
-    resolver: &dyn busbar_api::SecretResolve,
-    book: &std::sync::Mutex<root::durability::Durability>,
-    data: (&str, Option<&config::TlsCfg>),
-    admin: (&str, Option<&config::TlsCfg>),
-) {
-    use root::transports::{ListenerConfig, ListenerRole, TlsMaterialRefs};
-
-    // The location strings are CONFIG PATHS, not renderings of the references: the unit journals
-    // whatever it was handed, and what an auditor wants out of that entry is where the operator
-    // declared the secret.
-    let mut refs = std::collections::BTreeMap::new();
-    let mut listeners = Vec::new();
-    for (role, at, bind, tls, fingerprint) in [
-        (
-            ListenerRole::Data,
-            "tls",
-            data.0,
-            data.1,
-            "data-listener" as &'static str,
-        ),
-        (
-            ListenerRole::Admin,
-            "admin_tls",
-            admin.0,
-            admin.1,
-            "admin-listener",
-        ),
-    ] {
-        let material = tls.map(|cfg| {
-            refs.insert(format!("{at}.cert"), cfg.cert.clone());
-            refs.insert(format!("{at}.key"), cfg.key.clone());
-            if let Some(ca) = cfg.client_ca.as_ref() {
-                refs.insert(format!("{at}.client_ca"), ca.clone());
-            }
-            TlsMaterialRefs {
-                cert: format!("{at}.cert"),
-                key: format!("{at}.key"),
-                client_ca: cfg.client_ca.as_ref().map(|_| format!("{at}.client_ca")),
-            }
-        });
-        listeners.push(ListenerConfig {
-            role,
-            bind: bind.to_string(),
-            tls: material,
-            fingerprint,
-        });
-    }
-
-    let token = root::kernel::new_kernel().transport_key_token();
-    let durability_token = root::kernel::new_kernel().durability_token();
-    let secrets = root::transports::ConfiguredSecrets::new(resolver, refs);
-    let journal = root::transports::BookAccessJournal::new(book, &durability_token);
-    if let Err(e) = root::transports::provision_servers(
-        &listeners,
-        &secrets,
-        &journal,
-        &*sealed.transports.tls,
-        &token,
-    ) {
-        // NOT a boot refusal — see the function doc.
-        tracing::warn!("the root's listener slots were not provisioned: {e}");
-    }
+    root::linked::register_ws_arrivals(&LINKED);
 }
 
 fn main() {
@@ -661,93 +265,29 @@ fn main() {
     root::gauntlet_install::install();
     // DIAGNOSTICS REGISTRATION, same slot and the same reason: a rendered catalog or a `by_code`
     // lookup must see every linked plane's owned codes, so the diagnostics axis is installed before
-    // any reader. Each plane contributes its `DIAGNOSTICS` under its feature; a no-planes build
-    // installs nothing and the catalog is the neutral built-ins alone.
+    // any reader. Each linked entry contributes its owned diagnostics; a no-planes build installs
+    // nothing and the catalog is the neutral built-ins alone.
     register_diagnostics();
     // INBOUND WS-ACCEPT ARRIVAL REGISTRATION, same slot and the same reason as the axes above: the
     // core router drains the installed arrivals at build (`take_ws_arrivals`), which happens later in
     // `run()` — so the duplex planes' arrivals must be installed here, before the router is built. Each
-    // duplex plane contributes its `WsArrivalSpec`s under its feature; a build with no duplex plane
-    // installs nothing and the router mounts no WS-accept route. Gated to `plane-voice` (voice is the
-    // only duplex plane today), so a shipped build drops it entirely — strong-form deletable.
+    // duplex entry installs its `WsArrivalSpec`s; a build with no duplex plane installs nothing and
+    // the router mounts no WS-accept route — strong-form deletable.
     register_ws_arrivals();
     // THE COMPOSITION ROOT'S OWN SEAL is NOT here, and it is the one boot step that is not: it
     // composes the transports a switched-over plane would serve through, and the http one carries
     // the operator's `limits.request_body_max_bytes`, so it cannot run before the configuration it
-    // is built from has been read. It runs in `run()`, off the resolved limits, still before any
-    // listener is bound — see `mount_root_voice`. Every axis above is installed by then, which is
-    // the ordering the seal needed from this slot in the first place.
-    // THE HOSTLESS-EGRESS DRIVER, installed once here beside the plane axis: the neutral
-    // `busbar_kernel::egress::seam::HostlessEgress` a plane drives its governed outbound hop
-    // through, backed by core's `CoreHostlessEgress` (the `plane_host` FFI egress vtable). An
-    // extracted plane holds only `&dyn HostlessEgress` off `hostless()` and never names the core
-    // driver; this write is the composition root's one binding of the two. Gated to the plane
-    // features, so a no-planes build (`--no-default-features`) drops it — nothing drives egress then.
-    // `&CoreHostlessEgress` is a ZST unit struct, so it promotes to `'static`.
-    #[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
-    busbar_kernel::egress::seam::install_hostless_egress(
-        &busbar_kernel::egress::seam::CoreHostlessEgress,
-    );
-    // THE EGRESS-TRUST HOST CAPABILITY (HOST-CAPS S3, DECISIONS #26), installed once here beside the
-    // hostless-egress driver — the "both ends" binding of the outbound trust seam: the composition
-    // root installs the process capability so a call site can later reach client-identity /
-    // trust-anchor / peer-SPKI through `busbar_kernel::plane_host::egress_trust::egress_trust_host()`
-    // instead of the free primitives. ADDITIVE AND DORMANT: `PassThroughEgressTrust` is a byte-for-byte
-    // pass-through to the same `identity`/`trust_anchor`/`spki` primitives the egress chokepoint calls
-    // directly today, and NOTHING consults the seam on the shipped path yet (W2 flips the call site),
-    // so the outbound path is unchanged. `PassThroughEgressTrust` is a ZST unit struct, so it promotes
-    // to `'static`. Gated exactly as the hostless-egress driver above.
-    #[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
-    busbar_kernel::plane_host::egress_trust::install_egress_trust_host(
-        &busbar_kernel::plane_host::egress_trust::PassThroughEgressTrust,
-    );
-    // The A2A durable task set (`busbar_a2a::taskstore::TASKS`) now OWNS its whole write/restore path
-    // and drives the generic `PlaneRecord` store directly at its own boot hook, so the composition root
-    // binds no task codec or reader seam here — both were deleted with the relocation.
-    // The parse-time section list: the A2A plane refuses a cross-plane hook reference against the WHOLE
-    // section fold (`busbar_kernel::plane::config::config_sections`, which reads the process plane
-    // registry), so it names no core registry. Bound here — after `register_planes`, before the CLI
-    // flags read `--validate` — so config validation sees the populated list. Gated to `plane-a2a`.
-    #[cfg(feature = "plane-a2a")]
-    busbar_kernel::plane::config::install_plane_sections(
-        busbar_kernel::plane::config::config_sections,
-    );
-    // The self-enveloping verb backing: the A2A `approve` verb builds its OWN response + audit
-    // (`AdminReply::Prebuilt`) through the neutral `PlaneAdminEnvelope` seam, so it names no
-    // `err_json`/`ok_json`/`AdminError`/audit chain. Backed by core's `CorePlaneAdminEnvelope` (a ZST
-    // mapping each neutral call onto the real envelope helpers), bound here before the router serves.
-    // Gated to `plane-a2a`.
-    #[cfg(feature = "plane-a2a")]
-    busbar_kernel::admin_verbs::install_plane_admin_envelope(
-        &busbar_kernel::admin::planeverbs::CorePlaneAdminEnvelope,
-    );
-    // THE A2A PLANE'S KERNEL COMPOSITION, behind `root-a2a`, which is default-ON. The root is built
-    // before any plane is switched onto it, so what this installs is the scope entries the approve
-    // step reads for this plane's twelve operation classes — every one of them, because the scope
-    // unit reads silence as a refusal and a partly-declared policy leaves the rest unreachable. It
-    // diverts no byte: the serving path is still the one `register_planes` mounted, which is why
-    // the conformance battery and the neutrality cells read identically with this on and with it
-    // off. No config key, no environment variable, no boot line.
-    #[cfg(feature = "root-a2a")]
-    {
-        let policy = root::units_a2a::scope_policy(root::policy::ScopePolicy::new());
-        // A BOOT REFUSAL, not a debug assertion. The scope unit reads silence as a denial, so a
-        // policy that is short by an entry is a plane whose remaining operations answer 403 for the
-        // life of the process — and a `debug_assert_eq!` compiled the check out of the only build
-        // that ever serves anybody. The MCP seal a few lines above already answers this way, and
-        // this is the same class of fact: a composition that disagrees with itself must not bind a
-        // listener, because the alternative is finding out from a customer.
-        if policy.len() != busbar_plane_a2a::ops::OP_CLASSES.len() {
-            eprintln!(
-                "busbar: the composition root did not seal: the A2A scope policy declares {} of the \
-                 plane's {} operation classes, and the scope unit reads an undeclared class as a \
-                 refusal",
-                policy.len(),
-                busbar_plane_a2a::ops::OP_CLASSES.len()
-            );
-            std::process::exit(2);
-        }
-    }
+    // is built from has been read. It runs in `run()`, off the resolved limits (a root unit's
+    // `on_config`), still before any listener is bound. Every axis above is installed by then, which
+    // is the ordering the seal needed from this slot in the first place.
+    // THE ROOT-BOUND SEAMS the linked entries drive, each bound once here beside the plane axis and
+    // only when some entry drives it: the hostless-egress driver and the egress-trust host (the
+    // "both ends" binding of the outbound hop — a plane holds only `&dyn HostlessEgress` and never
+    // names the core driver; the trust host is a byte-for-byte pass-through nothing on the shipped
+    // path consults yet), the parse-time section list a cross-plane hook refusal reads (after the
+    // plane axis, before the CLI flags read `--validate`), and the envelope a self-enveloping admin
+    // verb builds its own reply through. A build whose entries drive none of them binds none.
+    root::linked::register_seams();
     // CLI flags next — BEFORE building any runtime. They must work without a configured deployment,
     // and `--version` / `--validate` should never spin up a thread pool.
     if let Some(code) = root::cli::handle_cli_flags() {
@@ -932,7 +472,6 @@ fn main() {
 /// opening could not be sealed — the two boot conditions [`root::migration::run`] returns where
 /// continuing would be worse than refusing. A store that merely would not answer for some rows is
 /// NOT one of them; see that module's preamble.
-#[cfg(any(feature = "root-admin", feature = "root-llm"))]
 fn compose_boot_book(
     adapter: &busbar_plugin_loader::store_adapter::StoreAdapter,
     data_dir: Option<std::path::PathBuf>,
@@ -990,7 +529,6 @@ fn compose_boot_book(
 /// [`root::durability::build_for_node`] is the unset one and nothing is probed, nothing is opened
 /// and no file appears: this wiring gives a node with a CONFIGURED directory somewhere to write, and
 /// deliberately does not make writing unconditional.
-#[cfg(any(feature = "root-admin", feature = "root-llm"))]
 fn open_boot_book(app: &busbar_kernel::state::App) -> root::durability::NodeBook {
     let Some(gov) = app.governance.as_ref() else {
         return root::durability::node_book();
@@ -1147,7 +685,7 @@ async fn run(data_workers: usize) {
     // `init_logging`'s `stdout_reserved`.
     observability::init_logging(
         otlp_cfg.as_ref().map(|o| o.url.as_str()),
-        mcp_stdio_requested(std::env::args()),
+        stdio_serve_requested(std::env::args()),
     );
 
     // First line in the logs: which build is running. Operators need this to confirm a deploy /
@@ -1225,42 +763,28 @@ async fn run(data_workers: usize) {
     // reading taken here instead would be the boot's rates forever: the usage projection would
     // reprice on an apply and this node's ledger would not, and the identity that says the two are
     // one money would hold only until the operator changed a fee.
-    // THE COMPOSITION ROOT'S OWN SEAL, in the first slot where the values it composes exist: the
+    // THE ROOT UNITS' CONFIGURATION STEP, in the first slot where the values they compose exist: the
     // limits are resolved (and the overlay merged onto them) one screen up, and no listener is bound
-    // for another few hundred lines. The transports it composes are built from THESE limits — the
-    // same `request_body_max_bytes` the line above hands the served door — so a switched-over plane's
-    // transport and the door in front of it cannot disagree about which bodies exist. Behind
-    // `root-voice`, which the shipped binary carries; the leg stays switchable, and with it off the
-    // line is not compiled and the binary is what it was, which is what the neutrality cells read.
-    #[cfg(feature = "root-voice")]
-    let sealed_root = mount_root_voice(&cfg.limits);
-    // THE VOICE PLANE'S EGRESS CREDENTIAL, read off the deployment's ORDINARY provider catalog.
-    // The voice plane's `streams:` grammar carries no credential field, so its realtime provider is
-    // the one already serving the model that section targets: `streams.session.model` names a model,
-    // the model names its provider, and that provider entry carries the origin and the secret
-    // reference every other lane's key is declared as. Captured here — before `cfg` moves into the
-    // build — and handed to the plane below, once the resolver that turns a reference into a
-    // credential exists. A deployment with no `streams:` block pins no model and captures nothing, so
-    // nothing about it changes.
-    #[cfg(feature = "plane-voice")]
-    let voice_provider = busbar_voice::config::configured_session_model()
-        .and_then(|model| cfg.models.get(&model).map(|m| m.provider.clone()))
-        .and_then(|provider| cfg.providers.get(&provider))
-        .map(|p| (p.base_url.clone(), p.api_key.clone()));
-
-    // THE RELOAD HOOK, installed BEFORE the first app build below so the boot's own rate resolution
-    // is the history's OPENING ENTRY and nothing has to read the configuration twice. That ordering
-    // is what makes the opening entry a real one rather than a placeholder: the first apply the
-    // holder ever hears is the deployment's configured card, and it is written effective from
-    // instant zero, so no instant is ever in a hole.
-    //
-    // From here on each resolution APPENDS an entry dated at the moment it landed, and no entry is
-    // ever rewritten — an operator's price edit prices what happens after it and leaves what already
-    // happened where it was booked. Each unit resolves against the snapshot it pinned at admission,
-    // at its own arrival instant. Off, no holder is installed and the seam is silent, which is the
-    // honest answer for a binary with no root ledger in it.
-    #[cfg(feature = "root-llm")]
-    root::kernel::install_card_repricer();
+    // for another few hundred lines. This is where the composition root's own seal runs — the
+    // transports it composes are built from THESE limits, the same `request_body_max_bytes` the line
+    // above hands the served door, so a switched-over plane's transport and the door in front of it
+    // cannot disagree about which bodies exist — and where the card repricer is installed, BEFORE
+    // the first app build below, so the boot's own rate resolution is the history's OPENING ENTRY and
+    // nothing has to read the configuration twice. From there each resolution APPENDS an entry dated
+    // at the moment it landed and none is ever rewritten. A build without those units runs neither
+    // and is what it was, which is what the neutrality cells read.
+    for step in ROOT_UNITS.iter().filter_map(|u| u.on_config) {
+        step(&cfg.limits);
+    }
+    // EACH LINKED PLUGIN'S PROVIDER, captured off the deployment's ORDINARY provider catalog before
+    // `cfg` moves into the build, and composed below once the resolver that turns a secret reference
+    // into a credential exists. A deployment that pins nothing captures nothing, so nothing about it
+    // changes.
+    let composes: Vec<root::linked::Compose> = LINKED
+        .compose
+        .iter()
+        .filter_map(|capture| capture(&cfg))
+        .collect();
 
     // D38: the fleet's SEALED OPERATOR KEY reference (`auth.operator_pub`), captured from the
     // resolved `auth:` block BEFORE `cfg` is consumed by `build_app_from_config`. It is resolved to
@@ -1301,37 +825,12 @@ async fn run(data_workers: usize) {
     boot_limits.keep();
     let app = Arc::new(boot_app);
 
-    // COMPOSE the voice plane's realtime provider: hand the plane the origin + the secret reference
-    // captured above and the deployment's own secret resolver, so the plane resolves its credential
-    // through the same seam every provider key is resolved through and its mint / SDP routes serve
-    // instead of answering "no provider composed". Silent on a deployment that captured nothing (no
-    // `streams:` block, no model pinned, or no such model/provider in the catalog) — the only line
-    // this can emit is a fail-closed warning when a reference the operator DID declare will not
-    // resolve, which is worth saying rather than leaving the routes mysteriously uncomposed.
-    #[cfg(feature = "plane-voice")]
-    if let Some((base_url, api_key)) = voice_provider {
-        if let Err(e) =
-            busbar_voice::mount::compose_provider(base_url.clone(), &api_key, &*app.secret_resolver)
-        {
-            tracing::warn!(
-                "voice: the realtime provider credential did not resolve, so the voice mint and SDP \
-                 routes stay uncomposed: {e}"
-            );
-        }
-        // K4: THE GEMINI LIVE ROUTE'S PROVIDER, composed under its OWN endpoint (a separate set-once
-        // slot, `x-goog-api-key` scheme) rather than reusing the OpenAI one's — a deployment cannot
-        // silently point one dialect's traffic at the other's credential. `streams:` still names ONE
-        // model, so today both endpoints are composed from the SAME resolved (origin, reference) pair;
-        // a deployment that fronts Gemini Live through a distinct provider entry needs a second
-        // `streams:` knob to name it, which is not this cycle's grammar change (see docs/voice.md).
-        if let Err(e) =
-            busbar_voice::mount::compose_gemini_provider(base_url, &api_key, &*app.secret_resolver)
-        {
-            tracing::warn!(
-                "voice: the Gemini Live provider credential did not resolve, so the Gemini route \
-                 stays uncomposed: {e}"
-            );
-        }
+    // COMPOSE each captured provider: the plugin resolves its credential through the deployment's own
+    // secret resolver — the same seam every provider key is resolved through — so its routes serve
+    // instead of answering "no provider composed". The only line this can emit is a fail-closed
+    // warning when a reference the operator DID declare will not resolve.
+    for compose in composes {
+        compose(&*app.secret_resolver);
     }
 
     // Record the BOOT snapshot as version 0 so the version history always has a rollback floor
@@ -1374,10 +873,14 @@ async fn run(data_workers: usize) {
     // `AppHandle` below (`set_snapshot_host`), which owns it for the boot generation and DROPS it on the
     // first config swap, retiring these boot probers (their `Weak` fails to upgrade) exactly as the old
     // `Weak<App>` did when the boot snapshot drained.
-    #[cfg(feature = "proto-llm")]
-    let boot_host = busbar_kernel::plane_host::engine_host(&app);
-    #[cfg(feature = "proto-llm")]
-    busbar_llm::spawn_probers(&boot_host);
+    // Built only when some linked entry re-anchors work on it: a build with none holds no host.
+    let on_host = LINKED.on_host;
+    let boot_host = (!on_host.is_empty()).then(|| busbar_kernel::plane_host::engine_host(&app));
+    if let Some(host) = &boot_host {
+        for spawn in on_host {
+            spawn(host);
+        }
+    }
 
     // Build the two routers with the operator-configured ingress body cap + the inbound-concurrency
     // layer (installed by default; `limits.max_inbound_concurrent: 0` opts out — no layer). The admin surface is built onto its
@@ -1406,8 +909,8 @@ async fn run(data_workers: usize) {
     // answers the admin operations is unchanged; what the wrap adds is the path a request takes to
     // reach it — through the kernel's loop, past the auth, scope, admission, usage and audit units,
     // and out through the one exit. Off, this line does not exist and the surface is the one it was.
-    // THE PROCESS'S ONE BOOK. The LLM plane's exit arm settles onto it (`bind_book` below) and the
-    // administrative ledger views read it; the MCP, A2A and voice planes bind no exit arm to it here.
+    // THE PROCESS'S ONE BOOK. The LLM plane's exit arm settles onto it (its root unit's book step,
+    // below) and the administrative ledger views read it; no other plane binds an exit arm to it.
     // It is ONE book, and that matters: a mount that opened its own would post
     // onto books nothing serves and serve books nothing posts to, and both halves of that would look
     // healthy, because an empty ledger reconciles. Its records ship to the deployment's CONFIGURED
@@ -1420,37 +923,29 @@ async fn run(data_workers: usize) {
     // settle, and it must settle against a book whose opening is ALREADY sealed. `open_boot_book`
     // returns only after the seal, so there is no window in which a settlement could be measured
     // from a checkpoint that was not written yet.
-    #[cfg(any(feature = "root-admin", feature = "root-llm"))]
-    let book = open_boot_book(&app_handle.load());
+    // Opened for the admin surface and for every root unit that settles onto it; a build with
+    // neither opens nothing.
+    let book = (cfg!(feature = "root-admin") || ROOT_UNITS.iter().any(|u| u.opens_book))
+        .then(|| open_boot_book(&app_handle.load()));
 
-    // THE TRANSPORT-KEY UNIT, given the two listeners this deployment configured. After the book,
-    // because the access entry per secret read goes on the node's own chain; before either listener
-    // binds, because a key resolved after a listener is accepting is a listener that accepted
-    // without one.
-    // LAW 7: the unit is the voice plane's root wiring, so it runs only where that plane is
-    // configured — a 1.5.5 config resolves, journals and warns about nothing here.
-    #[cfg(all(
-        feature = "root-voice",
-        any(feature = "root-admin", feature = "root-llm")
-    ))]
-    if app_handle
-        .load()
-        .plane_configured(&busbar_voice::PLANE_DECLARATION)
-    {
-        provision_root_listeners(
-            &sealed_root,
-            &*tls_secret_resolver,
-            &book.durability,
-            (&listen, tls_cfg.as_ref()),
-            (&admin_listen, admin_tls_cfg.as_ref()),
-        );
+    // THE ROOT UNITS' BOOK STEP, once the book is open and before either listener binds: the
+    // transport-key unit provisions the two configured listeners' TLS material (after the book,
+    // because the access entry per secret read goes on the node's own chain; before the bind, because
+    // a key resolved after a listener is accepting is a listener that accepted without one), and the
+    // root-driven exit arm is bound to the book, so a posting the loop hands back has somewhere to go.
+    if let Some(book) = &book {
+        let app = app_handle.load();
+        let ctx = root::linked::BookCtx {
+            book,
+            app: &app,
+            resolver: &*tls_secret_resolver,
+            data: (&listen, tls_cfg.as_ref()),
+            admin: (&admin_listen, admin_tls_cfg.as_ref()),
+        };
+        for step in ROOT_UNITS.iter().filter_map(|u| u.on_book) {
+            step(&ctx);
+        }
     }
-
-    // THE ROOT-DRIVEN LLM PLANE'S EXIT ARM, bound to that book. The loop already ended every unit
-    // and handed back a posting; what this line adds is somewhere for the posting to go. Off, the
-    // arm settles nothing, which is the honest answer for a build with no root ledger in it.
-    #[cfg(feature = "root-llm")]
-    root::units_llm::bind_book(std::sync::Arc::clone(&book.durability));
 
     // THE CARD IT PRICES AGAINST is already in place: the app build above resolved this deployment's
     // rates and raised the rate-apply seam the hook installed before it, so the root's card holds the
@@ -1458,72 +953,79 @@ async fn run(data_workers: usize) {
     // from. One configuration, two readings — and the next apply moves both, which is what makes the
     // node's books and the projection's rows the same money rather than two numbers that agreed once.
 
+    // (The admin surface always opens the book, so `None` is a build without that surface's book —
+    // never one with the surface.)
     #[cfg(feature = "root-admin")]
-    let admin_router = root::units_admin::mount(
-        admin_router,
-        root::kernel::new_kernel(),
-        // The same ingress cap the router below the wrap was built with, because the wrap reads the
-        // body before that router's own limit can.
-        req_body_max,
-        |dispatch| {
-            let mut units = root::kernel::ProductionUnits::admin_only_sharing(
-                dispatch,
-                std::sync::Arc::clone(&book.durability),
-                std::sync::Arc::clone(&book.rows)
-                    as std::sync::Arc<dyn root::units_admin::LegacyRowsRead>,
-            );
-            // D38 PRODUCTION SEALING (composition-root, binding-only). Replace the assembly's
-            // `UnsealedPosture` default with the posture THIS fleet sealed: `SealedPosture` carries
-            // the boot-resolved operator key, so `operator.pub` present ⇒ `OperatorState::Set` (a
-            // valid-signed `amend_rate_history` is now performable + ed25519-verified) and absent ⇒
-            // `OperatorState::Unset` (amend refused at the ceremony gate, byte-identical to before).
-            // Bound over the SAME public `posture` seam `AdminBinding::with_posture_view` sets — and
-            // the same one the ledger view beside it is bound through — so this is a binding, not a
-            // structural change to the units.
-            units.admin.posture =
-                std::sync::Arc::new(root::units_admin::SealedPosture::new(operator_key));
-            // Q64/Q67: an `adjust` names the pool its unit was dispatched through, checked against
-            // the pools this node has CONFIGURED — read off the live snapshot on every call, so a
-            // config apply that adds or removes a pool is what the check sees.
-            let live = std::sync::Arc::clone(&app_handle);
-            units.admin.pools = std::sync::Arc::new(move |pool: &str| {
-                busbar_kernel::governance::group_provision::pool_known(&live.load(), pool)
-            });
-            // THE DEPLOYMENT'S OWN DOOR, in front of the authenticate step. Without these two lines
-            // the assembly's open posture shipped: the step admitted every caller anonymously and
-            // the only thing deciding was the surface mounted underneath — so a credential this node
-            // had REVOKED was admitted at Authenticate, and the revocation the governance state
-            // holds was consulted by nothing on the request path. The chain is the operator's admin
-            // token and the bindings are the same governance state's directory, which is what makes
-            // the revocation set the one this node actually keeps.
-            match app_handle.load().governance.clone() {
-                Some(gov) => units
-                    .with_auth_chain(root::kernel::auth_bindings::admin_chain(
-                        std::sync::Arc::clone(&gov),
-                    ))
-                    .with_auth_bindings(root::kernel::auth_bindings::AuthBindings::new(
-                        std::sync::Arc::new(root::kernel::auth_bindings::GovernanceDirectory::new(
-                            gov,
+    let admin_router = match &book {
+        Some(book) => root::units_admin::mount(
+            admin_router,
+            root::kernel::new_kernel(),
+            // The same ingress cap the router below the wrap was built with, because the wrap reads the
+            // body before that router's own limit can.
+            req_body_max,
+            |dispatch| {
+                let mut units = root::kernel::ProductionUnits::admin_only_sharing(
+                    dispatch,
+                    std::sync::Arc::clone(&book.durability),
+                    std::sync::Arc::clone(&book.rows)
+                        as std::sync::Arc<dyn root::units_admin::LegacyRowsRead>,
+                );
+                // D38 PRODUCTION SEALING (composition-root, binding-only). Replace the assembly's
+                // `UnsealedPosture` default with the posture THIS fleet sealed: `SealedPosture` carries
+                // the boot-resolved operator key, so `operator.pub` present ⇒ `OperatorState::Set` (a
+                // valid-signed `amend_rate_history` is now performable + ed25519-verified) and absent ⇒
+                // `OperatorState::Unset` (amend refused at the ceremony gate, byte-identical to before).
+                // Bound over the SAME public `posture` seam `AdminBinding::with_posture_view` sets — and
+                // the same one the ledger view beside it is bound through — so this is a binding, not a
+                // structural change to the units.
+                units.admin.posture =
+                    std::sync::Arc::new(root::units_admin::SealedPosture::new(operator_key));
+                // Q64/Q67: an `adjust` names the pool its unit was dispatched through, checked against
+                // the pools this node has CONFIGURED — read off the live snapshot on every call, so a
+                // config apply that adds or removes a pool is what the check sees.
+                let live = std::sync::Arc::clone(&app_handle);
+                units.admin.pools = std::sync::Arc::new(move |pool: &str| {
+                    busbar_kernel::governance::group_provision::pool_known(&live.load(), pool)
+                });
+                // THE DEPLOYMENT'S OWN DOOR, in front of the authenticate step. Without these two lines
+                // the assembly's open posture shipped: the step admitted every caller anonymously and
+                // the only thing deciding was the surface mounted underneath — so a credential this node
+                // had REVOKED was admitted at Authenticate, and the revocation the governance state
+                // holds was consulted by nothing on the request path. The chain is the operator's admin
+                // token and the bindings are the same governance state's directory, which is what makes
+                // the revocation set the one this node actually keeps.
+                match app_handle.load().governance.clone() {
+                    Some(gov) => units
+                        .with_auth_chain(root::kernel::auth_bindings::admin_chain(
+                            std::sync::Arc::clone(&gov),
+                        ))
+                        .with_auth_bindings(root::kernel::auth_bindings::AuthBindings::new(
+                            std::sync::Arc::new(
+                                root::kernel::auth_bindings::GovernanceDirectory::new(gov),
+                            ),
                         )),
-                    )),
-                // No governance state is no directory and no configured token, which is the open
-                // administrative posture the previous release also has. Left as the assembly built
-                // it rather than wired to an authority that does not exist.
-                None => units,
-            }
-        },
-    );
+                    // No governance state is no directory and no configured token, which is the open
+                    // administrative posture the previous release also has. Left as the assembly built
+                    // it rather than wired to an authority that does not exist.
+                    None => units,
+                }
+            },
+        ),
+        None => admin_router,
+    };
 
     // Bind the boot generation's engine host to the handle so it OWNS the only strong reference the boot
     // probers depend on (they hold a `Weak`): the first config swap drops it and retires them. See the
     // spawn_probers call above and `AppHandle::set_snapshot_host`.
-    #[cfg(feature = "proto-llm")]
-    app_handle.set_snapshot_host(boot_host);
+    if let Some(host) = boot_host {
+        app_handle.set_snapshot_host(host);
+    }
     // And bind the spawner every later swap re-attaches the probers with (item 552): the swap drops
     // this generation's host and retires its probers, so without the binding the first admin
-    // mutation stops active health probing for the life of the process.
-    #[cfg(feature = "proto-llm")]
-    app_handle.attach_on_swap(busbar_llm::spawn_probers);
+    // mutation stops active health probing for the life of the process. The seam holds one.
+    if let Some(&spawn) = on_host.first() {
+        app_handle.attach_on_swap(spawn);
+    }
 
     // Graceful shutdown: on ctrl_c (SIGINT) or SIGTERM, stop accepting new connections, let
     // in-flight requests drain, then flush the OTLP tracer so the final (most diagnostic) spans are
@@ -1577,15 +1079,14 @@ async fn run(data_workers: usize) {
     // supervisor never asked for) and speaks newline-delimited JSON-RPC on its own stdin/stdout.
     // EOF on stdin is the shutdown signal, and the tail below is the listener path's own shutdown
     // tail: the final budget/metering flush, then the tracer.
-    // The MCP stdio serve mode exists only when the MCP plane is compiled in (`plane-mcp`). With the
-    // plane off there is no MCP dispatch to serve on stdin/stdout, so the mode is not offered and a
-    // build without MCP falls through to its listener path.
-    #[cfg(feature = "plane-mcp")]
-    if mcp_stdio_requested(std::env::args()) {
+    // The mode exists only when a linked entry serves it. With none there is no dispatch to serve on
+    // stdin/stdout, so the mode is not offered and the build falls through to its listener path.
+    let stdio_serve = LINKED.stdio_serve.first().copied();
+    if let Some(serve) = stdio_serve.filter(|_| stdio_serve_requested(std::env::args())) {
         // The neutral host factory, minted core-side and threaded into the stdio transport so the plane
         // re-mints the host over each frame's live snapshot without naming the core factory itself.
         let factory = busbar_kernel::plane_host::live_host_factory(app_handle.clone());
-        let code = busbar_mcp::mcp::stdio_serve::serve_stdio(factory).await;
+        let code = serve(factory).await;
         if let Some(gov) = app_handle.load().governance.clone() {
             let n = gov.flush_budgets();
             tracing::info!(flushed = n, "budget counters flushed on shutdown");

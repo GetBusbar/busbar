@@ -73,6 +73,7 @@ pub mod gauntlet_kernel;
 pub mod harness;
 pub mod kernel;
 pub mod ledger_identity;
+pub mod linked;
 pub mod migration;
 pub mod money_book;
 #[cfg(feature = "plane-decision")]

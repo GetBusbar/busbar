@@ -1145,21 +1145,28 @@ fn no_configured_directory_still_opens_nothing_and_writes_nothing() {
 
 /// ITEMS 244, 247, 259 — THREE DOC CLAIMS IN `main.rs` THAT THE CODE BESIDE THEM CONTRADICTED.
 ///
-/// Read off the source, because each claim is prose and the code that falsifies it sits in the same
-/// file: `register_planes` pushes `busbar_a2a::PLANE_DECLARATION` (so "A2A is still built into core ... not
-/// pushed here yet" was false); `main()`/`run()` call into `root::` throughout (so "Nothing in
-/// `main()` calls into it yet" was false); and only the LLM plane binds the boot book here while the
-/// admin views share it (so "Every plane's exit arm settles onto it" was false for mcp/a2a/voice).
+/// Read off the source, because each claim is prose and the code that falsifies it sits beside it:
+/// `register_planes` registers every linked entry, and the manifest links the A2A plane's crate (so
+/// "A2A is still built into core ... not pushed here yet" was false); `main()`/`run()` call into
+/// `root::` throughout (so "Nothing in `main()` calls into it yet" was false); and exactly one root
+/// unit binds the boot book — the LLM arm's — while the admin views share it (so "Every plane's exit
+/// arm settles onto it" was false for mcp/a2a/voice).
 #[test]
 fn main_rs_doc_claims_match_the_code_beside_them() {
     const MAIN: &str = include_str!("../main.rs");
+    const MANIFEST: &str = include_str!("../../Cargo.toml");
 
-    // 244: the A2A plane IS pushed by `register_planes`, so its doc may not say otherwise.
-    assert!(MAIN
-        .contains("installed.push(row!(busbar_a2a::PLANE_DECLARATION, busbar_a2a::PLANE_HOOKS));"));
+    // 244: the A2A plane IS registered — its crate is a linked row and `register_planes` registers
+    // every linked entry — so its doc may not say otherwise.
+    assert!(MANIFEST.contains("plane-a2a = \"busbar-a2a\""));
+    let register_planes = &MAIN[MAIN
+        .find("\nfn register_planes() {")
+        .expect("register_planes")..];
+    let register_planes = &register_planes[..register_planes.find("\n}\n").expect("it closes")];
+    assert!(register_planes.contains("root::linked::register_planes(&LINKED)"));
     assert!(
         !MAIN.contains("is not pushed here yet"),
-        "register_planes' doc says A2A is not pushed, and the function pushes it"
+        "register_planes' doc says A2A is not pushed, and the function registers it"
     );
 
     // 247: `main()` calls into `root::`, so the `mod root;` doc may not say nothing does.
@@ -1174,9 +1181,21 @@ fn main_rs_doc_claims_match_the_code_beside_them() {
         "the `mod root;` doc says main() does not call into the root, and it does"
     );
 
-    // 259: exactly one `bind_book` call in main.rs (the LLM arm), so the book's doc may not claim
+    // 259: exactly one root unit binds the boot book (the LLM arm), so the book's doc may not claim
     // every plane settles onto it.
-    assert_eq!(MAIN.matches("root::units_llm::bind_book(").count(), 1);
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/root");
+    let binders = std::fs::read_dir(&root)
+        .expect("the composition root")
+        .map(|e| e.expect("a directory entry").path())
+        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+        .filter(|p| {
+            std::fs::read_to_string(p)
+                .expect("a readable unit")
+                .contains("on_book: Some(|ctx| bind_book(")
+        })
+        .count();
+    assert_eq!(binders, 1);
+    assert!(MAIN.contains("ROOT_UNITS.iter().filter_map(|u| u.on_book)"));
     assert!(
         !MAIN.contains("Every plane's exit arm settles onto it"),
         "the boot book's doc claims every plane settles onto it; only the LLM arm is bound here"

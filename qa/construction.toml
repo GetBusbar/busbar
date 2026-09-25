@@ -2071,32 +2071,45 @@ max_doubles = 5
 # value at this composition — a null shipper on a node with no `peers:`, a memory-buffered book on a
 # node that configured no data directory. `verdict = "double"` means the review found a fixture's
 # value in the shipped binary, and those are counted by the second row so the owner sees them.
+# K1 (2026-09-25): the five voice-calls-* sites are the same constructions, reviewed with the same
+# verdicts, MOVED with `compose_voice_governed_calls` from main.rs into root/units_voice.rs (the root
+# unit that composes the node) when the composition root stopped naming plugin crates. A path
+# re-point, not a new review: the symbols, verdicts and reasons are unchanged and the doubles count
+# is the same seven (the main.rs `RecordingRows` row stays for the two left in `compose_boot_book`).
 [rules.no-test-doubles-in-production.known_sites.voice-calls-shipper]
-file = "crates/busbar/src/main.rs"
+file = "crates/busbar/src/root/units_voice.rs"
 symbol = "NullShipper"
 verdict = "double"
 because = "the voice governed-call node's journal, built in the default binary from no deployment value at all"
 
 [rules.no-test-doubles-in-production.known_sites.voice-calls-rows]
+file = "crates/busbar/src/root/units_voice.rs"
+symbol = "RecordingRows"
+verdict = "double"
+because = "the same node's rows: a recorder nothing reads, beside the node book the process already opened"
+
+# The main.rs half of the row above, kept: before K1 one `RecordingRows` row for main.rs covered the
+# voice node's rows AND the two in `compose_boot_book`; the node's moved, the boot book's did not.
+[rules.no-test-doubles-in-production.known_sites.voice-calls-rows-boot-book]
 file = "crates/busbar/src/main.rs"
 symbol = "RecordingRows"
 verdict = "double"
 because = "the same node's rows: a recorder nothing reads, beside the node book the process already opened"
 
 [rules.no-test-doubles-in-production.known_sites.voice-calls-pricer]
-file = "crates/busbar/src/main.rs"
+file = "crates/busbar/src/root/units_voice.rs"
 symbol = "Pricer::flat("
 verdict = "double"
 because = "a zero rate card in the shipped binary, where the deployment's own card is what a priced node needs"
 
 [rules.no-test-doubles-in-production.known_sites.voice-calls-chain]
-file = "crates/busbar/src/main.rs"
+file = "crates/busbar/src/root/units_voice.rs"
 symbol = "AuthChain::new(Vec::new()"
 verdict = "double"
 because = "an empty chain in the shipped binary, not the door the deployment configured"
 
 [rules.no-test-doubles-in-production.known_sites.voice-calls-bindings]
-file = "crates/busbar/src/main.rs"
+file = "crates/busbar/src/root/units_voice.rs"
 symbol = "without_directory("
 verdict = "double"
 because = "the same node's unbound key authorities, where the sealed root has the governance directory"

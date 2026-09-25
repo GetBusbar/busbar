@@ -737,10 +737,22 @@ MCP_DECL_SRC="crates/busbar-mcp/src crates/busbar-plane-mcp/src"
 grep -rq 'PLANE_KEY: &str = "mcp"' $MCP_DECL_SRC \
   || die "the MCP protocol crates must declare the mcp protocol key (PLANE_KEY = \"mcp\")"
 # shellcheck disable=SC2086
-grep -rq 'name: busbar_plane_mcp::PLANE_KEY' $MCP_DECL_SRC \
-  || die "the MCP protocol crates must build their ProtocolDecl over that key (name: busbar_plane_mcp::PLANE_KEY)"
-grep -q 'feature = "plane-mcp"' crates/busbar/src/main.rs \
-  || die "the composition root must register busbar_mcp::PROTO_DECL behind the plane-mcp feature"
+grep -rq 'ProtocolDecl::named(busbar_plane_mcp::PLANE_KEY)' $MCP_DECL_SRC \
+  || die "the MCP protocol crates must build their ProtocolDecl over that key (ProtocolDecl::named(busbar_plane_mcp::PLANE_KEY))"
+# REGISTERED BY THE COMPOSITION ROOT, through its linked table (K1): the root's source names no
+# plugin, so the registration is DATA in its manifest — `plane-mcp` maps to `busbar-mcp` in
+# `[package.metadata.busbar.linked]`, the crate's `linked-axes` row puts it on the `protocols` axis,
+# and the crate's `linked` entry module exports its ProtocolDecl on that axis (`linked::PROTOCOLS`).
+# A crate present in the tree but not wired — no linked row, or not on the protocols axis — is RED
+# here, which is the property the old main.rs grep held.
+MCP_ROOT_MANIFEST=crates/busbar/Cargo.toml
+manifest_table() { awk -v h="[$1]" '$0 == h {t=1; next} /^\[/ {t=0} t' "$MCP_ROOT_MANIFEST"; }
+manifest_table package.metadata.busbar.linked | grep -q '^plane-mcp = "busbar-mcp"' \
+  || die "the composition root must link busbar-mcp behind the plane-mcp feature ([package.metadata.busbar.linked] in $MCP_ROOT_MANIFEST)"
+manifest_table package.metadata.busbar.linked-axes | grep -Eq '^busbar-mcp = "(.* )?protocols( .*)?"' \
+  || die "the composition root must register busbar-mcp on the protocols axis ([package.metadata.busbar.linked-axes] in $MCP_ROOT_MANIFEST)"
+grep -q 'pub static PROTOCOLS: .*PROTO_DECL' crates/busbar-mcp/src/lib.rs \
+  || die "busbar-mcp's linked entry must export its ProtocolDecl on the protocols axis (linked::PROTOCOLS = [&PROTO_DECL])"
 note "mcp-a static: mcp declared by the crate, absent from core, registered by the composition root"
 
 # ── mcp-b: the MCP protocol crate is independently droppable, and the binary still SERVES ────────

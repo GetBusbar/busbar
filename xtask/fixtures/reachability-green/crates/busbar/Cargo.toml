@@ -5,3 +5,19 @@ version = "0.0.0"
 [[bin]]
 name = "busbar"
 path = "src/main.rs"
+
+# The linked table the real root's build script turns into the `LINKED` table `main.rs` includes.
+[package.metadata.busbar.linked]
+proto-llm = "busbar-llm"
+plane-mcp = "busbar-mcp"
+plane-a2a = "busbar-a2a"
+plane-voice = "busbar-voice"
+plane-decision = "busbar-plane-decision"
+
+# The axes each linked crate registers on; the plane axis is what `register_planes()` folds.
+[package.metadata.busbar.linked-axes]
+busbar-llm = "plane protocols"
+busbar-mcp = "plane protocols diagnostics"
+busbar-a2a = "plane diagnostics"
+busbar-voice = "plane diagnostics"
+busbar-plane-decision = "plane"

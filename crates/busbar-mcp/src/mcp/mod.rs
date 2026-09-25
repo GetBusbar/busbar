@@ -115,6 +115,7 @@
 //! tool description rather than the upstream's — applied to the field where it matters most.
 
 use busbar_contract::plane::{BillableClass, PER_REQUEST};
+use busbar_kernel::{plane::registry::PlaneHooks, plane_host::LiveHostFactory};
 
 /// THE MCP PLANE'S VOCABULARY DECLARATION, beside the code it describes. Folded into
 /// `plane::registry::BUILTIN_PLANE_DECLS`; every field replaces one arm of a `Plane::Mcp` `match`.
@@ -155,68 +156,74 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         fee_units: &[PER_REQUEST],
     };
 
+/// [`stdio_serve::serve_stdio`], boxed to the stdio-serve axis's shape ([`crate::linked`]).
+pub fn serve_stdio_boxed(
+    factory: LiveHostFactory,
+) -> futures::future::LocalBoxFuture<'static, i32> {
+    Box::pin(stdio_serve::serve_stdio(factory))
+}
+
 /// THE PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed over BESIDE
 /// [`PLANE_DECLARATION`] and joined to it kernel-side (`PlaneDecl::assemble`). The registration item
 /// is the declaration, which names no kernel type; this table is typed by kernel seams and stays on
 /// the kernel side of every fold.
-pub const PLANE_HOOKS: busbar_kernel::plane::registry::PlaneHooks =
-    busbar_kernel::plane::registry::PlaneHooks {
-        wire_format_names: || &[busbar_kernel::plane::WIRE_JSONRPC],
-        // THE MCP DOOR, from the validated resource. One claim — the ingress mount — spoken in
-        // JSON-RPC, and the audience is that resource's canonical URI. Whenever `mcp:` is configured
-        // the plane both mounts and admits, so the ratchet's "mounted ⇒ admitted" holds by
-        // construction here; the boot-refuse in `build_dispatch` guards the planes that might not.
-        claims: |slot| {
-            let r = slot
-                .downcast_ref::<McpResource>()
-                .expect("the mcp plane's dispatch slot is an McpResource");
-            vec![(
-                r.mount_path().to_string(),
-                busbar_kernel::plane::WIRE_JSONRPC,
-            )]
-        },
-        admission: |slot| {
-            let r = slot
-                .downcast_ref::<McpResource>()
-                .expect("the mcp plane's dispatch slot is an McpResource");
-            Some(r.admission())
-        },
-        // THE MCP SLOT: the validated resource is already built by config resolution
-        // (`McpResource::from_cfg`, run once at `RootCfg` construction) AND already type-erased at the
-        // composition root into the neutral `BuildCtx::endpoint_slot`, so `build` here is a CLONE of that
-        // ONE opaque `Arc` — not a second construction and not a re-erasure. `None` exactly when
-        // `cfg.mcp` is `None`, matching `App::mcp`'s own absence.
-        build: |ctx| ctx.endpoint_slot.clone(),
-        // S4a Option A: the MCP plane's data routes are contributed NEUTRALLY through `routes`, so
-        // its handlers no longer extract `axum::State<Arc<AppHandle>>`.
-        routes: Some(mcp_routes),
-        admin_routes: Some(mcp_admin_routes),
-        openapi: Some(mcp_openapi_fragment),
-        config_validate: Some(mcp_config_validate),
-        named_def_list: Some(admin_view::list),
-        named_def_get: Some(admin_view::get),
-        registry_contains: Some(admin_view::contains),
-        reresolve_gates: Some(admin_view::reresolve_gates),
-        #[cfg(feature = "openapi-schema")]
-        openapi_schemas: Some(admin_view::openapi_schemas),
-        #[cfg(not(feature = "openapi-schema"))]
-        openapi_schemas: None,
-        hydrate: Some(mcp_hydrate),
-        // NO START HOOK. Verify-on-call is LAZY — it re-verifies on the `tools/call` path against a
-        // ≤`verify_ttl` single-flight snapshot (see `busbar_kernel::trust::verify`), so there is no background
-        // sweep to spawn at boot. A server nobody calls is never fetched. The daemon this replaced is
-        // gone; its removal is the whole of this plane's boot change.
-        start: None,
-        on_swap: Some(mcp_on_swap),
-        parse_section: Some(mcp_parse_section),
-        parse_endpoint: Some(mcp_parse_endpoint),
-        lower_endpoint: Some(mcp_lower_endpoint),
-        build_runtime: Some(mcp_build_runtime),
-        viewer: None,
-        retain_verify_gates: Some(mcp_retain_verify_gates),
-        default_section: Some(mcp_default_section),
-        resolve_provider: None,
-    };
+pub const PLANE_HOOKS: PlaneHooks = PlaneHooks {
+    wire_format_names: || &[busbar_kernel::plane::WIRE_JSONRPC],
+    // THE MCP DOOR, from the validated resource. One claim — the ingress mount — spoken in
+    // JSON-RPC, and the audience is that resource's canonical URI. Whenever `mcp:` is configured
+    // the plane both mounts and admits, so the ratchet's "mounted ⇒ admitted" holds by
+    // construction here; the boot-refuse in `build_dispatch` guards the planes that might not.
+    claims: |slot| {
+        let r = slot
+            .downcast_ref::<McpResource>()
+            .expect("the mcp plane's dispatch slot is an McpResource");
+        vec![(
+            r.mount_path().to_string(),
+            busbar_kernel::plane::WIRE_JSONRPC,
+        )]
+    },
+    admission: |slot| {
+        let r = slot
+            .downcast_ref::<McpResource>()
+            .expect("the mcp plane's dispatch slot is an McpResource");
+        Some(r.admission())
+    },
+    // THE MCP SLOT: the validated resource is already built by config resolution
+    // (`McpResource::from_cfg`, run once at `RootCfg` construction) AND already type-erased at the
+    // composition root into the neutral `BuildCtx::endpoint_slot`, so `build` here is a CLONE of that
+    // ONE opaque `Arc` — not a second construction and not a re-erasure. `None` exactly when
+    // `cfg.mcp` is `None`, matching `App::mcp`'s own absence.
+    build: |ctx| ctx.endpoint_slot.clone(),
+    // S4a Option A: the MCP plane's data routes are contributed NEUTRALLY through `routes`, so
+    // its handlers no longer extract `axum::State<Arc<AppHandle>>`.
+    routes: Some(mcp_routes),
+    admin_routes: Some(mcp_admin_routes),
+    openapi: Some(mcp_openapi_fragment),
+    config_validate: Some(mcp_config_validate),
+    named_def_list: Some(admin_view::list),
+    named_def_get: Some(admin_view::get),
+    registry_contains: Some(admin_view::contains),
+    reresolve_gates: Some(admin_view::reresolve_gates),
+    #[cfg(feature = "openapi-schema")]
+    openapi_schemas: Some(admin_view::openapi_schemas),
+    #[cfg(not(feature = "openapi-schema"))]
+    openapi_schemas: None,
+    hydrate: Some(mcp_hydrate),
+    // NO START HOOK. Verify-on-call is LAZY — it re-verifies on the `tools/call` path against a
+    // ≤`verify_ttl` single-flight snapshot (see `busbar_kernel::trust::verify`), so there is no background
+    // sweep to spawn at boot. A server nobody calls is never fetched. The daemon this replaced is
+    // gone; its removal is the whole of this plane's boot change.
+    start: None,
+    on_swap: Some(mcp_on_swap),
+    parse_section: Some(mcp_parse_section),
+    parse_endpoint: Some(mcp_parse_endpoint),
+    lower_endpoint: Some(mcp_lower_endpoint),
+    build_runtime: Some(mcp_build_runtime),
+    viewer: None,
+    retain_verify_gates: Some(mcp_retain_verify_gates),
+    default_section: Some(mcp_default_section),
+    resolve_provider: None,
+};
 
 /// VALIDATE ONE `tools:` NAMED-DEFINITION DOCUMENT — the MCP plane's half of
 /// [`busbar_kernel::plane::registry::PlaneDecl::config_validate`]. Parses the raw document into

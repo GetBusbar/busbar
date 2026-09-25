@@ -634,6 +634,93 @@ impl PlaneDispatch for DrivenOnce {
     }
 }
 
+/// PROVISION EVERY CONFIGURED LISTENER'S TLS MATERIAL THROUGH THE TRANSPORT-KEY UNIT.
+///
+/// The unit resolves the material, journals the access, and registers the config in the slot the
+/// root allocated — data at 0, admin at 1 — and hands back a handle carrying a slot number, a
+/// fingerprint, and no bytes at all. Before this had a caller, the only thing in the tree that ever
+/// registered a listener's TLS config was the transport's own tests, so whatever bound a listener
+/// bypassed the unit entirely and the deployment's private key was resolved somewhere the journal
+/// never saw.
+///
+/// WHY NOTHING IS BOUND HERE, AND WHERE THAT ENDS. This boot does not call `listen_all`, and it is
+/// not an oversight: `main.rs`'s `serve_listener` binds the data and admin addresses over its own
+/// `busbar_core_connsec::prepare` path, so a second bind here would refuse the address and take
+/// the node down. What this function does is everything up to the bind — resolve, journal, register
+/// — so the commit that moves serving onto the root's transports is a change of who accepts, not a
+/// change of where the key comes from. Until then, this is a second resolution of the same
+/// references `serve_listener` resolves for itself: the bytes the transport-key unit reads are not
+/// the bytes rustls loads, but they are read from the same configured location, and this is the one
+/// place that read is journaled.
+///
+/// A PROVISIONING FAILURE IS NOT A BOOT REFUSAL, for the same reason nothing is bound here: nothing
+/// serves through these slots yet, and the path that does serve resolves the same references for
+/// itself and fails on its own terms if they are unusable. Refusing here would take down a
+/// deployment for a slot nobody is reading.
+pub(crate) fn provision_root_listeners(
+    sealed: &crate::root::registry::BootRegistry,
+    resolver: &dyn busbar_api::SecretResolve,
+    book: &std::sync::Mutex<crate::root::durability::Durability>,
+    data: (&str, Option<&busbar_kernel::config::TlsCfg>),
+    admin: (&str, Option<&busbar_kernel::config::TlsCfg>),
+) {
+    // The location strings are CONFIG PATHS, not renderings of the references: the unit journals
+    // whatever it was handed, and what an auditor wants out of that entry is where the operator
+    // declared the secret.
+    let mut refs = std::collections::BTreeMap::new();
+    let mut listeners = Vec::new();
+    for (role, at, bind, tls, fingerprint) in [
+        (
+            ListenerRole::Data,
+            "tls",
+            data.0,
+            data.1,
+            "data-listener" as &'static str,
+        ),
+        (
+            ListenerRole::Admin,
+            "admin_tls",
+            admin.0,
+            admin.1,
+            "admin-listener",
+        ),
+    ] {
+        let material = tls.map(|cfg| {
+            refs.insert(format!("{at}.cert"), cfg.cert.clone());
+            refs.insert(format!("{at}.key"), cfg.key.clone());
+            if let Some(ca) = cfg.client_ca.as_ref() {
+                refs.insert(format!("{at}.client_ca"), ca.clone());
+            }
+            TlsMaterialRefs {
+                cert: format!("{at}.cert"),
+                key: format!("{at}.key"),
+                client_ca: cfg.client_ca.as_ref().map(|_| format!("{at}.client_ca")),
+            }
+        });
+        listeners.push(ListenerConfig {
+            role,
+            bind: bind.to_string(),
+            tls: material,
+            fingerprint,
+        });
+    }
+
+    let token = crate::root::kernel::new_kernel().transport_key_token();
+    let durability_token = crate::root::kernel::new_kernel().durability_token();
+    let secrets = ConfiguredSecrets::new(resolver, refs);
+    let journal = BookAccessJournal::new(book, &durability_token);
+    if let Err(e) = provision_servers(
+        &listeners,
+        &secrets,
+        &journal,
+        &*sealed.transports.tls,
+        &token,
+    ) {
+        // NOT a boot refusal — see the function doc.
+        tracing::warn!(target: "busbar", "the root's listener slots were not provisioned: {e}");
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/transports.rs"]
 mod tests;

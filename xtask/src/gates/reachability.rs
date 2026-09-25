@@ -43,9 +43,13 @@
 //! ## What it asserts, per plane of the #48 roster (llm, mcp, a2a, streaming, decision)
 //!
 //! * `reachability:registered:<plane>` — the COMPOSITION ROOT registers it. The evidence is narrow
-//!   on purpose: a registration token in the BODY of `register_planes()` in
-//!   `crates/busbar/src/main.rs` or of `plane_claims()` in `crates/busbar/src/root/registry.rs`,
-//!   read off comment-stripped code. A plane named in a doc comment is not a plane that is served.
+//!   on purpose: the plane's crate is a row of the manifest's LINKED TABLE
+//!   (`[package.metadata.busbar.linked]` in `crates/busbar/Cargo.toml` — the data `build.rs` turns
+//!   into the `LINKED` tables `main.rs` includes) whose `linked-axes` row puts it on the `plane`
+//!   axis, AND the BODY of `register_planes()` in `crates/busbar/src/main.rs` folds that table; or a
+//!   plane type token in the body of
+//!   `plane_claims()` in `crates/busbar/src/root/registry.rs`. Read off comment-stripped code and
+//!   the manifest's own rows. A plane named in a doc comment is not a plane that is served.
 //! * `reachability:unit-path:<plane>` — its `root/units_<plane>.rs` UNIT PATH is CONSTRUCTED IN A
 //!   FUNCTION REACHED FROM `fn main()`. The unit path is derived, never listed: it is whatever type
 //!   the module writes `impl … Units for T` for — the kernel's ten-step unit trait. **A
@@ -109,6 +113,12 @@
 //! * **`main.rs` is seeded whole**, not just `fn main`'s body. Everything in the composition root's
 //!   own file is boot code by construction; drawing the line inside it would make the gate's answer
 //!   depend on which helper `main` happens to have been factored into.
+//! * **The generated linked tables are part of `main.rs`.** `main.rs` `include!`s
+//!   `$OUT_DIR/linked.rs`, which is not in the tree; its contents are DATA in the manifest
+//!   (`[package.metadata.busbar.root-units]` and `[package.metadata.busbar.linked-entry]` name the
+//!   root modules it references, and `linked-axes` which of an entry module's items). So each row
+//!   there seeds its module and its items as reached from `main.rs` — read from the manifest, never
+//!   assumed.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -205,8 +215,11 @@ struct Plane {
     /// The `root/<module>.rs` this plane's unit path would live in. Checked for existence, never
     /// assumed.
     module: &'static str,
-    /// Any one of these, in the body of `register_planes()` or `plane_claims()`, IS the
-    /// registration. Each is a type or a decl the root can only name in order to install it.
+    /// The plugin crate whose row in the manifest's linked table registers this plane (folded by
+    /// `register_planes()` over the generated `LINKED` table).
+    linked_crate: &'static str,
+    /// Any one of these, in the body of `plane_claims()`, IS the registration. Each is a type the
+    /// root can only name in order to install it.
     register_tokens: &'static [&'static str],
     /// Why this row is spelled the way it is, for the reader who finds it red.
     note: &'static str,
@@ -217,7 +230,8 @@ const ROSTER: &[Plane] = &[
         key: "llm",
         on_disk: "llm",
         module: "units_llm",
-        register_tokens: &["busbar_llm::PLANE_DECL", "LlmPlane"],
+        linked_crate: "busbar-llm",
+        register_tokens: &["LlmPlane"],
         note: "the 1.5.5 plane; `proto-llm` carries the crate edge, the protocol DECLS and the \
                plane decl together",
     },
@@ -225,7 +239,8 @@ const ROSTER: &[Plane] = &[
         key: "mcp",
         on_disk: "mcp",
         module: "units_mcp",
-        register_tokens: &["busbar_mcp::PLANE_DECL", "McpPlane"],
+        linked_crate: "busbar-mcp",
+        register_tokens: &["McpPlane"],
         note: "extracted to `busbar-mcp`; the root also seals its kernel bindings at boot behind \
                `root-mcp`",
     },
@@ -233,15 +248,17 @@ const ROSTER: &[Plane] = &[
         key: "a2a",
         on_disk: "a2a",
         module: "units_a2a",
-        register_tokens: &["busbar_a2a::PLANE_DECL", "A2aPlane"],
-        note: "served by `busbar_a2a::PLANE_DECL`; `root/units_a2a.rs` is the kernel-loop sibling \
+        linked_crate: "busbar-a2a",
+        register_tokens: &["A2aPlane"],
+        note: "served by `busbar_a2a::LINKED`; `root/units_a2a.rs` is the kernel-loop sibling \
                and is the module the 2026-09-22 money findings were in",
     },
     Plane {
         key: "streaming",
         on_disk: "voice",
         module: "units_voice",
-        register_tokens: &["busbar_voice::PLANE_DECL", "StreamingPlane"],
+        linked_crate: "busbar-voice",
+        register_tokens: &["StreamingPlane"],
         note: "#18: streaming is the PLANE, voice is one dialect inside it. The rename has not \
                landed, so the module and the crate are still spelled `voice`",
     },
@@ -249,11 +266,8 @@ const ROSTER: &[Plane] = &[
         key: "decision",
         on_disk: "decision",
         module: "units_decision",
-        register_tokens: &[
-            "busbar_decision::PLANE_DECL",
-            "DecisionPlane",
-            "busbar_plane_decision",
-        ],
+        linked_crate: "busbar-plane-decision",
+        register_tokens: &["DecisionPlane", "busbar_plane_decision"],
         note: "#48's fifth plane (jev). `crates/busbar-plane-decision` exists; whether the \
                composition root reaches it is exactly what this row answers",
     },
@@ -471,7 +485,7 @@ fn normalize_rel(p: &str) -> String {
 /// declares `pub mod money_book;` and nothing in the tree names `money_book` anywhere else, so the
 /// module is dead — and a graph that counted its own declaration as a use would call every module
 /// in the tree reached and prove nothing.
-fn reached_modules(files: &[Scanned]) -> BTreeSet<String> {
+fn reached_modules(files: &[Scanned], generated: &BTreeSet<(String, String)>) -> BTreeSet<String> {
     let live: Vec<&Scanned> = files.iter().filter(|f| !f.whole_file_is_test()).collect();
     let names: BTreeSet<&str> = live.iter().map(|f| f.stem.as_str()).collect();
 
@@ -495,6 +509,10 @@ fn reached_modules(files: &[Scanned]) -> BTreeSet<String> {
                     }
                 }
             }
+        }
+        // The generated table `main.rs` includes is `main.rs`'s text too (see the header).
+        if f.rel == MAIN_RS {
+            hit.extend(generated.iter().filter_map(|(m, _)| names.get(m.as_str())));
         }
         mentions.insert(f.stem.as_str(), hit);
     }
@@ -636,7 +654,11 @@ fn span_end(lines: &[ScopeLine], start: usize) -> usize {
 /// this OVER-approximates. It is used for exactly one thing — deciding whether the function that
 /// builds a unit is reached — and the own-constructor exclusion is what stops the over-approximation
 /// from turning a dormant unit green.
-fn reached_items(files: &[Scanned], items: &[Item]) -> BTreeSet<String> {
+fn reached_items(
+    files: &[Scanned],
+    items: &[Item],
+    generated: &BTreeSet<(String, String)>,
+) -> BTreeSet<String> {
     let names: BTreeSet<&str> = items.iter().map(|i| i.name.as_str()).collect();
     let mut mentions: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for it in items {
@@ -665,6 +687,15 @@ fn reached_items(files: &[Scanned], items: &[Item]) -> BTreeSet<String> {
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut queue: VecDeque<&str> = VecDeque::new();
     for it in items.iter().filter(|i| files[i.file].rel == MAIN_RS) {
+        if seen.insert(it.name.clone()) {
+            queue.push_back(it.name.as_str());
+        }
+    }
+    // …and the items the generated table it includes names (see the header).
+    for it in items
+        .iter()
+        .filter(|i| generated.contains(&(files[i.file].stem.clone(), i.name.clone())))
+    {
         if seen.insert(it.name.clone()) {
             queue.push_back(it.name.as_str());
         }
@@ -945,6 +976,78 @@ fn fn_body<'a>(lines: &'a [ScopeLine], name: &str) -> Option<&'a [ScopeLine]> {
     Some(&lines[start..=end])
 }
 
+/// The `key = "value"` rows of one `[table]` of the binary crate's manifest, in file order — the
+/// same reading `crates/busbar/src/linked_gen.rs` gives `build.rs` (one row per line, both sides
+/// optionally quoted, `#` starts a comment). An absent table is no rows.
+fn manifest_table(manifest: &str, table: &str) -> Vec<(String, String)> {
+    let header = format!("[{table}]");
+    let mut inside = false;
+    let mut rows = Vec::new();
+    for line in manifest.lines() {
+        let code = line.split('#').next().unwrap_or("").trim();
+        if code.starts_with('[') {
+            inside = code == header;
+            continue;
+        }
+        if let (true, Some((k, v))) = (inside, code.split_once('=')) {
+            rows.push((
+                k.trim().trim_matches('"').to_string(),
+                v.trim().trim_matches('"').to_string(),
+            ));
+        }
+    }
+    rows
+}
+
+/// The items a linked entry module exports per registration axis — the same table
+/// `crates/busbar/src/linked_gen.rs` generates `LINKED` from (the plane axis is its two items).
+const AXIS_ITEMS: &[(&str, &[&str])] = &[
+    ("plane", &["PLANE_DECLARATION", "PLANE_HOOKS"]),
+    ("protocols", &["PROTOCOLS"]),
+    ("path-ingress", &["PATH_INGRESS"]),
+    ("body-ingress", &["BODY_INGRESS"]),
+    ("protocol-seams", &["install_protocol_seams"]),
+    ("diagnostics", &["DIAGNOSTICS"]),
+    ("ws-arrivals", &["install_ws_arrivals"]),
+    ("on-host", &["on_host"]),
+    ("compose", &["compose"]),
+    ("stdio-serve", &["stdio_serve"]),
+];
+
+/// The registration axes the manifest's `[package.metadata.busbar.linked-axes]` row lists for
+/// `krate` (space-separated), or none.
+fn axes_of(manifest: &str, krate: &str) -> Vec<String> {
+    manifest_table(manifest, "package.metadata.busbar.linked-axes")
+        .into_iter()
+        .find(|(k, _)| k == krate)
+        .map(|(_, v)| v.split_whitespace().map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// What the generated `$OUT_DIR/linked.rs` that `main.rs` includes references in THIS crate, read
+/// off the manifest: each root-unit row's module and its `ROOT_UNIT`, and each linked-entry row that
+/// points into the root (`crate::root::<module>`) with the items its axes put in the tables. Returned
+/// as `(module stem, item name)` pairs.
+fn generated_table_refs(manifest: &str) -> BTreeSet<(String, String)> {
+    let mut refs = BTreeSet::new();
+    for (_, module) in manifest_table(manifest, "package.metadata.busbar.root-units") {
+        refs.insert((module, "ROOT_UNIT".to_string()));
+    }
+    for (krate, path) in manifest_table(manifest, "package.metadata.busbar.linked-entry") {
+        let Some(module) = path.strip_prefix("crate::root::") else {
+            continue;
+        };
+        for axis in axes_of(manifest, &krate) {
+            for (_, items) in AXIS_ITEMS.iter().filter(|(a, _)| *a == axis) {
+                for item in *items {
+                    refs.insert((module.to_string(), (*item).to_string()));
+                }
+            }
+        }
+    }
+    refs
+}
+
 fn body_names(body: &[ScopeLine], tokens: &[&str]) -> Vec<String> {
     body.iter()
         .filter(|l| !l.gated)
@@ -1156,7 +1259,7 @@ impl Gate for ReachabilityGate {
         // `crates/busbar/src/**` because the crate has no `[lib]` and therefore no construction
         // site can exist outside it. The day that stops being true, this gate's answers are scoped
         // wrong — so it refuses the tree rather than answering it.
-        match cx.read(CRATE_MANIFEST) {
+        let manifest = match cx.read(CRATE_MANIFEST) {
             Err(e) => return all_rows_did_not_run(&format!("{CRATE_MANIFEST}: {e}")),
             Ok(m) => {
                 if m.lines().any(|l| l.trim() == "[lib]") {
@@ -1167,8 +1270,13 @@ impl Gate for ReachabilityGate {
                          Widen the scan before trusting another verdict from it"
                     ));
                 }
+                m
             }
-        }
+        };
+        // What the generated table `main.rs` includes names, and the linked rows it is built from —
+        // DATA in the manifest (see the header), read here rather than assumed.
+        let generated = generated_table_refs(&manifest);
+        let linked_rows = manifest_table(&manifest, "package.metadata.busbar.linked");
         let files = match scan(cx) {
             Ok(f) => f,
             Err(e) => return all_rows_did_not_run(&format!("{CRATE_SRC} was not scanned: {e}")),
@@ -1198,9 +1306,13 @@ impl Gate for ReachabilityGate {
             ));
         };
 
-        let mods = reached_modules(&files);
+        let mods = reached_modules(&files, &generated);
         let all_items = items(&files);
-        let reached = reached_items(&files, &all_items);
+        let reached = reached_items(&files, &all_items, &generated);
+        // `register_planes()` folds the generated `LINKED` table — the one write into the plane axis.
+        let folds_linked = register_planes
+            .iter()
+            .any(|l| !l.gated && word_hit(&l.code, "LINKED"));
 
         let mut rows = vec![Row::pass(
             ROW_SCAN_FLOOR,
@@ -1222,8 +1334,22 @@ impl Gate for ReachabilityGate {
             let module_rel = format!("{ROOT_DIR}/{}.rs", p.module);
             let module = by_rel.get(module_rel.as_str());
 
-            // 1. REGISTERED.
-            let mut hits = body_names(register_planes, p.register_tokens);
+            // 1. REGISTERED — a linked-table row for the plane's crate that `register_planes()`
+            // folds, or a plane type in `plane_claims()`.
+            let mut hits: Vec<String> = linked_rows
+                .iter()
+                .filter(|(_, krate)| {
+                    folds_linked
+                        && krate == p.linked_crate
+                        && axes_of(&manifest, krate).iter().any(|a| a == "plane")
+                })
+                .map(|(feature, krate)| {
+                    format!(
+                        "{CRATE_MANIFEST} [package.metadata.busbar.linked] `{feature} = \"{krate}\"` \
+                         on the `plane` axis, folded by `register_planes()` over `LINKED`"
+                    )
+                })
+                .collect();
             hits.extend(
                 body_names(plane_claims, p.register_tokens)
                     .into_iter()
@@ -1231,10 +1357,11 @@ impl Gate for ReachabilityGate {
             );
             let registered = if hits.is_empty() {
                 Err(format!(
-                    "no registration token {:?} appears in `register_planes()` ({MAIN_RS}) or \
+                    "no linked-table row for `{}` on the `plane` axis in {CRATE_MANIFEST} that \
+                     `register_planes()` ({MAIN_RS}) folds over `LINKED`, and no registration token {:?} appears in \
                      `plane_claims()` ({REGISTRY_RS}). The composition root does not install this \
                      plane, so nothing it declares is served. ({})",
-                    p.register_tokens, p.note
+                    p.linked_crate, p.register_tokens, p.note
                 ))
             } else {
                 Ok(format!(
@@ -1787,9 +1914,126 @@ impl Gate for ReachabilityGate {
             "UNREACHED UNIT PATH",
         ));
 
+        // ── THE LINKED TABLE (K1): each registration route, and the generated table's reach ──────
+        //
+        // The green fixture registers every plane twice over — a linked-table row folded by
+        // `register_planes()`, and a plane type in `plane_claims()`. Each route is taken away in
+        // turn so each is proven load-bearing on its own, and a root-units row stands in for a direct
+        // call from `main.rs` to prove the generated table's reach is read, not assumed.
+        report.push(green_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "planes registered ONLY through the linked table `register_planes()` folds are green",
+            evidenced(claims_name_no_plane()),
+        ));
+        report.push(red_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a plane whose crate has no linked-table row, and no plane_claims token, reds its registration row",
+            &[row_registered("a2a")],
+            {
+                let mut ov = claims_name_no_plane();
+                ov.set(
+                    CRATE_MANIFEST,
+                    &FIXTURE_LINKED_MANIFEST.replace("plane-a2a = \"busbar-a2a\"\n", ""),
+                );
+                ov
+            },
+            "no linked-table row for `busbar-a2a` on the `plane` axis",
+        ));
+        report.push(red_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a crate linked but not on the plane axis, and no plane_claims token, reds its registration row",
+            &[row_registered("streaming")],
+            {
+                let mut ov = claims_name_no_plane();
+                ov.set(
+                    CRATE_MANIFEST,
+                    &FIXTURE_LINKED_MANIFEST
+                        .replace("busbar-voice = \"plane diagnostics\"", "busbar-voice = \"diagnostics\""),
+                );
+                ov
+            },
+            "no linked-table row for `busbar-voice` on the `plane` axis",
+        ));
+        report.push(red_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a linked table `register_planes()` does not fold registers nothing",
+            &[row_registered("llm")],
+            {
+                let mut ov = claims_name_no_plane();
+                ov.set(
+                    MAIN_RS,
+                    &FIXTURE_GREEN_MAIN.replace("Vec::from(LINKED)", "Vec::new()"),
+                );
+                ov
+            },
+            "no registration token",
+        ));
+        report.push(green_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a module `main.rs` reaches only through a root-units row of the generated table is reached",
+            evidenced(voice_reached_only_through_root_units(true)),
+        ));
+        report.push(red_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "the same module with no root-units row reds its reach row",
+            &[row_root_reach("streaming")],
+            voice_reached_only_through_root_units(false),
+            "is reached from no chain starting at",
+        ));
+
         report
     }
 }
+
+/// The green fixture's `plane_claims()` naming no plane type, so the linked table is the only
+/// registration route left.
+fn claims_name_no_plane() -> Overlay {
+    let mut ov = Overlay::new();
+    ov.set(
+        REGISTRY_RS,
+        "pub fn plane_claims() -> Vec<&'static str> {\n    Vec::new()\n}\n",
+    );
+    ov
+}
+
+/// The green fixture with `main.rs` no longer calling into `units_voice` — reached, if at all, only
+/// through a root-units row of the manifest (planted when `listed`).
+fn voice_reached_only_through_root_units(listed: bool) -> Overlay {
+    let mut ov = Overlay::new();
+    ov.set(
+        MAIN_RS,
+        &FIXTURE_GREEN_MAIN.replace("        + root::units_voice::answer()\n", ""),
+    );
+    if listed {
+        ov.set(
+            CRATE_MANIFEST,
+            &format!(
+                "{FIXTURE_LINKED_MANIFEST}\n[package.metadata.busbar.root-units]\nroot-voice = \"units_voice\"\n"
+            ),
+        );
+    }
+    ov
+}
+
+/// The green fixture's manifest, verbatim (the planted variants edit a copy of it).
+const FIXTURE_LINKED_MANIFEST: &str =
+    include_str!("../../fixtures/reachability-green/crates/busbar/Cargo.toml");
+
+/// The green fixture's `main.rs`, verbatim (the planted variants edit a copy of it).
+const FIXTURE_GREEN_MAIN: &str =
+    include_str!("../../fixtures/reachability-green/crates/busbar/src/main.rs");
 
 /// The green fixture with the decision plane's unit module (and its test twin) gone — the real
 /// tree's shape, where `crates/busbar/src/root/units_decision.rs` does not exist.

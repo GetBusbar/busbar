@@ -36,10 +36,18 @@
 // The derivation itself lives in src/build_stamp.rs, `include!`d below and mounted by main.rs under
 // `#[cfg(test)]`, so the functions that decide what the stamp says are unit-testable rather than
 // reachable only through a release build.
+//
+// THE LINKED TABLES. This script also writes `$OUT_DIR/linked.rs`, which `main.rs` includes: the
+// plugins this build links (one table per registration axis) and the root units it composes, read
+// out of the manifest's `[package.metadata.busbar.*]` tables and filtered by the enabled cargo
+// features — plus a `linked_*` cfg per root-bound seam some enabled entry drives. The generator is
+// src/linked_gen.rs, `include!`d below and by the test that judges `main.rs` against the same tables
+// (tests/composition_root_names_no_linked_plugin.rs), so what it decides is asserted there.
 
 use std::env;
 
 include!("src/build_stamp.rs");
+include!("src/linked_gen.rs");
 
 fn main() {
     // Re-run when the PGO signal or the rustflags change, so the stamp never goes stale.
@@ -87,4 +95,24 @@ fn main() {
         "cargo:rustc-env=BUSBAR_BUILD_PGO={}",
         if pgo { "true" } else { "false" }
     );
+
+    // THE LINKED TABLES (see src/linked_gen.rs): which plugins this build links, read as data out of
+    // the manifest and filtered by the cargo features cargo enabled for this build.
+    println!("cargo:rerun-if-changed=Cargo.toml");
+    println!("cargo:rerun-if-changed=src/linked_gen.rs");
+    let manifest = std::fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
+    let enabled = |feature: &str| {
+        let var = format!("CARGO_FEATURE_{}", feature.to_uppercase().replace('-', "_"));
+        env::var_os(var).is_some()
+    };
+    let (source, cfgs) = linked_source(&manifest, &enabled);
+    let out = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("linked.rs");
+    std::fs::write(out, source).expect("write linked.rs");
+    // The root-bound seams some enabled entry drives: the root binds each under its cfg.
+    for cfg in seam_cfgs() {
+        println!("cargo::rustc-check-cfg=cfg({cfg})");
+    }
+    for cfg in cfgs {
+        println!("cargo::rustc-cfg={cfg}");
+    }
 }

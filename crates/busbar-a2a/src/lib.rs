@@ -77,3 +77,18 @@ pub use a2a::{PLANE_DECLARATION, PLANE_HOOKS};
 /// hands to `busbar_substrate_values::diagnostics::install_diagnostics` at boot, re-exported at the crate
 /// root so the `busbar` binary names one stable path (`busbar_a2a::DIAGNOSTICS`). See [`diagnostics`].
 pub use diagnostics::DIAGNOSTICS;
+
+/// THE ONE ENTRY THIS PLUGIN IS REGISTERED THROUGH — everything a composition root that linked it
+/// wires, one item per registration axis, read off the crate rather than spelled at the root. The
+/// root's manifest names this crate and the axes it registers on
+/// (`[package.metadata.busbar.linked-axes]`: the plane — no protocol declaration — its owned
+/// diagnostics, and the three root-bound seams it drives: the governed outbound hop, the parse-time
+/// section list its cross-plane hook refusal reads, and the envelope its self-enveloping verbs build
+/// through); its build script turns that into one table per axis over these items, and the root's
+/// source names no item of this crate.
+pub mod linked {
+    /// The diagnostics axis.
+    pub use crate::DIAGNOSTICS;
+    /// The plane axis: the contract declaration, joined kernel-side to the behaviour table.
+    pub use crate::{PLANE_DECLARATION, PLANE_HOOKS};
+}

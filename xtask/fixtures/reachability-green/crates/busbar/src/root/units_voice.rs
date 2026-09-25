@@ -21,6 +21,10 @@ pub fn answer() -> u64 {
     unit.drive()
 }
 
+/// The root unit the generated table reaches when the manifest lists this module under
+/// `[package.metadata.busbar.root-units]` — the self-test's generated-table cases plant that row.
+pub const ROOT_UNIT: fn() -> u64 = answer;
+
 #[cfg(test)]
 #[path = "tests/units_voice.rs"]
 mod tests;

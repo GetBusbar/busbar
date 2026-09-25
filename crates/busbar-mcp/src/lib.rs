@@ -90,3 +90,21 @@ pub use codec::DECL as PROTO_DECL;
 /// so the `busbar` binary names ONE stable path (`busbar_mcp::PLANE_KEY`) and the plane and the flip
 /// cannot drift onto two different literals.
 pub use busbar_plane_mcp::PLANE_KEY;
+
+/// THE ONE ENTRY THIS PLUGIN IS REGISTERED THROUGH — everything a composition root that linked it
+/// wires, one item per registration axis, read off the crate rather than spelled at the root. The
+/// root's manifest names this crate and the axes it registers on
+/// (`[package.metadata.busbar.linked-axes]`: the plane, the JSON-RPC protocol declaration, the
+/// plane's owned diagnostics, the governed outbound hop it drives through the root-bound egress seam,
+/// and the stdio serve mode); its build script turns that into one table per axis over these items,
+/// and the root's source names no item of this crate.
+pub mod linked {
+    /// The plane axis: the contract declaration, joined kernel-side to the behaviour table.
+    pub use crate::mcp::{PLANE_DECLARATION, PLANE_HOOKS};
+    /// The protocol axis: the one JSON-RPC declaration.
+    pub static PROTOCOLS: &[&busbar_substrate_values::proto::ProtocolDecl] = &[&crate::PROTO_DECL];
+    /// The stdio serve mode: frames on stdin/stdout instead of a listener; the exit code.
+    pub use crate::mcp::serve_stdio_boxed as stdio_serve;
+    /// The diagnostics axis.
+    pub use crate::DIAGNOSTICS;
+}

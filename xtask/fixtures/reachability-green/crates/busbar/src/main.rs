@@ -1,13 +1,9 @@
 mod root;
 
+// The real root includes the generated `LINKED` table (`include!(concat!(env!("OUT_DIR"),
+// "/linked.rs"))`); its rows are the manifest's `[package.metadata.busbar.linked]`.
 fn register_planes() {
-    let mut installed: Vec<&'static str> = Vec::new();
-    installed.push(busbar_llm::PLANE_DECL);
-    installed.push(busbar_mcp::PLANE_DECL);
-    installed.push(busbar_a2a::PLANE_DECL);
-    installed.push(busbar_voice::PLANE_DECL);
-    installed.push(busbar_decision::PLANE_DECL);
-    install_planes(installed);
+    install_planes(Vec::from(LINKED));
 }
 
 fn install_planes(_installed: Vec<&'static str>) {}

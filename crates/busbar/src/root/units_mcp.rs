@@ -11,8 +11,9 @@
 //! ## What production reaches here, and what it does not
 //!
 //! Stated first because it decides whether an edit here changes anything a caller is billed. Boot
-//! calls [`seal`] — the self-consistency check over the plane's declarations — and nothing else in
-//! this file has a production caller: [`read_ingress`], [`decode`], the authenticate, verify,
+//! reaches [`ROOT_UNIT`] (through the composition root's generated table), whose one step calls
+//! [`seal`] — the self-consistency check over the plane's declarations — and nothing else in this
+//! file has a production caller: [`read_ingress`], [`decode`], the authenticate, verify,
 //! approve, admit, route, meter and settle bindings and the audit inputs are driven by this module's
 //! tests and by nothing on the serving path. A served MCP request is answered by `busbar-mcp`'s own
 //! `GauntletPlane` through `busbar_kernel::plane_host::run_gauntlet`, which dispatches to the
@@ -1776,6 +1777,28 @@ pub struct Mount {
     pub records: Records,
     /// The scopes every operation class requires, ready to be declared to the policy.
     pub scopes: Vec<(OpClassId, Scope)>,
+}
+
+/// THE MCP PLANE'S ROOT UNIT, addressed through the composition root's generated table: its kernel
+/// bindings are [`seal`]ed at boot, before any byte is served through them. It reads the plane's
+/// own declarations and compares them against each other and against nothing else — it binds no
+/// listener, opens no store, reads no configuration and writes no line, so a build with this unit
+/// and a build without it answer identically on the wire. A refusal is a boot refusal for the same
+/// reason a claim overlap is: a plane whose own declarations disagree cannot serve.
+pub const ROOT_UNIT: crate::root::linked::RootUnit = crate::root::linked::RootUnit {
+    seal: Some(seal_at_boot),
+    path_ingress: &[],
+    body_ingress: &[],
+    on_config: None,
+    opens_book: false,
+    on_book: None,
+};
+
+/// [`seal`], over the plane's own declarations, as the root unit's boot step: the refusal as text.
+fn seal_at_boot() -> Result<(), String> {
+    seal(&McpPlane::EMPTY)
+        .map(drop)
+        .map_err(|refusal| refusal.to_string())
 }
 
 /// Check, at boot, everything about this plane that would otherwise be discovered as a refused

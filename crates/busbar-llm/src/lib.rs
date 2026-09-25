@@ -193,6 +193,10 @@ pub mod testkit;
 // it directly, so there is no re-export here.
 
 use busbar_contract::plane::{BillableClass, PER_REQUEST, TOKEN_FAMILY};
+use busbar_kernel::{
+    ingress::arrival::install_completion_ingress, plane::registry::PlaneHooks,
+    proto::install_stream_translator_factory,
+};
 
 /// EVERY DIALECT THIS PLUGIN DECLARES, in the order an operator sees.
 ///
@@ -273,58 +277,83 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
 /// [`PLANE_DECLARATION`] and joined to it kernel-side (`PlaneDecl::assemble`). The registration item
 /// is the declaration, which names no kernel type; this table is typed by kernel seams and stays on
 /// the kernel side of every fold.
-pub const PLANE_HOOKS: busbar_kernel::plane::registry::PlaneHooks =
-    busbar_kernel::plane::registry::PlaneHooks {
-        wire_format_names: busbar_kernel::proto::known_protocols,
-        // THE FALLBACK MOUNTS NOTHING — the catch-all every unclaimed path falls through to, so it
-        // claims no path and binds no audience.
-        claims: |_| Vec::new(),
-        admission: |_| None,
-        // NO DISPATCH SLOT / NO SURFACE / NO DURABLE STATE — the fallback plane claims no path, so it
-        // contributes no config-conditional dispatch resource, and it restores/reconciles nothing.
-        build: |_| None,
-        // T3 — the fallback plane MOUNTS NOTHING by default (its documented stance): `routes` stays
-        // `None` so its boot is byte-identical. The OFF-by-default `webhook-receiver` feature flips it
-        // to the inbound OpenAI Responses webhook receiver's route builder (which itself mounts nothing
-        // unless `BUSBAR_LLM_WEBHOOK_SECRET` is configured). Gated so the money-path default build is
-        // untouched; see `openai_responses_webhook.rs` for the deferred secret-config seam.
-        #[cfg(not(feature = "webhook-receiver"))]
-        routes: None,
-        #[cfg(feature = "webhook-receiver")]
-        routes: Some(crate::openai_responses_webhook::webhook_routes),
-        admin_routes: None,
-        openapi: None,
-        hydrate: None,
-        start: None,
-        config_validate: None,
-        named_def_list: None,
-        named_def_get: None,
-        registry_contains: None,
-        reresolve_gates: None,
-        openapi_schemas: None,
-        on_swap: None,
-        parse_section: None,
-        parse_endpoint: None,
-        lower_endpoint: None,
-        // THE PER-GENERATION RUNTIME SEAM stays `None` for the fallback plane THIS phase (R3/R4 sub-phase
-        // B). The pool/lane/failover/egress runtime IS now carried in the opaque `plane_slots` runtime
-        // slot every plane's runtime rides, and the money-path read (`App::engine_tables`) downcasts that
-        // slot once per call — but its type (core's `state::NativeRuntime`) still lives in core,
-        // and a plane crate may not name a core item, so `busbar-core`'s `appbuild` composes
-        // the slot through a core-local constructor rather than through this pointer. Phase 3 relocates
-        // the type here, at which point this becomes `Some(<this crate's build_runtime>)` like MCP's.
-        build_runtime: Some(crate::engine::build_runtime::build_runtime),
-        viewer: Some(crate::engine::build_runtime::viewer),
-        retain_verify_gates: None,
-        default_section: None,
-        resolve_provider: Some(crate::engine::build_runtime::resolve_provider),
-    };
+pub const PLANE_HOOKS: PlaneHooks = PlaneHooks {
+    wire_format_names: busbar_kernel::proto::known_protocols,
+    // THE FALLBACK MOUNTS NOTHING — the catch-all every unclaimed path falls through to, so it
+    // claims no path and binds no audience.
+    claims: |_| Vec::new(),
+    admission: |_| None,
+    // NO DISPATCH SLOT / NO SURFACE / NO DURABLE STATE — the fallback plane claims no path, so it
+    // contributes no config-conditional dispatch resource, and it restores/reconciles nothing.
+    build: |_| None,
+    // T3 — the fallback plane MOUNTS NOTHING by default (its documented stance): `routes` stays
+    // `None` so its boot is byte-identical. The OFF-by-default `webhook-receiver` feature flips it
+    // to the inbound OpenAI Responses webhook receiver's route builder (which itself mounts nothing
+    // unless `BUSBAR_LLM_WEBHOOK_SECRET` is configured). Gated so the money-path default build is
+    // untouched; see `openai_responses_webhook.rs` for the deferred secret-config seam.
+    #[cfg(not(feature = "webhook-receiver"))]
+    routes: None,
+    #[cfg(feature = "webhook-receiver")]
+    routes: Some(crate::openai_responses_webhook::webhook_routes),
+    admin_routes: None,
+    openapi: None,
+    hydrate: None,
+    start: None,
+    config_validate: None,
+    named_def_list: None,
+    named_def_get: None,
+    registry_contains: None,
+    reresolve_gates: None,
+    openapi_schemas: None,
+    on_swap: None,
+    parse_section: None,
+    parse_endpoint: None,
+    lower_endpoint: None,
+    // THE PER-GENERATION RUNTIME SEAM stays `None` for the fallback plane THIS phase (R3/R4 sub-phase
+    // B). The pool/lane/failover/egress runtime IS now carried in the opaque `plane_slots` runtime
+    // slot every plane's runtime rides, and the money-path read (`App::engine_tables`) downcasts that
+    // slot once per call — but its type (core's `state::NativeRuntime`) still lives in core,
+    // and a plane crate may not name a core item, so `busbar-core`'s `appbuild` composes
+    // the slot through a core-local constructor rather than through this pointer. Phase 3 relocates
+    // the type here, at which point this becomes `Some(<this crate's build_runtime>)` like MCP's.
+    build_runtime: Some(crate::engine::build_runtime::build_runtime),
+    viewer: Some(crate::engine::build_runtime::viewer),
+    retain_verify_gates: None,
+    default_section: None,
+    resolve_provider: Some(crate::engine::build_runtime::resolve_provider),
+};
 
 /// SPAWN THE ACTIVE HEALTH PROBERS for a freshly-built/-swapped snapshot — the relocated
 /// `busbar-core::health::spawn_probers` (the prober loop reads the plane's own `Lane`/`NativeRuntime`
 /// tables, so it lives here). The composition root (the `busbar` binary) calls it at boot and the
 /// admin swap path re-attaches probers to each new generation. No-op when every lane is `mode: none`.
 pub use crate::engine::health::spawn_probers;
+
+/// THE ONE ENTRY THIS PLUGIN IS REGISTERED THROUGH — everything a composition root that linked it
+/// wires, one item per registration axis, read off the crate rather than spelled at the root. The
+/// root's manifest names this crate and the axes it registers on
+/// (`[package.metadata.busbar.linked-axes]`); its build script turns that into one table per axis
+/// over these items, and the root's source names no item of this crate.
+pub mod linked {
+    /// The engine-host axis: the health probers every generation's host re-anchors.
+    pub use crate::spawn_probers as on_host;
+    /// The protocol axis: the six dialects, in the order an operator sees.
+    pub use crate::DECLS as PROTOCOLS;
+    /// The path- and body-model arrivals, by dialect name.
+    pub use crate::{BODY_INGRESS, PATH_INGRESS};
+    /// The plane axis: the contract declaration, joined kernel-side to the behaviour table.
+    pub use crate::{PLANE_DECLARATION, PLANE_HOOKS};
+
+    /// THE PROTOCOL-AXIS SEAMS, installed beside the declarations: the resolved-completion
+    /// synthesizer — the single re-entry the MCP sampling path drives a synthesized chat completion
+    /// through (with no LLM plane linked there is no chat dialect to synthesize, and core returns
+    /// the honest "no default chat protocol" error) — and the cross-protocol stream translator, so
+    /// the neutral construction seam resolves it in production exactly as the test kit does.
+    pub fn install_protocol_seams() {
+        super::install_completion_ingress(crate::native_ingress::synthesize_completion);
+        super::install_stream_translator_factory(crate::proto_stream::new_stream_translator);
+    }
+}
 
 /// THE PATH-MODEL ARRIVALS THIS PLUGIN REGISTERS, protocol-name-keyed.
 ///

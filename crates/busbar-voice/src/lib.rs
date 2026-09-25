@@ -58,6 +58,26 @@ pub mod diagnostics;
 /// landed.) See [`diagnostics`].
 pub use diagnostics::DIAGNOSTICS;
 
+/// THE ONE ENTRY THIS PLUGIN IS REGISTERED THROUGH — everything a composition root that linked it
+/// wires, one item per registration axis, read off the crate rather than spelled at the root. The
+/// root's manifest names this crate and the axes it registers on
+/// (`[package.metadata.busbar.linked-axes]`: the plane — its protocol declaration is not installed
+/// on the protocol axis — its owned diagnostics, its inbound WS-accept arrivals, and its realtime
+/// provider composed off the deployment's catalog; the last two are wired behind `runtime`, exactly
+/// as the mount hooks are); its build script turns that into one table per axis over these items,
+/// and the root's source names no item of this crate.
+pub mod linked {
+    /// The WS-accept axis and the provider-composition axis.
+    #[cfg(feature = "runtime")]
+    pub use crate::mount::{
+        compose_from_config as compose, install_arrivals as install_ws_arrivals,
+    };
+    /// The diagnostics axis.
+    pub use crate::DIAGNOSTICS;
+    /// The plane axis: the contract declaration, joined kernel-side to the behaviour table.
+    pub use crate::{PLANE_DECLARATION, PLANE_HOOKS};
+}
+
 // THE T2 LIVE-SESSION RUNTIME + both topologies — behind the `runtime` cargo feature (OFF by default,
 // HARD RULE 4). The default / prod build compiles the IR + declarations only (no async runtime pulled
 // in); turning the feature on compiles the duplex session pump, the D2 metering lease, the durable
@@ -219,6 +239,7 @@ fn voice_egress_auth_headers(
 }
 
 use busbar_contract::plane::{BillableClass, PER_SESSION, TOKEN_FAMILY};
+use busbar_kernel::plane::registry::PlaneHooks;
 
 /// THE VOICE PLANE'S DECLARATION — contract data the composition root registers at boot, joined
 /// kernel-side to [`PLANE_HOOKS`], so the `busbar` binary names one stable path
@@ -301,56 +322,55 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
 /// [`PLANE_DECLARATION`] and joined to it kernel-side (`PlaneDecl::assemble`). The registration item
 /// is the declaration, which names no kernel type; this table is typed by kernel seams and stays on
 /// the kernel side of every fold.
-pub const PLANE_HOOKS: busbar_kernel::plane::registry::PlaneHooks =
-    busbar_kernel::plane::registry::PlaneHooks {
-        // TWO dialects ⇒ superset IR, DERIVED from this list's length (see VOICE_WIRE_FORMATS).
-        wire_format_names: || VOICE_WIRE_FORMATS,
-        // MOUNTED (behind `runtime`): the plane builds its dispatch slot from `public_url`, claims TWO
-        // audience-checked bases — `/v1/realtime` (OpenAI) and `/v1/realtime/gemini` (Gemini Live) —
-        // under the SAME bound audience, and mounts the five ingress routes across both dialects, whose
-        // handlers open governed sessions through `run_gauntlet_session` (see `crate::mount`).
-        // Off-feature these stay empty/`None` (the byte-unchanged default decl). A plane installed at
-        // boot is installed under `plane-voice` (⇒ `busbar-voice/runtime`), so it always both mounts and
-        // admits — the ratchet's "mounted ⇒ admitted" holds by construction.
-        claims: VOICE_CLAIMS,
-        admission: VOICE_ADMISSION,
-        build: VOICE_BUILD,
-        routes: VOICE_ROUTES,
-        admin_routes: None,
-        openapi: None,
-        // BOOT hooks — rehydrate the durable session working-set before the listener, then the
-        // post-listener readiness step. Wired behind `runtime` (see [`VOICE_HYDRATE`] / [`VOICE_START`]);
-        // `None` off-feature so the default decl is byte-unchanged.
-        hydrate: VOICE_HYDRATE,
-        start: VOICE_START,
-        config_validate: None,
-        named_def_list: None,
-        named_def_get: None,
-        registry_contains: None,
-        reresolve_gates: None,
-        openapi_schemas: None,
-        on_swap: None,
-        // config-seam: voice PARSES its owned `streams:` section through its own typed `StreamsCfg`,
-        // so `DeployCfg` names no `busbar_voice` type (the MCP `mcp_parse_section` / A2A
-        // `a2a_parse_section` pattern). UNCONDITIONAL — the hook lives outside the `runtime` gate so
-        // the default feature-off build validates `streams:` too.
-        parse_section: Some(config::streams_parse_section),
-        parse_endpoint: None,
-        lower_endpoint: None,
-        // RUNTIME HOOK — wired to the real per-generation runtime constructor behind the `runtime`
-        // feature (see [`VOICE_BUILD_RUNTIME`]); `None` when the feature is off so the default build is
-        // byte-unchanged. The DATA-plane hooks (`build` / `claims` / `admission` / `routes`) and the
-        // BOOT hooks (`hydrate` / `start`) are wired too (see [`mount`]) — all behind `runtime`.
-        build_runtime: VOICE_BUILD_RUNTIME,
-        viewer: None,
-        retain_verify_gates: None,
-        // config-seam: the empty `streams:` default, so an ABSENT section decodes byte-identically to
-        // `StreamsCfg::default()` (mirror of `a2a_default_section` / `mcp_default_section`). Without
-        // it the neutral `StreamsSection::default()` newtype would fall back to a raw capture, not the
-        // typed default.
-        default_section: Some(config::streams_default_section),
-        resolve_provider: None,
-    };
+pub const PLANE_HOOKS: PlaneHooks = PlaneHooks {
+    // TWO dialects ⇒ superset IR, DERIVED from this list's length (see VOICE_WIRE_FORMATS).
+    wire_format_names: || VOICE_WIRE_FORMATS,
+    // MOUNTED (behind `runtime`): the plane builds its dispatch slot from `public_url`, claims TWO
+    // audience-checked bases — `/v1/realtime` (OpenAI) and `/v1/realtime/gemini` (Gemini Live) —
+    // under the SAME bound audience, and mounts the five ingress routes across both dialects, whose
+    // handlers open governed sessions through `run_gauntlet_session` (see `crate::mount`).
+    // Off-feature these stay empty/`None` (the byte-unchanged default decl). A plane installed at
+    // boot is installed under `plane-voice` (⇒ `busbar-voice/runtime`), so it always both mounts and
+    // admits — the ratchet's "mounted ⇒ admitted" holds by construction.
+    claims: VOICE_CLAIMS,
+    admission: VOICE_ADMISSION,
+    build: VOICE_BUILD,
+    routes: VOICE_ROUTES,
+    admin_routes: None,
+    openapi: None,
+    // BOOT hooks — rehydrate the durable session working-set before the listener, then the
+    // post-listener readiness step. Wired behind `runtime` (see [`VOICE_HYDRATE`] / [`VOICE_START`]);
+    // `None` off-feature so the default decl is byte-unchanged.
+    hydrate: VOICE_HYDRATE,
+    start: VOICE_START,
+    config_validate: None,
+    named_def_list: None,
+    named_def_get: None,
+    registry_contains: None,
+    reresolve_gates: None,
+    openapi_schemas: None,
+    on_swap: None,
+    // config-seam: voice PARSES its owned `streams:` section through its own typed `StreamsCfg`,
+    // so `DeployCfg` names no `busbar_voice` type (the MCP `mcp_parse_section` / A2A
+    // `a2a_parse_section` pattern). UNCONDITIONAL — the hook lives outside the `runtime` gate so
+    // the default feature-off build validates `streams:` too.
+    parse_section: Some(config::streams_parse_section),
+    parse_endpoint: None,
+    lower_endpoint: None,
+    // RUNTIME HOOK — wired to the real per-generation runtime constructor behind the `runtime`
+    // feature (see [`VOICE_BUILD_RUNTIME`]); `None` when the feature is off so the default build is
+    // byte-unchanged. The DATA-plane hooks (`build` / `claims` / `admission` / `routes`) and the
+    // BOOT hooks (`hydrate` / `start`) are wired too (see [`mount`]) — all behind `runtime`.
+    build_runtime: VOICE_BUILD_RUNTIME,
+    viewer: None,
+    retain_verify_gates: None,
+    // config-seam: the empty `streams:` default, so an ABSENT section decodes byte-identically to
+    // `StreamsCfg::default()` (mirror of `a2a_default_section` / `mcp_default_section`). Without
+    // it the neutral `StreamsSection::default()` newtype would fall back to a raw capture, not the
+    // typed default.
+    default_section: Some(config::streams_default_section),
+    resolve_provider: None,
+};
 
 /// THE VOICE PLANE'S PROTOCOL DECLARATION — a `ProtocolDecl` with `codec: None`, re-exported at the
 /// crate root so the `busbar` binary names one stable path (`busbar_voice::DECLS`). Like MCP / A2A, it

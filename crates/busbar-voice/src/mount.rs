@@ -43,10 +43,11 @@ use crate::topology::{
     begin_session, dial_provider, open_admitted_session, stream_breaker_key, SessionGauntlet,
     StartError,
 };
+use busbar_kernel::config::RootCfg;
 use busbar_kernel::egress::engine::{send_bounded, EngineClient};
 use busbar_kernel::ingress::byte_duplex::serve_messages;
 use busbar_kernel::ingress::duplex_ws::{
-    accept_gauntlet, WsAcceptFuture, WsArrival, WsArrivalSpec,
+    accept_gauntlet, install_ws_arrivals, WsAcceptFuture, WsArrival, WsArrivalSpec,
 };
 use busbar_kernel::net_guard::GuardPolicy;
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
@@ -223,6 +224,50 @@ pub fn compose_gemini_provider(
 ) -> Result<bool, String> {
     let resolved = resolver.resolve_string(api_key)?;
     Ok(install_gemini_provider(base_url, resolved))
+}
+
+/// A provider composition step: captured off the resolved configuration, run once the deployment's
+/// secret resolver exists (the root's `compose` axis shape).
+pub type Compose = Box<dyn FnOnce(&dyn busbar_api::SecretResolve)>;
+
+/// THE PLANE'S PROVIDER, COMPOSED FROM THE DEPLOYMENT'S ORDINARY CATALOG — this plane's `compose` entry
+/// hook ([`crate::linked`]). The `streams:` grammar carries no credential field, so the realtime
+/// provider is the one already serving the model that section targets: `streams.session.model` names
+/// a model, the model names its provider, and that provider entry carries the origin and the secret
+/// reference every other lane's key is declared as. Captured off the resolved configuration BEFORE
+/// the app is built; the returned step runs once the resolver that turns a reference into a
+/// credential exists. A deployment with no `streams:` block pins no model and captures nothing.
+///
+/// Silent on a deployment that captured nothing; the only lines this emits are the fail-closed
+/// warnings when a reference the operator DID declare will not resolve. They are the composition
+/// root's lines (its log target), because it is the root's boot that is reporting them.
+pub fn compose_from_config(cfg: &RootCfg) -> Option<Compose> {
+    let (base_url, api_key) = crate::config::configured_session_model()
+        .and_then(|model| cfg.models.get(&model).map(|m| m.provider.clone()))
+        .and_then(|provider| cfg.providers.get(&provider))
+        .map(|p| (p.base_url.clone(), p.api_key.clone()))?;
+    Some(Box::new(move |resolver| {
+        if let Err(e) = compose_provider(base_url.clone(), &api_key, resolver) {
+            tracing::warn!(
+                target: "busbar",
+                "voice: the realtime provider credential did not resolve, so the voice mint and SDP \
+                 routes stay uncomposed: {e}"
+            );
+        }
+        // K4: THE GEMINI LIVE ROUTE'S PROVIDER, composed under its OWN endpoint (a separate set-once
+        // slot, `x-goog-api-key` scheme) rather than reusing the OpenAI one's — a deployment cannot
+        // silently point one dialect's traffic at the other's credential. `streams:` still names ONE
+        // model, so both endpoints are composed from the SAME resolved (origin, reference) pair; a
+        // deployment that fronts Gemini Live through a distinct provider entry needs a second
+        // `streams:` knob to name it, which is not this cycle's grammar change (see docs/voice.md).
+        if let Err(e) = compose_gemini_provider(base_url, &api_key, resolver) {
+            tracing::warn!(
+                target: "busbar",
+                "voice: the Gemini Live provider credential did not resolve, so the Gemini route \
+                 stays uncomposed: {e}"
+            );
+        }
+    }))
 }
 
 /// The composed Gemini Live provider endpoint, or `None` when the composition root composed none.
@@ -558,6 +603,12 @@ pub fn voice_routes(slot: &dyn Any) -> Vec<PlaneRouteSpec> {
             handler: Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture { Box::pin(sdp_route(ctx)) }),
         },
     ]
+}
+
+/// THE PLANE'S WS-ACCEPT ENTRY HOOK ([`crate::linked`]): installs [`voice_ws_arrivals`] into the
+/// neutral WS-accept registry, before the router that drains it is built.
+pub fn install_arrivals() {
+    install_ws_arrivals(voice_ws_arrivals());
 }
 
 /// THE VOICE PLANE'S INBOUND WS-ACCEPT ARRIVALS — the browser-sideband + telephony media legs,

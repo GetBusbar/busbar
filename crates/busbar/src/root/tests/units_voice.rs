@@ -1159,7 +1159,7 @@ fn the_served_composition_has_no_ungoverned_session_left_in_it() {
 
     // (1) THE ROOT'S OWN COMPOSITION. First writer wins on the plane's side, so this cell is the
     // one place in the crate that writes it, and it writes it the way `main()` does.
-    crate::compose_voice_governed_calls();
+    super::compose_voice_governed_calls();
     let bound = busbar_voice::mount::served_governed_session()
         .expect("after the root has mounted, every session the door opens is bound to a table");
     let next = busbar_voice::mount::served_governed_session()

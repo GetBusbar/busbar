@@ -198,6 +198,41 @@ pub const PLANE_HOOKS: busbar_kernel::plane::registry::PlaneHooks =
         resolve_provider: None,
     };
 
+// THE DECISION PLANE'S LINKED ENTRY is this module: [`PLANE_DECLARATION`] and [`PLANE_HOOKS`] on
+// the plane axis, addressed through the composition root's generated table like every linked
+// plugin's `linked` module (the manifest's `linked-entry` row maps the `plane-decision` crate here,
+// because its kernel-typed half is written in the root). A plane only: no protocol, no diagnostics,
+// no arrival, no seam.
+
+/// THE DECISION PLANE'S ROOT UNIT: the read-back seal, and nothing else.
+pub const ROOT_UNIT: crate::root::linked::RootUnit = crate::root::linked::RootUnit {
+    seal: Some(installed_under_its_own_key),
+    path_ingress: &[],
+    body_ingress: &[],
+    on_config: None,
+    opens_book: false,
+    on_book: None,
+};
+
+/// THE DECISION PLANE, READ BACK OUT OF THE AXIS IT WAS JUST INSTALLED INTO. Every other plane is
+/// installed under a key its own crate wrote; this one is installed under a key the ROOT wrote, and
+/// the fold between the install and the registry dedups by key and normalises order — so "the root
+/// installed it" and "the process serves it" are two facts here and one everywhere else. This is the
+/// check that makes them one again, and it is the only reader that asks the plane itself
+/// (`PlaneMeta::KEY`) what to look for. A boot refusal, for the same reason every root seal is one: a
+/// composition that disagrees with itself must not bind a listener.
+fn installed_under_its_own_key() -> Result<(), String> {
+    let key = <DecisionPlane as PlaneMeta>::KEY;
+    if busbar_kernel::plane::registry::plane_decl_for(key).is_none() {
+        return Err(format!(
+            "the composition root did not seal: the decision plane was installed but the plane \
+             axis answers no declaration for `{key}`, so nothing it declares — including its \
+             `decisions:` section — is in front of any reader"
+        ));
+    }
+    Ok(())
+}
+
 /// THE PLANE'S TYPED `decisions:` SECTION, WEARING THE KERNEL'S NEUTRAL SECTION TRAIT.
 ///
 /// A newtype and nothing else. `busbar_kernel::plane::config::PlaneCfg` is a `busbar-kernel` trait
