@@ -130,7 +130,15 @@ pub fn grant_series(
     first_party: bool,
     declared: &[busbar_plugin::cold::observe::SeriesDecl],
 ) -> Result<(), String> {
-    if !first_party || declared.is_empty() {
+    if !first_party {
+        return Ok(());
+    }
+    FIRST_PARTY
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(Default::default)
+        .insert(plugin.to_string());
+    if declared.is_empty() {
         return Ok(());
     }
     let is_host = HOST_SERIES.get().copied().unwrap_or(|_| false);
@@ -153,6 +161,19 @@ pub fn grant_series(
     }
     grants.insert(plugin.to_string(), declared.to_vec());
     Ok(())
+}
+
+/// Every plugin opened FIRST-PARTY (linked door, or signed by the release key), by its
+/// host-assigned name — recorded at open by [`grant_series`] whatever it declares (K9c).
+static FIRST_PARTY: std::sync::RwLock<Option<std::collections::HashSet<String>>> =
+    std::sync::RwLock::new(None);
+
+/// Was `plugin` opened first-party? What the host's observer asks before it renders a
+/// diagnostic the plugin raised as the host renders its own: the catalogue's line, no provenance
+/// label (K9c — the first-party namespace of S1, for diagnostics).
+pub fn first_party(plugin: &str) -> bool {
+    let guard = FIRST_PARTY.read().unwrap_or_else(|e| e.into_inner());
+    guard.as_ref().is_some_and(|s| s.contains(plugin))
 }
 
 /// Is `name` of type `kind` a series granted to `plugin`? What the host's observer asks of each

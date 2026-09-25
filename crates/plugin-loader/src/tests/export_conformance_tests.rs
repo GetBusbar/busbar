@@ -830,6 +830,13 @@ impl crate::EgressCarrier for RecordingCarrier {
             body: String::new(),
         })
     }
+
+    fn admit(&self, url: &str) -> Result<(), String> {
+        match url.contains("refused.example") {
+            true => Err("the host's egress policy refuses this target".into()),
+            false => Ok(()),
+        }
+    }
 }
 
 static CARRIER: RecordingCarrier = RecordingCarrier(std::sync::Mutex::new(Vec::new()));
@@ -936,4 +943,68 @@ fn a_sink_renders_the_recorder_snapshot_byte_identically_through_either_door() {
     sink.raw.call = unsupported_call;
     let families = crate::scrape::snapshot(exposition).expect("the snapshot reads");
     assert!(sink.scrape(families).is_err());
+}
+
+/// **K9c — START, CHECK AND ADMIT, BOTH WAYS.** The export fixture (which takes the SDK's defaults)
+/// starts live at the host's default admission and has nothing to check, identically through
+/// either door; and an `admit` op is answered by the installed carrier's POLICY without anything
+/// being carried. RED ARM: a sink over the wire that predates the ops says nothing (`None` / no
+/// lines) — the host's defaults, not a refusal.
+#[test]
+fn a_sink_starts_and_checks_the_same_through_either_door() {
+    crate::install_egress_carrier(&CARRIER);
+    let manifest = super::both_ways::statement(
+        "export",
+        "k9c-fixture",
+        "k9c-sink",
+        busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+    );
+    let transcript = |registry: &PluginRegistry| {
+        let sink = registry.open_export("k9c-sink", "{}").expect("opens");
+        let instances = [("tail".to_string(), serde_json::json!({}))];
+        format!(
+            "{:?} {:?} {:?}",
+            sink.start(),
+            sink.check(&instances),
+            registry.check_export("k9c-sink", &instances)
+        )
+    };
+    let Some([linked, dropped]) = super::both_ways::both_doors(manifest, transcript, String::clone)
+    else {
+        eprintln!("skip: the export fixture's cdylib is not built");
+        return;
+    };
+    assert_eq!(linked.1, r#"Ok(Some((true, 0, ""))) Ok([]) Some([])"#);
+    assert_eq!(linked, dropped, "both doors start and check the same");
+
+    // The admit op: the policy's verdict, nothing carried.
+    use busbar_plugin::cold::export::{HostOp, HostResult};
+    let none = crate::host::Destinations::default();
+    CARRIER.0.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    let ok = none.perform(&HostOp::Admit {
+        url: "https://collector.example/in".into(),
+    });
+    assert_eq!(ok, HostResult::Done { rotation: None });
+    let refused = none.perform(&HostOp::Admit {
+        url: "https://refused.example/in".into(),
+    });
+    assert!(
+        matches!(&refused, HostResult::Failed { step, .. } if step == "refused"),
+        "{refused:?}"
+    );
+    assert!(CARRIER
+        .0
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_empty());
+
+    // RED ARM: the pre-minor-8 wire.
+    let registry = super::both_ways::linked(
+        super::both_ways::statement("export", "k9c-older", "k9c-older", 3),
+        super::both_ways::fixture("export").1,
+    );
+    let mut sink = registry.open_export("k9c-older", "{}").expect("opens");
+    sink.raw.call = unsupported_call;
+    assert_eq!(sink.start(), Ok(None));
+    assert_eq!(sink.check(&[]), Ok(Vec::new()));
 }

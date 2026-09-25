@@ -315,6 +315,13 @@ pub struct PluginDiagnostic {
     /// diffable between two runs.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub fields: std::collections::BTreeMap<String, String>,
+    /// The order the plugin attached its fields in, when that is NOT key order (K9c, export ABI
+    /// minor 8) — what a host that renders a first-party plugin's diagnostic as its own catalogue
+    /// line writes them in, since a compiled-in site writes its fields in the order it names them.
+    /// Absent when the fields were attached in key order, and on an entry written before it
+    /// existed: the host then writes `fields` in key order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub order: Vec<String>,
 }
 
 /// The level an entry that omits `level` is read at. A free function because `#[serde(default = …)]`
@@ -340,14 +347,39 @@ impl PluginDiagnostic {
             level,
             message: message.into(),
             fields: std::collections::BTreeMap::new(),
+            order: Vec::new(),
         }
     }
 
     /// Attach one structured field. Never request content — see this type's doc.
     #[must_use]
     pub fn field(mut self, key: impl Into<String>, value: impl Into<String>) -> PluginDiagnostic {
-        self.fields.insert(key.into(), value.into());
+        let key = key.into();
+        let sorted = self.order.is_empty() && self.fields.keys().all(|k| *k <= key);
+        if self.fields.contains_key(&key) || sorted {
+            // Attached in key order so far: key order IS the attach order, nothing to state.
+            self.fields.insert(key, value.into());
+            return self;
+        }
+        if self.order.is_empty() {
+            self.order = self.fields.keys().cloned().collect();
+        }
+        self.order.push(key.clone());
+        self.fields.insert(key, value.into());
         self
+    }
+
+    /// The fields in the order they were attached ([`PluginDiagnostic::order`]), then any the
+    /// order does not name, in key order.
+    pub fn ordered_fields(&self) -> Vec<(String, String)> {
+        let named = self
+            .order
+            .iter()
+            .filter_map(|k| Some((k.clone(), self.fields.get(k)?.clone())));
+        let rest = self.fields.iter().filter(|(k, _)| !self.order.contains(k));
+        named
+            .chain(rest.map(|(k, v)| (k.clone(), v.clone())))
+            .collect()
     }
 }
 

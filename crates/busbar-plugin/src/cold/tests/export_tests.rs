@@ -180,7 +180,7 @@ fn export_abi_version_is_three() {
 /// loader gates on stays put — pinned so a seam cannot land without saying so.
 #[test]
 fn export_abi_minor_counts_the_host_seams() {
-    assert_eq!((EXPORT_ABI_VERSION, EXPORT_ABI_MINOR), (3, 7));
+    assert_eq!((EXPORT_ABI_VERSION, EXPORT_ABI_MINOR), (3, 8));
 }
 
 /// S1's declaration wire: `{"name": …, "type": …}`, the same `type` token a reported metric carries.
@@ -467,5 +467,41 @@ fn the_recorder_snapshot_wire_is_pinned() {
     assert_eq!(
         serde_json::to_value(&resp).expect("encode"),
         serde_json::json!({"Exposition": {"content_type": "text/plain; version=0.0.4", "body": ""}})
+    );
+}
+
+/// K9c's wire (export ABI minor 8): the `start` / `check` ops, the `Started` answer and the
+/// `admit` host op — pinned so a sink in any language matches on stable bytes.
+#[test]
+fn the_start_check_and_admit_wire_is_pinned() {
+    let start = serde_json::to_string(&ExportRequest::Start).unwrap();
+    assert_eq!(start, r#"{"op":"start"}"#);
+    let check = ExportRequest::Check {
+        instances: vec![("a".into(), serde_json::json!({"url": "https://x/"}))],
+    };
+    assert_eq!(
+        serde_json::to_string(&check).unwrap(),
+        r#"{"op":"check","instances":[["a",{"url":"https://x/"}]]}"#
+    );
+    let started = ExportResponse::Started {
+        live: true,
+        inflight: 64,
+        gate: "webhook".into(),
+    };
+    assert_eq!(
+        serde_json::to_string(&started).unwrap(),
+        r#"{"Started":{"live":true,"inflight":64,"gate":"webhook"}}"#
+    );
+    // `inflight` / `gate` default: the host's admission.
+    let bare: ExportResponse = serde_json::from_str(r#"{"Started":{"live":false}}"#).unwrap();
+    assert!(
+        matches!(bare, ExportResponse::Started { live: false, inflight: 0, ref gate } if gate.is_empty())
+    );
+    let admit = HostOp::Admit {
+        url: "https://x/".into(),
+    };
+    assert_eq!(
+        serde_json::to_string(&admit).unwrap(),
+        r#"{"op":"admit","url":"https://x/"}"#
     );
 }

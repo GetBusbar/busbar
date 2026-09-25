@@ -74,33 +74,101 @@ impl DynExport {
     /// A sink may answer with HOST OPS instead of the ack (K9a S4): the host performs them and
     /// resumes the sink with their results, until it acks — at most [`MAX_HOST_ROUNDS`] times.
     pub fn deliver(&self, stream: ExportStream, payload: &serde_json::Value) -> Result<(), String> {
-        let mut req = ExportRequest::Deliver {
+        let req = ExportRequest::Deliver {
             stream,
             payload: payload.clone(),
         };
+        match self.drive(req, "deliver")? {
+            ExportResponse::Delivered => Ok(()),
+            other => Err(self.unexpected("deliver", &other)),
+        }
+    }
+
+    /// Send `req` and perform the host ops it answers with, resuming the sink with their results,
+    /// until it answers something else — at most [`MAX_HOST_ROUNDS`] rounds. `op` names the
+    /// request in the refusal.
+    fn drive(&self, mut req: ExportRequest, op: &str) -> Result<ExportResponse, String> {
         for _ in 0..=MAX_HOST_ROUNDS {
             match self
                 .raw
                 .transport_call::<ExportRequest, ExportResponse>(&req)?
             {
-                ExportResponse::Delivered => return Ok(()),
                 ExportResponse::Host { token, ops } => {
                     let results = ops.iter().map(|op| self.perform(op)).collect();
                     req = ExportRequest::Resume { token, results };
                 }
-                other => {
-                    return Err(format!(
-                        "export plugin '{}' returned an unexpected response to deliver: {other:?}",
-                        self.raw.path
-                    ))
-                }
+                other => return Ok(other),
             }
         }
         Err(format!(
             "export plugin '{}' asked the host to act more than {MAX_HOST_ROUNDS} times for one \
-             delivery",
+             {op}",
             self.raw.path
         ))
+    }
+
+    fn unexpected(&self, op: &str, other: &ExportResponse) -> String {
+        format!(
+            "export plugin '{}' returned an unexpected response to {op}: {other:?}",
+            self.raw.path
+        )
+    }
+
+    /// The host-assigned name this sink was loaded under (its manifest name) — the name its
+    /// observations are folded and granted under.
+    pub fn name(&self) -> &str {
+        &self.raw.path
+    }
+
+    /// START the sink (export ABI minor 8): `Some((live, inflight, gate))` as it answered, after
+    /// the host performed any ops it asked for first; `None` from a sink built before the op (live,
+    /// at the host's defaults).
+    pub fn start(&self) -> Result<Option<(bool, u64, String)>, String> {
+        let first = self
+            .raw
+            .transport_call_status::<ExportRequest, ExportResponse>(&ExportRequest::Start);
+        let answer = match first {
+            Err(e) if e.is_unsupported() => return Ok(None),
+            Err(e) => {
+                return Err(format!(
+                    "export plugin '{}' could not be started: {}",
+                    self.raw.path, e.message
+                ))
+            }
+            Ok(ExportResponse::Host { token, ops }) => {
+                let results = ops.iter().map(|op| self.perform(op)).collect();
+                self.drive(ExportRequest::Resume { token, results }, "start")?
+            }
+            Ok(other) => other,
+        };
+        match answer {
+            ExportResponse::Started {
+                live,
+                inflight,
+                gate,
+            } => Ok(Some((live, inflight, gate))),
+            other => Err(self.unexpected("start", &other)),
+        }
+    }
+
+    /// Ask the sink's checks across `instances` of its module (export ABI minor 8): the lines it
+    /// reports, verbatim. A sink built before the op has nothing to report.
+    pub fn check(&self, instances: &[(String, serde_json::Value)]) -> Result<Vec<String>, String> {
+        let req = ExportRequest::Check {
+            instances: instances.to_vec(),
+        };
+        match self
+            .raw
+            .transport_call_status::<ExportRequest, ExportResponse>(&req)
+        {
+            Ok(ExportResponse::Validated(problems)) => Ok(problems),
+            Ok(other) => Err(self.unexpected("check", &other)),
+            Err(e) if e.is_unsupported() => Ok(Vec::new()),
+            Err(e) => Err(format!(
+                "export plugin '{}' could not check its settings: {}",
+                self.raw.path, e.message
+            )),
+        }
     }
 
     /// Perform one host op for this sink (K9a S4).
@@ -258,6 +326,33 @@ impl crate::PluginRegistry {
             .validate(instance, settings)
             .unwrap_or_else(|e| vec![format!("export.{instance}: {e}")]);
         Some((sink.streams, problems))
+    }
+}
+
+impl crate::PluginRegistry {
+    /// CHECK every `instances` of the `kind: export` module `module` (export ABI minor 8) — the
+    /// host's question while it validates a configuration, after its limits. `None` when `module`
+    /// is not an export row. The sink is opened with the first instance's settings; one that will
+    /// not open here reports nothing (its open refuses the boot naming the instance).
+    pub fn check_export(
+        &self,
+        module: &str,
+        instances: &[(String, serde_json::Value)],
+    ) -> Option<Vec<String>> {
+        let p = self
+            .resolve(module)
+            .filter(|p| p.manifest.kind == abi_kind::EXPORT)?;
+        let cfg = instances
+            .first()
+            .map_or_else(|| "{}".to_string(), |(_, s)| s.to_string());
+        let Ok(sink) = load_export_image(p.image(), &cfg, &p.manifest.name, &p.manifest.kind)
+        else {
+            return Some(Vec::new());
+        };
+        Some(
+            sink.check(instances)
+                .unwrap_or_else(|e| vec![format!("export `module: {module}`: {e}")]),
+        )
     }
 }
 

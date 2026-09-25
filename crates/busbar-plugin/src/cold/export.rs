@@ -97,7 +97,12 @@ pub const EXPORT_ABI_VERSION: u32 = 3;
 /// 7 (K9b): the SHED COUNTER — a declared series may be marked `shed`
 ///   ([`crate::cold::observe::SeriesDecl::shed`]): the host counts on it each delivery it sheds for
 ///   the sink, which the sink is never called for and so cannot count.
-pub const EXPORT_ABI_MINOR: u32 = 7;
+/// 8 (K9c): the START op ([`ExportRequest::Start`] / [`ExportResponse::Started`]) — the host
+///   starts feeding the sink and it states its in-flight admission; the CHECK op
+///   ([`ExportRequest::Check`]) — the sink's checks across every instance of its module while the
+///   host validates the configuration; and [`HostOp::Admit`] — the host's egress policy asked of a
+///   target without carrying anything to it.
+pub const EXPORT_ABI_MINOR: u32 = 8;
 
 /// One observability stream an export sink can carry OUT of the engine — the FROZEN word-space of
 /// the export projection grammar, the same discipline as the hook phase names.
@@ -599,6 +604,21 @@ pub enum ExportRequest {
         /// The families, in the recorder's own order.
         families: Vec<MetricFamily>,
     },
+    /// `start` — asked ONCE, when the host starts feeding the sink (after it is opened, before its
+    /// first delivery), at the moment the host starts its own built-in sinks. The sink may answer
+    /// [`ExportResponse::Host`] first (e.g. [`HostOp::Admit`] its target), and finishes with
+    /// [`ExportResponse::Started`]: whether it takes deliveries this run, and its in-flight
+    /// admission (K9c, export ABI minor 8). A sink built before the op answers
+    /// `STATUS_UNSUPPORTED`: live, at the host's default admission.
+    Start,
+    /// `check` — asked while the host VALIDATES the configuration, AFTER its limits are checked:
+    /// every instance of this sink's module, in configuration order, for the checks that read
+    /// across instances or belong to that phase. Reply: [`ExportResponse::Validated`] — each line
+    /// reported verbatim among the configuration's validation errors (K9c, export ABI minor 8).
+    Check {
+        /// `(instance name, settings as configured)`, in configuration order.
+        instances: Vec<(String, serde_json::Value)>,
+    },
 }
 
 /// One metric FAMILY of the host recorder's snapshot (K9a S6): its name, its type, its help text,
@@ -677,6 +697,13 @@ pub enum HostOp {
     Flush {
         /// The declared destination (a settings key).
         destination: String,
+    },
+    /// Ask the host's egress POLICY whether it would carry a request to `url` (K9c): nothing is
+    /// sent. [`HostResult::Done`] when it would, [`HostResult::Failed`] with step `refused` and the
+    /// policy's words when it would not.
+    Admit {
+        /// The target URL.
+        url: String,
     },
     /// Perform one outbound HTTP request through the HOST's egress (K9a S5) — its URL policy (the
     /// SSRF and cloud-metadata refusal), its TLS, its timeouts. The sink never dials; a request the
@@ -818,6 +845,19 @@ pub enum ExportResponse {
         token: u64,
         /// The acts, in order.
         ops: Vec<HostOp>,
+    },
+    /// `start` — the sink has started (K9c): whether it takes deliveries this run, and the
+    /// admission the host holds it to.
+    Started {
+        /// `false`: the sink takes nothing this run (it refused its own configuration at start
+        /// and said so); the host routes it no delivery.
+        live: bool,
+        /// Deliveries it may have in flight at once; `0` is the host's default.
+        #[serde(default)]
+        inflight: u64,
+        /// The name its admission gate is counted under when it sheds; empty is the host's.
+        #[serde(default)]
+        gate: String,
     },
     /// `scrape` — the exposition the sink rendered from the snapshot, and its content type.
     Exposition {

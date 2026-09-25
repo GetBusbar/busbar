@@ -1002,6 +1002,16 @@ pub enum HostStep {
         /// The acts.
         ops: Vec<HostOp>,
     },
+    /// Answering [`ExportHandler::start`] (export ABI minor 8): started — whether this sink takes
+    /// deliveries this run, and its in-flight admission (`0` / empty: the host's defaults).
+    Started {
+        /// `false`: take nothing this run.
+        live: bool,
+        /// Deliveries it may have in flight at once.
+        inflight: u64,
+        /// The name its admission gate is counted under.
+        gate: String,
+    },
 }
 
 /// Re-export the observability envelope (#85) so a plugin author names
@@ -1102,6 +1112,24 @@ pub trait ExportHandler: Send + Sync {
     fn resume(&self, _token: u64, _results: Vec<HostResult>) -> HostStep {
         HostStep::Done
     }
+
+    /// The host starts feeding this sink (export ABI minor 8): answer [`HostStep::Started`], or
+    /// [`HostStep::Host`] first (the results come back on [`resume`](Self::resume), which then
+    /// answers `Started`). Default: live, at the host's default admission.
+    fn start(&self) -> HostStep {
+        HostStep::Started {
+            live: true,
+            inflight: 0,
+            gate: String::new(),
+        }
+    }
+
+    /// The checks across every instance of this sink's module, `(name, settings)` in configuration
+    /// order, run while the host validates its configuration after its limits (export ABI minor
+    /// 8): every problem as one complete line, reported verbatim. Default: none.
+    fn check(&self, _instances: &[(String, serde_json::Value)]) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// A [`HostStep`] as the wire answers it.
@@ -1109,6 +1137,15 @@ fn host_step(step: HostStep) -> ExportResponse {
     match step {
         HostStep::Done => ExportResponse::Delivered,
         HostStep::Host { token, ops } => ExportResponse::Host { token, ops },
+        HostStep::Started {
+            live,
+            inflight,
+            gate,
+        } => ExportResponse::Started {
+            live,
+            inflight,
+            gate,
+        },
     }
 }
 
@@ -1160,6 +1197,8 @@ pub fn dispatch_export(handler: &dyn ExportHandler, req: ExportRequest) -> Expor
         ExportRequest::Validate { instance, settings } => {
             ExportResponse::Validated(handler.validate(&instance, &settings))
         }
+        ExportRequest::Start => host_step(handler.start()),
+        ExportRequest::Check { instances } => ExportResponse::Validated(handler.check(&instances)),
     }
 }
 

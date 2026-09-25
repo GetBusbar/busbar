@@ -854,5 +854,12 @@ fn the_egress_carrier_refuses_what_the_host_policy_refuses() {
             }
             other => panic!("{url} was carried: {other:?}"),
         }
+        // K9c: the policy asked WITHOUT carrying — the same guard, the same words.
+        let guard = busbar_kernel::observability::validate_webhook_url(Some(url.into()));
+        assert_eq!(HostEgressCarrier.admit(url), guard.map(|_| ()), "{url}");
     }
+    assert_eq!(
+        HostEgressCarrier.admit("https://collector.example/v1"),
+        Ok(())
+    );
 }

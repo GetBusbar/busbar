@@ -198,3 +198,30 @@ fn empty_observations_fold_to_a_bare_envelope() {
         r#"{"result":"Delivered"}"#
     );
 }
+
+/// K9c: a diagnostic's fields attached OUT of key order carry that order (`order`), which a host
+/// rendering a first-party plugin's line as its own writes them in; attached in key order they
+/// carry nothing more (the pinned wire above is unchanged).
+#[test]
+fn a_diagnostics_attach_order_rides_the_wire_only_when_it_is_not_key_order() {
+    let d = PluginDiagnostic::warn("BUSBAR-1", "m")
+        .field("webhook_url", "u")
+        .field("status", "503");
+    let wire = serde_json::to_value(&d).unwrap();
+    assert_eq!(wire["order"], serde_json::json!(["webhook_url", "status"]));
+    assert_eq!(
+        d.ordered_fields(),
+        vec![
+            ("webhook_url".to_string(), "u".to_string()),
+            ("status".to_string(), "503".to_string())
+        ]
+    );
+    let sorted = PluginDiagnostic::warn("BUSBAR-1", "m")
+        .field("a", "1")
+        .field("b", "2");
+    assert!(serde_json::to_value(&sorted)
+        .unwrap()
+        .get("order")
+        .is_none());
+    assert_eq!(sorted.ordered_fields().len(), 2);
+}

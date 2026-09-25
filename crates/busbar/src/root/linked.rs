@@ -498,6 +498,9 @@ pub fn dropped_planes_of(dropped: Option<&busbar_plugin_loader::PluginRegistry>)
 /// axis refuses (one spelling a built-in's module name) refuses the boot before any listener binds.
 pub fn register_exports(dropped: Option<&'static busbar_plugin_loader::PluginRegistry>) {
     busbar_plugin_loader::observe::install_host_series(host_series);
+    // The host's egress, which every sink's outbound request rides (K9a S5) — whatever else this
+    // build links.
+    busbar_plugin_loader::install_egress_carrier(&HostEgressCarrier);
     let Some(registry) = dropped else {
         return;
     };
@@ -682,7 +685,6 @@ pub fn register_ws_arrivals(linked: &Linked) {
 pub fn register_seams() {
     #[cfg(linked_egress)]
     {
-        busbar_plugin_loader::install_egress_carrier(&HostEgressCarrier);
         busbar_kernel::egress::seam::install_hostless_egress(
             &busbar_kernel::egress::seam::CoreHostlessEgress,
         );
@@ -702,52 +704,78 @@ pub fn register_seams() {
 
 /// THE EGRESS CARRIER (K9a S5): how the host carries an outbound HTTP request a plugin sink asks it
 /// to make — the sink never dials. The request meets the host's webhook URL policy first (https
-/// only; loopback, link-local, private, CGNAT and cloud-metadata targets refused, the same guard the
-/// built-in request-log webhook applies), then rides the host's governed hop — its TLS, its
-/// private/plaintext refusal, the request's deadline — and the body is read to a bound.
-#[cfg(linked_egress)]
+/// only; loopback, link-local, private, CGNAT and cloud-metadata targets refused), then rides the
+/// host's egress engine on the pooled open-web posture the request-log webhook has always POSTed
+/// over (webpki trust, system DNS, the boot environment's proxy tunnel), under the request's own
+/// deadline over the exchange up to the response head. Headers are set in order, a later one
+/// replacing an earlier of the same name; one that is not a valid header is left off. The answer's
+/// status is read back; its body is not read.
 pub struct HostEgressCarrier;
 
-/// How much of a far end's answer a carried request reads back.
-#[cfg(linked_egress)]
-const CARRIED_BODY_MAX: usize = 64 * 1024;
+/// The carrier's one client, built on the first request it carries.
+static CARRIER_CLIENT: std::sync::OnceLock<busbar_kernel::proxy::EgressClient> =
+    std::sync::OnceLock::new();
 
-#[cfg(linked_egress)]
 impl busbar_plugin_loader::EgressCarrier for HostEgressCarrier {
     fn carry(
         &self,
         request: &busbar_plugin_loader::HttpRequest,
     ) -> busbar_plugin_loader::HostResult {
-        use busbar_kernel::egress::seam::HostlessEgress as _;
         use busbar_plugin_loader::{HostResult, HttpResponse};
         let failed = |step: &str, error: String| HostResult::Failed {
             step: step.to_string(),
             error,
             rotation: None,
         };
-        let policy = busbar_kernel::observability::validate_webhook_url(Some(request.url.clone()));
-        if let Err(refusal) = policy {
+        if let Err(refusal) = self.admit(&request.url) {
             return failed("refused", refusal);
         }
-        let hop = busbar_kernel::egress::seam::HopSpec {
-            verb: &request.method,
-            url: &request.url,
-            headers: &request.headers,
-            body: request.body.as_bytes(),
-            allow_private: false,
-            allow_plaintext: false,
-            client_identity_ref: 0,
-            trust_anchor_ref: 0,
-            timeout: std::time::Duration::from_millis(request.timeout_ms),
-            resolved_addr: None,
+        let (Ok(uri), Ok(method)) = (
+            request.url.parse::<axum::http::Uri>(),
+            axum::http::Method::from_bytes(request.method.as_bytes()),
+        ) else {
+            return failed("request", "target URL does not parse".to_string());
         };
-        match busbar_kernel::egress::seam::CoreHostlessEgress.buffered(&hop, CARRIED_BODY_MAX) {
-            Ok(answer) => HostResult::Http(HttpResponse {
-                status: answer.status,
-                body: String::from_utf8_lossy(&answer.body).into_owned(),
-            }),
-            Err(fault) => failed("request", fault.cause),
+        let mut headers = axum::http::HeaderMap::new();
+        for (name, value) in &request.headers {
+            if let (Ok(n), Ok(v)) = (
+                axum::http::header::HeaderName::from_bytes(name.as_bytes()),
+                axum::http::HeaderValue::from_str(value),
+            ) {
+                headers.insert(n, v);
+            }
         }
+        let body = axum::body::Bytes::from(request.body.clone());
+        let req = busbar_kernel::egress::engine::request(method, uri, headers, body);
+        let client = CARRIER_CLIENT.get_or_init(|| {
+            busbar_kernel::proxy::build_egress_client(
+                &busbar_kernel::proxy::EgressClientSpec::pooled_webpki(
+                    usize::MAX,
+                    90,
+                    false,
+                    false,
+                ),
+            )
+        });
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return failed("refused", "this host carries no plugin egress".to_string());
+        };
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_millis(request.timeout_ms);
+        let sent = runtime.block_on(busbar_kernel::egress::engine::send_bounded(
+            client, req, deadline,
+        ));
+        match sent {
+            Ok(answer) => HostResult::Http(HttpResponse {
+                status: answer.status().as_u16(),
+                body: String::new(),
+            }),
+            Err(e) => failed("request", e.into_cause()),
+        }
+    }
+
+    fn admit(&self, url: &str) -> Result<(), String> {
+        busbar_kernel::observability::validate_webhook_url(Some(url.to_string())).map(|_| ())
     }
 }
 

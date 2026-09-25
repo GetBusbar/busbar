@@ -76,6 +76,7 @@ impl Destinations {
             | HostOp::Rotate { destination, .. }
             | HostOp::Flush { destination } => destination,
             HostOp::Http(request) => return carry(request),
+            HostOp::Admit { url } => return admit(url),
         };
         let Some(d) = self.0.get(destination) else {
             let error = format!("no destination '{destination}' was granted to this sink");
@@ -94,6 +95,7 @@ impl Destinations {
             },
             HostOp::Flush { .. } => flush(d),
             HostOp::Http(request) => carry(request),
+            HostOp::Admit { url } => admit(url),
         }
     }
 }
@@ -110,6 +112,10 @@ pub trait EgressCarrier: Send + Sync {
     /// [`HostResult::Failed`] (`refused` when the policy refuses it, `request` when it fails in
     /// flight). Called on the delivery's blocking thread.
     fn carry(&self, request: &HttpRequest) -> HostResult;
+
+    /// Whether the host's egress policy would carry a request to `url` (K9c): `Err` in the
+    /// policy's own words when it would not. Nothing is sent.
+    fn admit(&self, url: &str) -> Result<(), String>;
 }
 
 static CARRIER: std::sync::OnceLock<&'static dyn EgressCarrier> = std::sync::OnceLock::new();
@@ -124,6 +130,15 @@ pub fn install_egress_carrier(carrier: &'static dyn EgressCarrier) -> bool {
 fn carry(request: &HttpRequest) -> HostResult {
     match CARRIER.get() {
         Some(carrier) => carrier.carry(request),
+        None => failed("refused", "this host carries no plugin egress", None),
+    }
+}
+
+/// Ask the installed carrier's policy about `url`; with none installed, refuse it.
+fn admit(url: &str) -> HostResult {
+    match CARRIER.get().map(|carrier| carrier.admit(url)) {
+        Some(Ok(())) => HostResult::Done { rotation: None },
+        Some(Err(refusal)) => failed("refused", refusal, None),
         None => failed("refused", "this host carries no plugin egress", None),
     }
 }

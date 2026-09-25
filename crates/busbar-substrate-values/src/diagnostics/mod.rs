@@ -38,6 +38,9 @@ use std::fmt;
 #[cfg(test)]
 mod tests;
 
+mod emit;
+pub use emit::emit;
+
 /// The class of a diagnostic — the thousands digit of its code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
