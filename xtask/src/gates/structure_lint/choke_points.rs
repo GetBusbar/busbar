@@ -35,9 +35,19 @@
 //! instead (D's router layer PANICS on an under-claim, and its class test fails on an over-claim).
 //! Those rows are still listed here so the registry is a COMPLETE map of every choke point in the
 //! tree — you should never have to ask "is there a choke point for X?" anywhere but this table.
+//!
+//! ## Core-tier rules
+//!
+//! A rule marked [`BanRule::core_tier`] guards a choke point whose OWNER is a core/kernel-tier
+//! primitive, and it judges only core/kernel-tier crates. A plugin-kind crate (the seven kinds of
+//! `qa/construction.toml [gate.plugin_kinds]`) depends on `busbar-contract` alone (#40), and the
+//! contract carries no I/O machinery, so a plugin cannot route through the kernel's primitive: it
+//! owns its own I/O, exactly as a third-party store writing its own files does (ARCHITECT, P68-0
+//! residue (a)). Every other rule — the plugin export boundary above all — still judges every crate.
 
 use crate::ctx::Ctx;
 use crate::ere::Ere;
+use crate::gates::construction::{tree::dirs_for_globs, ConstructionGate};
 use crate::gates::structure_lint::corpus::{Candidate, Corpus};
 use crate::gates::structure_lint::roots::Addresses;
 use crate::gates::structure_lint::{row, Findings, Tables};
@@ -58,6 +68,9 @@ pub struct BanRule {
     pub allow: Vec<String>,
     /// The rule OPT-OUT for a shape that shares the pattern but not the hazard.
     pub unless: Option<String>,
+    /// Judges core/kernel-tier crates only; a plugin-kind crate is out of its scope (module doc,
+    /// "Core-tier rules").
+    pub core_tier: bool,
 }
 
 impl BanRule {
@@ -67,7 +80,13 @@ impl BanRule {
             what: what.to_string(),
             allow: allow.to_vec(),
             unless: None,
+            core_tier: false,
         }
+    }
+
+    fn core_tier(mut self) -> BanRule {
+        self.core_tier = true;
+        self
     }
 
     fn unless(mut self, unless: &str) -> BanRule {
@@ -108,12 +127,23 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
         //         atomic-write dance would silently drop whichever facet (parent fsync / temp
         //         cleanup / 0600 mode) its author forgot.
         //
-        //         LEDGERED EXEMPTION, `fs::rename`, for the request-log sink's rotate-by-rename:
-        //         rotation renames a file whose bytes are already fully on disk, and `fs::rename`
-        //         moves a directory entry without touching them, so there is no torn state to
-        //         protect. LEDGERED EXEMPTION, `sync_[ad]` and `create_dir_all`, for the WAL: it is
-        //         a SIBLING durability primitive, not a consumer — a log appends into a segment
-        //         that stays put and fsyncs it IN PLACE, and it performs the parent fsync itself.
+        //         LEDGERED EXEMPTION, `fs::rename`, for the request-log sink's rotate-by-rename,
+        //         which the plugin host performs for an export destination
+        //         (`crates/plugin-loader/src/host.rs`): rotation renames a file whose bytes are
+        //         already fully on disk, and `fs::rename` moves a directory entry without touching
+        //         them, so there is no torn state to protect. LEDGERED EXEMPTION, `sync_[ad]` and
+        //         `create_dir_all`, for the WAL: it is a SIBLING durability primitive, not a
+        //         consumer — a log appends into a segment that stays put and fsyncs it IN PLACE,
+        //         and it performs the parent fsync itself. The same host's `flush` is that shape
+        //         too, and ledgered for `sync_[ad]` on the same terms: it fsyncs an append-only
+        //         destination IN PLACE, and nothing is published by rename.
+        //
+        //         LEDGERED EXEMPTION, `create_dir_all`, for the kernel test kit
+        //         (`test_support/`): a scratch directory under the OS temp dir that a test builds
+        //         and discards is not a durable publication.
+        //
+        //         CORE-TIER: the owner is a kernel-tier primitive a plugin-kind crate cannot name
+        //         (#40), so a plugin's own persistence is its own I/O and out of this row's scope.
         ChokeRow {
             id: "A-persistence".into(),
             tag: "DURABLE-BYPASS".into(),
@@ -124,25 +154,33 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
                 BanRule::new(
                     r"fs::rename\(",
                     "hand-rolled rename-to-publish",
-                    &["crates/api/src/durable.rs".into(), format!("{core}/export/file.rs")],
-                ),
+                    &[
+                        "crates/api/src/durable.rs".into(),
+                        "crates/plugin-loader/src/host.rs".into(),
+                    ],
+                )
+                .core_tier(),
                 BanRule::new(
                     "sync_[ad]",
                     "hand-rolled fsync durability (sync_all/sync_data)",
                     &[
                         "crates/api/src/durable.rs".into(),
                         "crates/busbar-kernel-wal/src/backend.rs".into(),
+                        "crates/plugin-loader/src/host.rs".into(),
                     ],
-                ),
+                )
+                .core_tier(),
                 BanRule::new(
                     r"fs::create_dir_all\(",
                     "directory creation that leaves the new entry non-durable",
                     &[
                         "crates/api/src/durable.rs".into(),
                         format!("{core}/test_support/mod.rs"),
+                        format!("{core}/test_support/export_axis.rs"),
                         "crates/busbar-kernel-wal/src/backend.rs".into(),
                     ],
-                ),
+                )
+                .core_tier(),
             ],
             why: "persist-then-swap is only atomic if EVERY writer does the identical fsync/rename/cleanup dance".into(),
         },
@@ -209,7 +247,11 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
                         format!("{core}/state.rs"),
                     ],
                 )
-                .unless("Ordering::"),
+                // An ATOMIC swap is not an AppHandle swap: it carries a memory ordering, spelled
+                // `Ordering::X` or, with the variant imported, bare (`counter.swap(0, Relaxed)`).
+                .unless(
+                    r"(Ordering::|\.swap\([^)]*,[[:space:]]*(Relaxed|Acquire|Release|AcqRel|SeqCst)[[:space:]]*\))",
+                ),
                 BanRule::new(
                     r"AppHandle::swap\(",
                     "direct AppHandle::swap outside a transaction",
@@ -445,8 +487,68 @@ fn check_class_test(cx: &Ctx, r: &ChokeRow, f: &mut Findings) {
     }
 }
 
+/// The seven plugin kinds (DECISIONS #3), as `qa/construction.toml [gate.plugin_kinds]` spells
+/// them. `unit`, `loader` and `abi` are keys of that table too, and deliberately absent here: they
+/// scope the kernel side of the wall, which a core-tier rule still judges.
+pub const PLUGIN_KIND_KEYS: [&str; 7] = [
+    "plane",
+    "transport",
+    "store",
+    "secret",
+    "hook",
+    "auth",
+    "export",
+];
+
+/// Every plugin-kind crate directory (`crates/<dir>`), read off the ONE kind table the construction
+/// gate, the denylist and kind-isolation already share — never a second list kept here.
+pub fn plugin_kind_dirs(cx: &Ctx) -> Result<Vec<String>, String> {
+    let cfg = ConstructionGate::cfg(cx)?;
+    let mut out: Vec<String> = Vec::new();
+    for key in PLUGIN_KIND_KEYS {
+        for d in dirs_for_globs(cx, &cfg.kind_globs(key)?) {
+            if !out.contains(&d) {
+                out.push(d);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Whether `rel` sits inside one of `dirs`.
+fn under_any(rel: &str, dirs: &[String]) -> bool {
+    dirs.iter().any(|d| {
+        rel.strip_prefix(d.trim_end_matches('/'))
+            .is_some_and(|rest| rest.starts_with('/'))
+    })
+}
+
 pub fn scan(cx: &Ctx, corpus: &Corpus, t: &Tables, f: &mut Findings) {
     scan_class_tests(cx, t, f);
+
+    // Read only when a core-tier rule exists. An unreadable kind table is LOUD, not a silent
+    // widening or narrowing: the rules still run over every crate (nothing is exempted), and the
+    // registry says why.
+    let plugin_dirs: Vec<String> = if t
+        .choke_points
+        .iter()
+        .any(|r| r.rules.iter().any(|b| b.core_tier))
+    {
+        match plugin_kind_dirs(cx) {
+            Ok(d) => d,
+            Err(why) => {
+                f.choke_row_integrity.push(finding_malformed(
+                    "the registry",
+                    &format!(
+                        "a core-tier rule cannot tell a plugin-kind crate from a core one: {why}"
+                    ),
+                ));
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
 
     for r in &t.choke_points {
         for rule in &r.rules {
@@ -460,6 +562,7 @@ pub fn scan(cx: &Ctx, corpus: &Corpus, t: &Tables, f: &mut Findings) {
                 .files
                 .iter()
                 .filter(|c| !rule.allow.iter().any(|p| p == &c.rel))
+                .filter(|c| !(rule.core_tier && under_any(&c.rel, &plugin_dirs)))
                 .collect();
             if files.is_empty() {
                 f.choke_scan_set.push(finding_zero_scan(&r.id));

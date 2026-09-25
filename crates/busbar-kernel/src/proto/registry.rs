@@ -94,7 +94,7 @@ mod test_builtins;
 
 #[cfg(test)]
 pub fn builtin_decls() -> &'static [&'static ProtocolDecl] {
-    test_builtins::TEST_BUILTIN_DECLS
+    test_builtins::test_builtin_decls()
 }
 
 // ── THE REGISTRY SINGLETON RE-EXPORTS ─────────────────────────────────────────────────────────────

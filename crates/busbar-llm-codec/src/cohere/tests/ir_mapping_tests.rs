@@ -902,7 +902,7 @@ fn coh20_json_tool_result_reaches_cohere_as_text() {
     assert_eq!(tool["content"], json!("{\"x\":1}"), "COH-20: {out}");
 }
 
-// ── Q57 round 2: the typed IR slots (ir-slots-landed.md) and the ANT-17 follow-up ─────────────────
+// ── The typed IR slots and the ANT-17 follow-up ──────────────────────────────────────────────────
 
 /// A Cohere v2 request whose tool result is a `document` part with JSON `data`.
 fn json_tool_result_document_request() -> Value {

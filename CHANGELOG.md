@@ -616,7 +616,12 @@ moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
   output-token cap key an OpenAI-protocol upstream receives, and whether an Anthropic-protocol
   upstream gets adaptive thinking and native structured outputs. Each key is optional, and an
   omitted key sends what 1.5.5 sent. A provider key busbar does not know is still refused in 1.5.5's
-  sentence, with the four keys now among the expected fields. See
+  sentence, with the four keys now among the expected fields. A `model_capabilities` rule also
+  takes two per-model keys, `reasoning_none` (the model accepts reasoning effort `none`, so a
+  reasoning-off ask reaches an OpenAI or Responses upstream as `none` instead of being omitted) and
+  `thinking_always_on` (the model cannot switch thinking off, so a reasoning-off ask omits `thinking`
+  on an Anthropic or Bedrock upstream instead of sending `{type: disabled}`); the shipped catalog sets
+  them for GPT-5.1 / GPT-5.2 and for Claude Opus 5.5 / Fable 5. See
   [Lane capabilities](docs/providers.md#lane-capabilities). **Migration:** none.
 - **Two 64-bit ARM Linux builds, and the default one got faster.** The default arm64 artifacts
   (the `busbar-aarch64-unknown-linux-gnu.tar.gz` download and the multi-arch image's `linux/arm64`

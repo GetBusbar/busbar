@@ -8,7 +8,7 @@
 //! because there is no second use to extract a trait from later, so "is it actually generic?" has to
 //! be a test rather than a claim. The two artifacts are deliberately not near-twins:
 //!
-//! - `SpkiPin` is ONE opaque value under one mechanism (a TLS certificate SPKI). It is what an MCP
+//! - `CertKeyPin` is ONE opaque value under one mechanism (a TLS certificate SPKI). It is what an MCP
 //!   server offers, because MCP has no manifest signature at all.
 //! - `CardPin` is TWO values under a different mechanism (a JWS issuer key AND a card fingerprint),
 //!   and its equality is a conjunction. It is what an A2A Agent Card offers.
@@ -21,11 +21,11 @@ use std::collections::BTreeMap;
 
 /// The MCP shape: one mechanism, one opaque value.
 #[derive(Clone, Debug, PartialEq)]
-struct SpkiPin(&'static str);
+struct CertKeyPin(&'static str);
 
-impl PinnedArtifact for SpkiPin {
+impl PinnedArtifact for CertKeyPin {
     fn mechanism(&self) -> &'static str {
-        "cert_spki"
+        "cert_key"
     }
     fn digest(&self) -> String {
         self.0.to_string()
@@ -135,8 +135,8 @@ fn run_the_lifecycle<A: PinnedArtifact>(pin_a: A, pin_b: A, cap: &str, other: &s
 #[test]
 fn the_lifecycle_runs_over_a_single_value_transport_pin() {
     run_the_lifecycle(
-        SpkiPin("sha256/A"),
-        SpkiPin("sha256/B"),
+        CertKeyPin("sha256/A"),
+        CertKeyPin("sha256/B"),
         "read_file",
         "write_file",
     );
@@ -222,17 +222,48 @@ fn either_half_of_a_two_value_artifact_is_identity_drift() {
 /// comments are stripped and only the remaining code is judged.
 #[test]
 fn the_lifecycle_names_no_plane_in_its_code() {
-    const BANNED: &[&str] = &[
-        "mcp", "Mcp", "MCP", "a2a", "A2a", "A2A", "tool", "Tool", "agent", "Agent", "skill",
-        "Skill", "spki", "Spki", "SPKI", "card", "Card", "server", "Server", "jws", "Jws", "JWS",
+    // The artifact vocabulary the two pinning planes speak (neutral words, spelled here). The
+    // certificate-key auth noun is not spelled in the kernel at all: it is an instance noun, and
+    // `cargo xtask gate instance-noun-neutrality` reds its `:undocumented` row on it in ANY kernel
+    // file, this module's `mod.rs` included (no baseline row names that file).
+    const ARTIFACT_NOUNS: &[&str] = &[
+        "tool", "Tool", "agent", "Agent", "skill", "Skill", "card", "Card", "server", "Server",
+        "jws", "Jws", "JWS",
     ];
+    // The plane KEYS are derived from the workspace, never spelled: every `busbar-plane-<key>`
+    // crate directory contributes its key as lower, Capitalised and UPPER. A plane that lands later
+    // is banned from the day its crate exists, with no edit here.
+    let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut plane_keys: Vec<String> = std::fs::read_dir(&crates_dir)
+        .expect("the workspace crates directory is readable")
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter_map(|name| {
+            let rest = name.strip_prefix("busbar-plane-")?;
+            rest.split('-').next().map(str::to_string)
+        })
+        .collect();
+    plane_keys.sort();
+    plane_keys.dedup();
+    assert!(
+        plane_keys.len() >= 2,
+        "the plane-key derivation found {plane_keys:?} under {crates_dir:?} — a ratchet over no \
+         plane keys bans nothing, so an empty derivation is a failure, not a pass"
+    );
+    let mut banned: Vec<String> = ARTIFACT_NOUNS.iter().map(|s| s.to_string()).collect();
+    for key in &plane_keys {
+        let mut capitalised = key.clone();
+        capitalised[..1].make_ascii_uppercase();
+        banned.push(key.clone());
+        banned.push(capitalised);
+        banned.push(key.to_ascii_uppercase());
+    }
     let source = include_str!("../mod.rs");
     let code: String = source
         .lines()
         .filter(|l| !l.trim_start().starts_with("//"))
         .collect::<Vec<_>>()
         .join("\n");
-    for needle in BANNED {
+    for needle in &banned {
         assert!(
             !code.contains(needle),
             "the plane-neutral lifecycle names `{needle}` in its CODE. A machine that knows one \
@@ -246,7 +277,7 @@ fn the_lifecycle_names_no_plane_in_its_code() {
 /// operator reads and what an audit row records, and the two planes spell it differently.
 #[test]
 fn the_mechanism_label_belongs_to_the_artifact_not_the_machine() {
-    assert_eq!(SpkiPin("x").mechanism(), "cert_spki");
+    assert_eq!(CertKeyPin("x").mechanism(), "cert_key");
     assert_eq!(
         CardPin {
             issuer_key: "k",
@@ -279,6 +310,9 @@ fn a_multi_part_artifact_renders_every_part_it_is_compared_on() {
     assert_ne!(a.digest(), rotated_card.digest());
     assert_ne!(rotated_key.digest(), rotated_card.digest());
     // The single-value shape renders its one value, and equality and rendering agree there too.
-    assert_eq!(SpkiPin("sha256/A").digest(), "sha256/A");
-    assert_ne!(SpkiPin("sha256/A").digest(), SpkiPin("sha256/B").digest());
+    assert_eq!(CertKeyPin("sha256/A").digest(), "sha256/A");
+    assert_ne!(
+        CertKeyPin("sha256/A").digest(),
+        CertKeyPin("sha256/B").digest()
+    );
 }

@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The plane spine: identity, the superset-IR rule, and plane dispatch — proven on the REAL shipped
-//! `[llm, mcp, a2a]` roster.
+//! The plane spine: identity, the superset-IR rule, and plane dispatch — proven on the REAL linked
+//! plane roster.
 //!
 //! Relocated here from `src/plane/tests/plane_tests.rs` (the A6/HostCtx dev-dependency-cycle
-//! cleanup): every test hard-codes the literal keys `"llm"`/`"mcp"`/`"a2a"` and asserts against
-//! their REAL declared wire formats (`wire_formats("llm") == busbar_kernel::proto::known_protocols()
-//! .len()`, `has_superset_ir("a2a")`, …) — properties of the actual dialect/plane registries, not a
-//! shape a neutral fake could stand in for. `register_planes()` below replaces the automatic
-//! `#[cfg(test)]` seeding `TEST_BUILTIN_PLANE_DECLS` used to provide; every test calls it first
-//! (idempotent, first-wins). A handful of `pub(crate)` items (`Ingress`, `PlaneDispatch::{ingress_of,
+//! cleanup): the tests assert against the planes' REAL declared wire formats — properties of the
+//! actual dialect/plane registries, not a shape a neutral fake could stand in for. The planes come
+//! from the test-linked table (`tests/linked/mod.rs`; K3, architect ruling N02) and are ADDRESSED by
+//! what they declare, read back from the registry: the fallback plane, the plane that owns the
+//! `tools:` section (one wire format over several transports) and the plane that owns `agents:`
+//! (several bindings of one agent). This file spells no plane key; each plane pins its own literal
+//! identity in its own crate. Every test installs the roster first (idempotent, first-wins). A handful of `pub(crate)` items (`Ingress`, `PlaneDispatch::{ingress_of,
 //! wire_format_of, mounted_plane_of}`, `sole_wire_format`, `has_superset_ir`, `sole_of`,
 //! `superset_of`, `ingress::native::envelope_dialect`) were widened to `pub` for exactly this move.
 
@@ -19,12 +20,32 @@ use busbar_kernel::plane::{
     wire_format_names, wire_formats, Ingress, PlaneDispatch, WIRE_GRPC, WIRE_JSONRPC,
 };
 
-/// Register the real `[llm, mcp, a2a]` roster in the process registry — idempotent (first-wins), so
-/// every test can call it unconditionally regardless of run order.
+mod linked;
+
+/// Install the linked roster in the process registry — idempotent (first-wins), so every test can
+/// call it unconditionally regardless of run order.
 fn register_planes() {
-    busbar_llm::testkit::install_test_seams();
-    busbar_mcp::testkit::install_test_seams();
-    busbar_a2a::testkit::install_test_seams();
+    linked::install();
+}
+
+/// The fallback plane's key, read off the plane that declares the flag.
+fn fallback() -> &'static str {
+    linked::fallback().key
+}
+
+/// The key of the plane that owns the `tools:` section — a plane with ONE wire format.
+fn single() -> &'static str {
+    linked::owning("tools").key
+}
+
+/// The key of the plane that owns the `agents:` section — a plane with several bindings.
+fn multi() -> &'static str {
+    linked::owning("agents").key
+}
+
+/// A mount path spelled from a plane's own key: `/<key>`.
+fn door(key: &str) -> String {
+    format!("/{key}")
 }
 
 /// WARM THE SHARED PROTOCOL REGISTRY. Reading `known_protocols()` once, up front, before any plane
@@ -41,9 +62,14 @@ fn warm_shared_protocol_registry() {
 fn all_is_complete_and_has_no_duplicates() {
     register_planes();
     let all: Vec<&'static str> = plane_keys().collect();
-    for key in ["llm", "mcp", "a2a"] {
+    for key in linked::planes().iter().map(|d| d.key) {
         assert!(all.contains(&key), "{key} is missing from plane_keys()");
     }
+    assert_eq!(
+        all.len(),
+        linked::linked_count(),
+        "one key per linked plane"
+    );
     let mut keys = all.clone();
     let before = keys.len();
     keys.sort_unstable();
@@ -109,18 +135,18 @@ fn a_plane_earns_a_superset_ir_at_two_wire_formats_and_not_before() {
     }
 }
 
-/// Today, and only as a consequence of the rule above, expressed on three example fixture planes.
+/// Today, and only as a consequence of the rule above, expressed on the three linked planes.
 #[test]
-fn the_llm_and_a2a_planes_have_earned_an_ir_today() {
+fn the_fallback_and_multi_binding_planes_have_earned_an_ir_today() {
     register_planes();
     warm_shared_protocol_registry();
-    assert!(has_superset_ir("llm"));
-    assert!(!has_superset_ir("mcp"));
+    assert!(has_superset_ir(fallback()));
+    assert!(!has_superset_ir(single()));
     assert!(
-        has_superset_ir("a2a"),
-        "A2A serves {:?} — bindings of ONE agent, and two of them is the threshold, stated once \
-         and derived",
-        wire_format_names("a2a")
+        has_superset_ir(multi()),
+        "the `agents:` plane serves {:?} — bindings of ONE agent, and two of them is the threshold, \
+         stated once and derived",
+        wire_format_names(multi())
     );
 }
 
@@ -134,10 +160,10 @@ fn the_llm_and_a2a_planes_have_earned_an_ir_today() {
 /// Relocated from `src/tests/transport_tests.rs` (the "fix the 38" pass): it asserts real `a2a`
 /// wire-format behaviour, so — like every other test in this file — it needs the real roster.
 #[test]
-fn the_a2a_legs_are_named_by_the_planes_wire_formats() {
+fn the_multi_binding_legs_are_named_by_the_planes_wire_formats() {
     register_planes();
     use busbar_kernel::transport::Transport;
-    let wires = wire_format_names("a2a");
+    let wires = wire_format_names(multi());
     let legs: Vec<&str> = [Transport::JsonRpc, Transport::HttpJson, Transport::Grpc]
         .iter()
         .map(|t| t.name())
@@ -145,7 +171,7 @@ fn the_a2a_legs_are_named_by_the_planes_wire_formats() {
     assert_eq!(
         wires,
         legs.as_slice(),
-        "the A2A plane's wire formats and the transports its legs ride must be one list"
+        "the multi-binding plane's wire formats and the transports its legs ride must be one list"
     );
 }
 
@@ -153,16 +179,16 @@ fn the_a2a_legs_are_named_by_the_planes_wire_formats() {
 /// literal. An additional registered protocol must not require anyone to remember to bump a number
 /// here.
 #[test]
-fn the_llm_wire_format_count_comes_from_the_protocol_registry() {
+fn the_fallback_wire_format_count_comes_from_the_protocol_registry() {
     register_planes();
     warm_shared_protocol_registry();
     assert_eq!(
-        wire_formats("llm"),
+        wire_formats(fallback()),
         busbar_kernel::proto::known_protocols().len()
     );
     assert!(
-        wire_formats("llm") >= 2,
-        "the registry itself is what earns the LLM plane its IR"
+        wire_formats(fallback()) >= 2,
+        "the registry itself is what earns the fallback plane its IR"
     );
 }
 
@@ -171,9 +197,9 @@ fn the_llm_wire_format_count_comes_from_the_protocol_registry() {
 fn transports_do_not_count_as_wire_formats() {
     register_planes();
     assert_eq!(
-        wire_formats("mcp"),
+        wire_formats(single()),
         1,
-        "MCP has three transports and ONE wire format"
+        "the `tools:` plane has three transports and ONE wire format"
     );
 }
 
@@ -187,14 +213,20 @@ fn plane_of(d: &PlaneDispatch, path: &str) -> &'static str {
     }
 }
 
-/// With no plane mounted, everything is LLM: the LLM ingress is the fallback, exactly as the
-/// protocol catch-all is today.
+/// With no plane mounted, everything is the fallback plane, exactly as the protocol catch-all is
+/// today — including every path a linked plane's key spells.
 #[test]
-fn with_nothing_mounted_every_path_is_the_llm_plane() {
+fn with_nothing_mounted_every_path_is_the_fallback_plane() {
     register_planes();
     let d = PlaneDispatch::default();
-    for path in ["/", "/v1/messages", "/mcp", "/a2a", "/pool/v1/messages"] {
-        assert_eq!(plane_of(&d, path), "llm", "{path}");
+    let mut paths: Vec<String> = vec![
+        "/".into(),
+        "/v1/messages".into(),
+        "/pool/v1/messages".into(),
+    ];
+    paths.extend(linked::planes().iter().map(|p| door(p.key)));
+    for path in &paths {
+        assert_eq!(plane_of(&d, path), fallback(), "{path}");
     }
 }
 
@@ -203,19 +235,28 @@ fn with_nothing_mounted_every_path_is_the_llm_plane() {
 #[test]
 fn a_mounted_plane_claims_its_mount_and_everything_below_it() {
     register_planes();
-    let d = PlaneDispatch::default().mount("mcp", "/mcp", WIRE_JSONRPC);
-    assert_eq!(plane_of(&d, "/mcp"), "mcp");
-    assert_eq!(plane_of(&d, "/mcp/"), "mcp");
-    assert_eq!(plane_of(&d, "/mcp/tools/list"), "mcp");
+    let (k, m) = (single(), door(single()));
+    let d = PlaneDispatch::default().mount(k, &m, WIRE_JSONRPC);
+    assert_eq!(plane_of(&d, &m), k);
+    assert_eq!(plane_of(&d, &format!("{m}/")), k);
+    assert_eq!(plane_of(&d, &format!("{m}/tools/list")), k);
 }
 
 /// THE SEGMENT-BOUNDARY RULE: a sibling path that merely shares a prefix is NOT the plane.
 #[test]
 fn a_prefix_sibling_is_not_the_plane() {
     register_planes();
-    let d = PlaneDispatch::default().mount("mcp", "/mcp", WIRE_JSONRPC);
-    for path in ["/mcpx", "/mcpx/tools", "/mc", "/xmcp", "/v1/mcp"] {
-        assert_eq!(plane_of(&d, path), "llm", "{path} must not be MCP");
+    let (k, m) = (single(), door(single()));
+    let d = PlaneDispatch::default().mount(k, &m, WIRE_JSONRPC);
+    let short = &m[..m.len() - 1];
+    for path in [
+        format!("{m}x"),
+        format!("{m}x/tools"),
+        short.to_string(),
+        format!("/x{}", &m[1..]),
+        format!("/v1{m}"),
+    ] {
+        assert_eq!(plane_of(&d, &path), fallback(), "{path} must not be `{k}`");
     }
 }
 
@@ -223,48 +264,62 @@ fn a_prefix_sibling_is_not_the_plane() {
 #[test]
 fn two_mounted_planes_do_not_claim_each_other() {
     register_planes();
+    let (s, a) = (single(), multi());
     let d = PlaneDispatch::default()
-        .mount("mcp", "/mcp", WIRE_JSONRPC)
-        .mount("a2a", "/a2a", WIRE_JSONRPC);
-    assert_eq!(plane_of(&d, "/mcp/tools/list"), "mcp");
-    assert_eq!(plane_of(&d, "/a2a/tasks/send"), "a2a");
-    assert_eq!(plane_of(&d, "/v1/messages"), "llm");
+        .mount(s, &door(s), WIRE_JSONRPC)
+        .mount(a, &door(a), WIRE_JSONRPC);
+    assert_eq!(plane_of(&d, &format!("{}/tools/list", door(s))), s);
+    assert_eq!(plane_of(&d, &format!("{}/tasks/send", door(a))), a);
+    assert_eq!(plane_of(&d, "/v1/messages"), fallback());
 }
 
-/// An UNMOUNTED plane claims nothing, so a deployment that never enabled MCP cannot have a request
-/// routed onto the MCP plane by path shape alone.
+/// An UNMOUNTED plane claims nothing, so a deployment that never enabled a plane cannot have a
+/// request routed onto it by path shape alone.
 #[test]
 fn an_unmounted_plane_claims_nothing() {
     register_planes();
-    let d = PlaneDispatch::default().mount("a2a", "/a2a", WIRE_JSONRPC);
-    assert_eq!(plane_of(&d, "/mcp"), "llm");
-    assert_eq!(plane_of(&d, "/mcp/tools/list"), "llm");
+    let (s, a) = (single(), multi());
+    let d = PlaneDispatch::default().mount(a, &door(a), WIRE_JSONRPC);
+    assert_eq!(plane_of(&d, &door(s)), fallback());
+    assert_eq!(plane_of(&d, &format!("{}/tools/list", door(s))), fallback());
 }
 
-/// A mount is normalised, so an operator writing `/mcp/` or `mcp` gets the same dispatch as `/mcp`.
+/// A mount is normalised, so an operator writing `/<door>/` or `<door>` gets the same dispatch as
+/// `/<door>`.
 #[test]
 fn a_mount_is_normalised_before_it_is_matched() {
     register_planes();
-    for spelling in ["/mcp", "/mcp/", "mcp", "mcp/"] {
-        let d = PlaneDispatch::default().mount("mcp", spelling, WIRE_JSONRPC);
-        assert_eq!(plane_of(&d, "/mcp"), "mcp", "spelling {spelling}");
+    let k = single();
+    let m = door(k);
+    for spelling in [m.clone(), format!("{m}/"), k.to_string(), format!("{k}/")] {
+        let d = PlaneDispatch::default().mount(k, &spelling, WIRE_JSONRPC);
+        assert_eq!(plane_of(&d, &m), k, "spelling {spelling}");
         assert_eq!(
-            plane_of(&d, "/mcp/tools/list"),
-            "mcp",
+            plane_of(&d, &format!("{m}/tools/list")),
+            k,
             "spelling {spelling}"
         );
-        assert_eq!(plane_of(&d, "/mcpx"), "llm", "spelling {spelling}");
+        assert_eq!(
+            plane_of(&d, &format!("{m}x")),
+            fallback(),
+            "spelling {spelling}"
+        );
     }
 }
 
-/// The LLM plane cannot be mounted: it IS the fallback.
+/// The fallback plane cannot be mounted: it IS the fallback.
 #[test]
-fn the_llm_plane_cannot_be_mounted() {
+fn the_fallback_plane_cannot_be_mounted() {
     register_planes();
-    let d = PlaneDispatch::default().mount(fallback_key(), "/llm", WIRE_JSONRPC);
     assert_eq!(
-        plane_of(&d, "/llm"),
-        "llm",
+        fallback_key(),
+        fallback(),
+        "the fallback key is the declaring plane's"
+    );
+    let d = PlaneDispatch::default().mount(fallback_key(), &door(fallback()), WIRE_JSONRPC);
+    assert_eq!(
+        plane_of(&d, &door(fallback())),
+        fallback(),
         "it is the fallback anyway, so the mount is a no-op rather than a second door"
     );
     assert_eq!(d.mount_of(fallback_key()), None);
@@ -274,9 +329,10 @@ fn the_llm_plane_cannot_be_mounted() {
 #[test]
 fn a_mount_is_readable_back() {
     register_planes();
-    let d = PlaneDispatch::default().mount("mcp", "/mcp", WIRE_JSONRPC);
-    assert_eq!(d.mount_of("mcp"), Some("/mcp"));
-    assert_eq!(d.mount_of("a2a"), None);
+    let (s, a) = (single(), multi());
+    let d = PlaneDispatch::default().mount(s, &door(s), WIRE_JSONRPC);
+    assert_eq!(d.mount_of(s), Some(door(s).as_str()));
+    assert_eq!(d.mount_of(a), None);
 }
 
 /// `sole_wire_format` ANSWERS EXACTLY WHEN THERE IS ONE ANSWER, stated over every plane.
@@ -302,47 +358,52 @@ fn sole_wire_format_answers_exactly_when_a_plane_speaks_one() {
             "{p:?} claims no wire format at all, which is not a plane"
         );
     }
-    assert_eq!(sole_wire_format("llm"), None);
-    assert_eq!(sole_wire_format("mcp"), Some("jsonrpc"));
-    assert_eq!(sole_wire_format("a2a"), None);
+    assert_eq!(sole_wire_format(fallback()), None);
+    assert_eq!(sole_wire_format(single()), Some(WIRE_JSONRPC));
+    assert_eq!(sole_wire_format(multi()), None);
 }
 
 /// THE LABEL COMES OFF THE DOOR, WHICH IS WHY A SECOND BINDING DOES NOT SILENCE A PLANE.
 #[test]
 fn a_multi_binding_plane_is_still_labelled_at_the_door_that_was_knocked_on() {
     register_planes();
+    let a = multi();
+    let (m, svc) = (door(a), "/lf.svc.v1.Service");
     let d = PlaneDispatch::default()
-        .mount("a2a", "/a2a", WIRE_JSONRPC)
-        .mount("a2a", "/lf.a2a.v1.A2AService", WIRE_GRPC);
-    assert_eq!(d.mounted_plane_of("/a2a/agents/x"), Some("a2a"));
-    assert_eq!(d.wire_format_of("/a2a/agents/x"), Some(WIRE_JSONRPC));
-    assert_eq!(
-        d.mounted_plane_of("/lf.a2a.v1.A2AService/SendMessage"),
-        Some("a2a")
-    );
-    assert_eq!(
-        d.wire_format_of("/lf.a2a.v1.A2AService/SendMessage"),
-        Some(WIRE_GRPC)
-    );
-    assert_eq!(d.mount_of("a2a"), Some("/a2a"));
+        .mount(a, &m, WIRE_JSONRPC)
+        .mount(a, svc, WIRE_GRPC);
+    let under = format!("{m}/agents/x");
+    assert_eq!(d.mounted_plane_of(&under), Some(a));
+    assert_eq!(d.wire_format_of(&under), Some(WIRE_JSONRPC));
+    let call = format!("{svc}/SendMessage");
+    assert_eq!(d.mounted_plane_of(&call), Some(a));
+    assert_eq!(d.wire_format_of(&call), Some(WIRE_GRPC));
+    assert_eq!(d.mount_of(a), Some(m.as_str()));
     assert_eq!(d.wire_format_of("/v1/chat/completions"), None);
 }
 
-/// A CLAIM MAY ONLY NAME A DIALECT ITS PLANE ADMITS TO SPEAKING.
+/// A CLAIM MAY ONLY NAME A DIALECT ITS PLANE ADMITS TO SPEAKING. Every mounted plane's canonical door
+/// speaks JSON-RPC, so every mountable linked plane must declare it; each plane's OWN claims (its
+/// real mount paths and their bindings) are pinned against its declared list in that plane's crate
+/// (busbar-a2a `serve_tests`, busbar-mcp `decl_tests`).
 #[test]
 fn a_claim_only_names_a_wire_format_its_plane_speaks() {
     register_planes();
-    for (plane, path, wire) in [
-        ("mcp", "/mcp", WIRE_JSONRPC),
-        ("a2a", busbar_a2a::a2a::serve::MOUNT_PATH, WIRE_JSONRPC),
-        ("a2a", busbar_a2a::a2a::serve::GRPC_MOUNT_PATH, WIRE_GRPC),
-    ] {
+    let mountable: Vec<&'static str> = plane_keys().filter(|p| *p != fallback_key()).collect();
+    assert!(
+        !mountable.is_empty(),
+        "the linked roster has a mountable plane"
+    );
+    for plane in mountable {
+        let path = door(plane);
         assert!(
-            wire_format_names(plane).contains(&wire),
-            "{plane:?} is mounted at {path} speaking `{wire}`, which it does not declare: {:?}",
+            wire_format_names(plane).contains(&WIRE_JSONRPC),
+            "{plane:?} is mounted at {path} speaking `{WIRE_JSONRPC}`, which it does not declare: {:?}",
             wire_format_names(plane)
         );
     }
+    // The multi-binding plane's second binding is declared too.
+    assert!(wire_format_names(multi()).contains(&WIRE_GRPC));
 }
 
 /// EVERY MOUNTABLE PLANE'S DOOR SHAPES ITS REFUSALS AS JSON-RPC 2.0.
@@ -376,15 +437,20 @@ fn every_mounted_planes_door_dialect_is_jsonrpc() {
 #[test]
 fn the_mount_table_is_read_before_the_path_shape() {
     register_planes();
-    let d = PlaneDispatch::default().mount("mcp", "/mcp", WIRE_JSONRPC);
-    assert_eq!(d.ingress_of("/mcp"), Ingress::Mounted("mcp"));
-    assert_eq!(d.ingress_of("/mcp/tools/list"), Ingress::Mounted("mcp"));
+    let (s, a) = (single(), multi());
+    let m = door(s);
+    let d = PlaneDispatch::default().mount(s, &m, WIRE_JSONRPC);
+    assert_eq!(d.ingress_of(&m), Ingress::Mounted(s));
+    assert_eq!(
+        d.ingress_of(&format!("{m}/tools/list")),
+        Ingress::Mounted(s)
+    );
     assert_eq!(
         d.ingress_of("/v1/chat/completions"),
         Ingress::Fallback(Some("openai"))
     );
-    assert_eq!(d.ingress_of("/mcpx"), Ingress::Fallback(None));
-    assert_eq!(d.ingress_of("/a2a"), Ingress::Fallback(None));
+    assert_eq!(d.ingress_of(&format!("{m}x")), Ingress::Fallback(None));
+    assert_eq!(d.ingress_of(&door(a)), Ingress::Fallback(None));
 }
 
 /// A MOUNT CANNOT BE INFERRED FROM A URL.
@@ -392,7 +458,13 @@ fn the_mount_table_is_read_before_the_path_shape() {
 fn an_unmounted_plane_is_never_resolved_from_the_path() {
     register_planes();
     let d = PlaneDispatch::default();
-    for path in ["/mcp", "/mcp/tools/list", "/a2a", "/a2a/tasks/send"] {
+    let mut paths = Vec::new();
+    for p in linked::planes().iter().filter(|p| !p.fallback) {
+        paths.push(door(p.key));
+        paths.push(format!("{}/tasks/send", door(p.key)));
+    }
+    assert!(!paths.is_empty(), "the linked roster has a mountable plane");
+    for path in &paths {
         assert_eq!(
             d.ingress_of(path),
             Ingress::Fallback(None),
@@ -405,14 +477,15 @@ fn an_unmounted_plane_is_never_resolved_from_the_path() {
 #[test]
 fn a_resolved_ingress_names_its_own_wire_format() {
     register_planes();
-    let d = PlaneDispatch::default().mount("mcp", "/mcp", WIRE_JSONRPC);
-    assert_eq!(d.ingress_of("/mcp").wire_format(), Some(WIRE_JSONRPC));
+    let s = single();
+    let d = PlaneDispatch::default().mount(s, &door(s), WIRE_JSONRPC);
+    assert_eq!(d.ingress_of(&door(s)).wire_format(), Some(WIRE_JSONRPC));
     assert_eq!(
         d.ingress_of("/v1/messages").wire_format(),
         Some("anthropic")
     );
     assert_eq!(d.ingress_of("/stats").wire_format(), None);
-    let over = PlaneDispatch::default().mount("mcp", "/v1/messages", WIRE_JSONRPC);
+    let over = PlaneDispatch::default().mount(s, "/v1/messages", WIRE_JSONRPC);
     assert_eq!(
         over.ingress_of("/v1/messages").wire_format(),
         Some(WIRE_JSONRPC)
@@ -424,31 +497,33 @@ fn a_resolved_ingress_names_its_own_wire_format() {
 #[test]
 fn only_a_mounted_plane_claims_a_path_and_the_two_readings_agree() {
     register_planes();
+    let (s, a) = (single(), multi());
+    let (ms, ma) = (door(s), door(a));
     let d = PlaneDispatch::default()
-        .mount("mcp", "/mcp", WIRE_JSONRPC)
-        .mount("a2a", "/a2a", WIRE_JSONRPC);
+        .mount(s, &ms, WIRE_JSONRPC)
+        .mount(a, &ma, WIRE_JSONRPC);
     for path in [
-        "/mcp",
-        "/mcp/x",
-        "/a2a",
-        "/a2a/agents/planner",
-        "/mcpx",
-        "/v1/chat/completions",
-        "/metrics",
-        "/",
+        ms.clone(),
+        format!("{ms}/x"),
+        ma.clone(),
+        format!("{ma}/agents/planner"),
+        format!("{ms}x"),
+        "/v1/chat/completions".to_string(),
+        "/metrics".to_string(),
+        "/".to_string(),
     ] {
         assert_eq!(
-            d.mounted_plane_of(path).unwrap_or(fallback_key()),
-            plane_of(&d, path),
+            d.mounted_plane_of(&path).unwrap_or(fallback_key()),
+            plane_of(&d, &path),
             "the two readings disagree about {path}"
         );
     }
     assert_eq!(d.mounted_plane_of("/v1/chat/completions"), None);
-    assert_eq!(d.mounted_plane_of("/mcpx"), None);
+    assert_eq!(d.mounted_plane_of(&format!("{ms}x")), None);
     assert_eq!(d.mounted_plane_of("/metrics"), None);
-    assert_eq!(d.mounted_plane_of("/mcp/tools"), Some("mcp"));
-    assert_eq!(d.mounted_plane_of("/a2a/agents/planner"), Some("a2a"));
-    assert_eq!(PlaneDispatch::default().mounted_plane_of("/mcp"), None);
+    assert_eq!(d.mounted_plane_of(&format!("{ms}/tools")), Some(s));
+    assert_eq!(d.mounted_plane_of(&format!("{ma}/agents/planner")), Some(a));
+    assert_eq!(PlaneDispatch::default().mounted_plane_of(&ms), None);
 }
 
 /// THE ZERO-DIALECT PLANE, pinned. Pure data — no registration needed.
@@ -468,15 +543,16 @@ fn a_plane_with_zero_wire_formats_is_labelless_and_irless_by_decision() {
     assert!(superset_of(2));
 }
 
-/// **The LLM plane's dialect list IS the registry's, so the empty case is the registry's empty case.**
+/// **The fallback plane's dialect list IS the registry's, so the empty case is the registry's empty
+/// case.**
 #[test]
-fn the_llm_planes_dialects_are_the_registrys_so_an_empty_registry_empties_the_plane() {
+fn the_fallback_planes_dialects_are_the_registrys_so_an_empty_registry_empties_the_plane() {
     register_planes();
     warm_shared_protocol_registry();
     assert_eq!(
-        wire_format_names("llm"),
+        wire_format_names(fallback()),
         busbar_kernel::proto::known_protocols(),
-        "the LLM plane's wire formats must track the registry"
+        "the fallback plane's wire formats must track the registry"
     );
 
     let empty = busbar_kernel::proto::registry::Registry::new(

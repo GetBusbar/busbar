@@ -385,7 +385,7 @@ pub(crate) enum CredentialPlan {
     /// Send nothing.
     None,
     /// Send this bearer verbatim.
-    Bearer(Redacted<String>),
+    Token(Redacted<String>),
     /// Perform this exchange, then send the resulting bearer.
     Exchange(ExchangeRequest),
 }
@@ -490,9 +490,9 @@ fn plan_after_gate(
 ) -> Result<CredentialPlan, EgressDenied> {
     match credential {
         UpstreamCredential::None => Ok(CredentialPlan::None),
-        UpstreamCredential::Static(secret) => Ok(CredentialPlan::Bearer(secret.clone())),
+        UpstreamCredential::Static(secret) => Ok(CredentialPlan::Token(secret.clone())),
         UpstreamCredential::Passthrough => match caller_upstream_credential {
-            Some(c) => Ok(CredentialPlan::Bearer(c.clone())),
+            Some(c) => Ok(CredentialPlan::Token(c.clone())),
             None => Err(EgressDenied::PassthroughWithoutCallerCredential {
                 server: server.to_string(),
             }),

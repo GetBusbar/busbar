@@ -395,7 +395,7 @@ fn the_default_chain_is_the_new_chain_because_a_derived_default_starts_at_zero()
 /// production persists — and required to agree with the legacy single-buffer formula, recomputed
 /// here the OLD way. (The typed `Chain<McpCallRecord>` is gone; the seam is what production hashes.)
 #[test]
-fn the_mcp_call_digest_is_unchanged_by_the_unification() {
+fn the_length_prefixed_call_digest_is_unchanged_by_the_unification() {
     let (prev_hash, principal, seq) = (String::new(), "vk_alice", 1u64);
     let (ts, server, tool, outcome, reason, tool_digest, pin_generation) = (
         1_700_000_000u64,
@@ -445,7 +445,7 @@ fn the_mcp_call_digest_is_unchanged_by_the_unification() {
     assert_eq!(
         digest(&rec),
         busbar_api::sha256_hex(&buf),
-        "an MCP call digest that moved would report every deployment's persisted chain as tampered"
+        "a length-prefixed per-call digest that moved would report every deployment's persisted chain as tampered"
     );
 }
 
@@ -454,7 +454,7 @@ fn the_mcp_call_digest_is_unchanged_by_the_unification() {
 /// NEUTRAL journal seam over the plane's pre-framed `task_event_suffix` content (PipeSeparated), which
 /// is the exact shape production persists, and required to agree with the legacy canonical string.
 #[test]
-fn the_a2a_task_event_digest_is_unchanged_by_the_unification() {
+fn the_pipe_separated_task_event_digest_is_unchanged_by_the_unification() {
     let (prev_hash, task_id, seq) = (String::new(), "task-1", 1u64);
     let (ts, kind, context_id, principal, agent_id, state) = (
         1_700_000_000u64,
@@ -482,7 +482,7 @@ fn the_a2a_task_event_digest_is_unchanged_by_the_unification() {
     assert_eq!(
         digest(&rec),
         busbar_api::sha256_hex(canonical.as_bytes()),
-        "an A2A provenance digest that moved would report every persisted chain as tampered"
+        "a pipe-separated task-event digest that moved would report every persisted chain as tampered"
     );
 }
 

@@ -28,14 +28,14 @@ fn inducing_a_child_keeps_the_root_and_sets_the_parent() {
 /// parents — the causal tree the ledger joins on, naming no plane.
 #[test]
 fn a_multi_hop_chain_shares_one_root_and_threads_parents() {
-    let llm = Lineage::root(1);
-    let tool = llm.induce(2);
+    let origin = Lineage::root(1);
+    let tool = origin.induce(2);
     let sampled = tool.induce(3);
     assert_eq!(sampled.root_id(), 1);
     assert_eq!(sampled.parent_id(), Some(2));
     assert_eq!(sampled.id(), 3);
     // Every node in the tree agrees on the root.
-    assert_eq!(llm.root_id(), tool.root_id());
+    assert_eq!(origin.root_id(), tool.root_id());
     assert_eq!(tool.root_id(), sampled.root_id());
 }
 

@@ -324,3 +324,115 @@ pub trait SessionPlane: Plane {
     /// Open one upstream half of this session's codec state.
     fn open_upstream<'u>(&self, dest: &VerifiedDestination, ctx: &Ctx<'u>) -> PlaneSessionState;
 }
+
+/// THE FACTS A PLANE STATES ABOUT ITSELF, as plain data — the item a plane crate exports to be
+/// registered. Every field is a constant of the plane, read once at registration; nothing here is a
+/// hook, a handle or a behaviour, so a plane crate states it naming nothing but this crate. The
+/// behaviour a host runs for a plane is not a fact about the plane and is not here: the host keeps
+/// that table itself, keyed by [`Self::key`], and folds this declaration into it.
+///
+/// Two planes sharing a grant kind is how one plane's grant admits another plane's traffic, and two
+/// sharing a record kind is how one plane's records start answering another plane's question — so
+/// these are the strings that must not agree by coincidence, and each is declared once, here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlaneDeclaration {
+    /// The registry key: the label a plane is installed, resolved and indexed by. Also the metrics
+    /// label, the log label and the record resource prefix. Operator-visible.
+    pub key: &'static str,
+    /// TRUE for the one plane that declares itself the FALLBACK catch-all — the plane every unclaimed
+    /// path falls through to, which mounts nothing and binds no audience. At most one plane in a
+    /// process sets it; the fallback key is read off this flag, never spelled.
+    pub fallback: bool,
+    /// The top-level config section whose mere existence declares this plane, and the section the
+    /// hook-reference grammar folds in for it.
+    pub config_section: &'static str,
+    /// The grant kinds that admit traffic ON this plane, in the plane's declared order. A slice
+    /// because a plane may grant at more than one granularity.
+    pub scope_kinds: &'static [&'static str],
+    /// What ONE registration on this plane is called, in the words an operator reads back in a
+    /// not-found answer.
+    pub subject_noun: &'static str,
+    /// The singular hyphenated noun for one registration in this plane's named-definition section —
+    /// the spelling a recorded action (`<noun>.create`), a recorded resource (`<noun>:<name>`) and a
+    /// validation subject are stamped with. A plane with no named-definition section never has it
+    /// read, but still carries a sensible value.
+    pub admin_noun: &'static str,
+    /// The record resource kind for a registration on this plane, and the prefix of every action
+    /// word the plane's verbs record.
+    pub audit_kind: &'static str,
+    /// The versioned domain this plane's card-signing subkey is derived under, or `None` for a plane
+    /// that signs no cards. A constant, never a signer: the host derives and signs.
+    pub card_signing_domain: Option<&'static str>,
+    /// The `kid` prefix this plane stamps on its card signatures, or `None` for a plane that signs
+    /// no cards.
+    pub card_kid_prefix: Option<&'static str>,
+    /// The top-level config sections this plane declares it owns the grammar of — distinct from
+    /// [`Self::config_section`], which is the one section that declares the plane. A section is
+    /// owned by exactly one plane; the host refuses a boot where two claim one.
+    pub owned_config_sections: &'static [&'static str],
+    /// The billable unit classes this plane ledgers, each with the unit family it counts in.
+    /// Pairwise disjoint: no class is a subset of another. When the plane's section carries a rate
+    /// card, the card must configure every class listed here. `&[]` for a plane that bills nothing.
+    pub billable_classes: &'static [BillableClass],
+    /// The fee units this plane counts — [`PER_REQUEST`] and/or [`PER_SESSION`]. A nonzero fee
+    /// naming a unit not listed here is refused: a fee nothing counts charges nothing.
+    pub fee_units: &'static [&'static str],
+}
+
+/// One billable class a plane ledgers and the unit family its count is in — the family vocabulary
+/// the plane's own meter-class declarations use (`token`, `duration`, `count`, `byte`, …).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BillableClass {
+    /// The class string the plane's raw counts are keyed by.
+    pub class: &'static str,
+    /// The unit family the class counts in.
+    pub family: &'static str,
+}
+
+/// The token family: every class a plane declares in it counts toward a `tokens:` cap.
+pub const TOKEN_FAMILY: &str = "token";
+
+/// The fee unit a plane counts once per billable request (`fees.per_request`).
+pub const PER_REQUEST: &str = "per_request";
+
+/// The fee unit a plane counts once per opened session (`fees.per_session`).
+pub const PER_SESSION: &str = "per_session";
+
+/// THE DUP-CLAIM GUARD over a set of declarations' [`PlaneDeclaration::owned_config_sections`],
+/// judged against the sections the host still declares concretely (`reserved`, supplied by the
+/// caller as plain section keys). `Ok(())` when every claim is disjoint and unique, else the FIRST
+/// refusal: two planes claiming one section (one plane's grammar would answer for another's), or a
+/// plane claiming a reserved section (the grammar would be declared twice).
+///
+/// Pure: a declaration list and a reserved-key list in, a verdict out. The host runs it over its
+/// boot fold; a test drives it directly.
+pub fn check_owned_config_claims(
+    decls: &[&PlaneDeclaration],
+    reserved: &[&'static str],
+) -> Result<(), String> {
+    // section key → the plane key that first claimed it, so a second claimant names its rival.
+    let mut claimed: std::collections::BTreeMap<&'static str, &'static str> =
+        std::collections::BTreeMap::new();
+    for decl in decls {
+        for &section in decl.owned_config_sections {
+            if reserved.contains(&section) {
+                return Err(format!(
+                    "plane `{}` claims config section `{section}`, but core still owns it concretely: \
+                     a section must be evicted from core's `DeployCfg` in the SAME change that a plane \
+                     claims it, never before — else the grammar is declared twice and the config stops \
+                     deserializing byte-identically",
+                    decl.key
+                ));
+            }
+            if let Some(other) = claimed.insert(section, decl.key) {
+                return Err(format!(
+                    "config section `{section}` is claimed by two planes (`{other}` and `{}`): a \
+                     section is owned by exactly one plane, or one plane's grammar answers for \
+                     another's",
+                    decl.key
+                ));
+            }
+        }
+    }
+    Ok(())
+}

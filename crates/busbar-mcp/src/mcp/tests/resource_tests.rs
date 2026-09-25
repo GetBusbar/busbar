@@ -27,13 +27,11 @@ const METADATA_PATH: &str = "/.well-known/oauth-protected-resource/mcp";
 
 async fn serve() -> (String, tokio::task::JoinHandle<()>) {
     use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
-    use busbar_store_memory::MemoryStore;
-    use std::sync::Arc;
 
     metrics_init();
     let gov = engine()
         .governance(
-            Arc::new(MemoryStore::new()),
+            engine().scratch_store(),
             Some("admintok".to_string()),
             Some(TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID)),
         )
@@ -84,7 +82,7 @@ async fn a_credential_less_client_can_walk_from_the_401_to_the_metadata_document
         .to_string();
     assert!(
         challenge.starts_with("Bearer "),
-        "the challenge scheme must be Bearer: {challenge}"
+        "the challenge must name the RFC 6750 scheme: {challenge}"
     );
     assert!(
         !challenge.contains("error="),

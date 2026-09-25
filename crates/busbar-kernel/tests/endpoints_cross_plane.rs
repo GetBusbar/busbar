@@ -16,6 +16,8 @@
 //! exactly this move — nothing about the tests themselves changed; they still drive the real handler
 //! functions directly, not a shim or a real HTTP round trip.
 
+mod linked;
+
 use axum::{extract::Extension, http::HeaderMap};
 use busbar_api::{ScopeRef, VirtualKey};
 use busbar_kernel::endpoints::{list_models, list_models_v1beta, stats};
@@ -27,7 +29,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 fn register_planes() {
-    busbar_llm::testkit::install_test_seams();
+    linked::install();
 }
 
 /// A virtual key restricted to `allowed_pools`. Mapping for the test helper: an EMPTY

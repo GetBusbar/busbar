@@ -101,7 +101,7 @@ impl Case {
         }
     }
 
-    fn streaming(&self) -> bool {
+    fn streams(&self) -> bool {
         matches!(
             self.fixture,
             Fixture::OkSse | Fixture::BodyCutAfterFirstByte
@@ -546,7 +546,7 @@ async fn run_legacy(case: &Case) -> Observed {
     let (host, rt) = crate::engine::test_host_rt(&app);
     let probe_epoch = admit(&*app.store, case);
     let permit = app.store.try_acquire(0).expect("a fresh lane has capacity");
-    let body = bytes::Bytes::from(request_body(case.ingress, case.streaming()));
+    let body = bytes::Bytes::from(request_body(case.ingress, case.streams()));
     let result = legacy::forward_once(
         &host,
         &rt,
@@ -576,7 +576,7 @@ async fn run_attempt(case: &Case) -> Observed {
     let (host, rt) = crate::engine::test_host_rt(&app);
     let probe_epoch = admit(&*app.store, case);
     let permit = app.store.try_acquire(0).expect("a fresh lane has capacity");
-    let body = bytes::Bytes::from(request_body(case.ingress, case.streaming()));
+    let body = bytes::Bytes::from(request_body(case.ingress, case.streams()));
     let cands = vec![crate::engine::WeightedLane {
         idx: 0,
         weight: 1,

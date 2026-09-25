@@ -1,25 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Statements cut as of a snapshot, and the adjusting entries an amendment owes.
+//! Statements cut as of a snapshot.
 //!
-//! Two claims are proved here, and they are the two the whole design rests on. A statement
-//! re-derives its figures from the quantities and never sums a cached price — so the answer does
-//! not depend on whether the recompute has been round yet, and hand-corrupting every cache in the
-//! book leaves it untouched. And an amendment moves money by emitting an adjusting entry rather
-//! than by editing a line — so `settled` does not move, `adjustments` does, and the identity's
-//! residual is zero on both sides of it with no new term.
+//! The claim proved here is the one the whole design rests on. A statement re-derives its figures
+//! from the quantities and never sums a cached price — so the answer does not depend on whether the
+//! recompute has been round yet, and hand-corrupting every cache in the book leaves it untouched.
+//! An amendment reprices a window as a dated VIEW (#77(3)); it books no adjusting line (#77(2)).
 
 use crate::cost::{Author, CardEntryDraft, History, HistorySeq, LaneClass, RateCard};
 use busbar_contract::caps::MeterClassId;
 
-use crate::identity::residual;
 use crate::recompute::{
     price_line, DerivedPrice, Divergence, HistoryArchive, Posting, PostingOrigin, PricedLine,
     SealedHistory,
 };
-use crate::settle::{adjusting_entries, Ledger};
-use crate::totals::{totals_as_of, Totals, WindowStart};
+use crate::totals::{totals_as_of, WindowStart};
 
 use super::fixtures::key;
 
@@ -239,203 +235,4 @@ fn a_statement_names_one_window_and_never_sums_two() {
         0,
         "both statements are real figures, not two empty ones agreeing"
     );
-}
-
-#[test]
-fn an_amendment_emits_one_adjusting_entry_per_affected_balance_and_none_for_the_untouched() {
-    let history = amended();
-    let before = history.snapshot(HistorySeq::OPENING);
-    let after = history.current();
-    let lines = book(&archive_of(opening()));
-
-    let entries = adjusting_entries(&before, &after, FINGERPRINT, REASON, lines.iter());
-    assert_eq!(entries.len(), 1, "one balance, one window, one entry");
-    let entry = &entries[0];
-
-    assert_eq!(entry.key, key("b"));
-    assert_eq!(entry.window, WINDOW);
-    assert_eq!(entry.from_seq, HistorySeq::OPENING);
-    assert_eq!(entry.to_seq, HistorySeq(1));
-    assert_eq!(entry.old_card_seq, HistorySeq::OPENING);
-    assert_eq!(entry.new_card_seq, HistorySeq(1));
-    assert_eq!(entry.operator_fingerprint, FINGERPRINT);
-    assert_eq!(entry.reason_hash, REASON);
-    assert_eq!(
-        entry.postings, 1,
-        "only the line inside the amended interval; the late one resolves to the same entry it \
-         always did, so it is not affected and the record says so"
-    );
-    assert_eq!(entry.delta, entry.new_nanos - entry.old_nanos);
-    assert!(entry.delta > 0, "the amendment doubled the rate");
-    assert!(entry.old_nanos > 0 && entry.new_nanos > 0);
-    assert_eq!(entry.fee_count, 1);
-    // The quantities the entry summarises are on it, in class order, so it is readable without the
-    // lines it describes.
-    assert_eq!(
-        entry
-            .quantities
-            .iter()
-            .map(|q| (q.class.as_str(), q.quantity))
-            .collect::<Vec<_>>(),
-        vec![("tokens_in", 1_000), ("tokens_out", 200)]
-    );
-}
-
-#[test]
-fn an_amendment_that_moved_nothing_emits_nothing() {
-    // A history append over a window nobody used is a history append and nothing else. A zero-delta
-    // record would be noise in the one journal an auditor reads line by line.
-    let history = opening();
-    let view = history.current();
-    let lines = book(&archive_of(opening()));
-    assert!(adjusting_entries(&view, &view, FINGERPRINT, REASON, lines.iter()).is_empty());
-}
-
-#[test]
-fn an_amendment_does_not_move_settled_and_the_residual_stays_zero_through_it() {
-    // THE IDENTITY CLAIM, and the reason the entry rides `adjustments`. A booked line is never
-    // rewritten, so `settled` may not move by a nano-unit; the delta rides the cell the identity
-    // already carries; and because the same delta is drawn, both sides move together and the
-    // residual is what it was.
-    let mut ledger = Ledger::new();
-    let k = key("b");
-    ledger.record_draw(&k, WINDOW, 1_000);
-    ledger.book_mut().entry(k.clone(), WINDOW).settled = 600;
-    ledger
-        .book_mut()
-        .entry(k.clone(), WINDOW)
-        .open_slice_remainders = 400;
-
-    let since = Totals::zero();
-    let was = ledger.book().get(&k, WINDOW);
-    assert!(
-        residual(&since, &was).holds(),
-        "the fixture has to balance before the amendment or the test proves nothing"
-    );
-
-    let history = amended();
-    let entries = adjusting_entries(
-        &history.snapshot(HistorySeq::OPENING),
-        &history.current(),
-        FINGERPRINT,
-        REASON,
-        book(&archive_of(opening())).iter(),
-    );
-    assert_eq!(entries.len(), 1);
-    let delta = entries[0].delta;
-    for entry in &entries {
-        ledger.record_repricing(entry);
-    }
-
-    let now = ledger.book().get(&k, WINDOW);
-    assert_eq!(
-        now.settled, was.settled,
-        "a booked line is never rewritten, so settled does not move"
-    );
-    assert_eq!(
-        now.adjustments,
-        was.adjustments + delta,
-        "the delta rides the adjustments cell the identity already had"
-    );
-    assert_eq!(now.drawn, was.drawn + delta);
-    assert!(
-        residual(&since, &now).holds(),
-        "the residual stays zero through the amendment: {}",
-        residual(&since, &now)
-    );
-}
-
-#[test]
-fn an_amendment_that_lowered_the_bill_gives_the_delta_back() {
-    // The other direction, because a correction that could only ever raise a bill would be a
-    // correction an operator could not use for the case they most need it.
-    let mut history = opening();
-    history.append(CardEntryDraft {
-        effective_from: EARLY_MS - 1_000,
-        effective_until: Some(EARLY_MS + 1_000),
-        card: card(1.0, 2.0),
-        appended_at: LATE_MS,
-        author: Author::Amend {
-            operator_fingerprint: FINGERPRINT.to_string(),
-            reason_hash: REASON,
-        },
-    });
-    let entries = adjusting_entries(
-        &history.snapshot(HistorySeq::OPENING),
-        &history.current(),
-        FINGERPRINT,
-        REASON,
-        book(&archive_of(opening())).iter(),
-    );
-    assert_eq!(entries.len(), 1);
-    assert!(entries[0].delta < 0, "the bill went down");
-
-    let mut ledger = Ledger::new();
-    let k = key("b");
-    ledger.record_draw(&k, WINDOW, 1_000);
-    ledger.record_slice_spent(&k, WINDOW, 1_000);
-    ledger.book_mut().entry(k.clone(), WINDOW).settled = 1_000;
-    let was = ledger.book().get(&k, WINDOW);
-    assert!(
-        residual(&Totals::zero(), &was).holds(),
-        "the fixture has to balance before the amendment or the test proves nothing"
-    );
-    ledger.record_repricing(&entries[0]);
-    let now = ledger.book().get(&k, WINDOW);
-    assert_eq!(now.settled, was.settled);
-    assert!(now.adjustments < 0 && now.drawn < was.drawn);
-    assert!(residual(&Totals::zero(), &now).holds());
-}
-
-#[test]
-fn two_amendments_over_one_window_are_computed_one_against_the_next() {
-    // "Never rewritten" requires this: the second amendment's entry states what the balance was
-    // under the FIRST one, not what it was originally. Otherwise the two corrections would
-    // double-count the same movement.
-    let mut history = amended();
-    history.append(CardEntryDraft {
-        effective_from: EARLY_MS - 1_000,
-        effective_until: Some(EARLY_MS + 1_000),
-        card: card(8.0, 20.0),
-        appended_at: LATE_MS + 1,
-        author: Author::Amend {
-            operator_fingerprint: FINGERPRINT.to_string(),
-            reason_hash: REASON,
-        },
-    });
-    let lines = book(&archive_of(opening()));
-
-    let first = adjusting_entries(
-        &history.snapshot(HistorySeq::OPENING),
-        &history.snapshot(HistorySeq(1)),
-        FINGERPRINT,
-        REASON,
-        lines.iter(),
-    );
-    let second = adjusting_entries(
-        &history.snapshot(HistorySeq(1)),
-        &history.snapshot(HistorySeq(2)),
-        FINGERPRINT,
-        REASON,
-        lines.iter(),
-    );
-    assert_eq!(first.len(), 1);
-    assert_eq!(second.len(), 1);
-    assert_eq!(
-        second[0].old_nanos, first[0].new_nanos,
-        "the second correction starts from where the first left the balance"
-    );
-    assert_eq!(second[0].old_card_seq, HistorySeq(1));
-    assert_eq!(second[0].new_card_seq, HistorySeq(2));
-
-    // And the two deltas compose: applying both leaves the balance where one amendment straight to
-    // the final card would have.
-    let straight = adjusting_entries(
-        &history.snapshot(HistorySeq::OPENING),
-        &history.snapshot(HistorySeq(2)),
-        FINGERPRINT,
-        REASON,
-        lines.iter(),
-    );
-    assert_eq!(straight[0].delta, first[0].delta + second[0].delta);
 }

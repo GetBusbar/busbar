@@ -927,7 +927,7 @@ impl McpWire for StdioWire {
                 // on a stdio registration therefore never sees a matching observation and is
                 // quarantined by `connect::refresh` rather than silently treated as satisfied —
                 // exactly the fail-closed answer a meaningless pin on this carrier should get.
-                peer_spki: None,
+                peer_key_digest: None,
             })
             .map_err(TransportError::Io)
     }

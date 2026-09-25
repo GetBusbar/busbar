@@ -588,7 +588,7 @@ pub(super) async fn forward_once(
             // SUCCESS: stream the response body incrementally (permit held for stream life).
             let is_sse = ct
                 .as_ref()
-                .map(|h| is_streaming_content_type(h.to_str().unwrap_or("")))
+                .map(|h| is_stream_content_type(h.to_str().unwrap_or("")))
                 .unwrap_or(false);
 
             // Non-streaming cross-protocol response: buffer + translate egress→IR→ingress, mirroring

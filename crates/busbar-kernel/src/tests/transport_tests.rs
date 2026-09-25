@@ -35,10 +35,14 @@ fn names_are_stable_and_distinct() {
 /// convention.
 #[test]
 fn framing_carries_the_codec_through_unchanged() {
-    let rh = request_handler("openai").expect("openai is registered");
+    // The residual-default protocol: the one a request no dialect claimed is spoken in, read off the
+    // registry rather than named here.
+    let protocol = crate::proto::registry::residual_default_protocol()
+        .expect("a residual-default protocol is registered");
+    let rh = request_handler(protocol).unwrap_or_else(|| panic!("{protocol} is registered"));
     let codec = rh
         .operation_handler(Operation::CHAT)
-        .expect("openai serves chat");
+        .unwrap_or_else(|| panic!("{protocol} serves chat"));
     let framed = crate::handlers::frame(Transport::Http, Operation::CHAT, codec);
 
     assert_eq!(framed.operation, Operation::CHAT);
@@ -56,28 +60,38 @@ fn framing_carries_the_codec_through_unchanged() {
     assert_eq!(framed.taps_nonstream_usage(), codec.taps_usage());
 }
 
-/// EVERY PROTOCOL IN THE MATRIX STILL FRAMES ON `Http`. Six LLM dialects plus MCP, each framed
-/// through its own registered codec. The point of keeping this unchanged when the axis grew two
-/// variants is that the split was NOT a relabelling of what was already there: these seven cells
-/// ride the same variant, with the same name, that they rode before A2A's legs existed.
+/// EVERY PROTOCOL IN THE MATRIX STILL FRAMES ON `Http`. Every registered protocol, each framed
+/// through its own registered codec for every verb it declares. The point of keeping this unchanged
+/// when the axis grew two variants is that the split was NOT a relabelling of what was already
+/// there: these cells ride the same variant, with the same name, that they rode before the
+/// agent-protocol legs existed. The protocols are read off the registry, not listed here, so a
+/// protocol added to it is framed the day it lands.
 #[test]
 fn all_seven_protocols_frame_over_http() {
-    let cells = [
-        ("openai", Operation::CHAT),
-        ("anthropic", Operation::CHAT),
-        ("gemini", Operation::CHAT),
-        ("bedrock", Operation::CHAT),
-        ("cohere", Operation::CHAT),
-        ("responses", Operation::CHAT),
-        ("mcp", Operation::INVOKE),
-    ];
-    for (protocol, operation) in cells {
-        let rh = request_handler(protocol).unwrap_or_else(|| panic!("{protocol} is registered"));
-        let codec = rh
-            .operation_handler(operation)
-            .unwrap_or_else(|| panic!("{protocol} serves {}", operation.name()));
-        let framed = crate::handlers::frame(Transport::Http, operation, codec);
-        assert_eq!(framed.transport(), Transport::Http, "{protocol}");
-        assert_eq!(framed.operation, operation, "{protocol}");
+    let decls = crate::proto::registry::registry().decls();
+    assert_eq!(
+        decls.len(),
+        7,
+        "core's test binary registers seven protocols; an empty registry would pass vacuously"
+    );
+    let mut cells = 0;
+    for decl in decls {
+        let protocol = decl.name;
+        assert!(!decl.verbs.is_empty(), "{protocol} declares no verb");
+        for &operation in decl.verbs {
+            let rh =
+                request_handler(protocol).unwrap_or_else(|| panic!("{protocol} is registered"));
+            let codec = rh
+                .operation_handler(operation)
+                .unwrap_or_else(|| panic!("{protocol} serves {}", operation.name()));
+            let framed = crate::handlers::frame(Transport::Http, operation, codec);
+            assert_eq!(framed.transport(), Transport::Http, "{protocol}");
+            assert_eq!(framed.operation, operation, "{protocol}");
+            cells += 1;
+        }
     }
+    assert!(
+        cells >= decls.len(),
+        "every protocol framed at least one cell"
+    );
 }

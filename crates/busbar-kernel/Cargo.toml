@@ -24,6 +24,13 @@ license = "Apache-2.0"
 name = "busbar_kernel"
 path = "src/lib.rs"
 
+# THE TEST-LINKED PLANES (SEAM-T, N02 ruling): the dev-dependency plane crates the cross-plane
+# integration tests install and loop. build.rs emits `$OUT_DIR/test_linked.rs` from this list and
+# `tests/linked/mod.rs` includes it, so the tests' sources name none of these crates; they address a
+# plane by what its declaration states, read back from the registry.
+[package.metadata.busbar]
+test-linked = ["busbar-llm", "busbar-mcp", "busbar-a2a"]
+
 [dependencies]
 busbar-api = { path = "../api" }
 # ── ABSORBED from the pre-1.6.0 busbar-kernel crate (W4.a #19/#37) ────────────────────────────────
@@ -70,6 +77,12 @@ busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
 # crates, so the edge is acyclic and kernel -> kernel (an intra-tier edge ARCHITECTURE_ALLOWED
 # grants), exactly as the ledger edge above.
 busbar-kernel-audit = { path = "../busbar-kernel-audit" }
+# THE ONE BREAKER (item 142). The admission path's circuit-breaker state machine, the per-lane
+# `max_requests` budget and the two `limits.*` breaker knobs are this unit's; the in-memory store
+# holds handles onto its cells. There WAS a second copy of that state machine in this crate, and it
+# carried three races the unit had already fixed. The unit depends only on `busbar-contract`, so the
+# edge is acyclic and kernel -> kernel, exactly as the ledger and audit edges above.
+busbar-kernel-breaker = { path = "../busbar-kernel-breaker" }
 # Inline-capacity vectors for the per-request lane-selection working set (`proxy::select`): a
 # typical pool has a handful of members, so the candidate view, the SWRR scratch and the tried-set
 # live on the stack instead of costing three heap allocations per pick. Workspace-pinned.

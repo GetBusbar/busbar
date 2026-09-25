@@ -96,12 +96,12 @@ impl Words for ZetaWords {
 impl ResourceMetadata for ZetaWords {
     fn document(app: &crate::state::App) -> Option<Metadata<'_>> {
         // A third plane resolves its own facts off the snapshot exactly as the two real ones do.
-        // This one keys off `mcp` only so the test can turn the plane off and on; what is being
-        // measured is that the HANDLER is not written here, not where the facts come from.
-        // "is this an mcp deployment?" — read the neutral plane slot directly (the type-erased
-        // presence the `busbar_mcp::mcp::resource` accessor also keys off), so this in-crate unit test
+        // This one keys off its own slot only so the test can turn the plane off and on; what is
+        // being measured is that the HANDLER is not written here, not where the facts come from.
+        // "is this plane configured?" — read the neutral plane slot directly (the type-erased
+        // presence every real plane's resource accessor also keys off), so this in-crate unit test
         // names no plane type across the crate boundary.
-        app.plane_slot("mcp")?;
+        app.plane_slot("zeta")?;
         Some(Metadata {
             resource: std::borrow::Cow::Borrowed("https://zeta.example/rpc"),
             authorization_servers: &[],

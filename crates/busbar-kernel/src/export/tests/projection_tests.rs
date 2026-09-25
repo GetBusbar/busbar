@@ -40,7 +40,21 @@ fn assert_error_mentions(errors: &[String], needles: &[&str]) {
 /// release verifier) this release keeps guarding against.
 #[test]
 fn producerless_stream_is_a_loud_config_error() {
-    for stream in ["costs", "decisions", "identity", "prompts", "completions"] {
+    // Every stream of the frozen vocabulary this release does not produce — derived, so a stream
+    // that loses (or never had) its producer is covered the day it lands.
+    let producerless: Vec<&str> = ExportStream::ALL
+        .iter()
+        .filter(|s| !PRODUCED_STREAMS.contains(*s))
+        .map(|s| s.as_token())
+        .collect();
+    assert_eq!(
+        producerless.len(),
+        5,
+        "this release produces {} of the {} frozen streams; the producerless set is {producerless:?}",
+        PRODUCED_STREAMS.len(),
+        ExportStream::ALL.len()
+    );
+    for stream in producerless {
         let errors = resolve_errs(&format!(
             "siem:\n  module: request-log-webhook\n  streams: [{stream}]\n  settings:\n    url: https://sink.example.com/l\n"
         ));
@@ -189,6 +203,7 @@ fn omitting_a_pinned_field_is_a_loud_error_with_the_reason() {
     let proj = resolve_projection(
         "chain",
         "some-event-sink",
+        None,
         Some(&["events".to_string()]),
         Some(&[
             "seq".to_string(),
@@ -212,6 +227,7 @@ fn fields_override_replaces_the_default_set_rather_than_adding_to_it() {
     let proj = resolve_projection(
         "chain",
         "some-event-sink",
+        None,
         Some(&["events".to_string()]),
         Some(&[
             "seq".to_string(),
@@ -257,6 +273,7 @@ fn field_outside_the_subscribed_streams_is_a_loud_error() {
     resolve_projection(
         "chain",
         "some-event-sink",
+        None,
         Some(&["events".to_string()]),
         Some(&[
             "seq".into(),
@@ -284,6 +301,7 @@ fn projected_record_cannot_carry_an_ungranted_field() {
     let proj = resolve_projection(
         "chain",
         "some-event-sink",
+        None,
         Some(&["events".to_string()]),
         Some(&["seq".into(), "ts".into(), "prev_hash".into(), "kind".into()]),
         false,
@@ -320,6 +338,7 @@ fn a_grant_on_one_stream_does_not_leak_into_another() {
     let proj = resolve_projection(
         "chain",
         "some-event-sink",
+        None,
         Some(&["events".to_string()]),
         None,
         false,
@@ -369,7 +388,14 @@ fn projection_union_is_the_compute_gate() {
 fn produced_logs_fields_match_the_request_log_producer() {
     // A projection granting EVERY documented logs field: whatever the producer writes, gets through.
     let all_logs = Projection::for_test(&[ExportStream::Logs], ExportStream::Logs.default_fields());
-    let payload = crate::export::build_request_log(all_logs, 1, "acme", "p", "ok", 5);
+    let facts = crate::export::RequestLogFacts {
+        ts: 1,
+        ingress_protocol: "acme",
+        pool: "p",
+        outcome: "ok",
+        latency_ms: 5,
+    };
+    let payload = crate::export::build_request_log(all_logs, &facts);
     let mut written: Vec<&str> = payload
         .as_object()
         .expect("an object")
@@ -435,7 +461,9 @@ fn projection_keys_are_instance_level_not_settings() {
 #[test]
 fn a_producerless_stream_fails_the_boot_validate_pipeline() {
     crate::test_support::register_neutral_test_plane();
-    let yaml = r#"
+    // A config that is valid in every other respect: the one pool is memberless and no provider is
+    // declared, so nothing but the `export:` block can be what fails it.
+    let base = r#"
 listen: "0.0.0.0:8080"
 auth:
   chain: [keys]
@@ -446,35 +474,30 @@ auth:
       platform:
         allowed_pools: [main]
         group: eng
-providers:
-  anthropic:
-    api_key: { env: ANTHROPIC_API_KEY }
-models:
-  claude:
-    provider: anthropic
+providers: {}
+models: {}
 pools:
   main:
-    members:
-      - model: claude
+    members: []
 groups:
   eng:
     limits:
       - { requests: 500, per: minute }
 store:
   module: memory
-export:
-  siem:
-    module: request-log-webhook
-    streams: [prompts]
-    settings:
-      url: https://siem.example.com/l
 "#;
-    let deploy: crate::config::DeployCfg = serde_yaml::from_str(yaml).expect("fixture parses");
-    let def: crate::config::ProviderDef = serde_yaml::from_str(
-        "protocol: anthropic\nbase_url: https://api.anthropic.com\nerror_map:\n  \"400\": client_error\n",
-    )
-    .unwrap();
-    let defs = std::collections::HashMap::from([("anthropic".to_string(), def)]);
+    let defs = std::collections::HashMap::new();
+    // CONTROL: without the export block the same config resolves — so the refusal below is the
+    // export stream's, not some other defect in the fixture.
+    let control: crate::config::DeployCfg = serde_yaml::from_str(base).expect("fixture parses");
+    if let Err(errors) = crate::config::resolve(&control, &defs) {
+        panic!("the fixture without `export:` must resolve; errors were: {errors:#?}");
+    }
+    let yaml = format!(
+        "{base}export:\n  siem:\n    module: request-log-webhook\n    streams: [prompts]\n    \
+         settings:\n      url: https://siem.example.com/l\n"
+    );
+    let deploy: crate::config::DeployCfg = serde_yaml::from_str(&yaml).expect("fixture parses");
     let errors = crate::config::resolve(&deploy, &defs)
         .expect_err("a producerless stream must make the whole config fail to resolve");
     assert_error_mentions(&errors, &["prompts", "NO PRODUCER", "later release"]);

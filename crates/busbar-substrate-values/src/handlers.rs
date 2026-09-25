@@ -88,20 +88,10 @@ pub fn path_of(paths: &'static [(Operation, &'static str)], op: Operation) -> Op
         .map(|(_, path)| *path)
 }
 
-/// A request that could not be parsed into this operation's IR — rendered as a caller-dialect 4xx
-/// (via the existing `proxy::ingress_error`). `UnsupportedSubOp` is the second 404 site
-/// (`ImageIr.op` unsupported for the model) — distinct from handler-absence, same terminal.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum IngressReject {
-    BadRequest(String),
-    UnsupportedSubOp { op: Operation, model: String },
-}
-
-/// An upstream response body this OperationHandler could not decode into its operation's IR.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CodecError {
-    Malformed(String),
-}
+/// The two refusals a codec cell reports — a request it could not parse into its operation's IR, and
+/// an upstream body it could not decode. SHAPES: defined in `busbar_contract::codec` (DECISIONS #83,
+/// SD-1 of the #83a split) and re-exported here under their historical paths.
+pub use busbar_contract::codec::{CodecError, IngressReject};
 
 /// A pure per-(protocol × operation) codec. Feed it wire, assert the IR; feed it IR, assert the wire.
 /// That is the entire contract — the load-bearing discipline that makes the matrix scale. It knows

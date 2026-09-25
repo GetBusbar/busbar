@@ -478,10 +478,18 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
     ));
 
     // ── invariant 4 ──────────────────────────────────────────────────────────────────────────────
+    //
+    // ONE planted body, two homes. In a kernel crate it is a bypass of the kernel's durable-write
+    // primitive and must red; in a plugin-kind crate it is that plugin's own I/O (#40: a plugin
+    // cannot name the kernel's primitive) and the core-tier durable rules must not judge it.
+    const DURABLE_BYPASS_BODY: &str =
+        "pub fn publish() {\n    std::fs::rename(&tmp, &dst).unwrap();\n    \
+         std::fs::File::open(&dst).unwrap().sync_all().unwrap();\n    \
+         std::fs::create_dir_all(&dir).unwrap();\n}\n";
     let mut ov = Overlay::new();
     ov.set(
         format!("{}/planted_bypass.rs", roots::CORE),
-        "pub fn publish() {\n    std::fs::rename(&tmp, &dst).unwrap();\n}\n",
+        DURABLE_BYPASS_BODY,
     );
     report.push(debt_free_case(
         cx,
@@ -490,7 +498,61 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         &[choke_points::ROW_BYPASS],
         without_existing(&existing.choke_bypass),
         ov,
-        &["DURABLE-BYPASS", "planted_bypass.rs:2"],
+        &[
+            "DURABLE-BYPASS",
+            "planted_bypass.rs:2",
+            "planted_bypass.rs:3",
+            "planted_bypass.rs:4",
+        ],
+    ));
+
+    // The plugin-kind home is READ off the kind table the rule itself reads, not spelled here.
+    let plugin_dir = choke_points::plugin_kind_dirs(cx)
+        .ok()
+        .and_then(|d| d.into_iter().next())
+        .unwrap_or_else(|| "crates/store-example-plugin".to_string());
+    let mut ov = without_existing(&existing.choke_bypass);
+    ov.set(
+        format!("{plugin_dir}/src/planted_bypass.rs"),
+        DURABLE_BYPASS_BODY,
+    );
+    report.push(green_case(
+        cx,
+        gate,
+        "a plugin-kind crate's own durable write is its own I/O, not a kernel-tier bypass",
+        &[choke_points::ROW_BYPASS],
+        ov,
+    ));
+
+    // AN ATOMIC SWAP IS NOT AN APPHANDLE SWAP. The mutation rule's `.swap(` matches both; the one
+    // that carries a memory ordering — `Ordering::X`, or the variant imported bare — is a counter,
+    // and a sink draining its counters mutates no config. The handle swap still reds, by line.
+    let mut ov = Overlay::new();
+    ov.set(
+        format!("{}/planted_swap.rs", roots::CORE),
+        "pub fn publish(h: &AppHandle) {\n    h.swap(next);\n}\n",
+    );
+    report.push(debt_free_case(
+        cx,
+        gate,
+        "a direct AppHandle swap outside a transaction is named by file and line",
+        &[choke_points::ROW_BYPASS],
+        without_existing(&existing.choke_bypass),
+        ov,
+        &["MUTATION-BYPASS", "planted_swap.rs:2"],
+    ));
+    let mut ov = without_existing(&existing.choke_bypass);
+    ov.set(
+        format!("{}/planted_atomic_swap.rs", roots::CORE),
+        "pub fn drain(c: &AtomicU64, d: &AtomicBool) -> u64 {\n    \
+         d.swap(true, Ordering::SeqCst);\n    c.swap(0, Relaxed)\n}\n",
+    );
+    report.push(green_case(
+        cx,
+        gate,
+        "an atomic swap carrying its memory ordering is a counter, not an AppHandle swap",
+        &[choke_points::ROW_BYPASS],
+        ov,
     ));
 
     // A LINE INSIDE A `#[cfg(test)]` REGION IS NOT A BYPASS, and neither is one in a comment. Both

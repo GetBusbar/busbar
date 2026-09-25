@@ -45,6 +45,33 @@ fn is_comment(line: &str) -> bool {
     t.starts_with("//") || t.starts_with('*') || t.starts_with("/*")
 }
 
+/// Every OTHER plane crate's module spelling (`busbar_plane_<name>`), read live off the `crates/`
+/// directory rather than spelled by name — the forbidden list below forbids by SHAPE
+/// (`busbar-plane-*`, minus this crate itself) instead of a plane naming its siblings, which is the
+/// broker-law violation DECISION #8 forbids in the first place. It also stays true automatically if
+/// the plane roster (#48) ever changes.
+fn sibling_plane_modules() -> Vec<String> {
+    let crates_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("this crate sits under crates/")
+        .to_path_buf();
+    let this = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("this crate has a directory name")
+        .to_string();
+    let mut out: Vec<String> = std::fs::read_dir(&crates_dir)
+        .expect("crates/ is readable")
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .filter(|name| name.starts_with("busbar-plane-") && *name != this)
+        .map(|name| name.replace('-', "_"))
+        .collect();
+    out.sort();
+    out
+}
+
 /// The plane keeps no state of its own between calls.
 #[test]
 fn the_plane_holds_no_interior_state() {
@@ -137,26 +164,23 @@ fn the_plane_performs_no_input_or_output() {
 /// `the_manifest_names_only_what_this_plane_may_name`).
 #[test]
 fn the_plane_names_no_kernel_side_crate() {
-    let forbidden = [
-        "busbar_api",
-        "busbar_caps",
-        "busbar_kernel",
-        "busbar_unit",
-        "busbar_core",
-        "busbar_admin",
-        "busbar_plane_llm",
-        "busbar_plane_mcp",
-        "busbar_plane_a2a",
-        "busbar_plane_streaming",
+    let mut forbidden: Vec<String> = vec![
+        "busbar_api".to_string(),
+        "busbar_caps".to_string(),
+        "busbar_kernel".to_string(),
+        "busbar_unit".to_string(),
+        "busbar_core".to_string(),
+        "busbar_admin".to_string(),
     ];
+    forbidden.extend(sibling_plane_modules());
     let mut offenders = Vec::new();
     walk(&src_dir(), &mut |path, text| {
         for (n, line) in text.lines().enumerate() {
             if is_comment(line) {
                 continue;
             }
-            for name in forbidden {
-                if line.contains(name) {
+            for name in &forbidden {
+                if line.contains(name.as_str()) {
                     offenders.push(format!("{}:{}: {name}", path.display(), n + 1));
                 }
             }
@@ -270,7 +294,7 @@ fn the_plane_names_no_money_and_no_decision() {
         "deny(",
         "credential_bytes",
         "secret_value",
-        "bearer_token",
+        "credential_token",
     ];
     let mut offenders = Vec::new();
     walk(&src_dir(), &mut |path, text| {

@@ -250,7 +250,7 @@ responses/request/content[].type=output_text.text = carried responses_request_co
 responses/request/content[].type=output_text.annotations = carried responses_request_output_text_annotations_survive
 responses/request/content[].type=input_image.image_url = carried responses_request_content_parts_survive_roundtrip
 responses/request/content[].type=input_image.file_id = carried responses_request_content_parts_survive_roundtrip
-responses/request/content[].type=input_image.detail = carried responses_request_input_image_detail_dropped_with_warn
+responses/request/content[].type=input_image.detail = carried responses_request_input_image_detail_carried
 responses/request/input[].type=function_call.call_id = carried responses_request_function_call_items_survive_roundtrip
 responses/request/input[].type=function_call.name = carried responses_request_function_call_items_survive_roundtrip
 responses/request/input[].type=function_call.arguments = carried responses_request_function_call_items_survive_roundtrip

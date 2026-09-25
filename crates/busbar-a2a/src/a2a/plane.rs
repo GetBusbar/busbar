@@ -220,7 +220,7 @@ impl A2aPlane {
 
     /// LOWER `agents:` INTO A RUNNING REGISTRY, CARRYING the verify-on-call gate and the boot-resolved
     /// card transports across from the prior generation's plane — the composition-root entry point
-    /// ([`super::PLANE_DECL`]'s `build`) uses this so the coalescing epochs and the boot-set transports
+    /// ([`super::PLANE_HOOKS`]' `build`) uses this so the coalescing epochs and the boot-set transports
     /// survive every config apply (fresh defaults on the first build). [`Self::from_config`] is the
     /// fresh-gate shorthand every test uses.
     pub(crate) fn from_config_carrying(
@@ -326,9 +326,10 @@ impl A2aPlane {
         Arc::clone(&self.relay.read().unwrap_or_else(|e| e.into_inner()))
     }
 
-    /// Swap the relay seam. TEST ONLY, and compiled out of every release binary — a production
+    /// Swap the relay seam. TEST-SUPPORT ONLY (this crate's own tests, and the served-leg witnesses a
+    /// linking crate's test build runs), and compiled out of every release binary — a production
     /// build has exactly one way to obtain a seam, which is the constructor above.
-    #[cfg(all(test, feature = "test-support"))]
+    #[cfg(feature = "test-support")]
     pub(crate) fn set_relay_seam(&self, seam: Arc<dyn super::relay::RelaySeam>) {
         *self.relay.write().unwrap_or_else(|e| e.into_inner()) = seam;
     }

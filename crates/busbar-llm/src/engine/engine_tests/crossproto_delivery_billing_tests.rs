@@ -18,7 +18,6 @@ use crate::engine::AppEngineExt as _;
 use crate::engine::TapCell;
 use busbar_kernel::governance::NewKeySpec;
 use busbar_kernel::test_support::engine_kit::{CostKit, EngineTestKit as _, GovKit};
-use busbar_store_memory::MemoryStore;
 use std::sync::Arc;
 
 /// A governed fixture: an `App` whose sole lane is the OpenAI EGRESS with a limited request budget of
@@ -31,7 +30,7 @@ fn fixture() -> (
     busbar_api::VirtualKey,
 ) {
     crate::testkit::install_test_seams();
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .expect("gov");

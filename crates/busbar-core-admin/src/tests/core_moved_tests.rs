@@ -104,7 +104,7 @@ async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
     assert_eq!(
         r.status().as_u16(),
         200,
-        "correct Bearer + wrong x-admin-token must authorize (OR fold), got {}",
+        "correct Authorization header + wrong x-admin-token must authorize (OR fold), got {}",
         r.status()
     );
 
@@ -121,7 +121,7 @@ async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
     assert_eq!(
         r.status().as_u16(),
         200,
-        "wrong Bearer + correct x-admin-token must authorize (header compare must run), got {}",
+        "wrong Authorization header + correct x-admin-token must authorize (header compare must run), got {}",
         r.status()
     );
 
@@ -205,17 +205,17 @@ async fn test_admin_token_not_acceptable_via_vendor_carriers() {
 
     // The two sanctioned admin carriers MUST authorize (proving the 401s above are carrier
     // separation, not a blanket reject).
-    let r_bearer = client
+    let r_authz = client
         .get(&url)
         .bearer_auth("admintok")
         .send()
         .await
         .unwrap();
     assert_eq!(
-        r_bearer.status().as_u16(),
+        r_authz.status().as_u16(),
         200,
-        "Authorization: Bearer admintok must authorize the admin surface, got {}",
-        r_bearer.status()
+        "the Authorization-header credential must authorize the admin surface, got {}",
+        r_authz.status()
     );
     let r_hdr = client
         .get(&url)

@@ -9,7 +9,7 @@
 #
 # STATUS: the four-layer duplex/session IR (`plane4-duplex-session.md` §2), both dialect codecs (OpenAI
 # Realtime + Gemini Live), the T2 session pump, and both topologies are implemented behind the "runtime"
-# feature. Boot-mounting into the composition root (PLANE_DECL's build / admission / routes hooks) is
+# feature. Boot-mounting into the composition root (PLANE_HOOKS' build / admission / routes hooks) is
 # separate, tracked work. It compiles, registers, and is strong-form deletable.
 #
 # DEPENDENCY POSTURE: `busbar-substrate` is the neutral shared surface the plugin names instead of
@@ -52,6 +52,10 @@ required-features = ["runtime", "test-support"]
 # and protocol registry descriptors (`PlaneDecl`, `ProtocolDecl`), the diagnostics namespace, the
 # proxy/egress constants the `ProtocolDecl` fields carry.
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
+# The contract face. The plane's REGISTRATION item, `PLANE_DECLARATION`, is a
+# `busbar_contract::plane::PlaneDeclaration` — plain data naming no kernel type — so the declaration
+# a plane states about itself survives the fold into `busbar-plane-streaming` without a kernel edge.
+busbar-contract = { path = "../busbar-contract" }
 # THE CODECS. The pure half of this plugin, split out so `busbar-plane-streaming` can name the duplex IR
 # and the dialect grammars without pulling this crate's axum mount, WebSocket accept, tokio session
 # tasks and telephony dial into a pure kind's closure. Every module that moved is re-exported from
@@ -73,7 +77,7 @@ bytes = { workspace = true }
 # the argument bytes).
 serde = { workspace = true }
 serde_json = { workspace = true }
-# THE `streams:` CONFIG-SECTION reader (`config.rs`): `PLANE_DECL.parse_section` deserializes the
+# THE `streams:` CONFIG-SECTION reader (`config.rs`): `PLANE_HOOKS.parse_section` deserializes the
 # owned section from a `serde_yaml::Value` through the plane's own typed `StreamsCfg`, exactly as the
 # MCP/A2A `parse_section` hooks do. UNCONDITIONAL (config parse/validate is needed in the default
 # feature-off build too), so it is a plain dep rather than a `runtime`-gated one.
@@ -100,7 +104,7 @@ tokio = { workspace = true, features = ["rt", "sync", "macros", "time", "net", "
 # reason to expose. Same feature set as the substrate's own use (handshake only, no TLS/connector).
 tokio-tungstenite = { workspace = true, optional = true }
 # THE NEUTRAL ROUTE-ENUM ABI (`RouteAuth`/`RouteMethod`) the plane names to describe its data routes as
-# `PlaneRouteSpec`s (`PLANE_DECL.routes`), the SAME crate busbar-a2a names for its own routes. OPTIONAL,
+# `PlaneRouteSpec`s (`PLANE_HOOKS.routes`), the SAME crate busbar-a2a names for its own routes. OPTIONAL,
 # pulled only by `runtime`: the default feature-off build mounts no routes and names no route enum.
 busbar-plugin = { path = "../busbar-plugin", optional = true }
 # `url` — ONE reading of the deployment's `public_url` into the plane's RFC 8707 audience + metadata URL

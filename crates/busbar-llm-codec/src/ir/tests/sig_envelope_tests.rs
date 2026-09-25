@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! IR-18 provenance survives the CLIENT round trip (architect ruling, IR-INTEGRATE round 3 item 15).
+//! IR-18 provenance survives the CLIENT round trip (architect ruling).
 //!
 //! The probe is the whole trip: an Anthropic backend answers a Responses client with signed
 //! thinking; the client sends the reasoning item back on its next turn; the Anthropic egress must

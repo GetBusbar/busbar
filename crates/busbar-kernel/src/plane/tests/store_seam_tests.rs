@@ -93,7 +93,7 @@ fn compile_time_seam_proof_is_referenced() {
     // The two functions above are the proof; they are compiled because this test names them. It
     // runs them against a real narrowed store so the negative half has a live `&dyn PlaneStore`.
     plane_method_set_is_exactly_the_plane_methods();
-    let store = PlaneStoreView::narrow(Arc::new(busbar_store_memory::MemoryStore::new()));
+    let store = PlaneStoreView::narrow(Arc::new(crate::governance::MemoryStore::new()));
     plane_store_reaches_no_audit_method(store.as_ref());
 }
 

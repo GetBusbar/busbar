@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "busbar-export-file"
+version = "1.5.0"
+publish = false            # a first-party roster crate; shipped linked into busbar or as a signed tarball
+edition = "2021"
+rust-version = "1.97"
+description = "The request-log FILE export sink (`module: request-log-file`): appends each request-log line as JSONL, rotating by rename at `rotate_mb`. Every file act is performed by the host on the destination it opened for the operator's configured path; the sink never opens a path."
+license = "Apache-2.0"
+
+[lib]
+# cdylib: the dropped-in door (a signed tarball in `plugins/`). rlib: the linked door (the composition
+# root links the crate's `BUSBAR_COLD_ENTRY`) and the tests.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+busbar-plugin-sdk = { path = "../plugin-sdk" }
+# The sink's settings shape (`FileSettings`), parsed with the same serde the host's configuration
+# grammar uses so a settings error reads exactly as it always has. Not busbar crates: they do not
+# widen this crate's busbar closure (DECISIONS #84: exactly `busbar-plugin-sdk`).
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The sink's operator log lines (its rotation line and its five catalogue diagnostics), emitted with
+# the catalogue's `diag` banner field exactly as they always were.
+tracing = { workspace = true }

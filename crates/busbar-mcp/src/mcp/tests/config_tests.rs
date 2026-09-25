@@ -292,3 +292,49 @@ fn the_sampling_block_round_trips_through_yaml_and_the_new_bounds_default_when_o
          `max_messages` at its default, unbounded by what the operator thought they wrote"
     );
 }
+
+/// THE CADENCE RATCHET, OVER THIS PLANE'S OWN FILES. The `tools:` plane has a `verify_ttl:` and a
+/// fetch of its own, and both drive the kernel's shared `due`. A knob that slowed detection or
+/// delayed a quarantine would be exactly as dangerous here as on any other plane, so this plane's
+/// config grammar and its connect path are held to the identical rule the kernel's shared trust gate
+/// is held to. The plane tests itself: no sibling plane reads these files.
+#[test]
+fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
+    let read = |rel: &str| -> String {
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel))
+            .unwrap_or_else(|e| {
+                panic!(
+                    "the cadence ratchet cannot read `{rel}`: {e}. If the file \
+                 moved, MOVE THE RATCHET — do not drop the path."
+                )
+            })
+    };
+    let code = |s: &str| -> String {
+        s.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    for rel in ["src/mcp/config.rs", "src/mcp/connect.rs"] {
+        let src = code(&read(rel));
+        for banned in [
+            "detection_backoff",
+            "detection_grace",
+            "demotion_backoff",
+            "demotion_grace",
+            "demotion_delay",
+            "quarantine_grace",
+            "quarantine_delay",
+            "drift_grace",
+            "suppress_drift",
+            "min_drift",
+        ] {
+            assert!(
+                !src.contains(banned),
+                "{rel} names `{banned}`. Detection is never rate-limited and demotion is never \
+                 held; the only direction that may be held is RECOVERY. A window an upstream can \
+                 open for itself by flapping is a window it will use."
+            );
+        }
+    }
+}

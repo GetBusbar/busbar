@@ -17,7 +17,7 @@ use busbar_contract::{
 #[test]
 fn a_program_upstream_does_not_print_or_serialise_its_environment_values() {
     let a = UpstreamAddress::Program {
-        path: "/usr/bin/mcp-server",
+        path: "/usr/bin/grid-server",
         args: &["--stdio"],
         env: &[("GITHUB_TOKEN", "ghp_live-SECRET")],
         extras: &[],
@@ -32,7 +32,7 @@ fn a_program_upstream_does_not_print_or_serialise_its_environment_values() {
     // child spawned without the variable it needed, and nothing a reader could present as it.
     assert!(printed.contains("GITHUB_TOKEN"), "{printed}");
     assert!(printed.contains("15"), "{printed}");
-    assert!(printed.contains("/usr/bin/mcp-server"), "{printed}");
+    assert!(printed.contains("/usr/bin/grid-server"), "{printed}");
 
     let json = serde_json::to_string(&a).expect("an upstream address serialises");
     assert!(

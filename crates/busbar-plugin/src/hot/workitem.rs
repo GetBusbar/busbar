@@ -18,6 +18,8 @@
 //! keystone declares ALL tags now. A CI witness (this module's tests) asserts the tags exist and that
 //! `WorkItem` can represent an absent/duplex inbound+emit.
 
+use super::host::{HostCtx, PlaneHostVtable};
+
 /// The kind of a [`WorkItem`]'s inbound handle. Reserves all three representations from day one;
 /// append-only (new kinds get a fresh trailing discriminant).
 #[repr(u8)]
@@ -160,6 +162,22 @@ pub struct WorkItem {
     pub inbound: InboundHandle,
     /// The kind-tagged emit handle.
     pub emit: EmitHandle,
+    // ── THE DISPATCH'S OWN HOST AND REPLY (appended at minor 23). A host mints a fresh `HostCtx`
+    //    per dispatch (its generation is live only for that call, on that thread), so a plane that
+    //    serves a request calls back through THESE, not through the handle it stashed at `build`;
+    //    a plane reads them only when `size` proves the host wrote them. ──
+    /// The host vtable this dispatch calls back through; NULL = none (use the one handed at build).
+    pub host: *const PlaneHostVtable,
+    /// The host context minted for THIS dispatch, threaded into every host call it makes.
+    pub host_ctx: HostCtx,
+    /// A host-owned buffer the plane writes its reply bytes into (the [`EmitKind::Reply`] body);
+    /// NULL = no reply channel.
+    pub reply_ptr: *mut u8,
+    /// Capacity of the reply buffer.
+    pub reply_cap: usize,
+    /// Where the plane records how many reply bytes it wrote (at most `reply_cap`); NULL with
+    /// `reply_ptr`.
+    pub reply_written: *mut usize,
 }
 
 impl WorkItem {
@@ -173,7 +191,31 @@ impl WorkItem {
             _reserved: 0,
             inbound,
             emit,
+            host: core::ptr::null(),
+            host_ctx: HostCtx::NULL,
+            reply_ptr: core::ptr::null_mut(),
+            reply_cap: 0,
+            reply_written: core::ptr::null_mut(),
         }
+    }
+
+    /// This work item, dispatched over `host` with the `host_ctx` minted for it. Both must stay live
+    /// for the dispatch call.
+    #[must_use]
+    pub fn with_host(mut self, host: *const PlaneHostVtable, host_ctx: HostCtx) -> Self {
+        self.host = host;
+        self.host_ctx = host_ctx;
+        self
+    }
+
+    /// This work item, with a reply channel: the plane writes at most `reply.len()` bytes into
+    /// `reply` and the count into `written`. Both borrows must outlive the dispatch call.
+    #[must_use]
+    pub fn with_reply(mut self, reply: &mut [u8], written: &mut usize) -> Self {
+        self.reply_ptr = reply.as_mut_ptr();
+        self.reply_cap = reply.len();
+        self.reply_written = written;
+        self
     }
 }
 

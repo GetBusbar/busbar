@@ -7,25 +7,13 @@ rust-version = "1.97"
 description = "SDK for writing busbar store plugins in Rust: implement the Store trait, call export_store_plugin!(ctor), build as a cdylib. Emits the extern-C glue for the busbar store ABI."
 license = "Apache-2.0"
 
-# AUTHOR-SIDE PACKAGING (roster def 14), and every one of these is OPTIONAL ON PURPOSE.
-#
-# `busbar-plugin-pack` is a CLI an author runs; it is not something the SDK's LIB does. DECISIONS
-# #84 is owner-locked -- "a plugin's busbar closure is EXACTLY busbar-plugin-sdk; the SDK's own
-# busbar closure is EMPTY" -- and it names the harm by name: a third-party plugin must not
-# transitively link the money one-book. Measured, `busbar-plugin-loader` carries
-# `busbar-kernel-ledger` and `busbar-kernel-wal` and the SDK does not. A plain `[dependencies]`
-# entry here would put both into EVERY plugin in the tree, because every plugin names this crate.
-#
-# Behind `required-features`, none of it is built unless somebody asks for the tool, so the SDK's
-# default closure is byte-identical to what it was before the fold. `cargo tree -p
-# busbar-plugin-sdk --edges normal` is the witness and it is unchanged.
-[features]
-pack = ["dep:busbar-plugin-loader", "dep:busbar-secret-ref", "dep:jsonschema", "dep:getrandom", "dep:hex"]
-
-[[bin]]
-name = "busbar-plugin-pack"
-path = "src/pack.rs"
-required-features = ["pack"]
+# AUTHOR-SIDE PACKAGING (roster def 14) DOES NOT LIVE HERE. The `busbar-plugin-pack` CLI moved to
+# `busbar-plugin-loader` (a `[[bin]]` behind that crate's `pack` feature; batch 68/69 D1). DECISIONS
+# #84 is owner-locked -- "a plugin's busbar closure is EXACTLY busbar-plugin-sdk; the SDK's own busbar
+# closure is EMPTY" -- and `kind-isolation:closure` scores the UNION of feature configurations: an
+# optional `pack` feature here put `busbar-plugin-loader`, `busbar-kernel-ledger` and
+# `busbar-kernel-wal` (the money one-book) into the closure of every plugin that names this crate.
+# Do not add a feature or a dependency here that reaches the loader.
 
 [dependencies]
 # For the tracing->host bridge (`hostlog::install_tracing_bridge`). A plugin's own `tracing` calls
@@ -35,20 +23,6 @@ tracing-core = { workspace = true }
 busbar-api = { path = "../api" }
 busbar-plugin = { path = "../busbar-plugin" }
 serde_json = { workspace = true }
-# ── the `pack` feature's own dependencies; see the note above [features]. OPTIONAL, never default.
-# The signing/verify engine and the tarball writer the tool drives.
-busbar-plugin-loader = { path = "../plugin-loader", optional = true }
-# The extracted SecretRef reference type, so the x-busbar-secret `oneOf` shape is derived from the
-# REAL type the engine deserializes rather than a hand-written parallel copy that can drift.
-busbar-secret-ref = { path = "../secret-ref", optional = true }
-hex = { workspace = true, optional = true }
-# Keypair generation (`keygen`) draws its ed25519 seed from the OS RNG. The engine-facing signing
-# half stays RNG-free on purpose; the RNG lives here, in the tooling.
-getrandom = { workspace = true, optional = true }
-# Pack-time gate for --settings-schema-file: reject a syntactically-invalid JSON Schema 2020-12
-# document at PACK time, not at UI-render time on some operator's machine. Tooling-only, and behind
-# the feature, so it never reaches a plugin or the engine.
-jsonschema = { workspace = true, optional = true }
 
 [dev-dependencies]
 busbar-store-memory = { path = "../store-memory" }

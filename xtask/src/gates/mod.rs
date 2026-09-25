@@ -312,18 +312,18 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // row is what it caught: a rule claiming "a cancellation-token check precedes every `.await` in
     // the route step" that found no `.await` in scope at all, and passed on that basis.
     "hold-discipline:cancellation-before-await",
-    // SEVEN ROWS THAT RUN AND ARE RED ON THEIR MANIFESTS. Until item 120 the allowlist rule did not
+    // FIVE ROWS THAT RUN AND ARE RED ON THEIR MANIFESTS. Until item 120 the allowlist rule did not
     // read the `transport` kind, so these were "owed but no row was recorded — DID NOT RUN". It
-    // reads it now, and every one of the seven FAILS for a real reason, measured: each names
-    // third-party crates no review has recorded (tokio, futures, rustls, hyper, ...), and three name
+    // reads it now, and every one of them FAILS for a real reason, measured: each names
+    // third-party crates no review has recorded (tokio, futures, rustls, hyper, ...), and one names
     // a crate the rule scores as an automatic RED — `busbar-transport-tls` path-depends on
-    // `busbar-unit-transport-key` (a unit crate; #36/#40 kernel-side machinery), and `-grpc` and
-    // `-sse` on `busbar-transport-http` (a transport). Drain: the owner reviews the third-party
+    // `busbar-unit-transport-key` (a unit crate; #36/#40 kernel-side machinery). `-grpc` and `-sse`
+    // were the other two, each path-depending on `busbar-transport-http`: both FOLDED INTO it
+    // (dep-wall §6.5 ruling 1), so their rows have no crate left to score and grpc's third-party
+    // deps (`tonic`, `tower`) are `-http`'s row's now. Drain: the owner reviews the third-party
     // deps into `[rules.manifest-allowlist.reviewed_extra]` and the #40 opaque-handle work removes
     // the tls → unit edge; each name is struck here AND in scripts/land.sh as its row goes green.
-    "manifest-allowlist:busbar-transport-grpc",
     "manifest-allowlist:busbar-transport-http",
-    "manifest-allowlist:busbar-transport-sse",
     "manifest-allowlist:busbar-transport-stdio",
     "manifest-allowlist:busbar-transport-tcp",
     "manifest-allowlist:busbar-transport-tls",
@@ -369,18 +369,16 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // section 1.3 pinned word (config/mod.rs, appbuild.rs). Item 379 widened the scan to the eight
     // kernel crates the units became, which is what made it visible.
     "lean-core",
-    // `neutral-no-dialect`: 27 DIALECT/KEY hits in the neutral crates per plane-purity-lint.sh
-    // (busbar-kernel-identity egress_auth tests, busbar-kernel config) — the 59/60 dialect and
-    // strict-purity drains.
-    "neutral-no-dialect",
-    // `loc-ceilings:caps-contract` and `surface-ceiling:contract`: busbar-contract measures 6840
-    // against the ARCHITECTURE.md 1.1 ceiling of 5652 (caps folded in, #37/#38). `loc-ceilings:union`
-    // is the same breach one level up — 58644 against 57456, over by 1188, which the union had been
-    // absorbing while it read its members' slack (item 378 made it read their ceilings). A TRUE
-    // red: the contract surface a plugin author reads is 1188 lines over the owner's number.
-    "loc-ceilings:caps-contract",
+    // `neutral-no-dialect` STRUCK 2026-09-25: the dialect and strict-purity drains emptied it, and
+    // `--posture` scored the name STALE.
+    //
+    // `loc-ceilings:union`: the kernel + contract + unit-* union measures 59342 against 57456 — the
+    // union had been absorbing its members' overage while it read their slack (item 378 made it
+    // read their ceilings). A TRUE red, held under OWNER RULING Q50. Its two members
+    // `loc-ceilings:caps-contract` and `surface-ceiling:contract` are STRUCK 2026-09-25: the pair was
+    // re-armed at the measurement (OWNER RULING Q68(3)), both rows are green, and `--posture` scored
+    // the two names STALE.
     "loc-ceilings:union",
-    "surface-ceiling:contract",
 ];
 
 /// THE `qa-names` GATE'S STANDING REDS, BY NAME.

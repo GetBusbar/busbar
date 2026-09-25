@@ -73,8 +73,13 @@ pub const ROW_CLOSURE: &str = "kind-isolation:closure";
 const CONTRACT: &str = "busbar-contract";
 
 /// A graph smaller than this is not this workspace, and a wall measured over it is a wall measured
-/// over nothing. Mirrors the census floor for the same reason.
-const MIN_GRAPH_CRATES: usize = 40;
+/// over nothing. Mirrors the census floor (`kind_isolation::MIN_MANIFESTS`) for the same reason,
+/// and moves with it: 30, not 40 (item F0b, same shape as F0's `workspace-deps`
+/// `MIN_CRATE_MANIFESTS`, `98434a220`). The Phase 4 fold's planned end state is 35 crates under
+/// `crates/` (34 / 33 in the roster variants); at 40 this row would have reddened around fold #11,
+/// against a planned shrink. 30 sits three under the smallest planned roster variant, so no planned
+/// fold trips it, while a graph collapsed to a third of today's census is still RED.
+const MIN_GRAPH_CRATES: usize = 30;
 
 // ------------------------------------------------------------------------------------------------
 // the graph

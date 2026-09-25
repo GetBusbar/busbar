@@ -109,7 +109,7 @@ async fn stack_b(
                 .headers()
                 .get(http::header::LOCATION)
                 .map(|v| v.to_str().expect("location").to_string());
-            let spki = resp
+            let leaf_pin = resp
                 .extensions()
                 .get::<reqwest::tls::TlsInfo>()
                 .and_then(|t| t.peer_certificate())
@@ -121,7 +121,7 @@ async fn stack_b(
                     location,
                     body: String::from_utf8_lossy(&body).into_owned(),
                 },
-                spki,
+                leaf_pin,
             )
         }
         Err(e) if e.is_connect() => (Outcome::RefusedAtConnect, None),
@@ -136,7 +136,7 @@ async fn plaintext_status_and_body_are_identical_across_stacks() {
     crate::testkit::install_test_seams();
     let fixture = spawn_http(CannedResponse::ok(r#"{"answer":42}"#), 4);
     let a = stack_a(&format!("http://{}/v1/x", fixture.addr), r#"{"q":"hop"}"#).await;
-    let (b, spki) = stack_b(
+    let (b, leaf_pin) = stack_b(
         "plain.test",
         fixture.addr,
         &format!("http://plain.test:{}/v1/x", fixture.addr.port()),
@@ -155,7 +155,7 @@ async fn plaintext_status_and_body_are_identical_across_stacks() {
         }
     );
     assert_eq!(
-        spki, None,
+        leaf_pin, None,
         "a plaintext hop has no peer identity to observe"
     );
     assert_eq!(
@@ -206,7 +206,7 @@ async fn redirects_surface_verbatim_and_are_followed_by_neither_stack() {
 /// (webpki trust only) refuses the same server at the connect class: the private CA is not in its
 /// trust story, and "refused" is the correct differential record for that posture.
 #[tokio::test]
-async fn known_leaf_tls_spki_and_sni_are_observed_and_webpki_refuses_the_private_ca() {
+async fn known_leaf_tls_pin_and_sni_are_observed_and_webpki_refuses_the_private_ca() {
     crate::testkit::install_test_seams();
     let material = ca_and_leaf(&["pinned.test"]);
     let fixture = spawn_tls(TlsServerSpec {
@@ -218,7 +218,7 @@ async fn known_leaf_tls_spki_and_sni_are_observed_and_webpki_refuses_the_private
     });
     let root = reqwest::Certificate::from_pem(material.ca_pem.as_bytes()).expect("ca root");
 
-    let (b, spki) = stack_b(
+    let (b, leaf_pin) = stack_b(
         "pinned.test",
         fixture.addr,
         &format!("https://pinned.test:{}/v1/x", fixture.addr.port()),
@@ -238,9 +238,9 @@ async fn known_leaf_tls_spki_and_sni_are_observed_and_webpki_refuses_the_private
     let expected_pin =
         busbar_kernel::plane_host::spki::pin(&material.leaf_der).expect("fixture leaf");
     assert_eq!(
-        spki.as_deref(),
+        leaf_pin.as_deref(),
         Some(expected_pin.as_str()),
-        "the observed SPKI must equal the pin of the leaf the fixture served"
+        "the observed leaf pin must equal the pin of the leaf the fixture served"
     );
 
     // Without the extra root the same posture refuses — the "accepted only with the root" arm.
@@ -280,9 +280,9 @@ async fn known_leaf_tls_spki_and_sni_are_observed_and_webpki_refuses_the_private
 /// leaf. Without the identity the handshake is refused by the peer — connect class, presenting
 /// nothing rather than forging something.
 #[tokio::test]
-async fn mtls_fixture_accepts_only_the_carried_identity() {
+async fn client_cert_fixture_accepts_only_the_carried_identity() {
     crate::testkit::install_test_seams();
-    let server = ca_and_leaf(&["mtls.test"]);
+    let server = ca_and_leaf(&["client-cert.test"]);
     let client = ca_and_leaf(&["client.busbar.test"]);
     let fixture = spawn_tls(TlsServerSpec {
         cert_chain_pem: server.leaf_pem.clone(),
@@ -298,9 +298,9 @@ async fn mtls_fixture_accepts_only_the_carried_identity() {
     let identity = reqwest::Identity::from_pem(identity_pem.as_bytes()).expect("client identity");
 
     let (with_identity, _) = stack_b(
-        "mtls.test",
+        "client-cert.test",
         fixture.addr,
-        &format!("https://mtls.test:{}/v1/x", fixture.addr.port()),
+        &format!("https://client-cert.test:{}/v1/x", fixture.addr.port()),
         "{}",
         Some(identity),
         std::slice::from_ref(&root),
@@ -316,9 +316,9 @@ async fn mtls_fixture_accepts_only_the_carried_identity() {
     );
 
     let (without_identity, _) = stack_b(
-        "mtls.test",
+        "client-cert.test",
         fixture.addr,
-        &format!("https://mtls.test:{}/v1/x", fixture.addr.port()),
+        &format!("https://client-cert.test:{}/v1/x", fixture.addr.port()),
         "{}",
         None,
         std::slice::from_ref(&root),

@@ -23,7 +23,7 @@ struct OtherEntry(u32);
 fn sections() -> PlaneSections<Entry> {
     let mut s = PlaneSections::default();
     s.insert("alpha", "fast", Entry("a pool"));
-    s.insert("beta", "filesystem", Entry("an mcp server"));
+    s.insert("beta", "filesystem", Entry("a tool server"));
     s.insert("gamma", "planner", Entry("an agent"));
     s
 }

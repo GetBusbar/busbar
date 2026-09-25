@@ -339,6 +339,7 @@ dependencies = [
  "busbar-contract",
  "busbar-core-admin",
  "busbar-core-connsec",
+ "busbar-export-file",
  "busbar-kernel",
  "busbar-kernel-audit",
  "busbar-kernel-breaker",
@@ -356,12 +357,11 @@ dependencies = [
  "busbar-plane-llm",
  "busbar-plane-mcp",
  "busbar-plane-streaming",
+ "busbar-plugin-example-plane",
  "busbar-plugin-loader",
  "busbar-store-example-plugin",
  "busbar-substrate-values",
- "busbar-transport-grpc",
  "busbar-transport-http",
- "busbar-transport-sse",
  "busbar-transport-stdio",
  "busbar-transport-tcp",
  "busbar-transport-tls",
@@ -408,7 +408,6 @@ dependencies = [
  "busbar-plugin",
  "busbar-plugin-loader",
  "busbar-secret-ref",
- "busbar-store-memory",
  "busbar-substrate-values",
  "bytes",
  "ed25519-dalek",
@@ -445,24 +444,22 @@ dependencies = [
  "async-trait",
  "busbar-contract",
  "busbar-secret-ref",
- "hex",
  "serde",
  "serde_json",
- "sha2 0.11.0",
 ]
 
 [[package]]
 name = "busbar-auth-admin-tokens"
 version = "1.5.0"
 dependencies = [
- "busbar-api",
+ "busbar-contract",
 ]
 
 [[package]]
 name = "busbar-auth-static-plugin"
 version = "1.5.0"
 dependencies = [
- "busbar-api",
+ "busbar-contract",
  "busbar-plugin-sdk",
  "serde",
  "serde_json",
@@ -472,9 +469,14 @@ dependencies = [
 name = "busbar-contract"
 version = "1.6.0"
 dependencies = [
+ "async-trait",
  "futures",
+ "hex",
+ "http",
+ "memchr",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "smallvec",
  "zeroize",
 ]
@@ -536,6 +538,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-export-file"
+version = "1.5.0"
+dependencies = [
+ "busbar-plugin-sdk",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
+name = "busbar-export-prometheus"
+version = "1.5.0"
+dependencies = [
+ "busbar-plugin-sdk",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "busbar-hook-test-plugin"
 version = "1.5.0"
 dependencies = [
@@ -550,7 +571,7 @@ name = "busbar-hooks-ranking"
 version = "1.6.0"
 dependencies = [
  "async-trait",
- "busbar-api",
+ "busbar-contract",
  "tokio",
 ]
 
@@ -569,6 +590,7 @@ dependencies = [
  "busbar-contract",
  "busbar-hooks-ranking",
  "busbar-kernel-audit",
+ "busbar-kernel-breaker",
  "busbar-kernel-egress",
  "busbar-kernel-ledger",
  "busbar-llm",
@@ -717,9 +739,7 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "busbar-llm-codec",
- "busbar-mcp",
  "busbar-plugin",
- "busbar-store-memory",
  "busbar-substrate-values",
  "busbar-timing",
  "bytes",
@@ -783,7 +803,6 @@ dependencies = [
  "busbar-plugin",
  "busbar-plugin-loader",
  "busbar-secret-ref",
- "busbar-store-memory",
  "busbar-substrate-values",
  "bytes",
  "futures",
@@ -900,17 +919,22 @@ version = "1.5.0"
 dependencies = [
  "async-trait",
  "busbar-api",
+ "busbar-auth-static-plugin",
  "busbar-contract",
  "busbar-export-example-plugin",
+ "busbar-hook-test-plugin",
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
  "busbar-plugin",
  "busbar-plugin-example-plane",
+ "busbar-secret-example-plugin",
+ "busbar-secret-ref",
  "busbar-store-example-plugin",
  "ed25519-dalek",
  "flate2",
  "getrandom 0.3.4",
  "hex",
+ "jsonschema",
  "libc",
  "libloading",
  "serde",
@@ -927,12 +951,7 @@ version = "1.5.0"
 dependencies = [
  "busbar-api",
  "busbar-plugin",
- "busbar-plugin-loader",
- "busbar-secret-ref",
  "busbar-store-memory",
- "getrandom 0.3.4",
- "hex",
- "jsonschema",
  "serde_json",
  "tracing",
  "tracing-core",
@@ -942,7 +961,7 @@ dependencies = [
 name = "busbar-secret-example-plugin"
 version = "1.5.0"
 dependencies = [
- "busbar-api",
+ "busbar-contract",
  "busbar-plugin-sdk",
  "serde",
  "serde_json",
@@ -962,7 +981,7 @@ dependencies = [
 name = "busbar-store-example-plugin"
 version = "1.5.0"
 dependencies = [
- "busbar-api",
+ "busbar-contract",
  "busbar-plugin-sdk",
  "libc",
  "serde",
@@ -973,7 +992,6 @@ dependencies = [
 name = "busbar-store-memory"
 version = "1.5.0"
 dependencies = [
- "busbar-api",
  "busbar-contract",
  "serde",
  "serde_json",
@@ -1012,25 +1030,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-transport-grpc"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
- "busbar-transport-http",
- "busbar-transport-tcp",
- "bytes",
- "futures",
- "http",
- "http-body-util",
- "hyper",
- "hyper-util",
- "tokio",
- "tokio-util",
- "tonic",
- "tower",
-]
-
-[[package]]
 name = "busbar-transport-http"
 version = "1.6.0"
 dependencies = [
@@ -1049,18 +1048,9 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-util",
+ "tonic",
+ "tower",
  "webpki-roots",
-]
-
-[[package]]
-name = "busbar-transport-sse"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
- "busbar-transport-http",
- "futures",
- "memchr",
- "tokio",
 ]
 
 [[package]]
@@ -1087,7 +1077,6 @@ name = "busbar-transport-tls"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-transport-tcp",
  "busbar-unit-transport-key",
  "futures",
  "rcgen",
@@ -1104,8 +1093,6 @@ name = "busbar-transport-ws"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-transport-http",
- "busbar-transport-tcp",
  "futures",
  "rustls",
  "rustls-pki-types",
@@ -1132,6 +1119,7 @@ dependencies = [
  "async-trait",
  "axum",
  "busbar-api",
+ "busbar-contract",
  "busbar-kernel",
  "busbar-plane-streaming",
  "busbar-plugin",

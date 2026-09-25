@@ -1175,7 +1175,7 @@ RED3B
     fail=1; note "RED c3 FAILED: the shipped RSA-key-symbol leak would pass"; printf '%s\n' "$out" | sed 's/^/    /'
   fi
 
-  # ── RED (Check 3, LEDGER S21 companion — plugin-sdk/src/pack.rs:538, STILL LIVE). ──
+  # ── RED (Check 3, LEDGER S21 companion — plugin-loader/src/pack.rs:538, STILL LIVE). ──
   # `hex::FromHexError::InvalidHexCharacter { c, index }` prints the character AND its index, which
   # for the 32-byte ed25519 seed in $BUSBAR_SIGN_KEY is a nibble of the signing key. There is no
   # subject word in that message at all — `{SIGN_KEY_ENV}` is the env var NAME, a const — so the

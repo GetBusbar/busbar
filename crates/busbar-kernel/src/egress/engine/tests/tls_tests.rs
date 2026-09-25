@@ -299,7 +299,7 @@ async fn the_mtls_fixture_accepts_the_engine_identity_and_records_its_leaf() {
         .expect("the mutual handshake completes");
     assert_eq!(resp.status(), 200);
     assert_eq!(
-        peer_spki(&resp),
+        peer_key_pin(&resp),
         Some(
             crate::plane_host::spki::pin(&server.leaf_der)
                 .expect("server leaf")

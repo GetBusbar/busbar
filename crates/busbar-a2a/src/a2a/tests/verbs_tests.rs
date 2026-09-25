@@ -63,7 +63,7 @@ impl CardSource for ScriptedSource {
         // establish.
         Ok(SightedCard {
             document: v,
-            peer_spki: None,
+            peer_key_pin: None,
             client_identity_offered: false,
         })
     }

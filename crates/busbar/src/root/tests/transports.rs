@@ -7,7 +7,12 @@ use busbar_unit_transport_key::AccessPurpose;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use busbar_transport_tls::TlsTransport as SecuredTransport;
+/// The real secured transport this node composes — taken from the sealed composition the boot path
+/// builds (`seal`), so these tests drive the same instance a listener is provisioned into rather
+/// than naming the transport crate.
+fn sealed_composition() -> crate::root::registry::BootRegistry {
+    crate::root::registry::seal(Default::default()).expect("a default composition seals")
+}
 
 /// A secret source over an in-memory map. The deployment's real resolver is the secret plugin;
 /// what matters for these tests is that it is A source and the unit reads through it.
@@ -254,7 +259,8 @@ fn a_listener_binds_through_the_transport_it_was_provisioned_into() {
         ("key-ref".to_string(), key_pem),
     ]));
     let journal = RecordingJournal::default();
-    let tls = SecuredTransport::new();
+    let sealed = sealed_composition();
+    let tls = &*sealed.transports.tls;
     let token = crate::root::kernel::new_kernel().transport_key_token();
 
     let listeners = vec![ListenerConfig {
@@ -267,7 +273,7 @@ fn a_listener_binds_through_the_transport_it_was_provisioned_into() {
         }),
         fingerprint: "data-listener",
     }];
-    let provisioned = provision_servers(&listeners, &source, &journal, &tls, &token)
+    let provisioned = provision_servers(&listeners, &source, &journal, tls, &token)
         .expect("a self-signed pair resolves and parses");
 
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -275,7 +281,7 @@ fn a_listener_binds_through_the_transport_it_was_provisioned_into() {
         .build()
         .expect("a runtime");
     let bound = runtime
-        .block_on(listen_all(&tls, &provisioned, 1024))
+        .block_on(listen_all(tls, &provisioned, 1024))
         .expect("the listener binds against its own slot");
     assert_eq!(bound.len(), 1);
 }
@@ -332,14 +338,14 @@ fn the_handle_carries_no_material() {
 // ── the audit journal actually gets written on a real listener bring-up ────────────────────────
 //
 // Everything above proves `provision_servers` against recording doubles. Neither proves the thing
-// this module exists for: that `crate::provision_root_listeners` — the function `run()` actually
+// this module exists for: that `crate::root::transports::provision_root_listeners` — the function `run()` actually
 // calls before either listener binds — writes onto the node's REAL journal when it runs. A double
 // standing in for the journal would pass even if the real `BookAccessJournal` never got wired to
 // the real `Durability` book at all, which is exactly the defect this closes.
 
 /// The whole wiring `main.rs` boots with: an env-backed [`busbar_kernel::config::secret::SecretResolver`]
 /// (not a map double), a real sealed [`crate::root::registry::BootRegistry`], and a real
-/// [`crate::root::durability::Durability`] book, all handed to `crate::provision_root_listeners` the
+/// [`crate::root::durability::Durability`] book, all handed to `crate::root::transports::provision_root_listeners` the
 /// same way `run()` hands them. What is asserted afterward is that node's own journal.
 #[cfg(all(
     feature = "root-voice",
@@ -354,8 +360,8 @@ fn a_real_listener_bring_up_journals_the_access_the_boot_path_makes() {
     std::env::set_var(&key_var, String::from_utf8(key_pem).expect("pem is utf8"));
 
     let resolver = busbar_kernel::config::secret::SecretResolver::builtins_only();
-    let sealed = crate::root::registry::seal(busbar_transport_http::ClientSettings::default())
-        .expect("a default composition seals");
+    let sealed =
+        crate::root::registry::seal(Default::default()).expect("a default composition seals");
     let book = crate::root::durability::node_book();
 
     let tls_cfg = busbar_kernel::config::TlsCfg {
@@ -364,7 +370,7 @@ fn a_real_listener_bring_up_journals_the_access_the_boot_path_makes() {
         client_ca: None,
     };
 
-    crate::provision_root_listeners(
+    crate::root::transports::provision_root_listeners(
         &sealed,
         &resolver,
         &book.durability,
@@ -418,12 +424,12 @@ fn a_real_listener_bring_up_journals_the_access_the_boot_path_makes() {
 ))]
 #[test]
 fn a_plain_boot_with_no_tls_configured_journals_nothing() {
-    let sealed = crate::root::registry::seal(busbar_transport_http::ClientSettings::default())
-        .expect("a default composition seals");
+    let sealed =
+        crate::root::registry::seal(Default::default()).expect("a default composition seals");
     let book = crate::root::durability::node_book();
     let resolver = busbar_kernel::config::secret::SecretResolver::builtins_only();
 
-    crate::provision_root_listeners(
+    crate::root::transports::provision_root_listeners(
         &sealed,
         &resolver,
         &book.durability,
@@ -524,13 +530,14 @@ fn two_secured_listeners_are_each_served_the_certificate_provisioned_for_them() 
             fingerprint: "admin-listener",
         },
     ];
-    let server = SecuredTransport::new();
+    let sealed = sealed_composition();
+    let server = &*sealed.transports.tls;
     let token = crate::root::kernel::new_kernel().transport_key_token();
     let provisioned = provision_servers(
         &listeners,
         &source,
         &RecordingJournal::default(),
-        &server,
+        server,
         &token,
     )
     .expect("two self-signed pairs resolve and parse");
@@ -548,7 +555,7 @@ fn two_secured_listeners_are_each_served_the_certificate_provisioned_for_them() 
         .build()
         .expect("a runtime");
     runtime.block_on(async {
-        let bound = listen_all(&server, &provisioned, 1024)
+        let bound = listen_all(server, &provisioned, 1024)
             .await
             .expect("both listeners bind against their own slots");
         let trust = busbar_contract::caps::Grant::<busbar_contract::caps::Dial>::mint(
@@ -564,7 +571,7 @@ fn two_secured_listeners_are_each_served_the_certificate_provisioned_for_them() 
         ];
         for (listener, trust_store, dial_slot, completes) in cases {
             let dial_key = provision_dial(
-                &server,
+                server,
                 &token,
                 dial_slot,
                 "the-listener-roots",
@@ -581,10 +588,7 @@ fn two_secured_listeners_are_each_served_the_certificate_provisioned_for_them() 
                 "stream",
                 None,
             );
-            let accepted = {
-                let server = &server;
-                async move { server.accept(listener).await }
-            };
+            let accepted = { async move { server.accept(listener).await } };
             let (dialled, accepted) = tokio::join!(server.dial(&dest, &dial_key), accepted);
             assert_eq!(
                 dialled.is_ok(),

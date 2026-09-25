@@ -87,7 +87,7 @@ fn sample_credential() -> CredentialSecret {
         meta: CredentialMeta {
             id: "cred_1".to_string(),
             key_id: "vk_1".to_string(),
-            kind: "sigv4".to_string(),
+            kind: "generic".to_string(),
             slot: 0,
             public_id: "AKIA_TEST".to_string(),
             secret_form: SecretForm::Recoverable,
@@ -163,7 +163,7 @@ fn list_credentials_default_is_empty() {
 fn lookup_credential_secret_default_is_none() {
     let s = Bare::default();
     assert_eq!(
-        s.lookup_credential_secret("sigv4", "AKIA_TEST").unwrap(),
+        s.lookup_credential_secret("generic", "AKIA_TEST").unwrap(),
         None
     );
 }

@@ -5,9 +5,13 @@ the real crate and re-scan it (the "grew a whole-tree scan per plant" regression
 budget exists to catch).
 
   * `register_planes()` / `plane_claims()` have EMPTY bodies   -> five `registered:` rows RED.
-  * `main.rs` reaches no `root::units_*` module                -> five `root-reach:` rows RED.
+  * no key is flipped onto a kernel-loop runner (the only
+    flips are in a comment) and no plane's linked entry
+    exports a `Units` impl                                     -> five `unit-path:` and five
+                                                                  `root-reach:` rows RED.
   * each `units_<x>.rs` declares a `Units` type whose only
-    construction sites are its own constructor and a test file -> five `unit-path:` rows RED.
+    construction sites are its own constructor and a test file
+    (the superseded pre-unification shape; not the unit path).
   * `money_book.rs` is declared by `root/mod.rs` and named
     nowhere else                                               -> `root-module` RED.
   * `units_orphan.rs` maps to no roster plane                  -> `roster` RED.

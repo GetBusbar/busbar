@@ -26,7 +26,7 @@
 ///
 /// Named ONCE, here, on the pure side of the split, because the plane's `capability_key` and the
 /// composition-root FLIP must reference the SAME literal or a swap could drift onto two. It agrees
-/// with `busbar-voice`'s `PLANE_DECL.key` (`"voice"`). `busbar-voice` re-exports it as
+/// with `busbar-voice`'s `PLANE_DECLARATION.key` (`"voice"`). `busbar-voice` re-exports it as
 /// `busbar_voice::PLANE_KEY`, the one stable path the `busbar` binary names.
 pub const PLANE_KEY: &str = "voice";
 

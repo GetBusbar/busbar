@@ -671,8 +671,8 @@ fn the_usage_seam_answers_with_the_process_history() {
 /// The apply half without the read half is precisely the defect this seam rules out: a node that dates its
 /// prices and then reports them off the newest card anyway. The date half without the other two
 /// stamps an instant nothing reads. And any of them without a caller is dead code that looks live.
-/// So the body of `install_card_repricer` is read for all three names, and `main.rs` is read for
-/// the call — four facts that have to hold together for the seam to be reachable in the shipped
+/// So the body of `install_card_repricer` is read for all three names, and the root unit, `main.rs`
+/// and the manifest's root-unit table are read for the call — four facts that have to hold together for the seam to be reachable in the shipped
 /// binary, and no one of which implies the others.
 #[test]
 fn the_boot_install_raises_both_halves_of_the_rate_seam_and_main_calls_it() {
@@ -698,11 +698,50 @@ fn the_boot_install_raises_both_halves_of_the_rate_seam_and_main_calls_it() {
         "the boot install stopped raising the READ half — the usage read would price off the \
          newest card again (#79): {body}"
     );
+    // The call: a root unit's configuration step runs it, `main.rs` runs every enabled unit's
+    // configuration step, and the generated table this binary compiles carries that unit.
+    // The unit is found through the manifest's root-unit table (the data every build's table is
+    // generated from), not by name: some module that table lists must make the call.
     let main = include_str!("../../main.rs");
     assert!(
-        main.contains("install_card_repricer()"),
-        "nothing in the binary calls the boot install, so neither half is ever raised"
+        main.contains("ROOT_UNITS.iter().filter_map(|u| u.on_config)"),
+        "main.rs no longer runs the root units' configuration steps, so the boot install is never \
+         called"
     );
+    let manifest = include_str!("../../../Cargo.toml");
+    let callers: Vec<String> = root_unit_modules(manifest)
+        .into_iter()
+        .filter(|module| {
+            let path = format!("{}/src/root/{module}.rs", env!("CARGO_MANIFEST_DIR"));
+            std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("the manifest lists root unit `{module}`: {path}: {e}"))
+                .contains("on_config: Some(|_| crate::root::kernel::install_card_repricer())")
+        })
+        .collect();
+    assert!(
+        !callers.is_empty(),
+        "no root unit the manifest lists has a configuration step that calls the boot install, so \
+         neither half is ever raised (or the unit that does is not a root unit the manifest lists, \
+         so no build's table carries it)"
+    );
+}
+
+/// The module names `[package.metadata.busbar.root-units]` lists, in manifest order.
+fn root_unit_modules(manifest: &str) -> Vec<String> {
+    let mut in_table = false;
+    let mut modules = Vec::new();
+    for line in manifest.lines() {
+        let code = line.split('#').next().unwrap_or("").trim();
+        if code.starts_with('[') {
+            in_table = code == "[package.metadata.busbar.root-units]";
+            continue;
+        }
+        if let (true, Some((_, module))) = (in_table, code.split_once('=')) {
+            modules.push(module.trim().trim_matches('"').to_string());
+        }
+    }
+    assert!(!modules.is_empty(), "the manifest lists no root unit");
+    modules
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -711,8 +750,11 @@ fn the_boot_install_raises_both_halves_of_the_rate_seam_and_main_calls_it() {
 
 /// The flat lane the history tests price.
 const FLAT_LANE: &str = "gpt";
-/// The `mcp` plane's own lane (#47): its card prices it, at twice the flat card's rate.
-const PLANE_LANE: &str = "mcp\u{1f}search";
+/// The plane whose own card (#47) the history tests price. Any plane key reads the same: the card,
+/// its presence key and its fee lane are keyed on the string, never on which plane it is.
+const PLANE: &str = "planex";
+/// That plane's own lane (#47): its card prices it, at twice the flat card's rate.
+const PLANE_LANE: &str = "planex\u{1f}search";
 
 /// When the history tests' events land, in wall-clock milliseconds.
 const BOOT_A: u64 = 1_000;
@@ -732,18 +774,18 @@ fn tiers(input: f64) -> busbar_substrate_values::billing::RawTierRates {
 }
 
 /// The deployment's lanes at one price: [`FLAT_LANE`] at `price` micro-units an input token, and
-/// the `mcp` plane's card (its presence key and [`PLANE_LANE`]) at twice that.
+/// the [`PLANE`] plane's card (its presence key and [`PLANE_LANE`]) at twice that.
 fn lanes_at(price: f64) -> Vec<(String, busbar_substrate_values::billing::RawTierRates)> {
     vec![
         (FLAT_LANE.to_string(), tiers(price)),
-        ("mcp\u{1f}".to_string(), tiers(0.0)),
+        (format!("{PLANE}\u{1f}"), tiers(0.0)),
         (PLANE_LANE.to_string(), tiers(2.0 * price)),
     ]
 }
 
 fn plane_fees() -> busbar_kernel::config::PlaneFeesMap {
     busbar_kernel::config::PlaneFeesMap::from([(
-        "mcp".to_string(),
+        PLANE.to_string(),
         busbar_kernel_ledger::cost::PlaneFees {
             per_request: 7,
             per_session: 11,
@@ -1117,12 +1159,12 @@ fn an_applied_card_round_trips_the_journal_as_the_same_card_on_every_plane() {
     let read = super::CardApplied::from_body(&applied.body()).expect("the body reads back");
     assert_eq!(read, applied);
     let rebuilt = read.form.card();
-    let fee_lane = busbar_kernel_ledger::cost::plane_fee_lane("mcp");
+    let fee_lane = busbar_kernel_ledger::cost::plane_fee_lane(PLANE);
     for lane in [
         FLAT_LANE,
         PLANE_LANE,
         "other",
-        "mcp\u{1f}other",
+        "planex\u{1f}other",
         fee_lane.as_str(),
     ] {
         assert_eq!(

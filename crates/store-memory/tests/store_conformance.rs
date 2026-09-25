@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The shared [`busbar_api::Store`] contract conformance suite (`busbar-plugin-testkit`).
+//! The shared [`busbar_contract::records::RecordStore`] contract conformance suite (`busbar-plugin-testkit`).
 //!
 //! Core's own reference backend runs it alongside every plugin backend on purpose: these checks
 //! exist because the fleet had silently disagreed with itself about all four behaviours, and a suite
@@ -37,7 +37,7 @@ mod conf {
     //!
     //! The "reaches every backend on its next dependency bump" promise in the doc above is therefore
     //! NO LONGER TRUE of this copy, and is left standing as the record of what the shared crate was for.
-    //! Contract conformance for [`busbar_api::Store`] — the checks every backend must pass identically.
+    //! Contract conformance for [`busbar_contract::records::RecordStore`] — the checks every backend must pass identically.
     //!
     //! These exist because an audit found the fleet disagreeing with itself: the same input produced a
     //! different outcome depending on which store an operator had deployed. `revoke_credential` on an
@@ -74,9 +74,9 @@ mod conf {
     //! }
     //! ```
 
-    use busbar_api::{
+    use busbar_contract::records::{
         AuditRecord, CredentialMeta, CredentialSecret, PlaneDisposition, PlaneRecord,
-        PlaneSelector, SecretForm, Store, VirtualKey,
+        PlaneSelector, RecordStore as Store, SecretForm, VirtualKey,
     };
     use serde::{Deserialize, Serialize};
     use std::collections::hash_map::DefaultHasher;
@@ -150,13 +150,13 @@ mod conf {
         }
     }
 
-    /// A minimal `sigv4` credential for `key_id`, in slot 0.
+    /// A minimal generic-kind credential for `key_id`, in slot 0.
     pub fn credential(id: &str, key_id: &str) -> CredentialSecret {
         CredentialSecret {
             meta: CredentialMeta {
                 id: id.to_string(),
                 key_id: key_id.to_string(),
-                kind: "sigv4".to_string(),
+                kind: "generic".to_string(),
                 slot: 0,
                 // Bounded well under the 128-char column every backend uses, and unique per `ns` so two
                 // concurrent runs cannot collide on the global `(kind, public_id)` uniqueness rule.
@@ -323,7 +323,7 @@ mod conf {
         );
         assert!(
             store
-                .lookup_credential_secret("sigv4", &format!("AKIA{cred_id}"))
+                .lookup_credential_secret("generic", &format!("AKIA{cred_id}"))
                 .expect("lookup is never an error")
                 .is_none(),
             "the refused credential still resolves on the verify path"
@@ -332,7 +332,7 @@ mod conf {
 
     /// **`put_key_with_credential` is ATOMIC.** When the credential leg is refused — a `public_id`
     /// already in use is the ordinary way it is — NO key row may survive. The trait's default is the
-    /// two-call sequence, which commits the key before the credential can fail, leaving a live bearer key
+    /// two-call sequence, which commits the key before the credential can fail, leaving a live key
     /// with no credential that the caller was told did not get created.
     ///
     /// Skip on a backend with no credential support.
@@ -358,7 +358,7 @@ mod conf {
         );
         assert!(
             store.get_key(&minted_key).expect("read back").is_none(),
-            "the refused mint committed its key leg anyway — an orphan bearer key is live and the \
+            "the refused mint committed its key leg anyway — an orphan key is live and the \
              caller was told the mint failed"
         );
     }
@@ -417,7 +417,7 @@ mod conf {
     // without matching byte-for-byte on an incidental field order.
     //
     // This module is DELIBERATELY OPAQUE over the plane row types: it names none of the protocol row
-    // structs (`TaskRow`/`TaskEventRow`/`McpCallRecord`/`McpDemotionRow`, relocated out of `busbar-api`
+    // structs (`TaskRow`/`TaskEventRow`/`McpCallRecord`/`McpDemotionRow`, relocated out of the shared api crate
     // into the plane crates). The `body` is just serialized JSON with the field NAMES a backend that
     // projects a kind into typed columns decodes by — so these throwaway stand-in structs carry exactly
     // those fields, and a backend that stores the body verbatim and one that decodes/re-encodes it both

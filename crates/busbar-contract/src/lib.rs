@@ -10,20 +10,52 @@
 #![deny(missing_docs)]
 #![deny(missing_debug_implementations)]
 
+// THE PLUGIN-FACING HALF OF THE RETIRING API SHIM (DECISIONS #83: contract = shapes; #84: nothing
+// on the plugin path may link a crate holding semantics; #35(a): one capability trait per kind lands
+// here). `auth`, `hooks`, `secret` and `operation` are module-path-ONLY, byte-identical moves out of
+// `busbar-api`, which re-exports every item under its original name until the fold retires it. Two
+// names de-collided on the move (#35): `auth::AuthVerdict` (not `kinds::AuthOutcome`) and
+// `secret::SecretModuleError` (not `kinds::SecretError`). Nothing here is re-exported at the crate
+// root, so neither shadows the kind ABI's own spelling. `#[allow(missing_docs)]` travels with them
+// for the reason it travels with `records`: documenting a self-evident field or variant would EDIT
+// the moved surface.
+#[allow(missing_docs)]
+pub mod auth;
 pub mod authz;
+// THE SUBSTRATE-VALUES SHAPES (DECISIONS #83: contract = shapes; #83a, SD-1): `billing`, `codec`,
+// `ir`, `protocol` (and `diagnostic`, below) are module-path-only moves out of `busbar-substrate-values`, which re-exports
+// every item under its historical path until the split retires it (and the two upstream signal shapes
+// joined `upstream`). `#[allow(missing_docs, missing_debug_implementations)]` travels with them for
+// the reason it travels with `records`: documenting a self-evident field or deriving a `Debug` would
+// EDIT the moved surface. Nothing here is re-exported at the crate root.
+#[allow(missing_docs, missing_debug_implementations)]
+pub mod billing;
 pub mod bounded;
 pub mod caps;
 pub mod civil;
+#[allow(missing_docs, missing_debug_implementations)]
+pub mod codec;
 pub mod config;
 pub mod count;
 pub mod dest;
+// The diagnostic SHAPES and the three `#[macro_export]` emit macros (#83a O3, SD-1), moved out of
+// `busbar-substrate-values::diagnostics` beside the rest; the catalog stays kernel-side.
+pub mod diagnostic;
 pub mod duration;
 pub mod grammar;
+#[allow(missing_docs)]
+pub mod hooks;
 pub mod ids;
+#[allow(missing_docs, missing_debug_implementations)]
+pub mod ir;
 pub(crate) mod json_grammar;
 pub mod kinds;
+#[allow(missing_docs)]
+pub mod operation;
 pub mod plane;
 pub mod plugin;
+#[allow(missing_docs, missing_debug_implementations)]
+pub mod protocol;
 pub mod redacted;
 // The money-path durable record SHAPES (DECISIONS #83: contract = shapes, ledger = semantics;
 // DECISIONS #84: nothing on the plugin path may link a crate holding semantics). The module is a
@@ -36,6 +68,8 @@ pub mod redacted;
 #[allow(missing_docs)]
 pub mod records;
 pub mod scratch;
+#[allow(missing_docs)]
+pub mod secret;
 pub mod signal;
 pub mod slice;
 pub mod spans;
@@ -94,7 +128,7 @@ pub use plane::{
 // — the capability crate implements it on every token and sits above this one — so the scan named
 // in its own documentation is what holds the in-tree side.
 pub use plugin::{AbiVersion, Kind, KindMarker, Plugin, STORE_ABI};
-pub use redacted::{constant_time_eq, Redacted};
+pub use redacted::{constant_time_eq, sha256_hex, Redacted};
 pub use scratch::{Scratch, ScratchRefused};
 pub use signal::{Signal, SignalBag, SignalValue};
 pub use transport::{

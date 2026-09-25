@@ -67,7 +67,7 @@ fn is_alternate_ipv4_encoding_flags_obfuscated_forms() {
     assert!(!is_alternate_ipv4_encoding("127.0.0.1"));
     assert!(!is_alternate_ipv4_encoding("8.8.8.8"));
     // DNS names and the empty string are not alternate encodings.
-    assert!(!is_alternate_ipv4_encoding("api.openai.com"));
+    assert!(!is_alternate_ipv4_encoding("api.upstream.example"));
     assert!(!is_alternate_ipv4_encoding("example.com"));
     assert!(!is_alternate_ipv4_encoding(""));
 }
@@ -545,7 +545,7 @@ fn the_metadata_names_are_refused_under_every_policy_and_localhost_only_by_defau
             "`{name}` is what `allow_private` is for"
         );
     }
-    assert!(judge_host_name("a2a.vendor", strict()).is_ok());
+    assert!(judge_host_name("agent.vendor", strict()).is_ok());
 }
 
 /// THERE IS ONE METADATA-NAME LIST, and both name guards read it.
@@ -641,7 +641,7 @@ fn only_http_and_https_are_recognised() {
         "data:text/plain,hi",
         "ws://host/",
         "/no-scheme",
-        "host.example/mcp",
+        "host.example/rpc",
     ];
     assert_eq!(banned.len(), 8, "the banned-scheme set must not shrink");
     for url in banned {
@@ -650,13 +650,13 @@ fn only_http_and_https_are_recognised() {
             "`{url}` must be refused on its scheme"
         );
     }
-    assert!(split_url("https://ok.example/mcp").is_ok());
+    assert!(split_url("https://ok.example/rpc").is_ok());
 }
 
 #[test]
 fn userinfo_is_refused_rather_than_stripped() {
     assert!(matches!(
-        split_url("https://evil.test@good.example/mcp"),
+        split_url("https://evil.test@good.example/rpc"),
         Err(AddressRefusal::NoHost(_))
     ));
 }
@@ -670,7 +670,7 @@ fn userinfo_is_refused_rather_than_stripped() {
 #[test]
 fn a_refusal_never_repeats_the_credential_in_the_authority() {
     let refusals = [
-        split_url("https://svc:hunter2@good.example/mcp").expect_err("userinfo is refused"),
+        split_url("https://svc:hunter2@good.example/rpc").expect_err("userinfo is refused"),
         split_url("ftp://svc:hunter2@good.example/x").expect_err("the scheme is refused"),
         judge_scheme("http://svc:hunter2@good.example/x", false, strict())
             .expect_err("plaintext is refused"),
@@ -696,8 +696,8 @@ fn a_refusal_never_repeats_the_credential_in_the_authority() {
 
 #[test]
 fn default_ports_are_derived_from_the_scheme_and_ipv6_comes_back_unbracketed() {
-    let (https, host, port, path) = split_url("https://a.example/mcp").unwrap();
-    assert!(https && host == "a.example" && port == 443 && path == "/mcp");
+    let (https, host, port, path) = split_url("https://a.example/rpc").unwrap();
+    assert!(https && host == "a.example" && port == 443 && path == "/rpc");
     let (https, _, port, path) = split_url("http://a.internal").unwrap();
     assert!(!https && port == 80 && path == "/");
     let (_, host, port, _) = split_url("https://[::1]:9443/x").unwrap();
@@ -1401,8 +1401,8 @@ fn an_escaped_trailing_root_dot_is_stripped_because_the_decode_comes_first() {
 #[test]
 fn a_host_with_no_escape_in_it_is_returned_unchanged() {
     assert_eq!(
-        extract_normalized_host("https://api.openai.com/v1").as_deref(),
-        Some("api.openai.com")
+        extract_normalized_host("https://api.upstream.example/v1").as_deref(),
+        Some("api.upstream.example")
     );
 }
 
@@ -1451,8 +1451,8 @@ fn interior_spaces_are_not_trimmed_away() {
         None
     );
     assert_eq!(
-        extract_normalized_host("  https://api.openai.com/v1  ").as_deref(),
-        Some("api.openai.com")
+        extract_normalized_host("  https://api.upstream.example/v1  ").as_deref(),
+        Some("api.upstream.example")
     );
 }
 

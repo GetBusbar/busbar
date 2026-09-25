@@ -532,7 +532,7 @@ impl ProtocolReader for OpenAiReader {
                 retry_after: None,
             })?;
             for tool_val in tools_arr {
-                // OAI-09 (round 3 item 11): a `custom` tool (free-text / grammar input) crosses in
+                // OAI-09: a `custom` tool (free-text / grammar input) crosses in
                 // the typed hosted-tool slot, so a Responses lane receives it; one carrying a member
                 // the IR cannot hold stays the raw same-protocol tool.
                 if let Some(custom) = super::slots::read_custom_tool(tool_val) {

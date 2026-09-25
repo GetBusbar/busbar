@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Coverage for the trivial `kind: export` reference plugin: it declares exactly the `Metrics`
-//! stream, takes the trait's default no-op `deliver`, and `open` accepts any config (including
+//! Coverage for the trivial `kind: export` reference plugin: it declares exactly the `Metrics` and
+//! `Logs` streams, takes the trait's default no-op `deliver`, and `open` accepts any config (including
 //! malformed JSON) since this sink has no configurable shape.
 
 use super::*;
@@ -21,9 +21,12 @@ fn open_accepts_malformed_json_config_since_none_is_read() {
 }
 
 #[test]
-fn the_sink_declares_exactly_the_metrics_stream() {
+fn the_sink_declares_exactly_the_metrics_and_logs_streams() {
     let sink = open("").unwrap();
-    assert_eq!(sink.streams(), vec![ExportStream::Metrics]);
+    assert_eq!(
+        sink.streams(),
+        vec![ExportStream::Metrics, ExportStream::Logs]
+    );
 }
 
 #[test]

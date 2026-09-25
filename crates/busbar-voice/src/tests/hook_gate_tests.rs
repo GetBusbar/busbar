@@ -58,7 +58,7 @@ fn ungated_host() -> Arc<dyn EngineHost> {
 /// the attachment here).
 fn gated_host(_hook_name: &'static str, script: GateScript) -> Arc<dyn EngineHost> {
     FixtureHost::new()
-        .attach_gate(crate::PLANE_DECL.key, GATE_CONTAINER, script)
+        .attach_gate(crate::PLANE_DECLARATION.key, GATE_CONTAINER, script)
         .into_host()
 }
 

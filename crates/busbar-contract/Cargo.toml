@@ -36,14 +36,43 @@ license = "Apache-2.0"
 # its backing memory on drop, and `SignalBag` keeps the common 0-4-declared-signals case off the
 # heap. Both are LEAF crates — each resolves to a node with NO dependencies of its own in
 # `Cargo.lock`, so neither widens the closure every plugin inherits (#40(a)) by more than itself and
-# in particular neither reaches `libc`. That test is the one that matters here and is why
-# `sha256_hex` did NOT come with them: it is `sha2`, and `sha2 -> cpufeatures -> libc` is an open
-# owner ruling, not a dependency this crate may take on its own authority.
+# in particular neither reaches `libc`. That test is the one that matters here, and it is why
+# `sha256_hex` did not come with them.
+#
+# `sha2` and `hex` arrived with `sha256_hex` (DECISIONS #83; ARCHITECT P68-0 residue (b)): the digest
+# every auth module hashes a credential under before the constant-time compare, so a plugin compares
+# credentials against the contract alone. `sha2 -> cpufeatures -> libc` is the one edge here that
+# reaches `libc`, and it is RULED, not assumed: OWNER RULING 2026-09-22, stated once for the whole
+# tree as the `(dep = libc, via = cpufeatures)` edge exemption in `qa/construction.toml` — two
+# CPU-capability queries (`getauxval`, `sysctlbyname`), no socket, file, process, handle,
+# environment read or HTTP client. `cargo xtask gate denylist` still reds any OTHER path to `libc`.
+#
+# `serde_json` and `async-trait` arrived with the plugin-facing half of `busbar-api` (DECISIONS
+# #83/#84, the per-kind traits and their shapes: `auth`, `hooks`, `secret`, `operation`). `serde_json` is the settings/rewrite carrier those shapes already spoke —
+# a `SecretModule` takes a settings `Map`, a rewrite reply is JSON arrays — and it resolves to
+# `itoa`/`memchr`/`serde_core`/`zmij` in `Cargo.lock`, none of which reaches `libc`. `async-trait`
+# is a proc-macro: it runs at compile time and links nothing into a plugin, and `RoutingPolicy`'s
+# every implementor already writes `#[async_trait]` against it.
+#
+# `http` and `memchr` arrived with the substrate-values SHAPES (DECISIONS #83; SD-1 of the #83a
+# split: `billing`, `codec`, `ir`, `protocol`, and the two upstream signal shapes). `http` is the bare
+# header/status vocabulary a protocol-seam trait names (`HeaderMap` in a detection predicate and in
+# a dialect's error-header attach) — the spec's own "header vocabulary only" acceptance; it resolves
+# to `bytes`/`fnv`/`itoa` and opens nothing. `memchr` is the SSE frame-boundary scan's byte search,
+# a leaf already in this crate's closure through `serde_json`. Neither reaches `libc`. The shapes
+# whose signatures name the reference-counted `bytes::Bytes` buffer (the IR handle, the wire body,
+# the media carriers) did NOT come: `tests/bounded_limits.rs` bans that type from this surface.
 [dependencies]
 serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
 futures = { workspace = true }
 smallvec = { workspace = true }
 zeroize = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+http = { workspace = true }
+memchr = { workspace = true }
 
 # Tests only. The ABI types that seal into the policy journal are serialised by something, and a
 # test that asserts what a serialisation does NOT contain has to run a real serializer over it.

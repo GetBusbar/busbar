@@ -50,9 +50,10 @@ use std::os::raw::c_void;
 /// BEFORE dereferencing `ptr` (core's `recover`/`try_recover`), so a call carrying a stale generation is
 /// REJECTED, never dereferenced.
 ///
-/// This is an APPEND-ONLY hot-lane change: the HOT plane/transport ABI is NEW in 1.6.0 (no 1.5.5
-/// byte-identity constraint, nothing on the money JSON path) and its planes are version-locked to this
-/// crate, so it bumps [`ABI_MINOR`](crate::ABI_MINOR) rather than the frozen major. The struct stays a
+/// The HOT plane/transport ABI is NEW in 1.6.0 (no 1.5.5 byte-identity constraint, nothing on the
+/// money JSON path) and its planes are version-locked to this crate. The change was stamped as
+/// [`ABI_MINOR`](crate::ABI_MINOR) 21, but it RESIZED `BuildCtx.host_ctx` (8 → 16 bytes) and shifted
+/// the fields after it, so it is carried under [`ABI_MAJOR`](crate::ABI_MAJOR) 2 (item 410). The struct stays a
 /// small `#[repr(C)]` `Copy` value passed by register/stack across the `extern "C-unwind"` boundary,
 /// exactly as the bare pointer was.
 #[repr(C)]

@@ -24,7 +24,8 @@
 //! `LICENSE-OK`); a real plugin would verify a signature/expiry. A present-but-invalid `licenseKey`
 //! is a load error — the plugin, not the gateway, decides its own licensing policy.
 
-use busbar_api::{constant_time_eq, sha256_hex, AuthModule, AuthOutcome, Principal};
+use busbar_contract::auth::{AuthModule, AuthVerdict, Principal};
+use busbar_contract::redacted::{constant_time_eq, sha256_hex};
 use serde::Deserialize;
 
 /// The plugin's opaque config: the one accepted token and the identity it grants.
@@ -87,21 +88,26 @@ impl AuthModule for StaticModule {
         "static-auth"
     }
 
-    fn authenticate(&self, candidate: Option<&str>) -> AuthOutcome {
+    fn authenticate(&self, candidate: Option<&str>) -> AuthVerdict {
         match candidate {
             Some(cred) if constant_time_eq(&sha256_hex(cred.as_bytes()), &self.token_hash) => {
                 let mut p = Principal::from_id(self.id.clone());
                 p.roles = self.roles.clone();
-                AuthOutcome::Identify(p)
+                AuthVerdict::Identify(p)
             }
-            _ => AuthOutcome::Pass,
+            _ => AuthVerdict::Pass,
         }
     }
 }
 
 /// Construct the module from the engine-passed JSON config. Fail-closed: an empty/invalid config is a
 /// load error (surfaced by `open_auth` → boot/apply abort).
-fn open(cfg: &str) -> Result<Box<dyn AuthModule>, String> {
+///
+/// `pub` (#2's auth witness, step (3)) so the COMPILED-IN arm of the both-ways test constructs exactly
+/// the module the `cdylib`'s `busbar_open` constructs — not two similar objects built two ways, but
+/// the SAME constructor reached down two paths — and drives it through the `dispatch_compiled_in`
+/// twin `export_auth_plugin!` emits beside `busbar_call`.
+pub fn open(cfg: &str) -> Result<Box<dyn AuthModule>, String> {
     if cfg.trim().is_empty() {
         return Err("static-auth plugin requires config (token, id); none provided".to_string());
     }

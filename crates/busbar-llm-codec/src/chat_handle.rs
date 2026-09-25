@@ -324,7 +324,7 @@ pub fn chat_prepare_for_ingress(ir: &mut IrResponse, ingress_protocol: &str, now
     envelope_foreign_signatures(ir, ingress_protocol);
 }
 
-/// IR-18 (architect ruling, round 3 item 15): a reasoning signature another family minted is
+/// IR-18 (architect ruling): a reasoning signature another family minted is
 /// wrapped in the busbar provenance envelope before the ingress writer places it in a client
 /// carrier that has no origin field, so the client's next turn brings back the original bytes AND
 /// their origin (the ingress reader unwraps it) instead of a blob its own family would reject.

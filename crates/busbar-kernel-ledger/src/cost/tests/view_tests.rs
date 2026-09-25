@@ -505,6 +505,12 @@ fn money_spells_itself_without_a_float() {
 /// the config path — [`crate::cost::compose_plane_cards`] then [`RateCard::from_config`] and
 /// [`RateCard::with_unit_rates`] — exactly as the node builds it.
 fn per_plane_card(flat: bool, plane: bool) -> RateCard {
+    per_plane_card_with_fee(flat, plane, 0)
+}
+
+/// [`per_plane_card`] with the flat card's `per_request_fee:` configured at `fee` — the card is
+/// built whole, the fee handed to its one constructor.
+fn per_plane_card_with_fee(flat: bool, plane: bool, fee: i64) -> RateCard {
     use crate::cost::{compose_plane_cards, TierRates};
     use std::collections::BTreeMap;
     let flat_card = BTreeMap::from([(
@@ -527,7 +533,7 @@ fn per_plane_card(flat: bool, plane: bool) -> RateCard {
     let card = RateCard::from_config(
         map.as_ref()
             .map(|m| m.iter().map(|(lane, (tiers, _))| (lane.as_str(), *tiers))),
-        0,
+        fee,
     );
     card.with_unit_rates(map.iter().flatten().filter_map(|(lane, (_, calls))| {
         calls.map(|nanos| (LaneClass::new(lane.as_str(), "calls"), nanos))
@@ -639,8 +645,7 @@ fn a_flat_card_alone_composes_to_itself() {
 /// (the priced plane above) configured no fees at all.
 fn fee_card() -> RateCard {
     use crate::cost::PlaneFees;
-    let mut card = per_plane_card(true, true);
-    card.set_fee(5);
+    let card = per_plane_card_with_fee(true, true, 5);
     card.with_plane_fees([
         (
             "t",
@@ -726,8 +731,7 @@ fn plane_fees_leave_the_flat_card_byte_identical() {
     let row = LedgerEntry::new(LANE, 0)
         .with_whole(INPUT, 1_000)
         .with_fee_count(3);
-    let mut flat = per_plane_card(true, true);
-    flat.set_fee(5);
+    let flat = per_plane_card_with_fee(true, true, 5);
     assert_eq!(
         price_ledger(std::slice::from_ref(&row), &History::opening(flat, 0)),
         fee_row(row)

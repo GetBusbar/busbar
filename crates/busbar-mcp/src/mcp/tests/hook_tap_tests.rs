@@ -72,13 +72,16 @@ fn screen(reject_if_contains: &str) -> serde_json::Value {
 /// The env that loads the test cdylib under the alias `test-hook`, declaring the `prompt: rw` /
 /// `user: ro` manifest intent the operator grant is met against. ABSENCE IS A HARD FAILURE, never a
 /// skip: with no gate to load every assertion below is vacuous. The panic names the fix.
+///
+/// The acceptance criterion this battery answers, verbatim: "the rewrite half of the hook surface
+/// fires on a non-LLM protocol".
 fn hook_env() -> HookEnvHandle {
     engine()
         .hook_env(&["test-hook"], HookNeed::Rw, HookNeed::Ro)
     .expect(
         "the busbar-hook-test-plugin cdylib is not built. This battery is the acceptance test for \
-         \"the rewrite half of the hook surface fires on a non-LLM protocol\" and it CANNOT be \
-         skipped. Build it: `cargo build -p busbar-hook-test-plugin`.",
+         the rewrite half of the hook surface firing on the MCP plane (the criterion is quoted on \
+         `hook_env`) and it CANNOT be skipped. Build it: `cargo build -p busbar-hook-test-plugin`.",
     )
 }
 

@@ -68,10 +68,6 @@ http = { workspace = true }
 # `test-support` and drive reqwest as a client against the fixtures — optional on that feature,
 # absent from every shipped build; plain `cargo test -p` reaches it via [dev-dependencies].
 reqwest = { workspace = true, features = ["http2", "json"], optional = true }
-# TEST MACHINERY ONLY, same shape: the in-memory store the admin-verb battery hands the engine kit's
-# governance registry. That battery compiles into the LIBRARY under `test-support` (core's own
-# test-support build takes this shape), where a dev-dependency is out of reach.
-busbar-store-memory = { path = "../store-memory", optional = true }
 # The transport's extra trust anchors are DER (`CertificateDer`) now that the hostless hop rides
 # the engine (`Trust::WebpkiPlus`); parsed from PEM at registration, same fail-at-parse posture as
 # the retired `reqwest::Certificate::from_pem`.
@@ -139,7 +135,6 @@ test-support = [    "busbar-kernel/test-support",
     "busbar-kernel/plane-mcp",
     "busbar-kernel/plane-a2a",
     "dep:reqwest",
-    "dep:busbar-store-memory",
 ]
 
 [dev-dependencies]
@@ -153,7 +148,6 @@ reqwest = { workspace = true, features = ["json"] }
 rcgen = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
-busbar-store-memory = { path = "../store-memory" }
 busbar-secret-ref = { path = "../secret-ref" }
 # THE ADMIN JSON-REST SERVICE, dev-only — a dev-dep BACK-EDGE, not linked into any shipped target
 # (the same shape as busbar-mcp's `busbar-llm` back-edge). `/api/v1/admin/*` is served by

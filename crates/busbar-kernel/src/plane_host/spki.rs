@@ -42,7 +42,7 @@ const B64: base64::engine::general_purpose::GeneralPurpose =
 
 /// How many `TBSCertificate` members sit between the optional version and the SPKI:
 /// `serialNumber`, `signature`, `issuer`, `validity`, `subject`. RFC 5280 section 4.1.
-const MEMBERS_BEFORE_SPKI: usize = 5;
+const MEMBERS_BEFORE_KEY_INFO: usize = 5;
 
 /// ASN.1 `SEQUENCE`, constructed. The only tag this walk expects to find at a structural position.
 const TAG_SEQUENCE: u8 = 0x30;
@@ -172,7 +172,7 @@ pub fn subject_public_key_info(cert_der: &[u8]) -> Result<&[u8], SpkiError> {
     if rest.first() == Some(&TAG_VERSION) {
         rest = skip(rest)?;
     }
-    for _ in 0..MEMBERS_BEFORE_SPKI {
+    for _ in 0..MEMBERS_BEFORE_KEY_INFO {
         rest = skip(rest)?;
     }
     // The SPKI is itself a SEQUENCE; checking that is a cheap assertion that the walk landed where it
@@ -187,6 +187,6 @@ pub fn subject_public_key_info(cert_der: &[u8]) -> Result<&[u8], SpkiError> {
 /// -binary | base64` produces — so a host-computed pin and a plane-computed pin over the same
 /// certificate are the SAME string, which is the whole reason the walk lives in one place.
 pub fn pin(cert_der: &[u8]) -> Result<String, SpkiError> {
-    let spki = subject_public_key_info(cert_der)?;
-    Ok(format!("sha256/{}", B64.encode(Sha256::digest(spki))))
+    let key_info = subject_public_key_info(cert_der)?;
+    Ok(format!("sha256/{}", B64.encode(Sha256::digest(key_info))))
 }

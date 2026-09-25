@@ -187,6 +187,7 @@ pub fn read_cohere_citations(citations: &serde_json::Value) -> Vec<crate::ir::Ir
             .and_then(|a| a.first());
         let doc = first_source.and_then(|s| s.get("document"));
         out.push(crate::ir::IrCitation {
+            domain: None,
             // Cohere citations are character spans into the answer text — the same thing
             // Anthropic calls a `char_location`, which is the vocabulary the neutral `kind` uses.
             kind: Some("char_location".to_string()),
@@ -1186,3 +1187,7 @@ mod field_carry_tests;
 #[cfg(test)]
 #[path = "tests/ir_mapping_tests.rs"]
 mod ir_mapping_tests;
+
+#[cfg(test)]
+#[path = "tests/ir_round3_tests.rs"]
+mod ir_round3_tests;

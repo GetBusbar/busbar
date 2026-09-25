@@ -69,7 +69,7 @@ fn untapped_host() -> Arc<dyn EngineHost> {
 /// hook (it only labels the attachment here).
 fn tapped_host(_hook_name: &'static str, script: RewriteScript) -> Arc<dyn EngineHost> {
     FixtureHost::new()
-        .attach_rewrite(crate::PLANE_DECL.key, GATE_CONTAINER, script)
+        .attach_rewrite(crate::PLANE_DECLARATION.key, GATE_CONTAINER, script)
         .into_host()
 }
 
@@ -127,7 +127,11 @@ fn commits(content: serde_json::Value) -> RewriteScript {
 /// A fixture host carrying the attached rewrite chain, kept as the CONCRETE type so the cell can read
 /// the admin-audit log back off the same host the plane audited through.
 fn tapped_fixture(script: RewriteScript) -> Arc<FixtureHost> {
-    Arc::new(FixtureHost::new().attach_rewrite(crate::PLANE_DECL.key, GATE_CONTAINER, script))
+    Arc::new(FixtureHost::new().attach_rewrite(
+        crate::PLANE_DECLARATION.key,
+        GATE_CONTAINER,
+        script,
+    ))
 }
 
 /// Drive one `Mint` open through the governed choke point against the loopback provider and return

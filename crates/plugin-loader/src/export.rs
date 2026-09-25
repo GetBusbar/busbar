@@ -11,7 +11,7 @@
 //! metrics/audit/logs pipelines lands separately — this seam just proves an export plugin LOADS and
 //! reports the streams it carries.
 
-use crate::{stage, wire_up_raw, RawPlugin};
+use crate::RawPlugin;
 use busbar_plugin::cold::{
     endpoint::{EndpointRequest, EndpointResponse, Route},
     export::{ExportRequest, ExportResponse, ExportStream},
@@ -22,13 +22,20 @@ use busbar_plugin::cold::{
 /// [`RawPlugin`] whose kind was bound to `export` at load; the streams it carries are queried once at
 /// load and retained here so the engine can route deliveries only for declared streams.
 pub struct DynExport {
-    raw: RawPlugin,
+    pub(crate) raw: RawPlugin,
     /// The streams this instance reported to `Streams` at load — the minimal registry entry.
     streams: Vec<ExportStream>,
     /// The HTTP routes this instance declared to `Routes` at load — collected ONCE, retained so the
     /// engine's router builder can collision-check + mount them without a second ABI call.
     routes: Vec<Route>,
+    /// The destinations the host bound for this instance at open (K9a S4): its manifest's declared
+    /// settings keys, resolved against the operator's settings. Empty unless bound.
+    destinations: crate::host::Destinations,
 }
+
+/// How many times one delivery may answer with host ops before the host stops performing them —
+/// a sink that keeps asking is a sink that is not finishing, and the batch is dropped naming it.
+const MAX_HOST_ROUNDS: usize = 8;
 
 impl DynExport {
     /// The observability streams this sink declared at load.
@@ -63,21 +70,323 @@ impl DynExport {
 
     /// Hand one batch for `stream` across the ABI. Returns `Ok(())` on a `Delivered` ack; a transport
     /// failure or an unexpected response variant is an `Err` naming the plugin.
+    ///
+    /// A sink may answer with HOST OPS instead of the ack (K9a S4): the host performs them and
+    /// resumes the sink with their results, until it acks — at most [`MAX_HOST_ROUNDS`] times.
     pub fn deliver(&self, stream: ExportStream, payload: &serde_json::Value) -> Result<(), String> {
         let req = ExportRequest::Deliver {
             stream,
             payload: payload.clone(),
         };
+        match self.drive(req, "deliver")? {
+            ExportResponse::Delivered => Ok(()),
+            other => Err(self.unexpected("deliver", &other)),
+        }
+    }
+
+    /// Send `req` and perform the host ops it answers with, resuming the sink with their results,
+    /// until it answers something else — at most [`MAX_HOST_ROUNDS`] rounds. `op` names the
+    /// request in the refusal.
+    fn drive(&self, mut req: ExportRequest, op: &str) -> Result<ExportResponse, String> {
+        for _ in 0..=MAX_HOST_ROUNDS {
+            match self
+                .raw
+                .transport_call::<ExportRequest, ExportResponse>(&req)?
+            {
+                ExportResponse::Host { token, ops } => {
+                    let results = ops.iter().map(|op| self.perform(op)).collect();
+                    req = ExportRequest::Resume { token, results };
+                }
+                other => return Ok(other),
+            }
+        }
+        Err(format!(
+            "export plugin '{}' asked the host to act more than {MAX_HOST_ROUNDS} times for one \
+             {op}",
+            self.raw.path
+        ))
+    }
+
+    fn unexpected(&self, op: &str, other: &ExportResponse) -> String {
+        format!(
+            "export plugin '{}' returned an unexpected response to {op}: {other:?}",
+            self.raw.path
+        )
+    }
+
+    /// The host-assigned name this sink was loaded under (its manifest name) — the name its
+    /// observations are folded and granted under.
+    pub fn name(&self) -> &str {
+        &self.raw.path
+    }
+
+    /// START the sink (export ABI minor 8): `Some((live, inflight, gate))` as it answered, after
+    /// the host performed any ops it asked for first; `None` from a sink built before the op (live,
+    /// at the host's defaults).
+    pub fn start(&self) -> Result<Option<(bool, u64, String)>, String> {
+        let first = self
+            .raw
+            .transport_call_status::<ExportRequest, ExportResponse>(&ExportRequest::Start);
+        let answer = match first {
+            Err(e) if e.is_unsupported() => return Ok(None),
+            Err(e) => {
+                return Err(format!(
+                    "export plugin '{}' could not be started: {}",
+                    self.raw.path, e.message
+                ))
+            }
+            Ok(ExportResponse::Host { token, ops }) => {
+                let results = ops.iter().map(|op| self.perform(op)).collect();
+                self.drive(ExportRequest::Resume { token, results }, "start")?
+            }
+            Ok(other) => other,
+        };
+        match answer {
+            ExportResponse::Started {
+                live,
+                inflight,
+                gate,
+            } => Ok(Some((live, inflight, gate))),
+            other => Err(self.unexpected("start", &other)),
+        }
+    }
+
+    /// Ask the sink's checks across `instances` of its module (export ABI minor 8): the lines it
+    /// reports, verbatim. A sink built before the op has nothing to report.
+    pub fn check(&self, instances: &[(String, serde_json::Value)]) -> Result<Vec<String>, String> {
+        let req = ExportRequest::Check {
+            instances: instances.to_vec(),
+        };
         match self
             .raw
-            .transport_call::<ExportRequest, ExportResponse>(&req)?
+            .transport_call_status::<ExportRequest, ExportResponse>(&req)
         {
-            ExportResponse::Delivered => Ok(()),
-            other => Err(format!(
-                "export plugin '{}' returned an unexpected response to deliver: {other:?}",
-                self.raw.path
+            Ok(ExportResponse::Validated(problems)) => Ok(problems),
+            Ok(other) => Err(self.unexpected("check", &other)),
+            Err(e) if e.is_unsupported() => Ok(Vec::new()),
+            Err(e) => Err(format!(
+                "export plugin '{}' could not check its settings: {}",
+                self.raw.path, e.message
             )),
         }
+    }
+
+    /// Perform one host op for this sink (K9a S4).
+    fn perform(
+        &self,
+        op: &busbar_plugin::cold::export::HostOp,
+    ) -> busbar_plugin::cold::export::HostResult {
+        self.destinations.perform(op)
+    }
+
+    /// Bind the destinations this instance's manifest `declared` against its `settings` (JSON
+    /// text) — the host's half of the destination handle (K9a S4), run at open.
+    pub fn with_destinations(
+        mut self,
+        declared: &[String],
+        settings: &str,
+    ) -> Result<Self, String> {
+        self.destinations = crate::host::Destinations::bind(declared, settings)?;
+        Ok(self)
+    }
+
+    /// The host SHED one delivery for this sink (K9b): count it on each counter the sink was
+    /// GRANTED as its shed counter at open (a first-party declaration marked `shed`), folded through
+    /// the ONE observability path every envelope takes under this sink's name — so it renders
+    /// exactly as the sink's own report of that series would.
+    pub fn shed(&self) {
+        let shed = crate::observe::shed_series(&self.raw.path);
+        let metrics = shed.iter();
+        let metrics =
+            metrics.map(|n| serde_json::json!({"name": n, "type": "counter", "value": 1}));
+        let report = busbar_plugin::cold::observe::Envelope {
+            result: (),
+            metrics: metrics.collect(),
+            diagnostics: Vec::new(),
+        };
+        crate::observe::fold(&self.raw.path, abi_kind::EXPORT, &report);
+    }
+}
+
+impl DynExport {
+    /// Ask the sink what it has to report NOW — the host's pull, at the moment it renders its own
+    /// exposition — and fold the answer through the ONE observability path every envelope takes
+    /// ([`crate::observe`]), under this sink's host-assigned name. The host validates, bounds and
+    /// decides exactly as it does for an envelope; nothing here trusts the sink's entries.
+    ///
+    /// ADDITIVE on exactly one arm, like `routes` at load: a sink built before the op cannot decode
+    /// it and says so out of band, which is the sink having nothing to report. Every OTHER failure is
+    /// the sink failing to answer: it is logged naming the sink, and the host renders without this
+    /// sink's contribution rather than failing the scrape.
+    pub fn status(&self) {
+        if let Err(e) = self.status_report() {
+            tracing::warn!(error = %e, "export plugin status failed");
+        }
+    }
+
+    /// [`DynExport::status`]'s answer, with a failure returned rather than logged.
+    pub fn status_report(&self) -> Result<(), String> {
+        match self
+            .raw
+            .transport_call_status::<ExportRequest, ExportResponse>(&ExportRequest::Status)
+        {
+            Ok(ExportResponse::Status {
+                metrics,
+                diagnostics,
+            }) => {
+                let report = busbar_plugin::cold::observe::Envelope {
+                    result: (),
+                    metrics,
+                    diagnostics,
+                };
+                crate::observe::fold(&self.raw.path, abi_kind::EXPORT, &report);
+                Ok(())
+            }
+            Ok(other) => Err(format!(
+                "export plugin '{}' returned an unexpected response to status: {other:?}",
+                self.raw.path
+            )),
+            Err(e) if e.is_unsupported() => Ok(()),
+            Err(e) => Err(format!(
+                "export plugin '{}' could not be asked for its status: {}",
+                self.raw.path, e.message
+            )),
+        }
+    }
+}
+
+impl DynExport {
+    /// Ask the sink to validate `settings` for `instance` (export ABI minor 2): the problems it
+    /// found, each a complete line the host reports verbatim. A sink built before the op cannot
+    /// decode it and says so out of band — it has nothing to report, as before the op existed.
+    pub fn validate(
+        &self,
+        instance: &str,
+        settings: &serde_json::Value,
+    ) -> Result<Vec<String>, String> {
+        let req = ExportRequest::Validate {
+            instance: instance.to_string(),
+            settings: settings.clone(),
+        };
+        match self
+            .raw
+            .transport_call_status::<ExportRequest, ExportResponse>(&req)
+        {
+            Ok(ExportResponse::Validated(problems)) => Ok(problems),
+            Ok(other) => Err(format!(
+                "export plugin '{}' returned an unexpected response to validate: {other:?}",
+                self.raw.path
+            )),
+            Err(e) if e.is_unsupported() => Ok(Vec::new()),
+            Err(e) => Err(format!(
+                "export plugin '{}' could not validate its settings: {}",
+                self.raw.path, e.message
+            )),
+        }
+    }
+}
+
+impl crate::PluginRegistry {
+    /// VALIDATE an `export:` instance's settings against the sink its `module` names — the host's
+    /// question while it validates a configuration (K9a S2). `None` when `module` is not a
+    /// `kind: export` row (the caller's unknown-module diagnostic owns that). Otherwise the
+    /// problems to report among the configuration's errors: the sink's own lines verbatim, or one
+    /// naming the instance when the sink failed to answer. A sink that will not OPEN here reports
+    /// nothing — its open refuses the boot naming the instance, exactly as it did before the op.
+    pub fn validate_export(
+        &self,
+        module: &str,
+        instance: &str,
+        settings: &serde_json::Value,
+    ) -> Option<Vec<String>> {
+        self.probe_export(module, instance, settings)
+            .map(|(_, problems)| problems)
+    }
+
+    /// [`Self::validate_export`], and the streams the sink DECLARED (K9b) — asked of the same
+    /// load, so the host resolves the instance's projection against what the module carries while
+    /// it validates the configuration, as it does a built-in module's. `None` when `module` is not
+    /// a `kind: export` row; no streams and no problems when the sink will not open here (its open
+    /// refuses the boot naming the instance).
+    pub fn probe_export(
+        &self,
+        module: &str,
+        instance: &str,
+        settings: &serde_json::Value,
+    ) -> Option<(Option<Vec<ExportStream>>, Vec<String>)> {
+        let p = self
+            .resolve(module)
+            .filter(|p| p.manifest.kind == abi_kind::EXPORT)?;
+        let cfg = settings.to_string();
+        let Ok(sink) = load_export_image(p.image(), &cfg, &p.manifest.name, &p.manifest.kind)
+        else {
+            return Some((None, Vec::new()));
+        };
+        let problems = sink
+            .validate(instance, settings)
+            .unwrap_or_else(|e| vec![format!("export.{instance}: {e}")]);
+        Some((Some(sink.streams), problems))
+    }
+}
+
+impl crate::PluginRegistry {
+    /// CHECK every `instances` of the `kind: export` module `module` (export ABI minor 8) — the
+    /// host's question while it validates a configuration, after its limits. `None` when `module`
+    /// is not an export row. The sink is opened with the first instance's settings; one that will
+    /// not open here reports nothing (its open refuses the boot naming the instance).
+    pub fn check_export(
+        &self,
+        module: &str,
+        instances: &[(String, serde_json::Value)],
+    ) -> Option<Vec<String>> {
+        let p = self
+            .resolve(module)
+            .filter(|p| p.manifest.kind == abi_kind::EXPORT)?;
+        let cfg = instances
+            .first()
+            .map_or_else(|| "{}".to_string(), |(_, s)| s.to_string());
+        let Ok(sink) = load_export_image(p.image(), &cfg, &p.manifest.name, &p.manifest.kind)
+        else {
+            return Some(Vec::new());
+        };
+        Some(
+            sink.check(instances)
+                .unwrap_or_else(|e| vec![format!("export `module: {module}`: {e}")]),
+        )
+    }
+}
+
+impl DynExport {
+    /// Serve one inbound request matched to this sink's route, as the route table relays it: a sink
+    /// that cannot answer is a `502` with no body to the client and a warning naming it to the
+    /// operator — the exchange never fails open into a partial response.
+    pub fn serve(&self, request: &EndpointRequest) -> EndpointResponse {
+        self.handle_http(request).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "export plugin route failed");
+            EndpointResponse {
+                status: 502,
+                headers: Vec::new(),
+                body: Vec::new(),
+            }
+        })
+    }
+
+    /// Hand one batch across the ABI OFF the calling thread — the host's delivery, which must never
+    /// touch the request that produced it. `hold` is released when the call returns (the caller's
+    /// in-flight permit); a sink that errors is logged (the error names it) and the batch is dropped.
+    pub fn deliver_detached(
+        self: &std::sync::Arc<Self>,
+        stream: ExportStream,
+        payload: std::sync::Arc<serde_json::Value>,
+        hold: impl Send + 'static,
+    ) {
+        let sink = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let _hold = hold;
+            if let Err(e) = sink.deliver(stream, &payload) {
+                tracing::warn!(error = %e, "export plugin delivery failed; this batch was dropped");
+            }
+        });
     }
 }
 
@@ -101,15 +410,19 @@ pub fn load_export_from_bytes(
     display: &str,
     manifest_kind: &str,
 ) -> Result<DynExport, String> {
-    let (lib, staged) = stage::load_library_from_bytes(bytes, display)?;
-    let raw = wire_up_raw(
-        lib,
-        cfg_json,
-        display.to_string(),
-        abi_kind::EXPORT,
-        manifest_kind,
-        Some(staged),
-    )?;
+    load_export_image(crate::Image::Bytes(bytes), cfg_json, display, manifest_kind)
+}
+
+/// Load an EXPORT sink over either door's [`crate::Image`] — the one load [`load_export_from_bytes`]
+/// runs, and the one a LINKED export plugin's boundary takes: the same handshake, kind cross-check,
+/// `open`, and the same `streams`/`routes` questions at load.
+pub fn load_export_image(
+    image: crate::Image<'_>,
+    cfg_json: &str,
+    display: &str,
+    manifest_kind: &str,
+) -> Result<DynExport, String> {
+    let raw = crate::load_image(image, cfg_json, display, abi_kind::EXPORT, manifest_kind)?;
     export_from_raw(raw, display)
 }
 
@@ -153,6 +466,7 @@ fn export_from_raw(raw: RawPlugin, display: &str) -> Result<DynExport, String> {
         raw,
         streams,
         routes,
+        destinations: Default::default(),
     })
 }
 

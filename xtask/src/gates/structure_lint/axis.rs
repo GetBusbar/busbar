@@ -102,7 +102,9 @@ pub struct AxisException {
 /// own units, against a tree that can pass them. A row here is one line when that day comes.
 pub fn table(a: &Addresses) -> Vec<AxisRow> {
     let mut op_allowed = vec![
-        "crates/api/src/operation.rs".to_string(),
+        // The `Operation` axis's own home: moved module-path-only out of `busbar-api` into the contract
+        // (DECISIONS #83/#84); `busbar_api::operation` is a re-export of it.
+        "crates/busbar-contract/src/operation.rs".to_string(),
         format!("{}/proto/", a.core),
         format!("{}/handlers/", a.core),
     ];

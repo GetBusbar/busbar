@@ -568,9 +568,10 @@ PYEOF
 #
 # The boot fixture above is a SHARED config that NAMES EVERY PLANE — `mcp:` on the closed boot,
 # `agents:` on the open one — and it was handed unchanged to the mutated binary. But busbar refuses,
-# fail-closed at config resolve, to boot a config that configures a plane the build was compiled
-# WITHOUT ("`agents:` is configured, but this build was compiled without the plane that owns it",
-# "an endpoint block is configured for a plane this build was compiled without"). So for mcp and a2a
+# fail-closed at config parse, to boot a config that configures a plane the build was compiled
+# WITHOUT: the pre-pass lifts only the sections the REGISTERED planes declare, so the section reaches
+# the frozen top-level struct and is refused as an unknown key ("unknown field `agents`, expected one
+# of ..." — Option A, S11b (c) / Q67; the kernel cannot name a plane it does not have). So for mcp and a2a
 # the subject binary never came up at all and the leg reported "the binary did not come up" — a gate
 # failing for a reason other than the property it measures, and worse, failing on the product doing
 # EXACTLY the right thing.
@@ -582,8 +583,8 @@ PYEOF
 # (`plane_config_sections`), and the refusal itself is promoted from an accident into EVIDENCE:
 #
 #   REFUSAL WITNESS (`refusal_witness`): the mutated binary is ALSO booted on the UNSTRIPPED
-#   fixture — the one that still names P's section — and it must REFUSE, naming a plane the build
-#   was compiled without. The control binary boots that identical config fine. That pair is a far
+#   fixture — the one that still names P's section — and it must REFUSE, naming that section as an
+#   unknown field. The control binary boots that identical config fine. That pair is a far
 #   sharper presence/absence discriminator than any status code: the config the plane's own build
 #   accepts is the config the plane-less build rejects, at the plane's own section.
 #
@@ -797,11 +798,15 @@ judge_refusal() {
   if [ "$rc" -eq 0 ]; then
     red "  refusal witness ($p): the binary ACCEPTED a config naming busbar-$p's section with the crate GONE"
     note "    A build compiled without a plane must refuse the config that configures it (fail-closed at"
-    note "    resolve). Accepting it means either the plane is still compiled in, or the refusal was lost."
+    note "    parse). Accepting it means either the plane is still compiled in, or the refusal was lost."
     return 1
   fi
-  if ! grep -q "compiled without" "$log" 2>/dev/null; then
-    red "  refusal witness ($p): the binary failed to start, but NOT with a compiled-out-plane refusal"
+  local sec named=""
+  for sec in $(plane_config_sections "$p"); do
+    grep -qF "unknown field \`$sec\`" "$log" 2>/dev/null && named=1
+  done
+  if [ -z "$named" ]; then
+    red "  refusal witness ($p): the binary failed to start, but NOT with the unknown-field refusal naming its section"
     note "    An exit for an unrelated reason (a taken port, an unreadable config, a panic) is not"
     note "    evidence about the plane. The log's last lines:"
     tail -10 "$log" 2>/dev/null | sed 's/^/      /'
@@ -848,7 +853,7 @@ refusal_witness() {
   fi
 
   if judge_refusal "$fix/boot.log" "$rc" "$p"; then
-    grn "  refusal witness ($p): the same config the control boots is REFUSED (\`$secs:\` names a compiled-out plane)"
+    grn "  refusal witness ($p): the same config the control boots is REFUSED (\`$secs:\` is an unknown field without the plane)"
     rm -rf "$fix"; return 0
   fi
   rm -rf "$fix"; return 1
@@ -1530,12 +1535,12 @@ run_selftest() {
 
   # (5j) THE REFUSAL WITNESS' JUDGEMENT — the evidence that replaces the (now merely necessary) 404
   #      for a plane whose section the subject boot had to omit. Pure over a log and an exit status,
-  #      so all three verdicts are provable here without building or booting anything.
+  #      so all four verdicts are provable here without building or booting anything.
   local rl
   rl="$jd/refusal.log"
-  printf 'error: `agents:` is configured, but this build was compiled without the plane that owns it\n' >"$rl"
+  printf 'Error: config: unknown field `agents`, expected one of `listen`, `admin_listen` at line 6 column 1\n' >"$rl"
   if judge_refusal "$rl" 1 a2a >/dev/null 2>&1; then
-    note "PASS  refusal-judge GREEN: a non-zero exit whose log names a compiled-out plane is the refusal"
+    note "PASS  refusal-judge GREEN: a non-zero exit whose log refuses the plane's section as an unknown field is the refusal"
   else
     fail=1; note "FAIL  refusal-judge GREEN: refused a textbook fail-closed refusal"
   fi
@@ -1553,7 +1558,14 @@ run_selftest() {
     note "      A taken port, an unreadable config or a panic all exit non-zero and say nothing about"
     note "      the plane; counting them would green the witness on a build that still carries it."
   else
-    note "PASS  refusal-judge: a non-zero exit that is not a compiled-out-plane refusal is not evidence"
+    note "PASS  refusal-judge: a non-zero exit that is not the section's unknown-field refusal is not evidence"
+  fi
+  printf 'Error: config: unknown field `zz_other`, expected one of `listen`, `admin_listen`\n' >"$rl"
+  if judge_refusal "$rl" 1 a2a >/dev/null 2>&1; then
+    fail=1
+    note "FAIL  refusal-judge: an unknown-field refusal naming ANOTHER key counted as the plane's refusal."
+  else
+    note "PASS  refusal-judge: an unknown-field refusal must name the deleted plane's OWN section"
   fi
   rm -rf "$jd"
 

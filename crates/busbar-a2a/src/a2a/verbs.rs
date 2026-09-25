@@ -89,7 +89,7 @@ pub(crate) struct SightedCard {
     /// The `sha256/…` SPKI pin of the certificate the SERVING hop presented, where the hop ran over
     /// TLS. `None` on plaintext, and `None` is a refusal for a transport-pinned registration rather
     /// than a pass.
-    pub(crate) peer_spki: Option<String>,
+    pub(crate) peer_key_pin: Option<String>,
     /// THE OTHER END OF THE SAME HANDSHAKE: whether the hop that served this card carried busbar's
     /// client certificate for the registration it was fetched for. Carried for the same reason the
     /// peer's pin is — an `mtls` registration's mutual half is a fact about the connection, so a
@@ -609,7 +609,7 @@ pub(crate) async fn approve(ctx: AdminReqCtx) -> AdminReply {
         let Some(reg) = regs.iter_mut().find(|r| r.agent_id == name) else {
             return Err(WriteRefusal::NotFound(format!(
                 "{} `{name}`",
-                super::PLANE_DECL.subject_noun
+                super::PLANE_DECLARATION.subject_noun
             )));
         };
         super::pin::approve_registration(&mut reg.approval, &preview.sighting, None)

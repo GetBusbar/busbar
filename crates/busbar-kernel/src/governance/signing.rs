@@ -43,7 +43,7 @@ pub const TOKEN_PREFIX: &str = "bbk_";
 /// OID 1.3.101.112 }, BIT STRING }`. Fixed-length and fully determined; prefixed to the 32 raw key
 /// bytes to render busbar's PUBLIC card-issuer key in the ONE spelling the verifier accepts.
 #[cfg_attr(not(feature = "relay"), allow(dead_code))]
-const ED25519_SPKI_PREFIX: [u8; 12] = [
+const ED25519_KEY_INFO_PREFIX: [u8; 12] = [
     0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
 ];
 
@@ -220,10 +220,10 @@ impl TokenSigner {
     /// [`Self::sign_with_card_subkey`] signs with, rendered through the ONE Ed25519 SPKI spelling the
     /// verifier accepts, so a value emitted here and a value that verifier reads back cannot drift.
     #[cfg_attr(not(feature = "relay"), allow(dead_code))]
-    pub fn card_subkey_spki_base64(&self, domain: &str) -> String {
+    pub fn card_subkey_key_info_base64(&self, domain: &str) -> String {
         let key = SigningKey::from_bytes(&self.derived_subkey_seed(domain));
-        let mut der = Vec::with_capacity(ED25519_SPKI_PREFIX.len() + 32);
-        der.extend_from_slice(&ED25519_SPKI_PREFIX);
+        let mut der = Vec::with_capacity(ED25519_KEY_INFO_PREFIX.len() + 32);
+        der.extend_from_slice(&ED25519_KEY_INFO_PREFIX);
         der.extend_from_slice(key.verifying_key().as_bytes());
         base64::engine::general_purpose::STANDARD.encode(der)
     }

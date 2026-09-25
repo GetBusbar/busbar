@@ -85,7 +85,7 @@ MONEY_PREFIXES = (
     "crates/busbar-kernel-ledger/", "crates/busbar-kernel-budget/",
     "crates/busbar-kernel/src/cost.rs", "crates/busbar-kernel/src/billing.rs",
     "crates/busbar-contract/src/count.rs",
-    "crates/busbar/src/root/money_book.rs", "crates/busbar/src/root/durability.rs",
+    "crates/busbar/src/root/durability.rs",
     "crates/busbar/src/root/ledger_identity.rs", "crates/busbar/src/root/migration.rs",
     "crates/busbar-llm-codec/", "crates/busbar-voice-codec/",
 )

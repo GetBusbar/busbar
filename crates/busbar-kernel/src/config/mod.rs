@@ -49,8 +49,9 @@ pub use crate::breaker::status_class_from_str;
 use crate::diagnostics::{
     diag_warn, CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
 };
-use crate::plane::config::McpEndpointSection;
-use crate::plane::config::{AgentsSection, DecisionsSection, StreamsSection, ToolsSection};
+use crate::plane::config::{
+    AgentsSection, DecisionsSection, EndpointSection, StreamsSection, ToolsSection,
+};
 use busbar_kernel_ledger::cost::compose_plane_cards;
 
 /// Reject an env-var value that could break out of the surrounding YAML scalar when substituted
@@ -422,6 +423,10 @@ pub struct RootCfg {
     /// type and nothing downstream re-parses the canonical URI or re-derives the mount path. The
     /// plane's own module downcasts its entry back to its concrete resource; read it via
     /// [`RootCfg::endpoint_resource`] keyed by the plane's config section — never a per-plane field.
+    ///
+    /// A plane section the kernel carries RAW ([`DeployCfg::plane_raw`] — a plane with no typed
+    /// grammar of its own, such as one that states itself over the C ABI) is its plane's resource too,
+    /// as `(section, value)`: its plane's `build` reads it through the same `BuildCtx::endpoint_slot`.
     pub endpoint_resources:
         std::collections::HashMap<&'static str, std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     /// The VALIDATED authorization server (`oauth_as:`), or `None` when this deployment is not one.
@@ -1181,16 +1186,19 @@ pub struct DeployCfg {
     /// resource server. Its PRESENCE is what mounts that plane's endpoint — absent, the deployment
     /// carries no ingress for it and no `.well-known` document, and nothing joins the route table.
     /// See that plane's own endpoint config type.
-    // Type-erased through the neutral `McpEndpointSection` seam: the `mcp:` block deserializes into
+    // Type-erased through the neutral `EndpointSection` seam: the `mcp:` block deserializes into
     // its owning plane's own endpoint config behind `dyn PlaneEndpointCfg`, so `DeployCfg` names no
     // plane-specific endpoint type. The plane compiled out captures it raw and refuses a present block
     // at `resolve` (the deletion-gate leg).
     ///
     /// A CARRIER, not a parsed field: the key is lifted off the document by
     /// [`crate::config::prepass`] before this struct parses, so it is never in this struct's
-    /// accepted key set and never named in its unknown-key refusal. See that module for why.
+    /// accepted key set and never named in its unknown-key refusal. See that module for why. The
+    /// field is named for what it carries, not for its wire key: the pre-pass ties the key to this
+    /// carrier's TYPE (`LiftableSection for EndpointSection`), and the config-schema fingerprint
+    /// records it under that key.
     #[serde(skip)]
-    pub mcp: McpEndpointSection,
+    pub endpoint: EndpointSection,
     /// `oauth_as:` — busbar AS an OAuth 2.1 authorization server, for the deployment that has no
     /// identity provider (or has one that will not do dynamic registration). ABSENT BY DEFAULT, and
     /// absent means nothing is built: see `crate::oauth_as`.
@@ -1275,6 +1283,13 @@ pub struct DeployCfg {
     /// lifted like its card. The pools plane's fee is `per_request_fee:`.
     #[serde(skip)]
     pub plane_fees: PlaneFeesMap,
+    /// THE GENERIC CARRIER: every REGISTERED plane's declaring section that no other carrier holds
+    /// (a named one, or the generic singular one) and core does not own — lifted by the pre-pass off
+    /// the plane registry, card and fees stripped, the remainder kept RAW for the plane to read.
+    /// [`resolve`] hands each present one to its plane's `build` as its section-keyed resource. A
+    /// section no registered plane declares is still refused as an unknown field.
+    #[serde(skip)]
+    pub plane_raw: std::collections::BTreeMap<&'static str, serde_yaml::Value>,
     /// The durable store as `{ module, settings }`. Absent = the ephemeral RAM store.
     #[serde(default)]
     pub store: Option<StoreCfg>,
@@ -1779,10 +1794,26 @@ pub struct ExportCfg {
     pub prometheus: Option<PrometheusSettings>,
     /// Every configured `request-log-webhook` instance, in config order. Empty ⇒ no webhook sink.
     pub request_log_webhooks: Vec<WebhookSettings>,
-    /// Every configured `request-log-file` instance, in config order. Empty ⇒ no file sink.
-    pub request_log_files: Vec<FileSettings>,
     /// The `otlp` instance's settings, if one is configured. `None` ⇒ no tracer/span export.
     pub otlp: Option<OtlpSettings>,
+    /// Every instance whose `module:` names an export module registered on the EXPORT AXIS
+    /// ([`crate::export::plugin::register_module`]) — a plugin sink, compiled in or dropped in — in
+    /// config order. Opened once at boot ([`crate::export::plugin::open`]).
+    pub plugins: Vec<PluginExportSettings>,
+}
+
+/// One `export:` instance served by a module on the export axis: its name, its definition as the
+/// operator wrote it (the `settings:` bag is the plugin's to read), and its projection resolved at
+/// CONFIG time. That projection is provisional — the sink's declared streams are known only once it
+/// is opened, where the projection is resolved again against them — and it is what the union's
+/// compute gate reads.
+#[derive(Debug, Clone)]
+pub struct PluginExportSettings {
+    /// The instance name (`export.<name>`).
+    pub name: String,
+    /// The instance's definition.
+    pub def: ExportDefCfg,
+    pub(crate) projection: crate::export::projection::Projection,
 }
 
 impl ExportCfg {
@@ -1797,8 +1828,8 @@ impl ExportCfg {
                 .iter()
                 .map(|s| &s.projection)
                 .chain(self.request_log_webhooks.iter().map(|s| &s.projection))
-                .chain(self.request_log_files.iter().map(|s| &s.projection))
-                .chain(self.otlp.iter().map(|s| &s.projection)),
+                .chain(self.otlp.iter().map(|s| &s.projection))
+                .chain(self.plugins.iter().map(|s| &s.projection)),
         )
     }
 }
@@ -1887,24 +1918,6 @@ pub struct WebhookSettings {
     pub(crate) projection: crate::export::projection::Projection,
 }
 
-/// `settings:` of an `export.<name>.module: request-log-file` instance.
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct FileSettings {
-    /// The JSONL file path each request-log line is appended to — REQUIRED.
-    pub path: String,
-    /// Optional size (MiB) at which the file is rotated (best-effort; absent ⇒ never rotate).
-    #[serde(default)]
-    pub rotate_mb: Option<u64>,
-    /// THIS INSTANCE'S RESOLVED PROJECTION — the streams + fields this sink is granted, from its
-    /// `streams:` / `fields:` keys (see `crate::export::projection`). NOT an operator key: it is
-    /// `#[serde(skip)]` so the `settings:` bag stays exactly what the operator wrote, and it is
-    /// filled in by [`resolve_export`]. It rides here so the delivery path can build this sink's
-    /// payload TO ITS PROJECTION without a second lookup keyed on instance name.
-    #[serde(skip)]
-    pub(crate) projection: crate::export::projection::Projection,
-}
-
 /// `settings:` of an `export.<name>.module: otlp` instance — the new home of the DELETED
 /// `observability.otlp_url`. The tracer/log-init machinery in `crate::observability` is
 /// unchanged; only the config surface that drives it moved.
@@ -1936,7 +1949,8 @@ pub struct ExportAuthHeader {
 /// the same posture `resolve` takes everywhere else.
 ///
 /// Enforced here:
-/// - an unknown `module:` is a boot error naming the four built-ins (never a silently-ignored sink);
+/// - a `module:` that is neither a built-in nor registered on the export axis is a boot error naming
+///   the four built-ins (never a silently-ignored sink);
 /// - a bad/typo'd key inside `settings:` is a boot error (each settings struct is
 ///   `deny_unknown_fields`, so the opaque bag is only opaque to the OUTER layer);
 /// - a SECOND `prometheus` or `otlp` instance is a boot error (see [`ExportCfg`] — those two are
@@ -1953,15 +1967,25 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
     let mut otlp_owner: Option<&str> = None;
 
     for (name, def) in defs {
+        let settings = serde_json::Value::Object(def.settings.clone());
+        let module = def.module.trim();
+        // A module the kernel does not serve is asked of the export axis: the streams its sink
+        // declares (so the projection is resolved against them now, as a built-in's is) and its
+        // own verdict on the settings.
+        let built_in = crate::export::projection::module_streams(module);
+        let axis = built_in
+            .is_none()
+            .then(|| crate::export::plugin::probe(name, module, &settings))
+            .flatten();
         let projection = crate::export::projection::resolve_projection(
             name,
-            def.module.trim(),
+            module,
+            built_in.or(axis.as_ref().and_then(|(streams, _)| streams.as_deref())),
             def.streams.as_deref(),
             def.fields.as_deref(),
             def.durable,
             errors,
         );
-        let settings = serde_json::Value::Object(def.settings.clone());
         // Parse the opaque bag into this module's typed settings struct. One helper so every module
         // produces the identical `export.<name>.settings: …` error prefix.
         macro_rules! typed {
@@ -1999,11 +2023,6 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
                     out.request_log_webhooks.push(v);
                 }
             }
-            EXPORT_MODULE_REQUEST_LOG_FILE => {
-                if let Some(v) = typed!(FileSettings) {
-                    out.request_log_files.push(v);
-                }
-            }
             EXPORT_MODULE_OTLP => {
                 if let Some(owner) = otlp_owner {
                     errors.push(format!(
@@ -2015,6 +2034,15 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
                 }
                 otlp_owner = Some(name);
                 out.otlp = typed!(OtlpSettings);
+            }
+            // THE EXPORT AXIS: a module some compiled-in or dropped-in export plugin registered.
+            _ if axis.is_some() => {
+                errors.extend(axis.into_iter().flat_map(|(_, problems)| problems));
+                out.plugins.push(PluginExportSettings {
+                    name: name.clone(),
+                    def: def.clone(),
+                    projection,
+                })
             }
             other => errors.push(format!(
                 "export.{name}.module: unknown exporter '{other}'; the built-in export modules are \
@@ -2610,68 +2638,20 @@ pub fn resolve(
     if let Err(e) = deploy.tools.0.validate_registry() {
         errors.push(e);
     }
-    // A present plane registry section whose owning plane is NOT registered names a registry this
-    // build cannot serve: refuse it (the config deletion-gate leg), naming the SECTION (its
-    // plane-declared grammar key) rather than a hard-coded plane. With the plane registered the decl
-    // is present and this never fires; with it compiled out the `RawPlaneSection` reports
-    // `is_present()` for a section the operator wrote, and there is no decl for it.
-    //
-    // FAIL-CLOSED: this reads the FROZEN STATIC noun source
-    // `busbar_kernel::plane::config::NAMED_MAP_SECTIONS`, NOT the registry-derived
-    // `NamedMapSection::sections()` — the latter goes EMPTY of a plane's section when the plane is
-    // compiled out, which would let a `tools:`/`agents:` block for an absent plane slip through
-    // silently. The mirror's two core sections (`identity-providers`/`export`) are not plane sections,
-    // so `plane_section` answers `None` for them (never present) and they are skipped; only a plane
-    // section that is present with no decl is refused, byte-identical to the former `[Tools, Agents]`
-    // loop.
     // LAW 7 (BUSBAR-1.6.0.md: "Core loads a plugin **iff** its configuration section is present"):
-    // the plane sections this config writes, by the SAME `is_present()` the deletion gate reads — so
-    // "configured" is exactly what a build without the plane would refuse. Carried on `RootCfg`.
+    // the plane sections this config writes, carried on `RootCfg`. A section whose owning plane is
+    // not registered never gets here: the pre-pass lifts only the sections REGISTERED planes declare,
+    // so an undeclared one is refused at parse as an unknown field (Option A, S11b (c) / Q67) and no
+    // carrier can be present without its plane.
     let mut plane_sections = std::collections::BTreeSet::new();
-    for section in busbar_kernel::plane::config::NAMED_MAP_SECTIONS {
-        let present = deploy
-            .plane_section(section)
-            .is_some_and(|cfg| cfg.is_present());
-        if present {
-            plane_sections.insert(section);
-        }
-        if present && crate::plane::registry::plane_decl_for_config_section(section).is_none() {
-            errors.push(format!(
-                "`{section}:` is configured, but this build was compiled without the plane that \
-                 owns it, so busbar cannot serve it. Rebuild with that plane's feature enabled, or \
-                 remove the `{section}:` block."
-            ));
-        }
-    }
-    // THE SINGULAR PLANE SECTIONS. Each of these is one posture (or one model-serving table) per
-    // deployment rather than a registry of named definitions, so neither is a `NamedMapSection` and
-    // neither is in the mirror above — they are checked here, on the same terms: a present block
-    // with no registered owning plane names a section this build cannot serve and is refused at
-    // resolve, byte-identical to a present `tools:`/`agents:` naming a compiled-out plane. With the
-    // owning plane registered the decl is present and this never fires; with it compiled out the
-    // `RawPlaneSection` reports `is_present()` for a section the operator wrote, and there is no
-    // decl for it.
-    //
-    // WRITTEN AS ONE LIST RATHER THAN AS ONE `if` PER SECTION, because the `if` per section is
-    // exactly how this went wrong once: `streams:` had a leg, `decisions:` arrived beside it and
-    // got none, and a `decisions:` block in a build without that plane was accepted in silence —
-    // the same class of no-op the section's own grammar exists to refuse. The list does not make
-    // the next singular section IMPOSSIBLE to omit (it cannot be derived: reading a section's
-    // `is_present()` means naming its `DeployCfg` field, and the fields are concrete), but it is
-    // one obvious place to add it, beside the two already there, rather than a shape to re-copy.
     for (section, present) in [
-        ("streams", deploy.streams.0.is_present()),
-        ("decisions", deploy.decisions.0.is_present()),
+        (Some(ToolsSection::SECTION), deploy.tools.0.is_present()),
+        (Some(AgentsSection::SECTION), deploy.agents.0.is_present()),
+        (Some(StreamsSection::SECTION), deploy.streams.0.is_present()),
+        (DecisionsSection::section(), deploy.decisions.0.is_present()),
     ] {
-        if present {
+        if let (Some(section), true) = (section, present) {
             plane_sections.insert(section);
-        }
-        if present && crate::plane::registry::plane_decl_for_config_section(section).is_none() {
-            errors.push(format!(
-                "`{section}:` is configured, but this build was compiled without the plane that \
-                 owns it, so busbar cannot serve it. Rebuild with that plane's feature enabled, or \
-                 remove the `{section}:` block."
-            ));
         }
     }
 
@@ -2723,12 +2703,11 @@ pub fn resolve(
     // The `mcp:` endpoint is LOWERED through the plane seam into its validated resource, type-erased
     // as `Option<Arc<dyn Any>>` — so `RootCfg` names no plane-specific resource type. The plane's
     // `lower_endpoint` hook returns the SAME `Display` string boot produced for that error type,
-    // collected verbatim. With that plane compiled out there is no hook: a PRESENT `mcp:` block
-    // names a plane this build does not carry, so it is refused (the config deletion-gate leg) with
-    // the same wording.
-    let endpoint_block = deploy.mcp.0.as_ref();
+    // collected verbatim. With that plane compiled out nothing declares the block, so the pre-pass
+    // never lifts it: it is refused at parse as an unknown field (Option A, S11b (c) / Q67).
+    let endpoint_block = deploy.endpoint.0.as_ref();
     // The endpoint's owning plane is looked up by its CONFIG SECTION (the `tools:` plane owns the
-    // `mcp:` door), so no plane key is named here. Compiled out ⇒ no decl ⇒ the deletion-gate refusal.
+    // `mcp:` door), so no plane key is named here.
     let endpoint_section = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2];
     let lower = crate::plane::registry::plane_decl_for_config_section(endpoint_section)
         .and_then(|d| d.lower_endpoint);
@@ -2736,30 +2715,24 @@ pub fn resolve(
     if endpoint_block.is_some_and(|ep| ep.is_present()) {
         plane_sections.insert(endpoint_section);
     }
-    let lowered_endpoint = match (endpoint_block, lower) {
-        (None, _) => None,
-        (Some(ep), Some(lower)) => lower(&**ep).map_err(|e| errors.push(e)).ok(),
-        (Some(ep), None) => {
-            if ep.is_present() {
-                errors.push(
-                    "an endpoint block is configured for a plane this build was compiled without, \
-                     so busbar cannot serve it. Rebuild with that plane's feature enabled, or \
-                     remove the block."
-                        .to_string(),
-                );
-            }
-            None
-        }
-    };
+    let lowered_endpoint = endpoint_block
+        .zip(lower)
+        .and_then(|(ep, lower)| lower(&**ep).map_err(|e| errors.push(e)).ok());
 
     // The lowered endpoint resource, if any, keyed by its owning plane's config SECTION — the
     // neutral, section-keyed shape `RootCfg` carries in place of a per-plane field (mirroring
     // `tool_defs`/`agent_defs` beside it). The `tools:` plane owns the endpoint door, so its section
     // key is the map key; a build compiled without that plane produced no resource and inserts none.
-    let endpoint_resources: std::collections::HashMap<_, _> = lowered_endpoint
+    let mut endpoint_resources: std::collections::HashMap<_, _> = lowered_endpoint
         .map(|resource| (endpoint_section, resource))
         .into_iter()
         .collect();
+    // Each RAW-carried plane section a config writes declares its plane (LAW 7) and is that plane's
+    // resource, as `(section, value)`.
+    for (&section, value) in deploy.plane_raw.iter().filter(|(_, v)| !v.is_null()) {
+        plane_sections.insert(section);
+        endpoint_resources.insert(section, std::sync::Arc::new((section, value.clone())));
+    }
 
     // The `oauth_as:` block, validated HERE for the same reason the endpoint block is: an authorization server
     // whose issuer is malformed advertises endpoints at paths it does not serve, and every

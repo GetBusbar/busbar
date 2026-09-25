@@ -187,7 +187,17 @@ const MAKE_A_NEW_KIND: &str = "make a new plugin kind, do not fuse two";
 pub const REGISTRY_FILE: &str = "qa/kind-isolation.toml";
 
 /// A crate census below this is not a tree this gate can be a gate over.
-const MIN_MANIFESTS: usize = 50;
+///
+/// 30, not 50 (item F0b, same shape as F0's `workspace-deps` `MIN_CRATE_MANIFESTS`, `98434a220`).
+/// The Phase 4 fold's planned end state is 35 crates under `crates/`, 34 if `busbar-core-connsec`
+/// folds, and the roster's 33 (docs/design/1.6.0-TODO.md "THE FOLD"; docs/design/BUSBAR-1.6.0.md
+/// crate roster) — at 50 this row was already standing at its own floor pre-fold ("the tree sits
+/// EXACTLY at MIN_MANIFESTS") and would have reddened `:registry` at fold #1. The floor guards
+/// against a BLIND census (an emptied or unreadable `crates/`, a walk that stopped matching), which
+/// finds a handful or nothing; it is not a ratchet on the roster. 30 sits three under the smallest
+/// planned roster variant, so no planned fold trips it, while any walk that loses more than a
+/// third of today's census is still RED.
+const MIN_MANIFESTS: usize = 30;
 /// Likewise for the source walk the vocabulary rule reads.
 const MIN_SOURCES: usize = 600;
 
@@ -559,6 +569,23 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // preserved out of caution during a future audit of this table. It is here because a crate is
     // on its way out, and it goes when the crate does.
     ("api", "contract"),
+    // THE #40 WALL, GRANTED FOR ALL SEVEN PLUGIN KINDS AT ONCE. DECISIONS #40(a), OWNER-LOCKED:
+    // "a plugin crate's entire workspace dependency closure = `busbar-contract` and nothing else".
+    // So a plugin-kind crate's edge to the contract is not a coupling this gate ratchets: it is the
+    // ONE edge the architecture leaves a plugin, and `:closure` measures everything past it.
+    // It is stated here for every kind in `truths::PLUGIN_KINDS`, not kind by kind as each one's
+    // first crate happened to reach the contract — `store`, `plane` and `transport` were granted
+    // that way and `auth`, `hooks`, `secret` and `export` were not, so the day the dependency-wall
+    // wave repointed `busbar-hooks-ranking` at the contract, the plugin DOING what #40 asks was
+    // scored `new-forbidden-edge`. `the_wall_is_granted_for_every_plugin_kind` holds this block to
+    // the seven; [`is_the_wall`] is the same rule where an edge or a vocabulary cell is judged.
+    ("auth", "contract"),
+    ("export", "contract"),
+    ("hooks", "contract"),
+    ("plane", "contract"),
+    ("secret", "contract"),
+    ("store", "contract"),
+    ("transport", "contract"),
     // The pre-split dialects: a codec is written on the closed span grammar the contract re-exports.
     ("codec", "grammar"),
     ("contract", "grammar"),
@@ -587,7 +614,6 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // instance seal below (the cross-instance witness) still refuses a plane naming a DIFFERENT
     // plane's codec — a plane may path-dep ITS OWN codec and nothing else.
     ("plane", "codec"),
-    ("plane", "contract"),
     // The composition root is the one thing that names all three axes — that is what a root IS.
     ("root", "api"),
     ("root", "cleanliness"),
@@ -600,9 +626,7 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("root", "substrate"),
     ("root", "transport"),
     ("root", "unit"),
-    ("store", "contract"),
     ("substrate", "contract"),
-    ("transport", "contract"),
     // `("transport", "transport")` WAS HERE, AND IT IS STRUCK.
     //
     // It granted the CLASS `transport -> transport` — eight live edges (`grpc -> http`,
@@ -636,6 +660,21 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // measured in the `[[dep]]` ledger like every other Neutral kind's.
     ("cleanliness", "contract"),
 ];
+
+/// The kind `busbar-contract` resolves to — the one sink #40 leaves a plugin.
+pub(super) const CONTRACT_KIND: &str = "contract";
+
+/// THE #40 WALL AS A RULE: a crate of one of the seven plugin kinds naming `busbar-contract`.
+///
+/// That edge is the rule itself, not an instance of debt, so it owes NO per-crate row: `:deps` and
+/// `:test-deps` do not ask for a `[[dep]]` row for it, and `:matrix` does not measure a plugin
+/// crate's contract column (a plugin names the face it is written against on every `use` line). A
+/// row that still records one is reported as a per-crate exception to a rule that excepts nothing.
+/// Everything a plugin reaches PAST the contract is still judged — here as an ungranted class, and
+/// by `:closure` as a breach of the wall.
+pub(super) fn is_the_wall(from: &str, to: &str) -> bool {
+    to == CONTRACT_KIND && truths::PLUGIN_KINDS.contains(&from)
+}
 
 /// THE TRUSTED COMPUTING BASE: the loader and the plugin tooling, which `ARCHITECTURE.md` 1.4 says
 /// in its own words are NOT kinds. Their edges are neither granted nor refused by the kind rules,
@@ -1489,6 +1528,11 @@ struct CrateInfo {
     remainder: Vec<String>,
     /// The instance this crate is an instance OF, when its remainder names one.
     instance: Option<String>,
+    /// THE KEYS A TRANSPORT CRATE DECLARES (#50): every `const KEY: &'static str = "…";` in an
+    /// `impl TransportMeta for …` under its `src/`. One crate may carry several wires — `http`
+    /// holds `grpc` and `sse` since the dep-wall §6.5 fold — and each declared key is transport
+    /// vocabulary exactly as a crate named for it would be. Empty for every other kind.
+    declared_keys: Vec<String>,
     /// THE SHIPPED DEPENDENCY DECLARATIONS — `[dependencies]`, `[build-dependencies]` and both of
     /// their per-target forms, with `package = …` and `[workspace.dependencies]` renames resolved.
     /// See [`crate::manifest`] for the five spellings the one-section reader could not see.
@@ -1817,14 +1861,21 @@ fn census(cx: &Ctx) -> Result<Vec<CrateInfo>, String> {
         // by the registration.
         let kind = overrides.get(name.as_str()).copied().or(kind);
         let (deps, dev_deps) = deps_of(&text, &renames);
+        let dir = manifest_dir(&rel);
+        let declared_keys = if kind == Some("transport") {
+            declared_transport_keys(cx, &dir)
+        } else {
+            Vec::new()
+        };
         out.push(CrateInfo {
-            dir: manifest_dir(&rel),
+            dir,
             manifest: rel,
             name,
             kind,
             family: family_of(kind),
             remainder,
             instance: None,
+            declared_keys,
             deps,
             dev_deps,
             ambiguous,
@@ -1834,8 +1885,44 @@ fn census(cx: &Ctx) -> Result<Vec<CrateInfo>, String> {
     Ok(out)
 }
 
+/// The registry keys a transport crate DECLARES: each `const KEY` inside an
+/// `impl TransportMeta for …` block of a `.rs` file under `<dir>/src`. Read off the source, never
+/// typed here, so a wire folded into a sibling crate stays a transport word on the commit that folds
+/// it, and a wire added as a module teaches this gate its name the way a new crate would.
+fn declared_transport_keys(cx: &Ctx, dir: &str) -> Vec<String> {
+    let spec = WalkSpec::new([format!("{dir}/src")])
+        .ext("rs")
+        .allow_empty();
+    let Ok(files) = cx.walk(&spec) else {
+        return Vec::new();
+    };
+    let mut keys = Vec::new();
+    for f in files {
+        let mut in_meta = false;
+        for line in f.text.lines() {
+            let t = line.trim();
+            if t.starts_with("impl ") && t.contains("TransportMeta for ") {
+                in_meta = true;
+            } else if in_meta && t.starts_with("const KEY: &'static str = \"") {
+                if let Some(key) = t
+                    .strip_prefix("const KEY: &'static str = \"")
+                    .and_then(|r| r.strip_suffix("\";"))
+                {
+                    keys.push(key.to_string());
+                }
+                in_meta = false;
+            } else if t == "}" && !line.starts_with(' ') {
+                in_meta = false;
+            }
+        }
+    }
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
 /// The instance vocabularies, DERIVED: plane instances are the plane crates' names, transport
-/// instances are the transport crates' names.
+/// instances are the transport crates' names AND every key a transport crate declares.
 fn vocabularies(crates: &[CrateInfo]) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut planes = BTreeSet::new();
     let mut transports = BTreeSet::new();
@@ -1851,6 +1938,7 @@ fn vocabularies(crates: &[CrateInfo]) -> (BTreeSet<String>, BTreeSet<String>) {
             }
             Some("transport") => {
                 transports.insert(c.remainder.join("-"));
+                transports.extend(c.declared_keys.iter().cloned());
             }
             _ => {}
         }
@@ -2491,6 +2579,21 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
     for e in &measured {
         // The announced window, above.
         if announced.contains(e.from.as_str()) || announced.contains(e.to.as_str()) {
+            continue;
+        }
+        // THE WALL OWES NO ROW. A plugin-kind crate naming `busbar-contract` is #40(a) itself, not
+        // an instance of debt ([`is_the_wall`]); asking for a `[[dep]]` row for it is asking for a
+        // per-crate exception to a rule that has none. A row that still records one is reported,
+        // so the ledger does not carry a line that reads like a decision and is not one.
+        if is_the_wall(&e.class.0, &e.class.1) {
+            if listed.contains_key(&(e.from.as_str(), e.to.as_str())) {
+                offenders.push(format!(
+                    "rule-granted-row\t{} -> {}\tthe `[[dep]]` row records a {} -> {} edge, and #40(a) \
+                     grants every plugin kind its edge to busbar-contract as the RULE: a per-crate \
+                     row for it is an exception to a rule that excepts nothing. Strike the row.",
+                    e.from, e.to, e.class.0, e.class.1
+                ));
+            }
             continue;
         }
         let Some(row) = listed.get(&(e.from.as_str(), e.to.as_str())) else {
@@ -6071,12 +6174,14 @@ impl Gate for KindIsolationGate {
             ));
         }
 
-        // THE CONTRACT SINK IS THE SPEC'S, NOT A MEASUREMENT. `hooks -> contract` is in no snapshot
-        // and never was; PLUGIN-TREE.md §4 grants it, as it grants every kind the contract. This case plants that
-        // dependency and requires the row to stay GREEN — it was RED before the sink was read off
-        // the spec, which is what made `store -> contract` a "new kind-to-kind edge class" the day
-        // busbar-store-memory implemented the record contract, and failed the green baseline on the
-        // real tree.
+        // A GRANTED EDGE IS STILL AN EDGE THAT MUST BE WRITTEN DOWN — outside the #40 wall.
+        //
+        // RE-TARGETED (SHA-KI): the subject was `busbar-export-planted -> busbar-contract`, and that
+        // edge is no longer a ledger instance at all — #40(a) grants every plugin kind its contract
+        // edge as the RULE ([`is_the_wall`]), so the case proved a finding the architecture forbids
+        // the gate to make. The claim it carried is unchanged and still true of every OTHER granted
+        // class, so it is asked of one: a kernel workflow crate naming the contract (`kernel ->
+        // contract`, granted) still owes its `[[dep]]` row.
         //
         // The case is asked of the PER-PUSH gate only, for the reason the ship twin's own arm is
         // narrowed: on the ship sha `:deps` also carries the transitional ratchet, and every legacy
@@ -6088,15 +6193,39 @@ impl Gate for KindIsolationGate {
                 "an edge the architecture grants is still an edge that must be written down",
                 &[ROW_DEPS],
                 manifest_plant(
-                    "crates/busbar-export-planted",
-                    "busbar-export-planted",
+                    "crates/busbar-kernel-planted",
+                    "busbar-kernel-planted",
                     &["busbar-contract"],
                 ),
                 &[
                     "unlisted-dep-edge",
-                    "busbar-export-planted -> busbar-contract",
-                    "export -> contract",
+                    "busbar-kernel-planted -> busbar-contract",
+                    "kernel -> contract",
                 ],
+            ));
+
+            // THE #40 WALL, BOTH WAYS. A plugin-kind crate whose one dependency is busbar-contract
+            // IS DECISIONS #40(a) — `hooks -> contract` was scored `new-forbidden-edge` plus an
+            // unlisted `[[dep]]`, `[[cell]]` and `[[edge]]` the day `busbar-hooks-ranking` was
+            // repointed at the contract, for doing exactly what the wall asks. GREEN on the shipped
+            // graph, the test graph and the vocabulary matrix alike, with a source file that names
+            // the contract the way every plugin does. And the same crate reaching `busbar-api` is
+            // RED: the wall is one crate wide, not "the contract plus whatever else".
+            report.push(prove_rows_green(
+                cx,
+                subject,
+                "a plugin-kind crate whose one dependency is busbar-contract is the #40 wall, not \
+                 an edge to write down",
+                &[ROW_DEPS, ROW_TEST_DEPS, ROW_MATRIX],
+                the_wall_plant(&[]),
+            ));
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "a plugin-kind crate reaching busbar-api reaches past the #40 wall",
+                &[ROW_DEPS],
+                the_wall_plant(&["busbar-api"]),
+                &["busbar-hooks-planted -> busbar-api", "hooks -> api"],
             ));
         }
 
@@ -6486,7 +6615,7 @@ impl Gate for KindIsolationGate {
 
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-transport-sse/src/planted_plane_impl.rs",
+            "crates/busbar-transport-http/src/planted_plane_impl.rs",
             "pub struct Wire;\nimpl Plane for Wire {}\n",
         );
         report.push(prove_rows_red(
@@ -6495,7 +6624,7 @@ impl Gate for KindIsolationGate {
             "a wire implementing a plane face",
             &[ROW_FACES],
             ov,
-            &["foreign-entry", "busbar-transport-sse", "Plane"],
+            &["foreign-entry", "busbar-transport-http", "Plane"],
         ));
 
         let mut ov = Overlay::new();
@@ -6832,6 +6961,57 @@ impl Gate for KindIsolationGate {
             &[ROW_INPUTS],
             ov,
             &["unresolvable-include", "concat", "busbar-transport-tcp"],
+        ));
+
+        // `OUT_DIR` IS RESOLVED ONLY WHERE A BUILD SCRIPT WROTE IT. A crate with no `build.rs` has
+        // no writer for the file, so an `OUT_DIR` splice there names an input nothing scored.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-tcp/src/planted_out_dir.rs",
+            "include!(concat!(env!(\"OUT_DIR\"), \"/linked.rs\"));\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "an OUT_DIR include in a crate with no build script is refused",
+            &[ROW_INPUTS],
+            ov,
+            &["unresolvable-include", "concat", "busbar-transport-tcp"],
+        ));
+
+        // …AND AN `OUT_DIR` TAIL THAT CLIMBS IS REFUSED EVEN WHERE ONE EXISTS: `..` out of the build
+        // output is a path this gate cannot place, whatever the build script wrote.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar/src/planted_out_dir.rs",
+            "include!(concat!(env!(\"OUT_DIR\"), \"/../../x.rs\"));\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "an OUT_DIR include that climbs out with `..` is refused",
+            &[ROW_INPUTS],
+            ov,
+            &[
+                "unresolvable-include",
+                "concat",
+                "crates/busbar/src/planted_out_dir.rs",
+            ],
+        ));
+
+        // THE CONTROL: the same splice, not climbing, in a crate whose build script wrote it, is the
+        // crate's own file and stays green.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar/src/planted_out_dir.rs",
+            "include!(concat!(env!(\"OUT_DIR\"), \"/linked.rs\"));\n",
+        );
+        report.push(prove_rows_green(
+            cx,
+            subject,
+            "an OUT_DIR include in a crate with a build script is its own build output",
+            &[ROW_INPUTS],
+            ov,
         ));
 
         // A LOCK FILE NAMING AN EDGE NO MANIFEST HAS. Nothing in the tree read `Cargo.lock` at all,
@@ -8165,6 +8345,33 @@ fn all_but(cx: &Ctx, ext: &str, keep: usize) -> Overlay {
     ov
 }
 
+/// THE CENSUS HELD AT EXACTLY `n` MANIFESTS — item F0b's boundary fixture.
+///
+/// `all_but` thins the `crates/` walk, but [`census`] also reads root/`xtask`/`examples`/`testing`
+/// manifests the registry's off-tree table does not cover, so "keep 29 files under `crates/`" and
+/// "the census is 29" are not the same claim near the new, much lower floor — they were 24 apart at
+/// the old floor of 50 and nobody had to tell them apart. This removes exactly enough CENSUSED
+/// `crates/` manifests, and only those, to land the real census at `n`, so a boundary case can plant
+/// the number the floor actually reads rather than a number of files that merely implies it.
+///
+/// A `#[cfg(test)]`-only fixture: unlike `all_but`, its only caller is the two boundary cases in
+/// `plant_tests`, run through `cargo test`, not the `prove_rows_red` battery `cargo xtask selftest`
+/// runs (item 89's IMPOSS rule is why — see those cases' own comment).
+#[cfg(test)]
+fn census_holding(cx: &Ctx, n: usize) -> Overlay {
+    let full = census(cx).unwrap_or_default();
+    let excess = full.len().saturating_sub(n);
+    let mut ov = Overlay::new();
+    for c in full
+        .iter()
+        .filter(|c| c.manifest.starts_with("crates/"))
+        .take(excess)
+    {
+        ov.remove(c.manifest.clone());
+    }
+    ov
+}
+
 /// THE TREE WITH EVERY CRATE OF THE NAMED KINDS OUT OF THE CENSUS — the floors' own fixture.
 ///
 /// A rule whose subject is "no crate of any of these kinds reached me" cannot be proven by a plant
@@ -8187,13 +8394,16 @@ fn kinds_gone(cx: &Ctx, kinds: &[&str]) -> Overlay {
     ov
 }
 
-/// THE CENSUS HELD AT ITS FLOOR under a plant that removes `removed` manifests.
+/// THE CENSUS HELD AWAY FROM ITS FLOOR under a plant that removes `removed` manifests.
 ///
-/// The tree sits EXACTLY at [`MIN_MANIFESTS`] (Phase 0 F0), so a plant that takes one crate out
-/// drops the census below its floor, and the floor refusal — its own proven case — then answers
-/// for the whole `:registry` row: `the crate census collapsed below its floor`, and never the rule
-/// the case is about. The floor is not lowered. Each removed manifest is replaced by one inert
-/// kernel-kind filler crate, so the census stays a census and the row judges what was planted.
+/// [`MIN_MANIFESTS`] is 30 (item F0b); the Phase 4 fold walks the real census down toward that
+/// number one commit at a time, so a plant elsewhere in this battery that removes a manifest for a
+/// reason of its own — a dead kind, a retired alias, a struck legacy row — can, late in the fold,
+/// land close enough to the floor that the removal ALSO drops the census below it. When that
+/// happens the floor refusal, its own proven case, answers for the whole `:registry` row: `the
+/// crate census collapsed below its floor`, and never the rule the case is about. The floor is not
+/// lowered. Each removed manifest is replaced by one inert kernel-kind filler crate, so the census
+/// stays a census and the row judges what was planted.
 fn hold_census_floor(ov: &mut Overlay, removed: usize) {
     for i in 0..removed {
         ov.set(
@@ -8409,6 +8619,26 @@ fn lock_plus(cx: &Ctx, package: &str, dep: &str) -> Overlay {
     ov
 }
 
+/// A planted HOOKS-kind crate standing on the #40 wall: `busbar-contract` in both halves of the
+/// build graph, a source file that names it the way every plugin does, plus `extra` shipped deps.
+fn the_wall_plant(extra: &[&str]) -> Overlay {
+    let mut body = "[package]\nname = \"busbar-hooks-planted\"\nversion = \"0.0.0\"\n\n\
+                    [dependencies]\nbusbar-contract = { workspace = true }\n"
+        .to_string();
+    for d in extra {
+        body.push_str(&format!("{d} = {{ workspace = true }}\n"));
+    }
+    body.push_str("\n[dev-dependencies]\nbusbar-contract = { workspace = true }\n");
+    let mut ov = Overlay::new();
+    ov.set("crates/busbar-hooks-planted/Cargo.toml", body);
+    ov.set(
+        "crates/busbar-hooks-planted/src/lib.rs",
+        "//! A hooks plugin written against busbar_contract alone.\n\
+         pub use busbar_contract::Plugin;\n",
+    );
+    ov
+}
+
 /// A real manifest with a section APPENDED, so a plant adds one edge and takes none away: a plant
 /// that rewrote the whole file would strike the crate's real edges too, and the dead-allowance
 /// findings that produced would be the ones a reader mistook for the case's own.
@@ -8456,6 +8686,44 @@ mod plant_tests {
 
     fn reg_of(cx: &Ctx) -> KindRegistry {
         load_registry(cx).expect("the registry reads")
+    }
+
+    /// A WIRE A TRANSPORT CRATE DECLARES IS TRANSPORT VOCABULARY (#50), read off its
+    /// `impl TransportMeta` rather than off its crate name, so a wire folded into a sibling crate
+    /// (the dep-wall §6.5 fold) stays a transport word. Every transport crate declares its own id,
+    /// and a key declared by a module planted inside another transport crate joins the vocabulary.
+    #[test]
+    fn a_declared_transport_key_is_transport_vocabulary() {
+        let cx = ws();
+        let crates = census(&cx).expect("the census reads");
+        let transports: Vec<&CrateInfo> = crates
+            .iter()
+            .filter(|c| c.kind == Some("transport"))
+            .collect();
+        assert!(
+            !transports.is_empty(),
+            "the census found no transport crate"
+        );
+        for c in &transports {
+            let id = c.remainder.join("-");
+            assert!(
+                c.declared_keys.contains(&id),
+                "{} declares {:?}, not its own id `{id}`",
+                c.name,
+                c.declared_keys
+            );
+        }
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-tcp/src/planted_wire/meta.rs",
+            "impl TransportMeta for PlantedWire {\n    const KEY: &'static str = \"plantedwire\";\n}\n",
+        );
+        let planted = cx.with_overlay(ov);
+        let (_, ports) = vocabularies(&census(&planted).expect("the planted census reads"));
+        assert!(
+            ports.contains("plantedwire"),
+            "a declared key did not join the transport vocabulary: {ports:?}"
+        );
     }
 
     /// THE PLANT MUST BITE against the tree it is planted over: no removal of a path that tree has
@@ -8585,6 +8853,77 @@ mod plant_tests {
         rule_registry(&cx, &crates, &reg_of(&cx), false)
     }
 
+    // ── item F0b: the two crate-count floors, lowered to 30, proven at their new boundary ────────
+    //
+    // `MIN_MANIFESTS` and `closure::MIN_GRAPH_CRATES` moved 50 -> 30 and 40 -> 30 (same shape as
+    // F0's `workspace-deps` `MIN_CRATE_MANIFESTS`, `98434a220`) so the Phase 4 fold's planned end
+    // state (35 crates, 34 / 33 in the roster variants) clears both. The coarse collapse cases
+    // above (`all_but(cx, "toml", 4)`, `all_but(cx, "rs", 4)`) already prove each floor fires on a
+    // genuine collapse; these two prove the LOWERED floor fires exactly one manifest under itself
+    // and admits the real, un-planted tree — which sits well over 30 today, before the fold has
+    // touched a single crate. `:registry` and `:closure` both carry unrelated standing debt on the
+    // real tree right now (dead-kind/dead-transitional findings, a two-hop breach), so a
+    // `prove_rows_green` case asking either row to be wholly clean would be Impossible by
+    // construction (item 89); these read the FLOOR arm's own detail instead of the row's overall
+    // status, which is provable on the real tree regardless of that other debt.
+    #[test]
+    fn the_registry_census_floor_reds_one_below_thirty_and_admits_the_real_tree() {
+        assert_eq!(
+            MIN_MANIFESTS, 30,
+            "this case is pinned to the lowered floor"
+        );
+        let cx = ws();
+
+        let plant = census_holding(&cx, MIN_MANIFESTS - 1);
+        assert_bites(&cx, &plant);
+        let planted = cx.with_overlay(plant);
+        assert_eq!(
+            crates_of(&planted).0.len(),
+            MIN_MANIFESTS - 1,
+            "the fixture must land the census exactly one under the floor"
+        );
+        assert_red_naming(
+            &registry_over(census_holding(&cx, MIN_MANIFESTS - 1)),
+            &["floor", &MIN_MANIFESTS.to_string()],
+        );
+
+        let real = registry_over(Overlay::new());
+        assert!(
+            !real.detail.contains("collapsed below its floor"),
+            "the real tree's census must clear the lowered floor of {MIN_MANIFESTS}: {}",
+            real.detail
+        );
+    }
+
+    #[test]
+    fn the_closure_graph_floor_reds_one_below_thirty_and_admits_the_real_tree() {
+        const MIN_GRAPH_CRATES: usize = 30;
+        let cx = ws();
+
+        let plant = census_holding(&cx, MIN_GRAPH_CRATES - 1);
+        assert_bites(&cx, &plant);
+        let planted = cx.with_overlay(plant);
+        let (planted_crates, _) = crates_of(&planted);
+        assert_eq!(
+            planted_crates.len(),
+            MIN_GRAPH_CRATES - 1,
+            "the fixture must land the census exactly one under the floor"
+        );
+        assert_red_naming(
+            &closure::rule_closure(&planted, &planted_crates),
+            &["floor", &MIN_GRAPH_CRATES.to_string()],
+        );
+
+        let (real_crates, _) = crates_of(&cx);
+        let real = closure::rule_closure(&cx, &real_crates);
+        assert!(
+            !real.detail.contains("under the floor")
+                && !real.detail.contains("could not be walked over this tree"),
+            "the real tree's census must clear the lowered floor of {MIN_GRAPH_CRATES}: {}",
+            real.detail
+        );
+    }
+
     #[test]
     fn a_cleanliness_surface_reaching_a_wire_is_an_unlisted_edge() {
         assert_bites(&ws(), &cleanliness_reaches_wire());
@@ -8608,6 +8947,80 @@ mod plant_tests {
                 "plane -> cleanliness",
                 "busbar-plane-mcp -> busbar-oauth2",
             ],
+        );
+    }
+
+    // ── the #40 wall: every plugin kind -> busbar-contract is the rule (SHA-KI) ──────────────────
+
+    /// The class table grants the wall for EVERY plugin kind, and the rule the edge and matrix
+    /// judges read is that one pair shape and no other.
+    #[test]
+    fn the_wall_is_granted_for_every_plugin_kind() {
+        for k in truths::PLUGIN_KINDS {
+            assert!(
+                ARCHITECTURE_ALLOWED.contains(&(k, CONTRACT_KIND)),
+                "ARCHITECTURE_ALLOWED does not grant `{k} -> contract`, the one edge #40(a) leaves \
+                 a plugin"
+            );
+            assert!(is_the_wall(k, CONTRACT_KIND), "{k} -> contract is the wall");
+            assert_eq!(
+                verdict_for(&(k.to_string(), CONTRACT_KIND.to_string())),
+                "allowed"
+            );
+            assert!(!is_the_wall(k, "api"), "{k} -> api is past the wall");
+            assert!(!is_the_wall(k, "kernel"), "{k} -> kernel is past the wall");
+        }
+        for neutral in [
+            "kernel",
+            "core",
+            "api",
+            "root",
+            "unit",
+            "legacy",
+            "plugin-tooling",
+        ] {
+            assert!(
+                !is_the_wall(neutral, CONTRACT_KIND),
+                "`{neutral}` is not a plugin kind; its contract edge is an ordinary ledger row"
+            );
+        }
+    }
+
+    /// Asked of the rule directly, finding by finding, so no standing debt on the real tree can
+    /// answer it: the planted crate on the wall draws NO finding on either half of the graph, and
+    /// the same crate reaching busbar-api draws one that names the api edge.
+    #[test]
+    fn a_plugin_crate_on_the_wall_draws_no_finding_and_one_past_it_is_red() {
+        let green = the_wall_plant(&[]);
+        assert_bites(&ws(), &green);
+        let cx = ws().with_overlay(green);
+        let (crates, _) = crates_of(&cx);
+        assert!(
+            crates
+                .iter()
+                .any(|c| c.name == "busbar-hooks-planted" && c.kind == Some("hooks")),
+            "the plant must resolve to the hooks kind"
+        );
+        for half in [Half::Shipped, Half::Test] {
+            let row = rule_deps(&cx, &crates, &reg_of(&cx), half, false);
+            assert!(
+                !row.detail.contains("busbar-hooks-planted"),
+                "a hooks crate naming only busbar-contract drew a {} finding: {}",
+                half.word(),
+                row.detail
+            );
+        }
+
+        let red = deps_over(the_wall_plant(&["busbar-api"]));
+        assert_red_naming(
+            &red,
+            &["busbar-hooks-planted -> busbar-api", "hooks -> api"],
+        );
+        assert!(
+            !red.detail
+                .contains("busbar-hooks-planted -> busbar-contract"),
+            "the contract half of the plant must stay unreported: {}",
+            red.detail
         );
     }
 
@@ -8692,6 +9105,7 @@ mod plant_tests {
             family: Family::Neutral,
             remainder: Vec::new(),
             instance: None,
+            declared_keys: Vec::new(),
             deps: Vec::new(),
             dev_deps: Vec::new(),
             ambiguous: Vec::new(),

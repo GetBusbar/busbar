@@ -165,3 +165,39 @@ pub trait TestAppSeamExt: TestAppSeam {
 }
 
 impl<A: TestAppSeam + ?Sized> TestAppSeamExt for A {}
+
+/// A test plane's ERROR-SURFACE DRIVER: drives every error its admin surface declares, over the real
+/// router, so a set-comparison over the declared error set does not depend on which tests ran first.
+pub type ErrorSurfaceDriver = fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>;
+
+/// ONE LINKED TEST PLANE'S SEAM ENTRY — plain data a plane's own test kit exports (as its
+/// `testkit::TEST_SEAM` const), so a reader that needs every linked plane in its test binary loops
+/// [`test_plane_seams`] instead of naming a plane crate.
+#[derive(Clone, Copy)]
+pub struct TestPlaneSeam {
+    /// The plane's key, the dedupe identity of [`register_test_plane_seam`].
+    pub name: &'static str,
+    /// Install everything the composition root installs for this plane in production. Idempotent.
+    pub install: fn(),
+    /// This plane's error-surface driver, if it serves an admin surface with declared errors.
+    pub error_surface_driver: Option<ErrorSurfaceDriver>,
+}
+
+static TEST_PLANE_SEAMS: std::sync::Mutex<Vec<&'static TestPlaneSeam>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Register a linked plane's test seam entry. Idempotent by `name` (first wins); order is kept.
+pub fn register_test_plane_seam(seam: &'static TestPlaneSeam) {
+    let mut seams = TEST_PLANE_SEAMS.lock().unwrap_or_else(|e| e.into_inner());
+    if !seams.iter().any(|s| s.name == seam.name) {
+        seams.push(seam);
+    }
+}
+
+/// Every registered test plane seam, in registration order.
+pub fn test_plane_seams() -> Vec<&'static TestPlaneSeam> {
+    TEST_PLANE_SEAMS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}

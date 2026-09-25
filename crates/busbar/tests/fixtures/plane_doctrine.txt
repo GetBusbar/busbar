@@ -1,0 +1,49 @@
+# THE PLANE DOCTRINE (capability_equality.rs, plane_isomorphism.rs) — data, so the test sources
+# name no plugin.
+#
+# plane <column>: the owner's directional plane list, verbatim — the one-direction plane, then the
+# three bidirectional protocols counted in both directions. Must equal qa/capability-equality.json
+# `planes`.
+plane llm
+plane mcp-client
+plane mcp-server
+plane a2a-client
+plane a2a-server
+plane voice-client
+plane voice-server
+#
+# root-leg <leg> <cargo feature that compiles it into this build>: the five root legs. Must equal
+# qa/capability-equality.json `root_legs`. The mcp and a2a legs are the served kernel-loop rider, so
+# the feature that links the plane gates them.
+root-leg root-a2a plane-a2a
+root-leg root-admin root-admin
+root-leg root-llm root-llm
+root-leg root-mcp plane-mcp
+root-leg root-voice root-voice
+#
+# crate <crates/busbar-<suffix>> <ledger column>...: the columns each workspace plane crate answers
+# to (both halves of every plane; plane-streaming is the plane voice is a dialect of).
+crate llm llm
+crate mcp mcp-client mcp-server
+crate a2a a2a-client a2a-server
+crate voice voice-client voice-server
+crate plane-llm llm
+crate plane-mcp mcp-client mcp-server
+crate plane-a2a a2a-client a2a-server
+crate plane-streaming voice-client voice-server
+#
+# owed <crate suffix>: workspace plane crates that answer to no ledger column yet, pinned exactly.
+owed plane-decision
+#
+# installed <plane key> <ledger column>...: the doctrine's installed-plane axis (plane_isomorphism.rs)
+# — each plane the composition root installs from its own linked entry, and the directional ledger
+# column(s) it answers to.
+installed llm llm
+installed mcp mcp-client mcp-server
+installed a2a a2a-client a2a-server
+installed voice voice-client voice-server
+#
+# owned-section <plane key> <declaring section> <owned section>...: the linked planes that own the
+# grammar of a top-level section, and those sections (plane_owned_sections_boot.rs).
+owned-section mcp tools mcp
+owned-section voice streams streams

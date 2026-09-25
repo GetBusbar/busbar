@@ -76,7 +76,7 @@ pub use frame::{rewrite, Direction, Frame, Tap, Transform};
 /// THE REGISTRY KEY A2A IS KNOWN BY, in the plane registry and in the plugin contract alike.
 ///
 /// Named ONCE, here, on the pure side of the split, because two declarations read it and both must
-/// agree: the engine's `PLANE_DECL.key` and this crate's own plane `KEY`. A plane is a pure kind
+/// agree: the engine's `PLANE_DECLARATION.key` and this crate's own plane `KEY`. A plane is a pure kind
 /// and cannot name the engine at all, so a key spelled on the server
 /// side would be a key the plane could only copy — which is how two answers to "what is this plane
 /// called" start to differ.

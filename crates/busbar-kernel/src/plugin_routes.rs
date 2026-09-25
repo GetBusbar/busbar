@@ -232,65 +232,26 @@ fn confine(kind: RouteKind, owner: &str, path: &str) -> Result<(), String> {
             "plugin {owner:?} cannot register {path} — it is a reserved core route"
         ));
     }
-    match kind {
-        RouteKind::Hook => {
-            let root = format!("/hooks/{owner}");
-            if path == root || path.starts_with(&format!("{root}/")) {
-                Ok(())
-            } else {
-                Err(format!(
-                    "hook plugin {owner:?} cannot register {path} — hook routes are confined to \
-                     /hooks/{owner}/*"
-                ))
-            }
-        }
-        RouteKind::Export => {
-            // The one well-known exception: a metrics-stream export sink may claim `/metrics`.
-            if path == "/metrics" {
-                return Ok(());
-            }
-            let root = format!("/exports/{owner}");
-            if path == root || path.starts_with(&format!("{root}/")) {
-                Ok(())
-            } else {
-                Err(format!(
-                    "export plugin {owner:?} cannot register {path} — export routes are confined to \
-                     /metrics or /exports/{owner}/*"
-                ))
-            }
-        }
+    // A hook is confined to its own namespace; an export sink to its own, or the well-known
+    // `/metrics` (the one exception, for a metrics-stream sink).
+    let (noun, root, or_metrics) = match kind {
+        RouteKind::Hook => ("hook", format!("/hooks/{owner}"), ""),
+        RouteKind::Export if path == "/metrics" => return Ok(()),
+        RouteKind::Export => ("export", format!("/exports/{owner}"), "/metrics or "),
+    };
+    if path == root || path.starts_with(&format!("{root}/")) {
+        return Ok(());
     }
-}
-
-/// Confinement-check the {path, method} tuples of a set of declarations WITHOUT their dispatchers — the
-/// MANIFEST-LEVEL preflight: nothing is dlopened, deterministic scan order is the input
-/// order, first-to-claim owns, and a second claim of the same `{path, method}` fails LOUD naming the
-/// owning plugin. The SAME logic backs [`build_route_table`] (which additionally carries the live
-/// dispatchers), so `--validate` and boot cannot diverge from what actually mounts.
-pub fn preflight_route_collisions(decls: &[(String, RouteKind, Route)]) -> Result<(), String> {
-    let mut owned: HashMap<(String, RouteMethod), String> = HashMap::new();
-    for (owner, kind, route) in decls {
-        confine(*kind, owner, &route.path)?;
-        let key = (route.path.clone(), route.method);
-        if let Some(existing) = owned.get(&key) {
-            return Err(format!(
-                "plugin {owner:?} cannot register {} {} — already registered by {existing:?}",
-                route.method.as_str(),
-                route.path
-            ));
-        }
-        owned.insert(key, owner.clone());
-    }
-    Ok(())
+    Err(format!(
+        "{noun} plugin {owner:?} cannot register {path} — {noun} routes are confined to \
+         {or_metrics}{root}/*"
+    ))
 }
 
 /// Build the live [`PluginRouteTable`] from the deterministic-order declaration set: confine every
 /// route, first-to-claim owns each `{path, method}`, a second claim is a LOUD collision naming the
-/// owner. This is the App-construction / config-apply path (invoked once export/hook plugins are
-/// loaded into the snapshot — a later wave; exercised today by the route-dispatch + collision tests);
-/// [`preflight_route_collisions`] is the manifest-only mirror that runs at `--validate` and boot with
-/// the identical confinement + first-to-claim rules, so the two can never diverge.
-#[allow(dead_code)]
+/// owner. The App-construction / config-apply path, and the boot/`--validate` preflight's check over
+/// the same declaration set (`crate::preflight::plugins_preflight`), so the two can never diverge.
 pub fn build_route_table(decls: Vec<RouteDecl>) -> Result<PluginRouteTable, String> {
     let mut by_path: HashMap<String, Vec<(RouteMethod, Registered)>> = HashMap::new();
     for decl in decls {

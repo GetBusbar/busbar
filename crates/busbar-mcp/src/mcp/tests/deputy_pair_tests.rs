@@ -231,11 +231,10 @@ async fn a_grant_for_a_different_tool_on_the_same_server_is_refused() {
 async fn the_callers_busbar_key_appears_nowhere_on_the_upstream_wire() {
     use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_store_memory::MemoryStore;
     metrics_init();
 
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
-    let store = Arc::new(MemoryStore::new());
+    let store = engine().scratch_store();
     // Two handles on the SAME key material: one inside `GovState` (which consumes it) and one for
     // the test to mint the caller's audience-bound token with. Same bytes, same kid, so the verifier
     // busbar runs is verifying a token this test really minted.
@@ -283,7 +282,7 @@ async fn the_callers_busbar_key_appears_nowhere_on_the_upstream_wire() {
     gov.refresh().unwrap();
 
     // THE CALLER'S BUSBAR KEY: an audience-bound token for THIS deployment. This is the sentinel.
-    let bearer = signer.mint_for_audience(
+    let caller_token = signer.mint_for_audience(
         &key.id,
         2_000_000_000,
         generation.as_deref(),
@@ -320,7 +319,7 @@ async fn the_callers_busbar_key_appears_nowhere_on_the_upstream_wire() {
     });
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/mcp"))
-        .header("authorization", format!("Bearer {bearer}"))
+        .header("authorization", format!("Bearer {caller_token}"))
         .header("mcp-protocol-version", version)
         .header("mcp-method", "tools/call")
         .header("mcp-name", "fs_read")
@@ -355,7 +354,7 @@ async fn the_callers_busbar_key_appears_nowhere_on_the_upstream_wire() {
         "the scan has nothing to scan: {} bytes",
         wire.len()
     );
-    let forms = encodings(&bearer);
+    let forms = encodings(&caller_token);
     assert_eq!(forms.len(), 5, "every encoding must be exercised");
     for (encoding, bytes) in &forms {
         assert!(
@@ -364,7 +363,7 @@ async fn the_callers_busbar_key_appears_nowhere_on_the_upstream_wire() {
         );
     }
     // Belt and braces on the same haystack: no fragment of the token's payload segment either.
-    let payload_segment = bearer
+    let payload_segment = caller_token
         .trim_start_matches(busbar_kernel::governance::signing::TOKEN_PREFIX)
         .split('.')
         .next()

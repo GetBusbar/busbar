@@ -22,7 +22,7 @@
 // The fixture boots a REAL busbar with a configured provider; a `--no-default-features` build has
 // no wire codec compiled in and fails closed at boot, which is correct product behavior, not the
 // seam under test here.
-#![cfg(feature = "proto-llm")]
+#![cfg(linked_axis_body_ingress)]
 
 use std::collections::BTreeSet;
 use std::io::{Read, Write};

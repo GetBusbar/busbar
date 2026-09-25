@@ -266,11 +266,13 @@ where
 #[derive(Debug)]
 pub struct ToolsSection(pub Box<dyn PlaneCfg>);
 
+impl ToolsSection {
+    /// The declaring section this carrier holds, read off the frozen named-map list.
+    pub(crate) const SECTION: &'static str = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2];
+}
 impl Default for ToolsSection {
     fn default() -> Self {
-        ToolsSection(default_plane_section(
-            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-        ))
+        ToolsSection(default_plane_section(Self::SECTION))
     }
 }
 impl<'de> serde::Deserialize<'de> for ToolsSection {
@@ -278,11 +280,7 @@ impl<'de> serde::Deserialize<'de> for ToolsSection {
     where
         D: serde::Deserializer<'de>,
     {
-        deserialize_plane_section(
-            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-            deserializer,
-        )
-        .map(ToolsSection)
+        deserialize_plane_section(Self::SECTION, deserializer).map(ToolsSection)
     }
 }
 
@@ -292,11 +290,13 @@ impl<'de> serde::Deserialize<'de> for ToolsSection {
 #[derive(Debug)]
 pub struct AgentsSection(pub Box<dyn PlaneCfg>);
 
+impl AgentsSection {
+    /// The declaring section this carrier holds, read off the frozen named-map list.
+    pub(crate) const SECTION: &'static str = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3];
+}
 impl Default for AgentsSection {
     fn default() -> Self {
-        AgentsSection(default_plane_section(
-            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
-        ))
+        AgentsSection(default_plane_section(Self::SECTION))
     }
 }
 impl<'de> serde::Deserialize<'de> for AgentsSection {
@@ -304,11 +304,7 @@ impl<'de> serde::Deserialize<'de> for AgentsSection {
     where
         D: serde::Deserializer<'de>,
     {
-        deserialize_plane_section(
-            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
-            deserializer,
-        )
-        .map(AgentsSection)
+        deserialize_plane_section(Self::SECTION, deserializer).map(AgentsSection)
     }
 }
 
@@ -324,9 +320,13 @@ impl<'de> serde::Deserialize<'de> for AgentsSection {
 #[derive(Debug)]
 pub struct StreamsSection(pub Box<dyn PlaneCfg>);
 
+impl StreamsSection {
+    /// The declaring section this carrier holds — the one place the kernel spells it.
+    pub(crate) const SECTION: &'static str = "streams";
+}
 impl Default for StreamsSection {
     fn default() -> Self {
-        StreamsSection(default_plane_section("streams"))
+        StreamsSection(default_plane_section(Self::SECTION))
     }
 }
 impl<'de> serde::Deserialize<'de> for StreamsSection {
@@ -334,7 +334,7 @@ impl<'de> serde::Deserialize<'de> for StreamsSection {
     where
         D: serde::Deserializer<'de>,
     {
-        deserialize_plane_section("streams", deserializer).map(StreamsSection)
+        deserialize_plane_section(Self::SECTION, deserializer).map(StreamsSection)
     }
 }
 
@@ -349,17 +349,38 @@ impl<'de> serde::Deserialize<'de> for StreamsSection {
 /// not gain one, so the plane's own typed section cannot be named from a kernel struct. It lowers
 /// through this seam at `parse_section` exactly as the four above it do.
 ///
-/// Keyed by the bare `"decisions"` config-section literal rather than a
-/// [`NAMED_MAP_SECTIONS`] index, on the same terms as [`StreamsSection`]: the generic seam resolves
-/// the owning plane's decl by config section, and `decisions:` is deliberately NOT a
-/// named-definition-map section — joining that frozen array would mount admin routes and move a
-/// second golden, which this stage does not do.
+/// KEYED BY NO LITERAL (#49): the section this carrier holds is READ OFF THE REGISTRY
+/// ([`DecisionsSection::section`]) — the declaring section of the registered plane that OWNS its own
+/// declaring section's grammar (`PlaneDeclaration::owned_config_sections`) and that no named carrier
+/// (`tools:`/`agents:`/`streams:`) or core holds. It is deliberately NOT a named-definition-map
+/// section — joining that frozen array would mount admin routes and move a second golden.
 #[derive(Debug)]
 pub struct DecisionsSection(pub Box<dyn PlaneCfg>);
 
+impl DecisionsSection {
+    /// The section this carrier holds, or `None` when no registered plane declares one — in which
+    /// case nothing lifts into it and the carrier stays at its raw empty default.
+    pub(crate) fn section() -> Option<&'static str> {
+        let named = [
+            ToolsSection::SECTION,
+            AgentsSection::SECTION,
+            StreamsSection::SECTION,
+        ];
+        crate::plane::registry::plane_decls()
+            .iter()
+            .map(|d| &d.declaration)
+            .find(|d| {
+                d.owned_config_sections.contains(&d.config_section)
+                    && !named.contains(&d.config_section)
+                    && !crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS
+                        .contains(&d.config_section)
+            })
+            .map(|d| d.config_section)
+    }
+}
 impl Default for DecisionsSection {
     fn default() -> Self {
-        DecisionsSection(default_plane_section("decisions"))
+        DecisionsSection(default_plane_section(Self::section().unwrap_or_default()))
     }
 }
 impl<'de> serde::Deserialize<'de> for DecisionsSection {
@@ -367,47 +388,38 @@ impl<'de> serde::Deserialize<'de> for DecisionsSection {
     where
         D: serde::Deserializer<'de>,
     {
-        deserialize_plane_section("decisions", deserializer).map(DecisionsSection)
+        deserialize_plane_section(Self::section().unwrap_or_default(), deserializer)
+            .map(DecisionsSection)
     }
 }
 
-/// THE `mcp:` ENDPOINT BLOCK as it lands in `DeployCfg`, type-erased behind [`PlaneEndpointCfg`] — the
+/// THE ENDPOINT BLOCK as it lands in `DeployCfg`, type-erased behind [`PlaneEndpointCfg`] — the
 /// neutral seam the owning plane's own endpoint-config type deserializes through. Absent/null ⇒
 /// `None` (endpoint not configured), byte-identical to the pre-seam typed field's `Default`.
 #[derive(Debug, Default)]
-pub struct McpEndpointSection(pub Option<Box<dyn PlaneEndpointCfg>>);
+pub struct EndpointSection(pub Option<Box<dyn PlaneEndpointCfg>>);
 
-impl<'de> serde::Deserialize<'de> for McpEndpointSection {
+impl EndpointSection {
+    /// The DECLARING section of the plane that owns the endpoint door. The door's own key is never
+    /// spelled: it is whatever section that plane declares beside this one
+    /// (`PlaneDeclaration::owned_config_sections`), read by the pre-pass off the registry.
+    pub(crate) const OWNER: &'static str = ToolsSection::SECTION;
+}
+
+impl<'de> serde::Deserialize<'de> for EndpointSection {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        // The endpoint door is owned by the `tools:` plane, so it is keyed by that CONFIG SECTION —
-        // no plane key is named here.
-        deserialize_plane_endpoint(
-            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-            deserializer,
-        )
-        .map(McpEndpointSection)
+        // Keyed by its owning plane's CONFIG SECTION — no plane key is named here.
+        deserialize_plane_endpoint(Self::OWNER, deserializer).map(EndpointSection)
     }
 }
-
-/// THE FROZEN TOP-LEVEL WIRE KEY the `mcp:` endpoint block is lifted from — owned HERE, in the config
-/// seam beside its frozen carrier, so core's config PRE-PASS routes the lift through a plane-neutral
-/// spelling and names no concrete plane in its parse machinery (DECISIONS #1). NOT frozen: the
-/// `mcp:` key is 1.6.0-additive — `v1.5.3` and `v1.5.5` both ship a 26-field `DeployCfg` with no
-/// `mcp:` field (item 2) — so this literal carries no frozen-wire exemption and `plane-purity:key`
-/// counts it as the core-names-a-plane debt it is.
-pub(crate) const ENDPOINT_SECTION_KEY: &str = "mcp";
-
-/// The NEUTRAL ALIAS of the `mcp:` endpoint carrier type — the spelling the pre-pass lifts through so
-/// its generic lift machinery names no plane. Resolves to the snapshot-recorded [`McpEndpointSection`].
-pub(crate) type EndpointSection = McpEndpointSection;
 
 /// EVERY TOP-LEVEL CONFIG SECTION a bare hook reference could be reaching onto, DERIVED from the two
 /// tables that declare the config grammar rather than written as a literal.
 ///
-/// [`super::registry::PlaneDecl::config_section`] over [`super::registry::plane_decls`] gives the
+/// [`super::registry::PlaneDeclaration::config_section`] over [`super::registry::plane_decls`] gives the
 /// plane sections (`pools:`, `tools:`, `agents:`, and any registered plane's own section);
 /// [`NamedMapSection::key`] over [`NamedMapSection::ALL`] gives the 1.5.3 named-definition maps
 /// (`identity-providers:`, `export:`, and the two plane sections again, which is why this
@@ -425,7 +437,7 @@ pub fn config_sections() -> Vec<&'static str> {
 /// pass a plane busbar does not have and watch its section reach this grammar with nothing written
 /// for it in core (see `plane/tests/registry_tests.rs`). [`config_sections`] passes the process
 /// [`super::registry::plane_decls`]; the plane sections come off each decl's
-/// [`super::registry::PlaneDecl::config_section`] rather than an enum `match`, which is what lets a
+/// [`super::registry::PlaneDeclaration::config_section`] rather than an enum `match`, which is what lets a
 /// registered plane's section into the hook-reference grammar.
 pub fn config_sections_from(decls: &[&'static super::registry::PlaneDecl]) -> Vec<&'static str> {
     let mut out: Vec<&'static str> = Vec::new();
@@ -472,7 +484,7 @@ pub fn validate_section_hooks(
 /// `|_, _| Ok(())`.
 ///
 /// An extracted plane crate skips this wrapper and calls the substrate split directly with its OWN
-/// `PLANE_DECL.config_section` / `subject_noun` consts — it holds no plane registry to look up.
+/// `PLANE_DECLARATION.config_section` / `subject_noun` consts — it holds no plane registry to look up.
 ///
 /// `plane_key` is normally [`super::fallback_key`]'s answer for the `pools:` section's one caller —
 /// which is the EMPTY STRING on a build with no plane registered at all (an honest "there is no
@@ -833,7 +845,7 @@ pub fn attach_list(section: &[String], own: &[String]) -> Vec<String> {
 // Relocated here from `busbar_kernel::plane::config` so an extracted plane crate reads its own section
 // without naming core: the ONE registry coupling — the `PlaneDecl` lookup that turned a plane key
 // into the section/noun WORDS — is lifted OUT into a param pair the caller supplies (a plane passes
-// its own `PLANE_DECL.config_section` / `subject_noun` consts), so this half names only `serde` +
+// its own `PLANE_DECLARATION.config_section` / `subject_noun` consts), so this half names only `serde` +
 // `indexmap` + `busbar_api::UpstreamCreds` and no registry. Core wraps it with the lookup for its own
 // callers (`config::split_section(deserializer, plane_key, validate)`), so those are unchanged.
 

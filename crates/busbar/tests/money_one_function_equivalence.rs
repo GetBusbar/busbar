@@ -287,7 +287,7 @@ impl Case {
                 .map(i128::from),
             ),
             (
-                "kernel  CostModel::derive_spend_cents (the LLM door)",
+                "kernel  CostModel::derive_spend_cents (the request door)",
                 kernel
                     .derive_spend_cents([(self.lane, &units)].into_iter(), self.fee_count, true)
                     .map(i128::from),

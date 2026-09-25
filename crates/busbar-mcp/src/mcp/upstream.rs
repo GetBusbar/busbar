@@ -507,9 +507,9 @@ pub(crate) async fn call(
                 stage: busbar_kernel::failover::Stage::BeforeFirstByte,
             }
         })?;
-    let bearer = match plan {
+    let access_token = match plan {
         CredentialPlan::None => None,
-        CredentialPlan::Bearer(b) => Some(b.expose_secret().to_string()),
+        CredentialPlan::Token(b) => Some(b.expose_secret().to_string()),
         CredentialPlan::Exchange(req) => Some(
             exchange(pool, &req, auth.policy, auth.timeout)
                 .await
@@ -530,7 +530,7 @@ pub(crate) async fn call(
         key,
         arguments,
         request_id,
-        bearer.as_deref(),
+        access_token.as_deref(),
         // Each capability is declared exactly when this deployment can answer it for THIS server:
         // the operator granted the ask AND declared its satisfier. See `jsonrpc::tools_call` for
         // why declaring anything else would be dishonest either way.
@@ -798,9 +798,19 @@ pub(super) async fn exchange(
 // Shared fixtures for the upstream-leg batteries: a REAL fake MCP peer and a REAL fake RFC 8693
 // token endpoint, both recording every byte they receive. Declared here rather than duplicated per
 // file so a test that means to vary ONE thing varies one thing.
-#[cfg(all(test, feature = "test-support"))]
+//
+// Compiled under `test-support` (not only `test`) because the served-leg witnesses below drive the
+// same fake peer from a linking crate's test binary.
+#[cfg(feature = "test-support")]
+#[cfg_attr(not(test), allow(dead_code))]
 #[path = "tests/upstream_support.rs"]
 mod upstream_support;
+
+// THIS PLANE'S SERVED-LEG WITNESSES, exported through `crate::testkit::SERVED` so the binary crate's
+// test build runs them through its real kernel-loop rider (see the module header).
+#[cfg(feature = "test-support")]
+#[path = "tests/served_witness.rs"]
+pub(crate) mod served_witness;
 
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/upstream_join_tests.rs"]

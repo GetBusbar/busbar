@@ -857,6 +857,7 @@ fn gemini_citation_byte_indices_convert_to_characters() {
 fn gemini_writer_reemits_char_indices_as_bytes_for_foreign_citations() {
     let text = "héllo wörld";
     let citation = crate::ir::IrCitation {
+        domain: None,
         kind: Some("web_search_result_location".into()),
         cited_text: None,
         title: Some("T".into()),

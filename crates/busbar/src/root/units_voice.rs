@@ -626,14 +626,14 @@ impl OpenToolCalls {
 
 /// The node's open-call table, as the session runtime reaches it.
 ///
-/// The two moments [`OpenToolCalls`] does not own a call site for are the ones that happen on a
-/// socket: a client's reply arriving, and the tick beside the pump. Both live in `busbar-voice`, and
-/// neither can be a method on one of the four seams above — a seam that answered "which unit does
+/// The three moments [`OpenToolCalls`] does not own a call site for are the ones that happen on a
+/// socket: the pump planning a client-served leg, a client's reply arriving, and the tick beside the
+/// pump. All three live in `busbar-voice`, and none can be a method on one of the four seams above — a seam that answered "which unit does
 /// this reply wake" would be the I/O half deciding it.
 ///
 /// So the direction inverts here, exactly once, and it inverts the way the plane's tool executor
-/// already does: `busbar-voice` declares the port, the root implements it, and what crosses is two
-/// facts and no more. The runtime never learns which unit a call belongs to, how long its deadline
+/// already does: `busbar-voice` declares the port, the root implements it, and what crosses is a
+/// session and a call identifier and no more. The runtime never learns which unit a call belongs to, how long its deadline
 /// is, or what a refusal costs.
 ///
 /// A node's own calls, held by `Arc` because a session outlives the frame that opened it and the
@@ -642,6 +642,10 @@ impl OpenToolCalls {
 #[derive(Clone)]
 pub struct NodeCalls {
     node: std::sync::Arc<VoiceNode>,
+    /// The unit key each planned client-served leg is entered under. A served session runs no
+    /// kernel unit per call, so the port mints one: unique on this node, which is all the table's
+    /// per-session map needs of it.
+    next_unit: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[cfg(feature = "plane-voice")]
@@ -658,12 +662,32 @@ impl NodeCalls {
     /// Bind the port to one node's table.
     #[must_use]
     pub fn new(node: std::sync::Arc<VoiceNode>) -> Self {
-        NodeCalls { node }
+        NodeCalls {
+            node,
+            next_unit: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
+        }
     }
 }
 
 #[cfg(feature = "plane-voice")]
 impl busbar_voice::runtime::GovernedCalls for NodeCalls {
+    fn planned(&self, session: u64, call_id: &str, now_ms: u64) -> bool {
+        // The leg the plane declares, keyed by the identifier the model minted — the same pair
+        // `replied` answers under, so the wait entered here is the one a reply wakes.
+        let unit = UnitKey::new(
+            self.next_unit
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        );
+        let correlation_out = CorrelationRef {
+            fact_key: busbar_plane_streaming::plane::FACT_TOOL_CORRELATION,
+            value: CorrelationValue::Str(call_id),
+        };
+        self.node
+            .tool_calls
+            .planned(session, unit, TOOL_REPLY_LEG, Some(correlation_out), now_ms)
+            .is_ok()
+    }
+
     fn replied(
         &self,
         session: u64,
@@ -2102,6 +2126,86 @@ pub fn scope_policy() -> crate::root::policy::ScopePolicy {
 #[must_use]
 pub const fn handshake_scope() -> &'static str {
     TRANSPORT_HANDSHAKE
+}
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// THE ROOT UNIT — the switch-over's mount, addressed through the composition root's generated table
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// THE VOICE PLANE'S ROOT UNIT: once the deployment's limits are resolved its governed-call table is
+/// composed ([`compose_voice_governed_calls`]) — the node this root serves the plane's units on, and
+/// the one seam the half of the plane that owns sockets reaches it through. The composition root's
+/// seal is not this unit's: it runs on the boot path for every build. It opens no book and so has no
+/// book step: the listeners' TLS material is resolved by the path that serves them, once.
+pub const ROOT_UNIT: crate::root::linked::RootUnit = crate::root::linked::RootUnit {
+    seal: None,
+    path_ingress: &[],
+    body_ingress: &[],
+    on_config: Some(|_| compose_voice_governed_calls()),
+    opens_book: false,
+    on_book: None,
+};
+
+/// COMPOSE THE VOICE NODE'S OPEN-CALL TABLE onto the served door — the composition root's one write
+/// of the governed-call port, and the moment a served voice session becomes a governed one.
+///
+/// The node is built here rather than passed in because nothing about the table configuration
+/// decides: [`OpenToolCalls`] is empty at boot and its whole contents are what the
+/// sessions running on this node have opened since. What the served path reaches through the port is
+/// that table and nothing else — `planned`, `replied` and `expired`, none of which reads the
+/// node's door, its pricer, its auth chain or its journal.
+///
+/// So the parts below are the ones the table's own two answers need, and the rest are the root's
+/// unbound posture: the plane with the upstream list configuration composed (none today — the
+/// `streams:` reader that fills it is the same work that switches the serving path onto these units),
+/// a flat pricer, an unbound auth chain, and a memory-buffered journal. That posture is honest for
+/// exactly as long as this node serves no unit, which is the window `root-voice` exists to hold open;
+/// the switch that routes a frame through it is the one that has to thread the deployment's real
+/// auth, rate cards and data directory in, and it fails to compile until it does.
+///
+/// NONE OF A SERVED SESSION'S MONEY PASSES THROUGH THIS NODE (OWNER RULING Q21b). The served path
+/// meters on the streaming plane's units: each turn's raw counts per class go to the kernel's
+/// session account over the live host, which ledgers them through the one metering path and closes
+/// the carrier off the kernel's own budget view; the view prices them at read with the `streams`
+/// card. The flat pricer below prices this node's own door, which admits no served frame.
+///
+/// Set-once on the plane's side: a second call is a no-op rather than a silent swap of the table
+/// this node's live sessions are already keyed into.
+pub(crate) fn compose_voice_governed_calls() {
+    let durability = match crate::root::durability::build(
+        &crate::root::durability::DurabilityConfig { data_dir: None },
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+    ) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("busbar: the voice node's journal did not open: {e}");
+            std::process::exit(2);
+        }
+    };
+    let node = std::sync::Arc::new(VoiceNode::new(VoiceNodeParts {
+        plane: busbar_plane_streaming::StreamingPlane::new(&[]),
+        // No group reaches this node's door: the table's two answers read no cap, and the served
+        // sessions' admissions are the sealed root's, not this stub's.
+        groups: crate::root::policy::group_table(
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
+        ),
+        pricer: busbar_kernel_budget::Pricer::flat(0),
+        auth: busbar_kernel_identity::Auth::new(busbar_kernel_identity::AuthChain::new(
+            Vec::new(),
+            false,
+        )),
+        auth_bindings: crate::root::kernel::auth_bindings::AuthBindings::without_directory(),
+        scope: scope_policy(),
+        meter_policy: crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
+        durability,
+        io: VoiceIo::default(),
+        // Minted from the root's own kernel, which is the only place a sealed origin can come from:
+        // a unit is lent its audit token and nothing else, so it cannot mint one where it is used.
+        origin: crate::root::kernel::new_kernel().origin(busbar_contract::caps::OriginKind::Client),
+    }));
+    busbar_voice::mount::install_governed_calls(std::sync::Arc::new(NodeCalls::new(node)));
 }
 
 #[cfg(test)]

@@ -18,7 +18,7 @@
 //!
 //! The "reaches every backend on its next dependency bump" promise in the doc above is therefore
 //! NO LONGER TRUE of this copy, and is left standing as the record of what the shared crate was for.
-//! Contract conformance for [`busbar_api::Store`] — the checks every backend must pass identically.
+//! Contract conformance for [`busbar_contract::records::RecordStore`] — the checks every backend must pass identically.
 //!
 //! These exist because an audit found the fleet disagreeing with itself: the same input produced a
 //! different outcome depending on which store an operator had deployed. `revoke_credential` on an
@@ -55,9 +55,9 @@
 //! }
 //! ```
 
-use busbar_api::{
+use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, PlaneDisposition, PlaneRecord, PlaneSelector,
-    SecretForm, Store, VirtualKey,
+    RecordStore as Store, SecretForm, VirtualKey,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
@@ -131,13 +131,13 @@ pub fn live_key(id: &str) -> VirtualKey {
     }
 }
 
-/// A minimal `sigv4` credential for `key_id`, in slot 0.
+/// A minimal generic-kind credential for `key_id`, in slot 0.
 pub fn credential(id: &str, key_id: &str) -> CredentialSecret {
     CredentialSecret {
         meta: CredentialMeta {
             id: id.to_string(),
             key_id: key_id.to_string(),
-            kind: "sigv4".to_string(),
+            kind: "generic".to_string(),
             slot: 0,
             // Bounded well under the 128-char column every backend uses, and unique per `ns` so two
             // concurrent runs cannot collide on the global `(kind, public_id)` uniqueness rule.
@@ -304,7 +304,7 @@ pub fn assert_put_credential_requires_a_live_key(store: &dyn Store, ns: &str) {
     );
     assert!(
         store
-            .lookup_credential_secret("sigv4", &format!("AKIA{cred_id}"))
+            .lookup_credential_secret("generic", &format!("AKIA{cred_id}"))
             .expect("lookup is never an error")
             .is_none(),
         "the refused credential still resolves on the verify path"
@@ -313,8 +313,8 @@ pub fn assert_put_credential_requires_a_live_key(store: &dyn Store, ns: &str) {
 
 /// **`put_key_with_credential` is ATOMIC.** When the credential leg is refused — a `public_id`
 /// already in use is the ordinary way it is — NO key row may survive. The trait's default is the
-/// two-call sequence, which commits the key before the credential can fail, leaving a live bearer key
-/// with no credential that the caller was told did not get created.
+/// two-call sequence, which commits the key before the credential can fail, leaving a live key with
+/// no credential that the caller was told did not get created.
 ///
 /// Skip on a backend with no credential support.
 pub fn assert_put_key_with_credential_is_atomic(store: &dyn Store, ns: &str) {
@@ -339,7 +339,7 @@ pub fn assert_put_key_with_credential_is_atomic(store: &dyn Store, ns: &str) {
     );
     assert!(
         store.get_key(&minted_key).expect("read back").is_none(),
-        "the refused mint committed its key leg anyway — an orphan bearer key is live and the \
+        "the refused mint committed its key leg anyway — an orphan key is live and the \
          caller was told the mint failed"
     );
 }

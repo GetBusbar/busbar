@@ -1,0 +1,8 @@
+# THE BILLING PLANES (plane_meter_seam_reachability.rs): every linked plane that performs billable
+# work, keyed by its crate directory under crates/, and the ONE path that answers for its Meter step:
+#   <crate> root <composition-root leg file under crates/busbar/src/root/>
+#   <crate> served <crate>/<production file> <ledger step fn> <declared class const>
+busbar-llm root units_llm.rs
+busbar-mcp served busbar-mcp/src/mcp/method.rs ledger_tool_call CLASS_TOOL_CALLS
+busbar-a2a served busbar-a2a/src/a2a/receive.rs ledger_hop_bytes CLASS_BYTES
+busbar-voice root units_voice.rs

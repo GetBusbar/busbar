@@ -18,14 +18,10 @@
 //! from in-process; this one boots the real shipped binary end to end so the plane crates'
 //! actual `Cargo.toml` feature wiring, not a unit-test fixture, is what is under test).
 #![cfg(unix)]
-// "Every plane compiled in" requires all four plane-bearing features; a build missing one of
-// them is not the shape this test is about, so it skips rather than giving a false pass/fail.
-#![cfg(all(
-    feature = "proto-llm",
-    feature = "plane-mcp",
-    feature = "plane-a2a",
-    feature = "plane-voice"
-))]
+// "Every plane compiled in" is `linked_every_plane` (build.rs: every linked row carrying the `plane`
+// axis is enabled); a build missing one is not the shape this test is about, so it skips rather than
+// giving a false pass/fail.
+#![cfg(linked_every_plane)]
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -355,7 +351,7 @@ fn http_request(
     method: &str,
     path: &str,
     body: Option<&str>,
-    bearer: Option<&str>,
+    token: Option<&str>,
 ) -> (u16, String) {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async {
@@ -367,8 +363,8 @@ fn http_request(
             "POST" => client.post(format!("http://{addr}{path}")),
             _ => client.get(format!("http://{addr}{path}")),
         };
-        if let Some(t) = bearer {
-            req = req.bearer_auth(t);
+        if let Some(t) = token {
+            req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {t}"));
         }
         if let Some(b) = body {
             req = req

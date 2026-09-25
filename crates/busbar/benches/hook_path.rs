@@ -244,6 +244,7 @@ fn install_prompt_ro_hook(dir: &Path) {
         settings_schema: None,
         schema_derived: false,
         host: None,
+        declares: Default::default(),
     };
     m.sha256 = busbar_plugin_loader::sign::sha256_hex(&lib);
     let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", &lib).unwrap();

@@ -76,7 +76,7 @@ fn a_plane_may_only_narrow_within_the_claims_alternatives() {
     let auth = Auth::new(AuthChain::new(Vec::new(), false));
     let req = AuthRequest {
         scheme: Some("mutual-tls"),
-        declared_schemes: &["bearer", "signature"],
+        declared_schemes: &["static-token", "signature"],
         ..request()
     };
     let d = auth.resolve(&req, None, None, None, None, &token);
@@ -88,8 +88,8 @@ fn a_plane_may_only_narrow_within_the_claims_alternatives() {
     // Narrowing WITHIN the alternatives is fine and the chain runs normally.
     let (seal, token) = seal_and_token();
     let req = AuthRequest {
-        scheme: Some("bearer"),
-        declared_schemes: &["bearer", "signature"],
+        scheme: Some("static-token"),
+        declared_schemes: &["static-token", "signature"],
         ..request()
     };
     let d = auth.resolve(&req, None, None, None, None, &token);

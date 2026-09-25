@@ -2302,6 +2302,8 @@ fn a_wrong_shaped_store_block_is_never_taken_and_discarded() {
 /// pre-migration document meant.
 #[test]
 fn migrate_export_adds_the_explicit_streams_projection() {
+    // `request-log-file` is a row of the export axis (K9b), as a linked build's is.
+    crate::test_support::export_axis::install_export_axis();
     let raw = "\
 export:
   metrics:
@@ -2578,11 +2580,11 @@ fn migrate_renames_mcp_refresh_ttl_to_verify_ttl_with_a_warning() {
 tools:
   servers:
     fs:
-      url: "https://fs.example.com/mcp"
+      url: "https://fs.example.com/rpc"
       pin: { mechanism: cert_spki, key: "sha256:abc" }
       refresh_ttl: "6h"
     docs:
-      url: "https://docs.example.com/mcp"
+      url: "https://docs.example.com/rpc"
       pin: { mechanism: unpinned }
 "#;
     let out = migrate_config(raw).expect("migrates");

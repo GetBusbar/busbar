@@ -212,11 +212,11 @@ const GROUP_BUCKET_PREFIX: &str = "group:";
 /// panic — the missing parent is a validation refusal that has already run, and a config that
 /// somehow booted past it degrades to a shorter chain.
 ///
-/// `lease_ids` is the boot-interned name per group, from [`Vocabulary::group_ids`]. A group absent
+/// `lease_ids` is the boot-interned name per group, from [`Registration::key`]. A group absent
 /// from it carries no lease id, which is not an error: the door counts it exactly the same and the
 /// slot simply does not name it.
 ///
-/// [`Vocabulary::group_ids`]: crate::root::vocabulary::Vocabulary::group_ids
+/// [`Registration::key`]: busbar_contract::Registration::key
 #[must_use]
 pub fn group_table(
     groups: &BTreeMap<String, GroupCfg>,

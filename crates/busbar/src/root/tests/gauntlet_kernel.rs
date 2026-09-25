@@ -271,69 +271,109 @@ fn host_selection_seam_unset_session_key_routes_to_substrate() {
     );
 }
 
-// ── W2.a: THE MCP PRODUCTION FLIP ───────────────────────────────────────────────────────────────
-// The shipped serving path for MCP `tools/call` now rides the unified kernel loop: the plane declares
-// its capability key and the composition root registers the kernel-loop runner under it at boot.
+// ── THE KERNEL-LOOP AXES, READ OFF THE LINKED TABLE ────────────────────────────────────────────
+// Which planes ride the unified kernel loop is manifest data: a `[package.metadata.busbar.linked-axes]`
+// row carrying `gauntlet-one-shot` or `gauntlet-session` puts the plane's declaration key in
+// `LINKED.gauntlet_one_shot` / `LINKED.gauntlet_session`, and `install()` flips every key it finds
+// there. These tests ask the registered roster, never a plane by name.
 
-#[cfg(feature = "plane-mcp")]
-#[test]
-fn install_flips_mcp_onto_the_unified_kernel_loop() {
-    // The composition-root install (main.rs calls this at boot) must register a kernel-loop runner
-    // under MCP's capability key — the per-plane FLIP. Before W2.a this was empty (dormant), so this
-    // asserts the shipped MCP path is genuinely swapped onto the unified loop, not the substrate loop.
-    crate::root::gauntlet_install::install();
-    assert!(
-        busbar_kernel::plane_host::gauntlet_runner_registered(busbar_mcp::PLANE_KEY),
-        "install() must register MCP ({}) onto the unified kernel loop — the W2.a flip",
-        busbar_mcp::PLANE_KEY,
-    );
+/// The declaration keys this build's linked table puts on either kernel-loop axis.
+fn gauntlet_rows() -> std::collections::BTreeSet<&'static str> {
+    crate::LINKED
+        .gauntlet_one_shot
+        .iter()
+        .chain(crate::LINKED.gauntlet_session)
+        .copied()
+        .collect()
 }
 
-// ── W2.b: THE REMAINING PRODUCTION FLIPS ────────────────────────────────────────────────────────
-// Every other plane now rides the unified kernel loop too. Each declares its capability key and the
-// composition root registers a kernel-loop runner under it at boot — one-shot for a2a/llm, session
-// for voice/streaming. Red-before-green: with the plane's `flip_*_to_kernel(..)` line removed from
-// install(), each of these asserts fails (no runner registered); with it present, they pass.
-
-#[cfg(feature = "plane-a2a")]
+/// EVERY ROW IS FLIPPED ONTO THE RUNNER ITS AXIS NAMES: `install()` registers the one-shot runner
+/// under each `gauntlet-one-shot` row's key and the session runner under each `gauntlet-session`
+/// row's, and each such key is a plane this build links.
 #[test]
-fn install_flips_a2a_onto_the_unified_kernel_loop() {
+fn install_flips_every_linked_gauntlet_row_onto_the_runner_its_axis_names() {
     crate::root::gauntlet_install::install();
-    assert!(
-        busbar_kernel::plane_host::gauntlet_runner_registered(busbar_a2a::PLANE_KEY),
-        "install() must register A2A ({}) onto the unified kernel loop — the W2.b flip",
-        busbar_a2a::PLANE_KEY,
-    );
+    let linked = linked_planes();
+    for key in crate::LINKED.gauntlet_one_shot {
+        assert!(
+            linked.contains(*key),
+            "`{key}` is on the gauntlet-one-shot axis and is no linked plane"
+        );
+        assert!(
+            busbar_kernel::plane_host::gauntlet_runner_registered(key),
+            "install() must flip the linked plane `{key}` onto the unified kernel loop's one-shot runner"
+        );
+    }
+    for key in crate::LINKED.gauntlet_session {
+        assert!(
+            linked.contains(*key),
+            "`{key}` is on the gauntlet-session axis and is no linked plane"
+        );
+        assert!(
+            busbar_kernel::plane_host::session_runner_registered(key),
+            "install() must flip the linked plane `{key}` onto the unified kernel loop's session runner"
+        );
+    }
 }
 
-#[cfg(feature = "proto-llm")]
+/// EVERY FLIP LANDS WHERE ITS PLANE LOOKS: for each kernel-loop row, the key its plane's gauntlet
+/// asks the host-selection seam for (`<crate>::PLANE_KEY`) is the declaration key `install()` flips
+/// it under. A drift would register a runner nobody asks for, and the plane would run the inline
+/// fallback with its flip still "present".
 #[test]
-fn install_flips_llm_onto_the_unified_kernel_loop() {
-    crate::root::gauntlet_install::install();
-    assert!(
-        busbar_kernel::plane_host::gauntlet_runner_registered(busbar_llm::PLANE_KEY),
-        "install() must register the LLM native plane ({}) onto the unified kernel loop — the W2.b flip",
-        busbar_llm::PLANE_KEY,
+fn every_gauntlet_row_is_flipped_under_the_key_its_plane_asks_for() {
+    let asks: std::collections::BTreeSet<&str> = crate::LINKED_GAUNTLET_ASKS
+        .iter()
+        .map(|(declared, _)| *declared)
+        .collect();
+    assert_eq!(
+        asks,
+        gauntlet_rows(),
+        "the generated ask table covers exactly the kernel-loop rows"
     );
+    for (declared, asked) in crate::LINKED_GAUNTLET_ASKS {
+        assert_eq!(
+            declared, asked,
+            "plane `{declared}` is flipped under its declaration key and its gauntlet asks for a \
+             runner under `{asked}`"
+        );
+    }
 }
 
-#[cfg(feature = "plane-voice")]
+/// EVERY LINKED PLANE THE TELLER LEDGER RUNS RIDES THE KERNEL LOOP. `qa/teller-steps.json` holds a
+/// row of Teller steps for each plane the unified loop carries (DECISIONS #28); every such plane this
+/// build links must be on a kernel-loop axis and flipped. Drop a row's gauntlet axis from the
+/// manifest and that plane is unflipped: this goes red.
 #[test]
-fn install_flips_voice_session_onto_the_unified_kernel_loop() {
-    // Voice/streaming is a SESSION plane, so the flip registers a SESSION runner (open-pass admit),
-    // asserted through the session read-side twin rather than the one-shot one.
+fn every_linked_plane_the_teller_ledger_runs_rides_the_kernel_loop() {
     crate::root::gauntlet_install::install();
-    assert!(
-        busbar_kernel::plane_host::session_runner_registered(busbar_voice::PLANE_KEY),
-        "install() must register the voice session plane ({}) onto the unified kernel loop — the W2.b flip",
-        busbar_voice::PLANE_KEY,
-    );
+    let steps = ledger("teller-steps.json");
+    let rows = gauntlet_rows();
+    let linked = linked_planes();
+    let owed: Vec<&String> = steps["matrix"]
+        .as_object()
+        .expect("`matrix` is an object")
+        .keys()
+        .filter(|plane| linked.contains(*plane))
+        .collect();
+    for plane in owed {
+        assert!(
+            rows.contains(plane.as_str()),
+            "the linked plane `{plane}` runs the Teller steps and its linked-axes row carries no \
+             gauntlet axis: install() never flips it onto the unified kernel loop"
+        );
+        assert!(
+            busbar_kernel::plane_host::gauntlet_runner_registered(plane)
+                || busbar_kernel::plane_host::session_runner_registered(plane),
+            "the linked plane `{plane}` has no kernel-loop runner registered after install()"
+        );
+    }
 }
 
 /// THE ROOT'S PROSE AGREES WITH `install()` (item 238).
 ///
-/// The four tests above prove `install()` registers the kernel-loop runner for every plane in the
-/// build. The files that describe that runner used to call it DORMANT and "not the shipped path",
+/// The tests above prove `install()` registers the kernel-loop runner for every plane the build's
+/// linked table puts on a kernel-loop axis. The files that describe that runner used to call it DORMANT and "not the shipped path",
 /// and `install()`'s own doc said a key with no runner "fails closed" when `run_gauntlet` runs the
 /// inline fallback. An on-call engineer tracing a billing figure reads the prose first, so a
 /// contradiction there sends them to the wrong path. Every composition-root source file is read,
@@ -396,4 +436,259 @@ fn host_selection_seam_routes_session_to_registered_runner_when_set() {
         admitted.correlation_id, 4242,
         "the registered session runner ran, not the inline fallback"
     );
+}
+
+// ── THE SERVED LEG, ASKED OF EVERY SERVED PLANE ─────────────────────────────────────────────────
+//
+// The rider above is the served root leg of every one-shot plane `install()` flips (DECISIONS #28):
+// nothing of a plane's capability lives in it — the plane's `drive` carries all of it — so what the
+// root owes the ledgers is proof that each capability and each loop step HOLDS WHEN THE PLANE IS
+// DRIVEN THROUGH THIS RIDER. Each test below asks exactly that of every served plane the ledgers
+// (`qa/capability-equality.json`, `qa/teller-steps.json`) cite it for: it installs the real runners
+// (`gauntlet_install::install()`, what boot calls), runs the plane's own served witness for the
+// capability — the plane's `testkit::SERVED` table, reached through `$OUT_DIR/served_witness.rs`,
+// which `build.rs` generates from the manifest, so this file names no plane — and requires the
+// plane's `drive` to have run INSIDE THE KERNEL LOOP exactly as many times as the witness says it
+// served a unit. Unflip a plane and its drives stop landing here: every test citing it goes red.
+
+mod served {
+    include!(concat!(env!("OUT_DIR"), "/served_witness.rs"));
+}
+
+/// This file, as the ledgers spell a test that lives in it.
+const THIS_FILE: &str = "crates/busbar/src/root/tests/gauntlet_kernel.rs";
+
+fn ledger(name: &str) -> serde_json::Value {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../qa")
+        .join(name);
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("{} parses: {e}", path.display()))
+}
+
+/// The plane keys whose ledger cells name `THIS_FILE::test_fn` as their root-leg proof: a
+/// capability-equality column (`<plane>-client` / `<plane>-server`) or a teller-steps matrix row.
+fn planes_citing(test_fn: &str) -> std::collections::BTreeSet<String> {
+    let cite = format!("{THIS_FILE}::{test_fn}");
+    let mut planes = std::collections::BTreeSet::new();
+    let equality = ledger("capability-equality.json");
+    for cell in equality["cells"].as_array().expect("`cells` is an array") {
+        if cell["root"]["test"].as_str() == Some(cite.as_str()) {
+            let column = cell["plane"].as_str().expect("a cell names its column");
+            let plane = column.split_once('-').map_or(column, |(p, _)| p);
+            planes.insert(plane.to_string());
+        }
+    }
+    let steps = ledger("teller-steps.json");
+    for (plane, row) in steps["matrix"].as_object().expect("`matrix` is an object") {
+        for cell in row.as_object().expect("a matrix row is an object").values() {
+            if cell["root"]["test"].as_str() == Some(cite.as_str()) {
+                planes.insert(plane.clone());
+            }
+        }
+    }
+    planes
+}
+
+/// The plane keys this build links, off the linked table boot registers from.
+fn linked_planes() -> std::collections::BTreeSet<String> {
+    crate::LINKED
+        .planes
+        .iter()
+        .map(|decl| decl.declaration.key.to_string())
+        .collect()
+}
+
+/// Run `witness` — a loop step or a core capability — through the served rider for every linked
+/// plane whose served-witness table carries it, and require each plane's `drive` to have run inside
+/// the kernel loop exactly as many times as its witness served a unit. Every linked plane a ledger
+/// cell cites `test_fn` for must be among the planes that answered.
+async fn run_served(witness: &str, test_fn: &str) {
+    crate::root::gauntlet_install::install();
+    let linked = linked_planes();
+    let mut answered = std::collections::BTreeSet::new();
+    for (plane, table) in served::SERVED_WITNESSES
+        .iter()
+        .filter(|(key, _)| linked.contains(*key))
+    {
+        let Some((_, run)) = table.iter().find(|(id, _)| *id == witness) else {
+            continue;
+        };
+        let before = crate::root::gauntlet_kernel::DRIVES_IN_LOOP.with(std::cell::Cell::get);
+        let served = run().await;
+        let driven =
+            crate::root::gauntlet_kernel::DRIVES_IN_LOOP.with(std::cell::Cell::get) - before;
+        assert!(
+            served >= 1,
+            "plane `{plane}`'s `{witness}` witness served no unit at all"
+        );
+        assert_eq!(
+            driven, served,
+            "plane `{plane}`'s `{witness}` witness served {served} unit(s), and the kernel-loop rider \
+             carried {driven} of them into the plane's `drive`: the capability did not hold on the \
+             served root leg"
+        );
+        answered.insert(plane.to_string());
+    }
+    // What this build owes is what the ledgers cite `test_fn` for AMONG THE PLANES IT LINKS. A
+    // "some served plane carries the witness" floor is a claim about every plane at once: a build
+    // linking one served plane would be asked for a witness only an unlinked plane carries. The
+    // floor that keeps the test from passing over nothing is the ledgers' own citation, which does
+    // not move with the feature set.
+    let cited = planes_citing(test_fn);
+    assert!(
+        !cited.is_empty(),
+        "no ledger cell cites {THIS_FILE}::{test_fn} as any plane's served-leg proof, so the \
+         `{witness}` witness is owed by nobody and this test proves nothing"
+    );
+    let owed: Vec<String> = cited
+        .into_iter()
+        .filter(|p| linked.contains(p) && !answered.contains(p))
+        .collect();
+    assert!(
+        owed.is_empty(),
+        "the ledgers cite {THIS_FILE}::{test_fn} as the served-leg proof for {owed:?}, and no \
+         `{witness}` witness of theirs ran through the rider"
+    );
+}
+
+/// ARRIVAL, on the served leg: one call is one unit the rider carries.
+#[tokio::test]
+async fn served_rider_carries_one_unit_per_call() {
+    run_served("arrival", "served_rider_carries_one_unit_per_call").await;
+}
+
+/// DECODE, on the served leg: a body that is not an envelope is refused by its decode.
+#[tokio::test]
+async fn served_rider_refuses_a_body_that_does_not_decode() {
+    run_served("decode", "served_rider_refuses_a_body_that_does_not_decode").await;
+}
+
+/// AUTHENTICATE, on the served leg: only an authenticated caller becomes a unit.
+#[tokio::test]
+async fn served_rider_is_reached_only_by_an_authenticated_caller() {
+    run_served(
+        "authenticate",
+        "served_rider_is_reached_only_by_an_authenticated_caller",
+    )
+    .await;
+}
+
+/// VERIFY, on the served leg: a destination the unit may not reach is refused before any dial.
+#[tokio::test]
+async fn served_rider_refuses_a_destination_before_it_dials() {
+    run_served(
+        "verify",
+        "served_rider_refuses_a_destination_before_it_dials",
+    )
+    .await;
+}
+
+/// APPROVE, on the served leg: a grant short of the operation's scope is refused.
+#[tokio::test]
+async fn served_rider_refuses_a_grant_short_of_the_operation() {
+    run_served(
+        "approve",
+        "served_rider_refuses_a_grant_short_of_the_operation",
+    )
+    .await;
+}
+
+/// ADMIT, on the served leg: a caller over its budget is refused before the dial.
+#[tokio::test]
+async fn served_rider_refuses_an_over_budget_caller_before_it_dials() {
+    run_served(
+        "admit",
+        "served_rider_refuses_an_over_budget_caller_before_it_dials",
+    )
+    .await;
+}
+
+/// ROUTE, on the served leg: a failed upstream is answered inside the unit.
+#[tokio::test]
+async fn served_rider_answers_a_failed_upstream_inside_the_unit() {
+    run_served(
+        "route",
+        "served_rider_answers_a_failed_upstream_inside_the_unit",
+    )
+    .await;
+}
+
+/// METER, on the served leg: one call meters exactly one request.
+#[tokio::test]
+async fn served_rider_meters_exactly_one_request_per_call() {
+    run_served("meter", "served_rider_meters_exactly_one_request_per_call").await;
+}
+
+/// AUDIT, on the served leg: one call is audited exactly once.
+#[tokio::test]
+async fn served_rider_audits_each_call_once() {
+    run_served("audit", "served_rider_audits_each_call_once").await;
+}
+
+/// EXIT, on the served leg: one call ends once.
+#[tokio::test]
+async fn served_rider_ends_each_call_once() {
+    run_served("exit", "served_rider_ends_each_call_once").await;
+}
+
+/// AUDIT-CHAIN, on the served leg: the call's record is linked into its tamper-evident chain.
+#[tokio::test]
+async fn served_rider_chains_what_it_audits() {
+    run_served("audit-chain", "served_rider_chains_what_it_audits").await;
+}
+
+/// GOVERNANCE-BUDGET, on the served leg: the spend is the presenting key's.
+#[tokio::test]
+async fn served_rider_charges_the_presenting_key() {
+    run_served(
+        "governance-budget",
+        "served_rider_charges_the_presenting_key",
+    )
+    .await;
+}
+
+/// DISPOSITION, on the served leg: an upstream answer is classified, not mistaken for a trip.
+#[tokio::test]
+async fn served_rider_classifies_the_upstream_answer() {
+    run_served("disposition", "served_rider_classifies_the_upstream_answer").await;
+}
+
+/// METRICS, on the served leg: the upstream leg is on the scrape.
+#[tokio::test]
+async fn served_rider_counts_the_upstream_attempt() {
+    run_served("metrics", "served_rider_counts_the_upstream_attempt").await;
+}
+
+/// TRUST-PINNING, on the served leg: a drifted or demoted peer is not served.
+#[tokio::test]
+async fn served_rider_refuses_an_unpinned_peer() {
+    run_served("trust-pinning", "served_rider_refuses_an_unpinned_peer").await;
+}
+
+/// NET-GUARD, on the served leg: the dialled address is the one the guard judged.
+#[tokio::test]
+async fn served_rider_dials_only_the_judged_address() {
+    run_served("net-guard", "served_rider_dials_only_the_judged_address").await;
+}
+
+/// EGRESS-AUTH, on the served leg: the upstream is handed the planned credential only.
+#[tokio::test]
+async fn served_rider_presents_only_the_planned_credential() {
+    run_served(
+        "egress-auth",
+        "served_rider_presents_only_the_planned_credential",
+    )
+    .await;
+}
+
+/// CATALOGUE, on the served leg: what the caller may not see is not served.
+#[tokio::test]
+async fn served_rider_serves_only_the_callers_catalogue() {
+    run_served(
+        "catalogue",
+        "served_rider_serves_only_the_callers_catalogue",
+    )
+    .await;
 }

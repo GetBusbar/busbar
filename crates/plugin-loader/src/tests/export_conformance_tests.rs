@@ -132,7 +132,7 @@ fn run_dropped_in() -> Option<()> {
                 sink.deliver(stream, &payload).expect("deliver");
             }
             ExportRequest::Streams => {
-                assert_eq!(sink.streams(), &[ExportStream::Metrics]);
+                assert_eq!(sink.streams(), &[ExportStream::Metrics, ExportStream::Logs]);
             }
             _ => unreachable!("the script only uses deliver + streams"),
         }
@@ -167,7 +167,7 @@ fn example_cdylib() -> Option<std::path::PathBuf> {
     if candidate.is_none() && std::env::var_os("CI").is_some() {
         panic!(
             "the export example plugin cdylib is not built under CI: `cargo test --workspace` must \
-             build busbar_export_example_plugin. Refusing to silently skip DECISIONS #11's \
+             build busbar_export_example_plugin. Refusing to silently skip design decision #11's \
              compiled-in vs dropped-in equivalence."
         );
     }
@@ -198,7 +198,7 @@ fn compiled_in_and_dropped_in_report_identical_observations() {
     assert_eq!(
         compiled, dropped,
         "compiled-in and dropped-in builds of ONE crate must hand the host identical \
-         observations — this is DECISIONS #11's real test"
+         observations — this is design decision #11's real test"
     );
     // And they must both have SAID something: an equivalence between two empty sequences is the
     // vacuous pass this test exists to avoid.
@@ -230,6 +230,72 @@ fn the_reported_observations_are_the_ones_the_sink_produced() {
         // A DELTA of one, not a running total of one-then-two.
         assert_eq!(metrics[0]["value"], 1.0);
     }
+}
+
+/// **THE AXIS, BOTH WAYS** (DECISIONS #2 rule (1), K5's harness, item 141). The export kind's
+/// fixture (reached by KIND, `[package.metadata.busbar.both-ways]`) registered through the LINKED
+/// door (its `rlib`'s `BUSBAR_COLD_ENTRY`, through
+/// [`PluginRegistry::link`]) and the DROPPED-IN door (its `cdylib`, signed into `plugins/`) resolves to
+/// the byte-identical registry row, and the sink each door's `open_export` opens — the one load over
+/// either image — answers the same streams and routes and hands the host byte-identical folds for
+/// the same script. This is the equivalence above taken through the real registration and load a
+/// node runs, rather than through the SDK's op-dispatch.
+///
+/// RED by taking `export` out of the linked door's kinds (what the tree had before item 141):
+/// `link` refuses the row and the linked arm never opens.
+#[test]
+fn a_linked_and_a_dropped_in_export_sink_register_one_row_and_fold_the_same() {
+    let manifest = super::both_ways::statement(
+        "export",
+        "export-fixture",
+        "the-sink",
+        busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+    );
+    let _guard = crate::observe::testing::exclusive();
+    let transcript = |sink: &crate::export::DynExport| {
+        let before = crate::observe::testing::folds().len();
+        for n in [1, 2] {
+            sink.deliver(ExportStream::Logs, &serde_json::json!({ "n": n }))
+                .expect("deliver");
+        }
+        let folds: Vec<Compared> = crate::observe::testing::folds()[before..]
+            .iter()
+            .filter(|(who, ..)| who == "export-fixture")
+            .map(|(_, k, m, d)| (k.clone(), m.clone(), d.clone()))
+            .collect();
+        serde_json::json!({
+            "streams": sink.streams(),
+            "routes": sink.routes().len(),
+            "folds": folds,
+        })
+        .to_string()
+    };
+    let Some([linked, dropped]) = super::both_ways::both_doors(
+        manifest,
+        |registry| {
+            registry
+                .open_export("the-sink", "{}")
+                .expect("the export sink opens through its alias")
+        },
+        transcript,
+    ) else {
+        eprintln!("skip: the export fixture's cdylib is not built");
+        return;
+    };
+    assert!(
+        !linked.0.starts_with("no row"),
+        "the linked door registered no row: {}",
+        linked.0
+    );
+    assert!(
+        linked.1.contains(r#""counter""#),
+        "the linked sink reported its deliveries: {}",
+        linked.1
+    );
+    assert_eq!(
+        linked, dropped,
+        "the two doors must register one row and fold the same"
+    );
 }
 
 /// The host-assigned name the RED arm's pre-envelope build loads under — its own filter, for the
@@ -359,7 +425,9 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
             ExportResponse::Delivered => {
                 assert!(matches!(req, ExportRequest::Deliver { .. }), "{req:?}")
             }
-            ExportResponse::Streams(s) => assert_eq!(s, vec![ExportStream::Metrics]),
+            ExportResponse::Streams(s) => {
+                assert_eq!(s, vec![ExportStream::Metrics, ExportStream::Logs])
+            }
             other => panic!("unexpected response {other:?}"),
         }
     }
@@ -426,4 +494,517 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
 #[test]
 fn the_rendered_exposition_equivalence_is_owed_at_the_composition_root() {
     // Nothing to assert; this test is a landmark. It fails only if deleted, which is the point.
+}
+
+/// The series the S1 witness's sink reports its deliveries under — reserved, and declared.
+const S1_SERIES: &str = "busbar_s1_example_deliveries_total";
+
+/// A series the host itself emits, for the collision arm — installed once as this test binary's
+/// host catalog (the composition root installs the real one).
+const S1_HOST_SERIES: &str = "busbar_s1_host_owned_total";
+
+/// **K9a S1 — THE FIRST-PARTY METRIC NAMESPACE, BOTH WAYS.** The export fixture, its manifest
+/// declaring a reserved series, registered through the LINKED door and the DROPPED-IN door (signed
+/// by the release key): each open GRANTS the declared series, so the host renders it as declared
+/// (the kernel's `observe` tests render the grant), and the two doors register one row and fold the
+/// same. RED ARMS, in the same test so the grant cannot pass vacuously: the same crate dropped in by
+/// a THIRD party (allowlisted, trusted, not first-party) is granted nothing whatever it declares,
+/// and a first-party claim on a series the host emits refuses the open naming it.
+#[test]
+fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
+    use busbar_plugin::cold::observe::SeriesDecl;
+    crate::observe::install_host_series(|name| name == S1_HOST_SERIES);
+    let declaring = |name: &str, series: &str| {
+        let mut m = super::both_ways::statement(
+            "export",
+            name,
+            &format!("{name}-alias"),
+            busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+        );
+        m.declares.metrics = vec![SeriesDecl::new(series, "counter")];
+        m
+    };
+    let cfg = serde_json::json!({ "series": S1_SERIES }).to_string();
+    let _guard = crate::observe::testing::exclusive();
+    let transcript = |sink: &crate::export::DynExport| {
+        let before = crate::observe::testing::folds().len();
+        sink.deliver(ExportStream::Logs, &serde_json::json!({ "n": 1 }))
+            .expect("deliver");
+        let folds: Vec<Compared> = crate::observe::testing::folds()[before..]
+            .iter()
+            .filter(|(who, ..)| who == "s1-fixture")
+            .map(|(_, k, m, d)| (k.clone(), m.clone(), d.clone()))
+            .collect();
+        let granted = crate::observe::first_party_series("s1-fixture", S1_SERIES, "counter");
+        serde_json::json!({ "granted": granted, "folds": folds }).to_string()
+    };
+    let Some([linked, dropped]) = super::both_ways::both_doors(
+        declaring("s1-fixture", S1_SERIES),
+        |registry| {
+            registry
+                .open_export("s1-fixture-alias", &cfg)
+                .expect("a first-party declaration opens")
+        },
+        transcript,
+    ) else {
+        eprintln!("skip: the export fixture's cdylib is not built");
+        return;
+    };
+    assert!(
+        linked.1.contains(r#""granted":true"#) && linked.1.contains(S1_SERIES),
+        "the linked door grants the declared series and the sink reports under it: {}",
+        linked.1
+    );
+    assert_eq!(linked, dropped, "both doors grant and fold the same");
+
+    // RED ARM 1: a third party declaring the same kind of claim is granted nothing.
+    let (crate_snake, _) = super::both_ways::fixture("export");
+    let lib = std::fs::read(super::both_ways::cdylib(crate_snake).expect("built above"))
+        .expect("read the cdylib");
+    let mut third = declaring("s1-third-party", "busbar_s1_third_party_total");
+    third.publisher = "acme".into();
+    let registry = super::both_ways::dropped_third_party(crate_snake, third, &lib);
+    registry
+        .open_export("s1-third-party", "{}")
+        .expect("a third party opens; its declaration is simply not granted");
+    assert!(!crate::observe::first_party_series(
+        "s1-third-party",
+        "busbar_s1_third_party_total",
+        "counter"
+    ));
+
+    // RED ARM 2: a first-party claim on a host series refuses the open.
+    let registry = super::both_ways::linked(
+        declaring("s1-collides", S1_HOST_SERIES),
+        super::both_ways::fixture("export").1,
+    );
+    let refused = registry
+        .open_export("s1-collides", "{}")
+        .expect_err("a claim on a host series is refused");
+    assert!(
+        refused.contains(S1_HOST_SERIES) && refused.contains("the host itself emits"),
+        "{refused}"
+    );
+}
+
+/// **K9a S2 — THE VALIDATE OP, BOTH WAYS.** The export fixture registered through the LINKED door
+/// and the DROPPED-IN door answers the host's `validate` identically: settings it accepts report
+/// nothing, and settings it refuses report the sink's own line verbatim — the text the host prints
+/// among the configuration's errors. A module that is not an export row is not the axis's to judge.
+/// RED ARM, in the same test: the same sink driven over a wire that predates the op (it answers
+/// `STATUS_UNSUPPORTED`) reports NOTHING for the settings it would refuse — what every sink did
+/// before the op, and what the op exists to change.
+#[test]
+fn a_sink_validates_its_settings_the_same_through_either_door() {
+    let manifest = super::both_ways::statement(
+        "export",
+        "s2-fixture",
+        "s2-sink",
+        busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+    );
+    let refused = serde_json::json!({ "series": 7 });
+    let transcript = |registry: &PluginRegistry| {
+        serde_json::json!({
+            "accepted": registry.validate_export("s2-sink", "tail", &serde_json::json!({})),
+            "refused": registry.validate_export("s2-sink", "tail", &refused),
+            "not_export": registry.validate_export("no-such-module", "tail", &refused),
+        })
+        .to_string()
+    };
+    let Some([linked, dropped]) = super::both_ways::both_doors(manifest, transcript, String::clone)
+    else {
+        eprintln!("skip: the export fixture's cdylib is not built");
+        return;
+    };
+    let line = "export.tail.settings.series: must be a string naming the delivery counter";
+    assert_eq!(
+        linked.1,
+        serde_json::json!({ "accepted": [], "refused": [line], "not_export": null }).to_string()
+    );
+    assert_eq!(linked, dropped, "both doors validate the same");
+
+    // RED ARM: a sink that cannot decode the op (the pre-minor-2 wire) reports nothing.
+    let registry = super::both_ways::linked(
+        super::both_ways::statement("export", "s2-older", "s2-older", 3),
+        super::both_ways::fixture("export").1,
+    );
+    let mut sink = registry
+        .open_export("s2-older", "{}")
+        .expect("the older sink opens");
+    sink.raw.call = unsupported_call;
+    assert_eq!(sink.validate("tail", &refused), Ok(Vec::new()));
+}
+
+/// A `busbar_call` from before an op existed: every request is one it cannot decode.
+unsafe extern "C-unwind" fn unsupported_call(
+    _handle: *mut std::os::raw::c_void,
+    _req: *const u8,
+    _req_len: usize,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    *out = std::ptr::null_mut();
+    *out_len = 0;
+    STATUS_UNSUPPORTED
+}
+
+/// **K9a S3 — PLUGIN DIAGNOSTICS, BOTH WAYS.** The export fixture, its manifest declaring a
+/// `BUSBAR-NNNN` code, registered through the LINKED door and the DROPPED-IN door: both rows state
+/// the same declaration and are FIRST-PARTY — which is everything the composition root reads to
+/// register the code into the host's catalogue (`root::linked::declared_diagnostics`, whose own
+/// tests hold the catalogue half) — and a sink raising the code hands the host the same diagnostic
+/// either way. RED ARM, in the same test: the same declaration dropped in by a THIRD party is not
+/// first-party, which the root refuses.
+#[test]
+fn a_declared_diagnostic_is_stated_and_raised_the_same_through_either_door() {
+    use busbar_plugin::cold::observe::DiagnosticDecl;
+    let decl = DiagnosticDecl {
+        code: 6990,
+        slug: "s3-example-batches-delivered".into(),
+        title: "Example batches delivered".into(),
+        severity: "actionable".into(),
+        summary: "The example sink delivered batches.".into(),
+        action: "None.".into(),
+        since: "1.6.0".into(),
+    };
+    let declaring = |name: &str| {
+        let mut m = super::both_ways::statement(
+            "export",
+            name,
+            name,
+            busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+        );
+        m.declares.diagnostics = vec![decl.clone()];
+        m
+    };
+    let cfg = serde_json::json!({ "diagnostic": "BUSBAR-6990" }).to_string();
+    let _guard = crate::observe::testing::exclusive();
+    let transcript = |registry: &PluginRegistry| {
+        let first_party = registry.resolve("s3-fixture").map(|p| p.first_party());
+        let sink = registry.open_export("s3-fixture", &cfg).expect("opens");
+        let before = crate::observe::testing::folds().len();
+        sink.deliver(ExportStream::Logs, &serde_json::json!({ "n": 1 }))
+            .expect("deliver");
+        let raised: Vec<Vec<serde_json::Value>> = crate::observe::testing::folds()[before..]
+            .iter()
+            .filter(|(who, ..)| who == "s3-fixture")
+            .map(|(.., d)| d.clone())
+            .collect();
+        serde_json::json!({ "first_party": first_party, "raised": raised }).to_string()
+    };
+    let Some([linked, dropped]) =
+        super::both_ways::both_doors(declaring("s3-fixture"), transcript, String::clone)
+    else {
+        eprintln!("skip: the export fixture's cdylib is not built");
+        return;
+    };
+    assert!(
+        linked.0.contains("s3-example-batches-delivered"),
+        "{}",
+        linked.0
+    );
+    assert!(
+        linked.1.contains(r#""first_party":true"#) && linked.1.contains("BUSBAR-6990"),
+        "{}",
+        linked.1
+    );
+    assert_eq!(linked, dropped, "both doors state and raise the same");
+
+    // RED ARM: a third party's declaration is not first-party.
+    let (crate_snake, _) = super::both_ways::fixture("export");
+    let lib = std::fs::read(super::both_ways::cdylib(crate_snake).expect("built above"))
+        .expect("read the cdylib");
+    let mut third = declaring("s3-third-party");
+    third.publisher = "acme".into();
+    let registry = super::both_ways::dropped_third_party(crate_snake, third, &lib);
+    let row = registry.resolve("s3-third-party").expect("admitted");
+    assert_eq!(row.manifest.declares.diagnostics, vec![decl]);
+    assert!(!row.first_party());
+}
+
+/// **K9a S4 — THE DESTINATION HANDLE, BOTH WAYS.** The export fixture, its manifest declaring the
+/// `path` settings key a destination, registered through the LINKED door and the DROPPED-IN door
+/// and opened with the operator's path: each delivery has the HOST append the batch (the sink
+/// names the key; the host opens the path it resolved), rotating at the sink's limit — and both
+/// doors leave the same files and report the same folds. RED ARM, in the same test: the same sink
+/// whose manifest does NOT declare the key is refused every write — the path the operator's
+/// settings name is never created — and it reports the refusals.
+#[test]
+fn a_sink_writes_its_declared_destination_through_the_host_the_same_through_either_door() {
+    let declaring = |name: &str, declared: bool| {
+        let mut m = super::both_ways::statement(
+            "export",
+            name,
+            name,
+            busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+        );
+        if declared {
+            m.declares.destinations = vec!["path".into()];
+        }
+        m
+    };
+    let dir = std::env::temp_dir().join(format!("busbar-s4-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let door = std::sync::atomic::AtomicUsize::new(0);
+    let _guard = crate::observe::testing::exclusive();
+    let run = |registry: &PluginRegistry, name: &str| {
+        let n = door.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = dir.join(format!("door-{n}.jsonl"));
+        let cfg = serde_json::json!({ "path": path.display().to_string(), "rotate_bytes": 20 });
+        let sink = registry.open_export(name, &cfg.to_string()).expect("opens");
+        let before = crate::observe::testing::folds().len();
+        for n in 1..=4 {
+            sink.deliver(ExportStream::Logs, &serde_json::json!({ "n": n }))
+                .expect("deliver");
+        }
+        let folds: Vec<Compared> = crate::observe::testing::folds()[before..]
+            .iter()
+            .filter(|(who, ..)| who == name)
+            .map(|(_, k, m, d)| (k.clone(), m.clone(), d.clone()))
+            .collect();
+        let read = |p: &std::path::Path| std::fs::read_to_string(p).ok();
+        serde_json::json!({
+            "live": read(&path),
+            "archive": read(&path.with_extension("jsonl.1")),
+            "folds": folds,
+        })
+        .to_string()
+    };
+    let Some([linked, dropped]) = super::both_ways::both_doors(
+        declaring("s4-fixture", true),
+        |registry| run(registry, "s4-fixture"),
+        String::clone,
+    ) else {
+        eprintln!("skip: the export fixture's cdylib is not built");
+        return;
+    };
+    let expected_files = r#""archive":"{\"n\":1}\n{\"n\":2}\n{\"n\":3}\n","#;
+    assert!(linked.1.contains(expected_files), "{}", linked.1);
+    assert!(linked.1.contains(r#""live":"{\"n\":4}\n""#), "{}", linked.1);
+    assert!(
+        linked.1.contains("example_export_rotations_total"),
+        "{}",
+        linked.1
+    );
+    assert_eq!(linked, dropped, "both doors write and rotate the same");
+
+    // RED ARM: undeclared, the key is not a destination — every write refused, nothing created.
+    let registry = super::both_ways::linked(
+        declaring("s4-undeclared", false),
+        super::both_ways::fixture("export").1,
+    );
+    let refused = run(&registry, "s4-undeclared");
+    assert!(refused.contains(r#""live":null"#), "{refused}");
+    assert!(
+        refused.contains("example_export_host_failures_total"),
+        "{refused}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The egress this test binary installs: it records every request it is asked to carry and answers
+/// `204`, and its POLICY refuses any URL on `refused.example` before anything is sent — the shape of
+/// the host's own carrier (URL policy first, then the hop).
+struct RecordingCarrier(std::sync::Mutex<Vec<busbar_plugin::cold::export::HttpRequest>>);
+
+impl crate::EgressCarrier for RecordingCarrier {
+    fn carry(
+        &self,
+        request: &busbar_plugin::cold::export::HttpRequest,
+    ) -> busbar_plugin::cold::export::HostResult {
+        use busbar_plugin::cold::export::{HostResult, HttpResponse};
+        if request.url.contains("refused.example") {
+            return HostResult::Failed {
+                step: "refused".into(),
+                error: "the host's egress policy refuses this target".into(),
+                rotation: None,
+            };
+        }
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(request.clone());
+        HostResult::Http(HttpResponse {
+            status: 204,
+            body: String::new(),
+        })
+    }
+
+    fn admit(&self, url: &str) -> Result<(), String> {
+        match url.contains("refused.example") {
+            true => Err("the host's egress policy refuses this target".into()),
+            false => Ok(()),
+        }
+    }
+}
+
+static CARRIER: RecordingCarrier = RecordingCarrier(std::sync::Mutex::new(Vec::new()));
+
+/// **K9a S5 — THE EGRESS CARRIER, BOTH WAYS.** The export fixture registered through the LINKED
+/// door and the DROPPED-IN door, opened with a `url`: each delivery has the HOST carry the POST
+/// through the installed egress (the sink never dials), and both doors hand the carrier the same
+/// requests and fold the same answer. RED ARM, in the same test: a target the host's policy refuses
+/// never reaches the wire — nothing is carried — and the sink is told, and reports it.
+#[test]
+fn a_sinks_outbound_request_is_carried_by_the_host_the_same_through_either_door() {
+    crate::install_egress_carrier(&CARRIER);
+    let manifest = super::both_ways::statement(
+        "export",
+        "s5-fixture",
+        "s5-fixture",
+        busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+    );
+    let _guard = crate::observe::testing::exclusive();
+    let run = |registry: &PluginRegistry, url: &str| {
+        let cfg = serde_json::json!({ "url": url }).to_string();
+        let sink = registry.open_export("s5-fixture", &cfg).expect("opens");
+        let before = crate::observe::testing::folds().len();
+        CARRIER.0.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        for n in 1..=2 {
+            sink.deliver(ExportStream::Logs, &serde_json::json!({ "n": n }))
+                .expect("deliver");
+        }
+        let carried = CARRIER.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let folds: Vec<Compared> = crate::observe::testing::folds()[before..]
+            .iter()
+            .filter(|(who, ..)| who == "s5-fixture")
+            .map(|(_, k, m, d)| (k.clone(), m.clone(), d.clone()))
+            .collect();
+        serde_json::json!({ "carried": carried, "folds": folds }).to_string()
+    };
+    let Some([linked, dropped]) = super::both_ways::both_doors(
+        manifest.clone(),
+        |registry| run(registry, "https://collector.example/v1"),
+        String::clone,
+    ) else {
+        eprintln!("skip: the export fixture's cdylib is not built");
+        return;
+    };
+    assert!(
+        linked.1.contains(r#""body":"{\"n\":2}""#)
+            && linked.1.contains("example_export_posts_total"),
+        "{}",
+        linked.1
+    );
+    assert_eq!(linked, dropped, "both doors are carried the same");
+
+    // RED ARM: the policy refuses the target — nothing is carried, and the sink reports it.
+    let registry = super::both_ways::linked(manifest, super::both_ways::fixture("export").1);
+    let refused = run(&registry, "https://refused.example/v1");
+    assert!(refused.contains(r#""carried":[]"#), "{refused}");
+    assert!(
+        refused.contains("example_export_host_failures_total"),
+        "{refused}"
+    );
+}
+
+/// **K9a S6 — THE RECORDER SNAPSHOT, BOTH WAYS.** A recorder exposition in the host recorder's own
+/// shape — counters, a gauge with escaped label values, a quantile summary, a bucketed histogram —
+/// read into the snapshot and handed to the export fixture registered through the LINKED door and
+/// the DROPPED-IN door: each renders it back BYTE FOR BYTE under the text exposition's content type,
+/// the same either way. RED ARM, in the same test: a sink over the wire that predates the op renders
+/// nothing (the host keeps serving its own exposition).
+#[test]
+fn a_sink_renders_the_recorder_snapshot_byte_identically_through_either_door() {
+    let exposition = crate::scrape::tests::EXPOSITION;
+    let manifest = super::both_ways::statement(
+        "export",
+        "s6-fixture",
+        "s6-fixture",
+        busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+    );
+    let render = |registry: &PluginRegistry| {
+        let sink = registry.open_export("s6-fixture", "{}").expect("opens");
+        let families = crate::scrape::snapshot(exposition).expect("the snapshot reads");
+        let (content_type, body) = sink.scrape(families).expect("the sink renders");
+        serde_json::json!({ "content_type": content_type, "body": body }).to_string()
+    };
+    let Some([linked, dropped]) =
+        super::both_ways::both_doors(manifest.clone(), render, String::clone)
+    else {
+        eprintln!("skip: the export fixture's cdylib is not built");
+        return;
+    };
+    let expected = serde_json::json!({
+        "content_type": "text/plain; version=0.0.4",
+        "body": exposition,
+    });
+    assert_eq!(
+        linked.1,
+        expected.to_string(),
+        "the render is byte-identical"
+    );
+    assert_eq!(linked, dropped, "both doors render the same");
+
+    // RED ARM: the pre-minor-6 wire renders nothing.
+    let registry = super::both_ways::linked(manifest, super::both_ways::fixture("export").1);
+    let mut sink = registry.open_export("s6-fixture", "{}").expect("opens");
+    sink.raw.call = unsupported_call;
+    let families = crate::scrape::snapshot(exposition).expect("the snapshot reads");
+    assert!(sink.scrape(families).is_err());
+}
+
+/// **K9c — START, CHECK AND ADMIT, BOTH WAYS.** The export fixture (which takes the SDK's defaults)
+/// starts live at the host's default admission and has nothing to check, identically through
+/// either door; and an `admit` op is answered by the installed carrier's POLICY without anything
+/// being carried. RED ARM: a sink over the wire that predates the ops says nothing (`None` / no
+/// lines) — the host's defaults, not a refusal.
+#[test]
+fn a_sink_starts_and_checks_the_same_through_either_door() {
+    crate::install_egress_carrier(&CARRIER);
+    let manifest = super::both_ways::statement(
+        "export",
+        "k9c-fixture",
+        "k9c-sink",
+        busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+    );
+    let transcript = |registry: &PluginRegistry| {
+        let sink = registry.open_export("k9c-sink", "{}").expect("opens");
+        let instances = [("tail".to_string(), serde_json::json!({}))];
+        format!(
+            "{:?} {:?} {:?}",
+            sink.start(),
+            sink.check(&instances),
+            registry.check_export("k9c-sink", &instances)
+        )
+    };
+    let Some([linked, dropped]) = super::both_ways::both_doors(manifest, transcript, String::clone)
+    else {
+        eprintln!("skip: the export fixture's cdylib is not built");
+        return;
+    };
+    assert_eq!(linked.1, r#"Ok(Some((true, 0, ""))) Ok([]) Some([])"#);
+    assert_eq!(linked, dropped, "both doors start and check the same");
+
+    // The admit op: the policy's verdict, nothing carried.
+    use busbar_plugin::cold::export::{HostOp, HostResult};
+    let none = crate::host::Destinations::default();
+    CARRIER.0.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    let ok = none.perform(&HostOp::Admit {
+        url: "https://collector.example/in".into(),
+    });
+    assert_eq!(ok, HostResult::Done { rotation: None });
+    let refused = none.perform(&HostOp::Admit {
+        url: "https://refused.example/in".into(),
+    });
+    assert!(
+        matches!(&refused, HostResult::Failed { step, .. } if step == "refused"),
+        "{refused:?}"
+    );
+    assert!(CARRIER
+        .0
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_empty());
+
+    // RED ARM: the pre-minor-8 wire.
+    let registry = super::both_ways::linked(
+        super::both_ways::statement("export", "k9c-older", "k9c-older", 3),
+        super::both_ways::fixture("export").1,
+    );
+    let mut sink = registry.open_export("k9c-older", "{}").expect("opens");
+    sink.raw.call = unsupported_call;
+    assert_eq!(sink.start(), Ok(None));
+    assert_eq!(sink.check(&[]), Ok(Vec::new()));
 }

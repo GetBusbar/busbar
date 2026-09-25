@@ -6880,6 +6880,7 @@ fn buffered_to_eventstream_metadata_carries_metrics_even_without_timing() {
 #[test]
 fn bedrock_writer_emits_every_citation_in_a_multi_citation_delta() {
     let cit = |title: &str| crate::ir::IrCitation {
+        domain: None,
         kind: Some("web_search_result_location".to_string()),
         cited_text: Some("quoted".to_string()),
         title: Some(title.to_string()),

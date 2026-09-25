@@ -301,10 +301,14 @@ fn two_nodes_sharing_no_store_each_redeem_once_which_is_the_documented_ram_postu
 #[test]
 fn the_memory_store_shares_no_ledger_which_is_the_documented_contract() {
     let node_a = busbar_kernel::test_support::TestApp::new()
-        .mcp_durable_store(std::sync::Arc::new(busbar_store_memory::MemoryStore::new()))
+        .mcp_durable_store(std::sync::Arc::new(
+            busbar_kernel::governance::MemoryStore::new(),
+        ))
         .build();
     let node_b = busbar_kernel::test_support::TestApp::new()
-        .mcp_durable_store(std::sync::Arc::new(busbar_store_memory::MemoryStore::new()))
+        .mcp_durable_store(std::sync::Arc::new(
+            busbar_kernel::governance::MemoryStore::new(),
+        ))
         .build();
 
     let state = ask(&node_a);

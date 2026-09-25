@@ -57,7 +57,7 @@ pub mod unit;
 
 pub use admin::{admin_grants, kernel_verb_scope_satisfied, Grants, Scope};
 pub use cache::{CacheGeneration, CredentialCache, CredentialDigest};
-pub use carrier::{extract_bearer_token, extract_client_token, CallerToken, HeaderView};
+pub use carrier::{extract_client_token, extract_scheme_token, CallerToken, HeaderView};
 pub use chain::{AuthChain, ChainEntry, ChainVerdict, KeyVerifier, ResolvedKey, RevocationView};
 pub use challenge::{Challenge, ChallengeBounds};
 pub use exchange::{BrowserAction, AUTH_TOKEN_PATH};

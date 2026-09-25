@@ -13,6 +13,8 @@
 //! `metric_name_reads_every_exposition_line_shape` (a pure-function test, no `TestApp`/router) names
 //! no plane and stays in `src/tests/alarm_silence_tests.rs`.
 
+mod linked;
+
 use axum::body::Body;
 use axum::http::Request;
 use busbar_kernel::test_support::warn_capture::WarnCapture;
@@ -21,7 +23,7 @@ use std::sync::Arc;
 use tower::ServiceExt as _;
 
 fn register_planes() {
-    busbar_llm::testkit::install_test_seams();
+    linked::install();
 }
 
 /// The words an alarm or a disputes-report entry would carry, matched case-insensitively.

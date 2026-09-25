@@ -549,18 +549,12 @@ impl RateCard {
         }
     }
 
-    /// Set one cell's rate.
-    ///
-    /// The number is configured and set, never derived: there is no arm here that reads another
-    /// cell's rate, and no second denomination a rate could be derived through (#66).
+    /// The one placement of a configured rate into a cell, used by the constructor alone: a card is
+    /// built whole and has no mutator, so no second path can move a price after it is resolved
+    /// (#66: no second denomination a rate could be derived through).
     ///
     /// A value the card cannot represent leaves the cell UNPRICED (and records it in
     /// [`Self::refused_cells`]) — it never sets a zero the operator did not configure (item 22).
-    pub fn set_rate(&mut self, cell: LaneClass, micro_per_unit: f64) {
-        self.place_rate(cell, micro_per_unit);
-    }
-
-    /// The one placement of a configured rate into a cell — the constructor's and the mutator's.
     fn place_rate(&mut self, cell: LaneClass, micro_per_unit: f64) {
         self.present = true;
         let slot = self
@@ -584,11 +578,6 @@ impl RateCard {
         }
     }
 
-    /// Set the flat per-request fee in minor units, clamped at zero.
-    pub fn set_fee(&mut self, per_request_fee: i64) {
-        self.fee = per_request_fee.max(0);
-    }
-
     /// Whether a card is configured at all (token pricing active).
     pub fn pricing_enabled(&self) -> bool {
         self.present
@@ -598,13 +587,12 @@ impl RateCard {
     ///
     /// ALWAYS A FIGURE, NEVER A SILENCE — and that is a structural guarantee rather than a
     /// convention. The fee used to be read out of a per-currency map that a caller could leave a
-    /// hole in: a card could name a currency for its RATES (`set_rate`) and stay silent about the
-    /// fee in it (`set_fee` never called), pass every guard, and then have the missing entry read
-    /// as zero. That is silent under-billing — fail-open, the one outcome this module refuses
+    /// hole in: a card could name a currency for its RATES and stay silent about the fee in it,
+    /// pass every guard, and then have the missing entry read as zero. That is silent under-billing — fail-open, the one outcome this module refuses
     /// everywhere else (#42 `BUSBAR-1.6.0.md:367`: *"a hit class not priced ⇒ REFUSE (money-sacred,
     /// never a silent 0)"*). #66 removed the second axis, so the hole is GONE rather than guarded:
-    /// every constructor takes the fee by value, `set_fee` replaces it, and there is no key that
-    /// could be absent. A fee CONFIGURED at nothing is #77(5)'s (`:420`) explicit zero row —
+    /// every constructor takes the fee by value, nothing replaces it afterwards, and there is no
+    /// key that could be absent. A fee CONFIGURED at nothing is #77(5)'s (`:420`) explicit zero row —
     /// legitimately free, and distinguishable from a silence because a silence can no longer exist.
     ///
     /// THE SPELLING THAT DEFAULTED IS STILL GONE. `per_request_fee(&self)` used to answer
@@ -620,7 +608,7 @@ impl RateCard {
     /// before the single truncation give the same answer as truncating the usage first and adding
     /// the fee afterwards.
     pub fn fee_unit_price_nanos(&self) -> u128 {
-        // The clamp at every constructor and at `set_fee` is what makes this arm dead: a fee held
+        // The clamp at every constructor is what makes this arm dead: a fee held
         // here is already `>= 0`, so the conversion cannot fail and the `0` is a belt-and-braces
         // reading of a negative that cannot arrive.
         u128::try_from(self.fee)

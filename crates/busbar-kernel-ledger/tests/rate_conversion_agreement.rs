@@ -194,9 +194,9 @@ fn every_boundary_value_converts_to_its_named_integer_and_both_readers_agree() {
     }
 }
 
-/// **THE CARD HOLDS THE INTEGER THE CONVERSION GAVE IT, AND NOTHING RESCALES IT.** The same
-/// configured decimal, set through the constructor and through `set_rate`, is the SAME integer in
-/// the cell either way.
+/// **THE CARD HOLDS THE INTEGER THE CONVERSION GAVE IT, AND NOTHING RESCALES IT.** A configured
+/// decimal, set through the constructor (a card is built whole; it has no rate mutator), is the SAME
+/// integer in the cell as the conversion gave.
 ///
 /// This is the assertion that stands where a cross-rate would have gone. #66 removed the axis a
 /// cross-rate needed: there is no second denomination for a rate to be scaled against, so a rate
@@ -211,17 +211,13 @@ fn the_conversion_is_the_integer_the_card_holds() {
         let expected = nano_rate(micro);
 
         let built = RateCard::from_micro_rates([(LaneClass::new("lane", "input"), micro)], 0);
-        let mut set = RateCard::from_micro_rates([(LaneClass::new("lane", "other"), 0.0)], 0);
-        set.set_rate(LaneClass::new("lane", "input"), micro);
 
-        for card in [&built, &set] {
-            let rates = card.lane_rates("lane").expect("the lane is priced");
-            assert_eq!(
-                rates.nanos_per_unit("input"),
-                expected,
-                "case {case}: the rate moved at {micro} micro-units per unit"
-            );
-        }
+        let rates = built.lane_rates("lane").expect("the lane is priced");
+        assert_eq!(
+            rates.nanos_per_unit("input"),
+            expected,
+            "case {case}: the rate moved at {micro} micro-units per unit"
+        );
         // And the admission unit's projection, which is the same one function, still gives that
         // same integer.
         assert_eq!(admission_nano_rate(micro), expected, "case {case}");

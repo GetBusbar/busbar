@@ -13,8 +13,8 @@
 //! A call for a tool the node **does not** serve is the other half: the answer can only come from the
 //! client, so the call's leg is a *wait*, and a wait belongs to the unit the kernel opened for the
 //! call — not to the runtime. The root holds that table (`OpenToolCalls` on the voice node): it
-//! enters the wait where the leg is planned, wakes it when a reply names the call, and sweeps the
-//! ones nobody answered. The runtime's whole job is to be the thing that *tells* it — and this port
+//! enters the wait when the runtime plans the leg, wakes it when a reply names the call, and sweeps
+//! the ones nobody answered. The runtime's whole job is to be the thing that *tells* it — and this port
 //! is that telling, dependency-inverted the same way `busbar_voice::runtime::ToolExecutor` is, because a
 //! plane crate that named the composition root would be the I/O half deciding which unit an answer
 //! belongs to.
@@ -39,10 +39,16 @@ pub enum ReplyRefusal {
 
 /// THE NODE'S OPEN-CALL TABLE, as the runtime is allowed to see it.
 ///
-/// Two questions and no more. The runtime never asks which unit a call belongs to, never asks how
-/// long the deadline is, and never decides what a refusal costs — those are the kernel's, and a seam
-/// wide enough to answer them would be wide enough to get them wrong.
+/// One fact told and two questions asked, and no more. The runtime never asks which unit a call
+/// belongs to, never asks how long the deadline is, and never decides what a refusal costs — those
+/// are the kernel's, and a seam wide enough to answer them would be wide enough to get them wrong.
 pub trait GovernedCalls: Send + Sync {
+    /// The runtime planned `call_id` on `session` as a client-served leg, as of `now_ms`: enter its
+    /// wait. The table's one writer; without it every client reply answers nothing.
+    ///
+    /// Returns whether a wait was entered. `false` is a leg nothing can answer.
+    fn planned(&self, session: u64, call_id: &str, now_ms: u64) -> bool;
+
     /// A client's reply named `call_id` on `session`. Wake the unit waiting on it.
     ///
     /// # Errors

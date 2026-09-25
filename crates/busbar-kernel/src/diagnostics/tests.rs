@@ -56,7 +56,6 @@ const MIGRATED_FILES: &[&str] = &[
     // enforces this); each plane crate enforces its own uncoded-diagnostic floor. So none of those
     // plugin sources are listed here.
     "src/export/webhook.rs",
-    "src/export/file.rs",
     "src/ir/mod.rs",
     "src/proto/mod.rs",
     "src/plane/approvals.rs",

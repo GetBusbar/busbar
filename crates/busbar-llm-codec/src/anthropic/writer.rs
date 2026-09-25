@@ -417,8 +417,8 @@ impl ProtocolWriter for AnthropicWriter {
             // Reasoning switched OFF (IR-09, ANT-09) — matched FIRST: `to_budget` would read it as a
             // zero budget and drop it, losing the caller's "off" on a reasoning-by-default model.
             // Not an emitted thinking ask, so the sampling knobs below stay.
-            // A lane whose model cannot switch thinking off (`LaneCaps::thinking_always_on`,
-            // round 3 item 12) rejects `{type:"disabled"}`: the ask is omitted with a warn and the
+            // A lane whose model cannot switch thinking off (`LaneCaps::thinking_always_on`)
+            // rejects `{type:"disabled"}`: the ask is omitted with a warn and the
             // model thinks at its default.
             Some(crate::ir::IrReasoningAsk::Off) if caps.thinking_always_on => {
                 tracing::warn!(
@@ -830,6 +830,9 @@ impl ProtocolWriter for AnthropicWriter {
                     // native redacted shape. This PRESERVES the encrypted reasoning-reuse blob
                     // end-to-end on a cross-protocol stream (e.g. Bedrock-backend→Anthropic-client), the
                     // blob a later turn must replay for extended-thinking continuity.
+                    // IR-21: an Anthropic assistant message has no image / attachment block (ANT-15);
+                    // its start emitted no frame either.
+                    IrDelta::MediaDelta(_) => return None,
                     IrDelta::RedactedReasoningDelta(bytes) => {
                         // Writing the start and marking the index open are the SAME decision: this
                         // is the frame the paired `content_block_stop` closes. `mark_block_open`

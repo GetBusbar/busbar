@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! IR mapping round 2 (Q57, ir-slots-landed.md): the Responses reader FILLS and the writer EMITS the
+//! IR mapping: the Responses reader FILLS and the writer EMITS the
 //! typed IR slots. Each request probe drives reader → `chat_prepare_for_egress` → writer, and the
 //! seam clears `extra`, so a member reaches the far side ONLY through its typed slot.
 

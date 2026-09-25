@@ -26,24 +26,26 @@
 //! because this crate may not name `busbar-kernel`). So `PlaneDecl` + [`PlaneHostVtable`] are no
 //! longer the 0-caller ABI `docs/design/BUSBAR-1.6.0.md` §11a forbids.
 //!
-//! WHAT IS GENUINELY NOT HERE, stated as a measurement rather than a filing: a dropped-in plane is
-//! driven through [`DynPlane`], not yet INSTALLED into `busbar_kernel::plane::registry` beside the
-//! compiled-in decls. Two things are missing for that — an adapter from this C-ABI decl to the native
-//! Rust `PlaneDecl` the registry seals, and manifest-CARRIED claims — and both belong to the same
-//! change that routes the kernel's own request loop through `&PlaneHostVtable` rather than
-//! `&dyn EngineHost`, because until the loop is unified there is no single seam for an adapted decl to
-//! be installed ON. That change is `docs/design/1.6.0-TRACKER.md`'s H6, in this release, with an owner;
-//! it is NOT deferred past 1.6.0 and nothing here should be read as filing it away. [`DynPlane`] is the
-//! boundary-safe handle it adapts.
+//! ONE ADMISSION, BOTH DOORS. A plane dropped into `plugins/` reaches the composition root as a
+//! [`DynPlane`] through [`load_plane_from_bytes`]; the SAME plane linked into the binary reaches it as
+//! a [`DynPlane`] through [`link_plane`] — the same airlock, the same size bound, the same vocabulary
+//! reads, with no library behind it. The root adapts either onto the plane axis through one function
+//! (`crates/busbar/src/root/linked.rs`, `register_planes`), so a registry row cannot tell which door
+//! its plane came in by (#2 rule (1)). The DRIVE is the same too: [`DynPlane::serve`] builds either
+//! into a [`ServedPlane`], whose `claims`, `admission` and `dispatch` slots are what the root mounts,
+//! admits and serves through (minor 23) — one path over the HOT-lane vtable, whichever door.
 
 use crate::stage;
 use busbar_plugin::hot::decl::{
-    AdminRoutesFn, BuildFn, ConfigValidateFn, DispatchFn, HydrateFn, OpenApiFn, StartFn,
+    AdminRoutesFn, AdmissionFn, BuildFn, ClaimsFn, ConfigValidateFn, DispatchFn, HydrateFn,
+    OpenApiFn, StartFn,
 };
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::pod::{OpaqueState, RawStatus, StatusClass, POD_VERSION};
+use busbar_plugin::hot::workitem::{EmitHandle, EmitKind, InboundHandle};
 use busbar_plugin::hot::{
-    BuildCtx, IngressCarrier, PlaneDecl, PlaneDeclFn, PlaneHostVtable, WorkItem,
+    BuildCtx, DeclBillableClass, DeclStr, IngressCarrier, PlaneDecl, PlaneDeclFn, PlaneHostVtable,
+    WorkItem,
 };
 use busbar_plugin::{check_preamble, AbiPreamble};
 use core::mem::MaybeUninit;
@@ -76,6 +78,8 @@ pub struct DynPlane {
     label: String,
     /// The bitset of [`IngressCarrier`]s the plane declares it provides.
     provided_carriers: u32,
+    /// The rest of the plane's declaration (the decl's minor-22 tail), owned.
+    declaration: HotDeclaration,
     /// The plane name/path, for diagnostics.
     path: String,
     /// The mapped library. `Option` only so `Drop` can TAKE it and unload it on a plugin worker.
@@ -108,9 +112,38 @@ impl std::fmt::Debug for DynPlane {
             .field("section_key", &self.section_key)
             .field("scope", &self.scope)
             .field("provided_carriers", &self.provided_carriers)
+            .field("declaration", &self.declaration)
             .field("path", &self.path)
             .finish()
     }
+}
+
+/// THE REST OF A HOT-LANE PLANE'S DECLARATION — every fact of a registered plane's declaration the
+/// vocabulary fields do not carry, read off the decl's declaration tail into owned values. Nothing
+/// here is defaulted: a decl that does not reach the end of the tail is refused at load, and each
+/// field is what the plane stated (an optional fact the plane left NULL is `None`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HotDeclaration {
+    /// The plane declares itself the fallback catch-all.
+    pub fallback: bool,
+    /// What one registration on this plane is called.
+    pub subject_noun: String,
+    /// The singular hyphenated noun for one registration in its named-definition section.
+    pub admin_noun: String,
+    /// The record resource kind for a registration on this plane.
+    pub audit_kind: String,
+    /// The versioned domain the plane's signing subkey is derived under, if it signs.
+    pub signing_domain: Option<String>,
+    /// The `kid` prefix the plane stamps on its signatures, if it signs.
+    pub signing_kid_prefix: Option<String>,
+    /// The grant kinds that admit traffic on this plane, in declared order.
+    pub scope_kinds: Vec<String>,
+    /// The top-level config sections the plane owns the grammar of.
+    pub owned_sections: Vec<String>,
+    /// The billable classes the plane ledgers, each `(class, family)`.
+    pub billable_classes: Vec<(String, String)>,
+    /// The fee units the plane counts.
+    pub fee_units: Vec<String>,
 }
 
 impl DynPlane {
@@ -144,6 +177,11 @@ impl DynPlane {
     pub fn provides(&self, carrier: IngressCarrier) -> bool {
         self.provided_carriers & carrier.bit() != 0
     }
+    /// The rest of the plane's declaration, exactly as the decl states it.
+    #[must_use]
+    pub fn declaration(&self) -> &HotDeclaration {
+        &self.declaration
+    }
 
     // ── Slot readers: pull one `Option<fn>` slot out of the decl through the sized-struct guard.
     //    `Some(fn)` = the plane WROTE this slot (its attested `size` covers it); `None` = absent (an
@@ -173,6 +211,13 @@ impl DynPlane {
     }
     fn slot_openapi(&self) -> Option<OpenApiFn> {
         busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, openapi)
+            .flatten()
+    }
+    fn slot_claims(&self) -> Option<ClaimsFn> {
+        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, claims).flatten()
+    }
+    fn slot_admission(&self) -> Option<AdmissionFn> {
+        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, admission)
             .flatten()
     }
 
@@ -250,6 +295,22 @@ impl DynPlane {
         config: &[u8],
         resolved_refs: &[u64],
     ) -> (StatusClass, Option<OpaqueState>) {
+        // SAFETY: forwarded from this fn's own contract.
+        unsafe { self.build_at(host, host_ctx, config, resolved_refs, None) }
+    }
+
+    /// [`build`](Self::build), stating the deployment's public URL in the build context.
+    ///
+    /// # Safety
+    /// As [`build`](Self::build).
+    unsafe fn build_at(
+        &self,
+        host: *const PlaneHostVtable,
+        host_ctx: HostCtx,
+        config: &[u8],
+        resolved_refs: &[u64],
+        public_url: Option<&str>,
+    ) -> (StatusClass, Option<OpaqueState>) {
         let Some(f) = self.slot_build() else {
             return (StatusClass::Unsupported, None);
         };
@@ -264,6 +325,8 @@ impl DynPlane {
             config_len: config.len(),
             resolved_refs_ptr: resolved_refs.as_ptr(),
             resolved_refs_len: resolved_refs.len(),
+            public_url_ptr: public_url.map_or(core::ptr::null(), str::as_ptr),
+            public_url_len: public_url.map_or(0, str::len),
         };
         let mut out = MaybeUninit::<OpaqueState>::uninit();
         let ctx_ptr: *const BuildCtx = &ctx;
@@ -396,6 +459,34 @@ impl DynPlane {
         Ok(buf)
     }
 
+    /// A `claims`/`admission` answer: the slot's bytes as UTF-8. Unlike a [`contribution`](Self::contribution)
+    /// an empty answer is a valid one; a non-`Ok` status, a caught panic, a claimed length past the
+    /// buffer or non-UTF-8 bytes are refused.
+    fn answer(
+        &self,
+        op: &str,
+        state: *mut std::os::raw::c_void,
+        f: ClaimsFn,
+    ) -> Result<String, String> {
+        let mut buf = vec![0u8; MAX_PLANE_CONTRIBUTION_LEN];
+        let mut written = 0usize;
+        let (buf_ptr, cap) = (buf.as_mut_ptr(), buf.len());
+        let written_ptr: *mut usize = &mut written;
+        let status =
+            crate::ffi_guard(&self.path, op, || f(state, buf_ptr, cap, written_ptr))?.class();
+        let path = &self.path;
+        if status != StatusClass::Ok {
+            return Err(format!("plane '{path}' {op} answered {status:?}"));
+        }
+        if written > cap {
+            return Err(format!(
+                "plane '{path}' {op} claims {written} bytes written into a {cap}-byte buffer"
+            ));
+        }
+        buf.truncate(written);
+        String::from_utf8(buf).map_err(|_| format!("plane '{path}' {op} answered non-UTF-8 bytes"))
+    }
+
     /// Shared shape for the two `fn(*mut c_void) -> RawStatus` boot hooks (`hydrate`/`start`).
     unsafe fn drive_state(
         &self,
@@ -412,6 +503,172 @@ impl DynPlane {
         }
     }
 }
+
+impl DynPlane {
+    /// BUILD this plane to SERVE one config generation: its `build` slot, handed `host` (the host's
+    /// `'static` vtable, which outlives the built plane as the `build` contract requires), the plane's
+    /// raw config `section` bytes and the deployment's `public_url`. The built state is OWNED by the
+    /// returned [`ServedPlane`] and freed through the plane's own `free` when it drops. No host call
+    /// is live at build, so the build context carries the null `HostCtx`; every dispatch is handed
+    /// the one minted for it.
+    pub fn serve(
+        &'static self,
+        host: &'static PlaneHostVtable,
+        section: &[u8],
+        public_url: Option<&str>,
+    ) -> Result<ServedPlane, String> {
+        // SAFETY: `host` is a live `'static` vtable, so it outlives the built plane.
+        let (class, state) =
+            unsafe { self.build_at(host, HostCtx::NULL, section, &[], public_url) };
+        match state {
+            Some(raw) if class == StatusClass::Ok => Ok(ServedPlane { plane: self, raw }),
+            _ => Err(format!("plane '{}' did not build: {class:?}", self.path)),
+        }
+    }
+}
+
+/// A HOT-lane plane BUILT for one config generation: the `'static` plane and the state its `build`
+/// produced, owned. It is what the host mounts ([`claims`](Self::claims)), admits
+/// ([`admission`](Self::admission)) and drives ([`dispatch`](Self::dispatch)) — the same three calls
+/// for a linked plane and a dropped-in one, because both are a [`DynPlane`].
+pub struct ServedPlane {
+    plane: &'static DynPlane,
+    raw: OpaqueState,
+}
+
+// SAFETY: the plane-state handle is `Send + Sync` by the ABI's own soundness rule (the plane seam's
+// "opaque plane-state handle `Send+Sync`"): a plane's `claims`/`admission`/`dispatch` may be called
+// from any thread, concurrently, and its state synchronises itself (the example plane's counters are
+// atomics). The host never dereferences the handle; it only hands it back to the plane.
+unsafe impl Send for ServedPlane {}
+// SAFETY: see the `Send` impl above.
+unsafe impl Sync for ServedPlane {}
+
+/// One path a built plane answers on, as its `claims` slot states it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HotClaim {
+    /// The HTTP method, upper-case.
+    pub method: String,
+    /// The exact path.
+    pub path: String,
+    /// The wire format the path is spoken in.
+    pub wire: String,
+}
+
+impl ServedPlane {
+    /// The plane this state was built from.
+    #[must_use]
+    pub fn plane(&self) -> &'static DynPlane {
+        self.plane
+    }
+
+    /// What the built plane answers on, read through its `claims` slot. An absent slot or an empty
+    /// answer claims nothing; a non-`Ok` status, a caught panic, an overlong answer or a line that
+    /// is not `<METHOD> <path> <wire>` is refused, never read as "no claims".
+    pub fn claims(&self) -> Result<Vec<HotClaim>, String> {
+        let Some(f) = self.plane.slot_claims() else {
+            return Ok(Vec::new());
+        };
+        let text = self.plane.answer("plane_claims", self.raw.ptr, f)?;
+        text.lines()
+            .filter(|line| !line.is_empty())
+            .map(|line| match line.split(' ').collect::<Vec<_>>()[..] {
+                [method, path, wire] if !method.is_empty() && path.starts_with('/') => {
+                    Ok(HotClaim {
+                        method: method.to_string(),
+                        path: path.to_string(),
+                        wire: wire.to_string(),
+                    })
+                }
+                _ => Err(format!(
+                    "plane '{}' claims `{line}`, not `<METHOD> <path> <wire>`",
+                    self.plane.path
+                )),
+            })
+            .collect()
+    }
+
+    /// The audience the built plane binds and its resource-metadata URL, read through its
+    /// `admission` slot; `None` = it binds none. Refused on the same terms as [`claims`](Self::claims),
+    /// and when the answer is not exactly two lines.
+    pub fn admission(&self) -> Result<Option<(String, String)>, String> {
+        let Some(f) = self.plane.slot_admission() else {
+            return Ok(None);
+        };
+        let text = self.plane.answer("plane_admission", self.raw.ptr, f)?;
+        if text.is_empty() {
+            return Ok(None);
+        }
+        match text.split('\n').collect::<Vec<_>>()[..] {
+            [audience, metadata] if !audience.is_empty() => {
+                Ok(Some((audience.to_string(), metadata.to_string())))
+            }
+            _ => Err(format!(
+                "plane '{}' admission is not `<audience>\\n<resource_metadata>`",
+                self.plane.path
+            )),
+        }
+    }
+
+    /// DISPATCH one request-response work item: `inbound` as the finite buffer, a reply channel of
+    /// [`MAX_PLANE_REPLY_LEN`] bytes, and the dispatch's own `host` + `host_ctx` (minted for this
+    /// call; the plane calls back through them). Returns the plane's status and the reply it wrote;
+    /// a caught panic fails closed (`Fault`, no reply), and a claimed reply length past the channel
+    /// is a `Fault`.
+    pub fn dispatch(
+        &self,
+        host: &PlaneHostVtable,
+        host_ctx: HostCtx,
+        inbound: &[u8],
+    ) -> (StatusClass, Vec<u8>) {
+        // The channel is reserved, not zeroed: the plane writes into it and the host reads back only
+        // the prefix the plane says it wrote.
+        let mut reply: Vec<u8> = Vec::with_capacity(MAX_PLANE_REPLY_LEN);
+        let mut written = 0usize;
+        let mut work = WorkItem::new(
+            InboundHandle::finite_buffer(inbound),
+            EmitHandle::new(EmitKind::Reply, 0),
+        )
+        .with_host(host, host_ctx);
+        work.reply_ptr = reply.as_mut_ptr();
+        work.reply_cap = reply.capacity();
+        work.reply_written = &mut written;
+        // SAFETY: `raw.ptr` is the live state this plane's `build` produced (owned by `self`); every
+        // borrow the work item carries (`inbound`, `host`, the reply channel) outlives the call.
+        let class = unsafe { self.plane.dispatch(self.raw.ptr, &work) };
+        if written > reply.capacity() {
+            return (StatusClass::Fault, Vec::new());
+        }
+        // SAFETY: the plane initialized the first `written` bytes of the channel (the reply
+        // discipline), and `written` is within the reserved capacity (checked above).
+        unsafe { reply.set_len(written) };
+        (class, reply)
+    }
+}
+
+impl std::fmt::Debug for ServedPlane {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServedPlane")
+            .field("plane", &self.plane.name)
+            .finish()
+    }
+}
+
+impl Drop for ServedPlane {
+    fn drop(&mut self) {
+        // The same guarded, confined teardown an owned `PlaneState` runs.
+        drop(PlaneState {
+            plane: self.plane,
+            raw: OpaqueState {
+                ptr: self.raw.ptr,
+                free: self.raw.free,
+            },
+        });
+    }
+}
+
+/// Cap on one dispatch's reply: the channel the host hands the plane.
+const MAX_PLANE_REPLY_LEN: usize = 1024 * 1024;
 
 /// A plane handle (`config_validate`'s parsed config or `build`'s plane state) OWNED by the host.
 ///
@@ -472,6 +729,15 @@ pub fn load_plane_from_bytes(
 ) -> Result<DynPlane, String> {
     let (lib, staged) = stage::load_library_from_bytes(bytes, display)?;
     wire_up_plane(lib, display.to_string(), manifest_kind, Some(staged))
+}
+
+/// Admit a plane LINKED into this binary through exactly the admission a dropped-in one gets: the
+/// frozen preamble, the attested-size bound and the capped vocabulary reads of [`assemble`], over
+/// the plane's own `'static` decl rather than one resolved out of a mapped library. The composition
+/// root adapts the result through the same function it adapts a dropped-in [`DynPlane`] through, so
+/// the two doors cannot disagree about what a plane declares.
+pub fn link_plane(decl: &'static PlaneDecl, display: &str) -> Result<DynPlane, String> {
+    assemble(decl, display.to_string(), None, None)
 }
 
 /// Load a plane from the `cdylib` at `lib_path`. A bare path load has no signed manifest, so the
@@ -574,6 +840,17 @@ fn assemble(
              header — it cannot describe a PlaneDecl"
         ));
     }
+    // And THROUGH the declaration tail: a decl built before the tail existed states no declaration,
+    // and the host installs a plane only with the declaration the plane stated — never one invented
+    // for it — so such a decl is refused, not defaulted.
+    let declared =
+        (core::mem::offset_of!(PlaneDecl, fee_units_len) + core::mem::size_of::<usize>()) as u32;
+    if advertised < declared {
+        return Err(format!(
+            "plane '{display}' decl attests size {advertised}, below the {declared}-byte \
+             declaration — it states no plane declaration; rebuild it against this busbar ABI minor"
+        ));
+    }
     // REFUSED, not clamped — the same answer `PlaneHostVtable::check` gives the host table
     // (`VtableRefusal::SizeOverBuild`). The decl's trailing members are fn-pointer SLOTS this side
     // CALLS, and a size claim past this build's struct is unverifiable: a decl that really ends
@@ -595,6 +872,20 @@ fn assemble(
     let provided_carriers =
         busbar_plugin::read_sized_field!(decl_ptr, honoured_size, PlaneDecl, provided_carriers)
             .unwrap_or(0);
+    let declaration = read_declaration(decl_ptr, honoured_size, &display)?;
+    // `scope` is the plane's primary grant kind: it leads `scope_kinds`, and a plane with no scope
+    // grants none — so the two statements cannot disagree about what admits the plane's traffic.
+    let scope_leads = match declaration.scope_kinds.first() {
+        None => scope.is_empty(),
+        Some(first) => !scope.is_empty() && *first == scope,
+    };
+    if !scope_leads {
+        return Err(format!(
+            "plane '{display}' declares scope {scope:?} but scope kinds {:?}: the scope must lead \
+             the scope kinds, and a plane with no scope declares none",
+            declaration.scope_kinds
+        ));
+    }
 
     Ok(DynPlane {
         decl: decl_ptr,
@@ -604,6 +895,7 @@ fn assemble(
         scope,
         label,
         provided_carriers,
+        declaration,
         path: display,
         _lib: lib,
         _backing: backing,
@@ -679,6 +971,144 @@ fn read_vocab(
     std::str::from_utf8(bytes)
         .map(str::to_string)
         .map_err(|_| format!("plane '{display}' vocabulary is not valid UTF-8"))
+}
+
+/// Cap on the entries of one borrowed declaration list (`scope_kinds`/`owned_sections`/
+/// `billable_classes`/`fee_units`), enforced BEFORE any entry is read: the `*_len` is plugin-attested,
+/// exactly like a vocabulary length (see [`MAX_PLANE_VOCAB_LEN`]). A plane declares a handful of
+/// each; an oversize list is refused as a hard load error rather than walked.
+const MAX_PLANE_DECL_ENTRIES: usize = 1024;
+
+/// One field of the declaration tail, read through the sized guard. [`assemble`] refused every decl
+/// that does not reach the end of the tail, so an absent field is a refusal here too, never a default.
+macro_rules! tail_field {
+    ($decl:expr, $size:expr, $field:ident, $display:expr) => {
+        busbar_plugin::read_sized_field!($decl, $size, PlaneDecl, $field).ok_or_else(|| {
+            format!(
+                "plane '{}' decl does not reach its `{}` declaration field",
+                $display,
+                stringify!($field)
+            )
+        })?
+    };
+}
+
+/// Read the decl's declaration tail into an owned [`HotDeclaration`].
+fn read_declaration(
+    decl: *const PlaneDecl,
+    size: u32,
+    display: &str,
+) -> Result<HotDeclaration, String> {
+    let fallback = match tail_field!(decl, size, fallback, display) {
+        0 => false,
+        1 => true,
+        other => {
+            return Err(format!(
+                "plane '{display}' declares fallback flag {other}; a plane declares 0 or 1"
+            ))
+        }
+    };
+    let text = |d: DeclStr| decl_str(d, display);
+    let stated = |d: DeclStr, what: &str| {
+        text(d)?.ok_or_else(|| format!("plane '{display}' states no {what}"))
+    };
+    let strs = |ptr: *const DeclStr, len: usize, what: &str| -> Result<Vec<String>, String> {
+        decl_list(ptr, len, what, display)?
+            .into_iter()
+            .map(|d| stated(d, what))
+            .collect()
+    };
+    Ok(HotDeclaration {
+        fallback,
+        subject_noun: stated(
+            tail_field!(decl, size, subject_noun, display),
+            "subject noun",
+        )?,
+        admin_noun: stated(tail_field!(decl, size, admin_noun, display), "admin noun")?,
+        audit_kind: stated(tail_field!(decl, size, audit_kind, display), "audit kind")?,
+        signing_domain: text(tail_field!(decl, size, signing_domain, display))?,
+        signing_kid_prefix: text(tail_field!(decl, size, signing_kid_prefix, display))?,
+        scope_kinds: strs(
+            tail_field!(decl, size, scope_kinds_ptr, display),
+            tail_field!(decl, size, scope_kinds_len, display),
+            "scope kind",
+        )?,
+        owned_sections: strs(
+            tail_field!(decl, size, owned_sections_ptr, display),
+            tail_field!(decl, size, owned_sections_len, display),
+            "owned config section",
+        )?,
+        billable_classes: decl_list(
+            tail_field!(decl, size, billable_classes_ptr, display),
+            tail_field!(decl, size, billable_classes_len, display),
+            "billable class",
+            display,
+        )?
+        .into_iter()
+        .map(|c: DeclBillableClass| {
+            Ok((
+                stated(c.class, "billable class")?,
+                stated(c.family, "billable class family")?,
+            ))
+        })
+        .collect::<Result<_, String>>()?,
+        fee_units: strs(
+            tail_field!(decl, size, fee_units_ptr, display),
+            tail_field!(decl, size, fee_units_len, display),
+            "fee unit",
+        )?,
+    })
+}
+
+/// One [`DeclStr`] as an owned string: `None` for a NULL (absent) range, the stated string otherwise.
+/// Capped and UTF-8-checked exactly as a vocabulary range is ([`read_vocab`]).
+fn decl_str(d: DeclStr, display: &str) -> Result<Option<String>, String> {
+    if d.ptr.is_null() {
+        return Ok(None);
+    }
+    if d.len > MAX_PLANE_VOCAB_LEN {
+        return Err(format!(
+            "plane '{display}' declares a {}-byte declaration string, exceeding the \
+             {MAX_PLANE_VOCAB_LEN}-byte cap — refusing to load",
+            d.len
+        ));
+    }
+    // SAFETY: a non-null `DeclStr` addresses a live, immutable range for the life of the image (the
+    // decl's discipline), and its length is now bounded by `MAX_PLANE_VOCAB_LEN`.
+    let bytes = unsafe { std::slice::from_raw_parts(d.ptr, d.len) };
+    std::str::from_utf8(bytes)
+        .map(|s| Some(s.to_string()))
+        .map_err(|_| format!("plane '{display}' declaration string is not valid UTF-8"))
+}
+
+/// Copy one borrowed declaration list out of the image, entry by entry (unaligned reads: the list is
+/// plugin-attested). An empty list may be NULL; a NULL list claiming entries, or one past
+/// [`MAX_PLANE_DECL_ENTRIES`], is refused.
+fn decl_list<T: Copy>(
+    ptr: *const T,
+    len: usize,
+    what: &str,
+    display: &str,
+) -> Result<Vec<T>, String> {
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+    if ptr.is_null() {
+        return Err(format!(
+            "plane '{display}' declares {len} {what} entries behind a null list"
+        ));
+    }
+    if len > MAX_PLANE_DECL_ENTRIES {
+        return Err(format!(
+            "plane '{display}' declares {len} {what} entries, exceeding the \
+             {MAX_PLANE_DECL_ENTRIES}-entry cap — refusing to load"
+        ));
+    }
+    // SAFETY: a non-null list addresses `len` live entries for the life of the image (the decl's
+    // discipline), `len` is bounded, and each entry is copied out without assuming alignment.
+    Ok((0..len)
+        .map(|i| unsafe { core::ptr::read_unaligned(ptr.add(i)) })
+        .collect())
 }
 
 /// Small extension so `read_sized_field!(...).flatten_ptr()` yields the pointer (or null when the

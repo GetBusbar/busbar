@@ -123,7 +123,7 @@ fn delta(provider: &str, priced_from_ms: u64, tokens_input: u64) -> MeteringDelt
         usage_units: Default::default(),
         key_id: "vk_a".to_string(),
         bucket: DAY,
-        model: "m-openai-chat".to_string(),
+        model: "m-chat".to_string(),
         provider: provider.to_string(),
         tokens_input,
         tokens_output: 0,
@@ -144,8 +144,8 @@ fn delta(provider: &str, priced_from_ms: u64, tokens_input: u64) -> MeteringDelt
 #[test]
 fn a_rate_card_split_day_stays_split_on_an_abi_2_store() {
     let store = legacy_store(2);
-    store.add_metering(&delta("openai", 0, 100)).unwrap();
-    store.add_metering(&delta("openai", NOON_MS, 100)).unwrap();
+    store.add_metering(&delta("prov-a", 0, 100)).unwrap();
+    store.add_metering(&delta("prov-a", NOON_MS, 100)).unwrap();
 
     let mut rows = store.list_metering(DAY).unwrap();
     rows.sort_by_key(|r| r.priced_from_ms);
@@ -155,7 +155,7 @@ fn a_rate_card_split_day_stays_split_on_an_abi_2_store() {
         .collect();
     assert_eq!(
         got,
-        vec![("openai", 0, 100), ("openai", NOON_MS, 100)],
+        vec![("prov-a", 0, 100), ("prov-a", NOON_MS, 100)],
         "the morning and the afternoon must stay two cells, each with its own price instant"
     );
 }
@@ -164,7 +164,7 @@ fn a_rate_card_split_day_stays_split_on_an_abi_2_store() {
 /// rows 1.5.5 wrote: nothing is folded into `provider`, so a rollback reads them unchanged.
 #[test]
 fn an_opening_card_row_is_written_to_an_abi_2_store_unchanged() {
-    let d = delta("openai", 0, 7);
+    let d = delta("prov-a", 0, 7);
     assert_eq!(metering_delta_to_legacy(&d), d);
     let store = legacy_store(2);
     store.add_metering(&d).unwrap();
@@ -177,7 +177,7 @@ fn an_opening_card_row_is_written_to_an_abi_2_store_unchanged() {
             rows[0].priced_from_ms,
             rows[0].tokens_input
         ),
-        ("openai", 0, 14)
+        ("prov-a", 0, 14)
     );
 }
 

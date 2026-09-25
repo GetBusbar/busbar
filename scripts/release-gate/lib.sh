@@ -311,7 +311,7 @@ fetch() {  # fetch <url> -> body on stdout, non-zero on any non-2xx
 # summary names it NOT VERIFIED. Any other empty token returns 1 here and the row FAILs (no-token).
 site_not_run() {  # site_not_run <id>
   [ "$(site_token_state)" = fork-pr ] || return 1
-  record "$1" SKIP "not-run: fork PR has no SITE_VERIFY_TOKEN (Q39)" \
+  record "$1" SKIP "not-run: fork PR has no SITE_VERIFY_TOKEN" \
     "GitHub gives a pull_request from a fork no secrets, so this getbusbar.com row cannot send the X-Busbar-Verify header the Cloudflare WAF skip rule matches (OWNER RULING Q39). NOT VERIFIED, not passed. It runs on the same-repo PR, on push to main and on every release."
 }
 

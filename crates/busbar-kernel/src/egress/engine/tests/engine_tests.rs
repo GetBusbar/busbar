@@ -17,14 +17,14 @@ fn egress_request_uses_precomputed_parts_verbatim() {
     let mut headers = http::HeaderMap::new();
     headers.insert(
         http::header::AUTHORIZATION,
-        http::HeaderValue::from_static("Bearer k"),
+        http::HeaderValue::from_static("Token k"),
     );
     let req = egress_request(uri.clone(), headers, Bytes::from_static(b"{}"));
     assert_eq!(req.method(), http::Method::POST);
     assert_eq!(req.uri(), &uri);
     assert_eq!(
         req.headers().get(http::header::AUTHORIZATION).unwrap(),
-        "Bearer k"
+        "Token k"
     );
 }
 
@@ -32,7 +32,7 @@ fn egress_request_uses_precomputed_parts_verbatim() {
 fn builder_smoke_all_shapes() {
     for (h1, h2c) in [(false, false), (true, false), (false, true), (true, true)] {
         build_client(&EngineSpec::pooled_webpki(4, 300, h1, h2c))
-            .expect("the LLM-lane posture builds");
+            .expect("the pooled posture builds");
     }
 }
 
@@ -171,10 +171,10 @@ fn no_proxy_suffix_matching_is_conventional() {
         "a non-boundary suffix must NOT bypass (substring is not a domain match)"
     );
     assert!(!via("INTERNAL"), "matching is case-insensitive");
-    assert!(via("api.openai.com"), "unlisted hosts tunnel");
+    assert!(via("api.upstream.test"), "unlisted hosts tunnel");
     let all = tunnel::test_config("proxy.corp", 3128, None, "*");
     assert!(
-        tunnel::select_for_tests(&all, true, "api.openai.com").is_none(),
+        tunnel::select_for_tests(&all, true, "api.upstream.test").is_none(),
         "`*` disables tunneling"
     );
     // Leading dots are equivalent to none (curl/reqwest): `.example.com` ≡ `example.com`.
@@ -246,11 +246,11 @@ fn selection_is_scheme_scoped_and_no_proxy_excludes_both() {
     };
     let config = tunnel::resolve_config_for_tests(&env).unwrap().unwrap();
     assert_eq!(
-        tunnel::select_for_tests(&config, true, "api.openai.com").as_deref(),
+        tunnel::select_for_tests(&config, true, "api.upstream.test").as_deref(),
         Some("hs.corp:1")
     );
     assert_eq!(
-        tunnel::select_for_tests(&config, false, "api.openai.com").as_deref(),
+        tunnel::select_for_tests(&config, false, "api.upstream.test").as_deref(),
         Some("h.corp:2")
     );
     for is_https in [true, false] {
@@ -316,7 +316,7 @@ async fn connect_tunnel_end_to_end_through_scripted_proxy() {
     let connector =
         tunnel::TunnelConnector::new(http, Some(config), tunnel::connects_per_shard_for_tests());
     let tls = super::rustls_client_config(&EngineSpec::pooled_webpki(4, 300, true, false))
-        .expect("the LLM-lane tls posture builds");
+        .expect("the pooled tls posture builds");
     let https = hyper_rustls::HttpsConnectorBuilder::new()
         .with_tls_config(tls)
         .https_or_http()
@@ -478,7 +478,7 @@ fn request_moves_url_userinfo_into_a_sensitive_basic_auth_header() {
     let mut headers = http::HeaderMap::new();
     headers.insert(
         http::header::AUTHORIZATION,
-        http::HeaderValue::from_static("Bearer explicit"),
+        http::HeaderValue::from_static("Token explicit"),
     );
     let req = request(
         http::Method::GET,
@@ -489,7 +489,7 @@ fn request_moves_url_userinfo_into_a_sensitive_basic_auth_header() {
     assert_eq!(req.uri().to_string(), "https://sink.test/");
     assert_eq!(
         req.headers().get(http::header::AUTHORIZATION).unwrap(),
-        "Bearer explicit"
+        "Token explicit"
     );
 
     // No userinfo: untouched, no header invented.

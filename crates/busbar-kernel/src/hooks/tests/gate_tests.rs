@@ -121,7 +121,7 @@ async fn a_valid_reject_with_a_wrong_typed_sibling_rejects_under_on_error_reject
     let subject = GateSubject {
         facts: &facts,
         container: "filesystem",
-        ingress_protocol: "mcp",
+        ingress_protocol: "example-protocol",
         request_id: 1,
         key: None,
         incremental: None,
@@ -139,7 +139,7 @@ async fn a_totally_malformed_reply_applies_on_error() {
     let subject = GateSubject {
         facts: &facts,
         container: "filesystem",
-        ingress_protocol: "mcp",
+        ingress_protocol: "example-protocol",
         request_id: 1,
         key: None,
         incremental: None,
@@ -179,7 +179,7 @@ async fn a_malformed_reply_honors_a_non_reject_on_error() {
     let subject = GateSubject {
         facts: &facts,
         container: "filesystem",
-        ingress_protocol: "mcp",
+        ingress_protocol: "example-protocol",
         request_id: 1,
         key: None,
         incremental: None,
@@ -199,7 +199,7 @@ async fn an_empty_reply_still_abstains_even_under_on_error_reject() {
     let subject = GateSubject {
         facts: &facts,
         container: "filesystem",
-        ingress_protocol: "mcp",
+        ingress_protocol: "example-protocol",
         request_id: 1,
         key: None,
         incremental: None,
@@ -243,7 +243,7 @@ async fn a_well_formed_reject_still_rejects() {
     let subject = GateSubject {
         facts: &facts,
         container: "filesystem",
-        ingress_protocol: "mcp",
+        ingress_protocol: "example-protocol",
         request_id: 1,
         key: None,
         incremental: None,
@@ -300,7 +300,7 @@ fn key() -> busbar_api::VirtualKey {
     }
 }
 
-/// THE PROJECTION, WHOLE. What a `prompt: ro` + `user: ro` gate is handed for one MCP `tools/call`
+/// THE PROJECTION, WHOLE. What a `prompt: ro` + `user: ro` gate is handed for one tool invocation (`tools/call`)
 /// — and the reason this is the headline rather than the verdict test below it: a gate that fires
 /// with an empty projection is worse than a gate that does not fire, because a screening hook would
 /// pass a payload it never saw.
@@ -323,7 +323,7 @@ async fn an_invocation_is_projected_whole() {
         &GateSubject {
             facts: &facts,
             container: "filesystem",
-            ingress_protocol: "mcp",
+            ingress_protocol: "example-protocol",
             request_id: 7,
             key: Some(&k),
             incremental: None,
@@ -347,9 +347,9 @@ async fn an_invocation_is_projected_whole() {
             "op": "decide",
             "request": {
                 "request_id": 7,
-                // The CONTAINER, which on this plane is the registered MCP server.
+                // The CONTAINER, which on this plane is the registered tool server.
                 "pool": "filesystem",
-                "ingress_protocol": "mcp",
+                "ingress_protocol": "example-protocol",
                 "message_count": 1,
                 "has_tools": true,
                 // The chars of everything shown below — one number, one walk.
@@ -386,7 +386,7 @@ async fn a_grantless_gate_sees_shape_and_no_content() {
         &GateSubject {
             facts: &facts,
             container: "filesystem",
-            ingress_protocol: "mcp",
+            ingress_protocol: "example-protocol",
             request_id: 1,
             key: Some(&key()),
             incremental: None,
@@ -435,7 +435,7 @@ async fn a_reject_stops_the_request_with_a_clamped_status() {
             &GateSubject {
                 facts: &facts,
                 container: "filesystem",
-                ingress_protocol: "mcp",
+                ingress_protocol: "example-protocol",
                 request_id: 1,
                 key: None,
                 incremental: None,
@@ -478,7 +478,7 @@ async fn a_broken_gate_applies_its_own_on_error() {
     let subject = GateSubject {
         facts: &facts,
         container: "filesystem",
-        ingress_protocol: "mcp",
+        ingress_protocol: "example-protocol",
         request_id: 1,
         key: None,
         incremental: None,
@@ -529,7 +529,7 @@ async fn no_attached_gate_builds_no_projection() {
         &GateSubject {
             facts: &facts,
             container: "filesystem",
-            ingress_protocol: "mcp",
+            ingress_protocol: "example-protocol",
             request_id: 1,
             key: None,
             incremental: None,
@@ -573,7 +573,7 @@ async fn incremental_scan_skips_a_piece_already_cleared_this_session() {
         &GateSubject {
             facts: &facts,
             container: "filesystem",
-            ingress_protocol: "mcp",
+            ingress_protocol: "example-protocol",
             request_id: 1,
             key: None,
             incremental: Some(IncrementalScan {
@@ -606,7 +606,7 @@ async fn incremental_scan_skips_a_piece_already_cleared_this_session() {
         &GateSubject {
             facts: &facts,
             container: "filesystem",
-            ingress_protocol: "mcp",
+            ingress_protocol: "example-protocol",
             request_id: 2,
             key: None,
             incremental: Some(IncrementalScan {
@@ -650,7 +650,7 @@ async fn a_rejected_piece_is_not_cached_and_is_rescreened() {
         &GateSubject {
             facts: &facts,
             container: "filesystem",
-            ingress_protocol: "mcp",
+            ingress_protocol: "example-protocol",
             request_id: 1,
             key: None,
             incremental: Some(IncrementalScan {
@@ -679,7 +679,7 @@ async fn a_rejected_piece_is_not_cached_and_is_rescreened() {
         &GateSubject {
             facts: &facts,
             container: "filesystem",
-            ingress_protocol: "mcp",
+            ingress_protocol: "example-protocol",
             request_id: 2,
             key: None,
             incremental: Some(IncrementalScan {
@@ -746,7 +746,7 @@ async fn incremental_scan_reclears_across_principal_and_generation() {
             &GateSubject {
                 facts,
                 container: "filesystem",
-                ingress_protocol: "mcp",
+                ingress_protocol: "example-protocol",
                 request_id: 1,
                 key: None,
                 incremental: Some(IncrementalScan {

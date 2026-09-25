@@ -159,25 +159,8 @@ pub fn with_borrowed_host<R>(
     scope: &DispatchScope,
     f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
 ) -> R {
-    let state = HostState {
-        app,
-        scope,
-        // A host-internal mint: nobody's plane. See `HostState::emitter`.
-        emitter: None,
-    };
-    let vtable = build_plane_host_vtable();
-    // Open a fresh generation for exactly this `f` call, on THIS thread (`HostGeneration` is
-    // thread-local — see its doc). It drops at the end of this fn, right after `f` returns, so a
-    // `HostCtx` that escapes `f` and is replayed later is stamped with a generation no longer live.
-    let generation = HostGeneration::open();
-    // The stack `HostState`'s address IS the opaque HostCtx; it outlives every call `f` makes.
-    let ptr = (&state as *const HostState)
-        .cast_mut()
-        .cast::<std::os::raw::c_void>();
-    let host = HostCtx::new(ptr, generation.value(), HostCtx::KIND_PLANE_HOST);
-    let out = f(host, &vtable);
-    let _keep_alive = &state;
-    out
+    // A host-internal mint: nobody's plane. See `HostState::emitter`.
+    mint(None, app, scope, f)
 }
 
 /// Run `f` with a [`HostCtx`] ATTRIBUTED to `plane` — the mint site a real plane dispatch uses.
@@ -188,11 +171,25 @@ pub fn with_borrowed_host<R>(
 /// which plane it is dispatching — never a string the plane supplied — which is what makes the
 /// attribution unforgeable rather than merely present.
 ///
-/// ADDITIVE and currently unridden: no plane dispatch is wired yet (see [`with_dispatch_scope`]'s
-/// own note). That is why the slots requiring an emitter refuse today — a slot nobody has wired
-/// should not be writing unattributable series into the recorder, and refusing is how it says so.
+/// The mint a plane dispatched over the C ABI rides: every host call the plane makes back during the
+/// dispatch is recovered, and attributed, as that plane's.
 pub fn with_borrowed_host_as<R>(
     plane: &'static str,
+    app: &App,
+    scope: &DispatchScope,
+    f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
+) -> R {
+    mint(Some(plane), app, scope, f)
+}
+
+/// THE ONE MINT: run `f` with a [`HostCtx`] over a [`HostState`] of `app` + `scope` (attributed to
+/// `emitter`) + the host vtable. The `HostState` is pinned on this frame for exactly the duration of
+/// `f` (the [`recover`] invariant), and a fresh [`HostGeneration`] opens for exactly this call on
+/// THIS thread (`HostGeneration` is thread-local): it drops right after `f` returns, so a `HostCtx`
+/// that escapes `f` and is replayed later is stamped with a generation no longer live. Every mint
+/// site — borrowed, attributed, async, Send, durable — is this function.
+fn mint<R>(
+    emitter: Option<&'static str>,
     app: &App,
     scope: &DispatchScope,
     f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
@@ -200,12 +197,11 @@ pub fn with_borrowed_host_as<R>(
     let state = HostState {
         app,
         scope,
-        emitter: Some(plane),
+        emitter,
     };
     let vtable = build_plane_host_vtable();
-    // Same generation discipline as `with_borrowed_host`: opened for exactly this `f`, on THIS
-    // thread, so a `HostCtx` that escapes and is replayed later is stamped with a dead generation.
     let generation = HostGeneration::open();
+    // The stack `HostState`'s address IS the opaque HostCtx; it outlives every call `f` makes.
     let ptr = (&state as *const HostState)
         .cast_mut()
         .cast::<std::os::raw::c_void>();
@@ -1681,17 +1677,7 @@ impl<'a> HostDispatch<'a> {
     /// fresh [`HostGeneration`] opens for exactly this call and drops when it returns, so a `HostCtx`
     /// that escapes `f` anyway is refused (its generation is no longer live) rather than dereferenced.
     pub fn with_host<R>(&self, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
-        let state = self.host_state();
-        let vtable = build_plane_host_vtable();
-        let generation = HostGeneration::open();
-        // The stack `HostState`'s address IS the opaque HostCtx; it outlives every call `f` makes.
-        let ptr = (&state as *const HostState)
-            .cast_mut()
-            .cast::<std::os::raw::c_void>();
-        let host = HostCtx::new(ptr, generation.value(), HostCtx::KIND_PLANE_HOST);
-        let out = f(host, &vtable);
-        let _keep_alive = &state;
-        out
+        mint(None, self.app, &self.scope, f)
     }
 }
 
@@ -1749,16 +1735,7 @@ impl SendHostDispatch {
     /// [`new`](Self::new) would mint a stamp that is never live on the thread that checks it) and
     /// drops when this call returns.
     pub fn with_host<R>(&self, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
-        let state = self.host_state();
-        let vtable = build_plane_host_vtable();
-        let generation = HostGeneration::open();
-        let ptr = (&state as *const HostState)
-            .cast_mut()
-            .cast::<std::os::raw::c_void>();
-        let host = HostCtx::new(ptr, generation.value(), HostCtx::KIND_PLANE_HOST);
-        let out = f(host, &vtable);
-        let _keep_alive = &state;
-        out
+        mint(None, &self.app, &self.scope, f)
     }
 }
 
@@ -1831,16 +1808,7 @@ impl DurableHostDispatch {
     /// fresh [`HostGeneration`] opens for exactly this call (on this thread) and drops when it
     /// returns, so a `HostCtx` from a prior/foreign call is refused rather than dereferenced.
     pub fn with_host<R>(&self, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
-        let state = self.host_state();
-        let vtable = build_plane_host_vtable();
-        let generation = HostGeneration::open();
-        let ptr = (&state as *const HostState)
-            .cast_mut()
-            .cast::<std::os::raw::c_void>();
-        let host = HostCtx::new(ptr, generation.value(), HostCtx::KIND_PLANE_HOST);
-        let out = f(host, &vtable);
-        let _keep_alive = &state;
-        out
+        mint(None, &self.app, self.durable.arena(), f)
     }
 }
 

@@ -9,6 +9,9 @@
 // The transport-facing vocabulary, folded in from the former `busbar-contract-transport` crate
 // (DECISIONS #38): a KIND is a match-arm, not a crate, so the transport half lives here as one
 // module tree rather than a sibling crate the contract depended on.
+// The OPAQUE kernel-built configuration handle a transport's session layer is handed in place of key
+// material (#40(b), #36), and the sink a transport implements to receive it.
+pub mod config_handle;
 pub mod dest;
 pub mod driver;
 pub mod registry;
@@ -20,6 +23,8 @@ pub mod surface;
 pub mod transport;
 pub mod trust;
 pub mod wire;
+
+pub use config_handle::{ConfigRole, TransportConfigHandle, TransportConfigSink};
 
 use crate::bounded::ScratchBytes;
 use crate::dest::{TransportKeyHandle, VerifiedDestination};

@@ -6,7 +6,7 @@
 //! non-string `key`, unknown key, and the successful round-trip).
 
 use super::*;
-use busbar_api::SecretErrorKind;
+use busbar_contract::secret::SecretErrorKind;
 
 fn settings(pairs: &[(&str, serde_json::Value)]) -> serde_json::Map<String, serde_json::Value> {
     pairs

@@ -72,7 +72,7 @@ pub(crate) fn sign_and_wire_path(url_path: &str) -> String {
 /// `:` and other reserved chars) fails it. Lets the encode fast path skip the redundant second
 /// double-encode scan+allocation without changing any signed byte.
 #[inline]
-fn path_is_sigv4_unreserved(path: &str) -> bool {
+fn path_is_uri_unreserved(path: &str) -> bool {
     path.bytes().all(|b| {
         matches!(b,
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/')
@@ -205,7 +205,7 @@ pub(crate) fn sign_and_wire_path_parts(url_path: &str) -> (String, String) {
     // callers require exactly once each straight from the borrowed path. Byte-identical output to
     // the always-encode form — `uri_encode_path` provably returns its input unchanged here. Only a
     // path carrying an encodable char (a Bedrock modelId's `:`) takes the full double-encode below.
-    if path_is_sigv4_unreserved(path) {
+    if path_is_uri_unreserved(path) {
         let wire = match query {
             Some(q) => format!("{path}?{q}"),
             None => path.to_string(),

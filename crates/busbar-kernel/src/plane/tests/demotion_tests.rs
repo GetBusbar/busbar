@@ -32,7 +32,7 @@ use busbar_api::{PlaneSelector, Store, StoreResult};
 /// `demotion` stream through the generic `PlaneRecord` ABI, decoding each opaque body into the neutral
 /// [`DemotionRow`] the seam persists.
 trait DemotionStoreTestExt: Store {
-    fn list_mcp_demotions(&self) -> StoreResult<Vec<DemotionRow>> {
+    fn list_demotions(&self) -> StoreResult<Vec<DemotionRow>> {
         self.list_plane_records(KIND_DEMOTION, &PlaneSelector::All)?
             .iter()
             .map(|b| decode(b))
@@ -215,8 +215,8 @@ fn with_no_durable_sink_a_demotion_is_recorded_nowhere() {
     );
     assert!(
         open_plugin(&cfg)
-            .list_mcp_demotions()
-            .expect("list_mcp_demotions over the ABI")
+            .list_demotions()
+            .expect("list_demotions over the ABI")
             .is_empty(),
         "and nothing may have reached a store it was never given — a durability test that has \
          never seen a NON-durable deployment has proven nothing"
@@ -235,7 +235,7 @@ fn with_no_durable_sink_a_demotion_is_recorded_nowhere() {
 fn the_memory_store_keeps_demotions_only_for_the_life_of_the_process() {
     let d = DemotionRecord::new();
     d.set_sink(crate::plane::store::PlaneStoreView::narrow(
-        std::sync::Arc::new(busbar_store_memory::MemoryStore::new()),
+        std::sync::Arc::new(crate::governance::MemoryStore::new()),
     ));
     d.record("fs", "quarantined", 100);
     assert_eq!(
@@ -247,7 +247,7 @@ fn the_memory_store_keeps_demotions_only_for_the_life_of_the_process() {
     // The restart: a new process gets a new map, and the demotion is not in it.
     let restarted = DemotionRecord::new();
     restarted.set_sink(crate::plane::store::PlaneStoreView::narrow(
-        std::sync::Arc::new(busbar_store_memory::MemoryStore::new()),
+        std::sync::Arc::new(crate::governance::MemoryStore::new()),
     ));
     assert!(
         restarted.list().is_empty(),

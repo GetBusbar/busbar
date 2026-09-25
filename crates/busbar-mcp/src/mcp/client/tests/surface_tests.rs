@@ -17,6 +17,7 @@ use crate::mcp::client::support::key_wildcard;
 use crate::mcp::client::{
     dispatch::DispatchRefusal, Endpoint, McpClientEngine, McpServerRegistration,
 };
+use crate::mcp::config::McpPinMechanism;
 use busbar_api::Redacted;
 use busbar_kernel::trust::PinnedArtifact as _;
 
@@ -51,14 +52,17 @@ fn the_engine_owns_the_connection_pool() {
 
 #[test]
 fn both_pin_mechanisms_are_operator_visible_and_never_interpreted_by_the_machine() {
-    let spki = TransportPin::cert_spki("sha256/AAAA");
-    let mtls = TransportPin::mtls("client-cert-id");
-    assert_eq!(spki.mechanism(), "cert_spki");
-    assert_eq!(mtls.mechanism(), "mtls");
-    assert_eq!(spki.digest(), "sha256/AAAA");
+    let cert_key = TransportPin::of(McpPinMechanism::CertSpki, "sha256/AAAA");
+    let client_cert = TransportPin::of(McpPinMechanism::ClientCertBinding, "client-cert-id");
+    assert_eq!(cert_key.mechanism(), "cert_spki");
+    assert_eq!(client_cert.mechanism(), "mtls");
+    assert_eq!(cert_key.digest(), "sha256/AAAA");
     // Two mechanisms with the same VALUE are still different pins, because equality is structural
     // and the plane — not the trust machinery — decides what identity equality means.
-    assert_ne!(TransportPin::cert_spki("x"), TransportPin::mtls("x"));
+    assert_ne!(
+        TransportPin::of(McpPinMechanism::CertSpki, "x"),
+        TransportPin::of(McpPinMechanism::ClientCertBinding, "x")
+    );
 }
 
 #[test]

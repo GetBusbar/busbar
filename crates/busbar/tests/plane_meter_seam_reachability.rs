@@ -31,6 +31,15 @@
 //! neutrality and isomorphism gate in the tree and still proceed with an EMPTY usage report, which
 //! is the identical blind spot one path over. [`every_billing_plane_reaches_the_usage_seam_on_its_teller_meter_step`]
 //! closes it: every billing plane's leg must carry a Meter step AND reach the one usage seam.
+//!
+//! A plane the kernel-loop rider serves (`root/gauntlet_kernel.rs`, flipped per capability key by
+//! `root/gauntlet_install.rs`) has no root leg at all: the rider opens a zero hold and reports no
+//! evidence BY DESIGN, and the plane's money is metered inside its own `drive`, through the host's
+//! ledger seam, into the kernel's accrual. So that plane's row asks the SERVED leg the same question
+//! ([`every_billing_plane_the_rider_serves_ledgers_its_declared_class_on_the_served_path`]): the
+//! plane's ledger step must reach the host's ledger seam under the class the plane declares, the
+//! served path must call that step, and the host's seam must reach the kernel's accrual. Every
+//! billing plane answers on exactly one of the two paths — none is dropped by moving between them.
 
 //! ## What this gate reads, and what it deliberately does not
 //!
@@ -54,7 +63,45 @@ use std::path::{Path, PathBuf};
 
 /// Every plane that performs billable work and therefore MUST reach the core Meter seam. Keyed by
 /// the plane's crate directory name under `crates/`.
-const BILLING_PLANE_CRATES: &[&str] = &["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"];
+/// The list is DATA — `tests/fixtures/billing_plane_legs.txt`, one row per billing plane naming how
+/// it is answered — and every row must be a LINKED plane (see
+/// [`every_billing_plane_is_a_linked_plane`]), so the source names no plugin.
+fn billing_plane_crates() -> &'static [&'static str] {
+    static CRATES: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    CRATES.get_or_init(|| billing_rows().iter().map(|r| r[0]).collect())
+}
+
+/// The rows of `tests/fixtures/billing_plane_legs.txt`, whitespace-split and leaked once.
+fn billing_rows() -> &'static [Vec<&'static str>] {
+    static ROWS: std::sync::OnceLock<Vec<Vec<&'static str>>> = std::sync::OnceLock::new();
+    ROWS.get_or_init(|| {
+        common::fixture_lines("billing_plane_legs.txt")
+            .into_iter()
+            .map(|l| {
+                let l: &'static str = Box::leak(l.into_boxed_str());
+                l.split_whitespace().collect()
+            })
+            .collect()
+    })
+}
+
+/// Every billing plane named by the fixture is a plane the composition root LINKS (a
+/// `[package.metadata.busbar.linked]` row carrying the `plane` axis) — so the data cannot drift onto
+/// a crate this binary does not carry, and the gate cannot shrink by a row going stale.
+#[test]
+fn every_billing_plane_is_a_linked_plane() {
+    let linked: Vec<String> = common::linked_plane_crates()
+        .into_iter()
+        .map(|(_, krate)| krate)
+        .collect();
+    assert!(!billing_plane_crates().is_empty(), "no billing plane named");
+    for plane in billing_plane_crates() {
+        assert!(
+            linked.iter().any(|k| k == plane),
+            "billing plane `{plane}` is not a linked plane of this binary: {linked:?}"
+        );
+    }
+}
 
 /// The core Meter-seam call tokens. A production line containing any of these (outside a comment)
 /// counts as reaching the one billing path.
@@ -92,7 +139,7 @@ fn meter_seam_reaches(crate_dir: &Path) -> usize {
 fn every_billing_plane_reaches_the_core_meter_seam_in_production() {
     let root = crates_root();
     let mut offenders: Vec<String> = Vec::new();
-    for plane in BILLING_PLANE_CRATES {
+    for plane in billing_plane_crates() {
         let dir = root.join(plane);
         assert!(
             dir.join("src").is_dir(),
@@ -137,12 +184,17 @@ fn every_billing_plane_reaches_the_core_meter_seam_in_production() {
 /// Admin is deliberately absent: `root-admin` answers to ZERO ledger columns in
 /// `qa/capability-equality.json` (an admin request is unpriced), so it is owed no Meter reach and a
 /// row here would be a claim the ledger contradicts.
-const BILLING_PLANE_ROOT_LEGS: &[(&str, &str)] = &[
-    ("busbar-llm", "units_llm.rs"),
-    ("busbar-mcp", "units_mcp.rs"),
-    ("busbar-a2a", "units_a2a.rs"),
-    ("busbar-voice", "units_voice.rs"),
-];
+fn billing_plane_root_legs() -> &'static [(&'static str, &'static str)] {
+    static LEGS: std::sync::OnceLock<Vec<(&'static str, &'static str)>> =
+        std::sync::OnceLock::new();
+    LEGS.get_or_init(|| {
+        billing_rows()
+            .iter()
+            .filter(|r| r[1] == "root")
+            .map(|r| (r[0], r[2]))
+            .collect()
+    })
+}
 
 /// The ONE usage seam every Teller Meter step folds through, in the three spellings the tree
 /// actually uses: the usage unit's own entry point, the report constructor it returns, and the
@@ -197,7 +249,7 @@ fn every_billing_plane_reaches_the_usage_seam_on_its_teller_meter_step() {
     let leg_dir = root.join("busbar").join("src").join("root");
     let mut offenders: Vec<String> = Vec::new();
 
-    for (plane, leg) in BILLING_PLANE_ROOT_LEGS {
+    for (plane, leg) in billing_plane_root_legs() {
         let leg_path = leg_dir.join(leg);
         assert!(
             leg_path.is_file(),
@@ -276,6 +328,250 @@ fn every_billing_plane_reaches_the_usage_seam_on_its_teller_meter_step() {
          composition root the plane holds no host, so the ONLY place spend can be put on the \
          principal's ledger is the loop's Meter step:\n{}",
         offenders.join("\n")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// THE SAME QUESTION OVER THE SERVED LEG OF A PLANE THE KERNEL-LOOP RIDER SERVES.
+//
+// The rider (`crates/busbar/src/root/gauntlet_kernel.rs`) drives the plane's own `drive` through the
+// unified loop, opens a zero hold and reports ZERO evidence, so its Meter step reports no lines on
+// purpose: the plane meters inside `drive`, and a second count at the loop's exit would be a double
+// charge. The pre-unification root legs these planes once had are not the path a request takes, so
+// asking them was asking about code no request reaches. The served leg is asked instead, and it is
+// asked the same three things the Teller row asks, in its own terms: does the plane's ledger step
+// reach the ONE ledger seam, is it the class the plane declares, and does the served path actually
+// call it. And the seam itself must land in the kernel's accrual, or every plane behind it
+// ledgers into nothing.
+// ---------------------------------------------------------------------------
+
+/// A billing plane the kernel-loop rider serves, and the step on its served path that puts its
+/// declared class on the principal's ledger.
+struct ServedLeg {
+    /// `<plane crate directory under crates/>/<production file under it>` — where the step lives.
+    at: &'static str,
+    /// The ledger step's name: the scan finds `fn <name>(` and the served path's `<name>(` calls.
+    name: &'static str,
+    /// The plane's declared class constant the step ledgers under, found as `::meta::<class>`.
+    class: &'static str,
+}
+
+impl ServedLeg {
+    /// The plane crate's directory under `crates/`.
+    fn plane(&self) -> &'static str {
+        self.at.split_once('/').map_or(self.at, |(plane, _)| plane)
+    }
+
+    /// The production file, relative to the plane crate.
+    fn file(&self) -> &'static str {
+        self.at.split_once('/').map_or("", |(_, file)| file)
+    }
+}
+
+/// Every billing plane the rider serves, with its served ledger step.
+fn billing_plane_served_legs() -> &'static [ServedLeg] {
+    static LEGS: std::sync::OnceLock<Vec<ServedLeg>> = std::sync::OnceLock::new();
+    LEGS.get_or_init(|| {
+        billing_rows()
+            .iter()
+            .filter(|r| r[1] == "served")
+            .map(|r| ServedLeg {
+                at: r[2],
+                name: r[3],
+                class: r[4],
+            })
+            .collect()
+    })
+}
+
+/// The ONE ledger seam a served plane reaches: the host's `meter_ledger`, which appends the plane's
+/// raw counts to the caller's budget chain.
+const SERVED_LEDGER_SEAM: &str = "meter_ledger(";
+
+/// Where the host implements that seam, relative to `crates/`, and the kernel accrual its body must
+/// reach. A seam whose body stops reaching the accrual ledgers every plane behind it into nothing.
+const HOST_LEDGER_SEAM_FILE: &str = "busbar-kernel/src/plane_host/mod.rs";
+const HOST_LEDGER_SEAM_STEP: &str = "fn meter_ledger(";
+const KERNEL_ACCRUAL: &str = "record_usage(";
+
+/// What is wrong with one served leg, or nothing. Split out so the self-test drives the same
+/// judgement on synthetic source that the tree is judged by.
+fn served_leg_offences(
+    leg: &ServedLeg,
+    lines: &[common::Line],
+    crate_lines: &[common::Line],
+) -> Vec<String> {
+    let (plane, file) = (leg.plane(), leg.file());
+    let step = format!("fn {}(", leg.name);
+    let call = format!("{}(", leg.name);
+    let class = format!("::meta::{}", leg.class);
+    let step = step.as_str();
+    let Some(body) = common::item_body(lines, step) else {
+        return vec![format!(
+            "{plane}: {file} has NO production `{step}` — the served path has no step that puts \
+             this plane's declared class on any ledger"
+        )];
+    };
+    let mut out = Vec::new();
+    if !body.iter().any(|l| l.code.contains(SERVED_LEDGER_SEAM)) {
+        out.push(format!(
+            "{plane}: `{step}` in {file} does not reach the host ledger seam ({SERVED_LEDGER_SEAM}) \
+             — the served path ledgers nothing, and the principal is charged nothing for this class"
+        ));
+    }
+    if !body.iter().any(|l| l.code.contains(&class)) {
+        out.push(format!(
+            "{plane}: `{step}` in {file} does not ledger under the plane's declared class \
+             ({class}) — a count under an undeclared class is one no card, cap or usage row can name"
+        ));
+    }
+    let callers = crate_lines
+        .iter()
+        .filter(|l| l.code.contains(&call) && !l.code.contains(step))
+        .count();
+    if callers == 0 {
+        out.push(format!(
+            "{plane}: nothing in the plane's production source calls `{call}` — the ledger step \
+             exists and the served path never reaches it"
+        ));
+    }
+    out
+}
+
+#[test]
+fn every_billing_plane_the_rider_serves_ledgers_its_declared_class_on_the_served_path() {
+    let root = crates_root();
+
+    // Totality: every billing plane answers on exactly one path, so moving a plane between the two
+    // tables can never drop it from both.
+    for plane in billing_plane_crates() {
+        let on_root = billing_plane_root_legs()
+            .iter()
+            .filter(|(p, _)| p == plane)
+            .count();
+        let served = billing_plane_served_legs()
+            .iter()
+            .filter(|l| l.plane() == *plane)
+            .count();
+        assert_eq!(
+            on_root + served,
+            1,
+            "billing plane `{plane}` must be answered by exactly one row — a Teller root leg or a \
+             served leg — and is answered by {on_root} root and {served} served rows"
+        );
+    }
+
+    let mut offenders: Vec<String> = Vec::new();
+
+    let seam_path = root.join(HOST_LEDGER_SEAM_FILE);
+    let seam_lines = common::production_lines(&seam_path);
+    match common::item_body(&seam_lines, HOST_LEDGER_SEAM_STEP) {
+        None => offenders.push(format!(
+            "{HOST_LEDGER_SEAM_FILE} has no production `{HOST_LEDGER_SEAM_STEP}` — the seam every \
+             served plane ledgers through is not implemented by the host"
+        )),
+        Some(body) if !body.iter().any(|l| l.code.contains(KERNEL_ACCRUAL)) => offenders.push(format!(
+            "{HOST_LEDGER_SEAM_FILE}: the host's `{HOST_LEDGER_SEAM_STEP}` does not reach the kernel \
+             accrual ({KERNEL_ACCRUAL}) — every served plane ledgers into nothing"
+        )),
+        Some(_) => {}
+    }
+
+    for leg in billing_plane_served_legs() {
+        let dir = root.join(leg.plane());
+        let path = dir.join(leg.file());
+        assert!(
+            path.is_file(),
+            "billing plane `{}` names served leg {}, which does not exist — this gate is scanning \
+             the wrong tree",
+            leg.plane(),
+            path.display()
+        );
+        let lines = common::production_lines(&path);
+        assert!(
+            !lines.is_empty(),
+            "served leg {} classified to zero production lines — a scan that reads nothing passes \
+             everything",
+            path.display()
+        );
+        let mut files = Vec::new();
+        common::production_rs_files(&dir.join("src"), &mut files);
+        let crate_lines: Vec<common::Line> = files
+            .iter()
+            .flat_map(|p| common::production_lines(p))
+            .collect();
+        let found = served_leg_offences(leg, &lines, &crate_lines);
+        if found.is_empty() {
+            println!(
+                "  {:<13} {:<20} served ledger seam reached",
+                leg.plane(),
+                leg.name
+            );
+        }
+        offenders.extend(found);
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "a billing plane the kernel-loop rider serves does NOT ledger its declared class on the \
+         served path — the rider meters nothing by design, so the plane's own ledger step is the \
+         ONLY place its spend reaches the principal's ledger:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The served-leg judgement FIRES, on synthetic source: a ledger step that stopped reaching the
+/// seam, one that ledgers an undeclared class, and one nothing calls are each named, and the whole
+/// leg is clean only when all three hold.
+#[test]
+fn selftest_the_served_leg_judgement_fires() {
+    let leg = ServedLeg {
+        at: "busbar-demo/src/demo.rs",
+        name: "ledger_demo",
+        class: "CLASS_DEMO",
+    };
+    let prod = |src: &str| -> Vec<common::Line> {
+        common::classify(src, false)
+            .into_iter()
+            .filter(|l| !l.intest)
+            .collect()
+    };
+    let good = "fn ledger_demo(host: &H) {\n    let usage = busbar_plane_demo::meta::CLASS_DEMO;\n    host.meter_ledger(&usage);\n}\nfn drive() {\n    ledger_demo(host);\n}\n";
+    let lines = prod(good);
+    assert!(served_leg_offences(&leg, &lines, &lines).is_empty());
+
+    let no_seam = good.replace("host.meter_ledger(&usage);", "let _ = usage;");
+    let lines = prod(&no_seam);
+    let found = served_leg_offences(&leg, &lines, &lines);
+    assert!(
+        found
+            .iter()
+            .any(|o| o.contains("does not reach the host ledger seam")),
+        "{found:?}"
+    );
+
+    let wrong_class = good.replace("CLASS_DEMO", "CLASS_OTHER");
+    let lines = prod(&wrong_class);
+    let found = served_leg_offences(&leg, &lines, &lines);
+    assert!(
+        found.iter().any(|o| o.contains("declared class")),
+        "{found:?}"
+    );
+
+    let uncalled = good.replace("    ledger_demo(host);\n", "");
+    let lines = prod(&uncalled);
+    let found = served_leg_offences(&leg, &lines, &lines);
+    assert!(
+        found.iter().any(|o| o.contains("never reaches it")),
+        "{found:?}"
+    );
+
+    let only_in_tests = format!("#[cfg(test)]\nmod tests {{\n{}\n}}\n", good);
+    let lines = prod(&only_in_tests);
+    let found = served_leg_offences(&leg, &lines, &lines);
+    assert!(
+        found.iter().any(|o| o.contains("NO production")),
+        "{found:?}"
     );
 }
 
@@ -363,7 +659,7 @@ mod tests {
 #[test]
 fn selftest_the_hop_lands_on_the_meter_step_and_not_the_neighbouring_step() {
     let root = crates_root();
-    for (plane, _) in BILLING_PLANE_ROOT_LEGS {
+    for (plane, _) in billing_plane_root_legs() {
         let dir = root.join(plane);
         let unit_dir = dir.join("src").join("unit");
         if !unit_dir.is_dir() {

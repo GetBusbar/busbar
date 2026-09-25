@@ -7120,6 +7120,7 @@ fn write_response_emits_url_citations_without_inventing_fields() {
                 url: Option<&str>,
                 start: Option<i64>,
                 end: Option<i64>| crate::ir::IrCitation {
+        domain: None,
         kind: Some(kind.to_string()),
         cited_text: cited_text.map(str::to_string),
         title: title.map(str::to_string),
@@ -7240,6 +7241,7 @@ fn streamed_citations_reach_the_assembled_output_item() {
     let _ = ev(crate::ir::IrStreamEvent::BlockDelta {
         index: 0,
         delta: crate::ir::IrDelta::CitationsDelta(vec![crate::ir::IrCitation {
+            domain: None,
             kind: Some("web_search_result_location".into()),
             cited_text: Some("Sourced claim.".into()),
             title: Some("A Source".into()),
@@ -7727,6 +7729,7 @@ fn response_object_function_arguments_preserved() {
 fn writer_accumulators_are_bounded_in_entry_count() {
     let writer = ResponsesWriter;
     let citation = crate::ir::IrCitation {
+        domain: None,
         kind: Some("web_search_result_location".to_string()),
         cited_text: None,
         title: None,
@@ -7842,6 +7845,7 @@ fn responses_url_citation_survives_a_responses_round_trip() {
             text: "See the source for details.".to_string(),
             cache_control: None,
             citations: vec![crate::ir::IrCitation {
+                domain: None,
                 kind: Some("web_search_result_location".to_string()),
                 cited_text: None,
                 title: Some("Responses Source".to_string()),

@@ -3,7 +3,7 @@
 
 //! EGRESS-slot tests, driven over the REAL recovery path and the REAL guarded transport against a
 //! loopback HTTP mock. The plaintext hop's observed identity is honestly EMPTY (nothing was proved);
-//! the SPKI-population path is the engine's connect-time observation (`PeerSpki` on the response),
+//! the SPKI-population path is the engine's connect-time observation (`PeerKeyPin` on the response),
 //! which the a2a transport pin tests already exercise against real TLS.
 
 use super::*;

@@ -41,8 +41,8 @@ struct OpenCall {
     deadline: u64,
 }
 
-/// A stand-in for the composition root's open-call table, answering the two questions the port
-/// declares and recording what it was asked.
+/// A stand-in for the composition root's open-call table, answering what the port declares and
+/// recording what it was asked.
 #[derive(Debug, Default)]
 struct TableStandIn {
     open: Mutex<Vec<OpenCall>>,
@@ -61,6 +61,11 @@ impl TableStandIn {
 }
 
 impl GovernedCalls for TableStandIn {
+    fn planned(&self, session: u64, call_id: &str, now_ms: u64) -> bool {
+        self.enter(session, call_id, now_ms);
+        true
+    }
+
     fn replied(&self, session: u64, call_id: &str) -> Result<(), ReplyRefusal> {
         let mut open = self.open.lock().unwrap();
         if !open.iter().any(|c| c.session == session) {

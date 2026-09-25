@@ -20,7 +20,7 @@ use super::relay_harness::*;
 use crate::a2a::relay::{read_event, SseReader};
 use crate::a2a::task::TaskState;
 
-/// A streaming envelope: `message/stream`, which is what makes `TaskShape::requires_streaming` true
+/// A streaming envelope: `message/stream`, which is what makes `TaskShape::requires_stream` true
 /// and therefore what makes the ingress take the streaming hop.
 fn stream_envelope(context_id: &str) -> serde_json::Value {
     serde_json::json!({
@@ -180,7 +180,7 @@ fn a_streamed_event_carries_busbars_identity_and_an_unreadable_frame_is_passed_t
 /// THE RESULT IS STREAMED BACK. This is the half of C2 the goal names separately from the hop: a
 /// relay that submits a task and buffers the whole answer has not streamed anything.
 #[tokio::test]
-async fn a_streaming_submission_is_relayed_as_a_stream_and_written_back_as_sse() {
+async fn a_stream_submission_is_relayed_as_a_stream_and_written_back_as_sse() {
     crate::testkit::install_test_seams();
     let frames = vec![
         frame(serde_json::json!({
@@ -223,8 +223,8 @@ async fn a_streaming_submission_is_relayed_as_a_stream_and_written_back_as_sse()
     let sent = h.sent();
     assert_eq!(sent.len(), 1);
     assert!(
-        sent[0].streaming,
-        "a `message/stream` must go out through the streaming transport"
+        sent[0].is_stream,
+        "a `message/stream` must go out through the stream transport"
     );
     let accept = sent[0]
         .headers
@@ -234,7 +234,7 @@ async fn a_streaming_submission_is_relayed_as_a_stream_and_written_back_as_sse()
         .unwrap_or_default();
     assert!(
         accept.contains("text/event-stream"),
-        "the streaming hop must ASK for a stream, got `{accept}`"
+        "the stream hop must ASK for a stream, got `{accept}`"
     );
 }
 
@@ -242,7 +242,7 @@ async fn a_streaming_submission_is_relayed_as_a_stream_and_written_back_as_sse()
 /// than assumed to carry over: the streaming hop builds its own request, and a header set that is
 /// closed on one path and open on the other is exactly the asymmetry a single-path scan misses.
 #[tokio::test]
-async fn the_callers_busbar_key_is_absent_from_the_streaming_wire_too() {
+async fn the_callers_busbar_key_is_absent_from_the_stream_wire_too() {
     crate::testkit::install_test_seams();
     let frames = vec![frame(serde_json::json!({
         "id": "B1", "contextId": "BC", "status": { "state": "completed" }
@@ -253,10 +253,10 @@ async fn the_callers_busbar_key_is_absent_from_the_streaming_wire_too() {
 
     let wire = h.all_wire();
     assert!(wire.len() > 100, "the scan has nothing to scan");
-    for (encoding, bytes) in &encodings(&h.bearer) {
+    for (encoding, bytes) in &encodings(&h.caller_token) {
         assert!(
             !contains(&wire, bytes),
-            "the caller's busbar key reached the backend on the STREAMING path, as {encoding}"
+            "the caller's busbar key reached the backend on the STREAM path, as {encoding}"
         );
     }
     assert!(
@@ -296,7 +296,7 @@ async fn a_stream_request_answered_with_one_document_comes_back_as_a_document() 
 /// A STREAMING HOP THAT FAILS BEFORE ITS FIRST EVENT is still a status this handler gets to choose.
 /// After the first event it cannot be, which is why the commitment point is where it is.
 #[tokio::test]
-async fn a_streaming_hop_that_fails_before_its_first_event_is_a_busbar_attributed_error() {
+async fn a_stream_hop_that_fails_before_its_first_event_is_a_busbar_attributed_error() {
     crate::testkit::install_test_seams();
     let h = harness(Outcome::Fails("connection refused".to_string()), false).await;
     let (status, _ct, body) = call_raw(&h, "planner", &stream_envelope("ctx-fail")).await;

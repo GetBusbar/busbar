@@ -203,6 +203,7 @@ pub fn read_url_annotations(annotations: &serde_json::Value) -> Vec<crate::ir::I
             _ => (None, None),
         };
         out.push(crate::ir::IrCitation {
+            domain: None,
             kind: Some("web_search_result_location".to_string()),
             cited_text: None,
             title,

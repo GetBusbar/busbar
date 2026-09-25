@@ -17,8 +17,8 @@ use crate::{
     admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
     core_routes, cost, durable, egress_auth, endpoints, eventstream, export, failover, governance,
     handlers, hooks, ingress, ir, json, limits, lossless, media, metrics, net_guard, oauth_as,
-    observability, operation, plane, plugin_routes, profile, proto, proxy, sigv4, state, store,
-    telemetry, tls, transport, trust,
+    observability, operation, plane, plugin_routes, profile, proto, proxy, state, store, telemetry,
+    tls, transport, trust,
 };
 
 /// The FLEET DATA DIR the first-party anti-downgrade floor persists under, or `None` when this
@@ -40,6 +40,102 @@ pub fn fleet_data_dir() -> Option<std::path::PathBuf> {
     let raw = std::env::var_os("BUSBAR_DATA_DIR")?;
     let path = std::path::PathBuf::from(raw);
     (!path.as_os_str().is_empty()).then_some(path)
+}
+
+/// The rows this build LINKS onto the cold-kind axis, ahead of the plugins directory's: its
+/// in-process default store, which states itself ephemeral, its built-in secret modules, and (when
+/// compiled in) its ranking hooks — one row, the frozen strategy spellings its aliases.
+/// Registered through `PluginRegistry::link`, the admission a dropped-in plugin's row takes
+/// (DECISIONS #2 rule (1)).
+fn linked_rows() -> Vec<busbar_plugin_loader::LinkedPlugin> {
+    let memory = |_: &str| -> Result<Box<dyn governance::Store>, String> {
+        Ok(Box::new(governance::MemoryStore::new()))
+    };
+    let name = config::GOVERNANCE_STORE_MEMORY;
+    vec![
+        busbar_plugin_loader::LinkedPlugin::store(name, memory, true),
+        busbar_plugin_loader::LinkedPlugin::builtin_secret(config::secret::SECRET_MODULE_ENV),
+        busbar_plugin_loader::LinkedPlugin::builtin_secret(config::secret::SECRET_MODULE_FILE),
+        #[cfg(feature = "hooks-ranking")]
+        busbar_plugin_loader::LinkedPlugin::ranking(
+            "hooks-ranking",
+            &[
+                config::STRATEGY_CHEAPEST,
+                config::STRATEGY_FASTEST,
+                config::STRATEGY_LEAST_BUSY,
+                config::STRATEGY_USAGE,
+            ],
+            busbar_hooks_ranking::native_policy,
+        ),
+    ]
+}
+
+/// The built-in ranking strategy `name` spells on the hook axis — its linked row opened with that
+/// spelling — or `None` when this build links no ranking row answering to it.
+pub(crate) fn builtin_ranking(name: &str) -> Option<busbar_plugin_loader::registry::RankingPolicy> {
+    linked().ok()?.open_ranking(name).ok()
+}
+
+/// The build's own secret module `module` names on the secret axis — a linked `kind: secret` row,
+/// opened in process — or `None` when `module` is a plugin the directory must supply.
+pub(crate) fn builtin_secret(module: &str) -> Option<Box<dyn busbar_api::SecretModule>> {
+    linked().ok()?.open_secret(module, "{}").ok()
+}
+
+/// A configured reference to a `kind` plugin, in the words its refusals use: how it `names` the
+/// plugin, how a skipped match is `matched`, how a `missing` one is reported, what the plugin
+/// `must_be`, its tarball's `label` and the `remedy`. One per referencing kind (steps 4-6).
+struct PluginRef<'a> {
+    kind: &'a str,
+    names: String,
+    matched: String,
+    missing: String,
+    must_be: &'a str,
+    label: &'a str,
+    remedy: &'a str,
+}
+
+/// `r` must resolve to a loadable row of `want.kind`, or the preflight refuses in `want`'s words:
+/// another kind, a match the trust policy skipped, or nothing of that name in `dir`.
+fn require_plugin(
+    registry: &busbar_plugin_loader::PluginRegistry,
+    dir: &str,
+    r: &str,
+    want: PluginRef<'_>,
+) -> Result<(), String> {
+    match registry.resolve(r) {
+        Some(p) if p.manifest.kind == want.kind => Ok(()),
+        Some(p) => Err(format!(
+            "{} resolves to plugin '{}' of kind '{}', not {}",
+            want.names, p.manifest.name, p.manifest.kind, want.must_be
+        )),
+        None => Err(match registry.unresolved_reason(r) {
+            Some(s) => format!(
+                "{} plugin '{}' ({}) but it was not loaded: {}",
+                want.matched, s.manifest.name, s.file, s.reason
+            ),
+            None => format!(
+                "{} is installed in '{dir}' (plugins ARE enabled; loadable: [{}]). Two things to \
+                 check: is the plugin subsystem enabled? (it is) — and is the signed {}tarball \
+                 actually IN the folder? \
+                 Add it to plugins.fetch or drop the signed tarball in the directory, or {}.",
+                want.missing,
+                registry
+                    .loadable()
+                    .iter()
+                    .map(|p| p.manifest.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                want.label,
+                want.remedy
+            ),
+        }),
+    }
+}
+
+/// A registry holding only the [`linked_rows`] — what a build with the plugins directory off has.
+fn linked() -> Result<busbar_plugin_loader::PluginRegistry, String> {
+    busbar_plugin_loader::PluginRegistry::empty().link(linked_rows())
 }
 
 /// Build a complete `App` from a RESOLVED config — the ONE construction path shared by boot
@@ -79,7 +175,9 @@ pub fn plugins_preflight(
     let store_ref = store_cfg
         .map(|g| g.module.as_str())
         .unwrap_or(config::GOVERNANCE_STORE_MEMORY);
-    let store_is_plugin = store_ref != config::GOVERNANCE_STORE_MEMORY;
+    // Resolved on the store AXIS: a row this build links opens in-process; any other name is a
+    // `kind: store` plugin the plugins directory must supply.
+    let store_is_plugin = linked()?.resolve(store_ref).is_none();
 
     // Every non-builtin `auth.chain` module is a `kind: auth` plugin — the same manifest-only
     // pre-flight the store ref gets, so `--validate` catches a missing/wrong-kind/untrusted auth
@@ -217,13 +315,15 @@ pub fn plugins_preflight(
         tracing::info!(
             "plugins: disabled (plugins.enabled is false; tarballs in the directory are inert)"
         );
-        return Ok(busbar_plugin_loader::PluginRegistry::empty());
+        return linked();
     }
 
-    // 3. Three-phase scan over the plugins directory. Fail-closed on invalid/conflict.
+    // 3. Three-phase scan over the plugins directory. Fail-closed on invalid/conflict. The linked
+    //    rows register ahead of the directory's, through the same admission.
     let dir = std::path::Path::new(&plugins_cfg.dir);
     let registry = busbar_plugin_loader::scan_and_validate(dir, &policy)
-        .map_err(|errs| format!("plugin validation failed:\n  - {}", errs.join("\n  - ")))?;
+        .map_err(|errs| format!("plugin validation failed:\n  - {}", errs.join("\n  - ")))?
+        .link(linked_rows())?;
     tracing::info!(
         dir = %plugins_cfg.dir,
         loadable = registry.loadable().len(),
@@ -282,39 +382,20 @@ pub fn plugins_preflight(
 
     // 4. The configured store must resolve to a loadable store plugin.
     if store_is_plugin {
-        match registry.resolve(store_ref) {
-            Some(p) if p.manifest.kind == "store" => {}
-            Some(p) => {
-                return Err(format!(
-                    "store.module: '{store_ref}' resolves to plugin '{}' of kind '{}', not a \
-                     store plugin",
-                    p.manifest.name, p.manifest.kind
-                ));
-            }
-            None => {
-                return Err(match registry.unresolved_reason(store_ref) {
-                    Some(s) => format!(
-                        "store.module: '{store_ref}' matches plugin '{}' ({}) but it was not \
-                         loaded: {}",
-                        s.manifest.name, s.file, s.reason
-                    ),
-                    None => format!(
-                        "no plugin matching store.module: '{store_ref}' is installed in '{}' \
-                         (plugins ARE enabled; loadable: [{}]). Two things to check: is the plugin \
-                         subsystem enabled? (it is) — and is the signed tarball actually IN the \
-                         folder? Add it to plugins.fetch or drop the signed tarball in the \
-                         directory, or set store.module: memory.",
-                        plugins_cfg.dir,
-                        registry
-                            .loadable()
-                            .iter()
-                            .map(|p| p.manifest.name.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ),
-                });
-            }
-        }
+        require_plugin(
+            &registry,
+            &plugins_cfg.dir,
+            store_ref,
+            PluginRef {
+                kind: "store",
+                names: format!("store.module: '{store_ref}'"),
+                matched: format!("store.module: '{store_ref}' matches"),
+                missing: format!("no plugin matching store.module: '{store_ref}'"),
+                must_be: "a store plugin",
+                label: "",
+                remedy: "set store.module: memory",
+            },
+        )?;
     }
 
     // 5. Every configured auth-chain plugin must resolve to a loadable `kind: auth` plugin. Same
@@ -322,78 +403,40 @@ pub fn plugins_preflight(
     // `AuthMiddleware::new` at App construction). A missing/wrong-kind/untrusted auth plugin fails
     // `--validate` and boot alike — a typo'd or absent front-door module must never pass silently.
     for auth_ref in &auth_plugin_refs {
-        match registry.resolve(auth_ref) {
-            Some(p) if p.manifest.kind == "auth" => {}
-            Some(p) => {
-                return Err(format!(
-                    "auth.chain module '{auth_ref}' resolves to plugin '{}' of kind '{}', not an \
-                     `auth` plugin",
-                    p.manifest.name, p.manifest.kind
-                ));
-            }
-            None => {
-                return Err(match registry.unresolved_reason(auth_ref) {
-                    Some(s) => format!(
-                        "auth.chain module '{auth_ref}' matches plugin '{}' ({}) but it was not \
-                         loaded: {}",
-                        s.manifest.name, s.file, s.reason
-                    ),
-                    None => format!(
-                        "no plugin matching auth.chain module '{auth_ref}' is installed in '{}' \
-                         (plugins ARE enabled; loadable: [{}]). Two things to check: is the plugin \
-                         subsystem enabled? (it is) — and is the signed `kind: auth` tarball \
-                         actually IN the folder? Add it to plugins.fetch or drop the signed tarball \
-                         in the directory, or remove it from auth.chain.",
-                        plugins_cfg.dir,
-                        registry
-                            .loadable()
-                            .iter()
-                            .map(|p| p.manifest.name.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ),
-                });
-            }
-        }
+        require_plugin(
+            &registry,
+            &plugins_cfg.dir,
+            auth_ref,
+            PluginRef {
+                kind: "auth",
+                names: format!("auth.chain module '{auth_ref}'"),
+                matched: format!("auth.chain module '{auth_ref}' matches"),
+                missing: format!("no plugin matching auth.chain module '{auth_ref}'"),
+                must_be: "an `auth` plugin",
+                label: "`kind: auth` ",
+                remedy: "remove it from auth.chain",
+            },
+        )?;
     }
 
     // 6. Every hook's `plugin:` ref must resolve to a loadable `kind: hook` plugin. Same manifest-only
     // resolution as store/auth (no `dlopen` here; the real load happens in `resolve_gate_transport` at
     // App construction). A missing/wrong-kind/untrusted hook plugin fails `--validate` and boot alike.
     for hook_ref in &hook_plugin_refs {
-        match registry.resolve(hook_ref) {
-            Some(p) if p.manifest.kind == "hook" => {}
-            Some(p) => {
-                return Err(format!(
-                    "a hook references plugin '{hook_ref}', which resolves to plugin '{}' of kind \
-                     '{}', not a `hook` plugin",
-                    p.manifest.name, p.manifest.kind
-                ));
-            }
-            None => {
-                return Err(match registry.unresolved_reason(hook_ref) {
-                    Some(s) => format!(
-                        "a hook references plugin '{hook_ref}', matching plugin '{}' ({}) but it \
-                         was not loaded: {}",
-                        s.manifest.name, s.file, s.reason
-                    ),
-                    None => format!(
-                        "no plugin matching the hook reference '{hook_ref}' is installed in '{}' \
-                         (plugins ARE enabled; loadable: [{}]). Two things to check: is the plugin \
-                         subsystem enabled? (it is) — and is the signed `kind: hook` tarball \
-                         actually IN the folder? Add it to plugins.fetch or drop the signed tarball \
-                         in the directory, or remove the hook.",
-                        plugins_cfg.dir,
-                        registry
-                            .loadable()
-                            .iter()
-                            .map(|p| p.manifest.name.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ),
-                });
-            }
-        }
+        require_plugin(
+            &registry,
+            &plugins_cfg.dir,
+            hook_ref,
+            PluginRef {
+                kind: "hook",
+                names: format!("a hook references plugin '{hook_ref}', which"),
+                matched: format!("a hook references plugin '{hook_ref}', matching"),
+                missing: format!("no plugin matching the hook reference '{hook_ref}'"),
+                must_be: "a `hook` plugin",
+                label: "`kind: hook` ",
+                remedy: "remove the hook",
+            },
+        )?;
     }
 
     // 6b. Every `identity-providers:` DEFINITION's non-built-in `module:` must resolve to a loadable
@@ -434,56 +477,15 @@ pub fn plugins_preflight(
         }
     }
 
-    // 7. PLUGIN HTTP ROUTE COLLISION CHECK — MANIFEST-LEVEL, nothing dlopened. Walk every
-    // loadable export/hook plugin's DECLARED routes in the SAME deterministic scan order the registry
-    // produced, namespace-confine each, and fail LOUD naming the owning plugin on the first
-    // {path, method} collision — e.g. `plugin "datadog" cannot register GET /metrics — already
-    // registered by "prometheus"`. The IDENTICAL check backs boot and `--validate` (both call this
-    // preflight), and the SAME confinement + first-to-claim logic backs the live table built at App
-    // construction (`plugin_routes::build_route_table`), so the manifest check and what actually mounts
-    // cannot diverge. Route declarations are read straight from each signed manifest; a plugin that
-    // declares none contributes nothing (today's manifests carry no routes, so the set is empty until
-    // the export/hook route-manifest field lands — the wiring is here so that is a data change, not a
-    // control-flow one).
-    let route_owners: Vec<(String, crate::plugin_routes::RouteKind)> = registry
-        .loadable()
-        .iter()
-        .filter_map(|p| match p.manifest.kind.as_str() {
-            "export" => Some((
-                p.manifest.name.clone(),
-                crate::plugin_routes::RouteKind::Export,
-            )),
-            "hook" => Some((
-                p.manifest.name.clone(),
-                crate::plugin_routes::RouteKind::Hook,
-            )),
-            _ => None,
-        })
-        .collect();
-    let mut route_decls: Vec<(
-        String,
-        crate::plugin_routes::RouteKind,
-        busbar_plugin_loader::Route,
-    )> = route_owners
-        .into_iter()
-        .flat_map(|(name, kind)| {
-            // A plugin's DECLARED routes are read straight from its signed manifest. The manifest
-            // route field is not yet defined, so this yields nothing today; when it lands, map each
-            // declared route to `(name, kind, route)` HERE — the confinement + collision logic is
-            // already wired and tested.
-            Vec::<busbar_plugin_loader::Route>::new()
-                .into_iter()
-                .map(move |r| (name.clone(), kind, r))
-        })
-        .collect();
-    // The BUILT-IN exporters (`crate::export`) also claim routes (the `prometheus` exporter's
-    // `GET /metrics`). Prepend them in the SAME collision set so a loaded third-party export/hook
-    // plugin that tries to claim a path a built-in already owns fails LOUD at `--validate`/boot, e.g.
-    // `plugin "datadog" cannot register GET /metrics — already registered by "prometheus"`.
-    let mut built_in = crate::export::route_owners(export_cfg);
-    built_in.append(&mut route_decls);
-    let route_decls = built_in;
-    crate::plugin_routes::preflight_route_collisions(&route_decls)
+    // 7. PLUGIN HTTP ROUTE COLLISION CHECK. Every route the export: block's sinks declare — the
+    // built-in `prometheus` exporter's `GET /metrics` and every export-axis sink opened at boot
+    // (`crate::export::plugin::open`, which runs before the first app is built) — namespace-confined
+    // and collision-checked by the SAME `build_route_table` the live table is built with, so a sink
+    // claiming a path another already owns fails LOUD here, naming both: e.g. `plugin "datadog"
+    // cannot register GET /metrics — already registered by "prometheus"`. The manifest-only
+    // mirror this replaced read routes from a signed-manifest field that was never defined, so it
+    // checked the built-in set alone and could not collide.
+    crate::plugin_routes::build_route_table(crate::export::route_decls(export_cfg))
         .map_err(|e| format!("plugin route registration conflict: {e}"))?;
 
     Ok(registry)
@@ -651,7 +653,7 @@ pub(crate) fn validate_secret_module(
     registry: &busbar_plugin_loader::PluginRegistry,
     module: &str,
 ) -> Result<String, String> {
-    if module == config::secret::SECRET_MODULE_ENV || module == config::secret::SECRET_MODULE_FILE {
+    if builtin_secret(module).is_some() {
         return Err(format!(
             "secrets.{module}: '{module}' is a built-in secret resolver, not a plugin; it takes no \
              module-level configuration. Remove this `secrets:` entry (reference it inline as \
@@ -781,8 +783,7 @@ pub(crate) fn validate_secret_refs(
     cfg: &config::RootCfg,
 ) -> Result<(), String> {
     for (what, r) in config_validate::secret_refs(cfg) {
-        if r.module == config::secret::SECRET_MODULE_ENV
-            || r.module == config::secret::SECRET_MODULE_FILE
+        if builtin_secret(&r.module).is_some()
             // `none` names no module at all — it declares the ABSENCE of a credential — so there is
             // nothing here for the registry to resolve, and it must never be looked up as though a
             // `kind: secret` plugin called `none` could back it. WHERE it is permitted is
@@ -837,9 +838,7 @@ pub(crate) fn validate_secret_refs(
 pub fn validate_builtin_secrets_resolve(cfg: &config::RootCfg) -> Result<(), String> {
     let builtins = config::secret::SecretResolver::builtins_only();
     for (what, r) in config_validate::boot_resolved_secret_refs(cfg) {
-        if r.module != config::secret::SECRET_MODULE_ENV
-            && r.module != config::secret::SECRET_MODULE_FILE
-        {
+        if builtin_secret(&r.module).is_none() {
             // `none` is a declared ABSENCE, not a source: there is nothing to resolve and nothing
             // that can fail. Every other non-built-in module is plugin-backed — the plugin may not
             // be loadable here, and pre-flight covers it.

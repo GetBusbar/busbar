@@ -321,18 +321,21 @@ where
                                     // THE FORK. A tool this node serves is executed in-process below
                                     // and the client never authors its result — the moat, unchanged.
                                     // A tool it does not serve has only one possible answerer, so
-                                    // nothing is executed here: the call's reply leg is the wait the
-                                    // root entered when it planned the leg, and the answer comes back
-                                    // up the client's own uplink.
-                                    let client_serves =
-                                        self.governed.is_some() && !self.tools.serves(&e.name);
-                                    if !client_serves {
-                                        to_exec.push((
+                                    // nothing is executed here: the call's reply leg is a wait, and
+                                    // THIS is where that leg is planned — so it is entered in the
+                                    // node's table here, and the answer comes back up the client's
+                                    // own uplink. A leg the table cannot enter has no answerer; its
+                                    // reply is refused like any other that names nothing open.
+                                    match &self.governed {
+                                        Some(g) if !self.tools.serves(&e.name) => {
+                                            g.calls.planned(g.session, &e.call_id, now_ms());
+                                        }
+                                        _ => to_exec.push((
                                             call_ref,
                                             e.call_id.clone(),
                                             e.name.clone(),
                                             e.args.clone(),
-                                        ));
+                                        )),
                                     }
                                 }
                             }

@@ -8,10 +8,13 @@
 //! rather than re-derived per unit. Key material never lives in this crate's own state as bytes a
 //! caller can read: [`busbar_contract::TransportKeyHandle`] is opaque, so this crate keeps a
 //! slot-keyed registry of already-built `rustls` configs and looks one up by the handle's slot. The
-//! transport-key unit is what fills that registry, through
-//! [`busbar_unit_transport_key::TlsConfigSink`], at the moment it resolves the material and writes
-//! the `Access` entry the design requires — so a production listener has a key for the same reason
-//! a test one does, and nothing in this crate ever resolves a `SecretRef` or sees a byte of one.
+//! kernel side fills that registry through the contract's [`TransportConfigSink`] — an opaque
+//! [`TransportConfigHandle`] per slot and role, #40(b) — and, until the provisioning moves
+//! kernel-side, the transport-key unit fills it through
+//! [`busbar_unit_transport_key::TlsConfigSink`]; both land in the same slot, at the moment the
+//! material is resolved and the `Access` entry the design requires is written — so a production
+//! listener has a key for the same reason a test one does, and nothing in this crate ever resolves
+//! a `SecretRef` or sees a byte of one.
 //!
 //! ## Composition
 //!
@@ -38,6 +41,7 @@ use busbar_contract::transport::wire::Conn;
 use busbar_contract::transport::wire::ConnHandle;
 use busbar_contract::transport::wire::ListenerHandle;
 use busbar_contract::transport::wire::TransportError;
+use busbar_contract::transport::{ConfigRole, TransportConfigHandle, TransportConfigSink};
 use tokio::io::{AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex as AsyncMutex;
@@ -223,11 +227,13 @@ impl TlsTransport {
         self
     }
 
-    /// Register the server-side rustls config a [`TransportKeyHandle`]'s slot resolves to.
+    /// Register the server-side rustls config a
+    /// [`TransportKeyHandle`](busbar_contract::TransportKeyHandle)'s slot resolves to.
     ///
-    /// The transport-key unit is what calls this, through [`busbar_unit_transport_key::TlsConfigSink`],
-    /// at the moment it resolves the material and journals the access. Nothing here reads a secret;
-    /// this end of the seam only ever sees an already-built config and a slot number.
+    /// The kernel side reaches this through [`TransportConfigSink`], and the transport-key unit
+    /// through [`busbar_unit_transport_key::TlsConfigSink`], at the moment the material is resolved
+    /// and the access journaled. Nothing here reads a secret; this end of the seam only ever sees an
+    /// already-built config and a slot number.
     pub fn register_server_config(&self, slot: u64, cfg: Arc<rustls::ServerConfig>) {
         self.server_configs
             .lock()
@@ -235,7 +241,8 @@ impl TlsTransport {
             .insert(slot, cfg);
     }
 
-    /// Register the client-side rustls config a [`TransportKeyHandle`]'s slot resolves to.
+    /// Register the client-side rustls config a
+    /// [`TransportKeyHandle`](busbar_contract::TransportKeyHandle)'s slot resolves to.
     pub fn register_client_config(&self, slot: u64, cfg: Arc<rustls::ClientConfig>) {
         self.client_configs
             .lock()
@@ -393,6 +400,28 @@ impl TlsTransport {
             io::ErrorKind::InvalidData => TransportError::Framing,
             io::ErrorKind::UnexpectedEof => TransportError::Reset,
             _ => Self::map_io_err(e),
+        }
+    }
+}
+
+/// The contract's seam (#40(b)): the kernel side hands over an OPAQUE handle per slot and role, and
+/// this end uses it as the `rustls` config it was built as. A [`ConfigRole::Listen`] handle carries
+/// a [`rustls::ServerConfig`], a [`ConfigRole::Dial`] one a [`rustls::ClientConfig`]; a handle built
+/// as anything else registers nothing, so the slot stays empty and `listen`/`dial` refuse it exactly
+/// as they refuse a slot nobody provisioned.
+impl TransportConfigSink for TlsTransport {
+    fn register_config(&self, handle: TransportConfigHandle) {
+        match handle.role() {
+            ConfigRole::Listen => {
+                if let Some(cfg) = handle.config::<rustls::ServerConfig>() {
+                    TlsTransport::register_server_config(self, handle.slot(), cfg);
+                }
+            }
+            ConfigRole::Dial => {
+                if let Some(cfg) = handle.config::<rustls::ClientConfig>() {
+                    TlsTransport::register_client_config(self, handle.slot(), cfg);
+                }
+            }
         }
     }
 }

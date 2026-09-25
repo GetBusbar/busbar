@@ -1124,7 +1124,7 @@ fn the_envelope_encodes_as_an_http_message() {
             &[
                 ("method", b"POST".as_slice()),
                 ("path", b"/v1/messages".as_slice()),
-                ("authorization", b"Bearer substituted".as_slice()),
+                ("authorization", b"Token substituted".as_slice()),
             ],
             b"{\"model\":\"m\"}",
             &arena,
@@ -1136,7 +1136,7 @@ fn the_envelope_encodes_as_an_http_message() {
         text.starts_with("POST /v1/messages HTTP/1.1\r\n"),
         "the method and the path are the request line, not headers: {text:?}"
     );
-    assert!(text.contains("authorization: Bearer substituted\r\n"));
+    assert!(text.contains("authorization: Token substituted\r\n"));
     assert!(
         text.contains("content-length: 13\r\n"),
         "the length is a fact about the bytes below, stated by the transport"
@@ -1164,8 +1164,8 @@ fn a_field_cannot_smuggle_a_line_ending_into_the_header_block() {
     let transport = HttpTransport::new(ClientSettings::default());
     let arena = TestPlaneAlloc;
     let poisoned: &[(&str, &[u8])] = &[
-        ("x-note", b"ok\r\nauthorization: bearer stolen".as_slice()),
-        ("x-note", b"ok\nauthorization: bearer stolen".as_slice()),
+        ("x-note", b"ok\r\nauthorization: token stolen".as_slice()),
+        ("x-note", b"ok\nauthorization: token stolen".as_slice()),
         ("x-note", b"ok\rmore".as_slice()),
         ("x-note", b"ok\0more".as_slice()),
         ("bad\r\nname", b"ok".as_slice()),
@@ -1416,7 +1416,7 @@ async fn a_streamed_upstream_yields_frames_before_it_closes() {
     for _ in 0..2 {
         let (_s, body) = tokio::time::timeout(std::time::Duration::from_secs(2), frames.next())
             .await
-            .expect("a body frame arrives while the upstream is still streaming")
+            .expect("a body frame arrives while the upstream is still sending")
             .unwrap()
             .unwrap();
         assert_eq!(body.bytes.as_slice(), b"data: tick\n\n");
@@ -2343,7 +2343,7 @@ fn build_egress_trust_all_none() -> EgressTrust {
 /// A hand-built DER certificate whose SubjectPublicKeyInfo is the seventh TBS member: the walk lands
 /// on exactly it, header and all, so a pin taken over the returned bytes is a pin over the SPKI.
 #[test]
-fn the_spki_walk_lands_on_the_key() {
+fn the_key_info_walk_lands_on_the_key() {
     fn tlv(tag: u8, content: &[u8]) -> Vec<u8> {
         assert!(content.len() < 0x80, "short-form only in this fixture");
         let mut v = vec![tag, content.len() as u8];
@@ -2355,9 +2355,9 @@ fn the_spki_walk_lands_on_the_key() {
     let issuer = tlv(0x30, &[]);
     let validity = tlv(0x30, &[]);
     let subject = tlv(0x30, &[]);
-    let spki = tlv(0x30, &[0xAA, 0xBB, 0xCC]);
+    let key_info = tlv(0x30, &[0xAA, 0xBB, 0xCC]);
     let mut tbs_contents = Vec::new();
-    for part in [&serial, &sig, &issuer, &validity, &subject, &spki] {
+    for part in [&serial, &sig, &issuer, &validity, &subject, &key_info] {
         tbs_contents.extend_from_slice(part);
     }
     let tbs = tlv(0x30, &tbs_contents);
@@ -2372,14 +2372,14 @@ fn the_spki_walk_lands_on_the_key() {
     let found = subject_public_key_info(&cert).expect("the walk reaches the key");
     assert_eq!(
         found,
-        spki.as_slice(),
-        "the whole SPKI element, header included"
+        key_info.as_slice(),
+        "the whole key-info element, header included"
     );
 }
 
 /// Non-DER and truncated inputs produce no pin rather than a wrong one.
 #[test]
-fn the_spki_walk_refuses_what_is_not_a_certificate() {
+fn the_key_info_walk_refuses_what_is_not_a_certificate() {
     assert!(subject_public_key_info(&[]).is_none());
     assert!(subject_public_key_info(&[0x30, 0x80]).is_none()); // indefinite length is BER, not DER
     assert!(subject_public_key_info(&[0x02, 0x01, 0x01]).is_none()); // an INTEGER, not a certificate

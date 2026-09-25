@@ -17,17 +17,17 @@
 //!   registered; absent ⇒ no recorder, `/metrics` unmounted, every emit site a true no-op.
 //! - [`webhook`] — PUSH per-request. The `request-log-webhook` + `generic-webhook` sinks POST the
 //!   built request-log line behind the relocated SSRF guard + bounded `AdmissionGate` delivery.
-//! - [`file`] — PUSH per-request. The `request-log-file` sink appends the line as JSONL.
+//!
+//! Every other module — `request-log-file` among them — is a row of the EXPORT AXIS ([`plugin`]).
 
-pub(crate) mod file;
+pub mod plugin;
 pub(crate) mod projection;
 pub mod prometheus;
 pub(crate) mod webhook;
 
 use crate::config::ExportCfg;
 use crate::export::projection::ProjectedRecord;
-use crate::plugin_routes::{RouteDecl, RouteKind};
-use busbar_plugin_loader::Route;
+use crate::plugin_routes::RouteDecl;
 use busbar_plugin_loader::{ExportField, ExportStream};
 use serde_json::Value;
 use std::sync::Arc;
@@ -56,14 +56,8 @@ use std::sync::Arc;
 /// for the route itself — genuinely hot-mounting one is a router rebuild, not done here — but it is no
 /// longer a SILENT one.
 pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
-    prometheus::route_decl(cfg).into_iter().collect()
-}
-
-/// The manifest-level `(owner, kind, route)` mirror of [`route_decls`] for the `--validate`/boot
-/// collision preflight — WITHOUT the live dispatchers, so a loaded third-party export plugin claiming
-/// a path a built-in exporter already owns (e.g. `GET /metrics`) fails loudly before boot.
-pub(crate) fn route_owners(cfg: &ExportCfg) -> Vec<(String, RouteKind, Route)> {
-    prometheus::route_owner(cfg).into_iter().collect()
+    let built_in = prometheus::route_decl(cfg).into_iter();
+    built_in.chain(plugin::route_decls(cfg)).collect()
 }
 
 /// Configure every PUSH request-log exporter from the resolved `export:` block. Called once at
@@ -73,7 +67,12 @@ pub(crate) fn route_owners(cfg: &ExportCfg) -> Vec<(String, RouteKind, Route)> {
 /// `webhook::CLIENT`) — nothing here touches the LLM egress pool.
 pub fn configure(cfg: &ExportCfg) {
     webhook::configure(cfg);
-    file::configure(cfg);
+}
+
+/// Whether the kernel serves `module` itself — a module an export-axis row may not spell, since
+/// every instance naming it would reach the built-in.
+pub fn built_in(module: &str) -> bool {
+    projection::module_streams(module).is_some()
 }
 
 /// The raw per-request facts the `logs` stream is built FROM — everything core knows at
@@ -94,20 +93,13 @@ pub(crate) struct RequestLogFacts<'a> {
 /// it — so an ungranted field is never serialized and never crosses the ABI. There is no
 /// `json!` literal here on purpose: a literal plus a filter is a step someone can forget, and its
 /// failure mode is silent over-disclosure.
-pub(crate) fn build_request_log(
-    projection: projection::Projection,
-    ts: u64,
-    ingress_protocol: &str,
-    pool: &str,
-    outcome: &str,
-    latency_ms: u64,
-) -> Value {
+pub(crate) fn build_request_log(projection: projection::Projection, f: &RequestLogFacts) -> Value {
     let mut rec = ProjectedRecord::new(projection, ExportStream::Logs);
-    rec.set(ExportField::Ts, ts)
-        .set(ExportField::IngressProtocol, ingress_protocol)
-        .set(ExportField::Pool, pool)
-        .set(ExportField::Outcome, outcome)
-        .set(ExportField::LatencyMs, latency_ms);
+    rec.set(ExportField::Ts, f.ts)
+        .set(ExportField::IngressProtocol, f.ingress_protocol)
+        .set(ExportField::Pool, f.pool)
+        .set(ExportField::Outcome, f.outcome)
+        .set(ExportField::LatencyMs, f.latency_ms);
     rec.finish()
 }
 
@@ -133,15 +125,7 @@ impl<'a> PayloadCache<'a> {
         if let Some((_, v)) = self.built.iter().find(|(p, _)| *p == projection) {
             return v.clone();
         }
-        let f = self.facts;
-        let v = Arc::new(build_request_log(
-            projection,
-            f.ts,
-            f.ingress_protocol,
-            f.pool,
-            f.outcome,
-            f.latency_ms,
-        ));
+        let v = Arc::new(build_request_log(projection, self.facts));
         self.built.push((projection, v.clone()));
         v
     }
@@ -163,6 +147,6 @@ pub(crate) fn test_logs_projection() -> projection::Projection {
 /// [`PayloadCache`]).
 pub(crate) fn deliver_request_log(facts: &RequestLogFacts<'_>) {
     let mut cache = PayloadCache::new(facts);
-    file::deliver(&mut cache);
     webhook::deliver_logs(&mut cache);
+    plugin::deliver_logs(&mut cache);
 }

@@ -11,7 +11,7 @@
 //! x86_64 and aarch64 alike; every field here is a fixed-width scalar or pointer), so ONE golden
 //! covers them. Re-seed intentionally with `BUSBAR_UPDATE_GOLDEN=1 cargo test -p busbar-plugin`.
 
-use busbar_plugin::hot::decl::{BuildCtx, PlaneDecl};
+use busbar_plugin::hot::decl::{BuildCtx, DeclBillableClass, DeclStr, PlaneDecl};
 use busbar_plugin::hot::host::PlaneHostVtable;
 use busbar_plugin::hot::workitem::{EmitHandle, InboundHandle, WorkItem};
 use busbar_plugin::hot::*;
@@ -448,7 +448,23 @@ fn compute_layout() -> String {
     // The WorkItem keystone + its tagged handles.
     record!(s, InboundHandle, [kind, _reserved, id, ptr, len]);
     record!(s, EmitHandle, [kind, _reserved, id]);
-    record!(s, WorkItem, [size, version, _reserved, inbound, emit]);
+    record!(
+        s,
+        WorkItem,
+        [
+            size,
+            version,
+            _reserved,
+            inbound,
+            emit,
+            // The dispatch's own host and reply (minor 23).
+            host,
+            host_ctx,
+            reply_ptr,
+            reply_cap,
+            reply_written
+        ]
+    );
 
     // The two vtable headers (preamble + sized header), then the slots themselves. (Slot offsets do
     // NOT "follow deterministically" from the header — every slot is one pointer wide, so the
@@ -526,7 +542,10 @@ fn compute_layout() -> String {
             config_ptr,
             config_len,
             resolved_refs_ptr,
-            resolved_refs_len
+            resolved_refs_len,
+            // The deployment's public URL (minor 23).
+            public_url_ptr,
+            public_url_len
         ]
     );
     record!(
@@ -554,9 +573,30 @@ fn compute_layout() -> String {
             start,
             admin_routes,
             openapi,
-            dispatch
+            dispatch,
+            // The declaration tail (minor 22).
+            fallback,
+            _reserved2,
+            subject_noun,
+            admin_noun,
+            audit_kind,
+            signing_domain,
+            signing_kid_prefix,
+            scope_kinds_ptr,
+            scope_kinds_len,
+            owned_sections_ptr,
+            owned_sections_len,
+            billable_classes_ptr,
+            billable_classes_len,
+            fee_units_ptr,
+            fee_units_len,
+            // The plane's door (minor 23).
+            claims,
+            admission
         ]
     );
+    record!(s, DeclStr, [ptr, len]);
+    record!(s, DeclBillableClass, [class, family]);
 
     s
 }

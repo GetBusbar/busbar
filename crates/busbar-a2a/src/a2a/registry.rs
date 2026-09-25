@@ -259,7 +259,7 @@ pub(crate) struct TaskShape {
     pub(crate) skill: Option<String>,
     /// Protocol features the task REQUIRES (`streaming`, `pushNotifications`, …). An agent that does
     /// not declare a required feature cannot accept this shape of task.
-    pub(crate) requires_streaming: bool,
+    pub(crate) requires_stream: bool,
     pub(crate) requires_push_notifications: bool,
     /// MIME modes the caller will SEND and the modes it can ACCEPT back.
     pub(crate) input_modes: Vec<String>,
@@ -405,7 +405,7 @@ impl CatalogueItem for AgentRegistration {
 /// hazard. Same verb, unrelated subjects; the `structure-lint` gate carries that as a signed
 /// DISTINCT row rather than leaving it as duplication nobody noticed.
 fn judge(card: &AgentCard, shape: &TaskShape) -> Result<Option<String>, Excluded> {
-    if shape.requires_streaming && !card.capabilities.streaming {
+    if shape.requires_stream && !card.capabilities.is_stream {
         return Err(Excluded::CapabilityNotDeclared("streaming"));
     }
     if shape.requires_push_notifications && !card.capabilities.push_notifications {

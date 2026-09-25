@@ -62,7 +62,8 @@
 // invisible, including in the modules a request now goes through; per-file, a new gap in a mounted
 // module is a warning again, and the file that still has one has to say why.
 
-use busbar_kernel::plane::registry::{BillableClass, PER_REQUEST};
+use busbar_contract::plane::{BillableClass, PER_REQUEST};
+use busbar_kernel::plane::registry::PlaneHooks;
 
 /// THE A2A PLANE'S VOCABULARY DECLARATION, beside the code it describes. Folded into
 /// `plane::registry::BUILTIN_PLANE_DECLS`; every field replaces one arm of a `Plane::A2a` `match`.
@@ -71,8 +72,8 @@ use busbar_kernel::plane::registry::{BillableClass, PER_REQUEST};
 /// the JSON-RPC envelope (which a door refusal is shaped in), HTTP+JSON, and the gRPC service.
 /// `serve::servable_bindings` reads this list to decide what a served card may advertise, and its
 /// length (> 1) is what earns this plane a superset IR and denies it a `sole_wire_format`.
-pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
-    busbar_kernel::plane::registry::PlaneDecl {
+pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
+    busbar_contract::plane::PlaneDeclaration {
         // THE KEY IS THE CODEC'S OWN, named once on the pure side of the split so this declaration
         // and the contract plane in `busbar-plane-a2a` cannot drift apart.
         key: busbar_plane_a2a::PLANE_KEY,
@@ -83,97 +84,8 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         subject_noun: "fronted agent",
         admin_noun: "agent",
         audit_kind: "a2a_agent",
-        wire_format_names: || {
-            &[
-                busbar_kernel::plane::WIRE_JSONRPC,
-                busbar_kernel::plane::WIRE_HTTP_JSON,
-                busbar_kernel::plane::WIRE_GRPC,
-            ]
-        },
-        // THE A2A DOOR — TWO claims, and only when the plane has a RECEIVING side. `/a2a` (canonical,
-        // JSON-RPC, the dialect a door refusal is shaped in) and the gRPC service
-        // `/lf.a2a.v1.A2AService`, whose path the vendored `.proto` dictates and a gRPC client cannot
-        // be pointed off of — so it is claimed here or it is a path where no token's `aud` is
-        // checked. Both claims are gated on `admission().is_some()`: a delegation-only deployment
-        // (no `public_url`) fronts nothing, mounts nothing, and binds no audience.
-        claims: |slot| {
-            let p = slot
-                .downcast_ref::<crate::a2a::plane::A2aPlane>()
-                .expect("the a2a plane's dispatch slot is an A2aPlane");
-            if p.admission().is_some() {
-                vec![
-                    (
-                        crate::a2a::serve::MOUNT_PATH.to_string(),
-                        busbar_kernel::plane::WIRE_JSONRPC,
-                    ),
-                    (
-                        crate::a2a::serve::GRPC_MOUNT_PATH.to_string(),
-                        busbar_kernel::plane::WIRE_GRPC,
-                    ),
-                ]
-            } else {
-                Vec::new()
-            }
-        },
-        admission: |slot| {
-            let p = slot
-                .downcast_ref::<crate::a2a::plane::A2aPlane>()
-                .expect("the a2a plane's dispatch slot is an A2aPlane");
-            p.admission()
-        },
-        // THE A2A SLOT: lowered from `agent_defs:`/`public_url` through the SAME `from_config` the
-        // dispatch table and the re-verification job's registry are lowered from, so the object this
-        // seam erases and the object every other A2A consumer reads are one lowering, not two. `None`
-        // when no agent is configured — the absence `crate::a2a::runtime` reports, and NOT the same
-        // condition as `admission().is_none()` (a delegation-only plane has a slot but claims/admits
-        // nothing).
-        build: |ctx| {
-            // The registry crosses `BuildCtx` type-erased; downcast it back HERE, inside the plane.
-            let agent_defs = ctx
-                .agent_defs
-                .downcast_ref::<crate::a2a::config::AgentsCfg>()
-                .expect(
-                    "BuildCtx::agent_defs carries an AgentsCfg when the A2A plane is compiled in",
-                );
-            // CARRY the verify-on-call gate and the boot-resolved card transports off the PRIOR
-            // generation's plane (the same accumulated coordination the MCP runtime carries via
-            // `build_runtime`), so a config apply preserves the coalescing epochs and the boot-set
-            // transports. Fresh defaults on the first build (`ctx.prior` is `None`, or fronted no
-            // agents last generation).
-            let (verify, cards) = crate::a2a::carried_a2a_gates(ctx.prior);
-            crate::a2a::plane::A2aPlane::from_config_carrying(
-                agent_defs,
-                ctx.public_url,
-                verify,
-                cards,
-            )
-            .map(|p| p as std::sync::Arc<dyn std::any::Any + Send + Sync>)
-        },
-        // S7: A2A contributes its data routes through the NEUTRAL `routes` seam (like MCP). Its
-        // handlers ({well_known_card, card, agent_rpc, plane_rpc, push_notification, grpc::serve,
-        // metadata_route} + the REST family) are neutral async fns over `PlaneReqCtx`, no longer
-        // extracting `axum::State<Arc<AppHandle>>`.
-        routes: Some(crate::a2a::receive::a2a_routes),
-        admin_routes: Some(admin_routes),
-        openapi: Some(openapi_fragment),
-        config_validate: Some(a2a_config_validate),
         card_signing_domain: Some(crate::a2a::sign::CARD_SIGNING_DOMAIN),
         card_kid_prefix: Some(crate::a2a::sign::CARD_KID_PREFIX),
-        named_def_list: Some(crate::a2a::admin_view::list),
-        named_def_get: Some(crate::a2a::admin_view::get),
-        registry_contains: Some(crate::a2a::admin_view::contains),
-        reresolve_gates: Some(crate::a2a::admin_view::reresolve_gates),
-        #[cfg(feature = "openapi-schema")]
-        openapi_schemas: Some(crate::a2a::admin_view::openapi_schemas),
-        hydrate: Some(a2a_hydrate),
-        start: Some(a2a_start),
-        parse_section: Some(a2a_parse_section),
-        parse_endpoint: None,
-        lower_endpoint: None,
-        build_runtime: None,
-        viewer: None,
-        retain_verify_gates: Some(a2a_retain_verify_gates),
-        default_section: Some(a2a_default_section),
         // config-seam stage 1: the registry starts EMPTY — nothing has moved out of core yet.
         owned_config_sections: &[],
         // The class the plane crate declares (`busbar_plane_a2a::meta`), by its own symbol.
@@ -184,13 +96,104 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         // The fee unit this plane counts: one per hop, admitted under its plane-qualified pool. It
         // opens no session account, so `agents.fees.per_session` would charge nothing — refused.
         fee_units: &[PER_REQUEST],
-        resolve_provider: None,
-        // NOTHING TO CARRY ACROSS A SWAP. The A2A plane's runtime object (`A2aPlane`) is rebuilt from
-        // `agents:`/`public_url` on every apply, and its durable task table is restored at boot
-        // through `hydrate`, not reconciled here — so there is no engine-owned live object that
-        // outlives an apply for this seam to carry.
-        on_swap: None,
     };
+
+/// THE PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed over BESIDE
+/// [`PLANE_DECLARATION`] and joined to it kernel-side (`PlaneDecl::assemble`). The registration item
+/// is the declaration, which names no kernel type; this table is typed by kernel seams and stays on
+/// the kernel side of every fold.
+pub const PLANE_HOOKS: PlaneHooks = PlaneHooks {
+    wire_format_names: || {
+        &[
+            busbar_kernel::plane::WIRE_JSONRPC,
+            busbar_kernel::plane::WIRE_HTTP_JSON,
+            busbar_kernel::plane::WIRE_GRPC,
+        ]
+    },
+    // THE A2A DOOR — TWO claims, and only when the plane has a RECEIVING side. `/a2a` (canonical,
+    // JSON-RPC, the dialect a door refusal is shaped in) and the gRPC service
+    // `/lf.a2a.v1.A2AService`, whose path the vendored `.proto` dictates and a gRPC client cannot
+    // be pointed off of — so it is claimed here or it is a path where no token's `aud` is
+    // checked. Both claims are gated on `admission().is_some()`: a delegation-only deployment
+    // (no `public_url`) fronts nothing, mounts nothing, and binds no audience.
+    claims: |slot| {
+        let p = slot
+            .downcast_ref::<crate::a2a::plane::A2aPlane>()
+            .expect("the a2a plane's dispatch slot is an A2aPlane");
+        if p.admission().is_some() {
+            vec![
+                (
+                    crate::a2a::serve::MOUNT_PATH.to_string(),
+                    busbar_kernel::plane::WIRE_JSONRPC,
+                ),
+                (
+                    crate::a2a::serve::GRPC_MOUNT_PATH.to_string(),
+                    busbar_kernel::plane::WIRE_GRPC,
+                ),
+            ]
+        } else {
+            Vec::new()
+        }
+    },
+    admission: |slot| {
+        let p = slot
+            .downcast_ref::<crate::a2a::plane::A2aPlane>()
+            .expect("the a2a plane's dispatch slot is an A2aPlane");
+        p.admission()
+    },
+    // THE A2A SLOT: lowered from `agent_defs:`/`public_url` through the SAME `from_config` the
+    // dispatch table and the re-verification job's registry are lowered from, so the object this
+    // seam erases and the object every other A2A consumer reads are one lowering, not two. `None`
+    // when no agent is configured — the absence `crate::a2a::runtime` reports, and NOT the same
+    // condition as `admission().is_none()` (a delegation-only plane has a slot but claims/admits
+    // nothing).
+    build: |ctx| {
+        // The registry crosses `BuildCtx` type-erased; downcast it back HERE, inside the plane.
+        let agent_defs = ctx
+            .agent_defs
+            .downcast_ref::<crate::a2a::config::AgentsCfg>()
+            .expect("BuildCtx::agent_defs carries an AgentsCfg when the A2A plane is compiled in");
+        // CARRY the verify-on-call gate and the boot-resolved card transports off the PRIOR
+        // generation's plane (the same accumulated coordination the MCP runtime carries via
+        // `build_runtime`), so a config apply preserves the coalescing epochs and the boot-set
+        // transports. Fresh defaults on the first build (`ctx.prior` is `None`, or fronted no
+        // agents last generation).
+        let (verify, cards) = crate::a2a::carried_a2a_gates(ctx.prior);
+        crate::a2a::plane::A2aPlane::from_config_carrying(agent_defs, ctx.public_url, verify, cards)
+            .map(|p| p as std::sync::Arc<dyn std::any::Any + Send + Sync>)
+    },
+    // S7: A2A contributes its data routes through the NEUTRAL `routes` seam (like MCP). Its
+    // handlers ({well_known_card, card, agent_rpc, plane_rpc, push_notification, grpc::serve,
+    // metadata_route} + the REST family) are neutral async fns over `PlaneReqCtx`, no longer
+    // extracting `axum::State<Arc<AppHandle>>`.
+    routes: Some(crate::a2a::receive::a2a_routes),
+    admin_routes: Some(admin_routes),
+    openapi: Some(openapi_fragment),
+    config_validate: Some(a2a_config_validate),
+    named_def_list: Some(crate::a2a::admin_view::list),
+    named_def_get: Some(crate::a2a::admin_view::get),
+    registry_contains: Some(crate::a2a::admin_view::contains),
+    reresolve_gates: Some(crate::a2a::admin_view::reresolve_gates),
+    #[cfg(feature = "openapi-schema")]
+    openapi_schemas: Some(crate::a2a::admin_view::openapi_schemas),
+    #[cfg(not(feature = "openapi-schema"))]
+    openapi_schemas: None,
+    hydrate: Some(a2a_hydrate),
+    start: Some(a2a_start),
+    parse_section: Some(a2a_parse_section),
+    parse_endpoint: None,
+    lower_endpoint: None,
+    build_runtime: None,
+    viewer: None,
+    retain_verify_gates: Some(a2a_retain_verify_gates),
+    default_section: Some(a2a_default_section),
+    resolve_provider: None,
+    // NOTHING TO CARRY ACROSS A SWAP. The A2A plane's runtime object (`A2aPlane`) is rebuilt from
+    // `agents:`/`public_url` on every apply, and its durable task table is restored at boot
+    // through `hydrate`, not reconciled here — so there is no engine-owned live object that
+    // outlives an apply for this seam to carry.
+    on_swap: None,
+};
 
 /// VALIDATE ONE `agents:` NAMED-DEFINITION DOCUMENT — the A2A plane's half of
 /// [`busbar_kernel::plane::registry::PlaneDecl::config_validate`]. Parses the raw document into
@@ -251,7 +254,7 @@ fn a2a_retain_verify_gates(slots: &dyn busbar_kernel::plane_host::PlaneSlots) {
 pub(crate) fn runtime_off_slots(
     slots: &dyn busbar_kernel::plane_host::PlaneSlots,
 ) -> Option<&crate::a2a::plane::A2aPlane> {
-    slots.plane_slot(PLANE_DECL.key).map(|slot| {
+    slots.plane_slot(PLANE_DECLARATION.key).map(|slot| {
         slot.downcast_ref::<crate::a2a::plane::A2aPlane>()
             .expect("the a2a plane's dispatch slot is an A2aPlane")
     })
@@ -270,7 +273,7 @@ pub(crate) fn carried_a2a_gates(
     std::sync::Arc<std::sync::OnceLock<std::sync::Arc<crate::a2a::transport::LiveCardFetch>>>,
 ) {
     match prior
-        .and_then(|s| s.plane_slot(PLANE_DECL.key))
+        .and_then(|s| s.plane_slot(PLANE_DECLARATION.key))
         .and_then(|slot| slot.clone().downcast::<crate::a2a::plane::A2aPlane>().ok())
     {
         Some(plane) => (plane.verify_arc(), plane.cards_arc()),
@@ -287,7 +290,7 @@ pub(crate) fn carried_a2a_gates(
 /// `Arc<dyn Any>` slot and names no `crate::a2a` type. `None` exactly when `agents:` is not
 /// configured this generation (the plane contributed no slot — the same absence the deleted
 /// `App::a2a: None` used to encode). The downcast never fails: the a2a slot is always an `A2aPlane`
-/// (`PLANE_DECL::build`). The exact byte-analog of `crate::mcp::resource`; A2A carries ONE object,
+/// (`PLANE_HOOKS.build`). The exact byte-analog of `crate::mcp::resource`; A2A carries ONE object,
 /// so this single accessor is its whole runtime seam.
 ///
 /// TEST-ONLY: every production reader reaches the runtime through the neutral host seam
@@ -297,7 +300,7 @@ pub(crate) fn carried_a2a_gates(
 pub fn runtime(
     app: &dyn busbar_kernel::plane_host::PlaneSlots,
 ) -> Option<&crate::a2a::plane::A2aPlane> {
-    app.plane_slot(PLANE_DECL.key).map(|slot| {
+    app.plane_slot(PLANE_DECLARATION.key).map(|slot| {
         slot.downcast_ref::<crate::a2a::plane::A2aPlane>()
             .expect("the a2a plane's dispatch slot is an A2aPlane")
     })
@@ -317,7 +320,7 @@ pub fn runtime(
 pub(crate) fn runtime_arc(
     app: &dyn busbar_kernel::plane_host::PlaneSlots,
 ) -> Option<std::sync::Arc<crate::a2a::plane::A2aPlane>> {
-    app.plane_slot(PLANE_DECL.key).map(|slot| {
+    app.plane_slot(PLANE_DECLARATION.key).map(|slot| {
         slot.clone()
             .downcast::<crate::a2a::plane::A2aPlane>()
             .expect("the a2a plane's dispatch slot is an A2aPlane")
@@ -332,7 +335,7 @@ pub(crate) fn runtime_arc(
 pub(crate) fn runtime_arc_of(
     host: &std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
 ) -> Option<std::sync::Arc<crate::a2a::plane::A2aPlane>> {
-    host.plane_slot(PLANE_DECL.key).map(|slot| {
+    host.plane_slot(PLANE_DECLARATION.key).map(|slot| {
         slot.downcast::<crate::a2a::plane::A2aPlane>()
             .expect("the a2a plane's dispatch slot is an A2aPlane")
     })
@@ -614,9 +617,9 @@ pub(crate) mod words;
 // refresh timer drives the same `due` this one does. See the standing rule: unify the duplicate
 // before a second copy can drift from the first.
 pub(crate) use busbar_kernel::trust::reverify;
+pub(crate) mod key_info;
 pub mod serve;
 pub(crate) mod sign;
-pub(crate) mod spki;
 pub mod task;
 pub(crate) mod transport;
 pub mod verbs;

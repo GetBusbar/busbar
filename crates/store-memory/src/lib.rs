@@ -2,14 +2,14 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The DEFAULT `db` backend: an in-memory (RAM) store. Zero setup, no dependencies beyond the
-//! `busbar-api` contract — governance works out of the box. EPHEMERAL: every counter, key, and
+//! `busbar-contract` records contract — governance works out of the box. EPHEMERAL: every counter, key, and
 //! credential is lost on restart; configure a durable backend (e.g. `store-sqlite`/`store-postgres`)
 //! for persistence. Poison-recovering locks (the governance surface must never panic on a request).
 
-use busbar_api::{
+use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
-    PlaneRecord, PlaneSelector, Store, StoreError, StoreResult, UsageDelta, UsageLedger,
-    VirtualKey,
+    PlaneRecord, PlaneSelector, RecordStore as Store, RecordStoreError as StoreError,
+    RecordStoreResult as StoreResult, UsageDelta, UsageLedger, VirtualKey,
 };
 // The record half of the store protocol: the three verbs a `PlaneRecord` leg is run over, at the
 // contract's own spelling. `StoreError` is imported under a second name because the two protocols

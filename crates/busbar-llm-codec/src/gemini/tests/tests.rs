@@ -6358,6 +6358,7 @@ fn stream_anthropic_citation_projects_to_gemini_citation_metadata() {
     // emit the Anthropic `raw` verbatim — it has no Gemini uri/index keys — and must synthesize
     // a Gemini source from the neutral fields instead.
     let cit = crate::ir::IrCitation {
+        domain: None,
         kind: Some("web_search_result_location".to_string()),
         cited_text: None,
         title: Some("Doc Title".to_string()),

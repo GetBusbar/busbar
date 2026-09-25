@@ -28,5 +28,5 @@ busbar-secret-ref = { path = "../secret-ref" }
 # not in a comment either, because #40's dep-wall counts both. No cycle: `busbar-contract` depends
 # on no busbar crate.
 busbar-contract = { path = "../busbar-contract" }
-sha2 = { workspace = true }
-hex = { workspace = true }
+# `sha2`/`hex` LEFT with `sha256_hex` (DECISIONS #83, ARCHITECT P68-0 residue (b)): the digest now
+# lives in `busbar_contract::redacted` and is re-exported from `auth.rs` under its historical path.

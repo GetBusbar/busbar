@@ -1323,7 +1323,7 @@ impl Governance for RoutingGovernance {
 /// mutation.
 ///
 /// The posture is the part that matters. `operator: unset` with `dual_control: required` is the
-/// state a fleet is in before its ceremony has run, and under it the 17 money-governance verbs are
+/// state a fleet is in before its ceremony has run, and under it the money-governance verbs are
 /// refused outright. A read answers anyway — there is nothing about looking at a figure for a
 /// maker-checker step to interpose on — and the control below is one of those 17 being refused on
 /// the same executor, so the green is the views being exempt rather than the posture check being
@@ -1499,7 +1499,7 @@ fn an_unbound_integrator_serves_no_view_rather_than_an_empty_one() {
 /// it does not.
 ///
 /// The posture is the same one the ledger test uses, and for the same reason: `operator: unset`
-/// with `dual_control: required` refuses every one of the 17 money-governance verbs outright. A
+/// with `dual_control: required` refuses every one of the money-governance verbs outright. A
 /// chain read answers anyway — there is nothing about looking at a sealed head for a maker-checker
 /// step to interpose on — and the control below is one of those 17 being refused on the same
 /// executor, so the green is the reads being exempt rather than the posture check being unwired.
@@ -1741,7 +1741,7 @@ fn the_two_minting_verbs_are_refused_on_the_generic_dispatcher_rather_than_doubl
 /// The two 1.6.0 verbs the design binds as GETs are reads, and a read-only credential is what they
 /// ask for.
 ///
-/// `verify` and `plane_facts` are the two of the seventeen the architecture document binds as `GET`
+/// `verify` and `plane_facts` are the two new verbs the architecture document binds as `GET`
 /// — "GET for the two read-only verbs" — and everything that follows from a verb being a read
 /// follows for them: an operator holding a read-only admin credential is answered, and the
 /// maker-checker gate has no mutation of theirs to interpose on, so `required` posture answers them

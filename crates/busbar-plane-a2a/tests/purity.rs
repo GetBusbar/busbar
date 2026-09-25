@@ -136,9 +136,6 @@ fn the_plane_names_no_kernel_side_crate() {
         "busbar_kernel",
         "busbar_unit",
         "busbar_substrate",
-        "busbar_kernel",
-        "busbar_plane_llm",
-        "busbar_plane_mcp",
     ];
     let mut offenders = Vec::new();
     walk(&src_dir(), &mut |path, text| {
@@ -150,6 +147,13 @@ fn the_plane_names_no_kernel_side_crate() {
                 if line.contains(name) {
                     offenders.push(format!("{}:{}: {name}", path.display(), n + 1));
                 }
+            }
+            // No plane names a sibling plane crate — same broker law (DECISION #8) as the
+            // manifest-level check in `tests/invariance.rs`, asserted here from the source side.
+            // A prefix over the whole `busbar_plane_` family covers every sibling plane, present
+            // or future, rather than naming siblings one at a time.
+            if line.contains("busbar_plane_") {
+                offenders.push(format!("{}:{}: busbar_plane_", path.display(), n + 1));
             }
         }
     });
@@ -280,7 +284,7 @@ fn the_plane_names_no_money_and_no_decision() {
         "deny(",
         "credential_bytes",
         "secret_value",
-        "bearer_token",
+        "auth_token_raw",
     ];
     let mut offenders = Vec::new();
     walk(&src_dir(), &mut |path, text| {

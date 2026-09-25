@@ -255,11 +255,10 @@ const EXCLUDE_TESTS_MOD: &str = "/tests.rs";
 /// surviving file is as vacuous as none.
 const SCAN_FLOOR: usize = 18;
 
-/// The binary's DEDICATED money-unit files: the durable ledger, the reconciliation identity, the
-/// money-book seam and the money migration. Whole files whose every line is money path, so scanning
-/// them entire cannot flag a routing weight or a health score — those live in the plane files, which
-/// this gate does not scan. The card-build boundary in the binary is NOT here, on purpose (see the
-/// module header).
+/// The binary's DEDICATED money-unit files: the durable ledger, the reconciliation identity and
+/// the money migration. Whole files whose every line is money path, so scanning them entire cannot
+/// flag a routing weight or a health score — those live in the plane files, which this gate does
+/// not scan. The card-build boundary in the binary is NOT here, on purpose (see the module header).
 const BINARY_MONEY_FILES: &[&str] = &[
     // `847c22f98` split this file (structure-lint oversized) into `durability/mod.rs` (the seam,
     // the journal writers, the money-book impl) and `durability/replay.rs` (the book-rebuild
@@ -269,7 +268,6 @@ const BINARY_MONEY_FILES: &[&str] = &[
     "crates/busbar/src/root/durability/mod.rs",
     "crates/busbar/src/root/durability/replay.rs",
     "crates/busbar/src/root/ledger_identity.rs",
-    "crates/busbar/src/root/money_book.rs",
     "crates/busbar/src/root/migration.rs",
 ];
 

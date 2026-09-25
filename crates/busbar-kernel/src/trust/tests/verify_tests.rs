@@ -18,6 +18,9 @@ use std::time::Duration;
 use super::super::reverify::{Ledger, Policy};
 use super::VerifyGate;
 
+/// The plane label `report` logs under. The gate is plane-neutral: any label drives the same latch.
+const PLANE: &str = "example-plane";
+
 /// A fake ledger reader over a shared `last_checked_ms` cell. `0` means "never checked" (the
 /// fail-closed `NeverChecked`, i.e. due immediately), matching what a plane's store yields for a
 /// registration nothing has ever observed.
@@ -285,7 +288,7 @@ async fn retain_drops_retired_subjects_and_keeps_the_live_ones() {
         let last = Arc::new(AtomicU64::new(0));
         gate.ensure_fresh(subject, &policy, 1, ledger_of(&last), || async {})
             .await;
-        gate.report("a2a", subject, true, false);
+        gate.report(PLANE, subject, true, false);
     }
     assert!(gate.tracks_subject("retired") && gate.is_latched("retired"));
     assert!(gate.tracks_subject("surviving") && gate.is_latched("surviving"));

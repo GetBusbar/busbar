@@ -93,16 +93,14 @@ fn a_fee_of_nothing_is_an_explicit_zero_row_and_a_named_fee_bills() {
 
     // THE EXPLICIT-FREE CONTROL: a fee CONFIGURED at zero is legitimately free and must price, not
     // refuse. Without this arm a rule that refused everything would satisfy the arm below.
-    let mut free = RateCard::from_micro_rates([(LaneClass::new("m", INPUT), 5.0)], 0);
-    free.set_fee(0);
+    let free = RateCard::from_micro_rates([(LaneClass::new("m", INPUT), 5.0)], 0);
     assert_eq!(free.fee(), 0);
     let priced_free = price_ledger(&slice, &History::opening(free, 0))
         .expect("an explicit zero fee row is free, not unpriced");
     assert_eq!(priced_free.to_decimal_string(), "0.005000");
 
     // And the same card with the fee named bills it — the money the old silence gave away.
-    let mut charged = RateCard::from_micro_rates([(LaneClass::new("m", INPUT), 5.0)], 0);
-    charged.set_fee(3);
+    let charged = RateCard::from_micro_rates([(LaneClass::new("m", INPUT), 5.0)], 3);
     assert_eq!(charged.fee(), 3);
     let priced_fee =
         price_ledger(&slice, &History::opening(charged, 0)).expect("the card names a fee");
@@ -110,8 +108,7 @@ fn a_fee_of_nothing_is_an_explicit_zero_row_and_a_named_fee_bills() {
 
     // A NEGATIVE configured fee clamps at resolve, once, and can never credit a budget back
     // toward headroom.
-    let mut negative = RateCard::from_micro_rates([(LaneClass::new("m", INPUT), 5.0)], 0);
-    negative.set_fee(-7);
+    let negative = RateCard::from_micro_rates([(LaneClass::new("m", INPUT), 5.0)], -7);
     assert_eq!(negative.fee(), 0);
     assert_eq!(RateCard::absent(-7).fee(), 0);
 }

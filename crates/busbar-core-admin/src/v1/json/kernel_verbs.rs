@@ -4,7 +4,7 @@
 //! THE 1.6.0 KERNEL VERBS, IN THE ONE DOCUMENT.
 //!
 //! The closed verb table (`admin_codec::verbs`) declares 26 operations 1.6.0 adds to the
-//! administrative surface: the 18 money-governance verbs ([`NEW_VERBS`]), the five ledger views
+//! administrative surface: the 13 money-governance verbs ([`NEW_VERBS`]), the five ledger views
 //! ([`LEDGER_VERBS`]) and the three audit-chain reads ([`AUDIT_VERBS`]). The router in this crate
 //! mounts none of them. The node's administrative mount walks every row the table declares whose
 //! effect is bound through the kernel loop, and it is the composition root's route step that answers them — the ledger and
@@ -815,17 +815,17 @@ pub(crate) fn operations(
         };
         let method = row.method.to_ascii_lowercase();
         let path = row.template.to_string();
-        let mut responses = serde_json::Map::new();
+        let mut by_status = serde_json::Map::new();
         match doc.success {
             Success::Json(schema, description) => {
-                responses.insert(
+                by_status.insert(
                     "200".into(),
                     json!({"description": description,
                            "content": {"application/json": {"schema": schema}}}),
                 );
             }
             Success::Document => {
-                responses.insert(
+                by_status.insert(
                     "200".into(),
                     json!({"description": "The one administrative OpenAPI document",
                            "content": {"application/json": {"schema": {
@@ -834,17 +834,17 @@ pub(crate) fn operations(
                 );
             }
             Success::NoContent(description) => {
-                responses.insert("204".into(), json!({ "description": description }));
+                by_status.insert("204".into(), json!({ "description": description }));
             }
         }
-        responses.insert(
+        by_status.insert(
             "401".into(),
             json!({"description": "Missing/invalid admin credential (error code `unauthorized`)"}),
         );
         // Every error status speaks the one `Error` envelope (its `code` enum carries `unavailable`);
         // the caller's shared pass attaches it.
         for (status, description) in doc.errors {
-            responses.insert(status.into(), json!({ "description": description }));
+            by_status.insert(status.into(), json!({ "description": description }));
         }
         let http_method = match method.as_str() {
             "get" => axum::http::Method::GET,
@@ -861,7 +861,7 @@ pub(crate) fn operations(
             "security": [{"adminToken": []}, {"bearerAuth": []}],
             "x-busbar-required-scope": scope.as_str(),
             "x-busbar-since": SINCE,
-            RESPONSES_KEY: responses,
+            RESPONSES_KEY: by_status,
         });
         if !doc.query.is_empty() {
             op["parameters"] = Value::Array(doc.query);

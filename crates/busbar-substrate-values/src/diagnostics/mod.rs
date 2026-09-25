@@ -18,7 +18,8 @@
 //!
 //! ## Emitting
 //!
-//! Use [`diag_warn!`], [`diag_error!`], [`diag_debug!`] instead of the bare `tracing` macros. They
+//! Use [`diag_warn!`](crate::diag_warn), [`diag_error!`](crate::diag_error),
+//! [`diag_debug!`](crate::diag_debug) instead of the bare `tracing` macros. They
 //! attach the `diag = "BUSBAR-NNNN"` field so the code shows in every line and is greppable:
 //!
 //! ```ignore
@@ -33,140 +34,16 @@
 //! [`Severity::Actionable`] is a `warn!`/`error!` at human cadence (latched if it can recur).
 //! [`Severity::Fatal`] is a boot refusal / exit.
 
-use std::fmt;
-
 #[cfg(test)]
 mod tests;
 
-/// The class of a diagnostic — the thousands digit of its code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Class {
-    /// 1000 — durable audit floor, single-writer detach, store-outage backfill.
-    Durability,
-    /// 2000 — audit chain verification, tamper evidence, snapshot restore.
-    Audit,
-    /// 3000 — config.yaml parse/validate/schema, providers file, overrides.
-    Config,
-    /// 4000 — tokens, oauth_as/cimd, egress_auth, trust, sigv4 credentials.
-    Auth,
-    /// 5000 — upstream, egress gate, SSRF guard, breaker, availability, handlers.
-    Proxy,
-    /// 6000 — loader, ABI floor, signature/trust, plugin_routes, hooks.
-    Plugins,
-    /// 7000 — a2a, mcp, export, ir, proto, plane store.
-    Plane,
-    /// 8000 — holds, quotas, metering, appbuild, governance state.
-    Governance,
-    /// 9000 — startup, tls, telemetry, eventstream, preflight, jemalloc.
-    Boot,
-}
+mod emit;
+pub use emit::emit;
 
-impl Class {
-    /// The thousands multiplier: `Durability` → 1, `Boot` → 9. The code's `code / 1000`.
-    pub const fn ordinal(self) -> u16 {
-        match self {
-            Class::Durability => 1,
-            Class::Audit => 2,
-            Class::Config => 3,
-            Class::Auth => 4,
-            Class::Proxy => 5,
-            Class::Plugins => 6,
-            Class::Plane => 7,
-            Class::Governance => 8,
-            Class::Boot => 9,
-        }
-    }
-
-    /// Human title for the class, used as the section heading in the generated docs page.
-    pub const fn title(self) -> &'static str {
-        match self {
-            Class::Durability => "Durability & write-through",
-            Class::Audit => "Audit chain",
-            Class::Config => "Config",
-            Class::Auth => "Auth & identity",
-            Class::Proxy => "Proxy & routing",
-            Class::Plugins => "Plugins",
-            Class::Plane => "Plane protocols",
-            Class::Governance => "Governance & cost",
-            Class::Boot => "Boot & lifecycle",
-        }
-    }
-
-    /// Every class, in code order — the iteration order for the generated docs.
-    pub const ALL: [Class; 9] = [
-        Class::Durability,
-        Class::Audit,
-        Class::Config,
-        Class::Auth,
-        Class::Proxy,
-        Class::Plugins,
-        Class::Plane,
-        Class::Governance,
-        Class::Boot,
-    ];
-}
-
-/// How severe a diagnostic is — this decides the log level the emitting site uses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Severity {
-    /// Expected, self-healing, may fire per request/tick. `debug!` or a `warn!`-once latch.
-    BenignRecurring,
-    /// An operator can and should act (misconfig, outage, refusal). `warn!` or `error!`.
-    Actionable,
-    /// Boot refuses / the process exits. `error!` then exit.
-    Fatal,
-}
-
-impl Severity {
-    /// Stable lowercase token for the machine (`diagnostics.json`) form.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Severity::BenignRecurring => "benign_recurring",
-            Severity::Actionable => "actionable",
-            Severity::Fatal => "fatal",
-        }
-    }
-}
-
-/// One catalog entry. Constructed as a `const` per code; all are gathered into [`REGISTRY`].
-#[derive(Debug, Clone, Copy)]
-pub struct Diagnostic {
-    /// The numeric code, e.g. `1001`. Rendered as `BUSBAR-1001`.
-    pub code: u16,
-    /// The class this code belongs to; `class.ordinal()` must equal `code / 1000`.
-    pub class: Class,
-    /// Stable kebab-case anchor: the docs URL fragment and a rename-proof identity. Never changes.
-    pub slug: &'static str,
-    /// Short human title.
-    pub title: &'static str,
-    /// Intended severity → the log level the emitting site uses.
-    pub severity: Severity,
-    /// One to three sentences: what the condition means.
-    pub summary: &'static str,
-    /// What an operator should do, or `"None — self-heals."` for benign-recurring.
-    pub action: &'static str,
-    /// The version the code was introduced in.
-    pub since: &'static str,
-    /// A retired code: kept for historical log resolution, no longer emitted.
-    pub retired: bool,
-}
-
-impl Diagnostic {
-    /// The `BUSBAR-NNNN` banner, zero-allocation (a [`fmt::Display`] wrapper over the code).
-    pub const fn banner(&self) -> Banner {
-        Banner(self.code)
-    }
-}
-
-/// `Display`s as `BUSBAR-0001`. Used as the `diag` field on every emitted line.
-#[derive(Debug, Clone, Copy)]
-pub struct Banner(pub u16);
-
-impl fmt::Display for Banner {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "BUSBAR-{:04}", self.0)
-    }
-}
+// ── THE SHAPES live in `busbar_contract::diagnostic` (DECISIONS #83; #83a O3, SD-1): the entry struct
+//    a plane fills, its class and severity, and the banner. Re-exported here under their historical
+//    paths, so every caller (and every catalog const below) compiles unchanged.
+pub use busbar_contract::diagnostic::{Banner, Class, Diagnostic, Severity};
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // THE PLANE-CONTRIBUTED CATALOG SEAM. The neutral [`REGISTRY`] carries only the plane-AGNOSTIC
@@ -242,29 +119,9 @@ pub fn by_code(code: u16) -> Option<&'static Diagnostic> {
 // still gives a future plugin the macro.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/// `warn!` carrying the `diag = "BUSBAR-NNNN"` field. First arg is the [`Diagnostic`] const. The
-/// cross-crate twin of busbar-core's local `diag_warn!`.
-#[macro_export]
-macro_rules! diag_warn {
-    ($diag:expr, $($rest:tt)*) => {
-        ::tracing::warn!(diag = %$diag.banner(), $($rest)*)
-    };
-}
-/// `error!` carrying the `diag = "BUSBAR-NNNN"` field. The cross-crate twin of core's `diag_error!`.
-#[macro_export]
-macro_rules! diag_error {
-    ($diag:expr, $($rest:tt)*) => {
-        ::tracing::error!(diag = %$diag.banner(), $($rest)*)
-    };
-}
-/// `debug!` carrying the `diag = "BUSBAR-NNNN"` field (the benign-recurring / latched-quiet arm). The
-/// cross-crate twin of core's `diag_debug!`.
-#[macro_export]
-macro_rules! diag_debug {
-    ($diag:expr, $($rest:tt)*) => {
-        ::tracing::debug!(diag = %$diag.banner(), $($rest)*)
-    };
-}
+// The three `#[macro_export]` emit macros moved with the shapes to `busbar_contract` (#83a O3);
+// this crate's root re-exports them (`lib.rs`), so `busbar_substrate_values::diag_warn!` and every
+// `crate::diag_warn!` site here resolve exactly as before.
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // THE CATALOG. Add a const here (codes ascending within a class), then add it to REGISTRY below,
@@ -641,7 +498,7 @@ pub const CONFIG_PASSTHROUGH_UNUSED_APIKEY: Diagnostic = Diagnostic {
               `passthrough`, under which the upstream key is the caller's own token (or empty), so \
               the configured api_key is NEVER forwarded — it is inert dead config. A legitimate \
               passthrough provider that itself signs per-request via SigV4 and needs no static \
-              key, hence a warning rather than a hard reject.",
+              key, hence a warning rather than a hard reject.", // noun-neutrality: frozen-literal pinned-by=docs/diagnostics.md BUSBAR catalog summary, operator-visible; drift-tested render
     action: "If you intended static-key gating, use `upstream_credentials: own` (plus an auth \
              chain). Otherwise clear the referenced provider secret so the config reflects that no \
              static key is used on that passthrough provider.",
@@ -1064,15 +921,15 @@ pub const OAUTH_AS_SWEEP_FAILED: Diagnostic = Diagnostic {
 pub const SIGV4_HMAC_INIT_FAILED: Diagnostic = Diagnostic {
     code: 4024,
     class: Class::Auth,
-    slug: "sigv4-hmac-init-failed",
-    title: "SigV4 HMAC-SHA256 init failed (documented unreachable)",
+    slug: "sigv4-hmac-init-failed", // noun-neutrality: frozen-literal pinned-by=docs/diagnostics.md BUSBAR-4024 slug, operator-visible; drift-tested render
+    title: "SigV4 HMAC-SHA256 init failed (documented unreachable)", // noun-neutrality: frozen-literal pinned-by=docs/diagnostics.md BUSBAR-4024 title, operator-visible; drift-tested render
     severity: Severity::Actionable,
     summary: "Initializing HMAC-SHA256 for AWS SigV4 signing failed. This is documented as \
               unreachable — HMAC-SHA256 accepts a key of any length — so reaching it indicates a \
               serious crypto-library inconsistency. busbar returns an empty signature, which the \
-              upstream rejects.",
+              upstream rejects.", // noun-neutrality: frozen-literal pinned-by=docs/diagnostics.md BUSBAR-4024 summary, operator-visible; drift-tested render
     action: "Capture the logged error and file a bug; this should not be possible. SigV4-signed \
-             egress fails to authenticate until it is resolved.",
+             egress fails to authenticate until it is resolved.", // noun-neutrality: frozen-literal pinned-by=docs/diagnostics.md BUSBAR-4024 action, operator-visible; drift-tested render
     since: "1.6.0",
     retired: false,
 };
@@ -1561,21 +1418,10 @@ pub const USAGE_TAP_BAD_JSON: Diagnostic = Diagnostic {
     retired: false,
 };
 
-/// Usage tap: read_response could not decode a same-protocol 2xx body. Warn-once (latched).
-pub const USAGE_TAP_DECODE_FAILED: Diagnostic = Diagnostic {
-    code: 5029,
-    class: Class::Proxy,
-    slug: "usage-tap-decode-failed",
-    title: "Usage tap: read_response failed to decode a same-protocol 2xx body",
-    severity: Severity::BenignRecurring,
-    summary: "The usage tap's `read_response` could not decode a same-protocol 2xx body into the \
-              IR, so it bills 0 tokens for the request. Warned once per (protocol, reason); \
-              BILLING_TAP_DECODE_FAIL_TOTAL carries the volume.",
-    action: "None — self-heals per request. If a metered dialect bills 0 tokens repeatedly, the \
-             upstream's response shape may have changed; check for a busbar update covering it.",
-    since: "1.6.0",
-    retired: false,
-};
+/// Shared by both sides of the codec seam (#83a O5), so its constant is a SHAPE defined once in
+/// `busbar_contract::diagnostic`; re-exported here under its historical path and registered below
+/// in its historical position, so the rendered catalog is byte-identical.
+pub use busbar_contract::diagnostic::USAGE_TAP_DECODE_FAILED;
 
 /// No response headers within the per-attempt cap on the degraded path.
 pub const ATTEMPT_TIMEOUT_DEGRADED: Diagnostic = Diagnostic {
@@ -1789,7 +1635,7 @@ pub const STATEFUL_PLANE_EPHEMERAL_STORE: Diagnostic = Diagnostic {
               durable store is opt-in and RAM is the convenience default.",
     action: "Configure a durable store (sqlite/postgres) so plane task state survives a restart. \
              No action is needed if losing in-flight task state on restart is acceptable for this \
-             deployment.",
+             deployment.", // noun-neutrality: frozen-literal pinned-by=docs/diagnostics.md BUSBAR catalog action, operator-visible; drift-tested render
     since: "1.6.0",
     retired: false,
 };
@@ -2461,84 +2307,6 @@ pub const WEBHOOK_DELIVERY_TRANSPORT_ERROR: Diagnostic = Diagnostic {
               this can recur per request when a sink is unreachable, so it is logged at debug.",
     action: "If logs are being lost, check the webhook sink's reachability and the delivery \
              counters. `WEBHOOK_LOGS_DROPPED_TOTAL` tracks the volume.",
-    since: "1.6.0",
-    retired: false,
-};
-
-pub const FILE_LOG_APPEND_FAILED: Diagnostic = Diagnostic {
-    code: 7073,
-    class: Class::Plane,
-    slug: "file-log-append-failed",
-    title: "Request-log file append failed (log dropped)",
-    severity: Severity::Actionable,
-    summary:
-        "Writing a line to the request-log file failed, so that log line was dropped. Telemetry \
-              writes are fire-and-forget and never block serving, but a persistent failure means \
-              request logs are being lost — usually a disk-full or permission problem.",
-    action:
-        "Check the log file's path for free space and write permission. Serving is unaffected; \
-             only request-log durability is.",
-    since: "1.6.0",
-    retired: false,
-};
-
-pub const FILE_LOG_OPEN_FAILED: Diagnostic = Diagnostic {
-    code: 7074,
-    class: Class::Plane,
-    slug: "file-log-open-failed",
-    title: "Request-log file open failed (log dropped)",
-    severity: Severity::Actionable,
-    summary: "The request-log file could not be opened for append, so that log line was dropped. A \
-              persistent failure means request logs are being lost — usually a missing directory, a \
-              permission problem, or a full disk.",
-    action: "Ensure the log file's directory exists and is writable, and that the disk is not full. \
-             Serving is unaffected; only request-log durability is.",
-    since: "1.6.0",
-    retired: false,
-};
-
-pub const FILE_LOG_RETENTION_FAILED: Diagnostic = Diagnostic {
-    code: 7075,
-    class: Class::Plane,
-    slug: "file-log-retention-failed",
-    title: "Request-log archive retention cleanup failed",
-    severity: Severity::Actionable,
-    summary: "During rotation, deleting the oldest request-log archive failed, so the archive series \
-              may grow past its retention limit and consume more disk than intended. No log data is \
-              lost by this failure itself.",
-    action: "Check the log directory's permissions and free space so retention cleanup can remove \
-             the oldest archive on the next rotation.",
-    since: "1.6.0",
-    retired: false,
-};
-
-pub const FILE_LOG_SHIFT_FAILED: Diagnostic = Diagnostic {
-    code: 7076,
-    class: Class::Plane,
-    slug: "file-log-shift-failed",
-    title: "Request-log archive shift failed during rotation",
-    severity: Severity::Actionable,
-    summary:
-        "Renaming an archived request-log file to its next slot during rotation failed, so the \
-              older archive was left in place rather than lost. Rotation degrades but no recorded \
-              data is discarded.",
-    action: "Check the log directory's permissions and that no external process holds the archive \
-             files, so the shift can complete on the next rotation.",
-    since: "1.6.0",
-    retired: false,
-};
-
-pub const FILE_LOG_ROTATE_RENAME_FAILED: Diagnostic = Diagnostic {
-    code: 7077,
-    class: Class::Plane,
-    slug: "file-log-rotate-rename-failed",
-    title: "Request-log rotation rename failed (file grows past cap)",
-    severity: Severity::Actionable,
-    summary: "Renaming the current request-log file to its first archive slot failed, so busbar keeps \
-              APPENDING to the current file rather than truncating it — no recorded data is lost, but \
-              the file will grow past its `rotate_mb` cap until this is resolved.",
-    action: "Check the log directory's permissions and free space so the rotation rename can \
-             succeed. No data is lost in the meantime; the file simply exceeds its size cap.",
     since: "1.6.0",
     retired: false,
 };
@@ -3781,11 +3549,6 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &WEBHOOK_EXPORTER_DISABLED,
     &WEBHOOK_DELIVERY_NON_2XX,
     &WEBHOOK_DELIVERY_TRANSPORT_ERROR,
-    &FILE_LOG_APPEND_FAILED,
-    &FILE_LOG_OPEN_FAILED,
-    &FILE_LOG_RETENTION_FAILED,
-    &FILE_LOG_SHIFT_FAILED,
-    &FILE_LOG_ROTATE_RENAME_FAILED,
     &IR_CLAMP_N_TO_1,
     &IR_DROP_REASONING,
     &IR_DROP_PROMPT_CACHE,

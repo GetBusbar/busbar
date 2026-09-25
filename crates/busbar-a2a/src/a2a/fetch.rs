@@ -280,7 +280,7 @@ impl std::fmt::Display for FetchRefusal {
 /// historical name so the card-fetch and relay call sites read unchanged. It lives in
 /// [`busbar_kernel::egress`] rather than here because the same buffered round trip serves the MCP dispatch
 /// path too, and a return type owned by one plane could not be returned to the other. Its
-/// `peer_spki` / `client_identity_offered` fields carry the exact per-hop observations this plane's
+/// `peer_key_pin` / `client_identity_offered` fields carry the exact per-hop observations this plane's
 /// verifier reads ([`super::verify`] refuses a `cert_spki`/`mtls` registration whose card did not
 /// arrive over the connection those fields describe).
 pub(crate) use busbar_kernel::egress::Response as HttpResponse;
@@ -385,7 +385,7 @@ pub(crate) struct FetchedCard {
     /// can start at a host an operator pinned and end anywhere, and pinning the certificate of the
     /// server that merely pointed at the card would authenticate the signpost rather than the
     /// document.
-    pub(crate) peer_spki: Option<String>,
+    pub(crate) peer_key_pin: Option<String>,
     /// Whether the hop that actually served the card carried busbar's client certificate for this
     /// registration ([`HttpResponse::client_identity_offered`]). The LAST hop's, for the same
     /// reason the peer pin is the last hop's: the mutual half is about the connection the document
@@ -491,7 +491,7 @@ pub(crate) fn fetch_card(
             document,
             chain,
             addr: pin.addr(),
-            peer_spki: resp.peer_spki,
+            peer_key_pin: resp.peer_spki,
             client_identity_offered: resp.client_identity_offered,
         });
     }

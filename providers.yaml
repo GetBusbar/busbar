@@ -27,8 +27,14 @@ anthropic:
   # Lane capabilities (see docs/providers.md "Lane capabilities"). The newest Claude generations take
   # reasoning ONLY as adaptive thinking (they 400 on `thinking.budget_tokens`) and reject the forced
   # tool the older structured-output path uses, so they are sent adaptive thinking and native
-  # `output_config.format`. Every other model keeps the defaults (budget_tokens, forced tool).
+  # `output_config.format`. Claude Opus 5.5 and Fable 5.x cannot switch thinking off (they reject
+  # `thinking: {type: disabled}`), so a reasoning-off ask omits `thinking` on them. Every other model
+  # keeps the defaults (budget_tokens, forced tool, `{type: disabled}`). First matching rule wins.
   model_capabilities:
+    - models: ["claude-opus-5-5*", "claude-fable-5*"]
+      anthropic_adaptive_thinking: true
+      native_structured_output: true
+      thinking_always_on: true
     - models: ["claude-opus-4-7*", "claude-opus-5*", "claude-sonnet-5*", "claude-fable-5*"]
       anthropic_adaptive_thinking: true
       native_structured_output: true
@@ -56,6 +62,11 @@ openai:
   # crosses from another protocol writes its output cap as `max_completion_tokens` on this provider.
   # (OpenAI-compatible hosts below keep the default `max_tokens`, which is what they all accept.)
   max_output_key: max_completion_tokens
+  # GPT-5.1 and GPT-5.2 accept `reasoning_effort: "none"` (reasoning switched off), so a reasoning-off
+  # ask from another protocol is written as "none" on them; every other model omits it (the default).
+  model_capabilities:
+    - models: ["gpt-5.1", "gpt-5.1-20*", "gpt-5.2", "gpt-5.2-20*"]
+      reasoning_none: true
 
 # Oracle OCI Generative AI, the OpenAI-compatible surface (/openai/v1/chat/completions), serving
 # OCI's hosted catalog (OpenAI, Meta Llama, xAI, Google, and Cohere models). Since Jan 2026 OCI
@@ -821,6 +832,11 @@ responses:
   error_map:
     insufficient_quota: billing
     rate_limit_exceeded: rate_limit
+  # GPT-5.1 and GPT-5.2 accept `reasoning.effort: "none"`, so a reasoning-off ask from another
+  # protocol is written as "none" on them; every other model omits it (the default).
+  model_capabilities:
+    - models: ["gpt-5.1", "gpt-5.1-20*", "gpt-5.2", "gpt-5.2-20*"]
+      reasoning_none: true
 
 # -- Google Gemini protocol (generateContent) -----------------------------------------------------
 # The path embeds the model and auth uses x-goog-api-key, both handled by the gemini protocol.
@@ -876,8 +892,13 @@ bedrock:
   # first-party `anthropic` entry. Claude Sonnet 4.5, Haiku 4.5, Opus 4.5 and Opus 4.6 support
   # Converse structured outputs per AWS's supported-model list
   # (https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-structured-outputs.html);
-  # they keep budget thinking. Written in flow (JSON) style. First matching rule wins.
+  # they keep budget thinking. Claude Opus 5.5 and Fable 5.x cannot switch thinking off, so a
+  # reasoning-off ask omits `thinking` on them instead of writing `{type: disabled}`. Written in flow
+  # (JSON) style. First matching rule wins.
   model_capabilities: [
+    {"models": ["*anthropic.claude-opus-5-5*", "*anthropic.claude-fable-5*"],
+     "anthropic_adaptive_thinking": true, "native_structured_output": true,
+     "thinking_always_on": true},
     {"models": ["*anthropic.claude-opus-4-7*", "*anthropic.claude-opus-5*",
                 "*anthropic.claude-sonnet-5*", "*anthropic.claude-fable-5*"],
      "anthropic_adaptive_thinking": true, "native_structured_output": true},

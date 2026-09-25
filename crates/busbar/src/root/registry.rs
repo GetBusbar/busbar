@@ -83,24 +83,12 @@
 //! composition would register, pass `check_composition` — because `composed_over()` returns `None`
 //! and the check reads a declaration — and then refuse every connection. That is why the two are
 //! built through `over` here and why the registered rows record what they were actually built over.
-//!
-//! ## One key, two compositions
-//!
-//! Seven keys register, and eight instances are built: `ws` is composed twice. It adds no
-//! encryption of its own — it upgrades whatever stream the layer below gives up — so an in-band
-//! upgrade arriving on `http` and a `wss://` dial that must stand on `tls` are two different
-//! stacks, and the transport refuses a secure target over a cleartext lower layer rather than put a
-//! plain upgrade on a wire the caller was told was encrypted. The registry seals by key and cannot
-//! hold both, so the dial-side instance is the root's own handle and
-//! [`ComposedTransports::dialer`] is where a destination's scheme picks between them.
 
 use std::sync::Arc;
 
 use busbar_contract::plane::PlaneMeta;
 use busbar_contract::transport::TransportMeta;
-use busbar_contract::{
-    check_composition, CompositionError, Plugin, Registered, Transport, UpstreamAddress,
-};
+use busbar_contract::{check_composition, CompositionError, Plugin, Registered, Transport};
 use busbar_core_admin::admin_codec::AdminPlane;
 use busbar_kernel::registry::{seal_claims, ClaimConflict, PlaneClaim, Registry, ResolvedOverlap};
 use busbar_plane_a2a::A2aPlane;
@@ -108,9 +96,9 @@ use busbar_plane_llm::LlmPlane;
 use busbar_plane_mcp::McpPlane;
 #[cfg(feature = "plane-voice")]
 use busbar_plane_streaming::StreamingPlane;
-use busbar_transport_grpc::GrpcTransport;
+use busbar_transport_http::grpc::GrpcTransport;
+use busbar_transport_http::sse::SseTransport;
 use busbar_transport_http::{ClientSettings, HttpTransport};
-use busbar_transport_sse::SseTransport;
 use busbar_transport_stdio::StdioTransport;
 use busbar_transport_tcp::TcpTransport;
 use busbar_transport_tls::TlsTransport;
@@ -167,70 +155,25 @@ impl std::error::Error for BootRefusal {}
 /// The composed transports the root keeps a concrete handle on.
 ///
 /// The registry holds every transport as an `Arc<dyn Plugin>`, which is all the registry needs. The
-/// root needs more than that in two places: the TLS transport is the sink the transport-key unit
-/// registers a resolved config into, and the HTTP transport is the concrete lower layer SSE is
+/// root needs more than that in one place: the HTTP transport is the concrete lower layer SSE is
 /// composed over. Holding them here is the difference between a stack that is declared and a stack
 /// that is wired.
 pub struct ComposedTransports {
     /// The bottom layer.
     pub tcp: Arc<TcpTransport>,
-    /// The TLS layer, and the sink a provisioned listener's config lands in.
+    /// The TLS layer.
     pub tls: Arc<TlsTransport>,
     /// The HTTP layer, and the concrete lower layer SSE takes.
     pub http: Arc<HttpTransport>,
     /// Server-sent events over HTTP.
     pub sse: Arc<SseTransport>,
-    /// WebSocket for ingress, built over HTTP — never over nothing. This is the instance an in-band
-    /// upgrade arrives on, and the one registered under the `ws` key.
+    /// WebSocket, built over HTTP — never over nothing.
     #[cfg(feature = "plane-voice")]
     pub ws: Arc<WsTransport>,
-    /// WebSocket for a secure dial, built over TLS — the same key, composed a second way.
-    ///
-    /// Not registered: the registry seals by key and there is one `ws` entry. This instance is the
-    /// root's own handle, reached through [`ComposedTransports::dialer`], because the composition a
-    /// `wss://` destination needs is not the composition an upgrade arrives on and one instance
-    /// cannot be both.
-    #[cfg(feature = "plane-voice")]
-    pub ws_tls: Arc<WsTransport>,
     /// gRPC, built over HTTP — never over nothing.
     pub grpc: Arc<GrpcTransport>,
     /// The process's own standard streams.
     pub stdio: Arc<StdioTransport>,
-}
-
-impl ComposedTransports {
-    /// The instance that dials a destination which named `key`, given where the dial lands.
-    ///
-    /// Every key but `ws` has one instance and this is a lookup. `ws` is the exception the registry
-    /// cannot express: the registry seals by key, so exactly one `ws` may register, but a `ws://`
-    /// upgrade arrives on `http` while a `wss://` dial is only honest over `tls` — the transport
-    /// itself refuses a secure target over a cleartext lower layer rather than downgrade it. Those
-    /// are two compositions of one key, and the choice between them is the destination's scheme,
-    /// which is a fact of the dial rather than of the registry.
-    #[must_use]
-    pub fn dialer(&self, key: &str, address: &UpstreamAddress) -> Option<Arc<dyn Transport>> {
-        #[cfg(not(feature = "plane-voice"))]
-        let _ = address;
-        #[cfg(feature = "plane-voice")]
-        let secure = address
-            .authority()
-            .is_some_and(|authority| authority.starts_with("wss://"));
-        Some(match key {
-            TcpTransport::KEY => Arc::clone(&self.tcp) as Arc<dyn Transport>,
-            TlsTransport::KEY => Arc::clone(&self.tls) as Arc<dyn Transport>,
-            HttpTransport::KEY => Arc::clone(&self.http) as Arc<dyn Transport>,
-            SseTransport::KEY => Arc::clone(&self.sse) as Arc<dyn Transport>,
-            #[cfg(feature = "plane-voice")]
-            <WsTransport as TransportMeta>::KEY if secure => {
-                Arc::clone(&self.ws_tls) as Arc<dyn Transport>
-            }
-            #[cfg(feature = "plane-voice")]
-            <WsTransport as TransportMeta>::KEY => Arc::clone(&self.ws) as Arc<dyn Transport>,
-            GrpcTransport::KEY => Arc::clone(&self.grpc) as Arc<dyn Transport>,
-            StdioTransport::KEY => Arc::clone(&self.stdio) as Arc<dyn Transport>,
-            _ => return None,
-        })
-    }
 }
 
 /// What the boot seal produced: a registry nothing may add to after it, and the claim order every
@@ -304,16 +247,6 @@ fn compose_transports(client_settings: ClientSettings) -> ComposedTransports {
         Arc::clone(&http) as Arc<dyn Transport>,
         max_message_bytes,
     ));
-    // The dial-side composition of the same key. `ws` adds no encryption of its own, so a `wss://`
-    // target is only honest when the layer below is the one that encrypts — the transport refuses
-    // the dial otherwise rather than put a cleartext upgrade on a wire the caller was told was
-    // secure. Every realtime upstream this deployment reaches is `wss`, so without this instance
-    // the refusal is the whole voice plane's answer.
-    #[cfg(feature = "plane-voice")]
-    let ws_tls = Arc::new(WsTransport::over_with_max_message_bytes(
-        Arc::clone(&tls) as Arc<dyn Transport>,
-        max_message_bytes,
-    ));
     let grpc = Arc::new(GrpcTransport::over(Arc::clone(&http) as Arc<dyn Transport>));
     let stdio = Arc::new(StdioTransport::new());
     ComposedTransports {
@@ -323,8 +256,6 @@ fn compose_transports(client_settings: ClientSettings) -> ComposedTransports {
         sse,
         #[cfg(feature = "plane-voice")]
         ws,
-        #[cfg(feature = "plane-voice")]
-        ws_tls,
         grpc,
         stdio,
     }
@@ -425,6 +356,21 @@ pub fn seal(client_settings: ClientSettings) -> Result<BootRegistry, BootRefusal
         registered,
         transports,
     })
+}
+
+/// SEAL THE COMPOSITION ON THE BOOT PATH, or refuse the boot.
+///
+/// Run from `run()` once the deployment's limits are resolved and before any listener binds, in
+/// every build: the transports it composes carry the operator's `limits.request_body_max_bytes`,
+/// so it reads the configuration the served door reads. A composition that does not seal is a node
+/// that must not bind a listener, so the refusal goes to standard error and the process exits 2 —
+/// not a warning and not a log line, because a node that refused to boot has no boot to log.
+/// Nothing is written on the success path.
+pub fn seal_or_exit(client_settings: ClientSettings) {
+    if let Err(refusal) = seal(client_settings) {
+        eprintln!("busbar: the composition root did not seal: {refusal}");
+        std::process::exit(2);
+    }
 }
 
 /// Every claim names a transport the root actually registered.

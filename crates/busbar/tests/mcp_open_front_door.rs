@@ -30,7 +30,9 @@
 // `--no-default-features` binary has no MCP front door to leave open, so neither the refusal nor
 // the control can mean anything there. Same shape as `docs_examples.rs` gating its whole file on
 // `auth-admin-tokens`, and the same reasoning as the `plane-mcp` gate in `cli_validate.rs`.
-#![cfg(feature = "plane-mcp")]
+// The plane under test is the linked row carrying the `stdio-serve` axis (build.rs emits
+// `linked_axis_stdio_serve` from `[package.metadata.busbar.linked-axes]`).
+#![cfg(linked_axis_stdio_serve)]
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -40,7 +42,7 @@ use std::time::{Duration, Instant};
 /// A fresh, isolated fixture directory. Per-test, so nothing shares a config or a port.
 fn fixture_dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
-        "busbar-mcp-front-door-{}-{tag}-{}",
+        "busbar-open-front-door-{}-{tag}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -138,7 +140,7 @@ fn assert_names_both_keys(where_: &str, text: &str) {
 }
 
 #[test]
-fn an_mcp_config_with_no_auth_chain_fails_validate_naming_both_keys() {
+fn a_front_door_config_with_no_auth_chain_fails_validate_naming_both_keys() {
     let dir = fixture_dir("validate");
     let cfg = write_config(&dir, free_port(), free_port(), AUTH_OPEN);
     let out = busbar(&cfg, &["--validate"]).output().expect("run busbar");
@@ -150,13 +152,13 @@ fn an_mcp_config_with_no_auth_chain_fails_validate_naming_both_keys() {
     assert_ne!(
         out.status.code(),
         Some(0),
-        "`--validate` accepted an MCP deployment with an anonymous front door:\n{text}"
+        "`--validate` accepted a deployment with an anonymous front door:\n{text}"
     );
     assert_names_both_keys("the --validate error", &text);
 }
 
 #[test]
-fn an_mcp_config_with_no_auth_chain_does_not_boot() {
+fn a_front_door_config_with_no_auth_chain_does_not_boot() {
     let dir = fixture_dir("boot");
     let cfg = write_config(&dir, free_port(), free_port(), AUTH_OPEN);
     // No `--validate`: this is the REAL boot path, which is a different code path in `main.rs` from
@@ -219,7 +221,7 @@ fn an_mcp_config_with_no_auth_chain_does_not_boot() {
 }
 
 #[test]
-fn the_control_an_mcp_config_with_a_closed_chain_still_boots() {
+fn the_control_a_front_door_config_with_a_closed_chain_still_boots() {
     let dir = fixture_dir("control");
     let data_port = free_port();
     let cfg = write_config(&dir, data_port, free_port(), AUTH_CLOSED);
@@ -271,6 +273,6 @@ fn the_control_an_mcp_config_with_a_closed_chain_still_boots() {
     assert!(
         listening,
         "`mcp:` with `chain: [keys]` must still boot and listen on {addr}; a guard that refuses \
-         every MCP config is vacuous in the other direction"
+         every such config is vacuous in the other direction"
     );
 }

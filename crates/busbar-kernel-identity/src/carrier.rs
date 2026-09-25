@@ -21,8 +21,8 @@ const X_API_KEY: &str = "x-api-key";
 const X_GOOG_API_KEY: &str = "x-goog-api-key";
 /// The authorization header name, lower-cased (header names compare case-insensitively).
 const AUTHORIZATION: &str = "authorization";
-/// The bearer scheme word, matched case-insensitively.
-const AUTH_SCHEME_BEARER: &str = "bearer";
+/// The carried-token scheme word, matched case-insensitively.
+const AUTH_SCHEME_TOKEN: &str = "bearer";
 
 /// The request's headers, as this unit needs to read them.
 ///
@@ -57,9 +57,9 @@ impl fmt::Debug for CallerToken {
 ///
 /// Splits on the first space rather than slicing by byte offset, so a malformed header with a
 /// multi-byte character where the scheme belongs cannot land mid-character and panic.
-pub fn extract_bearer_token(auth_header: &str) -> Option<String> {
+pub fn extract_scheme_token(auth_header: &str) -> Option<String> {
     let (scheme, token) = auth_header.split_once(' ')?;
-    if scheme.eq_ignore_ascii_case(AUTH_SCHEME_BEARER) && !token.is_empty() {
+    if scheme.eq_ignore_ascii_case(AUTH_SCHEME_TOKEN) && !token.is_empty() {
         Some(token.to_string())
     } else {
         None
@@ -69,7 +69,7 @@ pub fn extract_bearer_token(auth_header: &str) -> Option<String> {
 /// Read the client credential from whichever carrier presented it, in the fixed order: the bearer
 /// authorization header, then the Anthropic key header, then the Google key header.
 pub fn extract_client_token(headers: &dyn HeaderView) -> Option<String> {
-    if let Some(t) = headers.header(AUTHORIZATION).and_then(extract_bearer_token) {
+    if let Some(t) = headers.header(AUTHORIZATION).and_then(extract_scheme_token) {
         return Some(t);
     }
     if let Some(t) = headers.header(X_API_KEY).filter(|t| !t.is_empty()) {

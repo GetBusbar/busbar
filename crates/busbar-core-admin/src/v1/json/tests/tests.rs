@@ -1,5 +1,11 @@
 use super::*;
 
+/// The OpenAPI 3 Operation Object's status-keyed field, spelled once. It is the OpenAPI
+/// specification's own key, not a busbar or instance word, and every read of an operation's
+/// documented statuses below goes through it.
+#[cfg(feature = "openapi-schema")]
+const OAS_OPERATION_STATUSES: &str = "responses"; // plane-purity: frozen-wire OpenAPI 3 Operation Object field name, fixed by the OpenAPI specification
+
 /// Collect an axum Response into (status, content-type, parsed JSON body) for the wire-helper
 /// micro-tests below.
 async fn parts(resp: Response) -> (StatusCode, String, serde_json::Value) {
@@ -342,7 +348,7 @@ fn openapi_documents_the_loops_503_on_every_operation_it_walks() {
             }
             let loop_walks =
                 crate::admin_codec::verbs::resolve(&method.to_ascii_uppercase(), path).is_some();
-            let documented = &op["responses"]["503"];
+            let documented = &op[OAS_OPERATION_STATUSES]["503"];
             if loop_walks {
                 walked += 1;
                 assert_eq!(
@@ -380,7 +386,7 @@ fn openapi_hook_escalation_endpoints_document_403() {
     ];
     for (path, method) in cases {
         assert!(
-            doc["paths"][path][method]["responses"]["403"].is_object(),
+            doc["paths"][path][method][OAS_OPERATION_STATUSES]["403"].is_object(),
             "{method} {path} can 403 on escalation but its openapi omits it"
         );
     }
@@ -498,21 +504,23 @@ fn openapi_every_operation_has_a_typed_response_schema() {
                 continue;
             }
             op_count += 1;
-            let responses = op["responses"].as_object().expect("responses");
+            let by_status = op[OAS_OPERATION_STATUSES]
+                .as_object()
+                .expect("documented statuses");
             // The success response: the single 2xx entry (200/201). 204 (No Content) has no body.
-            let success = responses
+            let success = by_status
                 .keys()
                 .find(|s| s.starts_with('2') && s.as_str() != "204");
             let Some(status) = success else {
                 // A 204-only op (DELETE) legitimately has no success body.
                 assert!(
-                    responses.contains_key("204"),
+                    by_status.contains_key("204"),
                     "{method} {path} has no 2xx success response"
                 );
                 continue;
             };
             with_body += 1;
-            let schema = &responses[status]["content"]["application/json"]["schema"];
+            let schema = &by_status[status]["content"]["application/json"]["schema"];
             // The discovery endpoint (`GET /openapi.json`) returns an OpenAPI document — described by
             // an inline object schema, not a component `$ref` (no named struct, and modeling the
             // OpenAPI meta-schema would be circular). Every OTHER operation must be a `$ref`.
@@ -640,10 +648,12 @@ fn declared_errors_is_total_and_well_formed() {
             }
             // The document IS the projection: every status the declaration produces is present in
             // the generated operation, with exactly the projected description.
-            let responses = op["responses"].as_object().expect("responses");
+            let by_status = op[OAS_OPERATION_STATUSES]
+                .as_object()
+                .expect("documented statuses");
             for (status, description) in declared_responses(method, rel) {
                 assert_eq!(
-                    responses[&status]["description"].as_str(),
+                    by_status[&status]["description"].as_str(),
                     Some(description.as_str()),
                     "{key} {rel} {status} is not the projection of its declaration — a response \
                      body was hand-written instead of projected"
@@ -758,7 +768,7 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         declared, 30,
         "30 mutating operations take a body; a change here is a deliberate API change. 30 = 22 \
          + each plane section's PUT and PATCH-settings (both DELETEs are bodyless, above) + the \
-         A2A plane's approve verb, whose body carries the fingerprint the \
+         agents plane's approve verb, whose body carries the fingerprint the \
          operator is attesting they read + the three 1.6.0 kernel verbs that read one \
          (`store-restore`, `adjust`, `ledger/amend-rate-history`)"
     );

@@ -32,6 +32,8 @@
 //! `busbar-llm/src/unit/meter.rs::a_spend_past_the_reservation_is_carried_out_as_an_overdraft` (a
 //! unit that overspends after admission carries the excess out rather than ending).
 
+mod common;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -293,11 +295,33 @@ fn no_abort_the_shipped_kernel_can_raise_carries_a_money_reason() {
     }
 }
 
-/// THE CENSUS FLOOR, armed at today's measured number: one hundred `Refusal::new(` constructions in
-/// production source. The scan this file used to run matched fifty-seven of them (item 258); a floor
+/// THE CENSUS FLOOR, armed at today's measured number: seventy-seven `Refusal::new(` constructions
+/// in production source. The scan this file used to run matched fifty-seven of them (item 258); a floor
 /// under the census is what stops a scanner regression from quietly shrinking the population every
 /// "nothing refuses with" claim below is asserted over.
-const MIN_REFUSAL_SITES: usize = 100;
+///
+/// The floor sits AT the population, with no headroom: one lost site is red. It was armed at one
+/// hundred, the population grew to one hundred and one, and the strike under the owner ruling of
+/// 2026-09-08 deleted `posture::check_approve` and
+/// `posture::check_set_dual_control_required` — the removed `approve` / `set_dual_control` verbs'
+/// own checks, zero production callers — taking their three `RefusalStep::Approve` sites
+/// (`SelfApproval`, `PayloadMismatch`, `InsufficientApprovers`) with them. None is a money reason and
+/// none was served. The population was ninety-eight since. K2c (DEAD-UNITS) then deleted
+/// `root/units_mcp.rs` — the pre-unification mcp unit bindings no chain from `fn main()` reaches; the
+/// plane is served through the kernel-loop rider and meters inside its own `drive` — taking its four
+/// sites with it: two `HandoffMismatch` (arrival), one `DecodeFailed` and the one carried `*reason`
+/// (decode; pinned below until then). None is a money reason and none was served. The population was
+/// ninety-four. K2c then deleted `root/units_a2a.rs` — the pre-unification a2a unit bindings, built
+/// only at their own constructor and in their tests; the plane is served through the same rider and
+/// ledgers its payload bytes inside its own `drive` — taking its seventeen sites with it: six
+/// `NoDestination`, three `DecodeFailed`, three `ScopeDenied`, one each of `OverBudget`,
+/// `DurabilityUnavailable`, `Revoked` and `MeterDisputed`, and the one carried
+/// `refusal.kind.reason()` (pinned below until then). The `OverBudget` was a door refusal on a unit
+/// no request reached; the served admission refuses over-budget itself. The population is
+/// seventy-seven since; the floor is re-armed there. A population that falls because code was DELETED
+/// re-arms this floor in the same commit as the deletion, naming the sites; a population that falls
+/// with no deletion is the scanner regression this floor exists to catch.
+const MIN_REFUSAL_SITES: usize = 77;
 
 /// THE SITES WHOSE REASON IS CARRIED, NOT WRITTEN — pinned, file by file, at today's measurement.
 ///
@@ -305,28 +329,17 @@ const MIN_REFUSAL_SITES: usize = 100;
 /// by [`every_value_a_computed_refusal_could_carry_excludes_the_ceiling_and_the_stale_slice`], which
 /// reads where reason VALUES come from instead. The pin is what makes a new carried site a reviewed
 /// event rather than an invisible one: it goes red here until somebody has looked at it.
-const COMPUTED_REFUSAL_SITES: &[(&str, &str)] = &[
-    ("busbar-core-admin/src/governance.rs", "reason"),
-    ("busbar-core-admin/src/refusal.rs", "reason"),
-    ("busbar-kernel-budget/src/lib.rs", "reason"),
-    (
-        "busbar-kernel-egress/src/trust/unit.rs",
-        "refusal.kind.reason()",
-    ),
-    ("busbar-llm/src/unit/verify.rs", "refusal.reason()"),
-    ("busbar/src/root/units_a2a.rs", "refusal.kind.reason()"),
-    (
-        "busbar/src/root/units_admin/mod.rs",
-        "verbs_reason(refusal.reason)",
-    ),
-    (
-        "busbar/src/root/units_admin/mod.rs",
-        "verbs_reason(refusal.reason)",
-    ),
-    ("busbar/src/root/units_mcp.rs", "*reason"),
-    ("busbar/src/root/units_voice.rs", "reason"),
-    ("busbar/src/root/units_voice.rs", "refusal.reason()"),
-];
+fn computed_refusal_sites() -> Vec<(String, String)> {
+    common::fixture_lines("computed_refusal_sites.txt")
+        .into_iter()
+        .map(|l| {
+            let (file, expr) = l.split_once('\t').unwrap_or_else(|| {
+                panic!("computed_refusal_sites.txt: `{l}` is not <file>TAB<expr>")
+            });
+            (file.trim().to_string(), expr.trim().to_string())
+        })
+        .collect()
+}
 
 /// `OverdraftCeiling` and `StaleSlice` are refusal reasons nothing in the tree ever refuses with.
 ///
@@ -362,7 +375,11 @@ fn overdraft_ceiling_and_stale_slice_are_refusal_reasons_nothing_refuses_with() 
         })
         .collect();
     computed.sort_unstable();
-    let mut pinned = COMPUTED_REFUSAL_SITES.to_vec();
+    let pinned_owned = computed_refusal_sites();
+    let mut pinned: Vec<(&str, &str)> = pinned_owned
+        .iter()
+        .map(|(f, e)| (f.as_str(), e.as_str()))
+        .collect();
     pinned.sort_unstable();
     assert_eq!(
         computed, pinned,

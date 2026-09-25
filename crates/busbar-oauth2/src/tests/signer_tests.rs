@@ -196,7 +196,7 @@ async fn the_jwks_and_metadata_documents_are_byte_identical_to_1_5_5() {
     let plane = crate::plane::AsPlane::build(
         identity,
         Some(&base64::engine::general_purpose::STANDARD.encode(&der)),
-        vec!["https://gw.example.com/mcp".to_string()],
+        vec!["https://gw.example.com/rpc".to_string()],
     )
     .expect("the plane builds with an operator-supplied key");
 
@@ -269,7 +269,7 @@ async fn the_jwks_and_metadata_documents_are_byte_identical_to_1_5_5() {
             r#""grant_types_supported":["authorization_code","refresh_token","client_credentials","urn:ietf:params:oauth:grant-type:device_code"],"#,
             r#""token_endpoint_auth_methods_supported":["client_secret_basic","client_secret_post","none"],"#,
             r#""code_challenge_methods_supported":["S256"],"#,
-            r#""protected_resources":["https://gw.example.com/mcp"],"#,
+            r#""protected_resources":["https://gw.example.com/rpc"],"#,
             r#""authorization_response_iss_parameter_supported":true}"#,
         ),
         "the served RFC 8414 metadata document is not byte-identical to 1.5.5's; this is a §9.5 \

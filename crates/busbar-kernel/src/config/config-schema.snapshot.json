@@ -450,7 +450,7 @@
         },
         "mcp": {
           "optional": true,
-          "type": "McpEndpointSection"
+          "type": "EndpointSection"
         },
         "models": {
           "optional": false,
@@ -1114,6 +1114,14 @@
           "type": "Vec<String>"
         },
         "native_structured_output": {
+          "optional": true,
+          "type": "bool"
+        },
+        "reasoning_none": {
+          "optional": true,
+          "type": "bool"
+        },
+        "thinking_always_on": {
           "optional": true,
           "type": "bool"
         }

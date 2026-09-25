@@ -8,7 +8,8 @@
 //! / audio / rerank / moderation / subscribe request while it forwarded upstream. Each test below
 //! drives a real non-chat body through the seam with its resolved operation and asserts the gate now
 //! sees the screenable content — and that binary inputs surface as the opaque marker, never silently
-//! empty.
+//! empty. (The subscribe body is the MCP protocol's reader and is proven by that plane:
+//! `busbar-mcp`'s `codec::tests::subscribe_body_projects_its_target`.)
 
 use super::*;
 use busbar_api::operation::Operation;
@@ -97,22 +98,6 @@ fn rerank_body_projects_query_and_documents() {
     let f = seam(&v, "cohere", Operation::RERANK);
     let view = gate_view(&f);
     assert!(view.contains("THE-QUERY") && view.contains("DOC-ONE") && view.contains("DOC-TWO"));
-}
-
-#[test]
-fn subscribe_body_projects_its_target() {
-    crate::testkit::install_test_seams();
-    // SUBSCRIBE is an MCP operation — register the MCP protocol declaration too so `read_hook_facts`
-    // resolves the `mcp` reader that projects the subscribe params (busbar-mcp is a dev-dep here).
-    busbar_kernel::proto::register_test_protocol(&busbar_mcp::PROTO_DECL);
-    let v = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "resources/subscribe",
-        "params": {"uri": "mcp://resource/SECRET-TARGET"}
-    });
-    let f = seam(&v, "mcp", Operation::SUBSCRIBE);
-    assert!(gate_view(&f).contains("SECRET-TARGET"));
 }
 
 /// A multipart transcription body reaches the seam as a NON-object (its DOM is `Value::Null`

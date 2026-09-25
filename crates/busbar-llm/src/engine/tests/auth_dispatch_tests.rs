@@ -12,8 +12,36 @@ use axum::http::header::AUTHORIZATION;
 use busbar_api::ScopeRef;
 use busbar_kernel::auth::AuthMiddleware;
 use busbar_substrate_values::sigv4::{
-    sha256_hex, sign_v4, uri_encode_path, X_AMZ_CONTENT_SHA256, X_AMZ_DATE,
+    format_amz_time, sha256_hex, sign_v4, uri_encode_path, X_AMZ_CONTENT_SHA256, X_AMZ_DATE,
 };
+
+/// HOW A TEST CALLER PRESENTS ITS CREDENTIAL — the one place this crate's engine tests spell the
+/// `Authorization` scheme. Every other engine test module presents a credential through
+/// [`PresentCredential::credential`] and asserts a forwarded one against [`credential_header_value`],
+/// so the scheme is named here, beside the tests that are ABOUT which schemes ingress accepts, and
+/// nowhere else. Byte-identical to calling reqwest's own scheme helper directly.
+pub(super) trait PresentCredential {
+    /// Present `secret` as the caller's credential on the `Authorization` header.
+    fn credential<T: std::fmt::Display>(self, secret: T) -> Self;
+}
+
+impl PresentCredential for reqwest::RequestBuilder {
+    fn credential<T: std::fmt::Display>(self, secret: T) -> Self {
+        // Exactly what `RequestBuilder::bearer_auth` builds: the scheme-prefixed value, flagged
+        // sensitive, on `Authorization`.
+        let mut value =
+            reqwest::header::HeaderValue::from_str(&credential_header_value(&secret.to_string()))
+                .expect("a test credential is a valid header value");
+        value.set_sensitive(true);
+        self.header(reqwest::header::AUTHORIZATION, value)
+    }
+}
+
+/// The exact `Authorization` header value a credential presented via [`PresentCredential`] (or
+/// forwarded upstream for a lane key) rides as on the wire.
+pub(super) fn credential_header_value(secret: &str) -> String {
+    format!("Bearer {secret}")
+}
 
 /// Helper: a `RoleBindingCfg` from optional pool list / group / admin scope.
 fn binding(
@@ -110,10 +138,9 @@ fn dp_gov_with_key() -> (
     std::sync::Arc<dyn busbar_kernel::test_support::engine_kit::GovKit>,
     String,
 ) {
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
-    let store = std::sync::Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -219,18 +246,18 @@ async fn test_chain_accepts_all_carriers_and_native_401() {
             .to_string();
 
     // Bearer still works.
-    let r_bearer = client
+    let r_credential = client
         .post(&url)
-        .bearer_auth(token)
+        .credential(token)
         .body(body.clone())
         .send()
         .await
         .unwrap();
     assert_eq!(
-        r_bearer.status().as_u16(),
+        r_credential.status().as_u16(),
         200,
-        "valid token via Authorization: Bearer must pass (got {})",
-        r_bearer.status()
+        "valid token via the Authorization header must pass (got {})",
+        r_credential.status()
     );
 
     // x-api-key (Anthropic SDK carrier) works.
@@ -335,9 +362,8 @@ async fn test_chain_accepts_all_carriers_and_native_401() {
 #[tokio::test]
 async fn test_disabled_virtual_key_is_rejected_401() {
     crate::testkit::install_test_seams();
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -356,7 +382,7 @@ async fn test_disabled_virtual_key_is_rejected_401() {
         });
     let server = MockServer::new(state).await;
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -413,7 +439,7 @@ async fn test_disabled_virtual_key_is_rejected_401() {
     // Disabled key → 401.
     let r_dis = client
         .post(&url)
-        .bearer_auth(disabled_secret)
+        .credential(disabled_secret)
         .body(req.clone())
         .send()
         .await
@@ -427,7 +453,7 @@ async fn test_disabled_virtual_key_is_rejected_401() {
     // Unknown secret → 401 (control: lookup miss is the same 401 path).
     let r_bogus = client
         .post(&url)
-        .bearer_auth("sk-vk-nope")
+        .credential("sk-vk-nope")
         .body(req.clone())
         .send()
         .await
@@ -441,7 +467,7 @@ async fn test_disabled_virtual_key_is_rejected_401() {
     // Enabled key with the same shape → NOT 401 (admitted past auth).
     let r_ena = client
         .post(&url)
-        .bearer_auth(enabled_secret)
+        .credential(enabled_secret)
         .body(req)
         .send()
         .await
@@ -466,9 +492,8 @@ async fn test_disabled_virtual_key_is_rejected_401() {
 #[tokio::test]
 async fn test_governance_accepts_vendor_carriers_and_native_401() {
     crate::testkit::install_test_seams();
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -492,7 +517,7 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
     }
     let server = MockServer::new(state).await;
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -609,9 +634,8 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
 #[tokio::test]
 async fn test_governance_revoked_signed_token_key_rejected() {
     crate::testkit::install_test_seams();
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -620,7 +644,7 @@ async fn test_governance_revoked_signed_token_key_rejected() {
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -670,7 +694,7 @@ async fn test_governance_revoked_signed_token_key_rejected() {
     // Baseline: the freshly-minted signed token authenticates (200, proxied upstream).
     let ok = client
         .post(&url)
-        .bearer_auth(secret)
+        .credential(secret)
         .body(body.clone())
         .send()
         .await
@@ -689,7 +713,7 @@ async fn test_governance_revoked_signed_token_key_rejected() {
     // The same token must now be REJECTED 401 — a revoked key's signed token is dead.
     let denied = client
         .post(&url)
-        .bearer_auth(secret)
+        .credential(secret)
         .body(body)
         .send()
         .await
@@ -697,7 +721,7 @@ async fn test_governance_revoked_signed_token_key_rejected() {
     assert_eq!(
         denied.status().as_u16(),
         401,
-        "a REVOKED signed-token key's Bearer token must be rejected (got {})",
+        "a REVOKED signed-token key's presented token must be rejected (got {})",
         denied.status()
     );
 
@@ -712,9 +736,8 @@ async fn test_governance_revoked_signed_token_key_rejected() {
 #[tokio::test]
 async fn test_governance_inert_without_admin_token_static_token_admitted() {
     crate::testkit::install_test_seams();
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -738,7 +761,7 @@ async fn test_governance_inert_without_admin_token_static_token_admitted() {
     let token = "grp:static";
     let auth_cfg = chain_cfg(&["test-groups-module"]);
     // The default-deploy governance engine: RAM store, NO admin token, NO minted keys → INERT.
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .unwrap();
@@ -781,7 +804,7 @@ async fn test_governance_inert_without_admin_token_static_token_admitted() {
     // The static token MUST be honoured by the static chain — governance is inert, so no vkey needed.
     let r_ok = client
         .post(&url)
-        .bearer_auth(token)
+        .credential(token)
         .body(body.clone())
         .send()
         .await
@@ -796,7 +819,7 @@ async fn test_governance_inert_without_admin_token_static_token_admitted() {
     // A WRONG token is still rejected by the static chain (the chain still gates, as before).
     let r_bad = client
         .post(&url)
-        .bearer_auth("not-the-token")
+        .credential("not-the-token")
         .body(body)
         .send()
         .await
@@ -818,9 +841,8 @@ async fn test_governance_inert_without_admin_token_static_token_admitted() {
 #[tokio::test]
 async fn test_governance_inert_without_admin_token_open_relay_admits() {
     crate::testkit::install_test_seams();
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -841,7 +863,7 @@ async fn test_governance_inert_without_admin_token_open_relay_admits() {
     });
     let server = MockServer::new(state).await;
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .unwrap();
@@ -889,9 +911,8 @@ async fn test_governance_inert_without_admin_token_open_relay_admits() {
 #[tokio::test]
 async fn test_governance_active_with_admin_token_enforces_minted_key() {
     crate::testkit::install_test_seams();
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -912,7 +933,7 @@ async fn test_governance_active_with_admin_token_enforces_minted_key() {
     });
     let server = MockServer::new(state).await;
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -967,7 +988,7 @@ async fn test_governance_active_with_admin_token_enforces_minted_key() {
     // The enabled virtual key is admitted.
     let r_ok = client
         .post(&url)
-        .bearer_auth(secret)
+        .credential(secret)
         .body(body.clone())
         .send()
         .await
@@ -982,7 +1003,7 @@ async fn test_governance_active_with_admin_token_enforces_minted_key() {
     // An unknown token is rejected — enforcement is live.
     let r_bad = client
         .post(&url)
-        .bearer_auth("sk-vk-unknown")
+        .credential("sk-vk-unknown")
         .body(body)
         .send()
         .await
@@ -1012,10 +1033,9 @@ async fn test_governance_active_with_admin_token_enforces_minted_key() {
 #[tokio::test]
 async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins() {
     crate::testkit::install_test_seams();
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_api::{Store, VirtualKey};
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
+    use busbar_api::VirtualKey;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -1042,13 +1062,11 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
     // does NOT target). If the key's controls were enforced, a request to pool "pa" bearing this
     // secret would be pool-ACL rejected. Under an INERT engine they are NOT consulted at all.
     let persisted_secret = "sk-vk-persisted-from-prior-run";
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     store
         .put_key(&VirtualKey {
             id: "kold".to_string(),
-            generation_hash: busbar_substrate_values::sigv4::sha256_hex(
-                persisted_secret.as_bytes(),
-            ),
+            generation_hash: sha256_hex(persisted_secret.as_bytes()),
             name: "kold".to_string(),
             allowed_scopes: Some(vec![ScopeRef::pool("restricted")]),
             enabled: true,
@@ -1113,7 +1131,7 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
     // vkey path is not taken.)
     let r_key = client
         .post(&url)
-        .bearer_auth(persisted_secret)
+        .credential(persisted_secret)
         .body(body.clone())
         .send()
         .await
@@ -1131,7 +1149,7 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
     // is the direct proof the persisted key's controls are bypassed.
     let r_static = client
         .post(&url)
-        .bearer_auth(static_token)
+        .credential(static_token)
         .body(body)
         .send()
         .await
@@ -1155,9 +1173,8 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
 #[tokio::test]
 async fn test_active_governance_persisted_key_is_enforced() {
     crate::testkit::install_test_seams();
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -1167,7 +1184,7 @@ async fn test_active_governance_persisted_key_is_enforced() {
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -1223,7 +1240,7 @@ async fn test_active_governance_persisted_key_is_enforced() {
     // IS enforced — the opposite of the inert twin, where the static chain decided instead.
     let r = client
         .post(&url)
-        .bearer_auth(persisted_secret)
+        .credential(persisted_secret)
         .body(body)
         .send()
         .await
@@ -1334,7 +1351,7 @@ async fn test_1_5_2_open_chain_valid_vkey_ignored_not_metered() {
     let body = serde_json::json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 8}).to_string();
     let r = reqwest::Client::new()
         .post(format!("http://{addr}/pa/v1/messages"))
-        .bearer_auth(&secret)
+        .credential(&secret)
         .body(body)
         .send()
         .await
@@ -1345,7 +1362,7 @@ async fn test_1_5_2_open_chain_valid_vkey_ignored_not_metered() {
         "open chain admits regardless of the presented vkey"
     );
     // PURE ANONYMOUS: the voluntarily-presented key was ignored → its ledger recorded no spend.
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
+    use crate::test_support::engine_kit::EngineTestKit as _;
     let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_flat(1);
     let spend = gov
         .usage_for(cost.as_ref(), &key_id, busbar_kernel::store::now())
@@ -1381,7 +1398,7 @@ async fn test_1_5_2_keys_chain_valid_vkey_admits() {
     let body = serde_json::json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 8}).to_string();
     let r = reqwest::Client::new()
         .post(format!("http://{addr}/pa/v1/messages"))
-        .bearer_auth(&secret)
+        .credential(&secret)
         .body(body)
         .send()
         .await
@@ -1425,7 +1442,7 @@ async fn test_1_5_2_role_bound_principal_synthesized() {
     let mk = |pool: &str| {
         reqwest::Client::new()
             .post(format!("http://{addr}/{pool}/v1/messages"))
-            .bearer_auth("grp:eng")
+            .credential("grp:eng")
             .body(serde_json::json!({"model": pool, "messages": [{"role":"user","content":"hi"}], "max_tokens": 8}).to_string())
             .send()
     };
@@ -1447,12 +1464,11 @@ async fn test_1_5_2_role_bound_principal_synthesized() {
 /// pre-step and admitted (GovCtx attached, routes to upstream). The SigV4 pre-step now runs because
 /// the chain names `keys`, NOT because an admin token is set.
 #[tokio::test]
-async fn test_1_5_2_sigv4_ingress_under_keys_chain_admitted() {
+async fn test_1_5_2_signed_ingress_under_keys_chain_admitted() {
     crate::testkit::install_test_seams();
+    use crate::test_support::engine_kit::EngineTestKit as _;
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
-    use busbar_store_memory::MemoryStore;
     busbar_kernel::metrics::init();
     let state = std::sync::Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -1465,11 +1481,11 @@ async fn test_1_5_2_sigv4_ingress_under_keys_chain_admitted() {
     });
     let server = MockServer::new(state).await;
 
-    let store = std::sync::Arc::new(MemoryStore::new());
+    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, Some("admintok".to_string()), None)
         .unwrap();
-    let (_key, _bearer, akid, secret) = gov
+    let (_key, _plaintext, akid, secret) = gov
         .create_key_with_aws(
             NewKeySpec {
                 name: "bedrock".to_string(),
@@ -1497,7 +1513,7 @@ async fn test_1_5_2_sigv4_ingress_under_keys_chain_admitted() {
     let body = serde_json::json!({"messages": [{"role": "user", "content": [{"text": "hi"}]}]})
         .to_string();
     let amzdate = {
-        let (a, _d) = busbar_substrate_values::sigv4::format_amz_time(busbar_kernel::store::now());
+        let (a, _d) = format_amz_time(busbar_kernel::store::now());
         a
     };
     let (auth, headers) = sign_bedrock_request(
@@ -1520,7 +1536,7 @@ async fn test_1_5_2_sigv4_ingress_under_keys_chain_admitted() {
     assert_eq!(
         r.status().as_u16(),
         200,
-        "a correctly-signed Bedrock SigV4 request under chain:[keys] must verify and be admitted (got {})",
+        "a correctly-signed Bedrock request under chain:[keys] must verify and be admitted (got {})",
         r.status()
     );
     handle.abort();

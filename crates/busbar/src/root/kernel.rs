@@ -84,8 +84,9 @@ pub fn new_kernel() -> busbar_kernel::teller::Kernel {
 /// Config-derived open-vocabulary keys — a lane, a pool, a model, a provider host, a dialect name,
 /// a loaded plugin's key — are leaked into `&'static str` exactly once, here, at registration. The
 /// resulting allocation is fixed and countable; a leak per connection or per dial is a defect
-/// rather than a variant of the rule. [`crate::root::vocabulary`] is what enforces the "exactly
-/// once, and never after boot" half.
+/// rather than a variant of the rule. [`busbar_contract::Registration`] enforces the "exactly
+/// once, and never after boot" half itself: it is idempotent, and it refuses a new key once the
+/// image's vocabulary is frozen.
 #[must_use]
 pub fn new_registration() -> busbar_contract::Registration {
     busbar_contract::Registration::new()

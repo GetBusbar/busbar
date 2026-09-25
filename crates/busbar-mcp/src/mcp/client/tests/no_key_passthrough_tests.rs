@@ -85,7 +85,7 @@ fn wire_for(mode: &UpstreamCredential) -> (OutboundRequest, Vec<u8>) {
     .expect("a wildcard caller is granted, so every mode plans");
     let (auth, exchange_body) = match &plan {
         CredentialPlan::None => (None, Vec::new()),
-        CredentialPlan::Bearer(b) => (Some(b.expose_secret().to_string()), Vec::new()),
+        CredentialPlan::Token(b) => (Some(b.expose_secret().to_string()), Vec::new()),
         CredentialPlan::Exchange(req) => {
             let body = req
                 .form_fields()

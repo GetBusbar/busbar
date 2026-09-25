@@ -49,7 +49,7 @@ pub(crate) const B64URL: base64::engine::general_purpose::GeneralPurpose =
 /// The DER prefix of an Ed25519 SubjectPublicKeyInfo, RFC 8410 section 4: `SEQUENCE { SEQUENCE {
 /// OID 1.3.101.112 }, BIT STRING }`. It is fixed-length and fully determined, so a key that does not
 /// carry it byte for byte is not an Ed25519 SPKI and is refused rather than salvaged.
-pub(crate) const ED25519_SPKI_PREFIX: [u8; 12] = [
+pub(crate) const ED25519_KEY_INFO_PREFIX: [u8; 12] = [
     0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
 ];
 
@@ -148,11 +148,11 @@ impl IssuerKey {
     /// key of a different algorithm that happens to be 32 bytes, and have it silently become the
     /// trust root. The SPKI wrapper names the algorithm, so requiring it means the key itself says
     /// what it is.
-    pub(crate) fn from_spki_base64(s: &str) -> Result<Self, JwsError> {
+    pub(crate) fn from_key_info_base64(s: &str) -> Result<Self, JwsError> {
         let der = base64::engine::general_purpose::STANDARD
             .decode(s.trim())
             .map_err(|_| JwsError::MalformedIssuerKey)?;
-        if der.len() != ED25519_SPKI_PREFIX.len() + 32 || der[..12] != ED25519_SPKI_PREFIX {
+        if der.len() != ED25519_KEY_INFO_PREFIX.len() + 32 || der[..12] != ED25519_KEY_INFO_PREFIX {
             return Err(JwsError::MalformedIssuerKey);
         }
         let mut raw = [0u8; 32];

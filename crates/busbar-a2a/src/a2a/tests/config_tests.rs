@@ -25,23 +25,30 @@ fn validate_section_hooks(hooks: &[String]) -> Result<(), String> {
 use crate::a2a::pin::CardPin;
 use crate::testkit::engine_boot::engine;
 
-/// A STAND-IN FOR THE LLM PLANE (`pools:`), registered so the cross-plane refusal battery below has a
-/// section owned by ANOTHER plane to reach onto. The LLM plane's declaration relocated to `busbar-llm`
-/// in the 1.7.0 plane extraction and is installed by the composition root behind `plane-llm`; this
-/// crate's own test binary never links `busbar-llm`, so — exactly as core's `registry_tests::WIDGET_PLANE`
-/// stands in for an extracted plane there — this fixture supplies the `pools:` section the way a
-/// shipped "busbar with the LLM plane" binary would. Idempotent by key, registered process-wide.
-static LLM_POOLS_STANDIN: busbar_kernel::plane::registry::PlaneDecl =
+/// A STAND-IN FOR ANOTHER PLANE owning a section (`pools:`), registered so the cross-plane refusal
+/// battery below has a section owned by ANOTHER plane to reach onto. This crate's own test binary links
+/// no sibling plane, so — exactly as core's `registry_tests::WIDGET_PLANE` stands in for an extracted
+/// plane there — this fixture supplies the `pools:` section the way a shipped binary carrying that
+/// plane would. Its key is its own neutral name: the refusal under test is about the SECTION belonging
+/// to another plane, never about which plane that is. Idempotent by key, registered process-wide.
+static POOLS_PLANE_STANDIN: busbar_kernel::plane::registry::PlaneDecl =
     busbar_kernel::plane::registry::PlaneDecl {
-        key: "llm",
-        // Stands in for the residual LLM plane.
-        fallback: true,
-        config_section: "pools",
-        scope_kinds: &["pool"],
-        subject_noun: "model pool",
-        admin_noun: "pool",
-        audit_kind: "pool_thing",
-        wire_format_names: || &["llm"],
+        declaration: busbar_contract::plane::PlaneDeclaration {
+            key: "pools_standin",
+            // Stands in for the plane that owns `pools:`.
+            fallback: true,
+            config_section: "pools",
+            scope_kinds: &["pool"],
+            subject_noun: "model pool",
+            admin_noun: "pool",
+            audit_kind: "pool_thing",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[],
+            fee_units: &[],
+        },
+        wire_format_names: || &["pools_standin"],
         claims: |_| Vec::new(),
         admission: |_| None,
         build: |_| None,
@@ -51,13 +58,10 @@ static LLM_POOLS_STANDIN: busbar_kernel::plane::registry::PlaneDecl =
         hydrate: None,
         start: None,
         config_validate: None,
-        card_signing_domain: None,
-        card_kid_prefix: None,
         named_def_list: None,
         named_def_get: None,
         registry_contains: None,
         reresolve_gates: None,
-        #[cfg(feature = "openapi-schema")]
         openapi_schemas: None,
         on_swap: None,
         parse_section: None,
@@ -67,9 +71,6 @@ static LLM_POOLS_STANDIN: busbar_kernel::plane::registry::PlaneDecl =
         viewer: None,
         retain_verify_gates: None,
         default_section: None,
-        owned_config_sections: &[],
-        billable_classes: &[],
-        fee_units: &[],
         resolve_provider: None,
     };
 
@@ -313,8 +314,8 @@ fn a_cross_plane_hook_reference_is_refused() {
     busbar_kernel::plane::config::install_plane_sections(
         busbar_kernel::plane::config::default_plane_sections,
     );
-    // Make the `pools:` (LLM) plane a section this test binary knows about — see [`LLM_POOLS_STANDIN`].
-    busbar_kernel::plane::registry::register_test_plane(&LLM_POOLS_STANDIN);
+    // Make the `pools:` plane a section this test binary knows about — see [`POOLS_PLANE_STANDIN`].
+    busbar_kernel::plane::registry::register_test_plane(&POOLS_PLANE_STANDIN);
     for bad in [
         "pools.fast",
         "agents.planner",
@@ -511,7 +512,7 @@ fn the_admin_write_path_and_the_file_share_one_grammar() {
     ];
     // The `agents:` section, carried as its plane's declared config section — the shape the engine
     // folds into the named-map chassis from the registry, whose typed parse the admin write path runs.
-    let agents = crate::a2a::PLANE_DECL.config_section;
+    let agents = crate::a2a::PLANE_DECLARATION.config_section;
     for (what, def) in cases {
         assert!(
             engine()
@@ -531,7 +532,7 @@ fn the_admin_write_path_and_the_file_share_one_grammar() {
 #[test]
 fn the_section_is_a_first_class_member_of_the_chassis() {
     let agents = engine()
-        .named_map_section_facts(crate::a2a::PLANE_DECL.config_section)
+        .named_map_section_facts(crate::a2a::PLANE_DECLARATION.config_section)
         .expect(
             "a section missing from sections() is a section the router, the OpenAPI generator and \
              the overlay applier all silently skip",
@@ -555,8 +556,8 @@ fn an_entry_round_trips_through_its_document_form() {
     let def = AgentDefCfg {
         url: "https://a2a.vendor/planner".to_string(),
         pin: AgentPinCfg {
-            mechanism: PinMechanism::CertSpki,
-            key: Some("sha256/SPKI==".to_string()),
+            mechanism: PinMechanism::CertKeyPin,
+            key: Some("sha256/KEYPIN==".to_string()),
             fingerprint: Some("sha256/CARD==".to_string()),
         },
         reverify_ttl: Some("15m".to_string()),
@@ -638,20 +639,20 @@ fn the_agents_grammar_takes_the_same_allow_private_its_tools_sibling_takes() {
 /// its `file:` sugar), which is the same spelling `tls.cert:` uses for busbar's inbound identity.
 /// There is no spelling that puts a private key in the config file.
 #[test]
-fn an_mtls_registration_names_its_client_certificate_by_reference() {
+fn a_mutual_tls_registration_names_its_client_certificate_by_reference() {
     let cfg = parse(
         r#"
 planner:
   url: "https://a2a.vendor/planner"
   pin:
     mechanism: mtls
-    key: "sha256/SPKI=="
+    key: "sha256/KEYPIN=="
   client_identity:
     cert: { file: /run/secrets/busbar-client.crt }
     key: { file: /run/secrets/busbar-client.key }
 "#,
     )
-    .expect("an mtls registration with a client identity must parse");
+    .expect("a mutual-TLS registration with a client identity must parse");
 
     let planner = cfg.agents.get("planner").expect("planner is registered");
     let identity = planner
@@ -672,17 +673,17 @@ planner:
 /// re-verification tick hours later, at which point the message is a TLS alert rather than a
 /// sentence about the config. Refused here, at boot, on the line the operator wrote.
 #[test]
-fn mtls_without_a_client_identity_is_refused_at_parse() {
+fn mutual_tls_without_a_client_identity_is_refused_at_parse() {
     let err = parse(
         r#"
 planner:
   url: "https://a2a.vendor/planner"
   pin:
     mechanism: mtls
-    key: "sha256/SPKI=="
+    key: "sha256/KEYPIN=="
 "#,
     )
-    .expect_err("`mtls` with no client certificate must not parse");
+    .expect_err("mutual TLS with no client certificate must not parse");
     assert!(
         err.contains("`pin.mechanism: mtls` needs `client_identity:`")
             && err.contains("CertificateRequired"),
@@ -699,7 +700,7 @@ planner:
   url: "http://a2a.vendor/planner"
   pin:
     mechanism: cert_spki
-    key: "sha256/SPKI=="
+    key: "sha256/KEYPIN=="
   client_identity:
     cert: { file: /run/secrets/c.crt }
     key: { file: /run/secrets/c.key }
@@ -734,10 +735,10 @@ planner:
 /// The admin write path runs the SAME rule. A grammar the file refuses and the API accepts is the
 /// exact defect `validate_agent` was split out to prevent.
 #[test]
-fn the_admin_write_path_refuses_mtls_without_a_client_identity_too() {
+fn the_admin_write_path_refuses_mutual_tls_without_a_client_identity_too() {
     let mut def = signed(None);
-    def.pin.mechanism = PinMechanism::Mtls;
-    def.pin.key = Some("sha256/SPKI==".to_string());
+    def.pin.mechanism = PinMechanism::MutualTls;
+    def.pin.key = Some("sha256/KEYPIN==".to_string());
     let err = validate_agent("planner", &def)
         .unwrap_err_display("the admin path must refuse what the file refuses");
     assert!(err.contains("needs `client_identity:`"), "{err}");

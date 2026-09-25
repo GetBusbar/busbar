@@ -373,7 +373,7 @@ jobs:
 
       - name: Build busbar-plugin-pack (from the sibling checkout)
         working-directory: busbar
-        run: cargo build --release -p busbar-plugin-sdk --features pack --bin busbar-plugin-pack
+        run: cargo build --release -p busbar-plugin-loader --features pack --bin busbar-plugin-pack
 
       - name: Ephemeral CI release keypair (never the real release key)
         # One throwaway ed25519 pair per run. The PUBLIC half is embedded into the busbar binary

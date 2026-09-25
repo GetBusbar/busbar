@@ -392,6 +392,10 @@ pub trait EngineTestKit: Send + Sync {
         admin_token: Option<String>,
         signer: Option<TokenSigner>,
     ) -> Result<Arc<dyn GovKit>, String>;
+    /// A fresh, empty SCRATCH STORE — the engine's own default in-memory backend, ephemeral and
+    /// private to the caller. What a test hands a governance registry, a durable-sink slot or a
+    /// store wrapper when the store itself is not under test, without naming a backend crate.
+    fn scratch_store(&self) -> Arc<dyn Store>;
     /// A pricing table that charges a FLAT `price_per_request_cents` per request and nothing per
     /// token — the shape a test takes when the figure under assertion is the fee, not the card.
     fn cost_flat(&self, price_per_request_cents: i64) -> Arc<dyn CostKit>;

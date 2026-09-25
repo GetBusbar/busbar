@@ -16,16 +16,21 @@ license = "Apache-2.0"
 # two both-ways witnesses in the tree (`plugin-loader/src/tests/{plane,export}_conformance_tests.rs`);
 # this crate was the one fixture that could not, being cdylib-only.
 #
-# ADDING THE ARTIFACT IS NOT THE WITNESS. `open` below is still private and there is no
-# `dispatch_compiled_in` twin of the `busbar_call` symbol `export_auth_plugin!` emits, so nothing
-# can yet drive the compiled-in door. The blocking piece is upstream of this crate:
-# `busbar_plugin_sdk::dispatch_export_enveloped` is the ONLY enveloped dispatch the SDK has (#85
-# covered `export` and no other kind), and the envelope is what makes "observationally identical"
-# testable at all. See the report in the commit that added this comment.
+# ADDING THE ARTIFACT IS NOT THE WITNESS — the witness is `plugin-loader`'s
+# `src/tests/auth_conformance_tests.rs`, #2's ordered cost walked in full: the SDK's
+# `dispatch_auth_enveloped` (1), the `dispatch_compiled_in` twin `export_auth_plugin!` emits beside
+# `busbar_call` (2), this crate's `pub fn open` (3), `plugin-loader`'s dev-dependency on this crate
+# (4), and the test (5), which drives `open` through the twin (compiled in) and this crate's `cdylib`
+# over the C ABI (dropped in) and requires the two wires to be byte-identical. The `rlib`'s
+# `BUSBAR_COLD_ENTRY` is also registered through `PluginRegistry::link` there, beside the same
+# `cdylib` signed into `plugins/`: one row, one module.
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-busbar-api = { path = "../api" }
+# Every name this plugin compiles against (auth types, `constant_time_eq`, `sha256_hex`) comes from
+# busbar-contract (#40; `sha256_hex` moved there under ARCHITECT P68-0 residue (b)). The SDK edge
+# below stays until F6 folds the export macro into the contract (#84).
+busbar-contract = { path = "../busbar-contract" }
 busbar-plugin-sdk = { path = "../plugin-sdk" }
 serde = { workspace = true }
 serde_json = { workspace = true }

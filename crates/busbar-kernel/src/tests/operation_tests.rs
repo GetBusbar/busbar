@@ -136,8 +136,22 @@ fn no_operation_is_still_called_tool_call() {
 /// would fail the deletion test on line one.
 #[test]
 fn no_verb_name_carries_a_protocol_identity() {
+    // The identities are READ OFF THE REGISTRY, not listed here: every protocol this test binary
+    // registers, so a protocol added to the registry is checked the day it lands. The plane keys of
+    // the real roster are checked against the same verbs in
+    // `tests/operation_names_cross_plane.rs`, where that roster is registered.
+    let identities: Vec<&str> = crate::proto::registry::registry()
+        .decls()
+        .iter()
+        .map(|d| d.name)
+        .collect();
+    assert_eq!(
+        identities.len(),
+        7,
+        "core's test binary registers seven protocols; an empty list would pass vacuously"
+    );
     for (_, _, name) in ALL {
-        for forbidden in ["mcp", "a2a", "openai", "anthropic", "gemini", "bedrock"] {
+        for forbidden in &identities {
             assert!(
                 !name.contains(forbidden),
                 "`{name}` names the `{forbidden}` protocol; verbs are shapes plus neutral words"
@@ -188,14 +202,14 @@ fn only_the_invoke_shape_may_stream() {
 /// collided on a name, and both are breaking changes.
 #[test]
 fn the_llm_family_is_one_shape_with_seven_distinct_words() {
-    let llm: Vec<&str> = ALL
+    let family: Vec<&str> = ALL
         .iter()
         .filter(|(op, _, _)| *op != Operation::INVOKE && op.shape() == OpShape::Invoke)
         .map(|(_, _, n)| *n)
         .collect();
-    assert_eq!(llm.len(), 7, "seven LLM verbs, all `Invoke`-shaped");
+    assert_eq!(family.len(), 7, "seven named verbs, all `Invoke`-shaped");
     assert!(
-        !llm.contains(&"invoke"),
-        "the LLM verbs keep their published endpoint names; none is the shape's own word"
+        !family.contains(&"invoke"),
+        "the named verbs keep their published endpoint names; none is the shape's own word"
     );
 }

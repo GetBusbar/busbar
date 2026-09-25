@@ -750,7 +750,7 @@ fn an_evicted_neutral_scopes_tampered_tail_surfaces_a_break_on_resume() {
 /// whose cutoff is safely in the past.
 #[test]
 fn append_scoped_stamps_a_real_instant_so_a_fresh_row_survives_retention() {
-    let store: Arc<dyn busbar_api::Store> = Arc::new(busbar_store_memory::MemoryStore::new());
+    let store: Arc<dyn busbar_api::Store> = Arc::new(crate::governance::MemoryStore::new());
     let plane_store = crate::plane::store::PlaneStoreView::narrow(store.clone());
     let j: Journal<NeutralRec> = Journal::new(1024);
     j.set_sink(plane_store);

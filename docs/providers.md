@@ -202,6 +202,14 @@ A provider that serves models of several generations declares per-model override
 (`upstream_model`, else the model name) sets every key it names, on top of the provider-level values.
 The only wildcard is `*`, which matches any run of characters.
 
+Two more keys exist only inside a `model_capabilities` rule, because each is a fact about one model
+generation rather than about a provider:
+
+| Key | Values | Default | What it changes |
+|---|---|---|---|
+| `reasoning_none` | `true` \| `false` | `false` | How an **OpenAI-** or **Responses-protocol** upstream receives a reasoning-off ask. `true`: `reasoning_effort: "none"` (`reasoning.effort: "none"` on Responses). `false`: the effort is omitted, since a model that does not know the word rejects it. GPT-5.1 and GPT-5.2 accept `none`. |
+| `thinking_always_on` | `true` \| `false` | `false` | How an **Anthropic-** or **Bedrock-protocol** upstream receives a reasoning-off ask. `true`: `thinking` is omitted. `false`: `thinking: {type: disabled}`. Claude Opus 5.5 and Fable 5 cannot switch thinking off and reject `disabled`. |
+
 ```yaml
 anthropic:
   protocol: anthropic
@@ -219,7 +227,9 @@ openai:
   max_output_key: max_completion_tokens
 ```
 
-The shipped catalog already sets these for `openai`, and for the `anthropic` models listed above. The
+The shipped catalog already sets these for `openai`, and for the `anthropic` models listed above. It
+also sets `thinking_always_on` for Claude Opus 5.5 and Fable 5 on `anthropic` and `bedrock`, and
+`reasoning_none` for GPT-5.1 and GPT-5.2 on `openai` and `responses`. The
 Azure OpenAI templates set `max_output_key: max_completion_tokens`. Every other catalog host keeps the
 defaults. A deployment in `config.yaml` can set any of the keys itself: a value overrides the
 catalog's, and a `model_capabilities` list replaces the catalog's list.

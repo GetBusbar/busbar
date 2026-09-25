@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE VOICE PLANE'S DATA-ROUTE MOUNT (behind the `runtime` feature) — the structural surface that
-//! turns `PLANE_DECL`'s `routes` / `claims` / `admission` / `build` hooks from `None`/empty into the
+//! turns `PLANE_HOOKS`' `routes` / `claims` / `admission` / `build` hooks from `None`/empty into the
 //! plane's real ingress door.
 //!
 //! ## The two slots, and which one this is
@@ -43,10 +43,11 @@ use crate::topology::{
     begin_session, dial_provider, open_admitted_session, stream_breaker_key, SessionGauntlet,
     StartError,
 };
+use busbar_kernel::config::RootCfg;
 use busbar_kernel::egress::engine::{send_bounded, EngineClient};
 use busbar_kernel::ingress::byte_duplex::serve_messages;
 use busbar_kernel::ingress::duplex_ws::{
-    accept_gauntlet, WsAcceptFuture, WsArrival, WsArrivalSpec,
+    accept_gauntlet, install_ws_arrivals, WsAcceptFuture, WsArrival, WsArrivalSpec,
 };
 use busbar_kernel::net_guard::GuardPolicy;
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
@@ -84,7 +85,7 @@ pub(crate) const SESSION_AUDIT_ACTION: &str = "voice.session.open";
 const GATE_CONTAINER: &str = "streams";
 
 /// THE SCOPE KIND a key must hold to open a live session — the plane's one declared scope kind (see
-/// `PLANE_DECL.scope_kinds`). Named once here, so the vocabulary an operator writes in
+/// `PLANE_DECLARATION.scope_kinds`). Named once here, so the vocabulary an operator writes in
 /// `allowed_scopes: [{ kind: session, value: … }]` and the vocabulary the door demands cannot drift.
 const SESSION_SCOPE_KIND: &str = "session";
 
@@ -223,6 +224,50 @@ pub fn compose_gemini_provider(
 ) -> Result<bool, String> {
     let resolved = resolver.resolve_string(api_key)?;
     Ok(install_gemini_provider(base_url, resolved))
+}
+
+/// A provider composition step: captured off the resolved configuration, run once the deployment's
+/// secret resolver exists (the root's `compose` axis shape).
+pub type Compose = Box<dyn FnOnce(&dyn busbar_api::SecretResolve)>;
+
+/// THE PLANE'S PROVIDER, COMPOSED FROM THE DEPLOYMENT'S ORDINARY CATALOG — this plane's `compose` entry
+/// hook ([`crate::linked`]). The `streams:` grammar carries no credential field, so the realtime
+/// provider is the one already serving the model that section targets: `streams.session.model` names
+/// a model, the model names its provider, and that provider entry carries the origin and the secret
+/// reference every other lane's key is declared as. Captured off the resolved configuration BEFORE
+/// the app is built; the returned step runs once the resolver that turns a reference into a
+/// credential exists. A deployment with no `streams:` block pins no model and captures nothing.
+///
+/// Silent on a deployment that captured nothing; the only lines this emits are the fail-closed
+/// warnings when a reference the operator DID declare will not resolve. They are the composition
+/// root's lines (its log target), because it is the root's boot that is reporting them.
+pub fn compose_from_config(cfg: &RootCfg) -> Option<Compose> {
+    let (base_url, api_key) = crate::config::configured_session_model()
+        .and_then(|model| cfg.models.get(&model).map(|m| m.provider.clone()))
+        .and_then(|provider| cfg.providers.get(&provider))
+        .map(|p| (p.base_url.clone(), p.api_key.clone()))?;
+    Some(Box::new(move |resolver| {
+        if let Err(e) = compose_provider(base_url.clone(), &api_key, resolver) {
+            tracing::warn!(
+                target: "busbar",
+                "voice: the realtime provider credential did not resolve, so the voice mint and SDP \
+                 routes stay uncomposed: {e}"
+            );
+        }
+        // K4: THE GEMINI LIVE ROUTE'S PROVIDER, composed under its OWN endpoint (a separate set-once
+        // slot, `x-goog-api-key` scheme) rather than reusing the OpenAI one's — a deployment cannot
+        // silently point one dialect's traffic at the other's credential. `streams:` still names ONE
+        // model, so both endpoints are composed from the SAME resolved (origin, reference) pair; a
+        // deployment that fronts Gemini Live through a distinct provider entry needs a second
+        // `streams:` knob to name it, which is not this cycle's grammar change (see docs/voice.md).
+        if let Err(e) = compose_gemini_provider(base_url, &api_key, resolver) {
+            tracing::warn!(
+                target: "busbar",
+                "voice: the Gemini Live provider credential did not resolve, so the Gemini route \
+                 stays uncomposed: {e}"
+            );
+        }
+    }))
 }
 
 /// The composed Gemini Live provider endpoint, or `None` when the composition root composed none.
@@ -560,6 +605,12 @@ pub fn voice_routes(slot: &dyn Any) -> Vec<PlaneRouteSpec> {
     ]
 }
 
+/// THE PLANE'S WS-ACCEPT ENTRY HOOK ([`crate::linked`]): installs [`voice_ws_arrivals`] into the
+/// neutral WS-accept registry, before the router that drains it is built.
+pub fn install_arrivals() {
+    install_ws_arrivals(voice_ws_arrivals());
+}
+
 /// THE VOICE PLANE'S INBOUND WS-ACCEPT ARRIVALS — the browser-sideband + telephony media legs,
 /// declared through the neutral substrate WS-accept seam (`WsArrivalSpec`) rather than `routes`,
 /// because an inbound WS upgrade cannot ride the buffered-body `PlaneReqCtx` adapter (its body is
@@ -571,7 +622,7 @@ pub fn voice_routes(slot: &dyn Any) -> Vec<PlaneRouteSpec> {
 #[must_use]
 pub fn voice_ws_arrivals() -> Vec<WsArrivalSpec> {
     use busbar_plugin::cold::endpoint::RouteAuth;
-    let key = crate::PLANE_DECL.key;
+    let key = crate::PLANE_DECLARATION.key;
     vec![
         WsArrivalSpec {
             path: SIDEBAND_PATH.to_string(),
@@ -654,7 +705,7 @@ pub(crate) struct GovernedOpen<'a> {
 ///    byte-identical.
 /// 3. **the governed open** — [`crate::topology::begin_session`] /
 ///    [`crate::topology::telephony::begin_telephony`] runs `run_gauntlet_session`
-///    (verify-strictly-before-charge): a denied destination refuses `403` before any lease/durable open.
+///    (verify-strictly-before-charge): a gate refusal is `403` before any lease/durable open.
 /// 4. **the serving leg** — for `Mint`, the `ek_` is minted through [`HttpsTokenMinter`] over the
 ///    configured provider and returned as JSON; for `Sdp`, the offer is brokered upstream, the
 ///    `rtc_<call_id>` correlation key is stamped onto the durable row, and the answer + `Location`
@@ -799,7 +850,7 @@ async fn hook_gate(
     now: u64,
     cfg: &SessionConfig,
 ) -> Result<(), Box<axum::response::Response>> {
-    if !host.gate_attached(crate::PLANE_DECL.key, GATE_CONTAINER) {
+    if !host.gate_attached(crate::PLANE_DECLARATION.key, GATE_CONTAINER) {
         return Ok(());
     }
     // Serialized ONCE for the seam (only past the presence check). The host re-selects the gate set by
@@ -811,7 +862,7 @@ async fn hook_gate(
     let host = Arc::clone(host);
     let outcome = tokio::task::spawn_blocking(move || {
         host.gate_decide(
-            crate::PLANE_DECL.key,
+            crate::PLANE_DECLARATION.key,
             GATE_CONTAINER,
             now,
             SESSION_OPEN_METHOD,
@@ -910,7 +961,7 @@ async fn hook_tap(
     now: u64,
     cfg: &SessionConfig,
 ) -> Result<Option<SessionConfig>, Box<axum::response::Response>> {
-    if !host.tap_attached(crate::PLANE_DECL.key, GATE_CONTAINER) {
+    if !host.tap_attached(crate::PLANE_DECLARATION.key, GATE_CONTAINER) {
         return Ok(None);
     }
     let args_json = serde_json::to_vec(cfg).unwrap_or_default();
@@ -920,7 +971,7 @@ async fn hook_tap(
     let hook_host = Arc::clone(host);
     let verdict = tokio::task::spawn_blocking(move || {
         hook_host.transform_over(
-            crate::PLANE_DECL.key,
+            crate::PLANE_DECLARATION.key,
             GATE_CONTAINER,
             now,
             SESSION_OPEN_METHOD,
@@ -1126,7 +1177,7 @@ fn sideband_pending() -> axum::response::Response {
 }
 
 /// The finished refusal for a `begin_session` / `begin_telephony` [`StartError`] — verify-before-charge
-/// at the route layer (a denied destination is `403` with zero charge).
+/// at the route layer (a gate refusal is `403` with zero charge).
 fn start_refusal(e: &StartError) -> axum::response::Response {
     match e {
         StartError::DestinationRefused => refusal(
@@ -1434,9 +1485,7 @@ where
         charged_at: now,
         started: std::time::Instant::now(),
     };
-    let gate: Box<dyn GauntletPlane> = Box::new(SessionGauntlet {
-        deny: rt.destination_denied(&destination),
-    });
+    let gate: Box<dyn GauntletPlane> = Box::new(SessionGauntlet);
     // THE METER STEP's attribution for this WS session — the presenting key each turn's usage is
     // landed on through the core seam, under THIS LEG'S OWN dialect label (K4: no longer a plane-wide
     // constant). Built from the resolved key (or `None` ungoverned) and moved into the post-upgrade

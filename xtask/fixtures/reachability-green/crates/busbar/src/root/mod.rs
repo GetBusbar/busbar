@@ -1,3 +1,6 @@
+pub mod gauntlet_install;
+pub mod gauntlet_kernel;
+pub mod plane_decision;
 pub mod registry;
 pub mod units_a2a;
 pub mod units_decision;

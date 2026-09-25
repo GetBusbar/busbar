@@ -1585,7 +1585,7 @@ async fn tools_call(
     // ZERO COST when nothing is attached: one hash lookup that misses.
     if ctx
         .host
-        .gate_attached(crate::PLANE_DECL.key, &selected.server)
+        .gate_attached(crate::PLANE_DECLARATION.key, &selected.server)
     {
         // FIRE THE GATE THROUGH THE HOST SEAM (`plane_host::gate_decide_over`), so this plane body no
         // longer names the core hooks gate decision (`gate::decide`) or holds the resolved `ResolvedPolicy` set (the
@@ -1619,7 +1619,7 @@ async fn tools_call(
         // (`block_on` on a runtime worker panics). One hop per request that has an attached gate.
         let outcome = tokio::task::spawn_blocking(move || {
             host.gate_decide(
-                crate::PLANE_DECL.key,
+                crate::PLANE_DECLARATION.key,
                 &server,
                 request_id,
                 &tool,
@@ -1684,7 +1684,7 @@ async fn tools_call(
     // thing that changes a byte; an abstaining chain returns the original bytes.
     if ctx
         .host
-        .tap_attached(crate::PLANE_DECL.key, &selected.server)
+        .tap_attached(crate::PLANE_DECLARATION.key, &selected.server)
     {
         // Serialized ONCE for the seam. Byte-safe for the same reason the gate's is: `preserve_order`
         // is OFF, so the round-trip preserves the `Value`.
@@ -1704,7 +1704,7 @@ async fn tools_call(
         // thread — one hop per request that has an attached rewrite hook.
         let verdict = tokio::task::spawn_blocking(move || {
             host.transform_over(
-                crate::PLANE_DECL.key,
+                crate::PLANE_DECLARATION.key,
                 &server,
                 request_id,
                 &tool,

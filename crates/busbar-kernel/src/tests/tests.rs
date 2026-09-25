@@ -1,6 +1,6 @@
 use super::*;
 use crate::test_support::EnvVarGuard;
-use crate::test_support::{build_once, cfg_with_provider_api_key, oversized_413_body};
+use crate::test_support::{build_once, cfg_with_provider_api_key};
 // The monolith's root tests reached every crate-root item through `use super::*`. The split put
 // those items in appbuild/preflight/router/boot; this block restores the same names to this file's
 // scope. Allowed-unused as one block: which of these a given test build exercises varies by cfg.
@@ -331,7 +331,7 @@ fn test_inert_durable_keys_banner_fires_only_for_durable_keyed_no_token() {
 fn test_stateful_plane_ephemeral_store_warn_fires_only_for_ram_plus_stateful() {
     // RAM store + an MCP plane configured (tool or tool-pool) → the specific warn fires.
     let w = stateful_plane_ephemeral_store_warn(true, true, false)
-        .expect("RAM + MCP stateful → sharper warn fires");
+        .expect("RAM + the first stateful plane → sharper warn fires");
     assert!(
         w.contains("in-flight tasks will break")
             && w.contains("sqlite/postgres")
@@ -342,20 +342,20 @@ fn test_stateful_plane_ephemeral_store_warn_fires_only_for_ram_plus_stateful() {
     // RAM store + an A2A plane configured (agent or agent-pool) → fires (either stateful plane does).
     assert!(
         stateful_plane_ephemeral_store_warn(true, false, true).is_some(),
-        "RAM + A2A stateful → the sharper warn fires"
+        "RAM + the second stateful plane → the sharper warn fires"
     );
 
     // RAM store but LLM-only (no stateful plane) → stateless, a restart costs nothing → NO warn.
     assert!(
         stateful_plane_ephemeral_store_warn(true, false, false).is_none(),
-        "an LLM-only (stateless) deploy must NOT get the sharper warn — noise trains people to \
+        "a stateless-only deploy must NOT get the sharper warn — noise trains people to \
          ignore warnings"
     );
 
     // A DURABLE store → task state survives a restart → no warn, even with stateful planes present.
     assert!(
         stateful_plane_ephemeral_store_warn(false, true, true).is_none(),
-        "a durable store persists MCP/A2A task state across restarts — no sharper warn"
+        "a durable store persists stateful-plane task state across restarts — no sharper warn"
     );
 }
 
@@ -391,98 +391,17 @@ fn residual_planes() -> crate::plane::PlaneDispatch {
     crate::plane::PlaneDispatch::default()
 }
 
-/// The dialect a 404/405/413 is shaped in for `path` on a residual-only deployment — read through
-/// the ONE resolver the fallback handlers read, so this table cannot drift from what they answer.
-fn residual_dialect(path: &str) -> &'static str {
-    crate::ingress::native::envelope_dialect(residual_planes().ingress_of(path))
-}
-
-/// The fallback handlers resolve the ingress from the request path so a 404/405 is shaped in the
-/// client's own dialect, not a bare axum body.
-#[test]
-fn test_residual_dialect_inference() {
-    assert_eq!(residual_dialect("/v1/chat/completions"), "openai");
-    assert_eq!(residual_dialect("/v1/responses"), "responses");
-    assert_eq!(residual_dialect("/v2/chat"), "cohere");
-    // Both the stable v1 and v1beta Gemini surfaces infer gemini.
-    assert_eq!(
-        residual_dialect("/v1/models/gemini-pro:generateContent"),
-        "gemini"
-    );
-    assert_eq!(
-        residual_dialect("/v1beta/models/gemini-pro:streamGenerateContent"),
-        "gemini"
-    );
-    // REGRESSION: an OpenAI-SDK `model.retrieve` hits
-    // `GET /v1/models/{model_id}` — NO `:<action>` colon. That must infer OpenAI (so the 405/404
-    // error is OpenAI-decodable), not Gemini, even though it shares the `/v1/models/` prefix.
-    assert_eq!(residual_dialect("/v1/models/gpt-4o"), "openai");
-    assert_eq!(residual_dialect("/v1/models"), "openai"); // list-models (no trailing id)
-                                                          // A `/v1/models/` path WITH a colon action is still the Gemini surface.
-    assert_eq!(
-        residual_dialect("/v1/models/gemini-1.5-pro:generateContent"),
-        "gemini"
-    );
-    // `/v1beta/models/...` is Gemini-only even without a colon (OpenAI has no v1beta surface).
-    assert_eq!(residual_dialect("/v1beta/models/gemini-pro"), "gemini");
-    assert_eq!(
-        residual_dialect("/model/anthropic.claude/converse"),
-        "bedrock"
-    );
-    assert_eq!(
-        residual_dialect("/model/anthropic.claude/converse-stream"),
-        "bedrock"
-    );
-    assert_eq!(residual_dialect("/my-model/v1/messages"), "anthropic");
-    // REGRESSION: a NON-Converse `/model/...` path must NOT be classified as bedrock
-    // (it lacks the `/converse`/`/converse-stream` suffix). The previous unconditional
-    // `starts_with("/model/")` shaped it as bedrock here while auth shaped it as openai —
-    // contradictory error envelopes for one path. The canonical classifier now requires the
-    // suffix, so a bare `/model/foo/bar` falls through to the OpenAI default, matching auth.rs.
-    assert_eq!(
-        residual_dialect("/model/foo/bar"),
-        "openai",
-        "non-Converse /model/ path must align with auth.rs (openai), not bedrock"
-    );
-    assert_eq!(residual_dialect("/model/foo/predict"), "openai");
-    // Unknown path defaults to the widely-understood OpenAI envelope.
-    assert_eq!(residual_dialect("/totally/unknown"), "openai");
-}
+// THE RESIDUAL-DIALECT TABLE (`test_residual_dialect_inference`: which shipped dialect each residual
+// path shape is answered in) MOVED to `tests/residual_envelope_cross_plane.rs`, beside the other
+// tests that assert real-plane behaviour. Its assertions are the real dialects' own residual
+// claims, which that integration target reaches through the plane crate's testkit; this neutral
+// source names no dialect.
 
 // (The test that pinned `main.rs::proto_for_path` against the canonical `proto::proto_for_path`
 // is GONE WITH ITS SUBJECT: there is no second classifier left for it to agree with. ONE resolver
 // — `plane::PlaneDispatch::ingress_of` — answers for the fallback handlers, the 413 reshape and the
 // auth-time 401 alike, so agreement is now a property of the code rather than of a test watching
 // two copies. `plane_tests::the_mount_table_is_read_before_the_path_shape` pins what it answers.)
-
-/// A 404 fallback on a Bedrock path must carry the native `__type` envelope AND the `x-amzn-*`
-/// headers a real AWS endpoint always emits — never axum's empty body (a proxy tell).
-#[test]
-fn test_fallback_bedrock_404_is_native_envelope_with_amzn_headers() {
-    let resp = fallback_error_response(
-        &residual_planes(),
-        "/model/some.model/converse",
-        axum::http::StatusCode::NOT_FOUND,
-        crate::taxonomy::ERR_TYPE_NOT_FOUND,
-        "missing",
-    );
-    assert_eq!(resp.status(), axum::http::StatusCode::NOT_FOUND);
-    assert_eq!(
-        resp.headers()
-            .get(axum::http::header::CONTENT_TYPE)
-            .and_then(|h| h.to_str().ok()),
-        Some("application/json"), // golden wire-contract literal (kept bare on purpose)
-        "fallback must be application/json, not bare text"
-    );
-    assert!(
-        resp.headers().get("x-amzn-requestid").is_some(),
-        "bedrock fallback must carry x-amzn-RequestId"
-    );
-    assert!(
-        resp.headers().get("x-amzn-errortype").is_some(),
-        "bedrock fallback must carry x-amzn-errortype"
-    );
-}
 
 /// A 404 fallback on the OpenAI path is shaped as the OpenAI error envelope (no amzn headers).
 #[tokio::test]
@@ -509,7 +428,7 @@ async fn test_fallback_openai_404_is_json_no_amzn_headers() {
     assert_eq!(
         v["error"]["type"],
         "not_found_error", // golden wire-contract literal (kept bare on purpose)
-        "OpenAI-inferred 404 must carry the canonical not_found_error type, not not_found"
+        "a chat-completions-path 404 must carry the canonical not_found_error type, not not_found"
     );
     let resp = fallback_error_response(
         &residual_planes(),
@@ -520,7 +439,7 @@ async fn test_fallback_openai_404_is_json_no_amzn_headers() {
     );
     assert!(
         resp.headers().get("x-amzn-requestid").is_none(),
-        "non-bedrock fallback must NOT carry x-amzn-* headers"
+        "a non-Converse-path fallback must NOT carry x-amzn-* headers"
     );
 }
 
@@ -576,60 +495,12 @@ async fn test_oversized_body_413_reshaped_to_json_not_plain_text() {
         serde_json::from_slice(&bytes).expect("reshaped 413 body must be valid JSON");
     assert!(
         v.get("error").is_some(),
-        "OpenAI-inferred 413 must carry an `error` envelope; got {v}"
+        "a chat-completions-path 413 must carry an `error` envelope; got {v}"
     );
     assert_ne!(
         String::from_utf8_lossy(&bytes),
         "length limit exceeded",
         "the axum plain-text body must not survive reshaping"
-    );
-}
-
-/// REGRESSION: a Bedrock-inferred oversized-body 413 must carry the native AWS
-/// `__type` envelope AND the `x-amzn-*` headers, indistinguishable from a real Bedrock reject.
-#[tokio::test]
-async fn test_oversized_body_413_bedrock_native_envelope_with_amzn_headers() {
-    use axum::response::IntoResponse;
-    use http_body_util::BodyExt as _;
-
-    let axum_native_413 = (
-        axum::http::StatusCode::PAYLOAD_TOO_LARGE,
-        [(
-            axum::http::header::CONTENT_TYPE,
-            axum::http::HeaderValue::from_static("text/plain; charset=utf-8"),
-        )],
-        "length limit exceeded",
-    )
-        .into_response();
-
-    let reshaped = reshape_oversized_413(
-        &residual_planes(),
-        "/model/some.model/converse",
-        axum_native_413,
-    )
-    .await;
-    assert_eq!(reshaped.status(), axum::http::StatusCode::PAYLOAD_TOO_LARGE);
-    assert_eq!(
-        reshaped
-            .headers()
-            .get(axum::http::header::CONTENT_TYPE)
-            .and_then(|h| h.to_str().ok()),
-        Some("application/json") // golden wire-contract literal (kept bare on purpose)
-    );
-    assert!(
-        reshaped.headers().get("x-amzn-requestid").is_some(),
-        "bedrock 413 must carry x-amzn-RequestId"
-    );
-    assert!(
-        reshaped.headers().get("x-amzn-errortype").is_some(),
-        "bedrock 413 must carry x-amzn-errortype"
-    );
-    let bytes = reshaped.into_body().collect().await.unwrap().to_bytes();
-    let v: serde_json::Value =
-        serde_json::from_slice(&bytes).expect("reshaped bedrock 413 body must be valid JSON");
-    assert!(
-        v.get("__type").is_some(),
-        "bedrock 413 must carry the native __type envelope; got {v}"
     );
 }
 
@@ -807,6 +678,7 @@ pub(crate) fn plugin_manifest(
         settings_schema: None,
         schema_derived: false,
         host: None,
+        declares: Default::default(),
     }
 }
 
@@ -880,6 +752,178 @@ fn disabled_plugins_are_inert_even_when_present() {
     )
     .expect("inert");
     assert!(reg.loadable().is_empty() && reg.skipped().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// K5 (DECISIONS #2 rule (1)) — THE BUILT-IN STORE IS A ROW OF THE STORE AXIS. The default store is
+/// registered through `PluginRegistry::link`, the admission a dropped-in store's row takes, and the
+/// configured name resolves to it there — not a name the kernel matches. With the plugins directory
+/// off the registry holds exactly that row, which states itself ephemeral and opens through
+/// `open_store`; with the directory on, the linked row still holds its name (first registration
+/// wins) and a dropped-in plugin spelling the same name stays the directory's own row.
+///
+/// RED by planting the door bypass: `linked_rows()` registering nothing leaves the default boot's
+/// `store.module: memory` unresolved (the preflight then refuses it as a plugin with plugins off).
+#[test]
+fn the_built_in_store_is_a_linked_row_of_the_store_axis() {
+    let name = crate::config::GOVERNANCE_STORE_MEMORY;
+    let reg = crate::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &crate::config::PluginsCfg::default(),
+        &Default::default(),
+    )
+    .expect("the default boot resolves its store on the axis");
+    let row = reg.resolve(name).expect("the default store is a row");
+    assert_eq!((row.manifest.kind.as_str(), row.ephemeral), ("store", true));
+    let stores = reg.linked().iter().filter(|p| p.manifest.kind == "store");
+    assert_eq!((stores.count(), reg.loadable().len()), (1, 0));
+    reg.open_store(name, "{}")
+        .expect("the row opens through open_store");
+
+    let dir = tmp_plugin_dir("linked-store");
+    let tarball = unsigned_tarball(plugin_manifest(name, "acme-ram", "acme"), b"lib");
+    std::fs::write(dir.join("ram.tar.gz"), tarball).unwrap();
+    let mut cfg = plugins_cfg(&dir, true);
+    cfg.trust.allow_unsigned = true;
+    let reg = crate::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &cfg,
+        &Default::default(),
+    )
+    .expect("the directory scans");
+    let row = reg.resolve(name).expect("the name still resolves");
+    assert!(
+        row.ephemeral && row.manifest.publisher == "busbar",
+        "the linked row holds its name"
+    );
+    assert_eq!(
+        reg.loadable().len(),
+        1,
+        "the dropped-in row is still the directory's"
+    );
+    assert_eq!(reg.resolve("acme-ram").map(|p| p.ephemeral), Some(false));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// K5b (DECISIONS #2 rule (1)) — THE BUILT-IN SECRET MODULES ARE ROWS OF THE SECRET AXIS. `env` and
+/// `file` are registered through `PluginRegistry::link` beside the default store, a reference to
+/// either resolves through its row's `open_secret` (not a name the resolver matches), and a
+/// resolution's failure text is the built-in's own, unwrapped. A dropped-in plugin spelling `env`
+/// leaves the linked row holding the name.
+///
+/// RED by planting the door bypass: `linked_rows()` registering no secret row leaves `env` a plugin
+/// reference, which the built-ins-only resolver refuses as "not a built-in".
+#[test]
+fn the_built_in_secret_modules_are_linked_rows_of_the_secret_axis() {
+    use crate::config::secret::{SecretRef, SecretResolver};
+    let reg = crate::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &crate::config::PluginsCfg::default(),
+        &Default::default(),
+    )
+    .expect("the default boot registers its linked rows");
+    for name in ["env", "file"] {
+        let row = reg
+            .resolve(name)
+            .expect("a built-in secret module is a row");
+        assert_eq!(row.manifest.kind, "secret");
+        assert!(row.in_process() && reg.open_secret(name, "{}").is_ok());
+    }
+    let var = "BUSBAR_K5B_LINKED_SECRET_ROW";
+    std::env::set_var(var, "hunter2");
+    let resolver = SecretResolver::builtins_only();
+    assert_eq!(resolver.resolve(&SecretRef::env(var)).unwrap(), b"hunter2");
+    let missing = resolver
+        .resolve(&SecretRef::env("BUSBAR_K5B_NO_SUCH_VARIABLE"))
+        .expect_err("an unset variable refuses");
+    assert_eq!(
+        missing,
+        "secret env:BUSBAR_K5B_NO_SUCH_VARIABLE cannot resolve: environment variable \
+         'BUSBAR_K5B_NO_SUCH_VARIABLE' is unset"
+    );
+    std::env::remove_var(var);
+
+    let dir = tmp_plugin_dir("linked-secret");
+    let tarball = unsigned_tarball(plugin_manifest("env", "acme-env", "acme"), b"lib");
+    std::fs::write(dir.join("env.tar.gz"), tarball).unwrap();
+    let mut cfg = plugins_cfg(&dir, true);
+    cfg.trust.allow_unsigned = true;
+    let reg = crate::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &cfg,
+        &Default::default(),
+    )
+    .expect("the directory scans");
+    let row = reg.resolve("env").expect("the name still resolves");
+    assert!(row.in_process(), "the linked row holds its name");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// K5b (3c) exit test: the built-in ranking strategies are ALIASES of ONE linked `hooks-ranking` row
+/// on the hook axis — each frozen spelling (`least_busy` too, which the package-name rule would
+/// refuse as a name) resolves through the alias table to that `kind: hook` row, and opens as the
+/// strategy it spells. `weighted` stays the inline floor (no row). A frozen spelling is the weakest
+/// claim on the table: a dropped-in plugin aliased `cheapest` keeps answering to it.
+/// RED by planting the door bypass: `linked_rows()` registering no ranking row leaves every
+/// strategy spelling unresolved ("a built-in ranking strategy is a row of the hook axis").
+#[cfg(feature = "hooks-ranking")]
+#[test]
+fn the_built_in_ranking_strategies_are_aliases_of_one_linked_row_of_the_hook_axis() {
+    let preflight = |cfg: &crate::config::PluginsCfg| {
+        crate::plugins_preflight(
+            None,
+            None,
+            &Default::default(),
+            &Default::default(),
+            cfg,
+            &Default::default(),
+        )
+    };
+    let reg = preflight(&Default::default()).expect("the default boot registers its linked rows");
+    for name in crate::config::RESERVED_HOOK_NAMES
+        .iter()
+        .filter(|n| crate::config::parse_strategy(n) != crate::config::PoolPolicy::Weighted)
+    {
+        let row = reg
+            .resolve(name)
+            .expect("a built-in ranking strategy is a row of the hook axis");
+        assert_eq!(
+            (row.manifest.kind.as_str(), row.manifest.name.as_str()),
+            ("hook", "hooks-ranking")
+        );
+        assert!(row.in_process() && row.manifest.alias == "hooks-ranking");
+        assert_eq!(reg.open_ranking(name).expect("the row opens").name(), *name);
+    }
+    assert!(reg.resolve(crate::config::ON_ERROR_WEIGHTED).is_none());
+    assert!(reg.open_ranking("hooks-ranking").is_err());
+
+    let dir = tmp_plugin_dir("linked-ranking");
+    let tarball = unsigned_tarball(plugin_manifest("acme-rank", "cheapest", "acme"), b"lib");
+    std::fs::write(dir.join("acme-rank.tar.gz"), tarball).unwrap();
+    let mut cfg = plugins_cfg(&dir, true);
+    cfg.trust.allow_unsigned = true;
+    let reg = preflight(&cfg).expect("the directory scans");
+    let row = reg.resolve("cheapest").expect("the alias still resolves");
+    assert_eq!(
+        row.manifest.name, "acme-rank",
+        "a row's own alias outranks a frozen spelling"
+    );
+    assert_eq!(
+        reg.resolve("least_busy").unwrap().manifest.name,
+        "hooks-ranking"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1717,26 +1761,9 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
 // mount table and the path-shape classifier ever disagree again, these three tests are where it
 // shows.
 
-/// A PLANE CLAIMS A PATH ONLY WHEN THE OPERATOR MOUNTED IT. With no `mcp:` section there is no MCP
-/// plane, so `/mcp` is an ordinary unclaimed path on the residual and is answered as one. The merge
-/// must not turn an unmounted plane into one that claims paths by URL shape.
-#[tokio::test]
-async fn an_unmounted_plane_claims_no_path_by_url_shape() {
-    crate::metrics::init();
-    let app = crate::test_support::TestApp::new().build();
-
-    let v = oversized_413_body(app, "/mcp").await;
-
-    assert!(
-        v.get("jsonrpc").is_none(),
-        "nothing mounted MCP, so `/mcp` is a residual path and must not be answered as a plane; \
-         got {v}"
-    );
-    assert!(
-        v.pointer("/error/message").is_some(),
-        "the residual plane answers the widely-understood envelope; got {v}"
-    );
-}
+// `an_unmounted_plane_claims_no_path_by_url_shape` MOVED to `tests/residual_envelope_cross_plane.rs`,
+// beside its mounted twin in `tests/plane_integration.rs`: the path it probes is a real plane's
+// mount path, which that integration target names through the plane crate itself.
 
 // ── response-header consolidation (default OFF, opt-in via `advanced.response_headers`) ──────────
 //
@@ -1861,10 +1888,10 @@ governance:
   db_path: "/var/lib/busbar/governance.db"
   admin_token: '${PATH}'
 providers:
-  anthropic:
+  upstream-a:
     api_key_env: ANTHROPIC_KEY
 models:
-  claude: { provider: anthropic }
+  claude: { provider: upstream-a }
 pools:
   fast:
     members:

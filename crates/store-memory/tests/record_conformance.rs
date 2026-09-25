@@ -213,7 +213,9 @@ fn a_scan_of_an_untouched_schema_is_empty() {
 /// path rather than an addition beside it.
 #[test]
 fn the_record_verbs_do_not_disturb_the_published_kind_tagged_rows() {
-    use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, Store};
+    use busbar_contract::records::{
+        PlaneDisposition, PlaneRecord, PlaneSelector, RecordStore as Store,
+    };
 
     let store = MemoryStore::new();
     store

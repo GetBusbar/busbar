@@ -47,8 +47,12 @@ pub use busbar_plugin::cold::{Signal, SignalBag, SignalValue};
 /// direct `busbar-plugin` dependency just to name the log-sink type in the generated symbol.
 #[doc(hidden)]
 pub mod __abi {
-    pub use busbar_plugin::cold::LogSinkFn;
+    pub use busbar_plugin::cold::{ColdEntry, LogSinkFn};
 }
+
+/// The boundary a LINKED build hands the loader in place of a library (the macro's
+/// `BUSBAR_COLD_ENTRY`): named here so a plugin's linked-door entry can state its type.
+pub use busbar_plugin::cold::ColdEntry;
 
 /// The handle type behind the opaque `*mut c_void` for a store plugin (a boxed trait object). Named at
 /// the module level so the `export_plugin!` expansion can pass it to `close_boundary::<$ty>`.
@@ -273,6 +277,12 @@ pub unsafe fn store_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutco
 /// level so the `export_plugin!` expansion can pass it to `close_boundary::<$ty>`.
 pub type AuthHandle = Box<dyn busbar_api::AuthPlugin>;
 
+/// Re-export the auth wire and the two auth faces so an auth author (and the `dispatch_compiled_in`
+/// twin `export_auth_plugin!` emits) names `busbar_plugin_sdk::AuthRequest` (etc.) without a direct
+/// `busbar-plugin` dependency, mirroring the hook/export re-export path.
+pub use busbar_api::{AuthModule, AuthPlugin};
+pub use busbar_plugin::cold::auth::{AuthRequest, AuthResponse};
+
 /// The auth handle behind the opaque `*mut c_void`: a boxed [`busbar_api::AuthPlugin`].
 type BoxedAuth = AuthHandle;
 
@@ -281,8 +291,14 @@ type BoxedAuth = AuthHandle;
 /// default (Reject) login behavior. This is what lets `export_auth_plugin!` keep accepting a
 /// `fn(&str) -> Result<Box<dyn AuthModule>, String>` ctor UNCHANGED while the exported handle is the
 /// unified `Box<dyn AuthPlugin>`.
-struct VerifyOnlyAuth(Box<dyn busbar_api::AuthModule>);
-impl busbar_api::AuthModule for VerifyOnlyAuth {
+///
+/// Generic over how the module is held: the dropped-in door's handle OWNS it (`Box`), and the
+/// compiled-in twin `export_auth_plugin!` emits BORROWS the one its caller opened (`&`) — one adapter,
+/// so the two doors cannot adapt a verify-only module differently.
+struct VerifyOnlyAuth<M>(M);
+impl<'a, M: std::ops::Deref<Target = dyn busbar_api::AuthModule + 'a> + Send + Sync>
+    busbar_api::AuthModule for VerifyOnlyAuth<M>
+{
     fn name(&self) -> &'static str {
         self.0.name()
     }
@@ -293,7 +309,10 @@ impl busbar_api::AuthModule for VerifyOnlyAuth {
         self.0.cacheable()
     }
 }
-impl busbar_api::LoginModule for VerifyOnlyAuth {}
+impl<'a, M: std::ops::Deref<Target = dyn busbar_api::AuthModule + 'a> + Send + Sync>
+    busbar_api::LoginModule for VerifyOnlyAuth<M>
+{
+}
 
 /// Wrap a verify-only auth module into the unified [`AuthHandle`]. Used by the `export_auth_plugin!`
 /// expansion; also the boundary for future login-capable plugins (which would box directly).
@@ -342,10 +361,40 @@ pub fn dispatch_auth(
     }
 }
 
+/// Run one auth request and wrap the answer in the observability envelope (DECISIONS #85) — what
+/// actually goes on the wire. The auth twin of [`dispatch_export_enveloped`] (#2's auth witness,
+/// step (1)).
+///
+/// An auth module's verify and login faces report nothing on the back-channel, so the envelope is
+/// BARE (`{"result": …}`): what makes it load-bearing is not what it carries today but that the
+/// dropped-in door (`busbar_call`, via [`auth_dispatch`]) and the compiled-in door (the
+/// `dispatch_compiled_in` twin `export_auth_plugin!` emits) run THIS function and nothing else, so the
+/// two builds of one crate are byte-identical on the wire and a compiled-in build has no
+/// back-channel of its own to reach. Shipped at auth payload schema v3 ([`auth_abi_version`]); the
+/// loader keeps the v1 floor and reads a bare (pre-envelope) answer exactly as before.
+pub fn dispatch_auth_enveloped(
+    module: &dyn busbar_api::AuthPlugin,
+    req: busbar_plugin::cold::auth::AuthRequest,
+) -> Envelope<busbar_plugin::cold::auth::AuthResponse> {
+    Envelope::bare(dispatch_auth(module, req))
+}
+
+/// [`dispatch_auth_enveloped`] over a VERIFY-ONLY module, adapted exactly as the dropped-in door
+/// adapts it ([`adapt_auth_handle`]): login requests take the fail-closed default. What the twin
+/// `export_auth_plugin!` emits runs, so the compiled-in door cannot adapt the module differently.
+#[doc(hidden)]
+pub fn dispatch_verify_only_enveloped(
+    module: &dyn busbar_api::AuthModule,
+    req: busbar_plugin::cold::auth::AuthRequest,
+) -> Envelope<busbar_plugin::cold::auth::AuthResponse> {
+    dispatch_auth_enveloped(&VerifyOnlyAuth(module), req)
+}
+
 /// The per-kind `dispatch` closure `export_auth_plugin!` hands to [`boundary::call_boundary`]: decode an
-/// [`busbar_plugin::cold::auth::AuthRequest`], run it via [`dispatch_auth`], and encode the
-/// [`busbar_plugin::cold::auth::AuthResponse`] into a [`BoundaryOutcome`]. An `authenticate` verdict
-/// (`Reject`/`Pass`) rides the OK payload — only an undecodable request / encode failure is non-OK.
+/// [`busbar_plugin::cold::auth::AuthRequest`], run it via [`dispatch_auth_enveloped`], and encode the
+/// enveloped [`busbar_plugin::cold::auth::AuthResponse`] into a [`BoundaryOutcome`]. An
+/// `authenticate` verdict (`Reject`/`Pass`) rides the OK payload — only an undecodable request /
+/// encode failure is non-OK.
 ///
 /// # Safety
 /// `handle` is a live auth handle from `open` (guaranteed non-null by the boundary wrapper).
@@ -355,7 +404,7 @@ pub unsafe fn auth_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcom
         Ok(r) => r,
         Err(e) => return BoundaryOutcome::Unsupported(format!("malformed request JSON: {e}")),
     };
-    let resp = dispatch_auth(module.as_ref(), request);
+    let resp = dispatch_auth_enveloped(module.as_ref(), request);
     match serde_json::to_vec(&resp) {
         Ok(payload) => BoundaryOutcome::Ok(payload),
         Err(e) => BoundaryOutcome::Error(format!("response encode failed: {e}")),
@@ -399,12 +448,28 @@ pub mod hostlog {
     /// # Safety
     /// `sink` must stay callable, and `ctx` valid, for the life of the plugin.
     pub unsafe fn install(sink: LogSinkFn, ctx: *mut std::ffi::c_void, max_level: u32) {
-        CTX.store(ctx, Ordering::Release);
-        MAX_LEVEL.store(max_level, Ordering::Release);
-        SINK.store(sink as usize, Ordering::Release);
+        unsafe { install_sink(sink, ctx, max_level) };
         // Light up every `tracing` call site already in this plugin, including in library crates
         // that never depended on this SDK.
         install_tracing_bridge();
+    }
+
+    /// Record the host's sink WITHOUT the `tracing` bridge — what a LINKED plugin's entry
+    /// (`BUSBAR_COLD_ENTRY`) installs. The bridge exists because a `cdylib` carries its own copy of
+    /// `tracing-core`, so its events reach no host subscriber unless forwarded. A linked plugin has
+    /// no copy of its own: its events already reach the host's dispatcher, which is exactly where the
+    /// bridge would have forwarded them. Installing the bridge anyway would put a forwarder INTO the
+    /// host's dispatcher — every host event would then re-enter the sink it forwards to. Explicit
+    /// [`log`] calls still reach the host through the sink, as on the dropped-in door. (Linked
+    /// plugins share this SDK's statics, so the last one to install is the `ctx` those explicit
+    /// records are attributed to; their `tracing` events carry their own targets.)
+    ///
+    /// # Safety
+    /// As [`install`].
+    pub unsafe fn install_sink(sink: LogSinkFn, ctx: *mut std::ffi::c_void, max_level: u32) {
+        CTX.store(ctx, Ordering::Release);
+        MAX_LEVEL.store(max_level, Ordering::Release);
+        SINK.store(sink as usize, Ordering::Release);
     }
 
     /// Emit one record at `level`. Goes to the host's subscriber when a sink is installed, else to
@@ -543,6 +608,17 @@ macro_rules! export_auth_plugin {
             ctor = __busbar_auth_open_adapted,
             handle = $crate::AuthHandle,
         );
+        /// THE COMPILED-IN ENTRY POINT — the twin of the `busbar_call` symbol above (#2's auth
+        /// witness, step (2)). A compiled-in build reaches the module `$ctor` opened through the SAME
+        /// op-dispatch and the SAME envelope the C symbol runs — `dispatch_auth_enveloped`, over the
+        /// same verify-only adapter — never through a shortcut into the module, so the two builds of
+        /// this crate are one plugin over one contract.
+        pub fn dispatch_compiled_in(
+            module: &dyn $crate::AuthModule,
+            req: $crate::AuthRequest,
+        ) -> $crate::Envelope<$crate::AuthResponse> {
+            $crate::dispatch_verify_only_enveloped(module, req)
+        }
     };
 }
 
@@ -579,6 +655,14 @@ macro_rules! export_login_plugin {
             ctor = __busbar_login_open,
             handle = $crate::AuthHandle,
         );
+        /// THE COMPILED-IN ENTRY POINT — the twin of the `busbar_call` symbol above, as
+        /// `export_auth_plugin!` emits it: the same `dispatch_auth_enveloped` the C symbol runs.
+        pub fn dispatch_compiled_in(
+            module: &dyn $crate::AuthPlugin,
+            req: $crate::AuthRequest,
+        ) -> $crate::Envelope<$crate::AuthResponse> {
+            $crate::dispatch_auth_enveloped(module, req)
+        }
     };
 }
 
@@ -768,6 +852,11 @@ pub trait HookHandler: Send + Sync {
 /// so the `export_plugin!` expansion can pass it to `close_boundary::<$ty>`.
 pub type HookHandle = Box<dyn HookHandler>;
 
+/// Re-export the hook wire so a hook author (and the `dispatch_compiled_in` twin
+/// `export_hook_plugin!` emits) names `busbar_plugin_sdk::HookRequest` / `HookReply` without a direct
+/// `busbar-plugin` dependency, mirroring the auth/export re-export path.
+pub use busbar_plugin::cold::hook::{HookReply, HookRequest};
+
 /// The hook handle behind the opaque `*mut c_void`: a boxed [`HookHandler`].
 type BoxedHook = HookHandle;
 
@@ -818,9 +907,26 @@ pub fn dispatch_hook(
     }
 }
 
+/// Run one hook request and wrap the reply in the observability envelope (DECISIONS #85) — what
+/// actually goes on the wire; the hook twin of [`dispatch_export_enveloped`].
+///
+/// A hook reports its metrics in its `status` reply (the shape #85's envelope was modelled on), so the
+/// envelope is BARE and the reply inside it is exactly [`dispatch_hook`]'s — the hook kind is a 1.6.0
+/// FUNCTIONAL fixed point, and this moves its wire, never its behaviour. The dropped-in door
+/// (`busbar_call`, via [`hook_dispatch`]) and the compiled-in door (the `dispatch_compiled_in` twin
+/// `export_hook_plugin!` emits) both run this, so the two builds are byte-identical on the wire.
+/// Shipped at hook payload schema v2 ([`hook_abi_version`]); the loader keeps the v1 floor and reads a
+/// bare (pre-envelope) reply exactly as before.
+pub fn dispatch_hook_enveloped(
+    handler: &dyn HookHandler,
+    req: busbar_plugin::cold::hook::HookRequest,
+) -> Envelope<busbar_plugin::cold::hook::HookReply> {
+    Envelope::bare(dispatch_hook(handler, req))
+}
+
 /// The per-kind `dispatch` closure `export_hook_plugin!` hands to [`boundary::call_boundary`]: decode a
-/// [`busbar_plugin::cold::hook::HookRequest`], run it via [`dispatch_hook`], and encode the reply into a
-/// [`BoundaryOutcome`].
+/// [`busbar_plugin::cold::hook::HookRequest`], run it via [`dispatch_hook_enveloped`], and encode the
+/// enveloped reply into a [`BoundaryOutcome`].
 ///
 /// # Safety
 /// `handle` is a live hook handle from `open` (guaranteed non-null by the boundary wrapper).
@@ -830,7 +936,7 @@ pub unsafe fn hook_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcom
         Ok(r) => r,
         Err(e) => return BoundaryOutcome::Unsupported(format!("malformed request JSON: {e}")),
     };
-    let resp = dispatch_hook(handler.as_ref(), request);
+    let resp = dispatch_hook_enveloped(handler.as_ref(), request);
     match serde_json::to_vec(&resp) {
         Ok(payload) => BoundaryOutcome::Ok(payload),
         Err(e) => BoundaryOutcome::Error(format!("response encode failed: {e}")),
@@ -845,7 +951,68 @@ pub unsafe fn hook_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcom
 
 /// Re-export the export wire types so a plugin author names `busbar_plugin_sdk::ExportStream` (etc.)
 /// without a direct `busbar-plugin` dependency, mirroring the hook/auth re-export path.
-pub use busbar_plugin::cold::export::{ExportField, ExportRequest, ExportResponse, ExportStream};
+pub use busbar_plugin::cold::export::{
+    ExportField, ExportRequest, ExportResponse, ExportStream, HostOp, HostResult, HttpRequest,
+    HttpResponse, MetricFamily, MetricSample, Rotation, RotationFault,
+};
+
+/// The Prometheus text exposition's content type — what [`ExportHandler::render`] answers by
+/// default.
+pub const TEXT_EXPOSITION: &str = "text/plain; version=0.0.4";
+
+/// Render the host recorder's snapshot (export ABI minor 6) in the Prometheus TEXT exposition
+/// format, family by family: `# HELP` (when present), `# TYPE`, the samples, a blank line. Every
+/// label value and number is written as the snapshot carries it, so rendering a snapshot of the
+/// host's own exposition reproduces it byte for byte.
+pub fn render_exposition(families: &[MetricFamily]) -> String {
+    let mut out = String::new();
+    for f in families {
+        if let Some(help) = &f.help {
+            out.push_str(&format!("# HELP {} {help}\n", f.name));
+        }
+        out.push_str(&format!("# TYPE {} {}\n", f.name, f.kind));
+        for s in &f.samples {
+            out.push_str(&s.name);
+            if !s.labels.is_empty() {
+                let labels: Vec<String> = s
+                    .labels
+                    .iter()
+                    .map(|(k, v)| format!("{k}=\"{v}\""))
+                    .collect();
+                out.push_str(&format!("{{{}}}", labels.join(",")));
+            }
+            out.push_str(&format!(" {}\n", s.value));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// What a sink answers a delivery (or a resume) with when it has the host act for it (export ABI
+/// minor 4): finished, or these [`HostOp`]s first — the host performs them and calls
+/// [`ExportHandler::resume`] with their results under the same `token`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostStep {
+    /// Nothing (more) for the host to do: the delivery is done.
+    Done,
+    /// Perform these, in order, then resume me with `token`.
+    Host {
+        /// The sink's correlation token, echoed on the resume.
+        token: u64,
+        /// The acts.
+        ops: Vec<HostOp>,
+    },
+    /// Answering [`ExportHandler::start`] (export ABI minor 8): started — whether this sink takes
+    /// deliveries this run, and its in-flight admission (`0` / empty: the host's defaults).
+    Started {
+        /// `false`: take nothing this run.
+        live: bool,
+        /// Deliveries it may have in flight at once.
+        inflight: u64,
+        /// The name its admission gate is counted under.
+        gate: String,
+    },
+}
 
 /// Re-export the observability envelope (#85) so a plugin author names
 /// `busbar_plugin_sdk::PluginMetric` (etc.) without a direct `busbar-plugin` dependency, mirroring
@@ -915,6 +1082,71 @@ pub trait ExportHandler: Send + Sync {
     fn drain_observations(&self) -> Observations {
         Observations::none()
     }
+
+    /// Validate the `settings` the operator wrote for the `instance` named, while the host
+    /// validates its configuration (export ABI minor 2): every problem as one complete
+    /// operator-facing line (the host reports each verbatim), or none. Default: none — a sink with
+    /// nothing to check accepts what it is given, as every sink did before the op.
+    fn validate(&self, _instance: &str, _settings: &serde_json::Value) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Accept one batch, with the host acting for the sink where it needs to (export ABI minor 4):
+    /// answer [`HostStep::Host`] to have the host perform [`HostOp`]s — append to a declared
+    /// destination, rotate it, flush it, carry an HTTP request (minor 5) — and receive their results on [`resume`](Self::resume).
+    /// Default: [`deliver`](Self::deliver), then done — every sink written before the op.
+    fn deliver_via_host(&self, stream: ExportStream, payload: &serde_json::Value) -> HostStep {
+        self.deliver(stream, payload);
+        HostStep::Done
+    }
+
+    /// Render the host recorder's snapshot (export ABI minor 6) into the exposition the host
+    /// serves: `(content_type, body)`. Default: the Prometheus text format
+    /// ([`render_exposition`]), which reproduces the host's own exposition byte for byte.
+    fn render(&self, families: &[MetricFamily]) -> (String, String) {
+        (TEXT_EXPOSITION.to_string(), render_exposition(families))
+    }
+
+    /// The results of the [`HostOp`]s a [`HostStep::Host`] asked for, in order, under its `token`.
+    /// Answer [`HostStep::Done`], or more ops. Default: done.
+    fn resume(&self, _token: u64, _results: Vec<HostResult>) -> HostStep {
+        HostStep::Done
+    }
+
+    /// The host starts feeding this sink (export ABI minor 8): answer [`HostStep::Started`], or
+    /// [`HostStep::Host`] first (the results come back on [`resume`](Self::resume), which then
+    /// answers `Started`). Default: live, at the host's default admission.
+    fn start(&self) -> HostStep {
+        HostStep::Started {
+            live: true,
+            inflight: 0,
+            gate: String::new(),
+        }
+    }
+
+    /// The checks across every instance of this sink's module, `(name, settings)` in configuration
+    /// order, run while the host validates its configuration after its limits (export ABI minor
+    /// 8): every problem as one complete line, reported verbatim. Default: none.
+    fn check(&self, _instances: &[(String, serde_json::Value)]) -> Vec<String> {
+        Vec::new()
+    }
+}
+
+/// A [`HostStep`] as the wire answers it.
+fn host_step(step: HostStep) -> ExportResponse {
+    match step {
+        HostStep::Done => ExportResponse::Delivered,
+        HostStep::Host { token, ops } => ExportResponse::Host { token, ops },
+        HostStep::Started {
+            live,
+            inflight,
+            gate,
+        } => ExportResponse::Started {
+            live,
+            inflight,
+            gate,
+        },
+    }
 }
 
 /// The export handle behind the opaque `*mut c_void`: a boxed [`ExportHandler`]. Named at the module
@@ -939,13 +1171,34 @@ pub fn dispatch_export(handler: &dyn ExportHandler, req: ExportRequest) -> Expor
     match req {
         ExportRequest::Streams => ExportResponse::Streams(handler.streams()),
         ExportRequest::Deliver { stream, payload } => {
-            handler.deliver(stream, &payload);
-            ExportResponse::Delivered
+            host_step(handler.deliver_via_host(stream, &payload))
+        }
+        ExportRequest::Resume { token, results } => host_step(handler.resume(token, results)),
+        ExportRequest::Scrape { families } => {
+            let (content_type, body) = handler.render(&families);
+            ExportResponse::Exposition { content_type, body }
         }
         ExportRequest::Routes => ExportResponse::Routes(handler.routes()),
         ExportRequest::Endpoint { request } => {
             ExportResponse::Endpoint(handler.handle_http(&request))
         }
+        // `status` is the host asking, at the moment it renders its own exposition, what this sink
+        // has to report. The answer is exactly what a delivery's envelope would have carried — the
+        // handler's DRAIN, moved into the result — so the host folds it down the one envelope path
+        // and a sink needs no second method to take part. The trailing drain in
+        // `dispatch_export_enveloped` then finds nothing left, so nothing is reported twice.
+        ExportRequest::Status => {
+            let drained = handler.drain_observations().into_envelope(());
+            ExportResponse::Status {
+                metrics: drained.metrics,
+                diagnostics: drained.diagnostics,
+            }
+        }
+        ExportRequest::Validate { instance, settings } => {
+            ExportResponse::Validated(handler.validate(&instance, &settings))
+        }
+        ExportRequest::Start => host_step(handler.start()),
+        ExportRequest::Check { instances } => ExportResponse::Validated(handler.check(&instances)),
     }
 }
 
@@ -1014,6 +1267,15 @@ macro_rules! export_hook_plugin {
             ctor = $ctor,
             handle = $crate::HookHandle,
         );
+        /// THE COMPILED-IN ENTRY POINT — the twin of the `busbar_call` symbol above: the handler
+        /// `$ctor` opened, reached through the SAME op-dispatch and envelope the C symbol runs
+        /// (`dispatch_hook_enveloped`), never through a shortcut into the handler.
+        pub fn dispatch_compiled_in(
+            handler: &dyn $crate::HookHandler,
+            req: $crate::HookRequest,
+        ) -> $crate::Envelope<$crate::HookReply> {
+            $crate::dispatch_hook_enveloped(handler, req)
+        }
     };
 }
 
@@ -1028,6 +1290,8 @@ macro_rules! export_hook_plugin {
 /// `boundary::open_boundary`/`call_boundary`/`close_boundary`/`free_boundary`. There is NO seam on which
 /// an author can get a boundary facet wrong: `$dispatch` returns a [`BoundaryOutcome`] that cannot name
 /// a raw pointer or a status integer, and these SIX symbols are the ONLY `#[no_mangle]` exports.
+/// Beside them it emits `BUSBAR_COLD_ENTRY`, the same boundary for a host that LINKS the plugin
+/// (DECISIONS #2 rule (1): compiled in or dropped in, one contract, one loading path).
 ///
 /// - `$kind` — a `&'static str` kind (`"store"` | `"secret"` | `"auth"` | `"hook"`).
 /// - `$dispatch` — the per-kind SDK `dispatch` adapter (`store_dispatch`/`auth_dispatch`/…).
@@ -1036,25 +1300,28 @@ macro_rules! export_hook_plugin {
 #[macro_export]
 macro_rules! export_plugin {
     (kind = $kind:expr, dispatch = $dispatch:path, ctor = $ctor:path, handle = $handle:ty $(,)?) => {
-        /// # Safety
-        /// Read only by the busbar loader as the frozen TRANSPORT handshake.
-        ///
-        /// `extern "C-unwind"` (matches [`busbar_plugin::cold::AbiFn`]): a panic that unwinds out of
-        /// this symbol propagates as a DEFINED forced unwind the engine's `catch_unwind` can catch,
-        /// rather than an immediate abort at this frame (which plain `extern "C"` would force).
-        #[no_mangle]
-        pub extern "C-unwind" fn busbar_abi() -> u32 {
+        // THE BOUNDARY, ONCE. Each function below is the body of one exported symbol, under a
+        // mangled name. The `#[no_mangle]` exports (in `__busbar_exports`) are one-line calls into
+        // these, and `BUSBAR_COLD_ENTRY` references them: the dropped-in door (`dlsym` on the
+        // `cdylib`) and the linked door (the `rlib`'s entry) reach the SAME code. The exports live in
+        // a module of their own so that linking the entry does not also pull them in — two plugins
+        // linked into one binary would otherwise both define `busbar_call`.
+
+        /// `busbar_abi` — the frozen TRANSPORT handshake.
+        #[doc(hidden)]
+        pub extern "C-unwind" fn __busbar_cold_abi() -> u32 {
             $crate::transport_version()
         }
 
-        /// # Safety
-        /// The returned pointer is to a `'static` NUL-terminated string owned by this library.
-        #[no_mangle]
-        pub extern "C-unwind" fn busbar_plugin_kind() -> *const u8 {
+        /// `busbar_plugin_kind` — a `'static` NUL-terminated string owned by this library.
+        #[doc(hidden)]
+        pub extern "C-unwind" fn __busbar_cold_kind() -> *const u8 {
             const KIND_NUL: &str = concat!($kind, "\0");
             KIND_NUL.as_ptr()
         }
 
+        /// `busbar_set_log_sink`.
+        ///
         /// # Safety
         /// Called at most once by the busbar loader, immediately after a successful `busbar_open`
         /// and before any `busbar_call`, with a sink that stays callable for this plugin's life.
@@ -1062,8 +1329,8 @@ macro_rules! export_plugin {
         /// OPTIONAL on both sides: a host that never calls it leaves the plugin logging to stderr,
         /// and a host that looks it up on an older plugin simply does not find it. That is what
         /// keeps this additive rather than a transport bump.
-        #[no_mangle]
-        pub unsafe extern "C-unwind" fn busbar_set_log_sink(
+        #[doc(hidden)]
+        pub unsafe extern "C-unwind" fn __busbar_cold_set_log_sink(
             sink: $crate::__abi::LogSinkFn,
             ctx: *mut ::std::ffi::c_void,
             max_level: u32,
@@ -1071,12 +1338,14 @@ macro_rules! export_plugin {
             unsafe { $crate::hostlog::install(sink, ctx, max_level) };
         }
 
+        /// `busbar_open`.
+        ///
         /// # Safety
         /// Called only by the busbar loader with ABI-valid pointers. Routes through
         /// `boundary::open_boundary`: the ctor runs under a mandatory `catch_unwind`, the handle is
         /// published only into a confirmed non-null slot (else dropped), and the status is total.
-        #[no_mangle]
-        pub unsafe extern "C-unwind" fn busbar_open(
+        #[doc(hidden)]
+        pub unsafe extern "C-unwind" fn __busbar_cold_open(
             cfg: *const u8,
             cfg_len: usize,
             out_handle: *mut *mut ::core::ffi::c_void,
@@ -1093,12 +1362,14 @@ macro_rules! export_plugin {
             )
         }
 
+        /// `busbar_call`.
+        ///
         /// # Safety
         /// Called only by the busbar loader with a live handle and ABI-valid pointers. Routes through
         /// `boundary::call_boundary`: null-handle → protocol, dispatch under mandatory `catch_unwind`,
         /// alloc-after-check buffer publish, total status.
-        #[no_mangle]
-        pub unsafe extern "C-unwind" fn busbar_call(
+        #[doc(hidden)]
+        pub unsafe extern "C-unwind" fn __busbar_cold_call(
             handle: *mut ::core::ffi::c_void,
             req: *const u8,
             req_len: usize,
@@ -1110,20 +1381,126 @@ macro_rules! export_plugin {
             })
         }
 
+        /// `busbar_free`.
+        ///
         /// # Safety
         /// Called only by the busbar loader with a buffer this plugin returned. Catch-wrapped dealloc.
-        #[no_mangle]
-        pub unsafe extern "C-unwind" fn busbar_free(ptr: *mut u8, len: usize) {
+        #[doc(hidden)]
+        pub unsafe extern "C-unwind" fn __busbar_cold_free(ptr: *mut u8, len: usize) {
             $crate::boundary::free_boundary(ptr, len)
         }
 
+        /// `busbar_close`.
+        ///
         /// # Safety
         /// Called only by the busbar loader with a live handle, once. Routes through
         /// `boundary::close_boundary`: the box is owned BEFORE the `catch_unwind`, so a panicking Drop
         /// frees the allocation and never unwinds out of this symbol.
-        #[no_mangle]
-        pub unsafe extern "C-unwind" fn busbar_close(handle: *mut ::core::ffi::c_void) {
+        #[doc(hidden)]
+        pub unsafe extern "C-unwind" fn __busbar_cold_close(handle: *mut ::core::ffi::c_void) {
             $crate::boundary::close_boundary::<$handle>(handle)
+        }
+
+        /// `busbar_set_log_sink` on the LINKED door: the sink, without the `tracing` bridge a linked
+        /// plugin must not install (see `hostlog::install_sink`).
+        ///
+        /// # Safety
+        /// As `__busbar_cold_set_log_sink`.
+        #[doc(hidden)]
+        pub unsafe extern "C-unwind" fn __busbar_linked_set_log_sink(
+            sink: $crate::__abi::LogSinkFn,
+            ctx: *mut ::std::ffi::c_void,
+            max_level: u32,
+        ) {
+            unsafe { $crate::hostlog::install_sink(sink, ctx, max_level) };
+        }
+
+        /// The boundary for the LINKED door (`busbar_plugin::cold::ColdEntry`): a build that compiles
+        /// this plugin in hands the loader these functions instead of a library to look them up in,
+        /// and the loader runs its one cold-lane load over them (DECISIONS #2 rule (1)).
+        pub static BUSBAR_COLD_ENTRY: $crate::__abi::ColdEntry = $crate::__abi::ColdEntry {
+            abi: __busbar_cold_abi,
+            kind: __busbar_cold_kind,
+            set_log_sink: __busbar_linked_set_log_sink,
+            open: __busbar_cold_open,
+            call: __busbar_cold_call,
+            free: __busbar_cold_free,
+            close: __busbar_cold_close,
+        };
+
+        /// The dropped-in door: the six (+ the optional log-sink) `#[no_mangle]` symbols the loader
+        /// looks up in the `cdylib`, each the boundary above under its frozen name.
+        #[doc(hidden)]
+        pub mod __busbar_exports {
+            /// # Safety
+            /// Read only by the busbar loader as the frozen TRANSPORT handshake.
+            ///
+            /// `extern "C-unwind"` (matches [`busbar_plugin::cold::AbiFn`]): a panic that unwinds out
+            /// of this symbol propagates as a DEFINED forced unwind the engine's `catch_unwind` can
+            /// catch, rather than an immediate abort at this frame (which plain `extern "C"` would
+            /// force).
+            #[no_mangle]
+            pub extern "C-unwind" fn busbar_abi() -> u32 {
+                super::__busbar_cold_abi()
+            }
+
+            /// # Safety
+            /// The returned pointer is to a `'static` NUL-terminated string owned by this library.
+            #[no_mangle]
+            pub extern "C-unwind" fn busbar_plugin_kind() -> *const u8 {
+                super::__busbar_cold_kind()
+            }
+
+            /// # Safety
+            /// See `__busbar_cold_set_log_sink`.
+            #[no_mangle]
+            pub unsafe extern "C-unwind" fn busbar_set_log_sink(
+                sink: $crate::__abi::LogSinkFn,
+                ctx: *mut ::std::ffi::c_void,
+                max_level: u32,
+            ) {
+                unsafe { super::__busbar_cold_set_log_sink(sink, ctx, max_level) }
+            }
+
+            /// # Safety
+            /// See `__busbar_cold_open`.
+            #[no_mangle]
+            pub unsafe extern "C-unwind" fn busbar_open(
+                cfg: *const u8,
+                cfg_len: usize,
+                out_handle: *mut *mut ::core::ffi::c_void,
+                out_err: *mut *mut u8,
+                out_err_len: *mut usize,
+            ) -> i32 {
+                unsafe { super::__busbar_cold_open(cfg, cfg_len, out_handle, out_err, out_err_len) }
+            }
+
+            /// # Safety
+            /// See `__busbar_cold_call`.
+            #[no_mangle]
+            pub unsafe extern "C-unwind" fn busbar_call(
+                handle: *mut ::core::ffi::c_void,
+                req: *const u8,
+                req_len: usize,
+                out: *mut *mut u8,
+                out_len: *mut usize,
+            ) -> i32 {
+                unsafe { super::__busbar_cold_call(handle, req, req_len, out, out_len) }
+            }
+
+            /// # Safety
+            /// See `__busbar_cold_free`.
+            #[no_mangle]
+            pub unsafe extern "C-unwind" fn busbar_free(ptr: *mut u8, len: usize) {
+                unsafe { super::__busbar_cold_free(ptr, len) }
+            }
+
+            /// # Safety
+            /// See `__busbar_cold_close`.
+            #[no_mangle]
+            pub unsafe extern "C-unwind" fn busbar_close(handle: *mut ::core::ffi::c_void) {
+                unsafe { super::__busbar_cold_close(handle) }
+            }
         }
     };
 }

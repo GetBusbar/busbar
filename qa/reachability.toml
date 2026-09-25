@@ -56,34 +56,29 @@
 # "`decision`/`registered` is declared dormant and is REACHED again", which is the expiry working
 # rather than a red anybody had to remember.
 #
-# ONE THING THE STRIKE DOES NOT CLAIM, AND WHAT THE GATE NOW SAYS ABOUT IT (corrected 2026-09-24,
-# item 180 follow-up). This paragraph used to say `reachability:unit-path:decision` and
-# `reachability:root-reach:decision` "still PASS, and they pass FOR FREE". That was the gate's
-# defect, not the plane's state: an absent `root/units_<plane>.rs` took an Ok arm in both rules.
-# Item 180 closed that arm, and BOTH ROWS ARE NOW RED, which is the true answer:
+# ONE THING THE STRIKE DOES NOT CLAIM, AND WHAT THE GATE NOW SAYS ABOUT IT (item 180, re-scoped
+# 2026-09-25 by K2a, ruling R1). `reachability:unit-path:decision` and
+# `reachability:root-reach:decision` are RED, which is the true answer. Since R1 the rows ask about
+# the LIVE unit path — the kernel-loop runner registered for the plane's capability key (the #28
+# rider: `gauntlet_install::install()` flips llm, mcp, a2a and streaming onto `GauntletKernelUnit`),
+# or a `Units` impl the plane's linked entry exports — and no longer about whether a
+# `root/units_<plane>.rs` exists:
 #
-#   reachability:unit-path:decision   "NO UNIT MODULE: roster plane `decision` names
-#                                     `crates/busbar/src/root/units_decision.rs` and there is no
-#                                     such file"
-#   reachability:root-reach:decision  "NO UNIT MODULE: ... An absent module is not a reached one."
+#   reachability:unit-path:decision   "NO LIVE UNIT PATH: … Rider: no non-test line routes a
+#                                     `busbar_plane_decision::…` key into
+#                                     `register_gauntlet_runner`/`register_session_runner` … Linked
+#                                     entry: `crates/busbar/src/root/plane_decision.rs` declares no
+#                                     `impl … Units for`."
+#   reachability:root-reach:decision  "NO UNIT PATH REACHED: …"
 #
-# THERE IS NO OTHER UNIT PATH FOR THIS PLANE TO BE CREDITED WITH — searched, not assumed. The whole
-# of the root's reach into the decision plane is `crates/busbar/src/root/plane_decision.rs` (the
-# `PLANE_DECL` the pure plane cannot hold, #40) plus the `register_planes()` push and the seal check
-# in `crates/busbar/src/main.rs` behind `plane-decision`. That declaration is identity only:
-# `claims`, `admission` and `build` are the inert trio — no path, no audience, no runtime slot —
-# and `grep -rn 'DecisionPlane\|busbar_plane_decision' crates --include='*.rs'` outside the plane
-# crate finds nothing but that file, its test, main.rs, one needle in busbar-plane-streaming's
-# purity test and two kernel comments. No `impl … Units for`
-# anywhere constructs a unit for `DecisionPlane`, so there is no ten-step unit on the serving path
-# for the plane's `decisions:` traffic to run through. The plane is SHIPPED (registered, in the
-# `default` feature set, its config section live) and has NO UNIT PATH.
+# The plane's entry is a declaration with the inert hooks trio (`claims`, `admission`, `build` —
+# no path, no audience, no runtime slot): there is no served door to put a unit on. The plane is
+# SHIPPED (registered, in `default`, its config section live) and has NO UNIT PATH.
 #
-# SO IT IS NOT DECLARED DORMANT HERE, deliberately. A `[[dormant]]` row (`module = ""`) would turn
-# both rows into tracked PASSes for a plane #48 puts in the shipped roster — the excuse this file
-# exists to refuse for a shipped plane. They stay RED until the composition root gives the decision
-# plane a `root/units_decision.rs` unit path that `fn main()` reaches (the owner of
-# `crates/busbar/src/root/`), and the row that reds is the gate finally seeing the plane.
+# SO IT IS NOT DECLARED DORMANT HERE, deliberately. A `[[dormant]]` row would turn both rows into
+# tracked PASSes for a plane #48 puts in the shipped roster — the excuse this file exists to refuse
+# for a shipped plane. Whether 1.6.0 serves the plane or ships it declared-only is OWNER question
+# Q72(3) (ruling R8); until it is ruled, both rows stay RED and are listed as owner-blocked.
 #
 # Nothing is declared. See below for why the four standing findings are not.
 

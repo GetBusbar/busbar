@@ -4,7 +4,7 @@
 //! THE R1 SPIKE AND THE CONNECTOR-LAYER PROOFS. The design's keystone is that `Connected::extra`
 //! extras propagate through hyper_util's legacy pool onto EVERY response a pooled connection
 //! serves — the spike test here pins it with two sequential requests over ONE connection, both
-//! carrying [`PeerSpki`]. Beside it: SNI stays on the hostname under an address pin (and the
+//! carrying [`PeerKeyPin`]. Beside it: SNI stays on the hostname under an address pin (and the
 //! certificate NAME check runs against the hostname, so a wrong-name cert at the pinned address
 //! is refused), the URI's port beats any port a resolver answers, and the connect deadline
 //! bounds a black-holing TLS peer that hyper's TCP-only connect timeout never would.
@@ -55,7 +55,7 @@ fn fixture_connector(
         .https_or_http()
         .enable_http1()
         .wrap_connector(http);
-    SpkiObserve::new(ConnectDeadline::new(https, deadline), observe)
+    KeyPinObserve::new(ConnectDeadline::new(https, deadline), observe)
 }
 
 fn pooled_client(connector: EngineConnector) -> EngineClient {
@@ -84,11 +84,11 @@ fn get(uri: String) -> http::Request<Full<Bytes>> {
 
 /// R1 — THE MANDATORY SPIKE. Two sequential requests ride ONE pooled connection (the fixture's
 /// per-connection request count is the proof of reuse), and BOTH responses carry the connection's
-/// [`PeerSpki`] in their extensions, equal to a pin computed directly from the served leaf. If
+/// [`PeerKeyPin`] in their extensions, equal to a pin computed directly from the served leaf. If
 /// hyper_util ever stopped copying `Connected` extras onto pooled-reuse responses, this goes red
 /// and the design's fallback (a per-connection slot keyed through the pin pool) activates.
 #[tokio::test]
-async fn extras_propagate_through_pooled_reuse_both_responses_carry_peer_spki() {
+async fn extras_propagate_through_pooled_reuse_both_responses_carry_the_peer_pin() {
     let material = ca_and_leaf(&["pinned.test"]);
     let fixture = spawn_tls(TlsServerSpec {
         cert_chain_pem: material.leaf_pem.clone(),
@@ -119,7 +119,7 @@ async fn extras_propagate_through_pooled_reuse_both_responses_carry_peer_spki() 
             .expect("the observed hop answers");
         assert_eq!(resp.status(), 200);
         assert_eq!(
-            peer_spki(&resp),
+            peer_key_pin(&resp),
             Some(expected.as_str()),
             "request {round} must carry the connection's observed SPKI"
         );

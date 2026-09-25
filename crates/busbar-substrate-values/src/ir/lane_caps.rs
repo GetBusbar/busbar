@@ -7,7 +7,8 @@
 //!
 //! A provider entry (catalog definition, deployment, resolved section) carries the keys
 //! `max_output_key`, `anthropic_adaptive_thinking`, `native_structured_output` and
-//! `model_capabilities`. The kernel holds them as these values and never reads them:
+//! `model_capabilities`; a `model_capabilities` rule additionally takes the per-model keys
+//! `reasoning_none` and `thinking_always_on`. The kernel holds them as these values and never reads them:
 //! it lays the entry's declaration beside the lane's wire model and asks [`resolve_lane_caps`] for
 //! the [`LaneCaps`] the egress writer receives. A bad value (an unknown `max_output_key` spelling,
 //! an unknown key inside a `model_capabilities` rule) is refused by THIS module's `Deserialize`
@@ -31,8 +32,9 @@ pub enum MaxOutputKeyCfg {
     MaxCompletionTokens,
 }
 
-/// One per-model capability rule (see `ProviderDef::model_capabilities`).
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+/// One per-model capability rule (see `ProviderDef::model_capabilities`). Every key but `models` is
+/// optional; an absent key leaves the value the provider level (or the default) set.
+#[derive(Debug, Deserialize, Clone, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ModelCapabilities {
     /// Wire-model globs (`*` matches any run of characters), e.g. `claude-opus-4-7*`.
@@ -46,6 +48,13 @@ pub struct ModelCapabilities {
     /// See `ProviderDef::native_structured_output`.
     #[serde(default)]
     pub native_structured_output: Option<bool>,
+    /// The model accepts `reasoning_effort: "none"` (see [`LaneCaps::reasoning_none`]). Per-model
+    /// only: a fact about one model generation, never about a whole provider.
+    #[serde(default)]
+    pub reasoning_none: Option<bool>,
+    /// The model cannot switch thinking off (see [`LaneCaps::thinking_always_on`]). Per-model only.
+    #[serde(default)]
+    pub thinking_always_on: Option<bool>,
 }
 
 /// The three capabilities a provider entry declares at PROVIDER level (each `None` = not declared),
@@ -93,6 +102,12 @@ pub fn resolve_lane_caps(
         }
         if let Some(b) = rule.native_structured_output {
             caps.native_structured_output = b;
+        }
+        if let Some(b) = rule.reasoning_none {
+            caps.reasoning_none = b;
+        }
+        if let Some(b) = rule.thinking_always_on {
+            caps.thinking_always_on = b;
         }
     }
     caps

@@ -8,8 +8,8 @@
 THE ROOT LEG COLUMN. Every cell carries a SECOND verdict (`root`), over the leg that runs its plane
 through the composition root. `crates/busbar/tests/capability_equality.rs` verifies that column's
 shape and that every named loop cell EXISTS. What a cargo test cannot do is run another crate's
-tests, so `--root-legs` closes the other half: it builds the binary crate with all five `root-*`
-features on and EXECUTES every root cell the ledger names, refusing a run in which a named cell did
+tests, so `--root-legs` closes the other half: it builds the binary crate with every leg's
+feature on (ROOT_FEATURES below) and EXECUTES every root cell the ledger names, refusing a run in which a named cell did
 not execute (a filter that selected nothing is a green that proves nothing). That is what makes
 `proven` on the root column mean "watched over the loop" rather than "present on disk".
 
@@ -39,8 +39,10 @@ import tempfile
 LEDGER = "qa/capability-equality.json"
 STATES = {"proven", "missing", "not-applicable"}
 ROOT_STATES = {"proven", "none", "not-applicable"}
-# The five legs the composition root carries, and the one cargo invocation that turns them all on.
-ROOT_FEATURES = "root-admin,root-mcp,root-a2a,root-voice,root-llm"
+# The five legs the composition root carries, and the one cargo invocation that turns them all on:
+# each `root-*` leg's own feature, and for the mcp and a2a legs (the kernel-loop rider those planes are
+# served through) the feature that links the plane.
+ROOT_FEATURES = "root-admin,plane-mcp,plane-a2a,root-voice,root-llm"
 
 
 def load(path):
@@ -208,14 +210,14 @@ def root_cells(doc):
 
 
 def libtest_path(file, fn):
-    """`crates/busbar/src/root/units_mcp.rs::the_x` -> `root::units_mcp::tests::the_x`, the name the
+    """`crates/busbar/src/root/units_llm.rs::the_x` -> `root::units_llm::tests::the_x`, the name the
     binary's own test harness knows it by. Derived rather than pinned, then CHECKED against the
     harness's own --list below, so a module that moved is a refusal and not a silent miss.
 
     A test body may live in a `tests/` child directory rather than inline (structure-lint's
     <dir>/tests/<stem>.rs convention). Two shapes exist: a SIBLING file's tests
-    (`root/tests/units_mcp.rs`, alongside the still-present `root/units_mcp.rs`) belong to
-    `root::units_mcp::tests`; a DIRECTORY module's own tests (`root/units_admin/tests/units_admin.rs`,
+    (`root/tests/gauntlet_kernel.rs`, alongside the still-present `root/gauntlet_kernel.rs`) belong
+    to `root::gauntlet_kernel::tests`; a DIRECTORY module's own tests (`root/units_admin/tests/units_admin.rs`,
     the stem repeating the directory's own name) belong to `root::units_admin::tests`. Stripping the
     `tests` path segment and, only in the repeating-name case, its following stem too, derives either
     from the path alone."""
@@ -459,7 +461,9 @@ def selftest():
             "every root cell derives a libtest path under its own root module",
             leg_cells
             and all(
-                (libtest_path(f, fn) or "").startswith("root::units_") for _, f, fn in leg_cells
+                (libtest_path(f, fn) or "").startswith("root::")
+                and (libtest_path(f, fn) or "").endswith(f"::tests::{fn}")
+                for _, f, fn in leg_cells
             ),
             "a root cell derives no module path",
         )

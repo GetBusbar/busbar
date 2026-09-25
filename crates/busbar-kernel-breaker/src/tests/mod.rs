@@ -1290,3 +1290,122 @@ fn a_long_failure_streak_saturates_the_cooldown_instead_of_wrapping_it_to_zero()
         "the computed cooldown at a saturating streak must be at the ceiling; got {computed}"
     );
 }
+
+// ── Item 142: the kernel's admission path runs on this state machine ─────────────────────────
+
+/// The consecutive-failure streak bump happens UNDER the transition lock, serialized with the
+/// trip/cooldown read — never before it, where concurrent failures over-counted the streak and
+/// inflated the first trip's cooldown. Moved here from the kernel's store tests with the state
+/// machine it pins. Deterministic: with the lock held, a racing failure parks at it and the streak
+/// cannot move.
+#[test]
+fn streak_bump_is_serialized_under_the_transition_lock() {
+    use std::sync::{Arc, Barrier};
+    let cell = Arc::new(BreakerCell::new());
+    let cfg = BreakerCfg {
+        base_cooldown_secs: 10,
+        max_cooldown_secs: 1000,
+        honor_retry_after: false,
+        bench_below_trip_threshold: true,
+        trip: TripConfig {
+            mode: TripMode::Consecutive,
+            window_s: 30,
+            threshold: 0.5,
+            min_requests: 5,
+            consecutive_n: 2,
+        },
+    };
+    let guard = cell.transition_guard();
+    let barrier = Arc::new(Barrier::new(2));
+    let handle = {
+        let (cell, cfg, barrier) = (Arc::clone(&cell), cfg.clone(), Arc::clone(&barrier));
+        std::thread::spawn(move || {
+            barrier.wait();
+            cell.record_failure(1000, &cfg, None, 3600)
+        })
+    };
+    barrier.wait();
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    assert_eq!(
+        cell.streak(),
+        0,
+        "while the transition lock is held, a concurrent failure must NOT advance the streak"
+    );
+    drop(guard);
+    assert!(
+        !handle.join().expect("record thread").tripped(),
+        "streak 1 < n=2 must not trip"
+    );
+    assert_eq!(cell.streak(), 1);
+    assert!(
+        cell.record_failure(1000, &cfg, None, 3600).tripped(),
+        "streak 2 == n trips"
+    );
+    assert_eq!(cell.streak(), 2);
+    // shift=2 → 40s ±10%; an inflated streak (shift >= 3 → >= 80s) lands well outside.
+    let remaining = cell.cooldown_until() - 1000;
+    assert!((36..=44).contains(&remaining), "got {remaining}s");
+}
+
+/// A cell carried across a rebuild keeps its state, cooldown, streak and error count — and a
+/// snapshot taken mid-probe comes back Open, never as a HalfOpen whose probe nobody holds.
+#[test]
+fn snapshot_restore_round_trips_and_normalizes_a_mid_probe_capture() {
+    use crate::cell::CellSnapshot;
+    let cfg = BreakerCfg::default();
+    let a = BreakerCell::new();
+    for _ in 0..5 {
+        let _ = a.record_failure(NOW, &cfg, None, 3600);
+    }
+    let snap = a.snapshot();
+    assert_eq!(
+        snap.state, 1,
+        "five failures trip the default error-rate cell"
+    );
+    let b = BreakerCell::new();
+    b.restore(snap);
+    assert_eq!(b.snapshot(), snap);
+    assert_eq!(b.err_count(), 5);
+
+    let mid_probe = CellSnapshot { state: 2, ..snap };
+    let c = BreakerCell::new();
+    c.restore(mid_probe);
+    assert_eq!(c.snapshot().state, 1);
+    assert!(!c.probe_in_flight());
+    assert!(matches!(
+        c.acquire(snap.cooldown_until),
+        ProbeAdmit::ProbeWon(_)
+    ));
+}
+
+/// The unit's own budget object is what a holder spends: a spend through the shared handle is a
+/// spend the unit sees, and a restored figure never exceeds what it is given nor drops below zero.
+#[test]
+fn a_shared_budget_is_the_units_budget() {
+    let unit = BreakerUnit::new();
+    let dest = DestinationId::new(3);
+    unit.set_budget(dest, 2);
+    let held = unit.budget(dest).expect("declared");
+    assert!(held.spend());
+    assert_eq!(unit.budget_remaining(dest), Some(1));
+    held.restore(-4);
+    assert_eq!(unit.budget_remaining(dest), Some(0));
+    assert!(!unit.spend_budget(dest));
+    let unlimited = LifetimeBudget::unlimited();
+    unlimited.restore(7);
+    assert_eq!(unlimited.remaining(), None);
+}
+
+/// `with_limits` is the path the two `limits.*` knobs take: the unit reports them back, and a
+/// hard-down arms exactly the configured sticky cooldown on every pool cell of the destination.
+#[test]
+fn with_limits_drives_the_hard_down_cooldown() {
+    let unit = BreakerUnit::new().with_limits(600, 7200);
+    assert_eq!(unit.hard_down_cooldown_secs(), 600);
+    assert_eq!(unit.max_honored_retry_after_secs(), 7200);
+    let dest = DestinationId::new(1);
+    let pooled = unit.cell("pool", dest);
+    assert!(unit.hard_down_all(dest, NOW));
+    assert_eq!(unit.cell("", dest).cooldown_until(), NOW + 600);
+    assert_eq!(pooled.cooldown_until(), NOW + 600);
+}

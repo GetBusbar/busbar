@@ -16,7 +16,7 @@ use std::net::IpAddr;
 
 use super::*;
 use crate::a2a::fetch::HttpResponse;
-use crate::a2a::jws::ED25519_SPKI_PREFIX;
+use crate::a2a::jws::ED25519_KEY_INFO_PREFIX;
 use crate::a2a::pin::CardPin;
 use base64::Engine as _;
 use busbar_kernel::trust::TrustState;
@@ -33,8 +33,8 @@ fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
 
-fn spki_base64(k: &SigningKey) -> String {
-    let mut der = ED25519_SPKI_PREFIX.to_vec();
+fn key_info_base64(k: &SigningKey) -> String {
+    let mut der = ED25519_KEY_INFO_PREFIX.to_vec();
     der.extend_from_slice(k.verifying_key().as_bytes());
     STD.encode(der)
 }
@@ -92,8 +92,8 @@ impl CardEndpoint {
                 status: 200,
                 location: None,
                 body: serde_json::to_vec(card).expect("serialize"),
-                peer_spki: None,
                 client_identity_offered: false,
+                ..Default::default()
             },
         );
     }
@@ -116,7 +116,7 @@ impl Transport for CardEndpoint {
 fn signed_pin(k: &SigningKey) -> AgentPinCfg {
     AgentPinCfg {
         mechanism: PinMechanism::JwsIssuerKey,
-        key: Some(spki_base64(k)),
+        key: Some(key_info_base64(k)),
         fingerprint: None,
     }
 }
@@ -267,7 +267,7 @@ fn unpinned_carrying_key_material_is_refused_on_the_wire_and_not_only_at_parse()
     let mut reg = a_registration();
     let contradictory = AgentPinCfg {
         mechanism: PinMechanism::Unpinned,
-        key: Some(spki_base64(&key(1))),
+        key: Some(key_info_base64(&key(1))),
         fingerprint: None,
     };
 
@@ -305,15 +305,15 @@ fn a_transport_pin_with_no_certificate_observed_is_refused_rather_than_recorded_
     // prevent, arriving from our side instead of theirs.
     let endpoint = CardEndpoint::serving(&a_card("decompose a goal"));
     for (mechanism, label) in [
-        (PinMechanism::CertSpki, "cert_spki"),
-        (PinMechanism::Mtls, "mtls"),
+        (PinMechanism::CertKeyPin, "cert_spki"),
+        (PinMechanism::MutualTls, "mtls"),
     ] {
         let mut reg = a_registration();
         let p = pass(
             &mut reg,
             &AgentPinCfg {
                 mechanism,
-                key: Some("sha256/SPKI==".to_string()),
+                key: Some("sha256/KEYPIN==".to_string()),
                 fingerprint: None,
             },
             &endpoint,
@@ -557,7 +557,7 @@ fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
     // `detection_backoff:` or `demotion_grace:`, and both would be a window an upstream can open
     // for itself by flapping. The cadence's own field set is enumerated here, and the ONLY held
     // direction it may name is recovery.
-    // `reverify.rs` moved to `src/trust/` when the MCP refresh timer became its second consumer.
+    // `reverify.rs` moved to `src/trust/` when a sibling plane's refresh timer became a consumer.
     // The ratchet moved with it — a path that silently stopped resolving would be this guard
     // quietly covering nothing, which is the failure mode it exists to prevent, turned inward.
     let read = |rel: &str| -> String {
@@ -572,18 +572,13 @@ fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
     let reverify_src = read("../busbar-kernel/src/trust/reverify.rs");
     let config_src = read("src/a2a/config.rs");
     let verify_src = read("src/a2a/verify.rs");
-    // THE OTHER PLANE'S BOUND, held to the identical rule, PLUS THE SHARED GATE BOTH PLANES NOW RUN.
-    // MCP has a `verify_ttl:` and a fetch of its own, and both drive the SAME `due`. A knob that
-    // slowed detection or delayed a quarantine would be exactly as dangerous there, and a ratchet
-    // that guarded only the plane it was written for would be the plane-local drift this release has
-    // already been bitten by. `trust/verify.rs` — the on-call single-flight gate that REPLACED the
+    // THE SHARED GATE EVERY PLANE RUNS, held to the identical rule. Every plane with a `verify_ttl:`
+    // drives the SAME `due`. `trust/verify.rs` — the on-call single-flight gate that REPLACED the
     // background sweep — is the one place a per-subject cooldown or a "skip if it failed recently"
-    // fast path could now be introduced for BOTH planes at once, which makes it the single most
+    // fast path could be introduced for EVERY plane at once, which makes it the single most
     // important file on this list.
-    // The MCP plane's sources moved to the `busbar-mcp` crate (Phase-B B2); the ratchet MOVED WITH
-    // THEM rather than dropping the path — the sibling-crate spelling reaches the same two files.
-    let mcp_config_src = read("../busbar-mcp/src/mcp/config.rs");
-    let mcp_fetch_src = read("../busbar-mcp/src/mcp/connect.rs");
+    // The sibling plane's own config grammar and connect path are held to this rule by that plane's
+    // own battery (the plane tests itself; a plane never reads another plane's sources).
     let shared_verify_src = read("../busbar-kernel/src/trust/verify.rs");
 
     let code = |s: &str| -> String {
@@ -600,8 +595,6 @@ fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
         ("trust/reverify.rs", code(&reverify_src)),
         ("a2a/config.rs", code(&config_src)),
         ("a2a/verify.rs", code(&verify_src)),
-        ("mcp/config.rs", code(&mcp_config_src)),
-        ("mcp/connect.rs", code(&mcp_fetch_src)),
         ("trust/verify.rs", code(&shared_verify_src)),
     ] {
         for banned in [
@@ -657,16 +650,16 @@ fn the_legacy_well_known_path_is_tried_only_when_the_canonical_one_served_nothin
                     status: 404,
                     location: None,
                     body: Vec::new(),
-                    peer_spki: None,
                     client_identity_offered: false,
+                    ..Default::default()
                 });
             }
             Ok(HttpResponse {
                 status: 200,
                 location: None,
                 body: self.body.clone(),
-                peer_spki: None,
                 client_identity_offered: false,
+                ..Default::default()
             })
         }
     }
@@ -713,8 +706,8 @@ fn the_legacy_well_known_path_is_tried_only_when_the_canonical_one_served_nothin
                 status: 200,
                 location: None,
                 body,
-                peer_spki: None,
                 client_identity_offered: false,
+                ..Default::default()
             })
         }
     }
@@ -857,9 +850,9 @@ fn approved_plane(
     k: &SigningKey,
     endpoint: &CardEndpoint,
 ) -> std::sync::Arc<crate::a2a::plane::A2aPlane> {
-    let spki = spki_base64(k);
+    let key_pin = key_info_base64(k);
     let cfg: crate::a2a::config::AgentsCfg = serde_yaml::from_str(&format!(
-        "planner:\n  url: \"https://a2a.vendor/planner\"\n  pin:\n    mechanism: jws_issuer_key\n    key: \"{spki}\"\n"
+        "planner:\n  url: \"https://a2a.vendor/planner\"\n  pin:\n    mechanism: jws_issuer_key\n    key: \"{key_pin}\"\n"
     ))
     .expect("a one-agent config");
     let plane =
@@ -960,8 +953,8 @@ impl Transport for BlockingCard {
                 status: 200,
                 location: None,
                 body: self.body.clone(),
-                peer_spki: None,
                 client_identity_offered: false,
+                ..Default::default()
             })
         } else {
             Err(format!("no card at `{url}`"))
@@ -981,11 +974,11 @@ fn a_blocking_card_host_does_not_hold_the_registry_lock_against_another_agents_r
     use std::time::Duration;
 
     let k = key(9);
-    let spki = spki_base64(&k);
+    let key_pin = key_info_base64(&k);
     // Two fronted agents: `planner` (whose card fetch will block) and `other` (whose verify-state a
     // concurrent caller reads).
     let cfg: crate::a2a::config::AgentsCfg = serde_yaml::from_str(&format!(
-        "planner:\n  url: \"https://a2a.vendor/planner\"\n  pin:\n    mechanism: jws_issuer_key\n    key: \"{spki}\"\nother:\n  url: \"https://a2a.vendor/other\"\n  pin:\n    mechanism: jws_issuer_key\n    key: \"{spki}\"\n"
+        "planner:\n  url: \"https://a2a.vendor/planner\"\n  pin:\n    mechanism: jws_issuer_key\n    key: \"{key_pin}\"\nother:\n  url: \"https://a2a.vendor/other\"\n  pin:\n    mechanism: jws_issuer_key\n    key: \"{key_pin}\"\n"
     ))
     .expect("a two-agent config");
     let plane = crate::a2a::plane::A2aPlane::from_config(&cfg, None).expect("a plane");

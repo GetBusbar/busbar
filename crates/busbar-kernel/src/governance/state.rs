@@ -75,7 +75,7 @@ impl GovState {
             admin_token_hash: RwLock::new(
                 admin_token
                     .as_ref()
-                    .map(|t| crate::sigv4::sha256_hex(t.as_bytes())),
+                    .map(|t| busbar_api::sha256_hex(t.as_bytes())),
             ),
             budget: Sharded::new(),
             pending_metering: PendingMetering::new(),
@@ -413,7 +413,7 @@ impl GovState {
         let m = self.signing_material()?;
         Some(crate::plane::registry::CardIssuer {
             kid: format!("{prefix}{}", m.signer.kid()),
-            issuer_spki_base64: m.signer.card_subkey_spki_base64(domain),
+            issuer_spki_base64: m.signer.card_subkey_key_info_base64(domain),
         })
     }
 
@@ -844,7 +844,7 @@ impl GovState {
     /// digest used to be frozen at construction and `GovState` is reused across applies, so it never
     /// did. Only the digest is retained; the plaintext is dropped here.
     pub fn set_admin_token(&self, token: Option<&str>) {
-        let hash = token.map(|t| crate::sigv4::sha256_hex(t.as_bytes()));
+        let hash = token.map(|t| busbar_api::sha256_hex(t.as_bytes()));
         *self
             .admin_token_hash
             .write()
@@ -880,7 +880,7 @@ impl GovState {
         // `?` converts a getrandom failure into a StoreError (see `From<getrandom::Error>`), so the
         // admin handler returns a 500 via its existing error_response path instead of panicking.
         let secret = generate_secret().store()?;
-        let hash = crate::sigv4::sha256_hex(secret.as_bytes());
+        let hash = busbar_api::sha256_hex(secret.as_bytes());
         // `id` is a 64-bit prefix of the 256-bit secret hash, while `generation_hash` is the full hash with
         // a UNIQUE constraint. Two distinct secrets sharing the same 64-bit prefix would produce the
         // same `id` but different `generation_hash`; since `put_key` UPSERTs on the PRIMARY KEY `id`, the
@@ -941,7 +941,7 @@ impl GovState {
         // `?` converts any getrandom failure into a StoreError (see `From<getrandom::Error>`), so the
         // admin handler returns a 500 via its existing error_response path instead of panicking.
         let secret = generate_secret().store()?;
-        let hash = crate::sigv4::sha256_hex(secret.as_bytes());
+        let hash = busbar_api::sha256_hex(secret.as_bytes());
         let id = format!("{VK_ID_PREFIX}{}", &hash[..VK_ID_HASH_PREFIX_LEN]);
         self.ensure_id_free_for_hash(&id, &hash)?;
         let access_key_id = generate_aws_access_key_id().store()?;

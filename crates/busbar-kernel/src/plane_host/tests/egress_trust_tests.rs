@@ -72,24 +72,24 @@ fn trust_anchor_seam_is_a_pass_through_to_the_registry() {
 }
 
 #[test]
-fn peer_spki_pin_seam_is_byte_for_byte_the_free_walk() {
+fn peer_leaf_pin_seam_is_byte_for_byte_the_free_walk() {
     let host = PassThroughEgressTrust;
     let der = a_root();
     // The seam's pin is the SAME string the free DER walk computes — the whole point of the seam
     // being a pass-through and not a second answer to "what is this key's pin".
     assert_eq!(
-        host.peer_spki_pin(der.as_ref()),
+        host.peer_leaf_pin(der.as_ref()),
         super::super::spki::pin(der.as_ref()),
         "the seam pins byte-for-byte identically to the free walk"
     );
     assert!(
-        host.peer_spki_pin(der.as_ref())
+        host.peer_leaf_pin(der.as_ref())
             .expect("a valid cert pins")
             .starts_with("sha256/"),
         "a real pin is spelled sha256/<base64>"
     );
     // A non-certificate refuses, exactly as the free walk does.
-    assert!(host.peer_spki_pin(b"not-a-cert").is_err());
+    assert!(host.peer_leaf_pin(b"not-a-cert").is_err());
 }
 
 #[test]
@@ -101,7 +101,7 @@ fn the_composition_root_install_hands_the_installed_capability_back() {
     let installed = egress_trust_host().expect("the just-installed capability reads back");
     let der = a_root();
     assert_eq!(
-        installed.peer_spki_pin(der.as_ref()),
+        installed.peer_leaf_pin(der.as_ref()),
         super::super::spki::pin(der.as_ref()),
         "the installed capability pins byte-identically to the free walk"
     );

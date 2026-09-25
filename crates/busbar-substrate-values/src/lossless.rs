@@ -5,16 +5,18 @@
 //! kept keyed by their SOURCE protocol so an egress OperationHandler may opt in to honoring a
 //! foreign knob it recognizes without merging namespaces across protocols.
 //!
-//! Protocols are identified by name (the codebase uses a string-keyed protocol registry).
+//! ONE DEFINITION (#83a, O13). This module used to declare a second alias of the type
+//! `ir::SourceScopedExtra` declares; the two resolved to the same concrete type, so the duplicate
+//! died and this path re-exports the one definition, now in `busbar_contract::ir`.
 
-use serde_json::{Map, Value};
+pub use busbar_contract::ir::SourceScopedExtra;
+
+// The relocated test reaches the map and value types through `super::*`, exactly as it did when
+// this module named them for its own alias.
+#[cfg(test)]
+use serde_json::Value;
+#[cfg(test)]
 use std::collections::BTreeMap;
-
-/// Request/response extras NAMESPACED BY SOURCE PROTOCOL. Outer key = source protocol name (e.g.
-/// `"openai"`), inner map = that protocol's unmodeled fields. An egress OperationHandler may CHOOSE to honor a
-/// foreign knob it recognizes; anything it does not consume is warn-and-dropped by the handler that
-/// declines it. Same-protocol round-trips re-emit the whole map verbatim.
-pub type SourceScopedExtra = BTreeMap<String, Map<String, Value>>;
 
 #[cfg(test)]
 #[path = "tests/lossless_tests.rs"]

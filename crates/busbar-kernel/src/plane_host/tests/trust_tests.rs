@@ -181,9 +181,10 @@ fn verify_decide_q_marshals_the_full_due_reason() {
                 got, want,
                 "verify_decide_q reason for last={last:?} ttl={ttl_ms} now={now}"
             );
-            // And it round-trips back to the SAME rich `Due` the a2a plane audits (the reconstruction
-            // is the a2a-gated inbound half of the mapping).
-            #[cfg(feature = "plane-a2a")]
+            // And it round-trips back to the SAME rich `Due` the relaying plane audits (the
+            // reconstruction is the `relay`-gated inbound half of the mapping — the neutral marker
+            // `Due::from_verify_decision` itself is compiled under).
+            #[cfg(feature = "relay")]
             assert_eq!(
                 crate::trust::reverify::Due::from_verify_decision(got),
                 due(&ledger, &policy, now, false),
@@ -248,8 +249,8 @@ fn drift_quarantine_records_and_is_fail_closed() {
 
 /// The neutral u8 mirror the drift path carries round-trips through
 /// [`trust_state_u8`]/[`trust_state_from_u8`] for every state, and an ABSENT/unknown value fails
-/// SAFE to `Quarantined` — the pre-extension demote-only disposition.
-#[cfg(feature = "plane-mcp")]
+/// SAFE to `Quarantined` — the pre-extension demote-only disposition. Ungated: both mirror fns are
+/// compiled under every feature set (see their docs), so the test is too.
 #[test]
 fn drift_state_mirror_round_trips_and_fails_safe() {
     use crate::trust::TrustState;
@@ -271,8 +272,7 @@ fn drift_state_mirror_round_trips_and_fails_safe() {
 /// (the pre-extension `size`, so the sized guard hides `drift_state`) settles the demote-only
 /// fallback. The test app has no durable sink, so the settle is a fire-and-forget `Ok`; the
 /// disposition carried is asserted via the mirror above and the durable settle rule in
-/// `plane::quarantine`'s own tests.
-#[cfg(feature = "plane-mcp")]
+/// `plane::quarantine`'s own tests. Ungated, as the slot and the mirror are.
 #[test]
 fn drift_quarantine_carries_the_caller_state() {
     use crate::trust::TrustState;

@@ -3,7 +3,7 @@
 
 //! THE SESSION-SCOPE AUTHORIZATION GATE — the plane's declared `session` scope kind, enforced.
 //!
-//! The plane declares one scope kind (`PLANE_DECL.scope_kinds`), which is the vocabulary an
+//! The plane declares one scope kind (`PLANE_DECLARATION.scope_kinds`), which is the vocabulary an
 //! `allowed_scopes: [{ kind: session, value: … }]` entry validates against. Holding a key that is
 //! valid for this plane's AUDIENCE is not the same as being GRANTED a session on it — the audience
 //! check answers "is this token for this door", the grant answers "may this caller walk through it",

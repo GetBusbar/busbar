@@ -29,8 +29,8 @@ use busbar_kernel::inflight::InFlight;
 use busbar_kernel::pump::{
     BodySpool, Direction, Dispatch, Scheduler, Shape, SpillBudget, StreamId, MAX_NEEDMORE_FRAMES,
 };
+use busbar_transport_http::sse::SseTransport;
 use busbar_transport_http::HttpTransport;
-use busbar_transport_sse::SseTransport;
 
 /// The knob the binding names, at the values it names them.
 #[test]

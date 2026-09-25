@@ -1,0 +1,166 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! The SSE frame terminator and frame parser, ported from the kernel's `proto` module (moved here
+//! per the design's own rule: "adding a transport" means the wire-level pieces that only a
+//! transport needs move into the transport crate, verbatim in behaviour). `busbar-substrate` is
+//! outside this delivery's ownership, so its copy is left for that crate's own owner to retire;
+//! this is the transport-owned copy `sse` actually runs on.
+
+/// The length of the line terminator starting at `i`, or `None` when `i` does not begin one.
+///
+/// The event-stream grammar names three: CRLF, a lone LF, and a lone CR. A CR at the very end of
+/// the buffer is not yet knowable — the LF that would make it a CRLF may still be in flight — so it
+/// reads as "no terminator here", which is the answer that makes a caller wait for more bytes
+/// rather than split a CRLF down the middle.
+fn terminator_len(buf: &[u8], i: usize) -> Option<usize> {
+    match buf.get(i)? {
+        b'\n' => Some(1),
+        b'\r' => match buf.get(i + 1) {
+            Some(b'\n') => Some(2),
+            Some(_) => Some(1),
+            None => None,
+        },
+        _ => None,
+    }
+}
+
+/// Find the first SSE frame terminator (a blank line) in `buf` at or after `start`, returning
+/// `(offset, terminator_len)` where `offset` is the byte index of the first terminator byte and the
+/// length spans BOTH line terminators that make the blank line, alongside how many bytes of `buf`
+/// this call examined — the pair a caller uses to pin the scan's own complexity class without a
+/// process-global counter racing every other test in the binary. `None` when no complete blank line
+/// is present yet.
+///
+/// All three of the spec's terminators are recognised, in every pairing: `\n\n` and `\r\n\r\n` are
+/// the two the providers emit, and `\r\r`, `\n\r`, `\r\n\r` and `\r\r\n` are the rest of the
+/// grammar.
+///
+/// A re-segmenting reader appends to its buffer and asks again; without a resume point it re-proves
+/// the prefix it already proved, once per arriving chunk, which is quadratic in the frame size. The
+/// caller passes the prefix it has already cleared, REWOUND BY THREE — the most of a four-byte
+/// terminator a previous look can have left straddling the boundary.
+///
+/// The search jumps between CR and LF bytes rather than stepping every position; a terminator
+/// begins with one of the two, so no candidate is skipped.
+#[must_use]
+pub fn find_frame_terminator_from(buf: &[u8], start: usize) -> (Option<(usize, usize)>, usize) {
+    let mut i = start.min(buf.len());
+    let scanned = buf.len() - i;
+    let found = loop {
+        let Some(rel) = memchr::memchr2(b'\r', b'\n', &buf[i..]) else {
+            break None;
+        };
+        let at = i + rel;
+        let Some(first) = terminator_len(buf, at) else {
+            // Only reachable for a trailing CR: not a terminator yet, and nothing past it to scan.
+            break None;
+        };
+        if let Some(second) = terminator_len(buf, at + first) {
+            break Some((at, first + second));
+        }
+        // A line ended here but the next one is not blank: resume past the terminator itself, so a
+        // CRLF is never re-read as a bare CR followed by a bare LF.
+        i = at + first;
+    };
+    (found, scanned)
+}
+
+/// Split `buf` into lines on the same grammar [`terminator_len`] recognises — CRLF, a lone LF, or
+/// a lone CR — rather than `str::lines`'s LF-only rule. Unlike the streaming scan above, a frame
+/// handed here is already complete (its own trailing blank line was stripped when it was carved
+/// out of the buffer), so a CR at the very end IS a terminator, not a "wait for more" ambiguity;
+/// this never yields the empty final line a trailing terminator would otherwise leave behind.
+///
+/// Yielded one at a time rather than collected: a caller that only needs to know whether SOME line
+/// is a `data:` line pays for no buffer at all, and the caller that reads them all borrows straight
+/// out of the frame either way.
+fn split_frame_lines(buf: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let mut start = 0_usize;
+    let mut i = 0_usize;
+    std::iter::from_fn(move || {
+        while i < buf.len() {
+            match buf[i] {
+                b'\r' => {
+                    let line = &buf[start..i];
+                    i += if buf.get(i + 1) == Some(&b'\n') { 2 } else { 1 };
+                    start = i;
+                    return Some(line);
+                }
+                b'\n' => {
+                    let line = &buf[start..i];
+                    i += 1;
+                    start = i;
+                    return Some(line);
+                }
+                _ => i += 1,
+            }
+        }
+        if start < buf.len() {
+            let line = &buf[start..];
+            start = buf.len();
+            return Some(line);
+        }
+        None
+    })
+}
+
+/// The four field names the SSE grammar defines. Anything else on a line — a leading `:`, which is
+/// a comment, or a name this list does not hold — is not a field.
+const SSE_FIELDS: [&[u8]; 4] = [b"data:", b"event:", b"id:", b"retry:"];
+
+/// Whether this frame carries an SSE FIELD at all.
+///
+/// The re-segmenter asks exactly this of every frame it carves, and asking it by parsing the frame
+/// and throwing the answer away costs a `String`, a `Vec` and a join per frame on the streaming
+/// path, all of it dropped before the frame is handed on untouched.
+///
+/// All four fields, not just `data:`. `id:` is the client's resume point and `retry:` is the
+/// upstream's reconnection floor — a reader that never sees them cannot resume where the stream
+/// stopped or wait as long as it was asked to, and this transport declares `DECODES_PAYLOAD =
+/// false`, so deciding that a field it does not itself read is uninteresting is not its call. Nor
+/// is UTF-8 its business: the bytes are handed on exactly as they arrived, so a frame that is not
+/// valid UTF-8 is still the frame the upstream sent, and dropping it silently loses an event
+/// nothing else will report. What stays out is what carries no field at all: a comment (`: ping`,
+/// the ordinary keepalive) says nothing, and there is nothing to hand up for it.
+#[must_use]
+pub fn frame_carries_a_field(frame: &[u8]) -> bool {
+    split_frame_lines(frame).any(|line| SSE_FIELDS.iter().any(|field| line.starts_with(field)))
+}
+
+/// Parse one SSE frame into `(event_type, data_payload)`. `event_type` is "" when the frame has
+/// no `event:` line (OpenAI style). Multiple `data:` lines in a single frame are concatenated with
+/// `\n` per the SSE spec. Returns `None` if the frame carries no `data:` line (including a frame
+/// with only an `event:` line) or is invalid UTF-8.
+///
+/// TEST ONLY, and compiled out of a production build entirely. `sse` declares `DECODES_PAYLOAD =
+/// false`: it hands each frame's bytes on exactly as they arrived and never reads the payload, so
+/// the only question its re-segmenter asks of a frame is [`frame_carries_a_field`]'s. What this is
+/// still for is the reading those tests check that predicate and their own payload assertions
+/// against — the parse the transport would have to agree with if it ever did decode one.
+#[cfg(test)]
+#[must_use]
+pub fn parse_sse_frame(frame: &[u8]) -> Option<(String, String)> {
+    // UTF-8 is validated once, over the whole frame; every split point below lands on a `\r` or
+    // `\n` byte, both single-byte ASCII, which can only ever be a boundary in valid UTF-8 (a
+    // continuation byte's top bit is always set), so each piece stays valid UTF-8 on its own.
+    std::str::from_utf8(frame).ok()?;
+    let mut event_type = String::new();
+    let mut data_lines: Vec<&str> = Vec::new();
+    for line in split_frame_lines(frame) {
+        let line = std::str::from_utf8(line).expect("ascii-boundary split of valid utf-8");
+        if let Some(rest) = line.strip_prefix("event:") {
+            event_type = rest.trim().to_string();
+        } else if let Some(rest) = line.strip_prefix("data:") {
+            data_lines.push(rest.strip_prefix(' ').unwrap_or(rest));
+        }
+    }
+    if data_lines.is_empty() {
+        return None;
+    }
+    Some((event_type, data_lines.join("\n")))
+}
+
+#[cfg(test)]
+#[path = "tests/proto.rs"]
+mod tests;

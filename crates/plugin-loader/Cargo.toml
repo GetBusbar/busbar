@@ -7,6 +7,25 @@ rust-version = "1.97"
 description = "The busbar plugin subsystem: signed-tarball discovery, in-memory unpack + verification, the three-phase (structural/trust/conflict) load validation, the name/alias registry, and the memfd/private-temp dynamic loader over the plugin C ABI. All FFI unsafe is isolated here so the engine crate keeps its forbid(unsafe_code) invariant."
 license = "Apache-2.0"
 
+# AUTHOR-SIDE PACKAGING (roster def 14): the `busbar-plugin-pack` CLI. It drives this crate's own
+# signing engine (`sign`) and tarball writer (`tarball`), so it lives beside them. It moved here from
+# `busbar-plugin-sdk` (batch 68/69 D1): an optional feature on the SDK is still an edge in the closure
+# of every plugin that names the SDK (`kind-isolation:closure` scores the union of feature
+# configurations), and this crate carries `busbar-kernel-ledger` and `busbar-kernel-wal`. Here it
+# reaches no plugin's closure: no plugin-kind crate may name this crate.
+#
+# OPTIONAL ON PURPOSE. This crate is in the `busbar` binary's graph, and `jsonschema` is tooling that
+# must never reach the engine. Behind `required-features`, a default build of the loader (and of
+# `busbar`) compiles none of it. Build the tool with
+#   cargo build --release -p busbar-plugin-loader --features pack --bin busbar-plugin-pack
+[features]
+pack = ["dep:busbar-secret-ref", "dep:jsonschema"]
+
+[[bin]]
+name = "busbar-plugin-pack"
+path = "src/pack.rs"
+required-features = ["pack"]
+
 [dependencies]
 busbar-api = { path = "../api" }
 busbar-plugin = { path = "../busbar-plugin" }
@@ -51,6 +70,16 @@ tar = { workspace = true }
 flate2 = { workspace = true }
 # Random staging-directory suffix (a pid alone is predictable to a pre-planter).
 getrandom = { workspace = true }
+# ── the `pack` feature's own dependencies; see the note above [features]. OPTIONAL, never default.
+# (`hex` and `getrandom` above are this crate's own unconditional deps; `keygen` draws its ed25519
+# seed from the OS RNG through the same `getrandom`.)
+# The extracted SecretRef reference type, so the x-busbar-secret `oneOf` shape is derived from the
+# REAL type the engine deserializes rather than a hand-written parallel copy that can drift.
+busbar-secret-ref = { path = "../secret-ref", optional = true }
+# Pack-time gate for --settings-schema-file: reject a syntactically-invalid JSON Schema 2020-12
+# document at PACK time, not at UI-render time on some operator's machine. Tooling-only, and behind
+# the feature, so it never reaches a plugin or the engine.
+jsonschema = { workspace = true, optional = true }
 
 [dev-dependencies]
 # The end-to-end DlopenPolicy test drives the async RoutingPolicy methods, so the test needs a
@@ -71,6 +100,19 @@ busbar-export-example-plugin = { path = "../export-example-plugin" }
 # requires the two to round-trip a plane scope grant (`mcp_tool`) identically — a dropped-in store's
 # copy of the scope-kind registry is never populated by the engine's boot registration.
 busbar-store-example-plugin = { path = "../store-example-plugin" }
+# The `kind: secret` BOTH-WAYS fixture, on the same terms: `secret_conformance_tests` links its
+# `rlib`'s `BUSBAR_COLD_ENTRY` (the linked door) and signs its `cdylib` into a temp `plugins/` (the
+# dropped-in door), and requires the two registry rows and what the two opened modules resolve to be
+# byte-identical (DECISIONS #2 rule (1)).
+busbar-secret-example-plugin = { path = "../secret-example-plugin" }
+# The `kind: auth` BOTH-WAYS fixture — #2's auth witness, step (4) (OWNER-LOCKED): its `rlib` gives the
+# test the COMPILED-IN module (its `pub fn open`, driven through the `dispatch_compiled_in` twin
+# `export_auth_plugin!` emits) and its `BUSBAR_COLD_ENTRY` (the linked door); its `cdylib` is the
+# dropped-in door. `auth_conformance_tests` requires the two to be one plugin — the auth kind's first
+# both-ways witness at any tag.
+busbar-auth-static-plugin = { path = "../auth-static-plugin" }
+# The `kind: hook` BOTH-WAYS fixture, on the same terms (`hook_conformance_tests`).
+busbar-hook-test-plugin = { path = "../hook-test-plugin" }
 
 [target.'cfg(unix)'.dependencies]
 # memfd_create (Linux zero-disk loads) + kill(pid, 0) liveness for the dead-pid staging sweep.
@@ -84,3 +126,14 @@ libc = { workspace = true }
 # back to the in-tree busbar-store-example-plugin when the sqlite sibling is not built; under CI a
 # missing fixture is a hard failure, never a skip. The sibling-built one is required only under
 # qa-gate.yml's `loader` leg (see store_fixture_plugin_path()'s doc comment in src/lib.rs).
+
+# THE BOTH-WAYS FIXTURES: <cold kind> = "<fixture crate>". `build.rs` turns these rows into the table
+# `src/tests/both_ways.rs` includes, so each conformance test reaches its kind's fixture by KIND and no
+# test source names a plugin instance. A fixture here is also a dev-dependency above: the linked door
+# needs its `rlib`, the dropped-in door its `cdylib`.
+[package.metadata.busbar.both-ways]
+store = "busbar-store-example-plugin"
+secret = "busbar-secret-example-plugin"
+export = "busbar-export-example-plugin"
+auth = "busbar-auth-static-plugin"
+hook = "busbar-hook-test-plugin"

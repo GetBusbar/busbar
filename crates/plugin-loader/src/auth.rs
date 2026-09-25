@@ -6,7 +6,7 @@
 //! identity-only [`busbar_plugin::cold::auth::Identity`] (→ [`busbar_api::Principal`]); a misbehaving
 //! plugin is FAIL-CLOSED (rejected, never admitted).
 
-use crate::{stage, wire_up_raw, RawPlugin};
+use crate::RawPlugin;
 use busbar_api::{
     AuthModule, AuthOutcome, AuthPlugin, BeginLogin, CompleteLogin, LoginKind, LoginModule,
     LoginOutcome, Principal,
@@ -199,8 +199,18 @@ pub fn load_auth_from_bytes(
     display: &str,
     manifest_kind: &str,
 ) -> Result<Box<dyn AuthModule>, String> {
+    load_auth_image(crate::Image::Bytes(bytes), cfg_json, display, manifest_kind)
+}
+
+/// [`load_auth_from_bytes`] over either door's [`crate::Image`].
+pub fn load_auth_image(
+    image: crate::Image<'_>,
+    cfg_json: &str,
+    display: &str,
+    manifest_kind: &str,
+) -> Result<Box<dyn AuthModule>, String> {
     Ok(Box::new(build_dyn_auth(
-        bytes,
+        image,
         cfg_json,
         display,
         manifest_kind,
@@ -218,8 +228,18 @@ pub fn load_login_from_bytes(
     display: &str,
     manifest_kind: &str,
 ) -> Result<Box<dyn AuthPlugin>, String> {
+    load_login_image(crate::Image::Bytes(bytes), cfg_json, display, manifest_kind)
+}
+
+/// [`load_login_from_bytes`] over either door's [`crate::Image`].
+pub fn load_login_image(
+    image: crate::Image<'_>,
+    cfg_json: &str,
+    display: &str,
+    manifest_kind: &str,
+) -> Result<Box<dyn AuthPlugin>, String> {
     Ok(Box::new(build_dyn_auth(
-        bytes,
+        image,
         cfg_json,
         display,
         manifest_kind,
@@ -230,20 +250,12 @@ pub fn load_login_from_bytes(
 /// the frozen contract (transport, kind==`auth` && kind==manifest), then resolves the module's
 /// `name()` / `cacheable()` ONCE. `manifest_kind` is the trust-verified signed-manifest `kind`.
 fn build_dyn_auth(
-    bytes: &[u8],
+    image: crate::Image<'_>,
     cfg_json: &str,
     display: &str,
     manifest_kind: &str,
 ) -> Result<DynAuth, String> {
-    let (lib, staged) = stage::load_library_from_bytes(bytes, display)?;
-    let raw = wire_up_raw(
-        lib,
-        cfg_json,
-        display.to_string(),
-        abi_kind::AUTH,
-        manifest_kind,
-        Some(staged),
-    )?;
+    let raw = crate::load_image(image, cfg_json, display, abi_kind::AUTH, manifest_kind)?;
 
     let name = match raw.transport_call::<AuthRequest, AuthResponse>(&AuthRequest::Name) {
         Ok(AuthResponse::Name(n)) => n,

@@ -173,13 +173,6 @@ pub fn residual_default_dialect() -> Option<&'static str> {
 pub(crate) mod stream_translator;
 pub use stream_translator::install_stream_translator_factory;
 pub use stream_translator::new_stream_translator;
-/// Core's OWN test binary routes the streaming-translator seam straight to the extracted dialect
-/// plugin's concrete factory through this `tests/` fixture (the neutral-purity lint excludes it), so the streaming
-/// suites that drive `new_stream_translator` standalone keep working after the `#[path]` witness of the
-/// concrete translator was deleted — with no plugin symbol in neutral source and no `install_*` call.
-#[cfg(test)]
-#[path = "tests/stream_factory_fixture.rs"]
-mod stream_factory_fixture;
 // The neutral `StreamTranslator` trait RELOCATED DOWN to `busbar_kernel::proto`; re-exported here
 // at its historical `busbar_kernel::proto::StreamTranslator` path so core's forward path is unchanged.
 
@@ -247,14 +240,27 @@ pub use registry::{
 /// [`residual_default_dialect`], and the frozen config lane-default is a frozen-wire literal in
 /// `config`. What remains is core's OWN test binary's fixtures, which name the shipped dialects by
 /// convention (golden-value checks) — so these consts are confined to test / `test-support` scope,
-/// where a neutral crate naming a dialect is expected, and the neutral PRODUCTION source spells none.
+/// and the neutral PRODUCTION source spells none.
+///
+/// EACH VALUE IS A FROZEN WIRE STRING, and that is the only ground on which it is spelled here: it is
+/// the value an operator writes in a provider's `protocol:` key, and all six have been accepted there
+/// unchanged since 1.5.3 (`git show v1.5.3:crates/busbar/src/proto/mod.rs`, lines 1744-1749, holds
+/// these six consts byte-for-byte). So each line carries the frozen-wire pragma naming that key,
+/// exactly as `busbar_substrate_values::ir::providers::DEFAULT_PROTOCOL` does for the omitted-key
+/// default.
 #[cfg(any(test, feature = "test-support"))]
 mod dialect_test_names {
+    // plane-purity: frozen-wire a value of a provider's `protocol:` key in the frozen providers.yaml config grammar (frozen since 1.5.3)
     pub const PROTO_ANTHROPIC: &str = "anthropic";
+    // plane-purity: frozen-wire a value of a provider's `protocol:` key in the frozen providers.yaml config grammar (frozen since 1.5.3)
     pub const PROTO_OPENAI: &str = "openai";
+    // plane-purity: frozen-wire a value of a provider's `protocol:` key in the frozen providers.yaml config grammar (frozen since 1.5.3)
     pub const PROTO_GEMINI: &str = "gemini";
+    // plane-purity: frozen-wire a value of a provider's `protocol:` key in the frozen providers.yaml config grammar (frozen since 1.5.3)
     pub const PROTO_BEDROCK: &str = "bedrock";
+    // plane-purity: frozen-wire a value of a provider's `protocol:` key in the frozen providers.yaml config grammar (frozen since 1.5.3)
     pub const PROTO_COHERE: &str = "cohere";
+    // plane-purity: frozen-wire a value of a provider's `protocol:` key in the frozen providers.yaml config grammar (frozen since 1.5.3)
     pub const PROTO_RESPONSES: &str = "responses";
 }
 #[cfg(any(test, feature = "test-support"))]

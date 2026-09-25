@@ -143,17 +143,11 @@ switch    = "STRIKE THIS ROW in the same commit that gives the composition root 
 # owner signs them, not an agent.
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 
-# BREAKER — the operator's per-destination request budget is never installed, so the root's
-# breaker answers "admissible" for every destination forever.
-[[capability]]
-id        = "breaker-request-budget"
-built     = "crates/busbar-kernel-breaker/src/lib.rs"
-symbol    = "set_budget"
-construct = [".set_budget("]
-scope     = ["crates"]
-why       = "BreakerAdapter::admissible() answers from budget_remaining(dest) != Some(0), and no destination ever HAS a budget, so the lifetime request cap config.yaml documents as max_requests can never refuse anything on the root's breaker path."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that reads the operator's max_requests out of config and calls set_budget for each destination when the root breaker is constructed (crates/busbar/src/root/kernel.rs, via adapters.rs BreakerAdapter::with_diagnostics)."
+# BREAKER — `breaker-request-budget` STRUCK 2026-09-25 (item 142, the breaker fold; K2-0 one-breaker
+# ruling Q40/Q47): the kernel's admission path now runs on the one breaker, and `HealthState` declares
+# every lane's `max_requests` through `BreakerUnit::set_budget` when it is built (store/in_memory/
+# mod.rs). The lane spends, refunds and reads that same counter — the unit's own, shared by handle —
+# so the cap is counted once, where it always was, and never beside it.
 
 # BREAKER — the operator's error map never reaches the breaker either.
 [[capability]]
@@ -166,27 +160,15 @@ why       = "The per-destination error map that lets an operator classify an ups
 unshipped = true
 switch    = "STRIKE THIS ROW in the commit that feeds the operator's declared error_maps into the root breaker at construction time, alongside the budget row above — they are the same seam and should land together."
 
-# BREAKER — the explicit-limits constructor has no caller at all, not even a test.
-[[capability]]
-id        = "breaker-with-limits"
-built     = "crates/busbar-kernel-breaker/src/lib.rs"
-symbol    = "with_limits"
-construct = ["BreakerUnit::with_limits(", ".with_limits("]
-scope     = ["crates"]
-why       = "The constructor that takes explicit hard_down_cooldown and max_honored_retry_after has no caller anywhere, so the composed breaker runs on ADR-0002 compiled-in defaults and the two knobs cannot be moved by any deployment."
-unshipped = true
-switch    = "STRIKE THIS ROW when the root constructs its breaker through with_limits with values read from config, or DELETE with_limits if the defaults are the decision — an unreachable constructor is not a knob."
+# BREAKER — `breaker-with-limits` STRUCK 2026-09-25 (item 142, the breaker fold): `HealthState` builds
+# its one breaker with `BreakerUnit::new().with_limits(hard_down_cooldown_secs,
+# max_honored_retry_after_secs)` from the two live `limits.*` keys, and every hard-down trip and every
+# honoured Retry-After ceiling reads them back from the unit. No second copy of either knob remains.
 
-# BUDGET — the pricer the admission door uses is never given a rate card.
-[[capability]]
-id        = "budget-pricer-card"
-built     = "crates/busbar-kernel-budget/src/price.rs"
-symbol    = "with_card"
-construct = ["Pricer::with_card("]
-scope     = ["crates"]
-why       = "The only production Pricer in the tree is Pricer::flat(0) (crates/busbar/src/main.rs), which prices every model at zero and carries no fee, so busbar-kernel-budget's Door/decide path has never been driven by an operator's card on any node."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that constructs the root's Pricer from the resolved rate card instead of flat(0). NOTE FOR THE OWNER: live admission today prices through busbar_kernel::cost::CostModel, which IS card-fed — so this is the split's unfinished half, not a live mispricing."
+# BUDGET — `budget-pricer-card` STRUCK 2026-09-25 (UC-STRIKE; #43 / item 104 "one function", Q36/Q9):
+# `Pricer::with_card` had no production caller and is DELETED — it was the pre-item-123 reserved-four
+# RateNanos constructor, superseded by `Pricer::from_card` (the ledger's one card). The stub second
+# node's `Pricer::flat(0)` stays with item 245; if that door ever needs a card, it is `from_card`.
 
 # LEDGER — no node ever seals a checkpoint, so the checkpoints read is empty everywhere.
 [[capability]]
@@ -210,16 +192,10 @@ why       = "Durability is built with checkpoints: Vec::new() and the one functi
 unshipped = true
 switch    = "STRIKE THIS ROW in the commit that calls journal_checkpoint on a real schedule or seam, together with ledger-checkpoint-seal."
 
-# LEDGER — a signed rate-history amendment books no adjusting entry.
-[[capability]]
-id        = "ledger-adjusting-entries"
-built     = "crates/busbar-kernel-ledger/src/settle.rs"
-symbol    = "adjusting_entries"
-construct = ["adjusting_entries("]
-scope     = ["crates"]
-why       = "The admin verb that amends rate history appends a card entry and books nothing, so the adjustments/drawn journal pair that would make a correction legible beside the original bill is never written. MONEY: PARKED-OWNER, an owner signs this, not an agent."
-unshipped = true
-switch    = "STRIKE THIS ROW when the amend-rate-history effect books the adjusting entries it derives. This is a BILLED-BYTE change and needs an owner signature before it lands."
+# LEDGER — `ledger-adjusting-entries` STRUCK 2026-09-25 (UC-STRIKE; #77(2) "no adjusting lines",
+# #77(3) "price is NEVER stored", #79, Q36/Q9): `adjusting_entries`, `Repricing` and
+# `Ledger::record_repricing` had no production caller and are DELETED — an amendment reprices its
+# window as a dated view over stored counts, and books nothing.
 
 # MONEY — the #79 exact pricing view has no production producer.
 # `money-one-function-view` STRUCK 2026-09-24 by owner ruling: the one function is the production
@@ -227,16 +203,11 @@ switch    = "STRIKE THIS ROW when the amend-rate-history effect books the adjust
 
 # ─── SECURITY AND DURABILITY, from the same sweep ───────────────────────────────────────────────
 
-# A SECURITY GATE THAT RUNS ON EVERY SESSION AND CAN NEVER FIRE.
-[[capability]]
-id        = "voice-denied-destinations"
-built     = "crates/busbar-voice/src/runtime/mod.rs"
-symbol    = "with_denied_destinations"
-construct = [".with_denied_destinations("]
-scope     = ["crates"]
-why       = "destination_denied() IS consulted on the live request path and renders a 403, but denied_destinations is initialised empty, its only writer is this builder, and StreamsCfg carries no deny field — so the upstream-destination denial gate runs on every session and always answers allow."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that gives StreamsCfg (or its successor) a deny list and passes it through with_denied_destinations when the voice runtime is constructed. Until then the 403 path is unreachable by configuration."
+# STREAMING — `voice-denied-destinations` STRUCK 2026-09-25 (UC-STRIKE; standing rule Q67, revert to
+# 1.5.5, which had no plane-private destination deny-list): `with_denied_destinations`,
+# `denied_destinations`, `destination_denied` and the session gauntlet's unreachable 403 arm had no
+# production writer and are DELETED. Model access stays the key/group pool ACL at the scope step; a
+# deny-list, if the owner wants one, is a new flagged config surface on the folded streaming plane.
 
 # NO NODE CAN LOAD A PLANE PLUGIN.
 [[capability]]
@@ -248,16 +219,6 @@ scope     = ["crates"]
 why       = "Of the registry's open_* kinds, open_auth/open_hook/open_secret/open_store all have production callers and open_plane has none, so no node can load a kind: plane plugin — the 1.6.0 plane ABI has a loader and no caller."
 unshipped = true
 switch    = "STRIKE THIS ROW in the commit that calls open_plane from the composition root's plugin wiring. Already described at docs/design/BUSBAR-1.6.0.md:1627 — this row is that sentence made machine-readable."
-
-[[capability]]
-id        = "export-plugin-open"
-built     = "crates/plugin-loader/src/registry.rs"
-symbol    = "open_export"
-construct = [".open_export("]
-scope     = ["crates"]
-why       = "The kind: export plugin open has zero callers anywhere in the tree, not even a test, so an export plugin cannot be loaded by any node. Described in docs/design/1.6.0-MAP.md section 6 and never in a file a machine reads."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that gives open_export a production caller, or delete the kind if export is not shipping in 1.6.0."
 
 # MID-LOG CORRUPTION — row `wal-corruption-verdict` STRUCK 2026-09-24 by owner ruling:
 # `recover_and_truncate` now branches on the scan's verdict (`.was_torn(`): a torn tail is cut
@@ -300,25 +261,24 @@ why       = "Its own doc calls this what makes the late-accrual exposure a mecha
 unshipped = true
 switch    = "STRIKE THIS ROW in the commit that converts a child hold at parent exit on the real path. MONEY: PARKED-OWNER — an owner signs, not an agent."
 
-# MONEY — the multi-currency card has no production builder.
-[[capability]]
-id        = "rate-card-multi-currency"
-built     = "crates/busbar-kernel-ledger/src/cost/rate.rs"
-symbol    = "set_rate"
-construct = [".set_rate("]
-scope     = ["crates"]
-why       = "The documented way a multi-currency card is built has no production caller; production builds exactly one currency through from_micro_rates_in, so a card carrying a second currency cannot be constructed by any deployment."
-unshipped = true
-switch    = "STRIKE THIS ROW when a production path builds a multi-currency card, or DELETE set_rate/set_fee if a card is always built whole — a mutator nothing calls is a second way to move a price. MONEY: PARKED-OWNER."
+# MONEY — `rate-card-multi-currency` STRUCK 2026-09-25 (UC-STRIKE, #66 OWNER-LOCKED + spec Q4 "no
+# currency"): the mutators `RateCard::set_rate`/`set_fee` had no production caller and are DELETED —
+# a card is built whole by its constructors, so no second path can move a price.
 
-# ─── THE THIRTEEN 1.6.0 MONEY-GOVERNANCE VERBS WITH NO EFFECT BOUND (architect ruling 2026-09-24) ───
+# ─── THE 1.6.0 MONEY-GOVERNANCE VERBS WITH NO EFFECT BOUND (architect ruling 2026-09-24) ───
+#
+# Thirteen when armed; FIVE STRUCK 2026-09-25 (UC-STRIKE, owner ruling 2026-09-08, ARCHITECTURE
+# section 4.7 + admin-new-verbs-contract.md): `admin-verb-{set-operator-key,set-escrow,
+# set-dual-control,export-keyset,approve}-effect`. Those five left 1.6.0: their `KernelVerb`
+# variants, `NEW_VERBS` entries, table rows and posture code are DELETED, and their paths answer the
+# unmounted 404 exactly as they did while unbound. Eight remain below.
 #
 # Each resolves in the closed verb table (`crates/busbar-core-admin/src/admin_codec/verbs.rs`) and
 # has NO effect behind it: measured 2026-09-24, every one walked the scope, operator and dual-control
 # gates, sealed a `rejected` audit row and then reached a surface with no handler, which answered
 # `404`. The ruling: a verb whose effect is not bound is NOT SERVED. `verb::effect_bound` answers
 # `false` for each, so the mount hands it to the surface's fallback (the unmounted 404, byte for
-# byte, no audit row) and the generated document does not describe it. Binding them is Phase 4 work.
+# byte, no audit row) and the generated document does not describe it. They stay unbound until each is given a binding.
 #
 # The anchor is the one generic check the binding must extend (`effect_bound` in
 # `crates/busbar-core-admin/src/verb.rs`); the needle is the effect function's call, named as the two
@@ -354,36 +314,6 @@ scope     = ["crates"]
 why       = "`POST /api/v1/admin/plane-record-write` is declared in the closed verb table but no effect is bound to it, so an operator cannot write a plane record entry; the node does not serve the path (unmounted 404, no audit row) and the document does not describe it."
 unshipped = true
 switch    = "STRIKE THIS ROW in the commit that binds the effect: a production call to plane_record_write_effect( reached from the composition root's execute_new_verb, and an effect_bound arm for KernelVerb naming this verb, so the mount serves it and the generated document describes it."
-
-[[capability]]
-id        = "admin-verb-set-operator-key-effect"
-built     = "crates/busbar-core-admin/src/verb.rs"
-symbol    = "effect_bound"
-construct = ["set_operator_key_effect("]
-scope     = ["crates"]
-why       = "`POST /api/v1/admin/operator-key` is declared in the closed verb table but no effect is bound to it, so an operator cannot seal the fleet's operator public key; the node does not serve the path (unmounted 404, no audit row) and the document does not describe it."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that binds the effect: a production call to set_operator_key_effect( reached from the composition root's execute_new_verb, and an effect_bound arm for KernelVerb naming this verb, so the mount serves it and the generated document describes it."
-
-[[capability]]
-id        = "admin-verb-set-escrow-effect"
-built     = "crates/busbar-core-admin/src/verb.rs"
-symbol    = "effect_bound"
-construct = ["set_escrow_effect("]
-scope     = ["crates"]
-why       = "`POST /api/v1/admin/escrow` is declared in the closed verb table but no effect is bound to it, so an operator cannot set the M-of-N key-loss escrow; the node does not serve the path (unmounted 404, no audit row) and the document does not describe it."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that binds the effect: a production call to set_escrow_effect( reached from the composition root's execute_new_verb, and an effect_bound arm for KernelVerb naming this verb, so the mount serves it and the generated document describes it."
-
-[[capability]]
-id        = "admin-verb-set-dual-control-effect"
-built     = "crates/busbar-core-admin/src/verb.rs"
-symbol    = "effect_bound"
-construct = ["set_dual_control_effect("]
-scope     = ["crates"]
-why       = "`POST /api/v1/admin/dual-control` is declared in the closed verb table but no effect is bound to it, so an operator cannot flip the dual-control posture between single and required; the node does not serve the path (unmounted 404, no audit row) and the document does not describe it."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that binds the effect: a production call to set_dual_control_effect( reached from the composition root's execute_new_verb, and an effect_bound arm for KernelVerb naming this verb, so the mount serves it and the generated document describes it."
 
 [[capability]]
 id        = "admin-verb-set-overdraft-ceiling-effect"
@@ -434,23 +364,3 @@ scope     = ["crates"]
 why       = "`POST /api/v1/admin/slices/resolve` is declared in the closed verb table but no effect is bound to it, so an operator cannot resolve a slice-level dispute; the node does not serve the path (unmounted 404, no audit row) and the document does not describe it."
 unshipped = true
 switch    = "STRIKE THIS ROW in the commit that binds the effect: a production call to resolve_slice_effect( reached from the composition root's execute_new_verb, and an effect_bound arm for KernelVerb naming this verb, so the mount serves it and the generated document describes it."
-
-[[capability]]
-id        = "admin-verb-export-keyset-effect"
-built     = "crates/busbar-core-admin/src/verb.rs"
-symbol    = "effect_bound"
-construct = ["export_keyset_effect("]
-scope     = ["crates"]
-why       = "`POST /api/v1/admin/export-keyset` is declared in the closed verb table but no effect is bound to it, so an operator cannot export the deployment keyset sealed to a recipient public key; the node does not serve the path (unmounted 404, no audit row) and the document does not describe it."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that binds the effect: a production call to export_keyset_effect( reached from the composition root's execute_new_verb, and an effect_bound arm for KernelVerb naming this verb, so the mount serves it and the generated document describes it."
-
-[[capability]]
-id        = "admin-verb-approve-effect"
-built     = "crates/busbar-core-admin/src/verb.rs"
-symbol    = "effect_bound"
-construct = ["approve_effect("]
-scope     = ["crates"]
-why       = "`POST /api/v1/admin/approve` is declared in the closed verb table but no effect is bound to it, so an operator cannot approve a held mutation (the maker-checker verb); the node does not serve the path (unmounted 404, no audit row) and the document does not describe it."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that binds the effect: a production call to approve_effect( reached from the composition root's execute_new_verb, and an effect_bound arm for KernelVerb naming this verb, so the mount serves it and the generated document describes it."

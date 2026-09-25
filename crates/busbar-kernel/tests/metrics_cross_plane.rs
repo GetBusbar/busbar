@@ -16,6 +16,8 @@
 //! Every OTHER test in `metrics_tests.rs` (counters, `describe()`, key-spend gauges, the gauge
 //! idle-timeout constant, …) names no lane/pool topology and stays in the unit module.
 
+mod linked;
+
 use busbar_api::{UsageLedger, VirtualKey};
 use busbar_kernel::governance::{
     GovState, MemoryStore, MeteringDelta, MeteringRow, Store, StoreError, StoreResult,
@@ -30,7 +32,7 @@ use busbar_kernel::test_support::{LaneSpec, TestApp};
 use std::sync::Arc;
 
 fn register_planes() {
-    busbar_llm::testkit::install_test_seams();
+    linked::install();
 }
 
 fn sample_vkey(id: &str) -> VirtualKey {

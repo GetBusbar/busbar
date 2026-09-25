@@ -295,10 +295,10 @@ async fn send_request(
 }
 
 /// Copy the connection's observed extras onto the response — the contract the observe spike
-/// pins: EVERY response served on a connection carries that connection's `PeerSpki`.
+/// pins: EVERY response served on a connection carries that connection's `PeerKeyPin`.
 fn inject_extras(resp: &mut Response<Incoming>, extras: &pool::ConnSnapshot) {
-    if let Some(spki) = &extras.spki {
-        resp.extensions_mut().insert(spki.clone());
+    if let Some(key_pin) = &extras.key_pin {
+        resp.extensions_mut().insert(key_pin.clone());
     }
 }
 

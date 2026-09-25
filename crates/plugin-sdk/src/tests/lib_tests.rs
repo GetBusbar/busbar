@@ -351,10 +351,13 @@ fn hook_ffi_roundtrip_open_call_close() {
         let mut out_len: usize = 0;
         let st = hook_call_impl(handle, req.as_ptr(), req.len(), &mut out, &mut out_len);
         assert_eq!(st, STATUS_OK);
-        let resp: busbar_plugin::cold::hook::HookReply =
+        // Hook payload schema v2: the reply rides the observability envelope, bare (a hook reports
+        // its metrics in its `status` reply, never on the back-channel).
+        let envelope: Envelope<busbar_plugin::cold::hook::HookReply> =
             serde_json::from_slice(std::slice::from_raw_parts(out, out_len)).unwrap();
         free_impl(out, out_len);
-        match resp {
+        assert!(envelope.is_bare(), "{envelope:?}");
+        match envelope.result {
             busbar_plugin::cold::hook::HookReply::Reply(v) => {
                 assert_eq!(v, serde_json::json!({"order": [0]}))
             }
@@ -541,6 +544,55 @@ fn dispatch_carries_what_the_handler_observed_on_that_calls_response() {
     assert_eq!(env.metrics[0]["name"], "x_total");
     assert_eq!(env.diagnostics.len(), 1);
     assert_eq!(env.diagnostics[0]["code"], "BUSBAR-0001");
+}
+
+/// THE `status` OP ANSWERS THE DRAIN, IN THE RESULT, ONCE. The host asks at scrape time; the sink
+/// hands over what it observed since it last reported, moved into [`ExportResponse::Status`] so the
+/// host folds it down the one envelope path — and the envelope around it is BARE, because the
+/// trailing drain finds nothing left. A second ask with nothing new observed reports nothing.
+#[test]
+fn status_answers_the_drain_in_the_result_and_reports_it_once() {
+    struct Queue {
+        pending: std::sync::atomic::AtomicU64,
+    }
+    impl ExportHandler for Queue {
+        fn streams(&self) -> Vec<ExportStream> {
+            vec![ExportStream::Logs]
+        }
+        fn drain_observations(&self) -> Observations {
+            match self.pending.swap(0, std::sync::atomic::Ordering::Relaxed) {
+                0 => Observations::none(),
+                n => Observations::none().metric(PluginMetric::counter("shed_total", n as f64)),
+            }
+        }
+    }
+    let sink = Queue {
+        pending: std::sync::atomic::AtomicU64::new(2),
+    };
+    let env = dispatch_export_enveloped(&sink, ExportRequest::Status);
+    assert!(
+        env.is_bare(),
+        "the drain rides the result, not the envelope: {env:?}"
+    );
+    match env.result {
+        ExportResponse::Status {
+            metrics,
+            diagnostics,
+        } => {
+            assert_eq!(metrics.len(), 1);
+            assert_eq!(metrics[0]["name"], "shed_total");
+            assert_eq!(metrics[0]["value"], 2.0);
+            assert!(diagnostics.is_empty());
+        }
+        other => panic!("expected Status, got {other:?}"),
+    }
+    match dispatch_export(&sink, ExportRequest::Status) {
+        ExportResponse::Status {
+            metrics,
+            diagnostics,
+        } => assert!(metrics.is_empty() && diagnostics.is_empty()),
+        other => panic!("expected Status, got {other:?}"),
+    }
 }
 
 fn mem_ctor(_cfg: &str) -> Result<BoxedStore, String> {
@@ -899,10 +951,11 @@ fn auth_abi_version_reads_the_shared_const() {
     assert_eq!(auth_abi_version(), busbar_plugin::cold::AUTH_ABI_VERSION);
 }
 
-/// Pin the auth payload schema at v2 (1.5.2 login primitives) — the SDK builds v2.
+/// Pin the auth payload schema at v3 (1.6.0: the enveloped wire over v2's login primitives) — the
+/// SDK builds v3.
 #[test]
-fn auth_abi_version_is_two() {
-    assert_eq!(auth_abi_version(), 2);
+fn auth_abi_version_is_three() {
+    assert_eq!(auth_abi_version(), 3);
 }
 
 // ── ABI v2 login dispatch (SDK server side) ────────────────────────────────────────────────

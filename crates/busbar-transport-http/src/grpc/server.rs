@@ -1,0 +1,395 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! The server side: one hyper HTTP/2 connection per accepted TCP socket, with a byte-blind
+//! per-RPC handler that forwards inbound gRPC messages into the connection's shared inbound
+//! channel and drains an outbound channel `write()` feeds, back onto the wire.
+//!
+//! ## The RPC path: the destination's, with this crate's own as the fallback
+//!
+//! gRPC's own wire format names every call by an HTTP/2 `:path` of the shape
+//! `/package.Service/Method`. A dialled call uses the method the destination named — the
+//! destination declares it under the reserved `method` key and `GrpcTransport::dial` reads it back
+//! through `UpstreamAddress::extra`, ignoring every key it does not understand — so two plane
+//! operations
+//! on one transport can reach two upstream methods. Only a destination naming none falls back to
+//! [`RPC_PATH`], which is also the path this byte-blind server answers on: served calls are
+//! answered whatever `:path` they arrive with, since the transport reads no meaning from it beyond
+//! recording it.
+
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::task::{Context, Poll};
+
+use futures::Stream;
+use hyper::body::Incoming;
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use tonic::{Request, Response, Status};
+
+use busbar_contract::transport::wire::Direction;
+use busbar_contract::transport::wire::FrameMeta;
+use busbar_contract::transport::wire::TransportError;
+use busbar_contract::transport::wire::WireStatus;
+use busbar_contract::wire::Frame;
+use busbar_contract::TransportMeta;
+use busbar_contract::{SlabBytes, StreamId};
+
+use super::codec::RawCodec;
+use super::conn::ConnState;
+
+/// This crate's own name for tonic's inbound message stream type — used at every call site below
+/// instead of the tonic type spelled out, so the crate-private plumbing that threads it around
+/// (the `RpcHandler` impl and `forward_inbound`, both `pub(crate)` or private, never exported)
+/// does not repeat tonic's own vocabulary more than the one place that has to name it.
+type InboundBody = tonic::Streaming<bytes::Bytes>;
+
+/// The path a dial falls back to when the destination names no method — this crate's own frame
+/// method, the only one a byte-blind transport can name for itself. See the module header.
+pub(crate) const RPC_PATH: &str = "/busbar.raw/Frames";
+
+/// Conservative per-connection HTTP/2 caps for a listener answering untrusted peers, set explicitly
+/// on the hyper server builder in [`serve_connection`] rather than left to hyper's defaults.
+///
+/// Hyper already defaults these to sane values (200 concurrent streams, a 16 KiB max frame, a 16 KiB
+/// max header list), so a stream flood or an HPACK bomb was already bounded — but a default is a
+/// bound this crate leans on without stating and a hyper upgrade could move. Pinned here, the ceiling
+/// on how many calls one connection multiplexes at once, and how much of a peer's framing this
+/// listener will read, is this crate's own deliberate choice. Each is a ceiling, not a target: a
+/// well-behaved peer never reaches any of them.
+///
+/// The stream cap is set tighter than hyper's default on purpose: past it the peer's next `HEADERS`
+/// waits rather than opening yet another concurrent call on this one connection.
+pub(crate) const MAX_CONCURRENT_STREAMS: u32 = 128;
+/// The largest HTTP/2 frame a peer may send — the protocol minimum (16 KiB, also hyper's default),
+/// the smallest a peer can be held to, so no single frame commits the connection to a larger read.
+const MAX_FRAME_BYTES: u32 = 16 * 1024;
+/// The largest decoded header list a peer may send (16 KiB, also hyper's default) — the ceiling on
+/// where an HPACK bomb would spend its budget, pinned so it stays bounded whatever the default does.
+const MAX_HEADER_LIST_BYTES: u32 = 16 * 1024;
+
+/// Serve one stream the layer below handed up as an HTTP/2 gRPC connection until it closes — or
+/// until the connection is closed from this side.
+///
+/// The task is spawned, so the shutdown seam is armed on `state` BEFORE the spawn: a `close` racing
+/// the very first poll of the connection must still find something to fire. Firing it asks hyper
+/// for a graceful shutdown (a GOAWAY: no new calls, the ones in flight end with their own
+/// trailers), and the socket goes with the task.
+pub(crate) fn serve_connection(
+    stream: super::conn::LowerIo,
+    state: Arc<ConnState>,
+    preface_timeout: std::time::Duration,
+) {
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    state.arm_shutdown(stop_tx);
+    let ending = state.clone();
+    tokio::spawn(async move {
+        // Bounded: see `super::conn::PrefaceGuard` on why the preface-only budget has to live on
+        // the raw stream rather than around this whole future. The budget is the one the
+        // transport was built with — [`super::conn::PREFACE_TIMEOUT`] unless a caller shortened
+        // it (a deployment, or a battery cell proving item 146 without a real ten-second wait).
+        let io = TokioIo::new(super::conn::PrefaceGuard::new(stream, preface_timeout));
+        let svc = hyper::service::service_fn(move |req: hyper::Request<Incoming>| {
+            let state = state.clone();
+            async move { Ok::<_, std::convert::Infallible>(handle_one_rpc(state, req).await) }
+        });
+        let mut builder = hyper::server::conn::http2::Builder::new(TokioExecutor::new());
+        // Explicit, crate-owned per-connection caps against a stream flood and HPACK exhaustion from
+        // an untrusted peer — see the constants' own note on why they are pinned rather than left to
+        // hyper's (already sane) defaults.
+        builder
+            .max_concurrent_streams(MAX_CONCURRENT_STREAMS)
+            .max_frame_size(MAX_FRAME_BYTES)
+            .max_header_list_size(MAX_HEADER_LIST_BYTES);
+        let conn = builder.serve_connection(io, svc);
+        tokio::pin!(conn);
+        let served = tokio::select! {
+            served = conn.as_mut() => served,
+            _ = stop_rx => {
+                conn.as_mut().graceful_shutdown();
+                conn.await
+            }
+        };
+        // HOW the connection ended, not merely that it did. A peer that spoke a framing this
+        // server could not read, or a socket that died mid-call, is not a peer that finished, and
+        // a reader handed the clean end-of-stream for either would read an aborted conversation as
+        // a complete one. The failure goes up as this connection's terminal error, ahead of the
+        // end.
+        if served.is_err() {
+            let _ = ending.send_inbound(Err(TransportError::Reset)).await;
+        }
+        // The connection is over, so nothing will ever arrive on it again: end the inbound side so
+        // a reader on `frames()` finishes rather than waiting out a deadline for a frame that
+        // cannot come.
+        ending.end_inbound();
+    });
+}
+
+/// Handle ONE incoming RPC (one HTTP/2 stream): mint a `StreamId`, register its outbound channel,
+/// spawn the inbound-forwarding task, and answer immediately with the response headers plus the
+/// live outbound stream — exactly the "unary + multiplexed streams" shape, since a unary caller is
+/// just a client that sends one message then half-closes.
+async fn handle_one_rpc(
+    state: Arc<ConnState>,
+    req: hyper::Request<Incoming>,
+) -> hyper::Response<tonic::body::Body> {
+    state.record_served_path(req.uri().path().to_string());
+    let local = state.next_local_stream.fetch_add(1, Ordering::Relaxed);
+    let stream_id = StreamId(local);
+    // A bounded max decoding message size, so one oversized length-prefixed message cannot make
+    // the framing layer reserve unbounded memory: `tonic` refuses an over-limit prefix with
+    // `OUT_OF_RANGE` before it buffers the body. The cap is this CONNECTION's — the deployment's
+    // own, if `listen` read one, else `super::codec::MAX_MESSAGE_BYTES` — not a crate-wide
+    // constant, so a listener the operator capped is actually capped.
+    let mut grpc =
+        tonic::server::Grpc::new(RawCodec).max_decoding_message_size(state.max_message_bytes);
+    // The call is registered by the handler, not here. `Grpc::streaming` can answer entirely on
+    // its own — a request naming a `grpc-encoding` this server has not enabled is refused while
+    // its headers are still being read — and then the handler below, whose response stream being
+    // dropped is the ONLY thing that prunes the map, never runs at all. An entry made before this
+    // await is one nothing drains and nothing removes, and a connection-wide refusal walks that
+    // map, so it would report a failure for a call that never opened.
+    let handler = RpcHandler {
+        state: state.clone(),
+        stream_id,
+    };
+    grpc.streaming(handler, req).await
+}
+
+/// The per-RPC handler: reads the inbound `Streaming<Vec<u8>>` in a spawned task (forwarding every
+/// message into the connection's shared inbound channel, tagged with this call's `StreamId`), and
+/// answers immediately with the outbound stream `write()` feeds.
+struct RpcHandler {
+    state: Arc<ConnState>,
+    stream_id: StreamId,
+}
+
+impl tower::Service<Request<InboundBody>> for RpcHandler {
+    type Response = Response<OutStream>;
+    type Error = Status;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Status>> + Send>>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, request: Request<InboundBody>) -> Self::Future {
+        let state = self.state.clone();
+        let stream_id = self.stream_id;
+        Box::pin(async move {
+            // The call becomes real HERE, at the first moment anything can be written to it: the
+            // response stream below is what drains this channel, and dropping that stream is what
+            // removes the entry again. See `handle_one_rpc` on why registering any earlier leaks.
+            let (out_tx, out_rx) = super::conn::outbound_channel();
+            let serial = state.register(stream_id.0, super::conn::opened(out_tx));
+            // `is_response = false`: this is the REQUEST body, which carries no `grpc-status`
+            // trailer — only a gRPC response does. See `forward_inbound`'s own note.
+            tokio::spawn(forward_inbound(
+                state.clone(),
+                stream_id,
+                request.into_inner(),
+                false,
+            ));
+            Ok(Response::new(OutStream::new(
+                out_rx, state, stream_id, serial,
+            )))
+        })
+    }
+}
+
+/// Drain one RPC's inbound `Streaming<Vec<u8>>`, forwarding every message as a [`Frame`] onto the
+/// connection's shared inbound channel, tagged with `stream_id` — this IS the multiplexing: many
+/// concurrent RPCs share one channel, told apart only by the tag.
+///
+/// `is_response` is true only on the CLIENT side, reading the upstream's ANSWER: that stream ends
+/// bearing the `grpc-status` trailer (`StatusAt::Terminal` in the architecture's grpc row), which
+/// this function reports as a final, zero-length, status-bearing frame — the transport's own
+/// honest reading of the trailer, never a decode of what the messages themselves meant. A gRPC
+/// REQUEST body carries no such trailer, so the server side never appends one.
+pub(crate) async fn forward_inbound(
+    state: Arc<ConnState>,
+    stream_id: StreamId,
+    mut inbound: InboundBody,
+    is_response: bool,
+) {
+    use futures::StreamExt;
+    let final_status = loop {
+        match inbound.next().await {
+            Some(Ok(bytes)) => {
+                // One copy, straight from the decoded message into the slab the frame carries: the
+                // decoder's own buffer is not first turned into a `Vec` for the `Arc` to copy out
+                // of again.
+                let slab = SlabBytes::new(Arc::<[u8]>::from(&bytes[..]));
+                let meta = FrameMeta {
+                    bytes: slab.len() as u64,
+                    transport_units: None,
+                    status: None,
+                    status_code: None,
+                    retry_after_secs: None,
+                };
+                let frame = Frame {
+                    direction: Direction::Inbound,
+                    stream: stream_id,
+                    bytes: slab,
+                    meta,
+                };
+                if state.send_inbound(Ok((stream_id, frame))).await.is_err() {
+                    return; // the connection's frame pump has gone away
+                }
+            }
+            Some(Err(status)) => break Some(status),
+            None => break None,
+        }
+    };
+    if is_response {
+        let frame = terminal_frame(stream_id, final_status.as_ref());
+        let _ = state.send_inbound(Ok((stream_id, frame))).await;
+    }
+    // The REQUEST side (`is_response == false`) ends here whether the body finished cleanly or
+    // FAILED, and in neither case does it put anything on the connection-wide inbound channel. A
+    // failed request-body read is ONE call's failure — a peer that reset its own RPC, or sent this
+    // one stream a message the framing could not read — and reporting it as an untagged
+    // `Err(TransportError::Reset)`, the very shape [`serve_connection`] uses for a whole-connection
+    // failure, told a `frames()` consumer that treats `Err` as "the connection is over" to tear
+    // down every other healthy multiplexed call on it. That call's own end is already surfaced
+    // where a served call's end is: hyper drops its `OutStream` when the RPC resets, which prunes
+    // its entry and ends its response. The genuine whole-connection failure is still reported, once,
+    // from `serve_connection` (and, on a dial, from the connection-over task) where the HTTP/2
+    // driver itself ends — never from one call's inbound read.
+}
+
+/// The zero-length, status-bearing frame that ends one call — the transport's honest reading of
+/// the `grpc-status` the upstream put on its answer, whether that answer ended a body with a
+/// trailer or was the whole answer (a trailers-only refusal, which never opens a body at all).
+///
+/// `None` means the stream ended with no failure, which on the gRPC wire is `grpc-status: 0`, so
+/// the number goes on the frame too: gRPC always puts a number on an answer, and a reader that has
+/// to tell a withdrawn credential from a bad argument cannot do it from the class alone.
+pub(crate) fn terminal_frame(stream_id: StreamId, status: Option<&Status>) -> Frame {
+    let code = status.map_or(tonic::Code::Ok, Status::code);
+    let meta = FrameMeta {
+        bytes: 0,
+        transport_units: None,
+        status: Some(status.map_or(
+            busbar_contract::transport::wire::WireStatusClass::Success,
+            map_status,
+        )),
+        // `as i32` is `grpc-status`'s own wire spelling, and every code it names is small and
+        // non-negative, so the narrowing below loses nothing.
+        //
+        // Named as gRPC's number, not left bare. The HTTP exchange under a gRPC answer succeeded
+        // (a trailers-only refusal is still a `200` on the HEADERS frame), so the HTTP status says
+        // nothing about what happened and the trailer says everything — but only a reader told
+        // WHICH numbering this is can read it. Handing `14` up unnamed had it matched against
+        // HTTP's bands, where it falls in none, so an `UNAVAILABLE` upstream was read as the
+        // caller's fault: no breaker record, no failover.
+        // The namespace is the one the transport DECLARES, not one this line spells: a frame
+        // cannot report in a numbering the transport did not say it reports in.
+        status_code: <super::transport::GrpcTransport as TransportMeta>::STATUS_NAMESPACE.and_then(
+            |ns| {
+                u32::try_from(code as i32)
+                    .ok()
+                    .map(|n| WireStatus::new(ns, n))
+            },
+        ),
+        retry_after_secs: None,
+    };
+    Frame {
+        direction: Direction::Inbound,
+        stream: stream_id,
+        bytes: SlabBytes::new(Arc::from([])),
+        meta,
+    }
+}
+
+/// The transport's own honest reading of the `grpc-status` trailer, into the closed
+/// [`busbar_contract::transport::wire::WireStatusClass`] — never a judgement about what the RPC's bytes meant.
+pub(crate) fn map_status(status: &Status) -> busbar_contract::transport::wire::WireStatusClass {
+    use busbar_contract::transport::wire::WireStatusClass;
+    use tonic::Code;
+    match status.code() {
+        Code::Ok => WireStatusClass::Success,
+        // The upstream blamed the request: the argument, the name, the credential, the state the
+        // caller asked against, or a quota the caller has spent.
+        Code::InvalidArgument
+        | Code::NotFound
+        | Code::AlreadyExists
+        | Code::PermissionDenied
+        | Code::Unauthenticated
+        | Code::FailedPrecondition
+        | Code::OutOfRange
+        | Code::ResourceExhausted => WireStatusClass::ClientError,
+        // The upstream blamed ITSELF. The four that were falling to the catch-all belong here and
+        // are named rather than left to it, because the two classes part company on money: only a
+        // server-side failure is one this node retries elsewhere and holds the destination
+        // responsible for. `Unknown` is gRPC's own word for a server-side failure it could not
+        // attribute; `DeadlineExceeded` is an upstream that did not answer in time; `Aborted` is
+        // an upstream aborting the call over its own concurrency; `Unavailable` and `Internal` say
+        // so outright. Reading any of them as "outside the three classes" said the upstream was
+        // fine and the caller was at fault, which is neither true nor free.
+        //
+        // An HTTP 5xx carrying NO `grpc-status` at all lands here too, by the same reading: there
+        // is no code to read off such an answer, so it arrives as `Unknown`, and an upstream that
+        // answered 5xx without finishing the gRPC framing has blamed itself twice over.
+        Code::Internal
+        | Code::Unavailable
+        | Code::DataLoss
+        | Code::Unimplemented
+        | Code::Unknown
+        | Code::DeadlineExceeded
+        | Code::Aborted => WireStatusClass::ServerError,
+        // Cancelled is the one code where NEITHER side is blamed: the call was called off, usually
+        // by the caller itself, so `Other` is the honest reading. Named, with no catch-all behind
+        // it: every code gRPC defines has a row here, so one added later stops this compiling
+        // rather than quietly acquiring a class nobody chose.
+        Code::Cancelled => WireStatusClass::Other,
+    }
+}
+
+/// The outbound message stream `write()` feeds, one message per queued `Vec<u8>`.
+///
+/// It carries the connection and the call's id as well as the channel because this stream's life IS
+/// the call's: hyper drops it when the RPC ends, and that is the moment the connection's outbound
+/// map should stop holding a sender nothing will ever drain again.
+pub(crate) struct OutStream {
+    rx: super::conn::OutboundRx,
+    state: Arc<ConnState>,
+    stream_id: StreamId,
+    serial: u64,
+}
+
+impl OutStream {
+    pub(crate) fn new(
+        rx: super::conn::OutboundRx,
+        state: Arc<ConnState>,
+        stream_id: StreamId,
+        serial: u64,
+    ) -> Self {
+        Self {
+            rx,
+            state,
+            stream_id,
+            serial,
+        }
+    }
+}
+
+/// The call is over when its outbound stream is: the entry the connection registered for it goes
+/// with it, so a connection serving many short calls holds senders for the ones still open and no
+/// others.
+///
+/// The entry it takes is its OWN — by serial, not by id alone. A drop that runs after the id has
+/// been reused would otherwise end a second call for the first one's death.
+impl Drop for OutStream {
+    fn drop(&mut self) {
+        self.state.end_call(self.stream_id.0, self.serial);
+    }
+}
+
+impl Stream for OutStream {
+    type Item = Result<Vec<u8>, Status>;
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.rx.poll_recv(cx).map(|opt| opt.map(Ok))
+    }
+}

@@ -16,8 +16,9 @@
 //!
 //! 1. the closed verb table (`admin_codec::verbs::table`): every `(method, path)` the node's
 //!    administrative mount walks through the kernel loop, which is how the 66 legacy operations and
-//!    the thirteen 1.6.0 kernel verbs whose effect is bound are answered (the other thirteen are
-//!    declared and NOT served — [`unbound_declared_operations`]);
+//!    the 1.6.0 kernel verbs whose effect is bound are answered (the other eight are declared and
+//!    NOT served — [`unbound_declared_operations`]; the five the owner removed from 1.6.0 are not
+//!    declared at all — [`REMOVED_OPERATIONS`]);
 //! 2. every named-definition section (`NamedMapSection::sections`), five operations each, which the
 //!    router mounts in one loop — including each plane-owned section;
 //! 3. every plane's admin trust verbs (`PlaneDecl::admin_routes`), which the router mounts in one
@@ -76,6 +77,27 @@ fn unbound_declared_operations() -> BTreeSet<Op> {
                 .is_some_and(|v| !crate::verb::effect_bound(*v))
         })
         .map(|row| (row.method.to_string(), row.template.to_string()))
+        .collect()
+}
+
+/// THE FIVE OPERATIONS THE OWNER REMOVED FROM 1.6.0 (2026-09-08: `set_operator_key`, `set_escrow`,
+/// `set_dual_control`, `export_keyset`, `approve`). They are not verbs, so the table has no row for
+/// them and the node answers each with the unmounted `404` — exactly what it answered while they
+/// were declared-but-unbound, and the published 1.5.5 answer for a path it never had. Each keeps
+/// its admin corpus entry and cells, which are what show that answer did not move.
+const REMOVED_OPERATIONS: [(&str, &str); 5] = [
+    ("POST", "/api/v1/admin/operator-key"),
+    ("POST", "/api/v1/admin/escrow"),
+    ("POST", "/api/v1/admin/dual-control"),
+    ("POST", "/api/v1/admin/export-keyset"),
+    ("POST", "/api/v1/admin/approve"),
+];
+
+/// The removed operations as [`Op`]s.
+fn removed_operations() -> BTreeSet<Op> {
+    REMOVED_OPERATIONS
+        .iter()
+        .map(|(m, p)| (m.to_string(), p.to_string()))
         .collect()
 }
 
@@ -297,12 +319,31 @@ async fn admin_corpus_reconciles_with_the_served_router() {
     let unbound = unbound_declared_operations();
     assert_eq!(
         unbound.len(),
-        13,
-        "the thirteen money-governance verbs with no effect bound: {unbound:?}"
+        8,
+        "the eight money-governance verbs with no effect bound: {unbound:?}"
+    );
+    let removed = removed_operations();
+    let removed_but_present: Vec<&Op> = removed
+        .iter()
+        .filter(|op| served.contains_key(*op) || unbound.contains(*op))
+        .collect();
+    assert!(
+        removed_but_present.is_empty(),
+        "an operation the owner removed from 1.6.0 is still declared or served: \
+         {removed_but_present:?}"
+    );
+    let removed_uncorpused: Vec<&Op> = removed
+        .iter()
+        .filter(|op| !entries.contains_key(*op))
+        .collect();
+    assert!(
+        removed_uncorpused.is_empty(),
+        "a removed operation lost its admin-bodies.json entry (no cell can show it still answers \
+         the unmounted 404): {removed_uncorpused:?}"
     );
     let unserved: Vec<&Op> = entries
         .keys()
-        .filter(|op| !served.contains_key(*op) && !unbound.contains(*op))
+        .filter(|op| !served.contains_key(*op) && !unbound.contains(*op) && !removed.contains(*op))
         .collect();
     assert!(
         unserved.is_empty(),
@@ -486,6 +527,55 @@ async fn served_openapi_lists_only_the_configured_planes() {
             .collect()
     };
 
+    // Every `$ref` a JSON subtree names, so the components a set of operations references can be
+    // read off the document rather than typed into this test.
+    fn refs_in(v: &serde_json::Value, out: &mut BTreeSet<String>) {
+        match v {
+            serde_json::Value::Object(m) => {
+                for (k, x) in m {
+                    match (k.as_str(), x.as_str()) {
+                        ("$ref", Some(r)) => {
+                            if let Some(name) = r.strip_prefix("#/components/schemas/") {
+                                out.insert(name.to_string());
+                            }
+                        }
+                        _ => refs_in(x, out),
+                    }
+                }
+            }
+            serde_json::Value::Array(a) => a.iter().for_each(|x| refs_in(x, out)),
+            _ => {}
+        }
+    }
+
+    // ── every plane section configured: the components ONLY plane operations reference ──
+    let sections = ["tools", "agents"];
+    let app = crate::new_test_app()
+        .governance(gov("served-openapi-token"))
+        .plane_sections(&sections)
+        .build();
+    let full = served_openapi(app).await;
+    let plane_owned: BTreeSet<String> = sections
+        .iter()
+        .flat_map(|s| plane_paths(&full, s))
+        .collect();
+    let (mut by_plane, mut by_rest) = (BTreeSet::new(), BTreeSet::new());
+    for (path, item) in full["paths"].as_object().expect("paths") {
+        let into = if plane_owned.contains(path) {
+            &mut by_plane
+        } else {
+            &mut by_rest
+        };
+        refs_in(item, into);
+    }
+    let plane_only: BTreeSet<String> = by_plane.difference(&by_rest).cloned().collect();
+    let full_schemas = full["components"]["schemas"].as_object().expect("schemas");
+    assert!(
+        !plane_only.is_empty() && plane_only.iter().all(|n| full_schemas.contains_key(n)),
+        "a node configuring every plane section serves the components only its plane operations \
+         reference ({plane_only:?}) — without them the check below would pass vacuously"
+    );
+
     // ── a 1.5.5 config: no plane section at all ──
     let app = crate::new_test_app()
         .governance(gov("served-openapi-token"))
@@ -526,10 +616,10 @@ async fn served_openapi_lists_only_the_configured_planes() {
     );
     // No component survives that only a dropped plane operation referenced.
     let schemas = doc["components"]["schemas"].as_object().expect("schemas");
-    for plane_only in ["McpTrustView", "A2aTrustView"] {
+    for name in &plane_only {
         assert!(
-            !schemas.contains_key(plane_only),
-            "{plane_only} is referenced only by unconfigured plane operations and was served"
+            !schemas.contains_key(name),
+            "{name} is referenced only by unconfigured plane operations and was served"
         );
     }
 

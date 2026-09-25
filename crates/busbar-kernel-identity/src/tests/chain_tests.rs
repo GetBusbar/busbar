@@ -167,7 +167,7 @@ fn test_audience_bound_token_is_rejected_on_the_data_plane() {
     // The verifier admits only a token minted for this audience; with no audience required, none is expected.
     let verifier = OneKey {
         token: "vk-token",
-        aud: Some("https://mcp.example/"),
+        aud: Some("https://resource.example/"),
     };
     let c = chain(Vec::new(), true);
     assert_eq!(
@@ -181,7 +181,7 @@ fn test_audience_bound_token_is_rejected_on_the_data_plane() {
             None,
             Some(&verifier),
             1000,
-            Some("https://mcp.example/")
+            Some("https://resource.example/")
         ),
         ChainVerdict::Identified { .. }
     ));

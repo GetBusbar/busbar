@@ -27,7 +27,7 @@ fn maximal_units() -> BTreeMap<String, u64> {
 
 /// A pricer whose one model `m` carries these rates, with no fee.
 fn pricer_for(rate: RateNanos) -> Pricer {
-    Pricer::with_card(0, BTreeMap::from([("m".to_string(), rate)]))
+    super::carded(0, BTreeMap::from([("m".to_string(), rate)]))
 }
 
 /// The four reserved keys at the largest count and the largest rate the types allow. The true
@@ -86,7 +86,7 @@ fn a_negative_configured_fee_is_clamped_at_resolve_and_can_never_credit_a_bucket
         "m".to_string(),
         RateNanos::from_micros_per_token(1.0, 0.0, 0.0, 0.0),
     )]);
-    let pricer = Pricer::with_card(-5, rates);
+    let pricer = super::carded(-5, rates);
     assert_eq!(pricer.price_per_request_cents(), 0);
 
     let mut units = BTreeMap::new();
@@ -154,7 +154,7 @@ fn ordinary_counts_still_sum_exactly() {
 
 /// A pricer holding a card that names `priced` and nothing else.
 fn card_naming_only_priced() -> crate::price::Pricer {
-    crate::price::Pricer::with_card(
+    super::carded(
         2,
         BTreeMap::from([(
             "priced".to_string(),
@@ -204,7 +204,7 @@ fn a_present_card_silent_about_the_model_blocks_rather_than_deriving_free() {
 /// Without this arm the test above is satisfied by a pricer that blocks on everything.
 #[test]
 fn a_model_the_card_prices_at_explicit_zero_is_free_and_does_not_block() {
-    let pricer = crate::price::Pricer::with_card(
+    let pricer = super::carded(
         2,
         BTreeMap::from([(
             "free-on-purpose".to_string(),

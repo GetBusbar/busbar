@@ -1159,7 +1159,7 @@ fn the_served_composition_has_no_ungoverned_session_left_in_it() {
 
     // (1) THE ROOT'S OWN COMPOSITION. First writer wins on the plane's side, so this cell is the
     // one place in the crate that writes it, and it writes it the way `main()` does.
-    crate::compose_voice_governed_calls();
+    super::compose_voice_governed_calls();
     let bound = busbar_voice::mount::served_governed_session()
         .expect("after the root has mounted, every session the door opens is bound to a table");
     let next = busbar_voice::mount::served_governed_session()
@@ -1238,6 +1238,124 @@ fn the_served_composition_has_no_ungoverned_session_left_in_it() {
     );
 }
 
+/// A tool executor that serves no tool: every call the session sees is the client's to answer.
+#[cfg(feature = "plane-voice")]
+#[derive(Debug)]
+struct ServesNoTool;
+
+#[cfg(feature = "plane-voice")]
+#[async_trait::async_trait]
+impl busbar_voice::runtime::ToolExecutor for ServesNoTool {
+    fn serves(&self, _name: &str) -> bool {
+        false
+    }
+    async fn execute(&self, _name: &str, _arguments: &[u8]) -> Vec<u8> {
+        b"{\"executed\":\"in-process\"}".to_vec()
+    }
+}
+
+/// A real session pump bound to `node`'s own table as `session`, serving no tool.
+#[cfg(feature = "plane-voice")]
+fn pump_serving_no_tool(
+    node: &std::sync::Arc<VoiceNode>,
+    session: u64,
+) -> busbar_voice::runtime::SessionCore<busbar_voice::ir::codec::OpenAiRealtimeCodec> {
+    busbar_voice::runtime::SessionCore::new(
+        busbar_voice::ir::codec::OpenAiRealtimeCodec,
+        None,
+        std::sync::Arc::new(ServesNoTool),
+        busbar_voice::runtime::Carrier::sideband(),
+        None,
+    )
+    .with_governed(busbar_voice::runtime::GovernedSession {
+        session,
+        calls: std::sync::Arc::new(NodeCalls::new(std::sync::Arc::clone(node))),
+    })
+}
+
+/// One OpenAI Realtime wire frame.
+#[cfg(feature = "plane-voice")]
+fn realtime_frame(json: &serde_json::Value) -> busbar_voice::ir::codec::WireEvent {
+    busbar_voice::ir::codec::WireEvent(bytes::Bytes::from(serde_json::to_vec(json).unwrap()))
+}
+
+/// The upstream frames a plan writes, as one string.
+#[cfg(feature = "plane-voice")]
+fn upstream_text(plan: &busbar_voice::runtime::Outbound) -> String {
+    plan.upstream
+        .iter()
+        .map(|w| String::from_utf8_lossy(&w.0).to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// **Q72(1) / R4: the served session plans the client-served leg, so the client's answer is taken.**
+///
+/// No hand-entered wait and no `VoiceUnit`: the call is announced to a real session pump bound to
+/// this node's real table, and the pump is the only thing that can have entered the wait. The tool
+/// is one the node does not serve, so nothing is executed in-process; the client's own
+/// `function_call_output` for that call is then accepted and carried to the model. Before the
+/// writer was wired the table stayed empty and this reply was refused (`refused_reply`). The RED
+/// arm: a reply naming a call nobody planned is still refused and reaches the model on no wire.
+#[cfg(feature = "plane-voice")]
+#[tokio::test]
+async fn a_served_session_plans_the_client_leg_and_accepts_its_reply() {
+    let node = std::sync::Arc::new(node(serviceable()));
+    let session = 5_151;
+    let core = pump_serving_no_tool(&node, session);
+
+    for f in [
+        serde_json::json!({"type":"response.output_item.added",
+            "item":{"type":"function_call","call_id":"call_cli","name":"client_tool"}}),
+        serde_json::json!({"type":"response.function_call_arguments.delta",
+            "call_id":"call_cli","delta":"{}"}),
+        serde_json::json!({"type":"response.function_call_arguments.done","call_id":"call_cli"}),
+    ] {
+        let plan = core.on_server_frame(realtime_frame(&f)).await;
+        assert!(
+            plan.upstream.is_empty(),
+            "a tool the node does not serve is never executed in-process: {}",
+            upstream_text(&plan)
+        );
+    }
+    assert_eq!(
+        node.tool_calls.open(),
+        1,
+        "the pump planned the client-served leg into the node's own table"
+    );
+
+    // THE RED ARM: a reply for a call nobody planned is refused, and nothing reaches the model.
+    let forged = core.on_client_frame(realtime_frame(&serde_json::json!({
+        "type":"conversation.item.create",
+        "item":{"type":"function_call_output","call_id":"call_unplanned","output":"1"}})));
+    assert!(
+        forged.refused_reply,
+        "a reply for an unplanned call is refused"
+    );
+    assert!(
+        forged.upstream.is_empty(),
+        "and it reaches the model on no wire at all: {}",
+        upstream_text(&forged)
+    );
+
+    // THE GREEN ARM: the client's reply for the planned call is accepted and carried upstream.
+    let answered = core.on_client_frame(realtime_frame(&serde_json::json!({
+        "type":"conversation.item.create",
+        "item":{"type":"function_call_output","call_id":"call_cli","output":"42"}})));
+    assert!(
+        !answered.refused_reply,
+        "the client's reply for a planned client-served call is accepted"
+    );
+    let up = upstream_text(&answered);
+    assert!(
+        up.contains("function_call_output")
+            && up.contains("call_cli")
+            && up.contains("response.create"),
+        "the accepted reply reaches the model and asks it to continue: {up}"
+    );
+    assert_eq!(node.tool_calls.open(), 0, "and the wait left the table");
+}
+
 /// A conversation that is over cannot answer anything.
 #[test]
 fn a_closed_session_stops_waiting_on_the_calls_it_had_open() {
@@ -1256,15 +1374,29 @@ fn a_closed_session_stops_waiting_on_the_calls_it_had_open() {
 // The hold's five acts, on this plane
 // -----------------------------------------------------------------------------------------
 
+/// A pricer whose card prices the dialect at 2 / 5 micro-units per input / output unit, built whole
+/// through the one card constructor and held through [`Pricer::from_card`].
+fn a_card_pricing_the_dialect() -> Pricer {
+    use busbar_kernel_budget::price::{UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
+    use busbar_kernel_ledger::cost::{LaneClass, RateCard};
+    let rate = busbar_kernel_budget::RateNanos::from_micros_per_token(2.0, 5.0, 0.0, 0.0);
+    let lane = Dialect::OpenaiRealtime.name();
+    Pricer::from_card(RateCard::from_nano_rates(
+        [
+            (UNIT_INPUT, rate.input),
+            (UNIT_OUTPUT, rate.output),
+            (UNIT_CACHE_READ, rate.cache_read),
+            (UNIT_CACHE_WRITE, rate.cache_write),
+        ]
+        .map(|(unit, nanos)| (LaneClass::new(lane, unit), nanos)),
+        0,
+    ))
+}
+
 /// A node whose card prices the dialect, so a turn's estimate is a figure rather than a zero.
 fn priced_node(io: VoiceIo) -> VoiceNode {
     let mut node = node(io);
-    let mut rates = std::collections::BTreeMap::new();
-    rates.insert(
-        Dialect::OpenaiRealtime.name().to_string(),
-        busbar_kernel_budget::RateNanos::from_micros_per_token(2.0, 5.0, 0.0, 0.0),
-    );
-    node.pricer = Pricer::with_card(0, rates);
+    node.pricer = a_card_pricing_the_dialect();
     node
 }
 
@@ -1536,12 +1668,7 @@ fn a_paid_turns_record_names_its_principal() {
         Auth::new(AuthChain::new(Vec::new(), true)),
         AuthBindings::new(std::sync::Arc::new(OneKey) as _),
     );
-    let mut rates = std::collections::BTreeMap::new();
-    rates.insert(
-        Dialect::OpenaiRealtime.name().to_string(),
-        busbar_kernel_budget::RateNanos::from_micros_per_token(2.0, 5.0, 0.0, 0.0),
-    );
-    node.pricer = Pricer::with_card(0, rates);
+    node.pricer = a_card_pricing_the_dialect();
 
     let kernel = Kernel::new();
     let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
@@ -2353,11 +2480,12 @@ fn one_turn_at_a_time(group: &str) -> busbar_kernel_budget::GroupTable {
     )]);
     // Through the interner the root uses at boot, so the name the slot records is the same
     // static the vocabulary holds rather than one this fixture invented.
-    let mut vocabulary = crate::root::vocabulary::Vocabulary::new();
-    let ids = vocabulary.group_ids(&crate::root::vocabulary::ConfigKeys {
-        groups: vec![group.to_string()],
-        ..crate::root::vocabulary::ConfigKeys::default()
-    });
+    let ids = std::collections::BTreeMap::from([(
+        group.to_string(),
+        crate::root::kernel::new_registration()
+            .key(group)
+            .expect("a boot-time key interns"),
+    )]);
     crate::root::policy::group_table(&groups, &ids)
 }
 
@@ -2718,8 +2846,7 @@ fn next_frame_after(usage: TurnUsage) -> Outcome {
 fn a_voice_tokens_cap_counts_audio_tokens_and_refuses_the_next_frame() {
     // The node reads the installed planes' token classes at construction, as boot does after
     // `install_planes`.
-    let _reg =
-        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&busbar_voice::PLANE_DECL]);
+    let _reg = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&VOICE_PLANE]);
     assert_eq!(
         next_frame_after(TurnUsage {
             audio_tokens_in: 60,
@@ -2739,8 +2866,7 @@ fn a_voice_tokens_cap_counts_audio_tokens_and_refuses_the_next_frame() {
 #[cfg(feature = "plane-voice")]
 #[test]
 fn a_voice_tokens_cap_never_counts_audio_seconds() {
-    let _reg =
-        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&busbar_voice::PLANE_DECL]);
+    let _reg = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&VOICE_PLANE]);
     assert_eq!(
         next_frame_after(TurnUsage {
             audio_tokens_in: 60,
@@ -2780,9 +2906,8 @@ mod plane_units {
     /// The node's card map exactly as boot composes it: the config text, core lifting
     /// `streams.rate_card` off the section, and `resolve` composing it beside the flat llm card.
     fn composed(yaml: &str) -> Option<BTreeMap<String, busbar_kernel::config::RateEntryCfg>> {
-        let _reg = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
-            &busbar_voice::PLANE_DECL,
-        ]);
+        let _reg =
+            busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&super::VOICE_PLANE]);
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&format!(
             "providers: {{}}\nmodels: {{}}\npools: {{}}\n{yaml}"
         ))
@@ -3051,3 +3176,12 @@ mod plane_units {
         );
     }
 }
+
+/// The voice plane's registry row, assembled kernel-side from its contract declaration
+/// and its behaviour table.
+#[cfg(feature = "plane-voice")]
+static VOICE_PLANE: busbar_kernel::plane::registry::PlaneDecl =
+    busbar_kernel::plane::registry::PlaneDecl::assemble(
+        busbar_voice::PLANE_DECLARATION,
+        busbar_voice::PLANE_HOOKS,
+    );

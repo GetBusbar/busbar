@@ -177,6 +177,45 @@ pub struct Manifest {
     /// entirely incompatible payload contracts across host products — see [`HOST_IDENTITY`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
+    /// What the plugin DECLARES it will say to the host beyond its kind's answers (K9a, the export
+    /// kind's host seams): the metric series it emits, the diagnostics it raises and the settings
+    /// keys that name its destinations. SIGNED like every other field, so a grant the host makes on
+    /// a declaration is made on what the publisher signed. Absent (empty) for every manifest packed
+    /// before the section existed, and skipped when empty, so their canonical bytes — and therefore
+    /// their signatures — are unchanged.
+    #[serde(default, skip_serializing_if = "Declares::is_empty")]
+    pub declares: Declares,
+}
+
+/// The declaration shapes a manifest's `declares` section carries, named here so a packer or a
+/// host reaches them beside [`Manifest`].
+pub use busbar_plugin::cold::observe::{DiagnosticDecl, SeriesDecl};
+
+/// A manifest's `declares` section — the statements a plugin makes ABOUT ITSELF that the host
+/// grants or refuses at open, never trusts as-is (the export ABI's minor, `EXPORT_ABI_MINOR`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Declares {
+    /// The metric series the plugin emits (S1, the first-party metric namespace): granted to a
+    /// first-party plugin only — see [`busbar_plugin::cold::observe::SeriesDecl`].
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub metrics: Vec<busbar_plugin::cold::observe::SeriesDecl>,
+    /// The `BUSBAR-NNNN` diagnostics the plugin raises: registered into the host's catalogue
+    /// for a first-party plugin — see [`busbar_plugin::cold::observe::DiagnosticDecl`].
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<busbar_plugin::cold::observe::DiagnosticDecl>,
+    /// The SETTINGS KEYS that name a destination the host opens for the plugin (S4, the
+    /// destination handle): the host resolves each against the operator's settings at open, and
+    /// the plugin's host ops name the key, never a path.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub destinations: Vec<String>,
+}
+
+impl Declares {
+    /// Nothing declared — the section is left off the wire (and out of the signed bytes).
+    pub fn is_empty(&self) -> bool {
+        self.metrics.is_empty() && self.diagnostics.is_empty() && self.destinations.is_empty()
+    }
 }
 
 /// The advisory declared-intent block a `kind: hook` plugin's manifest may carry (`needs:`). Each
@@ -592,6 +631,27 @@ pub fn validate_structure(
     supported_abi: &dyn Fn(&str) -> &'static [u32],
     host_identity: &str,
 ) -> Result<(), String> {
+    validate_identity(m, host_identity)?;
+    if m.sha256.len() != 64 || !m.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!(
+            "manifest sha256 '{}' is not a 64-char hex digest",
+            m.sha256
+        ));
+    }
+    if sha256_hex(lib_bytes) != m.sha256.to_ascii_lowercase() {
+        return Err(
+            "library bytes do not match the manifest sha256 (integrity failure)".to_string(),
+        );
+    }
+    validate_abi(m, supported_abi)
+}
+
+/// The STATEMENT half of [`validate_structure`] — everything a manifest says about the plugin rather
+/// than about the artifact file (`sha256` is the file's): name, alias, kind, version, publisher,
+/// host. A plugin linked into the build has no artifact, and states exactly this; the registry's
+/// linked door runs it, then [`validate_abi`], so a linked row passes the same structural gate a
+/// dropped-in one does.
+pub fn validate_identity(m: &Manifest, host_identity: &str) -> Result<(), String> {
     if !valid_name(&m.name) {
         return Err(format!(
             "manifest name '{}' is not a valid plugin name (lowercase [a-z0-9-]+)",
@@ -640,17 +700,15 @@ pub fn validate_structure(
             ));
         }
     }
-    if m.sha256.len() != 64 || !m.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(format!(
-            "manifest sha256 '{}' is not a 64-char hex digest",
-            m.sha256
-        ));
-    }
-    if sha256_hex(lib_bytes) != m.sha256.to_ascii_lowercase() {
-        return Err(
-            "library bytes do not match the manifest sha256 (integrity failure)".to_string(),
-        );
-    }
+    Ok(())
+}
+
+/// The payload-schema negotiation of [`validate_structure`]: the manifest's `abi_version` against the
+/// binary's supported range for its kind.
+pub fn validate_abi(
+    m: &Manifest,
+    supported_abi: &dyn Fn(&str) -> &'static [u32],
+) -> Result<(), String> {
     // `supported_abi` returns a CONTIGUOUS `[floor, max]` inclusive range (its endpoints) of the
     // PAYLOAD-schema versions the binary speaks for this kind. Negotiate the manifest's declared
     // `abi_version` against it: in range → ok; below floor / above max → refuse LOUD naming both.

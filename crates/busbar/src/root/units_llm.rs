@@ -2006,6 +2006,25 @@ pub fn bind_book(book: Arc<Mutex<crate::root::durability::Durability>>) {
     bind_node_book(&NODE, &crate::root::kernel::ROOT_CARD, book);
 }
 
+/// THE LLM PLANE'S ROOT UNIT, addressed through the composition root's generated table — the
+/// switched-over surface, and the money book behind it:
+///
+/// * its path- and body-model arrivals ([`PATH_INGRESS`], [`BODY_INGRESS`]) stand in for the plane's
+///   own under the same six names, so a request reaches the same answers through the kernel's loop;
+/// * the card repricer is installed once the limits resolve and BEFORE the first app build, so the
+///   boot's own rate resolution is the history's opening entry (see
+///   [`crate::root::kernel::install_card_repricer`]);
+/// * the node's book is opened for it, and its exit arm is bound to that book ([`bind_book`]) before
+///   any listener binds — without it the arm settles nothing.
+pub const ROOT_UNIT: crate::root::linked::RootUnit = crate::root::linked::RootUnit {
+    seal: None,
+    path_ingress: PATH_INGRESS,
+    body_ingress: BODY_INGRESS,
+    on_config: Some(|_| crate::root::kernel::install_card_repricer()),
+    opens_book: true,
+    on_book: Some(|ctx| bind_book(Arc::clone(&ctx.book.durability))),
+};
+
 /// [`bind_book`] for a named node and card holder: the holder's journal first, then the node's
 /// exit arm, both on the one book.
 fn bind_node_book(

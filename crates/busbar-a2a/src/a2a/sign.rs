@@ -158,10 +158,10 @@ impl CardSigner<'_> {
     ///
     /// Base64 of an Ed25519 SubjectPublicKeyInfo — the string an operator hands their counterparty
     /// out of band, and the string that counterparty pastes into their own `pin.key:`. Computed
-    /// host-side under the same SPKI prefix [`super::jws::IssuerKey::from_spki_base64`] requires, so a
+    /// host-side under the same SPKI prefix [`super::jws::IssuerKey::from_key_info_base64`] requires, so a
     /// value this method emits and a value that method accepts cannot drift into two spellings.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn issuer_spki_base64(&self) -> String {
+    pub(crate) fn issuer_key_info_base64(&self) -> String {
         self.issuer.issuer_spki_base64.clone()
     }
 

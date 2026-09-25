@@ -19,14 +19,14 @@ fn key(seed: u8) -> SigningKey {
 }
 
 /// Wrap a raw Ed25519 public key the way an operator receives it: base64 of the RFC 8410 SPKI.
-fn spki_base64(k: &SigningKey) -> String {
-    let mut der = ED25519_SPKI_PREFIX.to_vec();
+fn key_info_base64(k: &SigningKey) -> String {
+    let mut der = ED25519_KEY_INFO_PREFIX.to_vec();
     der.extend_from_slice(k.verifying_key().as_bytes());
     STD.encode(der)
 }
 
 fn issuer(k: &SigningKey) -> IssuerKey {
-    IssuerKey::from_spki_base64(&spki_base64(k)).expect("well-formed issuer key")
+    IssuerKey::from_key_info_base64(&key_info_base64(k)).expect("well-formed issuer key")
 }
 
 fn a_card() -> Value {
@@ -381,16 +381,16 @@ fn the_kid_is_reported_and_never_used_to_select_the_key() {
 /// 32-byte fallback would let an operator paste the wrong thing and have it silently become the
 /// trust root.
 #[test]
-fn only_a_well_formed_ed25519_spki_becomes_an_issuer_key() {
+fn only_a_well_formed_ed25519_key_info_becomes_an_issuer_key() {
     let k = key(1);
-    assert!(IssuerKey::from_spki_base64(&spki_base64(&k)).is_ok());
+    assert!(IssuerKey::from_key_info_base64(&key_info_base64(&k)).is_ok());
     // Leading and trailing whitespace survives a copy and paste.
-    assert!(IssuerKey::from_spki_base64(&format!("  {}\n", spki_base64(&k))).is_ok());
+    assert!(IssuerKey::from_key_info_base64(&format!("  {}\n", key_info_base64(&k))).is_ok());
 
     // The raw key, unwrapped: unambiguous by length, and still refused.
     let raw = STD.encode(k.verifying_key().as_bytes());
     assert_eq!(
-        IssuerKey::from_spki_base64(&raw),
+        IssuerKey::from_key_info_base64(&raw),
         Err(JwsError::MalformedIssuerKey)
     );
     for bad in [
@@ -400,7 +400,7 @@ fn only_a_well_formed_ed25519_spki_becomes_an_issuer_key() {
         &STD.encode([0u8; 12]),
     ] {
         assert_eq!(
-            IssuerKey::from_spki_base64(bad),
+            IssuerKey::from_key_info_base64(bad),
             Err(JwsError::MalformedIssuerKey),
             "issuer key {bad:?} must be refused"
         );

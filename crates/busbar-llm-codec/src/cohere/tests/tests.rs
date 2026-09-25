@@ -2384,6 +2384,7 @@ fn test_write_response_event_citation_start_is_single_object() {
     let ev = IrStreamEvent::BlockDelta {
         index: 0,
         delta: crate::ir::IrDelta::CitationsDelta(vec![crate::ir::IrCitation {
+            domain: None,
             kind: Some("web_search_result_location".to_string()),
             cited_text: Some("quoted".to_string()),
             title: Some("T".to_string()),
@@ -5676,6 +5677,7 @@ fn test_stream_generic_error_finish_pushes_ir_error_event() {
 #[test]
 fn cohere_writer_emits_every_citation_in_a_multi_citation_delta() {
     let cit = |url: &str| crate::ir::IrCitation {
+        domain: None,
         kind: Some("web_search_result_location".to_string()),
         cited_text: Some("quoted".to_string()),
         title: Some("t".to_string()),

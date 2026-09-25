@@ -9,37 +9,23 @@
 //! so every existing in-core and plugin caller compiles unchanged. Values are byte-identical to the
 //! pre-move definitions.
 
-// ── CANONICAL error-`type` vocabulary home. The forward-layer KIND_* bank (`proxy::KIND_*`), the
-//    admin API's not-found/invalid-request types, the anthropic writer's private ERR_TYPE_* bank, and
-//    the OpenAI-family writers all alias these consts, so the shared string values are single-sourced
-//    HERE (the neutral substrate) so every consumer — core, admin, and the `busbar-llm` dialects —
-//    names them without reaching into `busbar-core`. Relocated DOWN from `busbar-core`'s
-//    `proto::openai_family`, which now re-exports them so its callers are unchanged. (`proxy::KIND_OVERLOADED`
-//    = "overloaded" and anthropic's "timeout_error" are DELIBERATELY different values and stay at
-//    their own sites.)
-/// OpenAI error `type` for a missing or invalid API key.
-pub const ERR_TYPE_AUTHENTICATION: &str = "authentication_error";
-/// OpenAI error `type` for a malformed / bad-argument request.
-pub const ERR_TYPE_INVALID_REQUEST: &str = "invalid_request_error";
-/// OpenAI error `type` for a permission / access-control denial.
-pub const ERR_TYPE_PERMISSION: &str = "permission_error";
-/// OpenAI error `type` for a resource that does not exist.
-pub const ERR_TYPE_NOT_FOUND: &str = "not_found_error";
-/// OpenAI error `type` for a rate-limit / throttle response.
-pub const ERR_TYPE_RATE_LIMIT: &str = "rate_limit_error";
-/// OpenAI error `type` for a transient upstream failure.
-pub const ERR_TYPE_SERVER_ERROR: &str = "server_error";
-/// OpenAI error `type` for a billing-quota exhaustion (HTTP 429).
-pub const ERR_TYPE_INSUFFICIENT_QUOTA: &str = "insufficient_quota";
-/// Anthropic/busbar internal kind for an overloaded upstream; mapped to `server_error` on the
-/// OpenAI wire (OpenAI has no `overloaded_error` type).
-pub const ERR_TYPE_OVERLOADED: &str = "overloaded_error";
-/// Anthropic-vocabulary error `type` for a generic upstream/API failure; also the agnostic
-/// forward-layer kind (`proxy::KIND_API_ERROR` aliases this).
-pub const ERR_TYPE_API_ERROR: &str = "api_error";
-/// Error `type` for an oversized request (HTTP 413); shared by the forward KIND bank and the
-/// anthropic writer.
-pub const ERR_TYPE_REQUEST_TOO_LARGE: &str = "request_too_large";
+// ── THE PROTOCOL-SEAM SHAPES live in `busbar_contract::protocol` (DECISIONS #83: contract = shapes;
+//    SD-1 of the #83a split): the canonical error-`type` vocabulary, the IR-parse signal label, the
+//    stream-abort detail, the `IrError` alias, the SSE frame-boundary scan, and the neutral codec
+//    traits (`StreamTranslator`, `ArrayStreamFramer`, `DialectCodec`), the detection-predicate shapes
+//    and `SigningContext`. Re-exported here under their historical paths, so every caller compiles
+//    unchanged. What stays below is the declaration itself (`ProtocolDecl` and its inbound-auth and
+//    egress-credential fields, pending the O7-ruled shape), the registry, and dialect helpers.
+// The two SSE line walkers were crate-private here and stay so: the dialect helpers below share them.
+pub use busbar_contract::protocol::{
+    find_frame_terminator, ArrayStreamFramer, ClaimStrength, ClaimsFn, DialectCodec, IrError,
+    ResidualClaimsFn, SigningContext, StreamTranslator, VendorResponseMetadataFn,
+    ERR_TYPE_API_ERROR, ERR_TYPE_AUTHENTICATION, ERR_TYPE_INSUFFICIENT_QUOTA,
+    ERR_TYPE_INVALID_REQUEST, ERR_TYPE_NOT_FOUND, ERR_TYPE_OVERLOADED, ERR_TYPE_PERMISSION,
+    ERR_TYPE_RATE_LIMIT, ERR_TYPE_REQUEST_TOO_LARGE, ERR_TYPE_SERVER_ERROR, SIGNAL_IR_PARSE,
+    STREAM_ABORT_DETAIL,
+};
+pub(crate) use busbar_contract::protocol::{sse_line_spans, sse_lines};
 
 // ── Neutral protocol atoms relocated DOWN from `busbar-core` (`proto`) so the `busbar-llm` dialect
 //    crate names them WITHOUT reaching into `busbar-core` (the reverse-edge rule). Each atom is
@@ -142,12 +128,6 @@ pub fn bearer_error_code(error_type: &str) -> serde_json::Value {
     }
 }
 
-/// Busbar-internal `provider_signal` label for an IR-parse failure (the LANE label the breaker/metrics
-/// layer reads to classify a translation/parse error). A busbar-internal signal, NOT a wire shape, so
-/// it lives in the agnostic proto layer; the per-protocol readers reference it rather than re-spelling
-/// the literal.
-pub const SIGNAL_IR_PARSE: &str = "ir_parse";
-
 /// The OpenAI-style SSE stream terminator sentinel (`data: [DONE]`). The bare token is matched by the
 /// cross-protocol streaming core and several readers; the full framed bytes are emitted on egress.
 /// Shared here so no reader/writer re-spells either form.
@@ -158,9 +138,6 @@ pub const SSE_DONE_FRAME: &[u8] = b"data: [DONE]\n\n";
 /// The HTTP `Authorization` header name (lowercase, canonical). Emitted by the bearer/SigV4 auth-header
 /// builders across protocols; named once so no builder re-spells it.
 pub const HDR_AUTHORIZATION: &str = "authorization";
-
-/// An IR-level error, currently an alias for `CanonicalSignal` (the normalized error signal).
-pub type IrError = crate::breaker::CanonicalSignal;
 
 /// Mixed-case base62 alphabet (digits + lowercase + uppercase, no `-`/`_`) and the rejection-sampling
 /// threshold used when synthesizing opaque ids for protocols whose native ids are flat random tokens
@@ -278,87 +255,6 @@ pub fn tool_arguments_to_string(input: &serde_json::Value) -> String {
     }
 }
 
-/// Client-visible detail string for a mid-stream abort (the upstream connection dropped or a
-/// translate step failed after first byte). Relocated DOWN here so BOTH `busbar-core`'s proxy
-/// engine (SSE/forward abort path) and the `busbar-llm` Bedrock-eventstream reassembler emit it
-/// without either re-spelling the literal or the plugin reaching into core. Single source of truth
-/// so the abort text a client sees is identical on every framing.
-pub const STREAM_ABORT_DETAIL: &str = "The response stream was interrupted.";
-
-/// The length of the line terminator starting at `i`, or `None` when `i` does not begin one.
-///
-/// The event-stream grammar names three: CRLF, a lone LF, and a lone CR. A CR at the very end of
-/// the buffer is not yet knowable — the LF that would make it a CRLF may still be in flight — so it
-/// reads as "no terminator here", which is the answer that makes a caller wait for more bytes
-/// rather than split a CRLF down the middle.
-fn terminator_len(buf: &[u8], i: usize) -> Option<usize> {
-    match buf.get(i)? {
-        b'\n' => Some(1),
-        b'\r' => match buf.get(i + 1) {
-            Some(b'\n') => Some(2),
-            Some(_) => Some(1),
-            None => None,
-        },
-        _ => None,
-    }
-}
-
-/// Find the first SSE frame terminator (a blank line) in `buf`, returning `(offset, terminator_len)`
-/// where `offset` is the byte index of the first terminator byte and the length spans BOTH line
-/// terminators that make the blank line. All three of the spec's terminators are recognised, in
-/// every pairing: `\n\n` and `\r\n\r\n` are the two the providers emit, and `\r\r`, `\n\r`,
-/// `\r\n\r` and `\r\r\n` are the rest of the grammar. Returns `None` if no complete blank line is
-/// present yet.
-pub fn find_frame_terminator(buf: &[u8]) -> Option<(usize, usize)> {
-    let mut i = 0;
-    loop {
-        let at = i + memchr::memchr2(b'\r', b'\n', &buf[i..])?;
-        let first = terminator_len(buf, at)?;
-        if let Some(second) = terminator_len(buf, at + first) {
-            return Some((at, first + second));
-        }
-        // A line ended here but the next one is not blank: resume past the terminator itself, so a
-        // CRLF is never re-read as a bare CR followed by a bare LF.
-        i = at + first;
-    }
-}
-
-/// Split SSE frame text into lines on the event-stream grammar's own line-terminator rule — CRLF, a
-/// lone LF, **or** a lone CR each end a line — rather than `str::lines()`, which recognizes only
-/// LF/CRLF. Shared by [`parse_sse_frame`] here and `proxy::sse::sse_data`, which both used
-/// `str::lines()` and so silently produced no fields at all on a frame framed by a bare-CR
-/// terminator (a frame `find_frame_terminator` above correctly frames).
-pub(crate) fn sse_lines(text: &str) -> Vec<&str> {
-    sse_line_spans(text.as_bytes())
-        .into_iter()
-        .map(|(start, end)| &text[start..end])
-        .collect()
-}
-
-/// The `(start, end)` byte span of each line in `bytes` under the event-stream line-terminator rule.
-/// The single walk both [`sse_lines`] (which projects the spans back onto the `&str`) and the
-/// byte-level [`sse_event_type`] probe share, so the two cannot disagree about where a line ends.
-/// Every terminator byte is ASCII, so a span taken from valid UTF-8 always lands on a char boundary.
-fn sse_line_spans(bytes: &[u8]) -> Vec<(usize, usize)> {
-    let mut spans = Vec::new();
-    let mut start = 0usize;
-    let mut i = 0usize;
-    while i < bytes.len() {
-        match terminator_len(bytes, i) {
-            Some(len) => {
-                spans.push((start, i));
-                i += len;
-                start = i;
-            }
-            None => i += 1,
-        }
-    }
-    if start < bytes.len() {
-        spans.push((start, bytes.len()));
-    }
-    spans
-}
-
 /// Parse one SSE frame into `(event_type, data_payload)`. `event_type` is "" when the frame has
 /// no `event:` line (OpenAI style). Multiple `data:` lines in a single frame are concatenated with
 /// `\n` per the SSE spec. Returns `None` if the frame carries no `data:` line (including a
@@ -405,86 +301,6 @@ pub fn write_sse_frame(out: &mut Vec<u8>, event_type: &str, data: &serde_json::V
 #[path = "tests/proto_2.rs"]
 mod frame_terminator_tests;
 
-/// Neutral streaming byte-in/byte-out translator seam. The WHOLE concrete `StreamTranslate` (in the
-/// `busbar-llm` plugin) sits behind this trait so emission ORDER is preserved verbatim — the
-/// streaming forward path holds an `Option<Box<dyn StreamTranslator>>` and never names the concrete
-/// translator. `usage()` returns an OWNED [`crate::billing::TokenUsage`] (the billing consumers read
-/// the four token totals, not the concrete `&IrUsage` borrow), so the seam names zero concrete IR.
-/// Relocated DOWN here so the plugin implements it without reaching into `busbar-core`.
-pub trait StreamTranslator: Send {
-    /// Feed a chunk of EGRESS bytes; return the translated INGRESS bytes for whatever COMPLETE frames
-    /// are now available (empty if only a partial frame is buffered).
-    fn feed(&mut self, chunk: &[u8]) -> Vec<u8>;
-    /// Call once at end-of-stream; returns the INGRESS terminator plus any deferred terminal frames.
-    fn finish(&mut self) -> Vec<u8>;
-    /// The terminal token usage accumulated for this stream, projected to the neutral billing total,
-    /// or `None` if no usage-bearing terminal event was seen. The streaming billing arm reads this
-    /// for the per-request token fee.
-    fn usage(&self) -> Option<crate::billing::TokenUsage>;
-    /// The NON-TOKEN billing the body reported beside [`Self::usage`] — a rerank's counted search
-    /// units (item 134) — or `None`. Default `None`: a translator that reads tokens only reports none.
-    fn open_billing(&self) -> Option<crate::billing::Billing> {
-        None
-    }
-    /// The terminal stream ERROR message, or `None` for a clean stream — the breaker/billing gate.
-    fn terminal_error(&self) -> Option<&str>;
-    /// True once this translator abandoned its stream (reassembly overflow / malformed prelude).
-    fn aborted(&self) -> bool;
-    /// Record whether the ORIGINAL client request opted into streaming usage.
-    fn set_client_include_usage(&mut self, include: bool);
-    /// Capture the ORIGINAL ingress request body so an ingress writer whose spec requires certain
-    /// response members to MIRROR client-set request values (OpenAI Responses: `temperature`,
-    /// `top_p`, `instructions`, `metadata`, `tool_choice`, `parallel_tool_calls`, `tools`) can answer
-    /// with the caller's actual values instead of the spec's bare defaults. Called once, before the
-    /// first `feed`, on a CROSS-PROTOCOL stream — same-protocol never reaches this (the ingress
-    /// writer never runs; the original bytes are relayed verbatim). Default no-op: every ingress
-    /// writer without such a requirement ignores it.
-    fn set_request_echo(&mut self, _ingress_request_body: &serde_json::Value) {}
-    /// Frame a TERMINAL mid-stream error through the ingress writer THIS translator has been driving
-    /// all stream, rather than through a freshly-resolved dialect writer. A writer that carries
-    /// per-stream identity (the OpenAI Responses writer latches the response id, `created_at`, `model`
-    /// and a monotonic `sequence_number`) produces a frame that CORRELATES with the frames the client
-    /// already received; a fresh writer restarts every one of those from its default, so the failure
-    /// event arrives with `sequence_number: 0` and an unrelated response id — a stream a strict SDK
-    /// cannot reconcile with the `response.created` it opened on. `None` when this translator has no
-    /// in-band error frame to offer, in which case the caller falls back to the dialect seam.
-    fn terminal_error_frame(&mut self, _err: &IrError) -> Option<(String, serde_json::Value)> {
-        None
-    }
-}
-
-/// How tightly a protocol CLAIMS an inbound request, for the generic detection fold. A LOWER value
-/// binds TIGHTER — it names an earlier rung of the historical detection ladder (a mandatory-unique
-/// auth header binds tighter than a path verb, which binds tighter than a bare path suffix). The
-/// fold picks the tightest claim across the registered protocols; a tie breaks by registration
-/// order. Opaque to core: only the relative order is meaningful, and each protocol owns the rungs it
-/// claims. This is the datum that let the hand-ordered `if`-ladder in `busbar-core`'s
-/// `proto::detect::protocol_id` become a fold over per-decl predicates — each dialect's specific
-/// header/path sniff now states its own rungs on [`ProtocolDecl::claims`], and core names no dialect.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub struct ClaimStrength(pub u16);
-
-/// The ROUTER detection predicate a protocol supplies: `(headers, path) -> Option<ClaimStrength>`,
-/// `Some` at the tightest rung this protocol claims for that request, `None` when it does not claim
-/// it at all. The generic fold in `busbar-core` folds every registered protocol's predicate in
-/// registration order and keeps the tightest claim. Relocated here with [`ProtocolDecl`] so a
-/// dialect crate names it without reaching into `busbar-core`.
-pub type ClaimsFn = fn(&http::HeaderMap, &str) -> Option<ClaimStrength>;
-
-/// The RESIDUAL detection predicate a protocol supplies: `path -> Option<ClaimStrength>`, from the
-/// path SHAPE ALONE (no headers). Narrower than [`ClaimsFn`] — it is the arm the mount table falls
-/// through to when deciding which native error envelope an UNMOUNTED path should wear, and it owns
-/// its dialect's slice of the `/v1/models/{id}` colon disambiguation. `None` when the protocol names
-/// no residual for that path.
-pub type ResidualClaimsFn = fn(&str) -> Option<ClaimStrength>;
-
-/// A protocol's RESPONSE-side vendor-metadata reporter: given a response body, the vendor-scoped
-/// field names present that NO other protocol in the matrix can express (a Gemini `safetyRatings`, a
-/// Bedrock guardrail `trace`). Core calls it on the cross-protocol response seam to LOG the drop; the
-/// per-dialect lookup SHAPE (Gemini reads `candidates[].k`, Bedrock a top-level key) stays with the
-/// dialect. `None` for a protocol that carries no such artifact.
-pub type VendorResponseMetadataFn = fn(&serde_json::Value) -> Vec<&'static str>;
-
 /// WHICH INBOUND AUTH SCHEME a protocol's clients present. DECLARED metadata, never a branch: the
 /// verification itself stays in the auth layer, which has the governance key lookup and the shared
 /// signing helpers. This replaces `ProtocolReader::uses_sigv4_ingress_auth()`, which was the same
@@ -496,127 +312,6 @@ pub enum IngressAuth {
     Bearer,
     /// An AWS SigV4 request signature (Bedrock's ingress shape).
     SigV4,
-}
-
-/// A streaming JSON-array reframer: consumes a protocol's SSE response bytes and re-emits them as one
-/// streaming JSON array (`[{...},{...}]`), the body shape a non-SSE streaming request expects. The
-/// agnostic forward path holds one `Box<dyn ArrayStreamFramer>` (built via
-/// `ProtocolWriter::make_array_stream_framer`) and drives it, so it names no protocol's framer type.
-/// The sole implementor is `gemini::GeminiJsonArrayFramer` (Gemini `:streamGenerateContent` without
-/// `?alt=sse`). The trait exposes only the SUBSET of that type's API the agnostic core needs (`feed`,
-/// `finish_for_translate`, `finish_with_server_error`); the type's raw `finish` and its low-level
-/// `finish_with_error(code, status, …)` are absent, since the core never passes a wire status code.
-///
-/// RELOCATED DOWN from `busbar-core` (`proto`) so the dialect crate names it without reaching into
-/// `busbar-core`; core re-exports it from `busbar_kernel::proto::ArrayStreamFramer`.
-pub trait ArrayStreamFramer: Send {
-    /// Feed a chunk of SSE bytes; return JSON-array bytes for whatever complete frames are now
-    /// available (empty if only a partial frame is buffered).
-    fn feed(&mut self, chunk: &[u8]) -> Vec<u8>;
-
-    /// Close the array at end-of-stream when this framer sits DOWNSTREAM of a cross-protocol
-    /// `StreamTranslate`; pass `translate_aborted = StreamTranslate::aborted()` so a translate-side
-    /// abort surfaces as a trailing error element instead of a silent truncation. Idempotent.
-    fn finish_for_translate(&mut self, translate_aborted: bool) -> Vec<u8>;
-
-    /// Terminate the array with a trailing protocol-shaped SERVER-ERROR element, then the closing `]`.
-    /// Used on a mid-stream upstream transport failure (and on internal abort). The agnostic caller
-    /// supplies only the human-readable `message`; the implementor owns the wire status/code shape (e.g.
-    /// Gemini emits a `google.rpc.Status` with HTTP 500 / gRPC `INTERNAL`), so the core names no
-    /// protocol wire value. Idempotent.
-    fn finish_with_server_error(&mut self, message: &str) -> Vec<u8>;
-}
-
-/// **THE 4TH NEUTRAL SEAM (G6 A4b, owner-ruled 2026-08-20).** The per-PROTOCOL computed-codec facade
-/// the operation-blind driver reads, so core names ZERO concrete LLM IR and zero `ProtocolReader`/
-/// `ProtocolWriter` at its call sites. Every method here has a NEUTRAL signature (bytes / `Value` /
-/// `bool` / `TokenUsage` / neutral tuples — `IrError` is `breaker::CanonicalSignal`); the concrete
-/// codec lives behind the implementor.
-///
-/// This is the sibling of the per-CELL `TranslateCodec` — these are the ~10 computed methods the
-/// engine/wire/health/hooks/response_body driver called through the `Protocol` bundle
-/// (`protocol_for(name).writer()/.reader().X()`) that are protocol-level, not operation-level, and so
-/// have no home on `TranslateCodec`. Reached via `decl_for(name).dialect()`. Its sole implementor
-/// (`DialectRef`) lives in `busbar-llm` and forwards to that crate's writer/reader.
-///
-/// RELOCATED DOWN from `busbar-core` (`proto`) so the dialect crate names it without reaching into
-/// `busbar-core`; core re-exports it from `busbar_kernel::proto::DialectCodec`.
-pub trait DialectCodec: Send + Sync {
-    fn probe_body(&self, model: &str) -> Vec<u8>;
-    fn apply_rewrite_to_ingress_body(
-        &self,
-        obj: &mut serde_json::Map<String, serde_json::Value>,
-        messages: &[serde_json::Value],
-        tools: &[serde_json::Value],
-    ) -> bool;
-    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<crate::billing::TokenUsage>;
-    fn ingress_response_request_id(
-        &self,
-        upstream_request_id: Option<&str>,
-    ) -> Option<(&'static str, String)>;
-    fn write_error(&self, status: u16, kind: &str, message: &str) -> serde_json::Value;
-    fn requested_candidate_count(&self, body: &serde_json::Value) -> Option<u64>;
-    fn write_response_exception(
-        &self,
-        err: &crate::breaker::CanonicalSignal,
-    ) -> Option<(String, String)>;
-    fn write_error_frame(
-        &self,
-        err: &crate::breaker::CanonicalSignal,
-    ) -> Option<(String, serde_json::Value)>;
-    fn wants_array_stream(&self, body: &serde_json::Value) -> bool;
-    fn inject_response_metrics(&self, value: &mut serde_json::Value, elapsed_ms: Option<u64>);
-    fn attach_error_response_headers(
-        &self,
-        headers: &mut http::HeaderMap,
-        kind: &str,
-        envelope: &serde_json::Value,
-    );
-    /// This protocol's upstream-error vocabulary (the reader's `extract_error`), reached by name so
-    /// `handlers::protocol_error` names no concrete reader. `status` is the raw HTTP code.
-    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError;
-    /// The dialect's array-stream framer for a Gemini-style JSON-array ingress client, or `None` when
-    /// this protocol frames no array stream — the writer method reached by name at the SSE seam.
-    fn make_array_stream_framer(&self) -> Option<Box<dyn ArrayStreamFramer>>;
-    /// The upstream request path for a (streaming) request against this dialect — the health probe's
-    /// URL builder reaches it here rather than through the concrete writer.
-    fn upstream_path_for_stream(&self, model: &str, stream: bool) -> String;
-    /// Install the authoritative lane model into a same-protocol passthrough body if the dialect
-    /// requires it; returns whether the body changed (a pristine-passthrough invalidator).
-    fn rewrite_model_if_needed(&self, body: &mut serde_json::Value, model: &str) -> bool;
-    /// Reshape a path-base (URL-model) lane's body for this dialect (e.g. Claude-on-Vertex drops
-    /// `model`, adds `anthropic_version`); returns whether the body changed.
-    fn reshape_for_path_base(&self, body: &mut serde_json::Value) -> bool;
-}
-
-/// Per-request signing context. Most protocols' `auth_headers` ignore this; protocols that
-/// sign the whole request (AWS SigV4 for Bedrock) need the method/host/path/body/time.
-///
-/// RELOCATED DOWN from `busbar-core` (`proto`) so the substrate `ProtocolDecl`'s
-/// `egress_auth_headers` builder names it without reaching into `busbar-core`; core re-exports it
-/// from `busbar_kernel::proto::SigningContext` so every in-core / plugin caller is unchanged. Its only
-/// non-primitive field is `busbar_api::UpstreamCreds` (a `busbar-api` leaf type), so the relocation
-/// carries no core-only machinery.
-pub struct SigningContext<'a> {
-    /// Upstream host (no scheme), e.g. `bedrock-runtime.us-east-1.amazonaws.com`. Borrowed from the
-    /// lane's precomputed `signing_host` on the forward path (no per-request allocation); only the
-    /// Bedrock SigV4 writer reads it.
-    pub host: &'a str,
-    /// URI-encoded request path (no query), e.g. `/model/anthropic.claude%3A0/converse`. Borrowed
-    /// (like `host`): on the forward path it comes from the lane's boot-precomputed egress target,
-    /// so building the context allocates nothing; only the Bedrock SigV4 writer reads it.
-    pub canonical_uri: &'a str,
-    /// The exact request body bytes that will be sent.
-    pub body: &'a [u8],
-    /// Unix epoch seconds at signing time.
-    pub timestamp_epoch: u64,
-    /// The UPSTREAM-credential mode for this request. Lets a writer resolve a credential whose scheme
-    /// is otherwise ambiguous (e.g. Anthropic's API-key-vs-Bearer choice) to the single native header
-    /// the mode implies — `Passthrough` forwards the caller's Bearer token; `Own` presents the
-    /// configured-key shape. Without it, an ambiguous credential must emit BOTH headers, which is an
-    /// upstream-distinguishability tell no native client produces. (The upstream-credential concern,
-    /// split out of the front-door auth mode in slice 2d.)
-    pub upstream_creds: busbar_api::UpstreamCreds,
 }
 
 /// A protocol's declared egress credential-header builder: the resolved per-request credential

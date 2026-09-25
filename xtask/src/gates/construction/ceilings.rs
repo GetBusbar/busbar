@@ -418,6 +418,9 @@ pub fn add_to_list(text: &str, table: &str, key: &str, items: &[String]) -> Opti
     Some(s)
 }
 
+/// The header prefix of every `[gate.ceiling_raises."<dotted path>"]` declaration table.
+pub const RAISES_PREFIX: &str = "gate.ceiling_raises.";
+
 /// The text with every table whose header starts with `prefix` removed, header to next header.
 /// The self-test's green fixture uses it to take `[gate.ceiling_raises.*]` out of a ceilings file
 /// whose base is planted as that same file: a declaration over a base with no raise is stale by
@@ -814,7 +817,7 @@ pub fn raises(cx: &Ctx) -> BTreeMap<String, Raise> {
     // `Document::children` cannot answer this: the entry's key IS a dotted path, so a header like
     // `[gate.ceiling_raises."rules.legacy-reach.prefixes.busbar_substrate.figure"]` registers a
     // table whose remainder contains dots, which `children` filters out as a deeper sub-table.
-    let prefix = "gate.ceiling_raises.";
+    let prefix = RAISES_PREFIX;
     for (key, t) in doc
         .tables()
         .into_iter()
@@ -924,8 +927,16 @@ fn array_identity(doc: &crate::toml_doc::Document, path: &str) -> Option<String>
 ///
 /// THE PATH OF AN `[[array]]` ENTRY IS ITS IDENTITY, NOT ITS INDEX — see [`array_identity`] for the
 /// 117 raises that were not raises.
+///
+/// A DECLARATION IS NOT A CEILING. The `from` / `to` of a `[gate.ceiling_raises."<path>"]` entry
+/// are numbers in this file, and they used to be read as ceilings like every other number: the
+/// commit that replaces a landed declaration with the next re-arm of the same ceiling (7414 -> 7418
+/// over 5652 -> 7414) moves both numbers UP, and `ceiling-rose` refused the re-declaration itself
+/// as two undeclared rises. The declaration tables are taken out before anything is read, so the
+/// numbers compared are the ceilings and only the ceilings; [`raises`] reads the declarations.
 fn ints_of(text: &str) -> Result<BTreeMap<String, i64>, String> {
-    let doc = crate::toml_doc::parse_str(text)?;
+    let text = strip_tables(text, RAISES_PREFIX);
+    let doc = crate::toml_doc::parse_str(&text)?;
     let mut out = BTreeMap::new();
     for (path, table) in doc.tables() {
         let keyed = array_identity(&doc, path).unwrap_or_else(|| path.to_string());
@@ -1114,5 +1125,19 @@ mod tests {
         assert!(!stripped.contains("from = 1"), "{stripped}");
         assert!(stripped.contains("[d]\nm = 3"), "{stripped}");
         assert!(stripped.contains("[b]\nn = 1"), "{stripped}");
+    }
+
+    /// A DECLARATION IS NOT A CEILING: the `from` / `to` of a `[gate.ceiling_raises.*]` entry are
+    /// not read as numbers `ceiling-rose` compares, and a ceiling in the table after one still is.
+    #[test]
+    fn a_declarations_numbers_are_not_ceilings() {
+        let doc = "[rules.x]\nceiling = 7\n[gate.ceiling_raises.\"rules.x.ceiling\"]\nfrom = 5652\nto = 7414\n[rules.y]\nceiling = 3\n";
+        let ints = ints_of(doc).expect("the fixture parses");
+        assert_eq!(ints.get("rules.x.ceiling"), Some(&7), "{ints:?}");
+        assert_eq!(ints.get("rules.y.ceiling"), Some(&3), "{ints:?}");
+        assert!(
+            ints.keys().all(|k| !k.starts_with(RAISES_PREFIX)),
+            "a declaration's numbers were read as ceilings: {ints:?}"
+        );
     }
 }

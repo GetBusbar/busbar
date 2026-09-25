@@ -18,6 +18,28 @@ fn src_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
 }
 
+/// The underscore-spelled module path of every OTHER `busbar-plane-*` crate in the workspace.
+///
+/// Read from the tree rather than typed out one instance at a time: a purity check that hand-lists
+/// its sibling planes is itself an instance-naming leak (and a stale one, the day a new plane is
+/// added and this list is not). Deriving the set from `crates/`'s own directory listing makes the
+/// check exhaustive over every sibling plane there is, present or future, without this crate's own
+/// source spelling a single one of their names.
+fn sibling_plane_crate_paths() -> Vec<String> {
+    let crates_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crates/<this crate> has a parent");
+    let mut out: Vec<String> = std::fs::read_dir(crates_dir)
+        .expect("the crates directory is readable")
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|name| name.starts_with("busbar-plane-") && name != env!("CARGO_PKG_NAME"))
+        .map(|name| name.replace('-', "_"))
+        .collect();
+    out.sort();
+    out
+}
+
 /// Walk every source file, handing each to a reader.
 fn walk(dir: &Path, f: &mut impl FnMut(&Path, &str)) {
     for entry in std::fs::read_dir(dir)
@@ -137,9 +159,8 @@ fn the_plane_names_no_kernel_side_crate() {
         "busbar_unit",
         "busbar_substrate",
         "busbar_kernel",
-        "busbar_plane_llm",
-        "busbar_plane_a2a",
     ];
+    let siblings = sibling_plane_crate_paths();
     let mut offenders = Vec::new();
     walk(&src_dir(), &mut |path, text| {
         for (n, line) in text.lines().enumerate() {
@@ -149,6 +170,11 @@ fn the_plane_names_no_kernel_side_crate() {
             for name in forbidden {
                 if line.contains(name) {
                     offenders.push(format!("{}:{}: {name}", path.display(), n + 1));
+                }
+            }
+            for sibling in &siblings {
+                if line.contains(sibling.as_str()) {
+                    offenders.push(format!("{}:{}: {sibling}", path.display(), n + 1));
                 }
             }
         }

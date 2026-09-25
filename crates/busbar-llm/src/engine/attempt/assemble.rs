@@ -74,7 +74,7 @@ pub(super) async fn build(
     // non-constant credential (OAuth / SigV4) reads the request, so both build live.
     let egress_auth = match (&hop.lane_row().prebuilt_auth, hop.upstream_creds) {
         (Some(pre), busbar_api::UpstreamCreds::Own) => pre.clone(),
-        _ => convert_headers(busbar_timing::scope("egress_sigv4", || {
+        _ => convert_headers(busbar_timing::scope("egress_lane_auth", || {
             lane_auth_headers(hop.lane_row(), key, &signing_ctx)
         })),
     };

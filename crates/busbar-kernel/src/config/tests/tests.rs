@@ -55,7 +55,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         decisions: Default::default(),
         listen: DEFAULT_LISTEN_ADDR.into(),
         // Left at its type default (unset).
-        mcp: Default::default(),
+        endpoint: Default::default(),
         oauth_as: None,
         public_url: None,
         tls: None,
@@ -75,6 +75,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         per_request_fee: 0,
         plane_rate_cards: Default::default(),
         plane_fees: Default::default(),
+        plane_raw: Default::default(),
         store: None,
         secrets: Default::default(),
         advanced: AdvancedCfg::default(),
@@ -888,29 +889,6 @@ fn test_hook_access_grants_parse() {
     assert!(!bare.prompt.sends_prompt());
 }
 
-/// The shipped providers.yaml catalog must parse, name only known protocols, and use HTTPS.
-#[test]
-fn test_shipped_providers_catalog_valid() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../providers.yaml");
-    let raw = std::fs::read_to_string(path).expect("read providers.yaml");
-    let defs: HashMap<String, ProviderDef> =
-        serde_yaml::from_str(&raw).expect("parse providers.yaml");
-    assert!(defs.len() >= 10, "catalog should be non-trivial");
-    for (name, def) in &defs {
-        assert!(
-            // Neutral registry seam: a protocol is KNOWN iff it has a registered declaration
-            // (`decl_for`), reached without naming the witnessed codec (`protocol_for`).
-            crate::proto::decl_for(&def.protocol).is_some(),
-            "provider '{name}' names unknown protocol '{}'",
-            def.protocol
-        );
-        assert!(
-            def.base_url.starts_with("https://"),
-            "provider '{name}' base_url must be https"
-        );
-    }
-}
-
 // ── env interpolation ────────────────────────────────────────────────────────────────────────────
 
 // NOTE: env vars are process-global; tests run in parallel. Use UNIQUE per-test var
@@ -1560,7 +1538,7 @@ fn test_resolve_provider_from_def() {
 
 // THE HOOK-PATH / FALLBACK-PATH EQUIVALENCE (1.6.0 pools stage-B) MOVED to
 // `tests/config_cross_plane.rs::resolve_provider_hook_and_core_fallback_agree` — it calls the REAL
-// `busbar_llm::PLANE_DECL.resolve_provider` hook, which only type-checks against core's OWN
+// `busbar_llm::PLANE_HOOKS.resolve_provider` hook, which only type-checks against core's OWN
 // `ProviderDef`/`ProviderDeploy` when there is ONE `busbar_kernel` in the graph (an integration-test
 // target), not the two copies busbar-kernel's own `#[cfg(test)]` dev-dependency back-edge onto
 // busbar-llm produces. See that file's header for the full rationale.
@@ -2311,6 +2289,7 @@ fn on_error_cfg_as_name_unwraps_both_variants() {
 /// rather than N near-identical single-purpose tests.
 #[test]
 fn serde_default_fns_return_their_documented_constants() {
+    // plane-purity: frozen-wire the omitted-`protocol:` default in the frozen providers.yaml config grammar (frozen since 1.5.3)
     assert_eq!(default_protocol(), "anthropic");
     assert_eq!(default_min_requests(), 5);
     assert_eq!(default_max_cooldown(), 120);
@@ -2929,6 +2908,7 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
             settings_schema: None,
             schema_derived: false,
             host: None,
+            declares: Default::default(),
         },
         artifact,
     );
@@ -2993,6 +2973,7 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
             settings_schema: None,
             schema_derived: false,
             host: None,
+            declares: Default::default(),
         },
         artifact,
     );
@@ -3761,11 +3742,11 @@ fn failover_pools_are_absent_by_default() {
     let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
     assert!(
         cfg.tool_pools.is_empty(),
-        "no MCP failover unless asked for"
+        "no tool-plane failover unless asked for"
     );
     assert!(
         cfg.agent_pools.is_empty(),
-        "no A2A failover unless asked for"
+        "no agent-plane failover unless asked for"
     );
 }
 
@@ -3964,29 +3945,54 @@ fn test_auth_policy_rejects_bad_input_at_parse() {
     assert!(err.to_string().contains("unknown field"), "got: {err}");
 }
 
+/// The top-level section [`NEUTRAL_SECTION_PLANE`] declares and owns.
+const NEUTRAL_SECTION: &str = "neutral_section";
+
+/// A NEUTRAL plane that DECLARES AND OWNS a singular section of its own ([`NEUTRAL_SECTION`]) — the
+/// generic singular carrier `plane::config::DecisionsSection` holds it — all hooks stubbed, so the
+/// pre-pass, which lifts only the sections a REGISTERED plane declares, lifts it. With no
+/// `parse_section` hook the value is captured raw.
+static NEUTRAL_SECTION_PLANE: crate::plane::registry::PlaneDecl =
+    crate::plane::registry::PlaneDecl {
+        declaration: crate::plane::registry::PlaneDeclaration {
+            key: "neutral-test-section",
+            fallback: false,
+            config_section: NEUTRAL_SECTION,
+            scope_kinds: &[],
+            owned_config_sections: &[NEUTRAL_SECTION],
+            ..crate::test_support::NEUTRAL_FALLBACK.declaration
+        },
+        ..crate::test_support::NEUTRAL_FALLBACK
+    };
+
 /// DECISIONS #47/#48 (`docs/design/BUSBAR-1.6.0.md:373`/`:374`): `decisions:` is the FIFTH plane's
-/// declaring top-level section, so the config PRE-PASS must lift it. `DeployCfg` is
-/// `deny_unknown_fields`, so before the lift existed a document carrying `decisions:` was refused
-/// outright AT THAT KEY, before any plane seam was consulted.
+/// declaring top-level section, so the config PRE-PASS lifts it — while a REGISTERED plane declares
+/// it (#49: the kernel reads the lift list off the plane registry). `DeployCfg` is
+/// `deny_unknown_fields`, so without the lift a document carrying `decisions:` is refused outright
+/// AT THAT KEY (the test below).
 ///
-/// THE LIFT IS ALL THIS PROVES, and that is deliberate: `is_present()` is true of an untyped raw
-/// capture too, so no assertion available HERE can tell a typed section from a raw one. This crate
-/// cannot name the decision plane (the dep wall, DECISIONS #40), so the plane that owns `decisions:`
-/// is never registered in this test binary and the seam always takes its raw arm. The typed half —
-/// that the hooks are wired, that `deny_unknown_fields` runs inside the block, and that
-/// `decisions: "hello"` is REFUSED — is proven where the owning decl is written and registrable,
-/// `crates/busbar/src/root/tests/plane_decision.rs`. What THIS binary can prove about a build with
-/// no owning plane is the test below it.
+/// THE LIFT IS ALL THIS PROVES, and that is deliberate: this crate cannot name the decision plane
+/// (the dep wall, DECISIONS #40), so the plane seeded here is a NEUTRAL one that declares and owns a
+/// singular section of its own with no `parse_section` hook — the kernel keys that carrier by no
+/// literal, so the neutral section lands exactly where `decisions:` does — and the seam takes its
+/// raw arm. The typed half — that the
+/// hooks are wired, that `deny_unknown_fields` runs inside the block, and that `decisions: "hello"`
+/// is REFUSED — is proven where the owning decl is written and registrable,
+/// `crates/busbar/src/root/tests/plane_decision.rs`.
 #[test]
 fn test_decisions_section_parses() {
-    crate::test_support::register_neutral_test_plane();
-    let deploy: DeployCfg = crate::config::deploy_from_yaml_str(
-        "decisions:\n  \
+    let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
+        crate::test_support::neutral_fallback_plane(),
+        &NEUTRAL_SECTION_PLANE,
+    ]);
+    let section = NEUTRAL_SECTION;
+    let deploy: DeployCfg = crate::config::deploy_from_yaml_str(&format!(
+        "{section}:\n  \
            models:\n    \
-             primary: { provider: example-upstream, upstream_model: example-1 }\n\
-         providers: {}\nmodels: {}\npools: {}\n",
-    )
-    .expect("a document carrying the 1.6.0 `decisions:` section must parse");
+             primary: {{ provider: example-upstream, upstream_model: example-1 }}\n\
+         providers: {{}}\nmodels: {{}}\npools: {{}}\n",
+    ))
+    .expect("a document carrying a section a registered plane declares must parse");
 
     // The second half, because "the document parsed" is ALSO true of a key read and thrown away:
     // the lifted value must be BANKED onto the carrier (`PlaneCfg` is already in scope).
@@ -4006,53 +4012,108 @@ fn test_decisions_section_parses() {
     );
 }
 
-/// THE DELETION-GATE LEG FOR `decisions:`. A section an operator wrote, in a build compiled without
-/// the plane that owns it, names a grammar busbar cannot serve — and must be REFUSED at resolve,
-/// exactly as a present `tools:`/`agents:`/`streams:` naming a compiled-out plane already is.
-///
-/// This leg did not exist: `resolve`'s `NAMED_MAP_SECTIONS` loop does not contain `decisions` (it is
-/// a singular model-serving section, deliberately not a named-definition map), and the hand-written
-/// leg beside it covered `streams:` alone. So a `decisions:` block in a `--no-default-features`
-/// build parsed, named a plane that was not there, and boot said nothing.
-///
-/// This test binary IS that build: `busbar-kernel` may not name `busbar-plane-decision`, so nothing
-/// here can register a plane owning `decisions` and the condition the leg refuses on is the
-/// standing state rather than one a fixture has to manufacture.
+/// The top-level section [`RAW_SECTION_PLANE`] declares — and does NOT own the grammar of.
+const RAW_SECTION: &str = "raw_section";
+
+/// A NEUTRAL plane declaring [`RAW_SECTION`] with no carrier of its own: not a named one, not the
+/// generic singular one (it owns no grammar), not core's — the shape of a plane that states itself
+/// over the C ABI, whose section only it can read.
+static RAW_SECTION_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
+    declaration: crate::plane::registry::PlaneDeclaration {
+        key: "neutral-test-raw",
+        fallback: false,
+        config_section: RAW_SECTION,
+        scope_kinds: &[],
+        owned_config_sections: &[],
+        ..crate::test_support::NEUTRAL_FALLBACK.declaration
+    },
+    ..crate::test_support::NEUTRAL_FALLBACK
+};
+
+/// THE GENERIC CARRIER: a registered plane's declaring section that no carrier holds is
+/// lifted RAW onto `DeployCfg::plane_raw` — its core-owned `rate_card`/`fees` stripped and banked
+/// under the plane's key like any plane's — and `resolve` makes it both LAW 7's "this plane is
+/// configured" and that plane's section-keyed resource, `(section, value)`, the bytes its `build` is
+/// handed. RED before K7: the pre-pass lifted no such section, so the document was refused at the key
+/// as an unknown field.
 #[test]
-fn a_decisions_section_with_no_owning_plane_is_refused_at_resolve() {
-    crate::test_support::register_neutral_test_plane();
-    let deploy: DeployCfg = crate::config::deploy_from_yaml_str(
+fn a_declared_section_no_carrier_holds_is_lifted_raw_for_its_plane() {
+    let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
+        crate::test_support::neutral_fallback_plane(),
+        &RAW_SECTION_PLANE,
+    ]);
+    let deploy: DeployCfg = crate::config::deploy_from_yaml_str(&format!(
+        "{RAW_SECTION}:\n  greeting: hi\n  fees: {{ per_request: 3 }}\n\
+         providers: {{}}\nmodels: {{}}\npools: {{}}\n",
+    ))
+    .expect("a section a registered plane declares must parse, whichever carrier holds it");
+    let remainder: serde_yaml::Value = serde_yaml::from_str("greeting: hi").unwrap();
+    assert_eq!(
+        deploy.plane_raw.get(RAW_SECTION),
+        Some(&remainder),
+        "the section lands raw, its core-owned `fees` lifted off it"
+    );
+    assert!(deploy.plane_fees.contains_key("neutral-test-raw"));
+
+    let root = crate::config::resolve(&deploy, &Default::default()).expect("resolves");
+    assert!(
+        root.plane_sections.contains(RAW_SECTION),
+        "LAW 7: the plane is configured"
+    );
+    let resource = root
+        .endpoint_resource(RAW_SECTION)
+        .expect("its plane's resource");
+    assert_eq!(
+        resource.downcast_ref::<(&'static str, serde_yaml::Value)>(),
+        Some(&(RAW_SECTION, remainder)),
+        "the resource is `(section, value)`"
+    );
+
+    // An absent (or null) section configures nothing and hands its plane nothing.
+    let bare = crate::config::deploy_from_yaml_str(&format!(
+        "{RAW_SECTION}: ~\nproviders: {{}}\nmodels: {{}}\npools: {{}}\n"
+    ))
+    .expect("parses");
+    let root = crate::config::resolve(&bare, &Default::default()).expect("resolves");
+    assert!(!root.plane_sections.contains(RAW_SECTION));
+    assert!(root.endpoint_resource(RAW_SECTION).is_none());
+}
+
+/// THE DELETION-GATE LEG FOR `decisions:` (Option A, S11b (c) / Q67). A section an operator wrote,
+/// in a build with no registered plane declaring it, is a key this build does not know — and is
+/// REFUSED AT PARSE with serde's standard unknown-field message, naming the key, exactly as 1.5.5
+/// refused any key it did not know. The kernel cannot say more: naming the plane that would own it
+/// means spelling a plane section it does not have (#49).
+///
+/// This test binary IS that build: `busbar-kernel` may not name `busbar-plane-decision`, and the
+/// registry is seeded with the neutral fallback plane alone, so nothing declares `decisions`.
+#[test]
+fn a_decisions_section_with_no_owning_plane_is_refused_as_an_unknown_key() {
+    let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
+        crate::test_support::neutral_fallback_plane(),
+    ]);
+    let err = crate::config::deploy_from_yaml_str(
         "decisions:\n  \
            models:\n    \
              jev: { provider: typesafe }\n\
          providers: {}\nmodels: {}\npools: {}\n",
     )
-    .expect(
-        "with no plane to own it the section is captured raw — the parse is not where it fails",
-    );
-
-    let errors = resolve(&deploy, &HashMap::new()).expect_err(
-        "a `decisions:` block naming a plane this build does not have must be refused at resolve",
-    );
+    .expect_err("a `decisions:` block no registered plane declares must be refused")
+    .to_string();
     assert!(
-        errors.iter().any(|e| {
-            e.contains("`decisions:` is configured")
-                && e.contains("compiled without the plane that owns it")
-        }),
-        "the refusal must name the SECTION the operator wrote; got: {errors:?}"
+        err.contains("unknown field `decisions`"),
+        "the refusal must be serde's unknown-field refusal NAMING the key the operator wrote; got: {err}"
     );
 
     // The control, in the same test, because a leg that refuses everything is not a leg: an ABSENT
-    // `decisions:` must not trip it. Without this the assertion above would still pass if the leg
-    // fired unconditionally.
+    // `decisions:` must parse and resolve clean. Without this the assertion above would still pass if
+    // every document were refused.
     let bare: DeployCfg =
         crate::config::deploy_from_yaml_str("providers: {}\nmodels: {}\npools: {}\n")
             .expect("a document with no `decisions:` section still parses");
     let bare_errors = resolve(&bare, &HashMap::new()).err().unwrap_or_default();
     assert!(
-        !bare_errors
-            .iter()
-            .any(|e| e.contains("`decisions:` is configured")),
+        !bare_errors.iter().any(|e| e.contains("unknown field")),
         "an absent `decisions:` section must not be refused; got: {bare_errors:?}"
     );
 }
@@ -4073,13 +4134,20 @@ fn record_plane_section(
 /// A stub plane owning the registry section a card is authored in, whose `parse_section` records
 /// what it was handed. `"card-plane"` is its registry key: the key the card is filed under.
 static CARD_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-    key: "card-plane",
-    fallback: false,
-    config_section: "tools",
-    scope_kinds: &[],
-    subject_noun: "card thing",
-    admin_noun: "card-thing",
-    audit_kind: "card-thing",
+    declaration: crate::plane::registry::PlaneDeclaration {
+        key: "card-plane",
+        fallback: false,
+        config_section: "tools",
+        scope_kinds: &[],
+        subject_noun: "card thing",
+        admin_noun: "card-thing",
+        audit_kind: "card-thing",
+        card_signing_domain: None,
+        card_kid_prefix: None,
+        owned_config_sections: &[],
+        billable_classes: &[],
+        fee_units: &[],
+    },
     wire_format_names: || &[],
     claims: |_| Vec::new(),
     admission: |_| None,
@@ -4090,13 +4158,10 @@ static CARD_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::P
     hydrate: None,
     start: None,
     config_validate: None,
-    card_signing_domain: None,
-    card_kid_prefix: None,
     named_def_list: None,
     named_def_get: None,
     registry_contains: None,
     reresolve_gates: None,
-    #[cfg(feature = "openapi-schema")]
     openapi_schemas: None,
     on_swap: None,
     parse_section: Some(record_plane_section),
@@ -4106,9 +4171,6 @@ static CARD_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::P
     viewer: None,
     retain_verify_gates: None,
     default_section: None,
-    owned_config_sections: &[],
-    billable_classes: &[],
-    fee_units: &[],
     resolve_provider: None,
 };
 

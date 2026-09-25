@@ -43,6 +43,14 @@ impl LifetimeBudget {
         }
     }
 
+    /// Carry a remaining figure across a rebuild. A no-op on an unlimited budget, which has no
+    /// figure to carry; never below zero, which no spend could have left it at.
+    pub fn restore(&self, remaining: i64) {
+        if self.limited {
+            self.remaining.store(remaining.max(0), Ordering::Relaxed);
+        }
+    }
+
     /// Atomically consume one unit. Returns `false` when the budget was already exhausted (the
     /// spend was a no-op — the budget is never driven negative).
     ///

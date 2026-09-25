@@ -12,24 +12,24 @@
     "beside the ISOMORPHISM group.",
     "",
     "THE ROOT COLUMN (`root_legs` + every cell's `root`). The `cell` above is the SHIPPED path: the",
-    "step proven where a conformance rig drives the plane as an operator would. All five planes now",
-    "also run through the composition root, behind root-llm / root-mcp / root-a2a / root-voice /",
-    "root-admin, and a step proven on the rig and unwitnessed over the loop is the same half-answer.",
+    "step proven where a conformance rig drives the plane as an operator would. Every plane now",
+    "also runs through the composition root -- root-llm / root-voice / root-admin behind their",
+    "features, root-mcp / root-a2a on the kernel-loop rider every linked one-shot plane is served through -- and a step proven on the rig and unwitnessed over the loop is the same half-answer.",
     "So every cell carries a SECOND verdict over its plane's root leg:",
-    "  proven -- with `test`: a `<crates/busbar/src/root/units_*.rs>::<test fn>` cell that drives the",
-    "            step through run_unit. The check verifies the file is the leg's own and the fn is in",
-    "            it; `--root-legs` EXECUTES every one of them with all five features on.",
+    "  proven -- with `test`: a `<the leg's own file under crates/busbar/src/root/>::<test fn>` cell that drives the",
+    "            step through the loop. The check verifies the file is the leg's own and the fn is in",
+    "            it; `--root-legs` EXECUTES every one of them with every leg's feature on.",
     "  none   -- with `note`: what the leg does instead, and why no cell drives this step yet. R-16:",
     "            name a gap, never paper it.",
     "The root column's gaps are PRINTED and named on every run but do not fail --check by themselves.",
-    "root-admin, root-mcp, root-a2a and root-voice are now IN the binary's default feature set, so for",
-    "those four the loop IS the shipped path and --root-legs-gating (below) holds them to the same red",
-    "rule the rig column has: a gating step with no cell over the loop fails. root-llm is still",
-    "default-off and being switched over plane by plane, so its root gaps remain the switch-over",
+    "Every leg's feature (a leg's `feature`, else the leg's own name) is now IN the binary's default feature set, so for",
+    "each of them the loop IS the shipped path and --root-legs-gating (below) holds them to the same red",
+    "rule the rig column has: a gating step with no cell over the loop fails. A leg whose feature is",
+    "default-off is still being switched over plane by plane, so its root gaps remain the switch-over",
     "queue and are printed rather than failed. What IS red on this column whatever the leg ships as: a",
     "`proven` root cell whose named test does not exist, and a leg with no proven cell at all.",
     "The two columns are independent verdicts about the same step and either may be \"none\" alone:",
-    "mcp.approve and a2a.decode are exactly that shape today -- open on the rig, proven over the loop."
+    "mcp.approve is exactly that shape today -- open on the rig, proven over the loop."
   ],
   "steps": {
     "arrival": {
@@ -80,11 +80,13 @@
     },
     "root-mcp": {
       "plane": "mcp",
-      "file": "crates/busbar/src/root/tests/units_mcp.rs"
+      "file": "crates/busbar/src/root/tests/gauntlet_kernel.rs",
+      "feature": "plane-mcp"
     },
     "root-a2a": {
       "plane": "a2a",
-      "file": "crates/busbar/src/root/tests/units_a2a.rs"
+      "file": "crates/busbar/src/root/tests/gauntlet_kernel.rs",
+      "feature": "plane-a2a"
     },
     "root-voice": {
       "plane": "voice",
@@ -216,8 +218,8 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/tests/units_mcp.rs::the_arrival_facts_are_the_stack_the_claim_was_matched_on",
-          "note": "the gate stays the kernel's, but the handover is this plane's and it is driven: the three claimed surfaces (http, sse over it, stdio) carry the transport's record forward unchanged, a claim naming a transport no claim of this plane makes is refused HandoffMismatch, and so is a claim whose transport is below rather than at the top of the composed chain -- an sse stack matched as a document request. Every later step resolves against these bytes, so a record handed on under the wrong claim authenticates one surface and answers another"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_carries_one_unit_per_call",
+          "note": "one served tools/call arrives as ONE unit the kernel-loop rider carries into the plane's drive, and reaches the registered upstream exactly once -- the rider's own drive count is the evidence, never a status code"
         }
       },
       "decode": {
@@ -227,8 +229,8 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/tests/units_mcp.rs::an_envelope_resolves_to_an_operation_and_a_malformed_one_is_refused",
-          "note": "a real frame through the plane's own ingress decoder, over a real arena: a tools/call envelope resolves to the method table's own operation class and the step proceeds carrying it; five malformed shapes (wrong version, non-string method, an identifier that is neither string nor number, no version member, a method the table never named) each refuse at the decode step with decode_failed; an unrecognised notice is DROPPED rather than refused, because a refusal is an answer and this protocol forbids answering a message with no identifier. The metadata block is read as the depth-1 walk it is -- the block resolves by pointer and its separator-carrying member names do not, which is why the block is located by pointer and its members read by name out of it"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_a_body_that_does_not_decode",
+          "note": "a body that is not JSON is refused by the transport's own parse with -32700 and never becomes a unit, while the well-formed tools/call beside it does -- so the served leg's decode refusal is proven to happen before the loop opens anything"
         }
       },
       "authenticate": {
@@ -238,8 +240,8 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/tests/units_mcp.rs::the_bound_form_authenticates_through_the_nodes_own_seams",
-          "note": "the bound form reaches the node's own auth seams and the signed key it resolves is the directory's, so a dispatch cannot hand three absences and verify nothing"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_is_reached_only_by_an_authenticated_caller",
+          "note": "behind a closed chain, no credential and a forged one are both 401 before dispatch and open no unit; the caller holding a real audience-bound token is carried through the rider to the upstream once"
         }
       },
       "verify": {
@@ -249,19 +251,19 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/tests/units_mcp.rs::an_explicit_empty_scope_list_denies_every_pool",
-          "note": "a key scoped to nothing is refused before the door draws anything -- the explicit-empty-list rule the rig's verify cell turns on"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_a_destination_before_it_dials",
+          "note": "a caller whose grant names another server is refused inside the unit and the refused server is never dialled -- neither its tool endpoint nor its token endpoint sees a byte"
         }
       },
       "approve": {
         "cell": "none",
         "status": "none",
-        "note": "no CONFORMANCE-RIG scenario exercises allowed_scopes narrowing for a tools/call. The root column beside this one now does: root-mcp's a_read_only_grant_lists_and_does_not_call drives the required_scope narrowing through the root's own approve(). The rig half stays open.",
+        "note": "no CONFORMANCE-RIG scenario exercises allowed_scopes narrowing for a tools/call. The root column beside this one now does: its served-rider witness drives a grant on the server without its tool through the kernel-loop rider and is refused. The rig half stays open.",
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/tests/units_mcp.rs::a_read_only_grant_lists_and_does_not_call",
-          "note": "THE required_scope NARROWING, driven through the root's own approve(): a read-only grant lists and is refused a tools/call. Its two companions on this leg are every_operation_class_has_a_required_scope (no class authorized by silence) and silence_is_a_refusal"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_a_grant_short_of_the_operation",
+          "note": "a grant on the server without its tool is the operation's scope, missing: the tools/call is refused inside the unit and the upstream is never contacted"
         }
       },
       "admit": {
@@ -271,8 +273,8 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/tests/units_mcp.rs::a_call_is_estimated_flat_plus_its_document",
-          "note": "what the door draws for a call: the flat fee plus its request document, and the document alone for everything else"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_an_over_budget_caller_before_it_dials",
+          "note": "a key in a one-request group is served once and refused the second time naming the budget, with the refused call never reaching the upstream -- both calls ride the rider"
         }
       },
       "route": {
@@ -282,8 +284,8 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/tests/units_mcp.rs::every_planned_kind_classifies",
-          "note": "every kind this plane's plans name classifies to something the root can service, and no plan yields the unsupported arm"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_answers_a_failed_upstream_inside_the_unit",
+          "note": "an upstream answering a bare 503 ends the unit with a failure the caller reads, after exactly one attempt at the one registered target -- no silent success and no retry storm"
         }
       },
       "meter": {
@@ -293,8 +295,8 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/tests/units_mcp.rs::a_completed_call_is_counted_once",
-          "note": "the metering binding posts a completed call under the class the plane declares, once"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_meters_exactly_one_request_per_call",
+          "note": "one served tools/call writes exactly ONE metering row, under the presenting key, attributed to the namespaced tool and to this plane, counting one request"
         }
       },
       "audit": {
@@ -304,8 +306,8 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/tests/units_mcp.rs::the_audit_strings_are_the_codecs_own",
-          "note": "the action and the resource prefix the chain records are read out of the codec's own source, so a rename there is red here"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_audits_each_call_once",
+          "note": "one served tools/call lands exactly ONE mcp_tool.call row in the admin audit ring, naming the tool and the calling principal"
         }
       },
       "exit": {
@@ -315,8 +317,8 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/tests/units_mcp.rs::only_a_served_call_leaves_an_administrative_entry",
-          "note": "one served call leaves exactly one administrative entry and nothing else leaves one at all -- one terminal per unit"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_ends_each_call_once",
+          "note": "one served tools/call is one terminal: one upstream leg, one audit row and one chained per-call record -- never a double post"
         }
       }
     },
@@ -328,19 +330,19 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/units_a2a.rs::the_arrival_carries_the_transports_own_record_and_a_full_table_refuses_at_arrival",
-          "note": "both halves of what Arrival decides for a data-listener leg: the gate refuses an a2a unit at the in-flight cap with the arrival hold handed back, and the step carries the transport's own composed chain forward rather than re-deriving one"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_carries_one_unit_per_call",
+          "note": "one inbound message/send arrives as ONE unit the kernel-loop rider carries into the plane's drive and is relayed to the backend agent exactly once"
         }
       },
       "decode": {
         "cell": "none",
         "status": "none",
-        "note": "no a2a-tck/a2a-battery/a2a-supplement row is named for a malformed-envelope refusal specifically. The root column beside this one names what the loop does prove: root-a2a's every_operation_class_is_declared pins the op-class set the decode step maps a body into, and a body naming none of them is DecodeFailed at the step that read it.",
+        "note": "no a2a-tck/a2a-battery/a2a-supplement row is named for a malformed-envelope refusal specifically. The root column beside this one names what the loop does prove: its served-rider witness drives a body that is not JSON through the kernel-loop rider and reads the parse error's own code back.",
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/units_a2a.rs::every_operation_class_is_declared",
-          "note": "THE decode OP CLASS: the step maps a body into this plane's declared operation classes and refuses with DecodeFailed when it names none. This cell pins that set -- every class the plane declares is real and reachable, so a class outside it cannot be produced. What it does NOT do is push a malformed envelope through decode() itself; that half stays the rig column's \"none\""
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_a_body_that_does_not_decode",
+          "note": "a body that is not JSON is refused with the parse error's own -32700 by the unit's decode, which on this plane runs inside the drive the rider carries, and nothing is relayed"
         }
       },
       "authenticate": {
@@ -350,8 +352,8 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/units_a2a.rs::a_bad_credential_is_refused_before_verify_through_the_nodes_own_seams",
-          "note": "a bad credential refused before Verify is ever reached, through the node's own three auth seams: a forged credential is unauthenticated, a burned one is revoked (the revocation view is asked because an unbound a2a unit is a new unit), and another plane's audience does not open this one. Zero egress is structural and asserted as such -- the fixture carries an Upstream destination, so every refusal is a dial that did not happen. The rig column's AUTH-SERVER-002 stays the separately-reported evidence it always was"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_is_reached_only_by_an_authenticated_caller",
+          "note": "no credential and a forged one are both 401 at the front door and never become a unit; the caller holding a real audience-bound token is carried through the rider and relayed once"
         }
       },
       "verify": {
@@ -361,8 +363,8 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/units_a2a.rs::a_metadata_endpoint_is_refused_even_when_private_addressing_is_allowed",
-          "note": "a destination this deployment's credential could never be scoped to reach, refused at the guard before Admit draws anything -- and refused whatever the deployment opted into"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_a_destination_before_it_dials",
+          "note": "a backend whose name resolves to the cloud metadata address is refused by the guard inside the unit and the transport is never reached"
         }
       },
       "approve": {
@@ -372,8 +374,8 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/units_a2a.rs::a_read_only_grant_does_not_reach_a_send",
-          "note": "the required scope from (claim, op_class): a read-only grant reaches a projection and is refused a send"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_a_grant_short_of_the_operation",
+          "note": "a caller granted planner and not payments is refused at payments with no hop and no lease spent, and still reaches planner through the same rider"
         }
       },
       "admit": {
@@ -383,8 +385,8 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/units_a2a.rs::only_a_hop_to_an_agent_carries_the_fee",
-          "note": "what the door draws: a draft whose plan reaches an agent carries the fee, one that only touches records does not"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_an_over_budget_caller_before_it_dials",
+          "note": "a caller whose group allows one request a day is served once and refused the second time with a 429 before any hop, both units riding the rider"
         }
       },
       "route": {
@@ -394,8 +396,8 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/units_a2a.rs::a_plan_runs_its_record_legs_in_order_and_skips_the_hop",
-          "note": "the route step's plan runs its legs in the plan's own order and leaves the upstream hop alone -- the ordering an out-of-order run would break"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_answers_a_failed_upstream_inside_the_unit",
+          "note": "a hop the transport cannot complete is answered inside the unit as the upstream's fault, 502 carrying -32006, after exactly one attempt -- never a silent empty task"
         }
       },
       "meter": {
@@ -405,8 +407,8 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/units_a2a.rs::a_record_leg_is_not_priced_on_a_lane",
-          "note": "a record leg carries no lane and so never enters the sealed set; the priced axis is exactly the hops"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_meters_exactly_one_request_per_call",
+          "note": "one served hop writes exactly ONE metering row under this plane's own resource spelling agent:planner, counting one request"
         }
       },
       "audit": {
@@ -416,8 +418,8 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/units_a2a.rs::the_audit_action_is_the_word_the_rig_reads",
-          "note": "the action the chain records is pinned against the word the gating rig reads, so the two cannot drift apart"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_audits_each_call_once",
+          "note": "one served hop lands exactly ONE agent.call row, applied, in the admin audit ring for the calling principal"
         }
       },
       "exit": {
@@ -427,8 +429,8 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/units_a2a.rs::every_ending_has_an_audited_spelling",
-          "note": "the four endings a unit can reach map one for one onto the audit unit's own four -- every terminal has exactly one spelling"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_ends_each_call_once",
+          "note": "a hop that can never complete ends its task once, as failed rather than left submitted, after its one hop"
         }
       }
     },

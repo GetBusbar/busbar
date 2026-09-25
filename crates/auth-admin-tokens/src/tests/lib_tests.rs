@@ -13,7 +13,7 @@ fn hash(s: &str) -> String {
 fn no_configured_token_passes() {
     assert_eq!(
         authenticate_admin_tokens(None, Some("x"), None),
-        AuthOutcome::Pass
+        AuthVerdict::Pass
     );
 }
 
@@ -22,7 +22,7 @@ fn no_credential_passes() {
     let h = hash("secret");
     assert_eq!(
         authenticate_admin_tokens(Some(&h), None, None),
-        AuthOutcome::Pass
+        AuthVerdict::Pass
     );
 }
 
@@ -36,7 +36,7 @@ fn either_carrier_identifies() {
         (Some("wrong"), Some("secret")),
     ] {
         match authenticate_admin_tokens(Some(&h), b, hd) {
-            AuthOutcome::Identify(p) => assert_eq!(p.id, ADMIN_TOKENS_PRINCIPAL_ID),
+            AuthVerdict::Identify(p) => assert_eq!(p.id, ADMIN_TOKENS_PRINCIPAL_ID),
             other => panic!("expected Identify, got {other:?} for ({b:?},{hd:?})"),
         }
     }
@@ -47,11 +47,11 @@ fn wrong_credential_rejects() {
     let h = hash("secret");
     assert_eq!(
         authenticate_admin_tokens(Some(&h), Some("nope"), None),
-        AuthOutcome::Reject
+        AuthVerdict::Reject
     );
     assert_eq!(
         authenticate_admin_tokens(Some(&h), None, Some("nope")),
-        AuthOutcome::Reject
+        AuthVerdict::Reject
     );
 }
 
@@ -72,7 +72,7 @@ fn a_jws_shaped_candidate_defers_to_the_next_chain_arm() {
     for (b, hd) in [(Some(jws), None), (None, Some(jws)), (Some(jws), Some(jws))] {
         assert_eq!(
             authenticate_admin_tokens(Some(&h), b, hd),
-            AuthOutcome::Pass,
+            AuthVerdict::Pass,
             "a JWS-shaped candidate is another scheme's grammar and must reach the next arm \
              ({b:?}, {hd:?})"
         );
@@ -88,12 +88,12 @@ fn a_non_jws_wrong_credential_still_terminally_rejects() {
     for candidate in ["nope", "a.b", "a.b.c.d", "a..c", ".b.c", "a.b."] {
         assert_eq!(
             authenticate_admin_tokens(Some(&h), Some(candidate), None),
-            AuthOutcome::Reject,
+            AuthVerdict::Reject,
             "`{candidate}` is addressed to this module and wrong; it must deny, not defer"
         );
         assert_eq!(
             authenticate_admin_tokens(Some(&h), None, Some(candidate)),
-            AuthOutcome::Reject,
+            AuthVerdict::Reject,
             "`{candidate}` on the header carrier must deny too"
         );
     }
@@ -107,13 +107,13 @@ fn deferring_never_admits_and_never_widens_the_door() {
     let jws = "aaa.bbb.ccc";
     assert_eq!(
         authenticate_admin_tokens(Some(&h), Some(jws), None),
-        AuthOutcome::Pass
+        AuthVerdict::Pass
     );
     // And the real token is still recognised on either carrier even when the OTHER carries a JWS
     // meant for a later arm — the both-carriers fold is untouched by the shape check.
     for (b, hd) in [(Some("secret"), Some(jws)), (Some(jws), Some("secret"))] {
         match authenticate_admin_tokens(Some(&h), b, hd) {
-            AuthOutcome::Identify(p) => assert_eq!(p.id, ADMIN_TOKENS_PRINCIPAL_ID),
+            AuthVerdict::Identify(p) => assert_eq!(p.id, ADMIN_TOKENS_PRINCIPAL_ID),
             other => panic!("expected Identify, got {other:?} for ({b:?},{hd:?})"),
         }
     }

@@ -505,7 +505,7 @@ pub const A2A_REVERIFY_CADENCE_UNPARSED: Diagnostic = Diagnostic {
 };
 
 /// A card endpoint's certificate yielded no SPKI pin — a trust/pin configuration problem.
-pub const A2A_CARD_CERT_NO_SPKI: Diagnostic = Diagnostic {
+pub const A2A_CARD_CERT_NO_KEY_PIN: Diagnostic = Diagnostic {
     code: 7028,
     class: Class::Plane,
     slug: "a2a-card-cert-no-spki",
@@ -648,7 +648,7 @@ pub static DIAGNOSTICS: &[&Diagnostic] = &[
     &A2A_TASK_STATE_UNREAD,
     &A2A_CARD_FETCH_PANICKED,
     &A2A_REVERIFY_CADENCE_UNPARSED,
-    &A2A_CARD_CERT_NO_SPKI,
+    &A2A_CARD_CERT_NO_KEY_PIN,
     &A2A_PUSH_OUTCOME_UNCHAINED,
     &A2A_DISPATCH_UNRECORDED,
     &A2A_PUSH_CALLBACK_UNPERSISTED,

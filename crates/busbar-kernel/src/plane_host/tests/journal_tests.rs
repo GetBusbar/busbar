@@ -263,14 +263,14 @@ extern "C-unwind" fn neutral_reframe(
 /// memory store (so `GovState::new` sees genuine governance behaviour) and PERSISTS the neutral
 /// plane-record verbs generically by `(kind, parent)` — exactly what a durable backend does.
 struct GenericPlaneStore {
-    inner: busbar_store_memory::MemoryStore,
+    inner: crate::governance::MemoryStore,
     rows: Mutex<Vec<busbar_api::PlaneRecord>>,
 }
 
 impl GenericPlaneStore {
     fn new() -> Self {
         Self {
-            inner: busbar_store_memory::MemoryStore::new(),
+            inner: crate::governance::MemoryStore::new(),
             rows: Mutex::new(Vec::new()),
         }
     }
@@ -591,8 +591,8 @@ fn durable_unregistered_kind_fails_closed() {
 // `boot_verify_golden.rs` on purpose: two independent tripwires, so a slip in one is caught by the
 // other. DO NOT regenerate these bytes to make a failing test pass.
 
-const G_MCP_1: &[u8] = br#"{"principal":"vk_alice","seq":1,"ts":1700000000,"server":"srv","tool":"srv_tool","outcome":"dispatched","reason":"","tool_digest":"abc123","pin_generation":7,"request_id":"req-1","prev_hash":"","hash":"f1e8c2ec47e8199499663f3e08272d67b96ed4d56bddc8fa9e9371352e5ba718"}"#;
-const G_MCP_2: &[u8] = br#"{"principal":"vk_alice","seq":2,"ts":1700000060,"server":"srv","tool":"srv_other","outcome":"refused","reason":"not_granted","tool_digest":"","pin_generation":7,"request_id":"req-2","prev_hash":"f1e8c2ec47e8199499663f3e08272d67b96ed4d56bddc8fa9e9371352e5ba718","hash":"721c70456695c90b0085e3ef0170d413a6fa3a1e0ebb65eb02730ab6597ef47a"}"#;
+const G_CALL_1: &[u8] = br#"{"principal":"vk_alice","seq":1,"ts":1700000000,"server":"srv","tool":"srv_tool","outcome":"dispatched","reason":"","tool_digest":"abc123","pin_generation":7,"request_id":"req-1","prev_hash":"","hash":"f1e8c2ec47e8199499663f3e08272d67b96ed4d56bddc8fa9e9371352e5ba718"}"#;
+const G_CALL_2: &[u8] = br#"{"principal":"vk_alice","seq":2,"ts":1700000060,"server":"srv","tool":"srv_other","outcome":"refused","reason":"not_granted","tool_digest":"","pin_generation":7,"request_id":"req-2","prev_hash":"f1e8c2ec47e8199499663f3e08272d67b96ed4d56bddc8fa9e9371352e5ba718","hash":"721c70456695c90b0085e3ef0170d413a6fa3a1e0ebb65eb02730ab6597ef47a"}"#;
 // The A2A task-event fixture was RELOCATED with the task subsystem: the A2A plane computes its chain
 // plane-side over its own `TaskEventRow` now (no host-side journal stream), and its byte-layout golden
 // lives in `busbar_a2a::taskstore`. This neutral seam golden keeps the MCP `call` (LengthPrefixed) and
@@ -600,7 +600,7 @@ const G_MCP_2: &[u8] = br#"{"principal":"vk_alice","seq":2,"ts":1700000060,"serv
 const G_AD_1: &[u8] = br#"{"seq":1,"ts":1700000000,"action":"hook.register","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"","hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa"}"#;
 const G_AD_2: &[u8] = br#"{"seq":2,"ts":1700000060,"action":"hook.delete","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa","hash":"33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264"}"#;
 
-const G_MCP_TAIL: &str = "721c70456695c90b0085e3ef0170d413a6fa3a1e0ebb65eb02730ab6597ef47a";
+const G_CALL_TAIL: &str = "721c70456695c90b0085e3ef0170d413a6fa3a1e0ebb65eb02730ab6597ef47a";
 const G_AD_TAIL: &str = "33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264";
 
 /// The NEUTRAL local shape a frozen `call`-stream body decodes into for this seam test — its fields
@@ -665,7 +665,7 @@ fn write_reframe(
 /// A plane's `call`-stream reframe: decode the frozen per-call body and emit the LengthPrefixed suffix
 /// (every field self-delimits: `u64` big-endian length + bytes; a num is its 8-byte big-endian
 /// form). `frame_prelude(prev_hash, principal, seq) ⧺ suffix` == the record's sealed digest fields.
-extern "C-unwind" fn mcp_reframe(
+extern "C-unwind" fn call_reframe(
     _host: HostCtx,
     _kind_id: u32,
     body_ptr: *const u8,
@@ -838,23 +838,23 @@ fn restore_and_verify(
 #[test]
 fn frozen_chains_boot_verify_through_the_durable_seam() {
     let store = Arc::new(GenericPlaneStore::new());
-    put_frozen(&store, "call", "vk_alice", 1, G_MCP_1);
-    put_frozen(&store, "call", "vk_alice", 2, G_MCP_2);
+    put_frozen(&store, "call", "vk_alice", 1, G_CALL_1);
+    put_frozen(&store, "call", "vk_alice", 2, G_CALL_2);
     put_frozen(&store, "admin_audit", "log", 1, G_AD_1);
     put_frozen(&store, "admin_audit", "log", 2, G_AD_2);
 
     let app = durable_app_over(store);
-    let mcp_id = fresh_kind_id();
+    let call_id = fresh_kind_id();
     let admin_id = fresh_kind_id();
     with_dispatch_scope(&app, |host, vt| {
         register_stream(
             host,
             vt,
-            mcp_id,
+            call_id,
             b"call",
             AbiFraming::LengthPrefixed,
             1,
-            mcp_reframe,
+            call_reframe,
         );
         register_stream(
             host,
@@ -866,10 +866,10 @@ fn frozen_chains_boot_verify_through_the_durable_seam() {
             admin_reframe,
         );
 
-        let mcp_tail: FrozenCallBody = serde_json::from_slice(G_MCP_2).unwrap();
+        let call_tail: FrozenCallBody = serde_json::from_slice(G_CALL_2).unwrap();
         let ad_tail: crate::audit_ring::AuditEntry = serde_json::from_slice(G_AD_2).unwrap();
 
-        restore_and_verify(host, vt, mcp_id, b"vk_alice", &mcp_tail.hash, G_MCP_TAIL);
+        restore_and_verify(host, vt, call_id, b"vk_alice", &call_tail.hash, G_CALL_TAIL);
         restore_and_verify(host, vt, admin_id, b"log", &ad_tail.hash, G_AD_TAIL);
     });
 }

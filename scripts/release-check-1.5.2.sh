@@ -435,7 +435,7 @@ phase "Phase 0: build (or reuse) busbar binary + busbar-plugin-pack"
 if [ -n "${BUSBAR_BIN:-}" ] && [ -x "${BUSBAR_BIN:-}" ] && [ -n "${PACK_BIN:-}" ] && [ -x "${PACK_BIN:-}" ]; then
   ok "reusing pre-built binaries handed down by the parent gate"
 else
-  cargo build --release -p busbar -p busbar-plugin-sdk --features busbar-plugin-sdk/pack
+  cargo build --release -p busbar -p busbar-plugin-loader --features busbar-plugin-loader/pack
   BUSBAR_BIN="${REPO_ROOT}/target/release/busbar"
   PACK_BIN="${REPO_ROOT}/target/release/busbar-plugin-pack"
 fi

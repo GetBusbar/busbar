@@ -71,7 +71,7 @@ fn sample_credential() -> CredentialSecret {
         meta: CredentialMeta {
             id: "cred_1".to_string(),
             key_id: "vk_1".to_string(),
-            kind: "sigv4".to_string(),
+            kind: "customsig".to_string(),
             slot: 0,
             public_id: "AKIA_TEST".to_string(),
             secret_form: SecretForm::Recoverable,
@@ -108,7 +108,7 @@ fn scope_allowed_pool_kind_c6_semantics() {
 /// CROSS-KIND `scope_allowed` is FAIL-CLOSED, and that is frozen.
 ///
 /// A key whose `allowed_scopes` names only `pool` entries grants NOTHING for any OTHER kind. This
-/// matters because 1.6.0 adds `mcp_server` and `agent`: under the fail-OPEN reading
+/// matters because 1.6.0 adds `grid_server` and `agent`: under the fail-OPEN reading
 /// (an unlisted kind is "unconstrained") every already-issued pool-scoped key would silently
 /// become a WILDCARD over the new kind on upgrade — a privilege escalation delivered by a
 /// version bump.
@@ -122,7 +122,7 @@ fn scope_allowed_cross_kind_is_fail_closed() {
     // A pool-only grant denies every future kind, by value AND by kind.
     k.allowed_scopes = Some(vec![ScopeRef::pool("fast")]);
     assert!(k.scope_allowed("pool", "fast"));
-    for future_kind in ["mcp_server", "agent", "some_kind_not_invented_yet"] {
+    for future_kind in ["grid_server", "agent", "some_kind_not_invented_yet"] {
         assert!(
             !k.scope_allowed(future_kind, "fast"),
             "a pool-only grant must grant NOTHING for the future kind '{future_kind}' — the unlisted-kind case is FAIL-CLOSED and frozen"
@@ -133,16 +133,16 @@ fn scope_allowed_cross_kind_is_fail_closed() {
     // The ONLY wildcard is an omitted list, and it spans every kind (unchanged).
     k.allowed_scopes = None;
     assert!(k.scope_allowed("pool", "fast"));
-    assert!(k.scope_allowed("mcp_server", "filesystem"));
+    assert!(k.scope_allowed("grid_server", "filesystem"));
     assert!(k.scope_allowed("agent", "planner"));
 
     // A grant naming ONLY a future kind likewise denies pools — the rule is symmetric, so it
     // cannot be read as "pool is special".
     k.allowed_scopes = Some(vec![ScopeRef {
-        kind: "mcp_server".to_string(),
+        kind: "grid_server".to_string(),
         value: "filesystem".to_string(),
     }]);
-    assert!(k.scope_allowed("mcp_server", "filesystem"));
+    assert!(k.scope_allowed("grid_server", "filesystem"));
     assert!(
         !k.scope_allowed("pool", "filesystem"),
         "the fail-closed rule is symmetric across kinds"
@@ -158,7 +158,7 @@ fn scope_allowed_is_kind_specific() {
     k.allowed_scopes = Some(vec![ScopeRef::pool("fast")]);
     assert!(k.scope_allowed("pool", "fast"));
     assert!(
-        !k.scope_allowed("mcp_server", "fast"),
+        !k.scope_allowed("grid_server", "fast"),
         "same value, different kind: must not match"
     );
 }
@@ -261,25 +261,25 @@ fn attribution_fields_round_trip_and_are_backward_compatible() {
 ///
 /// Before the kind-partitioned wire fields existed, `allowed_scopes_wire` serialized every
 /// entry's bare `value` under `allowed_pools` and deserialized every one back as
-/// `kind: "pool"` - so an `mcp_server` grant silently became a POOL grant on any store
-/// round-trip: a loss of the MCP grant AND an escalation into pool access. Each kind now has
-/// its OWN named wire field (`allowed_pools` / `allowed_mcp_servers` / `allowed_mcp_tools`),
+/// `kind: "pool"` - so a `grid_server` grant silently became a POOL grant on any store
+/// round-trip: a loss of the GRID grant AND an escalation into pool access. Each kind now has
+/// its OWN named wire field (`allowed_pools` / `allowed_grid_servers` / `allowed_grid_tools`),
 /// partitioned on write and reassembled on read.
 #[test]
 fn scope_kinds_survive_store_round_trip() {
     // The plane scope kinds are registered at boot from each `PlaneDecl.scope_kinds`; a unit test
     // registers them itself (idempotent) so the neutral crate's SOURCE names no plane kind.
-    register_scope_kind("mcp_server");
-    register_scope_kind("mcp_tool");
+    register_scope_kind("grid_server");
+    register_scope_kind("grid_tool");
     let mut k = sample_key();
     k.allowed_scopes = Some(vec![
         ScopeRef::pool("fast"),
         ScopeRef {
-            kind: "mcp_server".into(),
+            kind: "grid_server".into(),
             value: "filesystem".into(),
         },
         ScopeRef {
-            kind: "mcp_tool".into(),
+            kind: "grid_tool".into(),
             value: "filesystem_read_file".into(),
         },
     ]);
@@ -290,11 +290,11 @@ fn scope_kinds_survive_store_round_trip() {
         "scope kinds must survive a store round-trip intact: {json}"
     );
 
-    // The escalation guard: an MCP grant must NEVER come back as a pool grant.
+    // The escalation guard: a GRID grant must NEVER come back as a pool grant.
     assert!(!rt.scope_allowed("pool", "filesystem"));
     assert!(!rt.scope_allowed("pool", "filesystem_read_file"));
-    assert!(rt.scope_allowed("mcp_server", "filesystem"));
-    assert!(rt.scope_allowed("mcp_tool", "filesystem_read_file"));
+    assert!(rt.scope_allowed("grid_server", "filesystem"));
+    assert!(rt.scope_allowed("grid_tool", "filesystem_read_file"));
     assert!(rt.scope_allowed("pool", "fast"));
 }
 
@@ -338,31 +338,31 @@ fn unregistered_scope_kind_round_trips_verbatim_under_its_own_field() {
     assert_eq!(serde_json::to_value(&rt).unwrap(), v);
 }
 
-/// The MCP wire fields are ADDITIVE: absent from a pool-only key's wire shape (so the
+/// The GRID wire fields are ADDITIVE: absent from a pool-only key's wire shape (so the
 /// pre-1.6.0 byte-identity contract holds), and readable when present. An explicit-empty
-/// `allowed_pools: []` beside an MCP field stays the EMPTY pool set - never "all".
+/// `allowed_pools: []` beside a GRID field stays the EMPTY pool set - never "all".
 #[test]
-fn mcp_scope_wire_fields_are_additive() {
-    register_scope_kind("mcp_server");
-    register_scope_kind("mcp_tool");
-    // Pool-only and None grants must not grow mcp fields on the wire.
+fn grid_scope_wire_fields_are_additive() {
+    register_scope_kind("grid_server");
+    register_scope_kind("grid_tool");
+    // Pool-only and None grants must not grow grid fields on the wire.
     let pool_only = sample_key();
     let v = serde_json::to_value(&pool_only).unwrap();
-    assert!(v.get("allowed_mcp_servers").is_none(), "{v}");
-    assert!(v.get("allowed_mcp_tools").is_none(), "{v}");
+    assert!(v.get("allowed_grid_servers").is_none(), "{v}");
+    assert!(v.get("allowed_grid_tools").is_none(), "{v}");
 
     // A wire body carrying the new fields reassembles into kind-tagged scopes.
-    let wire = r#"{"id":"vk_9","generation_hash":"h","name":"n","allowed_pools":[],"allowed_mcp_servers":["filesystem"],"allowed_mcp_tools":["filesystem_read_file"],"enabled":true,"created_at":1}"#;
+    let wire = r#"{"id":"vk_9","generation_hash":"h","name":"n","allowed_pools":[],"allowed_grid_servers":["filesystem"],"allowed_grid_tools":["filesystem_read_file"],"enabled":true,"created_at":1}"#;
     let k: VirtualKey = serde_json::from_str(wire).unwrap();
     assert_eq!(
         k.allowed_scopes,
         Some(vec![
             ScopeRef {
-                kind: "mcp_server".into(),
+                kind: "grid_server".into(),
                 value: "filesystem".into()
             },
             ScopeRef {
-                kind: "mcp_tool".into(),
+                kind: "grid_tool".into(),
                 value: "filesystem_read_file".into()
             },
         ])
@@ -372,7 +372,7 @@ fn mcp_scope_wire_fields_are_additive() {
         "empty pool set stays empty"
     );
 
-    // MCP-only grant round-trips with an explicit-empty `allowed_pools` (an explicit list was
+    // GRID-only grant round-trips with an explicit-empty `allowed_pools` (an explicit list was
     // set, so the pool set must stay the EMPTY set on the wire, never absent/null = "all").
     let json = serde_json::to_string(&k).unwrap();
     let rt: VirtualKey = serde_json::from_str(&json).unwrap();
@@ -455,8 +455,8 @@ fn virtual_key_minimal_json_defaults_optionals() {
     assert_eq!(k.revision, 0);
 }
 
-/// `CredentialMeta::is_live` is the exact predicate the SigV4 admit path consults (in addition
-/// to the KEY-level `enabled`/denylist checks, which are unaffected by per-credential
+/// `CredentialMeta::is_live` is the exact predicate the signed-request admit path consults (in
+/// addition to the KEY-level `enabled`/denylist checks, which are unaffected by per-credential
 /// revocation): not revoked, and not expired as of `now`.
 #[test]
 fn credential_meta_is_live_checks_revocation_and_expiry() {

@@ -278,7 +278,7 @@ jobs:
         run: |
           . scripts/release-gate/site-curl.sh
           if [ "$(site_token_state)" = fork-pr ]; then
-            echo "::warning::not-run: fork PR has no SITE_VERIFY_TOKEN (Q39). GitHub gives a fork's pull_request no secrets, so the getbusbar.com rows (install.sh, the download page) are recorded NOT VERIFIED for this PR; they run on the same-repo PR, on push to main and on every release."
+            echo "::warning::not-run: fork PR has no SITE_VERIFY_TOKEN. GitHub gives a fork's pull_request no secrets, so the getbusbar.com rows (install.sh, the download page) are recorded NOT VERIFIED for this PR; they run on the same-repo PR, on push to main and on every release."
             exit 0
           fi
           if [ -z "${SITE_VERIFY_TOKEN:-}" ]; then

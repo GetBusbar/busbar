@@ -116,7 +116,7 @@ impl CredentialCache {
     pub fn get(&self, module: &str, credential: &str, now: u64) -> Option<AuthOutcome> {
         let key = (
             module.to_string(),
-            crate::sigv4::sha256_hex(credential.as_bytes()),
+            busbar_api::sha256_hex(credential.as_bytes()),
         );
         let mut guard = self.lock();
         match guard.entries.get(&key) {
@@ -149,7 +149,7 @@ impl CredentialCache {
         now: u64,
         r#gen: CacheGeneration,
     ) {
-        let hash = crate::sigv4::sha256_hex(credential.as_bytes());
+        let hash = busbar_api::sha256_hex(credential.as_bytes());
         let (verdict, ttl) = match outcome {
             AuthOutcome::Identify(p) => (
                 CachedVerdict::Identify(p.clone()),

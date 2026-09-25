@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::Semaphore;
@@ -25,31 +25,6 @@ const HARD_DOWN_COOLDOWN_SECS: u64 = crate::config::DEFAULT_HARD_DOWN_COOLDOWN_S
 // (threaded onto `HealthState`); this const is the DEFAULT, retained only for default-config tests.
 #[cfg(test)]
 const MAX_HONORED_RETRY_AFTER_SECS: u64 = crate::config::DEFAULT_MAX_HONORED_RETRY_AFTER_SECS;
-
-// Breaker-state encoding for the per-cell `AtomicU64` (stored as u64 so it can be CAS'd).
-const ST_CLOSED: u64 = 0;
-const ST_OPEN: u64 = 1;
-const ST_HALF_OPEN: u64 = 2;
-
-/// Normalize a breaker state being RESTORED from a snapshot (or inherited by a sibling cell):
-/// `ST_HALF_OPEN` becomes `ST_OPEN`. A restored HalfOpen cell has `probe_in_flight == false` (the
-/// snapshot never carries it, and the restore path never sets it), and both `cell_ready_breaker` and
-/// `cell_acquire_breaker` reject HalfOpen unconditionally — so the cell WEDGES: no dispatch can acquire
-/// it and no probe outcome (`cell_open`/`cell_closed`) ever runs against it, benching that (pool, lane)
-/// until an out-of-band `recover_lane` touches it (indefinitely when health probing is disabled).
-/// Restoring `ST_OPEN` instead lets the restored (already-expired) cooldown drive a fresh probe
-/// acquisition on the cell's first request.
-fn restored_breaker_state(state: u64) -> u64 {
-    if state == ST_HALF_OPEN {
-        ST_OPEN
-    } else {
-        state
-    }
-}
-
-// Bounded capacity of each cell's sliding outcome window (recent request outcomes for the
-// error-rate trip computation).
-const OUTCOME_WINDOW_CAPACITY: usize = 1024;
 
 /// Lock a `std::sync::Mutex` on the production request path WITHOUT panicking on poison.
 ///
@@ -162,6 +137,10 @@ pub(crate) use planes::Admission as PlaneAdmission;
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/breaker_race_tests.rs"]
+mod breaker_race_tests;
 
 // The neutral store vocab (LaneRuntime/BreakerCfg/now/now_ms) relocated in from busbar-substrate (W4.b P2).
 mod vocab;

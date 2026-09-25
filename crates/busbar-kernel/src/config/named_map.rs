@@ -40,7 +40,7 @@ pub enum NamedMapSection {
     /// `export:` — instance NAME → `{module, settings}`, the single telemetry-egress surface.
     Export,
     /// A PLANE-OWNED named-definition map, carrying the owning plane's declared config-section key
-    /// ([`PlaneDecl::config_section`](crate::plane::registry::PlaneDecl::config_section)) as OPAQUE
+    /// ([`PlaneDeclaration::config_section`](crate::plane::registry::PlaneDeclaration::config_section)) as OPAQUE
     /// DATA. `tools:` (server NAME → `{url, pin, tools_allow, …}`) and `agents:`
     /// (agent NAME → `{url, pin, reverify_ttl, …}`) are its two 1.6.0 instances, each declared by a
     /// different registered plane, and a registered plane declaring a `named_def_list` is another. The
@@ -102,7 +102,7 @@ impl NamedMapSection {
     /// Singular human noun for messages and audit resources (`identity-provider:corp-ad`).
     ///
     /// The two 1.5.3-native sections carry their noun as a literal; a PLANE section reads it from the
-    /// owning plane's [`PlaneDecl::admin_noun`](crate::plane::registry::PlaneDecl::admin_noun) via the
+    /// owning plane's [`PlaneDeclaration::admin_noun`](crate::plane::registry::PlaneDeclaration::admin_noun) via the
     /// registry, so core stamps a registered plane's audit/error noun without a hard-coded plane
     /// literal. With the owning plane compiled out (no registered decl) `singular` is never reached —
     /// a definition on an absent plane is refused before any noun is stamped — but it still answers

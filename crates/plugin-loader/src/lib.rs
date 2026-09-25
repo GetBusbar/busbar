@@ -37,11 +37,13 @@ pub mod fetch;
 mod ffi_thread;
 pub mod highwater;
 pub mod hook;
+mod host;
 mod hostlog;
 mod legacy_usage;
 pub mod observe;
 pub mod plane;
 pub mod registry;
+pub mod scrape;
 // The former `busbar-plugin-sign` crate, folded in whole (DECISIONS #33): signature verify +
 // trust evaluation is the loader's OWN job, not a crate the loader reaches for. Pure data +
 // policy, no I/O -- the I/O that acts on its verdicts is `tarball`, `fetch` and `registry`.
@@ -57,18 +59,48 @@ pub use auth::DynAuth;
 pub use busbar_plugin::cold::endpoint::{
     EndpointRequest, EndpointResponse, Route, RouteAuth, RouteMethod,
 };
-pub use export::{load_export_from_bytes, DynExport};
+pub use export::{load_export_from_bytes, load_export_image, DynExport};
 // The export PROJECTION vocabulary (the frozen `streams:` / `fields:` word-space). Re-exported for
 // the same reason the endpoint types above are: the engine names these through the loader
 // rather than taking a second, direct dependency on the ABI crate.
 pub use busbar_plugin::cold::export::{ExportField, ExportStream};
+pub use busbar_plugin::cold::export::{HostResult, HttpRequest, HttpResponse};
+/// A cold plugin's LINKED boundary (`BUSBAR_COLD_ENTRY`), named for the composition root's linked
+/// tables, which hand it to [`LinkedPlugin::boundary`].
+pub use busbar_plugin::cold::ColdEntry;
+
+impl LinkedPlugin {
+    /// A FIRST-PARTY cold plugin a build links: `name` (its own alias) of `kind`, at the newest
+    /// payload schema this loader speaks for the kind, published by busbar — the manifest its release
+    /// tarball states — over `entry`, the boundary its `cdylib` exports under the frozen symbols.
+    pub fn first_party(kind: &str, name: &str, entry: &'static ColdEntry) -> Self {
+        let mut row = LinkedPlugin::store(name, |_| Err(String::new()), false);
+        row.manifest.kind = kind.into();
+        row.manifest.abi_version = supported_abi(kind).iter().copied().max().unwrap_or(0);
+        row.entry = LinkedEntry::Boundary(entry);
+        row
+    }
+}
+/// The borrowed-string range of that decl's declaration tail, re-exported beside it.
+pub use busbar_plugin::hot::DeclStr as HotDeclStr;
+/// The HOT-lane plane declaration, re-exported for the reason the endpoint types above are: the
+/// composition root names the decl a linked plane exports through the loader, not a second edge.
+pub use busbar_plugin::hot::PlaneDecl as HotPlaneDecl;
+/// The HOT-lane host vtable, re-exported for the same reason: the composition root keeps the table a
+/// served plane is built against, and names its type through the loader.
+pub use busbar_plugin::hot::PlaneHostVtable as HotHostVtable;
+/// The status class a served plane's dispatch answers with, re-exported beside the vtable.
+pub use busbar_plugin::hot::StatusClass as HotStatusClass;
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
 pub use highwater::{HighWaterMarks, HIGH_WATER_FILE};
 pub use hook::DlopenPolicy;
-pub use plane::{load_plane, load_plane_from_bytes, DynPlane};
+pub use host::{install_egress_carrier, EgressCarrier};
+pub use plane::{
+    link_plane, load_plane, load_plane_from_bytes, DynPlane, HotClaim, HotDeclaration, ServedPlane,
+};
 pub use registry::{
-    inventory as inventory_tarballs, scan_and_validate, supported_abi, InventoryEntry,
-    LoadablePlugin, PluginRegistry, SkippedPlugin,
+    inventory as inventory_tarballs, scan_and_validate, supported_abi, InventoryEntry, LinkedEntry,
+    LinkedPlugin, LoadablePlugin, PluginRegistry, SkippedPlugin,
 };
 pub use stage::sweep_dead_staging;
 
@@ -237,7 +269,8 @@ struct RawPlugin {
     /// [`RawPlugin::decode_response`]. Latched on the first successful decode and never revisited.
     shape: std::sync::atomic::AtomicU8,
     /// The mapped library. `Option` only so `Drop` can TAKE it and unload it on a plugin worker
-    /// (`dlclose` runs the image's `.fini_array`); it is always `Some` until then. Declared BEFORE
+    /// (`dlclose` runs the image's `.fini_array`); it is `Some` until then for a dropped-in plugin and
+    /// `None` for a linked one, whose boundary is part of this image. Declared BEFORE
     /// `_backing` so the unload still happens first — the UNLOAD-then-REMOVE order Windows requires.
     _lib: Option<Library>,
     /// The staging backing (Linux memfd / private-temp file) for a from-bytes load; `None` for a path
@@ -549,6 +582,74 @@ fn wire_up_raw(
     manifest_kind: &str,
     backing: Option<stage::Staged>,
 ) -> Result<RawPlugin, String> {
+    wire_up(
+        Some(lib),
+        None,
+        cfg_json,
+        display,
+        expected_kind,
+        manifest_kind,
+        backing,
+    )
+}
+
+/// Where a cold plugin's boundary functions come from — the ONE thing its two doors differ in
+/// (DECISIONS #2 rule (1)). A dropped-in plugin is verified library BYTES the loader stages, maps and
+/// looks the [`symbol`]s up in; a linked one is its [`ColdEntry`], the same functions referenced.
+/// Everything after the lookup — handshake, kind cross-check, log bridge, `open`, the typed wrapper —
+/// is one path, so a plugin cannot behave differently for having come in by the other door.
+#[derive(Clone, Copy)]
+pub enum Image<'a> {
+    /// The verified library bytes of a dropped-in plugin.
+    Bytes(&'a [u8]),
+    /// A linked plugin's boundary.
+    Linked(&'static ColdEntry),
+}
+
+/// Run the one cold-lane load over `image`: stage and map BYTES first (the dropped-in door), then
+/// [`wire_up`] either way. `expected_kind` is the seam's kind, `manifest_kind` the row's statement.
+pub(crate) fn load_image(
+    image: Image<'_>,
+    cfg_json: &str,
+    display: &str,
+    expected_kind: &'static str,
+    manifest_kind: &str,
+) -> Result<RawPlugin, String> {
+    match image {
+        Image::Bytes(bytes) => {
+            let (lib, staged) = stage::load_library_from_bytes(bytes, display)?;
+            wire_up_raw(
+                lib,
+                cfg_json,
+                display.to_string(),
+                expected_kind,
+                manifest_kind,
+                Some(staged),
+            )
+        }
+        Image::Linked(entry) => wire_up(
+            None,
+            Some(entry),
+            cfg_json,
+            display.to_string(),
+            expected_kind,
+            manifest_kind,
+            None,
+        ),
+    }
+}
+
+/// The load itself, over a mapped `lib` OR a linked `entry` (exactly one is `Some`): every step below
+/// reads its function out of whichever it was handed, in the same order, with the same refusals.
+fn wire_up(
+    lib: Option<Library>,
+    entry: Option<&'static ColdEntry>,
+    cfg_json: &str,
+    display: String,
+    expected_kind: &'static str,
+    manifest_kind: &str,
+    backing: Option<stage::Staged>,
+) -> Result<RawPlugin, String> {
     // Hold the mapped library + its staged backing in a guard whose fields drop in the CORRECT
     // order — `lib` BEFORE `backing` — so that on ANY early `?`/error return below the library is
     // UNLOADED before the staged file is removed (Windows refuses `remove_file` on a still-mapped DLL;
@@ -560,8 +661,8 @@ fn wire_up_raw(
         backing: Option<stage::Staged>,
     }
     impl LoadGuard {
-        fn disarm(mut self) -> (Library, Option<stage::Staged>) {
-            (self.lib.take().expect("lib present"), self.backing.take())
+        fn disarm(mut self) -> (Option<Library>, Option<stage::Staged>) {
+            (self.lib.take(), self.backing.take())
         }
     }
     impl Drop for LoadGuard {
@@ -575,18 +676,21 @@ fn wire_up_raw(
             self.backing.take();
         }
     }
-    let guard = LoadGuard {
-        lib: Some(lib),
-        backing,
-    };
-    let lib = guard.lib.as_ref().expect("lib present");
+    let guard = LoadGuard { lib, backing };
+    let lib = guard.lib.as_ref();
     // ── 1. Transport handshake FIRST — refuse a non-matching transport before resolving open/call. ──
     // The `busbar_abi()` call runs plugin code, so it too rides `ffi_guard`: a plugin that panics in
     // its handshake fails the load CLOSED instead of aborting the engine during boot/reload.
     let transport = {
-        let f = unsafe { lib.get::<busbar_plugin::cold::AbiFn>(symbol::ABI) }
-            .map_err(|_| format!("'{display}' is not a busbar plugin (no busbar_abi symbol)"))?;
-        ffi_guard_confined(&display, "abi", || unsafe { (*f)() })?
+        let f = match (lib, entry) {
+            (Some(lib), _) => *unsafe { lib.get::<busbar_plugin::cold::AbiFn>(symbol::ABI) }
+                .map_err(|_| {
+                    format!("'{display}' is not a busbar plugin (no busbar_abi symbol)")
+                })?,
+            (None, Some(e)) => e.abi,
+            (None, None) => return Err(format!("'{display}' has no boundary to load")),
+        };
+        ffi_guard_confined(&display, "abi", || unsafe { f() })?
     };
     if transport != TRANSPORT_VERSION {
         return Err(format!(
@@ -596,7 +700,11 @@ fn wire_up_raw(
 
     // ── 2. Kind bound at load — read the exported kind, cross-check it against the seam AND the
     // signed manifest. Any disagreement is a hard fail-closed load error naming both. ──
-    let exported_kind = read_plugin_kind(lib, &display)?;
+    let exported_kind = match (lib, entry) {
+        (Some(lib), _) => read_plugin_kind(lib, &display)?,
+        (None, Some(e)) => kind_from_fn(e.kind, &display)?,
+        (None, None) => unreachable!("refused at the handshake"),
+    };
     if exported_kind != expected_kind {
         return Err(format!(
             "plugin '{display}' exports kind '{exported_kind}' but is being loaded as '{expected_kind}'"
@@ -610,20 +718,24 @@ fn wire_up_raw(
     }
 
     // ── 3. Resolve the operational symbols (copied out as plain fn pointers; valid while mapped). ──
-    let (open, call, free, close) = unsafe {
-        let open = *lib
-            .get::<busbar_plugin::cold::OpenFn>(symbol::OPEN)
-            .map_err(|e| format!("plugin '{display}' missing busbar_open: {e}"))?;
-        let call = *lib
-            .get::<CallFn>(symbol::CALL)
-            .map_err(|e| format!("plugin '{display}' missing busbar_call: {e}"))?;
-        let free = *lib
-            .get::<FreeFn>(symbol::FREE)
-            .map_err(|e| format!("plugin '{display}' missing busbar_free: {e}"))?;
-        let close = *lib
-            .get::<CloseFn>(symbol::CLOSE)
-            .map_err(|e| format!("plugin '{display}' missing busbar_close: {e}"))?;
-        (open, call, free, close)
+    let (open, call, free, close) = match (lib, entry) {
+        (None, Some(e)) => (e.open, e.call, e.free, e.close),
+        (None, None) => unreachable!("refused at the handshake"),
+        (Some(lib), _) => unsafe {
+            let open = *lib
+                .get::<busbar_plugin::cold::OpenFn>(symbol::OPEN)
+                .map_err(|e| format!("plugin '{display}' missing busbar_open: {e}"))?;
+            let call = *lib
+                .get::<CallFn>(symbol::CALL)
+                .map_err(|e| format!("plugin '{display}' missing busbar_call: {e}"))?;
+            let free = *lib
+                .get::<FreeFn>(symbol::FREE)
+                .map_err(|e| format!("plugin '{display}' missing busbar_free: {e}"))?;
+            let close = *lib
+                .get::<CloseFn>(symbol::CLOSE)
+                .map_err(|e| format!("plugin '{display}' missing busbar_close: {e}"))?;
+            (open, call, free, close)
+        },
     };
 
     // ── 3b. Install the host log bridge (OPTIONAL symbol; absence is normal, not an error). ──
@@ -642,8 +754,16 @@ fn wire_up_raw(
     // Installed BEFORE `open`, deliberately: a constructor is exactly where a plugin has something
     // worth reporting (a rejected config, a refused target), and installing afterwards would drop
     // precisely those lines.
-    unsafe {
-        if let Ok(set_sink) = lib.get::<busbar_plugin::cold::SetLogSinkFn>(symbol::SET_LOG_SINK) {
+    let set_sink = match (lib, entry) {
+        (Some(lib), _) => unsafe {
+            lib.get::<busbar_plugin::cold::SetLogSinkFn>(symbol::SET_LOG_SINK)
+                .ok()
+                .map(|f| *f)
+        },
+        (None, e) => e.map(|e| e.set_log_sink),
+    };
+    {
+        if let Some(set_sink) = set_sink {
             // The ctx identifies WHICH plugin is talking, since a bare fn pointer carries no
             // captured state. It points at the INTERNED name, not a fresh `Box::into_raw` per load.
             //
@@ -662,10 +782,10 @@ fn wire_up_raw(
             // and it is the LAST one that should be: it installs a `tracing` dispatcher INSIDE the
             // plugin, which is about the most reliable way there is to touch a plugin-side
             // thread-local with a destructor and arm the pthread key on whatever thread ran it.
-            let sink = *set_sink;
+            let sink = set_sink;
             let ctx = hostlog::intern_log_ctx(&display);
             let level = hostlog::host_max_level();
-            let _ = ffi_thread::on_plugin_thread(move || {
+            let _ = ffi_thread::on_plugin_thread(move || unsafe {
                 sink(hostlog::host_log_sink, ctx, level);
             });
         }
@@ -750,7 +870,7 @@ fn wire_up_raw(
         path: display,
         kind: expected_kind,
         shape: std::sync::atomic::AtomicU8::new(response_shape::UNKNOWN),
-        _lib: Some(lib),
+        _lib: lib,
         _backing: backing,
     })
 }
@@ -760,8 +880,13 @@ fn read_plugin_kind(lib: &Library, display: &str) -> Result<String, String> {
     let f = unsafe { lib.get::<PluginKindFn>(symbol::PLUGIN_KIND) }.map_err(|_| {
         format!("'{display}' is not a busbar plugin (no busbar_plugin_kind symbol)")
     })?;
+    kind_from_fn(*f, display)
+}
+
+/// Call a plugin's `busbar_plugin_kind()` — looked up or linked — and read the kind it names.
+fn kind_from_fn(f: PluginKindFn, display: &str) -> Result<String, String> {
     // Guarded: `busbar_plugin_kind()` runs plugin code; a panic fails the load CLOSED, not an abort.
-    let ptr = ffi_guard_confined(display, "kind", || unsafe { (*f)() })?;
+    let ptr = ffi_guard_confined(display, "kind", || unsafe { f() })?;
     // SAFETY: `ptr` came from the plugin's `busbar_plugin_kind()`, whose contract is a 'static
     // string; `kind_from_ptr` reads at most `MAX_PLUGIN_KIND_LEN + 1` bytes of it.
     unsafe { kind_from_ptr(ptr, display) }
@@ -1552,15 +1677,17 @@ pub fn load_secret_from_bytes(
     display: &str,
     manifest_kind: &str,
 ) -> Result<Box<dyn busbar_api::SecretModule>, String> {
-    let (lib, staged) = stage::load_library_from_bytes(bytes, display)?;
-    let raw = wire_up_raw(
-        lib,
-        cfg_json,
-        display.to_string(),
-        abi_kind::SECRET,
-        manifest_kind,
-        Some(staged),
-    )?;
+    load_secret_image(Image::Bytes(bytes), cfg_json, display, manifest_kind)
+}
+
+/// Load a SECRET module over either door's [`Image`] — the one load [`load_secret_from_bytes`] runs.
+pub fn load_secret_image(
+    image: Image<'_>,
+    cfg_json: &str,
+    display: &str,
+    manifest_kind: &str,
+) -> Result<Box<dyn busbar_api::SecretModule>, String> {
+    let raw = load_image(image, cfg_json, display, abi_kind::SECRET, manifest_kind)?;
     Ok(Box::new(DynSecret { raw }))
 }
 
@@ -1672,15 +1799,37 @@ fn load_dyn_store_from_bytes_at_abi(
     manifest_kind: &str,
     abi_version: u32,
 ) -> Result<DynStore, String> {
-    let (lib, staged) = stage::load_library_from_bytes(bytes, display)?;
-    let raw = wire_up_raw(
-        lib,
+    load_dyn_store_image(
+        Image::Bytes(bytes),
         cfg_json,
-        display.to_string(),
-        abi_kind::STORE,
+        display,
         manifest_kind,
-        Some(staged),
-    )?;
+        abi_version,
+    )
+}
+
+/// Load a STORE over either door's [`Image`], adapting at the row's payload schema — the one load
+/// [`load_store_from_bytes_at_abi`] runs.
+pub fn load_store_image(
+    image: Image<'_>,
+    cfg_json: &str,
+    display: &str,
+    manifest_kind: &str,
+    abi_version: u32,
+) -> Result<Box<dyn Store>, String> {
+    load_dyn_store_image(image, cfg_json, display, manifest_kind, abi_version)
+        .map(|s| Box::new(s) as _)
+}
+
+/// [`load_store_image`] before the trait object boxes it away.
+fn load_dyn_store_image(
+    image: Image<'_>,
+    cfg_json: &str,
+    display: &str,
+    manifest_kind: &str,
+    abi_version: u32,
+) -> Result<DynStore, String> {
+    let raw = load_image(image, cfg_json, display, abi_kind::STORE, manifest_kind)?;
     Ok(DynStore::new(raw, abi_version))
 }
 
@@ -1894,3 +2043,31 @@ mod export_conformance_tests;
 #[cfg(test)]
 #[path = "tests/store_scope_kind_conformance_tests.rs"]
 mod store_scope_kind_conformance_tests;
+
+/// The cold kinds' both-ways harness (DECISIONS #2 rule (1)): one plugin registered through the
+/// linked door and the dropped-in door, its rows and its opened instance compared.
+#[cfg(test)]
+#[path = "tests/both_ways.rs"]
+mod both_ways;
+
+/// `kind: store` through both doors: one row, one store.
+#[cfg(test)]
+#[path = "tests/store_conformance_tests.rs"]
+mod store_conformance_tests;
+
+/// `kind: secret` through both doors: one row, one module.
+#[cfg(test)]
+#[path = "tests/secret_conformance_tests.rs"]
+mod secret_conformance_tests;
+
+/// `kind: auth` through both doors — the auth kind's first both-ways witness (#2, steps (1)-(5)): the
+/// compiled-in twin and the `cdylib`'s `busbar_call` put one wire, and the linked and dropped-in rows
+/// open one module.
+#[cfg(test)]
+#[path = "tests/auth_conformance_tests.rs"]
+mod auth_conformance_tests;
+
+/// `kind: hook` through both doors: one wire, one row, one routing policy.
+#[cfg(test)]
+#[path = "tests/hook_conformance_tests.rs"]
+mod hook_conformance_tests;

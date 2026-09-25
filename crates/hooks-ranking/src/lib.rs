@@ -5,7 +5,7 @@
 //! routing policies, each a small sync sort over the live signals projected into `Candidate`.
 //!
 //! These are removable built-in order-hooks (the `hooks-ranking` engine feature): each implements
-//! the `RoutingPolicy` contract (`busbar-api`) and ranks on a signal the hook wire already
+//! the `RoutingPolicy` contract (`busbar-contract`) and ranks on a signal the hook wire already
 //! projects, so an external hook could do the same. `weighted` is NOT here — it is the engine's
 //! non-removable inline SWRR floor, never a plugin (the `weighted` NAME/entry lives alongside for
 //! registry completeness, but the floor's zero-cost behavior is the engine's inline path). Each
@@ -19,7 +19,7 @@
 //! The native bodies + `native_policy` registry are live: `resolve_policy` looks a non-weighted name
 //! up here at config load, and `forward::decide_policy_order` invokes the resolved policy per request.
 
-use busbar_api::{
+use busbar_contract::hooks::{
     Candidate, PolicyResult, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
 };
 use std::time::Duration;

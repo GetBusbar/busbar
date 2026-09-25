@@ -3192,7 +3192,7 @@ mod signed_token {
         );
         assert!(
             g.is_revoked_at(&binding.id, base + 1),
-            "the predicate the legacy-hash and SigV4 admit paths consult must agree immediately"
+            "the predicate the legacy-hash and signed-request admit paths consult must agree immediately"
         );
     }
 
@@ -3239,7 +3239,7 @@ mod signed_token {
         );
         assert!(
             g.is_revoked_at(&binding.id, past),
-            "the SigV4/legacy-hash admit predicate re-syncs on the same window"
+            "the signed-request/legacy-hash admit predicate re-syncs on the same window"
         );
     }
 

@@ -531,7 +531,7 @@ async fn a_reused_in_flight_id_does_not_cancel_the_request_already_open_under_it
 fn signing_governance() -> Arc<dyn GovKit> {
     engine()
         .governance(
-            Arc::new(busbar_store_memory::MemoryStore::new()),
+            engine().scratch_store(),
             None,
             Some(
                 busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
@@ -640,7 +640,6 @@ async fn a_caller_ask_is_driven_live_over_the_channel_and_the_call_completes() {
 /// time, with `budget_exhausted` named, and the refused call never contacts the upstream.
 #[tokio::test]
 async fn a_budgeted_key_is_refused_over_budget_through_the_stdio_binding() {
-    use busbar_store_memory::MemoryStore;
     metrics_init();
     let peer = Peer::start(vec![wire_tool(TOOL, DESCRIPTION, schema())]).await;
     let mut cfg = server_cfg(
@@ -652,7 +651,7 @@ async fn a_budgeted_key_is_refused_over_budget_through_the_stdio_binding() {
         entry.description = Some(DESCRIPTION.to_string());
         entry.input_schema = Some(schema());
     }
-    let store = Arc::new(MemoryStore::new());
+    let store = engine().scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[3u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -1144,9 +1143,8 @@ async fn unsubscribe_stops_the_resource_updates() {
 /// permits a server-originated cancellation for.
 #[tokio::test]
 async fn an_early_closed_subscription_is_announced_with_cancelled() {
-    use busbar_store_memory::MemoryStore;
     metrics_init();
-    let store = Arc::new(MemoryStore::new());
+    let store = engine().scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[9u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,

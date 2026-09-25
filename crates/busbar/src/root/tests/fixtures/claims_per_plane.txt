@@ -1,0 +1,9 @@
+# THE CLAIMS EACH PLANE OF THE SHIPPED COMPOSITION DECLARES — `<plane key> <claims>`, one row per
+# plane. Read by root/tests/registry.rs (`the_planes_declare_fifty_claims`). A plane that gains or
+# loses a claim has to say so here.
+llm 25
+mcp 4
+a2a 14
+streaming 4
+decision 2
+admin 1

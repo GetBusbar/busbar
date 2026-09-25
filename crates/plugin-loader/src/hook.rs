@@ -22,7 +22,7 @@
 //! bounding) live in the engine's `hooks::wire`, which parses that value. This is what keeps the
 //! retired socket/webhook seam and this dlopen seam provably identical.
 
-use crate::{stage, wire_up_raw, RawPlugin};
+use crate::RawPlugin;
 use busbar_api::{
     Candidate, HookStatus, PolicyError, PolicyResult, RoutingContext, RoutingPolicy,
     RoutingRequest, TransformOutcome,
@@ -297,15 +297,26 @@ pub fn load_hook_from_bytes(
     name: &str,
     projectors: Arc<HookProjectors>,
 ) -> Result<Arc<dyn RoutingPolicy>, String> {
-    let (lib, staged) = stage::load_library_from_bytes(bytes, display)?;
-    let raw = wire_up_raw(
-        lib,
+    load_hook_image(
+        crate::Image::Bytes(bytes),
         cfg_json,
-        display.to_string(),
-        abi_kind::HOOK,
+        display,
         manifest_kind,
-        Some(staged),
-    )?;
+        name,
+        projectors,
+    )
+}
+
+/// [`load_hook_from_bytes`] over either door's [`crate::Image`].
+pub fn load_hook_image(
+    image: crate::Image<'_>,
+    cfg_json: &str,
+    display: &str,
+    manifest_kind: &str,
+    name: &str,
+    projectors: Arc<HookProjectors>,
+) -> Result<Arc<dyn RoutingPolicy>, String> {
+    let raw = crate::load_image(image, cfg_json, display, abi_kind::HOOK, manifest_kind)?;
     // Intern the name to a `&'static str` reused across opens of the same plugin, rather than
     // leaking a fresh allocation on every open (this runs per reload/configure/status/schema scrape).
     let name: &'static str = crate::intern_name(name);

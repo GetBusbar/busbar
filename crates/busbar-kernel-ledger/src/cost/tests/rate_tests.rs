@@ -56,8 +56,8 @@ fn nano_rate_clamps_a_finite_but_overflowing_rate_to_zero_not_the_maximum() {
 /// never produces, arriving at the single input the guard exists to stop. There is exactly ONE
 /// `f64` in the gap the wrong spelling opens, and this test is standing on it.
 ///
-/// It is reachable from operator config, not just from a unit test: `RateCard::from_micro_rates_in`
-/// and `set_rate` both convert a configured decimal through here, so a card quoting `2^64 / 1000`
+/// It is reachable from operator config, not just from a unit test: `RateCard::from_micro_rates`
+/// converts a configured decimal through here, so a card quoting `2^64 / 1000`
 /// micro-units per unit is the whole of it.
 ///
 /// WHY THIS SURVIVED, which is the more useful half. The test that NAMES this case
@@ -157,12 +157,6 @@ fn negative_per_request_fee_clamps_to_zero() {
     let c = RateCard::absent(-5);
     assert_eq!(c.fee(), 0);
     assert_eq!(c.fee_unit_price_nanos(), 0);
-    // A fee CONFIGURED at nothing is a PRICED nothing — #77(5)'s explicit zero row. Since #66 a
-    // card carries exactly one fee and every constructor sets it, so there is no longer a silence
-    // this could be confused with: the absent key that used to be readable as zero is gone.
-    let mut set = RateCard::absent(9);
-    set.set_fee(-1);
-    assert_eq!(set.fee(), 0, "`set_fee` clamps through the same gate");
 }
 
 /// The fee's unit price is its cents lifted to nano-units — an exact multiple of ten million,

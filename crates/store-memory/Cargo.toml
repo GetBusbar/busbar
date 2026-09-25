@@ -8,7 +8,6 @@ description = "The default in-memory (RAM) backend for busbar's durable governan
 license = "Apache-2.0"
 
 [dependencies]
-busbar-api = { path = "../api" }
 # The record half of the store protocol. `busbar_contract::kinds::Store` declares `record_put`,
 # `record_get` and `record_scan` for a plane's kernel-held durable records, and this backend answers
 # them at the contract's own spelling. A plugin-kind crate may name the contract freely (the
@@ -21,7 +20,7 @@ busbar-contract = { path = "../busbar-contract" }
 # ruled that crate DELETED on 2026-09-22 and #2/#31 forbid a shared test util between plugins, so
 # the suite now lives in this crate's own `tests/store_conformance.rs`. It serialises typed rows into
 # the opaque `PlaneRecord` body exactly as core does, which is the whole of what it needs from serde;
-# `busbar-api` it already has as a normal dependency above.
+# `busbar-contract` it already has as a normal dependency above.
 #
 # Core's own reference backend still runs the suite: if the reference implementation does not pass
 # the checks the plugin backends are held to, the checks are wrong.

@@ -42,8 +42,9 @@
 #                          reads this to build its matrix (registry-driven, no hand-written legs).
 #                          CONTRACT: four tab-separated columns in that order. Per-plugin segments
 #                          appear as ordinary rows. The workflow depends on this shape.
-#   --selftest             the SEGMENTATION SELF-TEST: the manifest parses; lists both
-#                          active AND reserved entries; the preserved coverage is present; every
+#   --selftest             the SEGMENTATION SELF-TEST: the manifest parses; lists active
+#                          segments; the preserved coverage is present; the plane legs are armed
+#                          over suites that exist; every
 #                          active segment has a run command; reserved segments are INERT (proven by
 #                          observation); the per-plugin expansion matches the registry EXACTLY; the
 #                          missing-target hard fail actually fails; and EVERY active segment is
@@ -441,11 +442,18 @@ selftest() {
   active="$(printf '%s\n' "$f" | awk -F'\t' '$2=="active"{print $1}' | sort)"
   reserved="$(printf '%s\n' "$f" | awk -F'\t' '$2=="reserved"{print $1}' | sort)"
 
-  # (a) lists BOTH active and reserved entries
-  if [ -n "$active" ] && [ -n "$reserved" ]; then
-    note "PASS  manifest lists both active AND reserved segments"
+  # (a) the manifest lists ACTIVE segments. It used to demand at least one RESERVED entry too, and
+  #     that demand was only ever satisfied by the two capabilities that were not built yet: the day
+  #     both were armed (item 80) it could be met only by inventing a reservation, which is the
+  #     hollow slot the honesty rule forbids. What a reserved slot MEANS — inert, excluded from the
+  #     green claim, named in the scope line, red when it is all a run reached — is proven below by
+  #     OBSERVATION against fixture manifests, blocks (h), (k) and the all-reserved floor, none of
+  #     which reads this roster. The real manifest's reserved set may therefore be empty; it is
+  #     named here either way, so a reader sees it rather than infers it.
+  if [ -n "$active" ]; then
+    note "PASS  manifest lists active segments (reserved: ${reserved:-<none>})"
   else
-    red "  FAIL  manifest must list both active and reserved segments"; fails=$((fails+1))
+    red "  FAIL  manifest lists no active segment"; fails=$((fails+1))
   fi
 
   # (b) PRESERVED coverage present (union ⊇ today's gate). `plugins` is deliberately NOT asserted
@@ -468,18 +476,23 @@ selftest() {
     fi
   done
 
-  # (d) the RESERVED slots are defined-but-inert, each mapped to a release. `smart-router` was struck
-  # from this roster and from qa/segments.toml in the same commit (item 97): its `qa_smart_router`
-  # test target never existed at any point in the repo's history (`git log --all --diff-filter=A --
-  # '*qa_smart_router*'` is empty), so the slot named a capability that was never built, not one
-  # merely not-yet-armed. The reserved-with-absent-target and active-with-absent-target invariants
-  # this selftest proves (blocks (h) and (i) below) are both driven by synthetic fixtures, not by this
-  # roster, so striking smart-router here removes no coverage.
+  # (d) THE TWO PLANE LEGS ARE ARMED, AND ARMED FOR REAL (item 80). `mcp-integrity` and `a2a` were
+  #     reserved slots whose `qa_mcp_integrity` / `qa_a2a` targets did not exist, so "a one-line
+  #     status flip" would have turned CI red. The suites now exist (crates/busbar/tests/
+  #     qa_mcp_integrity.rs, qa_a2a.rs) and both segments are `active`. This block holds that: each
+  #     must be ACTIVE and its run target must EXIST, so neither can slide back to a reservation, nor
+  #     stay active over a deleted suite, without this selftest going red. (`smart-router` was struck
+  #     from this roster and from qa/segments.toml in the same commit (item 97): its
+  #     `qa_smart_router` target never existed at any point in the repo's history.)
   for seg in mcp-integrity a2a; do
-    if printf '%s\n' "$reserved" | grep -qx "$seg"; then
-      note "PASS  reserved slot defined-but-inert: $seg"
+    local seg_run seg_miss
+    seg_run="$(printf '%s\n' "$f" | awk -F'\t' -v id="$seg" '$1==id && $2=="active"{print $4}')"
+    if [ -z "$seg_run" ]; then
+      red "  FAIL  plane leg not armed: $seg is not an active segment"; fails=$((fails+1))
+    elif seg_miss="$(missing_test_target "$seg_run")"; then
+      red "  FAIL  plane leg $seg is active over a missing test target '$seg_miss'"; fails=$((fails+1))
     else
-      red "  FAIL  reserved slot missing: $seg"; fails=$((fails+1))
+      note "PASS  plane leg armed and its suite exists: $seg"
     fi
   done
 

@@ -27,8 +27,9 @@
 //! reachable, not `Reject` and short-circuit the whole chain. A non-JWS-shaped wrong candidate is
 //! still a genuine "addressed to this module and wrong" attempt and must `Reject`.
 
-use busbar_api::{sha256_hex, AuthOutcome};
 use busbar_auth_admin_tokens::{authenticate_admin_tokens, ADMIN_TOKENS_PRINCIPAL_ID};
+use busbar_contract::auth::AuthVerdict;
+use busbar_contract::redacted::sha256_hex;
 
 fn hash(s: &str) -> String {
     sha256_hex(s.as_bytes())
@@ -42,7 +43,7 @@ fn hash(s: &str) -> String {
 fn both_carriers_correct_still_identifies() {
     let h = hash("secret");
     match authenticate_admin_tokens(Some(&h), Some("secret"), Some("secret")) {
-        AuthOutcome::Identify(p) => assert_eq!(p.id, ADMIN_TOKENS_PRINCIPAL_ID),
+        AuthVerdict::Identify(p) => assert_eq!(p.id, ADMIN_TOKENS_PRINCIPAL_ID),
         other => panic!("both carriers correct must Identify, got {other:?}"),
     }
 }
@@ -69,24 +70,24 @@ fn non_matching_credentials_of_any_shape_never_identify() {
     for cred in bad_candidates {
         // As the Bearer carrier alone.
         match authenticate_admin_tokens(Some(&h), Some(cred), None) {
-            AuthOutcome::Identify(_) => {
+            AuthVerdict::Identify(_) => {
                 panic!("non-matching bearer candidate {cred:?} must never Identify")
             }
-            AuthOutcome::Pass | AuthOutcome::Reject => {}
+            AuthVerdict::Pass | AuthVerdict::Reject => {}
         }
         // As the X-Admin-Token carrier alone.
         match authenticate_admin_tokens(Some(&h), None, Some(cred)) {
-            AuthOutcome::Identify(_) => {
+            AuthVerdict::Identify(_) => {
                 panic!("non-matching header candidate {cred:?} must never Identify")
             }
-            AuthOutcome::Pass | AuthOutcome::Reject => {}
+            AuthVerdict::Pass | AuthVerdict::Reject => {}
         }
         // As BOTH carriers simultaneously (the both-carrier fold under test).
         match authenticate_admin_tokens(Some(&h), Some(cred), Some(cred)) {
-            AuthOutcome::Identify(_) => {
+            AuthVerdict::Identify(_) => {
                 panic!("non-matching both-carrier candidate {cred:?} must never Identify")
             }
-            AuthOutcome::Pass | AuthOutcome::Reject => {}
+            AuthVerdict::Pass | AuthVerdict::Reject => {}
         }
     }
 }
@@ -101,12 +102,12 @@ fn wrong_credential_of_any_shape_rejects_not_passes() {
     for cred in ["", "wrong", "\0\x01garbage"] {
         assert_eq!(
             authenticate_admin_tokens(Some(&h), Some(cred), None),
-            AuthOutcome::Reject,
+            AuthVerdict::Reject,
             "candidate {cred:?} on bearer carrier must Reject"
         );
         assert_eq!(
             authenticate_admin_tokens(Some(&h), None, Some(cred)),
-            AuthOutcome::Reject,
+            AuthVerdict::Reject,
             "candidate {cred:?} on header carrier must Reject"
         );
     }
@@ -122,12 +123,12 @@ fn jws_shaped_mismatch_defers_not_rejects() {
     for cred in ["a.b.c", "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0.sig", "x.y.z"] {
         assert_eq!(
             authenticate_admin_tokens(Some(&h), Some(cred), None),
-            AuthOutcome::Pass,
+            AuthVerdict::Pass,
             "JWS-shaped candidate {cred:?} on bearer carrier must Pass (defer), not Reject"
         );
         assert_eq!(
             authenticate_admin_tokens(Some(&h), None, Some(cred)),
-            AuthOutcome::Pass,
+            AuthVerdict::Pass,
             "JWS-shaped candidate {cred:?} on header carrier must Pass (defer), not Reject"
         );
     }
@@ -142,12 +143,12 @@ fn mixed_carriers_non_jws_wrong_still_rejects() {
     let h = hash("secret");
     assert_eq!(
         authenticate_admin_tokens(Some(&h), Some("wrong"), Some("a.b.c")),
-        AuthOutcome::Reject,
+        AuthVerdict::Reject,
         "a non-JWS-shaped wrong bearer must still Reject even with a JWS-shaped header"
     );
     assert_eq!(
         authenticate_admin_tokens(Some(&h), Some("a.b.c"), Some("wrong")),
-        AuthOutcome::Reject,
+        AuthVerdict::Reject,
         "a non-JWS-shaped wrong header must still Reject even with a JWS-shaped bearer"
     );
 }

@@ -211,24 +211,23 @@ fn every_status_line_names_a_real_field() {
 /// travelled with its codec is still an instrument, and a scanner that read only the half left
 /// behind would call it a ghost.
 ///
+/// The list is DATA (`tests/fixtures/evidence_roots.txt`): which plugin crates carry instruments is
+/// the tree's layout, not this source's vocabulary.
+///
 /// Every root must EXIST ([`every_evidence_root_exists`]). `crates/busbar-core/src` sat in this list
 /// for as long as the crate had been gone (item 262): a root that is not there reads as "nothing to
 /// find" and never as a failure, which is how a stale path hides a shrinking search.
-const EVIDENCE_ROOTS: &[&str] = &[
-    "crates/busbar/src",
-    "crates/busbar-llm/src",
-    "crates/busbar-llm-codec/src",
-    "crates/busbar-mcp/src/codec",
-    "crates/busbar-plane-mcp/src",
-    "crates/busbar-plane-a2a/src",
-    "crates/busbar-voice-codec/src",
-];
+fn evidence_roots() -> Vec<String> {
+    common::fixture_lines("evidence_roots.txt")
+}
 
 /// Every `.rs` under the evidence roots, classified once.
 fn evidence_files() -> Vec<Vec<common::Line>> {
     let mut out = Vec::new();
-    let mut stack: Vec<std::path::PathBuf> =
-        EVIDENCE_ROOTS.iter().map(|r| repo_root().join(r)).collect();
+    let mut stack: Vec<std::path::PathBuf> = evidence_roots()
+        .iter()
+        .map(|r| repo_root().join(r))
+        .collect();
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -249,7 +248,8 @@ fn evidence_files() -> Vec<Vec<common::Line>> {
 
 #[test]
 fn every_evidence_root_exists() {
-    let absent: Vec<&&str> = EVIDENCE_ROOTS
+    let roots = evidence_roots();
+    let absent: Vec<&String> = roots
         .iter()
         .filter(|r| !repo_root().join(r).is_dir())
         .collect();
@@ -265,7 +265,7 @@ fn every_evidence_root_exists() {
 /// This is the load-bearing assertion of the whole gate. "The IR has a member for it" is not
 /// coverage — the audited losses were all in fields nothing read and nothing emitted, where a
 /// mutation test had nothing to break. A claim of survival is admissible only with an instrument
-/// attached, so the named function must be, somewhere under [`EVIDENCE_ROOTS`], (1) test code,
+/// attached, so the named function must be, somewhere under [`evidence_roots`], (1) test code,
 /// (2) a test the harness runs, and (3) a body that asserts — the same three checks
 /// `capability_equality.rs` holds its proven cells to, from the one copy in `common`. It used to be
 /// satisfied by the text `fn NAME(` anywhere, which a production helper, a doc comment and an empty

@@ -715,28 +715,8 @@ pub const PLANE_REQUEST_DURATION_SECONDS: &str = "busbar_plane_request_duration_
 // alerts on a non-zero rate to detect "the webhook is overwhelmed and logs are being shed silently."
 pub const WEBHOOK_LOGS_DROPPED_TOTAL: &str = "busbar_webhook_logs_dropped_total"; // no labels
 
-// Request-log FILE appends DROPPED because that sink's in-flight append cap was saturated (the
-// filesystem is slow/stalled — a full disk, a hung NFS/EBS mount — and the bounded blocking-append
-// pool is full). Incremented once per dropped log, the exact counterpart of
-// `WEBHOOK_LOGS_DROPPED_TOTAL` for the other request-log sink. Unlabeled: like the webhook's, the
-// drop is a global backpressure condition, not per-request. Alert on a non-zero rate to detect
-// "the request-log file sink is shedding lines."
-pub const FILE_LOGS_DROPPED_TOTAL: &str = "busbar_file_logs_dropped_total"; // no labels
-
-// A request-log FILE sink crossed `rotate_mb` and was rolled over by RENAMING the full file to a
-// numbered archive (`<path>.1`, shifting any older archives up) before a fresh file was opened.
-// Incremented once per rotation. Unlabeled — rotation is a per-sink lifecycle event, not
-// per-request. A security/audit product must never rotate recorded evidence silently: this counter
-// is the observable proof that a rotation preserved history via rename rather than discarding it.
-pub const FILE_LOGS_ROTATED_TOTAL: &str = "busbar_file_logs_rotated_total"; // no labels
-
-// A request-log FILE sink crossed `rotate_mb` but the archive RENAME failed (e.g. cross-device
-// mount, permission, or a racing external process). On this path the sink deliberately keeps
-// APPENDING to the current (over-size) file rather than truncating it — truncation would destroy
-// unarchived audit data, which is strictly worse than a temporarily oversized file. Incremented
-// once per failed rotation attempt; alert on a non-zero rate — it means a sink is not being bounded
-// by `rotate_mb` and needs operator attention (disk/permissions on the sink's directory).
-pub const FILE_LOGS_ROTATE_FAILED_TOTAL: &str = "busbar_file_logs_rotate_failed_total"; // no labels
+// The request-log FILE sink's three series (`busbar_file_logs_{dropped,rotated,rotate_failed}_total`)
+// are the `busbar-export-file` sink's own, declared first-party in its manifest (K9b).
 
 // App-retype WEDGE 3: the `busbar_tap_notifications_dropped_total` metric NAME moved to the substrate
 // tap fan-out (`busbar_kernel::proxy::proxy_vocab::spawn_bounded_tap`) with core's `spawn_bounded_tap`

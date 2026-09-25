@@ -37,7 +37,7 @@ use crate::mcp::config::{McpPinMechanism, McpServerDefCfg, ServerPinCfg, ToolAll
 const MECHANISMS: &[McpPinMechanism] = &[
     McpPinMechanism::PinnedPubkey,
     McpPinMechanism::CertSpki,
-    McpPinMechanism::Mtls,
+    McpPinMechanism::ClientCertBinding,
     McpPinMechanism::Unpinned,
 ];
 

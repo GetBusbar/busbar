@@ -11,6 +11,53 @@
 
 use super::*;
 
+/// EVERY PLANE KEY THIS TREE SHIPS, read off the workspace rather than written here: each
+/// `crates/busbar-plane-<key>` directory is one plane (the same derivation `cargo xtask gate
+/// plane-purity` uses for its vocabulary). A list typed into this file would itself name the planes
+/// the ratchet exists to keep out of the shared surface — and would miss the next plane to land.
+fn shipped_plane_keys() -> Vec<String> {
+    let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the kernel crate sits inside the workspace `crates/` directory");
+    let mut keys: Vec<String> = std::fs::read_dir(crates_dir)
+        .expect("the workspace `crates/` directory is readable")
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            e.file_name()
+                .to_str()
+                .and_then(|n| n.strip_prefix("busbar-plane-"))
+                .map(str::to_string)
+        })
+        .collect();
+    keys.sort();
+    // A derivation that found nothing would make both ratchets below pass on any source at all.
+    assert!(
+        keys.len() >= 2,
+        "the plane roster read off `crates/busbar-plane-*` is {keys:?} — too small to be the tree"
+    );
+    keys
+}
+
+/// A plane key as code spells it: lowercase (`key`), Capitalised (a type or variant) and UPPERCASE
+/// (a constant or acronym).
+fn spellings(key: &str) -> [String; 3] {
+    let mut chars = key.chars();
+    let capitalised = chars
+        .next()
+        .map(|c| c.to_ascii_uppercase().to_string() + chars.as_str())
+        .unwrap_or_default();
+    [key.to_string(), capitalised, key.to_ascii_uppercase()]
+}
+
+/// The shared surface's source with comment lines dropped.
+fn planeverbs_code() -> String {
+    include_str!("../planeverbs.rs")
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// THE RATCHET, the same one the shared sweep job and choke point F carry. This file is shared
 /// because it names no plane; the moment it does, the sibling plane stops being able to
 /// parameterise it and grows a copy instead.
@@ -19,19 +66,18 @@ use super::*;
 /// their vocabularies differ, and prose that explains a boundary is not code that crosses it.
 #[test]
 fn the_shared_verb_surface_names_no_plane_in_its_code() {
-    const BANNED: &[&str] = &[
-        "mcp", "Mcp", "MCP", "a2a", "A2a", "A2A", "tool", "Tool", "agent", "Agent", "skill",
-        "Skill", "card", "Card",
+    // The planes' own subject vocabulary, then every shipped plane key in each spelling.
+    const SUBJECT_NOUNS: &[&str] = &[
+        "tool", "Tool", "agent", "Agent", "skill", "Skill", "card", "Card",
     ];
-    let source = include_str!("../planeverbs.rs");
-    let code: String = source
-        .lines()
-        .filter(|l| !l.trim_start().starts_with("//"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    for needle in BANNED {
+    let mut banned: Vec<String> = SUBJECT_NOUNS.iter().map(|s| s.to_string()).collect();
+    for key in shipped_plane_keys() {
+        banned.extend(spellings(&key));
+    }
+    let code = planeverbs_code();
+    for needle in &banned {
         assert!(
-            !code.contains(needle),
+            !code.contains(needle.as_str()),
             "the shared trust verb surface names `{needle}` in its CODE. The plane's vocabulary \
              belongs in `Plane::subject_noun` / `Plane::audit_kind` and in the plane's own \
              `PlaneTrust` impl, never in the surface both planes share."
@@ -44,21 +90,19 @@ fn the_shared_verb_surface_names_no_plane_in_its_code() {
 /// reads as unified and is not.
 #[test]
 fn the_plane_is_a_parameter_and_never_a_branch() {
-    let source = include_str!("../planeverbs.rs");
-    let code: String = source
-        .lines()
-        .filter(|l| !l.trim_start().starts_with("//"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    for needle in [
-        "match plane",
-        "match P::PLANE",
-        "if plane ==",
-        "Plane::Mcp",
-        "Plane::A2a",
-    ] {
+    let code = planeverbs_code();
+    let mut branches: Vec<String> = ["match plane", "match P::PLANE", "if plane =="]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    // A branch on one named plane: `Plane::<Key>` for every shipped plane.
+    for key in shipped_plane_keys() {
+        let [_, capitalised, _] = spellings(&key);
+        branches.push(format!("Plane::{capitalised}"));
+    }
+    for needle in &branches {
         assert!(
-            !code.contains(needle),
+            !code.contains(needle.as_str()),
             "the shared trust verb surface contains `{needle}`. One handler set, parameterised by \
              plane — a branch here is one handler set per plane with extra steps."
         );

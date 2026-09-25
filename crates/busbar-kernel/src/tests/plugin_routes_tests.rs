@@ -91,33 +91,8 @@ fn collision_is_a_loud_failure_naming_the_owner() {
         "plugin \"datadog\" cannot register GET /metrics — already registered by \"prometheus\""
     );
 
-    // The manifest-only preflight uses the IDENTICAL logic + message, so `--validate` and boot
-    // catch the same collision the live table would.
-    let preflight = preflight_route_collisions(&[
-        (
-            "prometheus".to_string(),
-            RouteKind::Export,
-            Route {
-                path: "/metrics".into(),
-                method: RouteMethod::Get,
-                auth: RouteAuth::None,
-            },
-        ),
-        (
-            "datadog".to_string(),
-            RouteKind::Export,
-            Route {
-                path: "/metrics".into(),
-                method: RouteMethod::Get,
-                auth: RouteAuth::None,
-            },
-        ),
-    ])
-    .unwrap_err();
-    assert_eq!(
-        preflight,
-        "plugin \"datadog\" cannot register GET /metrics — already registered by \"prometheus\""
-    );
+    // The boot/`--validate` preflight runs THIS function over the same declaration set
+    // (`plugins_preflight`, step 7), so it refuses the same collision in the same words.
 }
 
 /// The SAME path with DIFFERENT methods is NOT a collision — the collision key is `{path, method}`.

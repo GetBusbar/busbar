@@ -17,8 +17,8 @@ fn key(seed: u8) -> SigningKey {
 }
 
 /// The operator's out-of-band issuer key, as they paste it: base64 of the RFC 8410 SPKI.
-fn spki_base64(k: &SigningKey) -> String {
-    let mut der = jws::ED25519_SPKI_PREFIX.to_vec();
+fn key_info_base64(k: &SigningKey) -> String {
+    let mut der = jws::ED25519_KEY_INFO_PREFIX.to_vec();
     der.extend_from_slice(k.verifying_key().as_bytes());
     STD.encode(der)
 }
@@ -51,15 +51,15 @@ fn signed_by(k: &SigningKey) -> Value {
 fn the_seam_verifies_a_good_card_byte_identically_to_the_free_function() {
     let k = key(1);
     let card = signed_by(&k);
-    let spki = spki_base64(&k);
+    let key_pin = key_info_base64(&k);
     let host = PassThroughInboundJws;
     assert_eq!(
-        host.verify_signed_card(&card, &spki),
-        super::super::pin::pin_a_signed_card(&card, &spki),
+        host.verify_signed_card(&card, &key_pin),
+        super::super::pin::pin_a_signed_card(&card, &key_pin),
         "the seam's success outcome is byte-for-byte the free function's"
     );
     assert!(
-        host.verify_signed_card(&card, &spki).is_ok(),
+        host.verify_signed_card(&card, &key_pin).is_ok(),
         "a card signed by the pinned issuer verifies through the seam"
     );
 }
@@ -69,7 +69,7 @@ fn the_seam_refuses_a_wrong_key_and_a_malformed_key_exactly_as_the_free_function
     let card = signed_by(&key(1));
     let host = PassThroughInboundJws;
     // THE LOOK-ALIKE: signed by a valid but not-pinned key. Same refusal through both paths.
-    let wrong = spki_base64(&key(2));
+    let wrong = key_info_base64(&key(2));
     assert_eq!(
         host.verify_signed_card(&card, &wrong),
         super::super::pin::pin_a_signed_card(&card, &wrong),
@@ -80,11 +80,11 @@ fn the_seam_refuses_a_wrong_key_and_a_malformed_key_exactly_as_the_free_function
     );
     // A malformed operator key is refused identically.
     assert_eq!(
-        host.verify_signed_card(&card, "not-base64-spki"),
-        super::super::pin::pin_a_signed_card(&card, "not-base64-spki"),
+        host.verify_signed_card(&card, "not-base64-key-info"),
+        super::super::pin::pin_a_signed_card(&card, "not-base64-key-info"),
     );
     assert_eq!(
-        host.verify_signed_card(&card, "not-base64-spki"),
+        host.verify_signed_card(&card, "not-base64-key-info"),
         Err(jws::JwsError::MalformedIssuerKey),
     );
 }
@@ -98,10 +98,10 @@ fn the_composition_root_install_hands_the_installed_capability_back() {
     let installed = inbound_card_jws().expect("the just-installed capability reads back");
     let k = key(3);
     let card = signed_by(&k);
-    let spki = spki_base64(&k);
+    let key_pin = key_info_base64(&k);
     assert_eq!(
-        installed.verify_signed_card(&card, &spki),
-        super::super::pin::pin_a_signed_card(&card, &spki),
+        installed.verify_signed_card(&card, &key_pin),
+        super::super::pin::pin_a_signed_card(&card, &key_pin),
         "the installed capability verifies byte-identically to the free function"
     );
 }

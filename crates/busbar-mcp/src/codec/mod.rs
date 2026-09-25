@@ -62,70 +62,35 @@ mod subscribe;
 /// tests see matches the registry a shipped binary has.
 pub const DECL: busbar_substrate_values::proto::ProtocolDecl =
     busbar_substrate_values::proto::ProtocolDecl {
-        name: busbar_plane_mcp::PLANE_KEY,
-        codec: None,
         handler: Some(&handler::McpRequestHandler),
         verbs: &[
             busbar_api::operation::Operation::INVOKE,
             busbar_api::operation::Operation::SUBSCRIBE,
         ],
-        head_keys: &[],
-        streaming_content_type: None,
-        array_stream_shim_key: None,
-        native_tool_id_prefix: None,
-        ingress_auth: busbar_substrate_values::proto::IngressAuth::Bearer,
-        // The shared bearer/api-key/SigV4 schemes stay in `egress_auth::resolve`: MCP presents no
-        // dialect-specific egress credential shaping of its own, so it declares no builder — unlike
-        // Anthropic, whose api-key/Bearer disambiguation retired its arm in core.
-        egress_auth_headers: None,
-        egress_auth_lane_constant: false,
-        // NO PATH INGRESS (model in the BODY): `has_model_in_url` is false below, so this dialect
-        // registers no arrival and the catch-all resolves its operation through the `RequestHandler`
-        // on the universal ingress. The arrival is no longer a decl field (Batch C-6).
-        stream_usage_requires_opt_in: false,
-        // ── Promoted writer facts (G6 step A1): MCP declares NO codec and has no writer, so every
-        //    promoted fact is the `ProtocolWriter` trait DEFAULT — the same value core read for a
-        //    protocol with no override. These are inert for MCP (its facts are never consulted through a
-        //    writer that does not exist) but the declaration must state them.
-        requires_max_tokens: false,
-        stop_sequence_cap: None,
-        cache_markers_model_gated: false,
-        fills_thought_signature: false,
-        frame_after_message_start: None,
-        reshapes_body_at_path_base: false,
-        max_cache_control_breakpoints: None,
-        quota_exceeded_status: http::StatusCode::TOO_MANY_REQUESTS,
-        ingress_is_eventstream: false,
-        emits_sse_done_terminator: false,
-        max_citations_per_delta: None,
-        egress_user_agent: busbar_substrate_values::proxy::EGRESS_UA_DEFAULT,
-        has_model_in_url: false,
-        auth_failure_status_and_kind: (
-            http::StatusCode::UNAUTHORIZED,
-            busbar_substrate_values::proto::ERR_TYPE_AUTHENTICATION,
-        ),
-        ingress_relays_amzn_headers: false,
-        ingress_relayed_response_header_names: &[],
-        auth_failure_message: "authentication failed",
-        uses_array_stream_shim: false,
-        has_native_path_not_found: false,
-        // MCP ships no cross-dialect codec, so this is never consulted for a translated egress; it
-        // carries the neutral SSE default the by-name `egress_accept` fallback would have returned.
-        egress_stream_accept: busbar_substrate_values::proxy::TEXT_EVENT_STREAM,
-        // MCP is not an LLM chat dialect and serves no `/v1/models` discovery surface.
-        models_list_envelope: None,
-        // MCP is identified by its EXPLICIT mount (`/mcp`), never by a wire fingerprint — so it claims
-        // no router or residual rung, and core's detection fold never resolves to it from a path/header
-        // sniff. It contributes no untranslatable vendor response metadata and is not the residual
-        // default.
-        claims: None,
-        residual_claims: None,
-        residual_default: false,
-        vendor_response_metadata: None,
-        // MCP serves no model-discovery surface, so it declares no list-models fingerprint header.
-        list_models_fingerprint_headers: &[],
+        // EVERY OTHER FIELD IS THE NEUTRAL ROW (`ProtocolDecl::named`), stated once beside the struct
+        // rather than copied here — and each one is exactly what MCP means:
+        // - no codec, no head keys, no stream content type, no array-stream shim, no native tool-id
+        //   prefix: MCP declares a HANDLER and nothing a cross-dialect translation would read;
+        // - the default ingress auth scheme, and no egress credential builder: the shared schemes stay
+        //   in `egress_auth::resolve`, because MCP presents no dialect-specific egress credential
+        //   shaping of its own;
+        // - no path ingress (`has_model_in_url` false): the model is in the BODY, so this dialect
+        //   registers no arrival and the catch-all resolves its operation through the
+        //   `RequestHandler` on the universal ingress;
+        // - every promoted writer fact (G6 step A1) is the `ProtocolWriter` trait DEFAULT: MCP has no
+        //   writer, so these are inert, but the declaration must state them;
+        // - the neutral SSE `egress_stream_accept`, never consulted (no translated egress);
+        // - no `/v1/models` envelope or list-models fingerprint: MCP serves no model discovery;
+        // - no router or residual claim, not the residual default, no vendor response metadata: MCP
+        //   is identified by its EXPLICIT mount (`/mcp`), never by a wire fingerprint.
+        // `the_mcp_decl_is_the_neutral_row_but_for_its_handler_and_verbs` pins each of these.
+        ..busbar_substrate_values::proto::ProtocolDecl::named(busbar_plane_mcp::PLANE_KEY)
     };
 
 #[cfg(test)]
 #[path = "tests/mcp_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/decl_tests.rs"]
+mod decl_tests;

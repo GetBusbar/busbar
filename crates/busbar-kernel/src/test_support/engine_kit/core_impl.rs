@@ -60,6 +60,10 @@ impl EngineTestKit for CoreEngineKit {
             .map_err(|e| e.to_string())
     }
 
+    fn scratch_store(&self) -> Arc<dyn Store> {
+        Arc::new(crate::governance::MemoryStore::new())
+    }
+
     fn cost_flat(&self, price_per_request_cents: i64) -> Arc<dyn CostKit> {
         Arc::new(crate::cost::CostModel::flat(price_per_request_cents))
     }

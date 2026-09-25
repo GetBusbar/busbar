@@ -1537,3 +1537,7 @@ mod ir_mapping_tests;
 #[cfg(test)]
 #[path = "tests/ir_slot_wiring_tests.rs"]
 mod ir_slot_wiring_tests;
+
+#[cfg(test)]
+#[path = "tests/ir_round3_tests.rs"]
+mod ir_round3_tests;

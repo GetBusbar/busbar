@@ -693,7 +693,7 @@ jobs:
 
       - name: Build busbar-plugin-pack (host target, build tool only)
         if: ${{ matrix.headroom }}
-        run: cargo build --release -p busbar-plugin-sdk --features pack --bin busbar-plugin-pack
+        run: cargo build --release -p busbar-plugin-loader --features pack --bin busbar-plugin-pack
 
       - name: Package + sign the headroom-hook plugin tarball
         if: ${{ matrix.headroom }}

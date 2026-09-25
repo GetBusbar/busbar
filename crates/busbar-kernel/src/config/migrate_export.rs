@@ -37,6 +37,14 @@ pub(crate) const EXPORT_TYPE_KEY_TO_INSTANCE_NAME: &[(&str, &str, &str)] = &[
     ("generic-webhook", "req-log-audit", "request-log-webhook"),
 ];
 
+/// The streams each 1.5.x export module carried — a FROZEN fact about the documents this pass
+/// rewrites, for the modules the kernel no longer serves itself (a first-party sink on the export
+/// axis now carries them, and declares the same streams: `request-log-file` → `logs`, K9b).
+const RELEASED_MODULE_STREAMS: &[(&str, &[busbar_plugin_loader::ExportStream])] = &[(
+    "request-log-file",
+    &[busbar_plugin_loader::ExportStream::Logs],
+)];
+
 /// Ensure `root.export` exists as a mapping, returning a handle to splice an instance into.
 fn export_map_mut(root: &mut Mapping) -> &mut Mapping {
     let entry = root
@@ -124,8 +132,9 @@ pub(super) fn migrate_export_named_map(root: &mut Mapping, changes: &mut Vec<Str
 /// this module carries" (see `crate::export::projection::resolve_projection`), so this is a
 /// TEACHING rewrite, not a semantic one — the migrated document shows the operator the key they will
 /// narrow with `fields:`, and the ledger says so. The streams are read from
-/// `crate::export::projection::module_streams`, the SAME table the validator uses, so the migrator
-/// cannot write a projection the validator would then reject.
+/// `crate::export::projection::module_streams`, the SAME table the validator uses (and, for a
+/// 1.5.x module now served on the export axis, [`RELEASED_MODULE_STREAMS`], the streams its sink
+/// declares), so the migrator cannot write a projection the validator would then reject.
 ///
 /// IDEMPOTENT (an instance that already declares `streams:` is left alone) and NON-DESTRUCTIVE:
 ///
@@ -196,7 +205,9 @@ fn migrate_one_export_projection(
         ));
         return;
     };
-    let Some(streams) = crate::export::projection::module_streams(&module) else {
+    let released = RELEASED_MODULE_STREAMS.iter().find(|(m, _)| *m == module);
+    let streams = crate::export::projection::module_streams(&module);
+    let Some(streams) = streams.or(released.map(|(_, s)| *s)) else {
         todos.push(format!(
             "{ctx}: `module: {module}` is not a built-in export module in this build, so its              `streams:` projection could not be inferred and was NOT guessed. Add `streams:` by              hand naming what this sink subscribes to."
         ));

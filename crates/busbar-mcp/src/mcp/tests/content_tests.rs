@@ -480,12 +480,13 @@ async fn asking_upstream() -> (String, tokio::task::JoinHandle<()>) {
 
 /// Boot busbar in front of `upstream`, with one approved tool and NO ask grants.
 async fn serve_with_upstream(upstream: &str) -> (String, tokio::task::JoinHandle<()>) {
+    let mechanism = crate::mcp::config::McpPinMechanism::CertSpki.token();
     let yaml = format!(
         r#"
 url: "{upstream}"
 allow_private: true
 pin:
-  mechanism: cert_spki
+  mechanism: {mechanism}
   key: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 tools_allow:
   ask:

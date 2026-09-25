@@ -4,41 +4,41 @@
 //! The carriers and their precedence, and the redacting debug output.
 
 use super::Headers;
-use crate::carrier::{extract_bearer_token, extract_client_token, CallerToken};
+use crate::carrier::{extract_client_token, extract_scheme_token, CallerToken};
 
 #[test]
-fn test_extract_bearer_token_valid() {
+fn test_extract_scheme_token_valid() {
     assert_eq!(
-        extract_bearer_token("Bearer abc123"),
+        extract_scheme_token("Bearer abc123"),
         Some("abc123".to_string())
     );
 }
 
 #[test]
-fn test_extract_bearer_token_case_insensitive() {
+fn test_extract_scheme_token_case_insensitive() {
     assert_eq!(
-        extract_bearer_token("bEaReR abc123"),
+        extract_scheme_token("bEaReR abc123"),
         Some("abc123".to_string())
     );
 }
 
 #[test]
-fn test_extract_bearer_token_no_bearer() {
-    assert_eq!(extract_bearer_token("Basic abc123"), None);
-    assert_eq!(extract_bearer_token("Bearer "), None);
+fn test_extract_scheme_token_wrong_scheme() {
+    assert_eq!(extract_scheme_token("Basic abc123"), None);
+    assert_eq!(extract_scheme_token("Bearer "), None);
 }
 
 #[test]
-fn test_extract_bearer_token_malformed_no_panic() {
+fn test_extract_scheme_token_malformed_no_panic() {
     // A multi-byte character where the scheme belongs must not land mid-character.
-    assert_eq!(extract_bearer_token("Béarer x"), None);
-    assert_eq!(extract_bearer_token("Bearer"), None);
-    assert_eq!(extract_bearer_token(""), None);
-    assert_eq!(extract_bearer_token("　"), None);
+    assert_eq!(extract_scheme_token("Béarer x"), None);
+    assert_eq!(extract_scheme_token("Bearer"), None);
+    assert_eq!(extract_scheme_token(""), None);
+    assert_eq!(extract_scheme_token("　"), None);
 }
 
 #[test]
-fn test_extract_client_token_authorization_bearer() {
+fn test_extract_client_token_authorization_carrier() {
     let h = Headers(vec![("authorization", "Bearer tok-a")]);
     assert_eq!(extract_client_token(&h), Some("tok-a".to_string()));
 }
@@ -84,7 +84,7 @@ fn test_extract_client_token_none_when_no_carrier() {
 }
 
 #[test]
-fn test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key() {
+fn test_extract_client_token_non_scheme_authorization_falls_through_to_x_api_key() {
     let h = Headers(vec![
         ("authorization", "AWS4-HMAC-SHA256 Credential=…"),
         ("x-api-key", "tok-b"),
@@ -93,7 +93,7 @@ fn test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key
 }
 
 #[test]
-fn test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_api_key() {
+fn test_extract_client_token_non_scheme_authorization_falls_through_to_x_goog_api_key() {
     let h = Headers(vec![
         ("authorization", "Basic dXNlcjpwYXNz"),
         ("x-goog-api-key", "tok-c"),

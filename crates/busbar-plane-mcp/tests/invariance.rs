@@ -17,6 +17,27 @@ fn manifest() -> String {
         .expect("the manifest is readable")
 }
 
+/// The dash-spelled directory name of every OTHER `busbar-plane-*` crate in the workspace.
+///
+/// Read from the tree rather than typed out one instance at a time: a purity check that hand-lists
+/// its sibling planes is itself an instance-naming leak (and a stale one, the day a new plane is
+/// added and this list is not). Deriving the set from `crates/`'s own directory listing makes the
+/// check exhaustive over every sibling plane there is, present or future, without this crate's own
+/// source spelling a single one of their names.
+fn sibling_plane_crates() -> Vec<String> {
+    let crates_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crates/<this crate> has a parent");
+    let mut out: Vec<String> = std::fs::read_dir(crates_dir)
+        .expect("the crates directory is readable")
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|name| name.starts_with("busbar-plane-") && name != env!("CARGO_PKG_NAME"))
+        .collect();
+    out.sort();
+    out
+}
+
 /// Walk every source file, handing each to a reader.
 fn walk(dir: &Path, f: &mut impl FnMut(&Path, &str)) {
     for entry in std::fs::read_dir(dir)
@@ -120,12 +141,16 @@ fn the_manifest_names_only_what_a_plane_may_name() {
             "busbar-caps",
             "busbar-kernel",
             "busbar-unit-",
-            "busbar-plane-llm",
-            "busbar-plane-a2a",
         ] {
             assert!(
                 !name.starts_with(forbidden),
                 "the plane depends on {name}, which is kernel-side"
+            );
+        }
+        for sibling in sibling_plane_crates() {
+            assert!(
+                !name.starts_with(sibling.as_str()),
+                "the plane depends on {name}, a sibling plane — the broker law forbids it"
             );
         }
     }

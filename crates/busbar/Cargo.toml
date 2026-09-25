@@ -130,19 +130,20 @@ busbar-plane-streaming = { path = "../busbar-plane-streaming" }
 # composition root writes it, in `src/root/plane_decision.rs`, which is the one place entitled to
 # name a kernel type and a plane in the same file.
 busbar-plane-decision = { path = "../busbar-plane-decision", optional = true }
+# THE REQUEST-LOG FILE SINK (`module: request-log-file`), a first-party EXPORT plugin linked through
+# the `exports` axis (K9b) — the same row a signed tarball of it registers when dropped in.
+busbar-export-file = { path = "../busbar-export-file", optional = true }
 # The seven transports. Composition is an edge that does not exist as a Cargo dependency — a
 # transport may not name the layer beneath it — so the root supplies each composing transport its
 # lower layer as a constructor argument, which is why every one of them is named here.
 busbar-transport-tcp = { path = "../busbar-transport-tcp" }
 busbar-transport-tls = { path = "../busbar-transport-tls" }
 busbar-transport-http = { path = "../busbar-transport-http" }
-busbar-transport-sse = { path = "../busbar-transport-sse" }
 # WebSocket, and the ONE transport that is optional: it is the voice plane's edge and nothing else
 # reaches it, so a build without voice must not carry it. Non-optional, `--no-default-features` still
 # pulled `tokio-tungstenite` through this line and voice stopped being strong-form deletable — the
 # exact leak `cargo xtask gate duplex-ws-default-edge` exists to catch. `plane-voice` carries the edge.
 busbar-transport-ws = { path = "../busbar-transport-ws", optional = true }
-busbar-transport-grpc = { path = "../busbar-transport-grpc" }
 busbar-transport-stdio = { path = "../busbar-transport-stdio" }
 # Named directly because provisioning a listener means handing the transport-key unit a resolved
 # `rustls` config: the root builds the dial-side trust store, and the deployment's trust roots are
@@ -186,10 +187,10 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 [features]
 # Pure forwards: every `#[cfg(feature = ...)]` site lives in busbar-core, so the binary's features
 # are one-line re-exports of the core feature with the same name. Every protocol entry below is the
-# SAME default set the monolithic crate had; `root-admin`, `root-mcp`, `root-a2a`, `root-voice` and
-# `root-llm` are the additions, and all five are paths rather than surfaces — the operations, their
-# bytes and their features are unchanged.
-default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "plane-decision", "root-admin", "root-mcp", "root-a2a", "root-voice", "root-llm"]
+# SAME default set the monolithic crate had; `root-admin`, `root-voice` and `root-llm` are the
+# additions, and all three are paths rather than surfaces — the operations, their bytes and their
+# features are unchanged.
+default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "plane-decision", "export-file", "root-admin", "root-voice", "root-llm"]
 # A protocol crate: the dependency edge plus its registration line in main.rs. Dropping the
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
@@ -233,6 +234,9 @@ plane-voice = ["dep:busbar-voice", "dep:busbar-transport-ws", "busbar-voice?/run
 # differently either way — which is what keeps the neutrality cells answering the same on both
 # legs, and is why this ships on rather than waiting for a golden it could never move.
 plane-decision = ["dep:busbar-plane-decision"]
+# THE REQUEST-LOG FILE SINK, DEFAULT ON: the `busbar-export-file` crate on the export axis. Off, the
+# module resolves only when a signed tarball of the sink is dropped into `plugins/`.
+export-file = ["dep:busbar-export-file"]
 # THE VOICE PLANE, SERVED THROUGH THE COMPOSITION ROOT rather than through the previous release's
 # path, DEFAULT ON. `main()` seals the composition and mounts the voice plane's units at boot.
 # Default-off was the ordering, not the destination — the root is BUILT before any plane is SWITCHED
@@ -278,32 +282,6 @@ root-voice = ["plane-voice"]
 # the built binary: `proto-llm` in the same list is what pulls the crate in, so the feature is on
 # whenever `root-llm` is.
 root-llm = ["proto-llm", "busbar-llm?/teller-waist"]
-# THE A2A PLANE ON THE KERNEL, DEFAULT ON. `main()` assembles the A2A plane's scope entries and its
-# record-leg binding at boot and holds them; the serving path is still the one the A2A plugin
-# mounts, which is why the conformance battery, the TCK and the neutrality cells read identically
-# with the feature on and with it off. Default-off was the ordering, not the destination — the root
-# is BUILT before any plane is SWITCHED onto it — and the ordering is done: the rigs answer
-# identically both ways and the full owed golden came back at 0 diverging with it on.
-#
-# One thing had to land BEFORE the flip and did: the leg's exit used to hand settlement an empty
-# fee table, and no oracle cell could have caught it, because the golden records no a2a cells. A
-# default that shipped a plane whose fee nothing could observe would have been the flip covering
-# for the bug rather than the measurement clearing it.
-#
-# It carries no config key, no environment variable and no boot line, which is what keeps the
-# neutrality cells answering the same on both legs. The leg stays switchable — off, it costs one
-# unbuilt module and nothing else.
-root-a2a = []
-# THE MCP PLANE'S KERNEL BINDINGS, DEFAULT ON. Not a second MCP switch: `plane-mcp` above still
-# decides whether this binary speaks the protocol at all. This one decides whether the MCP plane's
-# bindings to the fourteen units are compiled and sealed at boot, which is the step BEFORE any byte
-# is served through them. Default-off was the ordering, not the destination: the bindings were built
-# and checked against the real unit traits while the serving path stayed untouched, the rigs answered
-# identically both ways, and the whole 890-cell owed golden came back at 0 diverging with it on. So
-# it ships on, and a plane whose own declarations disagree now refuses to boot instead of being found
-# out by a customer. The leg stays switchable — off, it costs one unbuilt module and nothing else,
-# because `main.rs` names the seal inside a `cfg` and the serving path is not the thing it touches.
-root-mcp = []
 # THE ROOT-DRIVEN ADMIN SURFACE (composition-root step C1 / switch-over S1). DEFAULT ON: it was held
 # off until the oracle's admin family was green on it, and it is. The switch is what makes an admin
 # request travel through the kernel's loop instead of reaching its handler directly; the 234 owed
@@ -328,6 +306,65 @@ hooks-ranking = ["busbar-kernel/hooks-ranking", "busbar-core-admin/hooks-ranking
 openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
 loom-model = ["busbar-kernel/loom-model"]
 
+# ── THE LINKED PLUGINS (K1, #2 rule (1)) ─────────────────────────────────────────────────────────────
+# The composition root's source names no plugin: WHICH plugins a build links is this data. build.rs
+# (src/linked_gen.rs) reads the three tables below and writes `$OUT_DIR/linked.rs`, which main.rs
+# includes: `extern crate <crate> as _;` for every row whose cargo feature is ENABLED, `LINKED` — one
+# table per registration axis over each linked crate's `linked` entry module (the contract
+# PLANE_DECLARATION joined kernel-side to its kernel-typed PLANE_HOOKS, protocol declarations,
+# arrivals, diagnostics, installers …) — a `linked_*` cfg per root-bound seam an enabled entry drives,
+# and the `ROOT_UNITS` table of each enabled root module's `ROOT_UNIT`. `src/root/linked.rs` folds
+# them into the kernel's registration seams, axis by axis, in table order — the same path an entry
+# adapted from a plugin dropped into `plugins/` feeds.
+#
+# THE ORDER IS THE REGISTRATION ORDER on every axis (protocols, planes, diagnostics, WS arrivals, the
+# root-bound seams): appending a row keeps every existing protocol's index; inserting one renumbers
+# them. `crates/busbar/tests/composition_root_names_no_linked_plugin.rs` refuses a `main.rs` that
+# names any crate or root module listed here.
+[package.metadata.busbar.linked]
+proto-llm = "busbar-llm"
+plane-mcp = "busbar-mcp"
+plane-a2a = "busbar-a2a"
+plane-voice = "busbar-voice"
+plane-decision = "busbar-plane-decision"
+export-file = "busbar-export-file"
+
+# What each linked feature's crate registers (keyed by the feature, as the linked row is), axis by axis: `plane` (PLANE_DECLARATION + PLANE_HOOKS, joined
+# kernel-side), `protocols`, `path-ingress`, `body-ingress`, `protocol-seams`, `diagnostics`,
+# `ws-arrivals`, `on-host`, `compose`, `stdio-serve`, `exports` — each an item of the crate's entry
+# module — and the root-bound seams it drives: `egress`, `plane-sections`, `admin-envelope`.
+# `gauntlet-one-shot` / `gauntlet-session`: the plane rides the unified kernel loop (#28) —
+# `gauntlet_install::install()` flips its `PLANE_DECLARATION.key` onto the one-shot or session runner.
+[package.metadata.busbar.linked-axes]
+proto-llm = "plane protocols path-ingress body-ingress protocol-seams on-host gauntlet-one-shot"
+plane-mcp = "plane protocols diagnostics egress stdio-serve gauntlet-one-shot"
+plane-a2a = "plane diagnostics egress plane-sections admin-envelope gauntlet-one-shot"
+plane-voice = "plane diagnostics ws-arrivals compose gauntlet-session"
+plane-decision = "plane"
+export-file = "exports"
+
+# A linked crate whose entry module is not `<crate>::linked`: the decision plane is a PURE plane
+# crate whose manifest names `busbar-contract` and nothing else (#40), so its kernel-typed hooks are
+# written in the composition root and its entry module is that root module.
+[package.metadata.busbar.linked-entry]
+busbar-plane-decision = "crate::root::plane_decision"
+
+# The root's own unit modules (the kernel-loop halves of planes that still live in the root), each
+# compiled under its cargo feature and exporting a `ROOT_UNIT` (`root::linked::RootUnit`). Order is
+# the order their boot steps run in: seals, then the configuration step, then the book step.
+# THE SERVED-LEG WITNESSES the root's rider tests run: cargo feature -> the plane crate whose
+# `testkit::SERVED` table they drive through the kernel-loop runner `gauntlet_install::install()`
+# registers for that plane's key. Test builds only (`build.rs` emits `$OUT_DIR/served_witness.rs`, which
+# `root/tests/gauntlet_kernel.rs` includes); each crate is linked with `test-support` by the dev-deps.
+[package.metadata.busbar.served-witness]
+plane-mcp = "busbar-mcp"
+plane-a2a = "busbar-a2a"
+
+[package.metadata.busbar.root-units]
+plane-decision = "plane_decision"
+root-voice = "units_voice"
+root-llm = "units_llm"
+
 [dev-dependencies]
 # The loop-unify shadow-compare test (`root::gauntlet_kernel`) implements a deterministic
 # `GauntletPlane` to drive both the substrate gauntlet and the kernel rider on one input; the trait
@@ -335,6 +372,9 @@ loom-model = ["busbar-kernel/loom-model"]
 async-trait = { workspace = true }
 # The root's own llm tests install the plane's seams.
 busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
+# The served planes' test kits: `testkit::SERVED` (their served-leg witnesses) is `test-support` only.
+busbar-mcp = { path = "../busbar-mcp", features = ["test-support"] }
+busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
 # The bin's own unit tests (src/tests/tests.rs, the ~14 boot/CLI helpers) build App fixtures
 # through the kernel's test_support, exposed to dependents only behind this feature.
 busbar-kernel = { path = "../busbar-kernel", features = ["test-support"] }
@@ -361,6 +401,14 @@ bytes = { workspace = true }
 serde_json = { workspace = true }
 # tests/method_coverage.rs et al. keep their rationale from the pre-split manifest (git history).
 busbar-store-example-plugin = { path = "../store-example-plugin" }
+# The plane axis's both-doors proof (`src/root/tests/linked.rs`): a `["cdylib", "rlib"]` fixture, so
+# the test links its `PLANE_DECL` (the linked door) and drops its cdylib into a temp `plugins/`
+# directory (the dropped-in door) and requires the two to install byte-identical registry rows.
+busbar-plugin-example-plane = { path = "../plane-example" }
+# That proof calls the router it built as the tower service it is (`ServiceExt::oneshot`). The
+# normal-edge `tower` above is `root-admin`'s own and optional, so a build without `root-admin` (every
+# single-plane build) would not compile the test; the test's edge is its own, unconditional here.
+tower = { workspace = true, features = ["util"] }
 # tests/cli_validate.rs builds signed plugin tarball fixtures.
 hex = { workspace = true }
 # `root/transports.rs` provisions a listener against a real self-signed pair rather than a fixture
@@ -368,6 +416,13 @@ hex = { workspace = true }
 rcgen = { workspace = true }
 # THE ADDED-LATENCY INSTRUMENT (`benches/hook_path.rs`) — black-box, boots the shipped binary.
 criterion = { workspace = true }
+# tests/ws_composed_battery.rs (the `ws` transport battery's cross-transport composition cells,
+# moved here off `busbar-transport-ws`'s own `kind-isolation:closure` `closure-test-reach`
+# findings) builds fixture `VerifiedDestination` and `TransportKeyHandle` values through
+# `busbar_contract::plugin::TestKernelSeal`, the one blessed fixture implementor of the SEALED
+# `KernelSeal` trait (#65) — dev-only and feature-gated, so it is absent from every release build,
+# same as every other crate's own battery does it.
+busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 
 # ── THE HOOK-PATH BENCH ── `harness = false` because criterion supplies its own `main`. Still a
 # black-box instrument that boots the shipped binary (see the bench's own header). The split gives

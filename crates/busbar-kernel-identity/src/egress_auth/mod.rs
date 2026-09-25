@@ -113,7 +113,7 @@ pub fn decorate(
             if !is_valid_header_value(secret) {
                 return AuthDecoration::decorate(token, Vec::new(), false, Vec::new());
             }
-            let slot = SecretSlot::declare(token, "header:authorization:bearer");
+            let slot = SecretSlot::declare(token, "header:authorization:token");
             AuthDecoration::decorate(token, Vec::new(), false, vec![slot])
         }
         Scheme::ApiKeyHeader { header } => {
@@ -152,7 +152,7 @@ pub fn decorate(
             );
             let credential_scope = format!(
                 "{datestamp}/{region}/{service}/{}",
-                sigv4::SIGV4_TERMINATION
+                sigv4::SIGNATURE_TERMINATION
             );
             let authorization = format!(
                 "{} Credential={access_key_id}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}",
@@ -194,7 +194,7 @@ pub fn continue_handshake(token: &Grant<Sign>, _state: &[u8], _frame: &[u8]) -> 
 /// string is interpreted — the egress-auth unit is the only unit that ever holds `secret` in the
 /// clear, so this is also the only place that can perform the substitution at all.
 ///
-/// The `header:<name>:bearer` / `header:<name>:raw` location grammar is private to this crate:
+/// The `header:<name>:token` / `header:<name>:raw` location grammar is private to this crate:
 /// [`decorate`] is the only producer of a [`SecretSlot`] here, so the two agree by construction.
 pub fn substitute(
     decoration: &AuthDecoration,
@@ -217,7 +217,7 @@ pub fn substitute(
             continue;
         };
         let value = match template {
-            "bearer" => format!("Bearer {secret}"),
+            "token" => format!("Bearer {secret}"),
             "raw" => secret.to_string(),
             _ => continue,
         };

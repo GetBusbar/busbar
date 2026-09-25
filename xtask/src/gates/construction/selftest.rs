@@ -668,6 +668,42 @@ fn loop_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         ov,
         &["install_planted_seam"],
     ));
+
+    // THE EXEMPTION'S BOUNDARY, both sides. The kernel's test kit (`test_support`, compiled only
+    // under `cfg(any(test, feature = "test-support"))`) may define a fixture install hook that no
+    // production code calls — that is not a production promise and must not count. The SAME seam
+    // one directory up, in production source, must still go red: the exemption names the kit, not
+    // the kernel.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar-kernel/src/test_support/zz_planted_seam.rs",
+        "static PLANTED_KIT_SEAM_CELL: OnceLock<u32> = OnceLock::new();\n\npub fn \
+         install_planted_kit_seam(v: u32) {\n    let _ = PLANTED_KIT_SEAM_CELL.set(v);\n}\n",
+    );
+    r.push(prove_rows_green(
+        cx,
+        gate,
+        "a fixture install hook defined in the kernel's test kit (`test_support`) is not a \
+         production seam",
+        &["no-uninstalled-seam"],
+        ov,
+    ));
+
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar-kernel/src/zz_test_support_named.rs",
+        "static PLANTED_NEAR_KIT_CELL: OnceLock<u32> = OnceLock::new();\n\npub fn \
+         install_planted_near_kit_seam(v: u32) {\n    let _ = PLANTED_NEAR_KIT_CELL.set(v);\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a production file whose NAME contains test_support (not under the kit directory) is \
+         still scanned",
+        &["no-uninstalled-seam"],
+        ov,
+        &["install_planted_near_kit_seam"],
+    ));
     r
 }
 
@@ -1021,6 +1057,87 @@ fn ceiling_ratchet_cases<'a>(
             "[rules.legacy-reach] carries no `ceiling` to lower at the base, so the arm that \
              refuses a declaration describing a different edit is unproven",
         );
+    }
+
+    // ── A RE-DECLARED RAISE IS NOT A RISE ───────────────────────────────────────────────────────
+    //
+    // A declaration's own `from` / `to` are numbers in the ceilings file, and the row used to read
+    // them as ceilings: the commit that replaces a landed declaration with the next re-arm of the
+    // same ceiling moves both numbers UP, and the re-declaration itself was refused as two
+    // undeclared rises. GREEN arm: the base carries the ceiling at 0 and an OLDER declaration of
+    // it; the tree raises the ceiling and re-declares exactly that raise. RED arm: the same plant
+    // with one more rise, undeclared, of a second ceiling — taking the declaration tables out of
+    // the comparison must not take a real ceiling with them.
+    let doc = crate::toml_doc::parse_str(&text).ok();
+    let int_at = |table: &str, key: &str| -> Option<i64> {
+        doc.as_ref()
+            .and_then(|d| d.table(table).and_then(|t| t.int_of(key)))
+            .filter(|v| *v > 0)
+    };
+    let current = int_at("rules.legacy-reach", "ceiling");
+    match (
+        current,
+        ceilings::set_int(&text, "rules.legacy-reach", "ceiling", 0),
+    ) {
+        (Some(now), Some(base_lowered)) => {
+            let declare = |from: i64, to: i64| {
+                format!(
+                    "\n[gate.ceiling_raises.\"rules.legacy-reach.ceiling\"]\nfrom = {from}\n\
+                     to = {to}\nbecause = \"planted by the self-test: the re-arm of a ceiling whose \
+                     previous declaration had already landed, which moves the declaration's own \
+                     numbers up and is still exactly one declared raise\"\n"
+                )
+            };
+            let mut ov = on(base);
+            ov.set_command(
+                format!("git-show:{based}:{CEILINGS}"),
+                format!("{base_lowered}{}", declare(0, now - 1)),
+            );
+            ov.set(CEILINGS, format!("{text}{}", declare(0, now)));
+            r.push(prove_rows_green(
+                real,
+                gate,
+                "a re-declared raise is one declared raise, not a rise of the declaration's own \
+                 numbers",
+                &[ceilings::ROW_ROSE],
+                ov.clone(),
+            ));
+            // The second rise is another RATCHETED ceiling of the same file, read off the pins
+            // the gate itself keeps rather than named here.
+            let second = ceilings::pins(cfg)
+                .into_iter()
+                .filter(|p| !(p.table == "rules.legacy-reach" && p.key == "ceiling"))
+                .filter(|p| int_at(&p.table, &p.key).is_some())
+                .find_map(|p| {
+                    let before = ceilings::set_int(&base_lowered, &p.table, &p.key, 0)?;
+                    Some((p.table, p.key, before))
+                });
+            match second {
+                Some((table, key, lowered)) => {
+                    ov.set_command(
+                        format!("git-show:{based}:{CEILINGS}"),
+                        format!("{lowered}{}", declare(0, now - 1)),
+                    );
+                    let raised = format!("{CEILINGS} {table}.{key}: 0 ->");
+                    r.push(prove_rows_red(
+                        cx,
+                        gate,
+                        "beside a re-declared raise, an undeclared rise is still refused",
+                        &[ceilings::ROW_ROSE],
+                        ov,
+                        &[raised.as_str()],
+                    ));
+                }
+                None => r.note_infra_failure(
+                    "no second ratcheted ceiling could be lowered at the base, so the arm that \
+                     refuses an undeclared rise beside a re-declared one is unproven",
+                ),
+            }
+        }
+        _ => r.note_infra_failure(
+            "[rules.legacy-reach] carries no `ceiling` above 0 to re-declare a raise of, so the \
+             arm that reads a re-declaration as one declared raise is unproven",
+        ),
     }
 
     if !stale_carried {

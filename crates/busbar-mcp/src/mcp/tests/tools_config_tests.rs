@@ -91,7 +91,7 @@ fn a_pin_must_carry_exactly_the_material_its_mechanism_needs() {
     parse("s:\n  url: \"https://x/\"\n  pin: { mechanism: unpinned }\n")
         .expect("unpinned is legal");
     parse("s:\n  url: \"https://x/\"\n  pin: { mechanism: mtls, key: \"k\" }\n")
-        .expect("mtls with material is legal");
+        .expect("the client-certificate binding with material is legal");
 }
 
 /// THE SEPARATOR RULE, and the asymmetry in it.
@@ -398,7 +398,7 @@ fn the_admin_write_path_rejects_exactly_what_the_file_rejects() {
         }
         // THE ADMIN WRITE PATH: the typed parse the generic handler runs before it persists.
         if engine()
-            .validate_named_def(crate::mcp::PLANE_DECL.config_section, name, def)
+            .validate_named_def(crate::mcp::PLANE_DECLARATION.config_section, name, def)
             .is_err()
         {
             api_rejects.push(name);
@@ -634,7 +634,7 @@ fn the_admin_write_path_refuses_a_malformed_publish_as_exactly_as_the_file_does(
         "tools_allow": { "greet": { "publish_as": "  " } },
     });
     let err = engine()
-        .validate_named_def(crate::mcp::PLANE_DECL.config_section, "gh", &def)
+        .validate_named_def(crate::mcp::PLANE_DECLARATION.config_section, "gh", &def)
         .expect_err("the API must reject exactly what the file rejects");
     assert!(err.contains("publish_as"), "{err}");
 }
@@ -768,7 +768,7 @@ fn the_admin_write_path_refuses_an_unknown_ask_method_exactly_as_the_file_does()
         },
     });
     let err = engine()
-        .validate_named_def(crate::mcp::PLANE_DECL.config_section, "gh", &def)
+        .validate_named_def(crate::mcp::PLANE_DECLARATION.config_section, "gh", &def)
         .expect_err("the API must reject exactly what the file rejects");
     assert!(err.contains("elicitation/created"), "{err}");
 }

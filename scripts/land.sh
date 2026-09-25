@@ -224,9 +224,7 @@ land_construction_standing_reds() {
   local reds
   reds="$(cat <<'EOF'
 hold-discipline:cancellation-before-await
-manifest-allowlist:busbar-transport-grpc
 manifest-allowlist:busbar-transport-http
-manifest-allowlist:busbar-transport-sse
 manifest-allowlist:busbar-transport-stdio
 manifest-allowlist:busbar-transport-tcp
 manifest-allowlist:busbar-transport-tls
@@ -240,10 +238,7 @@ token-sealed:admit-token-mint
 token-sealed:kernel-seal
 token-sealed:secret-once-mint
 lean-core
-neutral-no-dialect
-loc-ceilings:caps-contract
 loc-ceilings:union
-surface-ceiling:contract
 EOF
 )"
   case "${P_to:-}" in

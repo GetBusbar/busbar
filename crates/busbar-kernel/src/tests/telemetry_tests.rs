@@ -28,8 +28,22 @@ fn model_plane_key() -> &'static str {
     crate::plane::fallback_key()
 }
 
-fn openai() -> &'static str {
-    crate::proto::PROTO_OPENAI
+/// Two DISTINCT shipped protocol names, read off the protocol registry's own codec list (the same
+/// `known_protocols()` the bank sizes its request families and its translation table over), so this
+/// module names no dialect: what it asserts is the bank's routing over WHATEVER the registry ships,
+/// never anything about one dialect. `.0` is the lane's egress protocol, `.1` a different ingress.
+fn shipped_protocols() -> (&'static str, &'static str) {
+    let known = crate::proto::known_protocols();
+    assert!(
+        known.len() >= 2,
+        "the test binary's protocol registry must ship at least two codecs; got {known:?}"
+    );
+    (known[0], known[1])
+}
+
+/// The lane protocol every `TestApp` in this module is built with: a shipped codec.
+fn lane_protocol() -> &'static str {
+    shipped_protocols().0
 }
 
 /// Multi-thread adds must sum exactly, INCLUDING while a concurrent scraper is flushing the bank
@@ -110,7 +124,7 @@ fn test_config_reapply_accumulates_across_generations() {
     crate::metrics::init();
     let build = || {
         TestApp::new()
-            .lane(LaneSpec::new("tel-gen-model", openai(), "http://m"))
+            .lane(LaneSpec::new("tel-gen-model", lane_protocol(), "http://m"))
             .pool("tel-gen-pool", &[(0, 1)])
             .build()
     };
@@ -122,7 +136,7 @@ fn test_config_reapply_accumulates_across_generations() {
     request_finished(
         &gen1,
         model_plane_key(),
-        "openai",
+        lane_protocol(),
         "tel-gen-pool",
         "ok",
         0.001,
@@ -130,7 +144,7 @@ fn test_config_reapply_accumulates_across_generations() {
     request_finished(
         &gen2,
         model_plane_key(),
-        "openai",
+        lane_protocol(),
         "tel-gen-pool",
         "ok",
         0.002,
@@ -150,14 +164,20 @@ fn test_config_reapply_accumulates_across_generations() {
 fn test_request_finished_renders_premigration_names_and_labels() {
     crate::metrics::init();
     let app = TestApp::new()
-        .lane(LaneSpec::new("tel-parity-model", openai(), "http://m"))
+        .lane(LaneSpec::new(
+            "tel-parity-model",
+            lane_protocol(),
+            "http://m",
+        ))
         .pool("tel-parity-pool", &[(0, 1)])
         .build();
+    let ingress = shipped_protocols().1;
+    let ingress_label = format!("ingress_protocol=\"{ingress}\"");
 
     request_finished(
         &app,
         model_plane_key(),
-        "anthropic",
+        ingress,
         "tel-parity-pool",
         "ok",
         0.005,
@@ -167,7 +187,7 @@ fn test_request_finished_renders_premigration_names_and_labels() {
     let counter_line = out.lines().find(|l| {
         !l.starts_with('#')
             && l.starts_with(crate::metrics::REQUESTS_TOTAL)
-            && l.contains("ingress_protocol=\"anthropic\"")
+            && l.contains(&ingress_label)
             && l.contains("pool=\"tel-parity-pool\"")
             && l.contains("outcome=\"ok\"")
     });
@@ -196,10 +216,7 @@ fn test_request_finished_renders_premigration_names_and_labels() {
     );
     let count = metric_sum(
         "busbar_request_duration_seconds_count",
-        &[
-            ("ingress_protocol", "anthropic"),
-            ("pool", "tel-parity-pool"),
-        ],
+        &[("ingress_protocol", ingress), ("pool", "tel-parity-pool")],
     );
     assert!(
         count >= 1.0,
@@ -213,7 +230,7 @@ fn test_request_finished_renders_premigration_names_and_labels() {
 fn test_engine_helpers_emit_premigration_series() {
     crate::metrics::init();
     let app = TestApp::new()
-        .lane(LaneSpec::new("tel-eng-model", openai(), "http://m"))
+        .lane(LaneSpec::new("tel-eng-model", lane_protocol(), "http://m"))
         .pool("tel-eng-pool", &[(0, 1)])
         .build();
     let pool = [("pool", "tel-eng-pool")];
@@ -273,7 +290,7 @@ fn test_engine_helpers_emit_premigration_series() {
 fn test_unregistered_pool_falls_back_to_macro_emission() {
     crate::metrics::init();
     let app = TestApp::new()
-        .lane(LaneSpec::new("tel-fb-model", openai(), "http://m"))
+        .lane(LaneSpec::new("tel-fb-model", lane_protocol(), "http://m"))
         .pool("tel-fb-pool", &[(0, 1)])
         .build();
 
@@ -282,7 +299,7 @@ fn test_unregistered_pool_falls_back_to_macro_emission() {
     request_finished(
         &app,
         model_plane_key(),
-        "openai",
+        lane_protocol(),
         "tel-fb-unregistered-pool",
         "ok",
         0.001,
@@ -334,9 +351,10 @@ fn test_histogram_bank_drains_all_thread_samples() {
 #[test]
 fn test_translation_bank_counts_known_protocol_pair() {
     crate::metrics::init();
-    let labels = [("from", "cohere"), ("to", "gemini")];
+    let (from, to) = shipped_protocols();
+    let labels = [("from", from), ("to", to)];
     let before = metric_sum(crate::metrics::TRANSLATIONS_TOTAL, &labels);
-    translation("cohere", "gemini");
+    translation(from, to);
     let after = metric_sum(crate::metrics::TRANSLATIONS_TOTAL, &labels);
     assert_eq!(
         (after - before).round() as u64,
@@ -345,9 +363,9 @@ fn test_translation_bank_counts_known_protocol_pair() {
     );
 
     // Unknown (plugin) protocol names fall back to the macro and are still counted.
-    let fb_labels = [("from", "tel-custom-proto"), ("to", "openai")];
+    let fb_labels = [("from", "tel-custom-proto"), ("to", to)];
     let fb_before = metric_sum(crate::metrics::TRANSLATIONS_TOTAL, &fb_labels);
-    translation("tel-custom-proto", "openai");
+    translation("tel-custom-proto", to);
     let fb_after = metric_sum(crate::metrics::TRANSLATIONS_TOTAL, &fb_labels);
     assert_eq!((fb_after - fb_before).round() as u64, 1);
 }

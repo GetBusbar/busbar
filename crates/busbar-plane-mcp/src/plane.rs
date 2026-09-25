@@ -440,13 +440,13 @@ const fn sampling_destination() -> DestinationFacts {
 }
 
 /// The finish class one unit ending is.
-fn finish_of(end: &UnitEnd, streaming: bool) -> FinishClass {
+fn finish_of(end: &UnitEnd, event_framed: bool) -> FinishClass {
     // One mapping, written once in the contract and read by every plane. All this plane decides is
     // what a COMPLETED unit is, which is a question about the exchange and not about the ending: a
     // streamed unit ends a turn of a session that continues, a unary one ends the whole answer.
     busbar_contract::unit::finish_class_of(
         end,
-        if streaming {
+        if event_framed {
             FinishClass::TurnComplete
         } else {
             FinishClass::Complete
@@ -505,7 +505,7 @@ impl Plane for McpPlane {
                 .and_then(|raw| f::correlation_for(raw, ctx.arena())),
             facts,
         };
-        if row.streaming {
+        if row.event_framed {
             Ok(Ingress::Open(Box::new(draft)))
         } else {
             Ok(Ingress::OneShot(Box::new(draft)))
@@ -996,13 +996,13 @@ impl Plane for McpPlane {
     }
 
     fn audit<'u>(&self, u: &Unit<'u>, out: &UnitEnd, _ctx: &Ctx<'u>) -> AuditFacts {
-        let streaming = Self::row_for_op(u.op()).is_some_and(|r| r.streaming);
+        let event_framed = Self::row_for_op(u.op()).is_some_and(|r| r.event_framed);
         AuditFacts {
             // The DRAFT's class is the one that priced the unit, and this is that class read back
             // off the unit. A plane that named a different class here would be disputing its own
             // earlier answer, which is exactly what the loop treats it as.
             op_class: u.op(),
-            finish: finish_of(out, streaming),
+            finish: finish_of(out, event_framed),
         }
     }
 

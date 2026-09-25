@@ -112,8 +112,8 @@ impl ScriptedTransport {
                 status: 200,
                 location: None,
                 body: body.as_bytes().to_vec(),
-                peer_spki: None,
                 client_identity_offered: false,
+                ..Default::default()
             },
         );
         self
@@ -126,8 +126,8 @@ impl ScriptedTransport {
                 status: 302,
                 location: Some(to.to_string()),
                 body: Vec::new(),
-                peer_spki: None,
                 client_identity_offered: false,
+                ..Default::default()
             },
         );
         self
@@ -140,8 +140,8 @@ impl ScriptedTransport {
                 status,
                 location: None,
                 body: Vec::new(),
-                peer_spki: None,
                 client_identity_offered: false,
+                ..Default::default()
             },
         );
         self
@@ -830,7 +830,7 @@ fn allow_private_never_opens_a_cloud_metadata_target() {
 /// `!https && !plaintext_admissible()`), and a
 /// loopback agent that could only be reached over TLS is a knob that does not do its job.
 #[test]
-fn allow_private_carries_the_plaintext_permission_its_mcp_sibling_carries() {
+fn allow_private_carries_the_plaintext_permission_its_sibling_plane_carries() {
     let r = ScriptedResolver::new().always("a2a.vendor", vec![ip(PUBLIC)]);
     let policy = FetchPolicy {
         allow_private: true,

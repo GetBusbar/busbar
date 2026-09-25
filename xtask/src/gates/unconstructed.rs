@@ -147,39 +147,41 @@ pub const ROW_STALE: &str = "unconstructed:stale-declaration";
 /// shrinks as the debts drain. Armed 2026-09-23 at the eighteen the file declares today.
 pub const KNOWN_UNSHIPPED: &[&str] = &[
     "audit-chain-signing",
-    "breaker-request-budget",
+    // `breaker-request-budget` STRUCK 2026-09-25 (item 142, the breaker fold): every lane's
+    // `max_requests` is declared through `BreakerUnit::set_budget` and spent on that one counter.
     "breaker-error-map",
-    "breaker-with-limits",
-    "budget-pricer-card",
+    // `breaker-with-limits` STRUCK 2026-09-25 (item 142): the one breaker is built `with_limits`
+    // from the two live `limits.*` keys.
+    // `budget-pricer-card` STRUCK 2026-09-25 (#43/item 104): `Pricer::with_card` deleted,
+    // superseded by `Pricer::from_card`.
     "ledger-checkpoint-seal",
     "ledger-checkpoint-journal",
-    "ledger-adjusting-entries",
+    // `ledger-adjusting-entries` STRUCK 2026-09-25 (#77(2)(3), Q36/Q9): the adjusting-entry code
+    // is deleted; an amendment reprices as a view.
     // `money-one-function-view` STRUCK 2026-09-24 (owner ruling Q12/Q25c; item 421).
-    "voice-denied-destinations",
+    // `voice-denied-destinations` STRUCK 2026-09-25 (Q67, revert to 1.5.5): the streaming plane's
+    // unwired deny-list is deleted.
     "plane-plugin-open",
-    "export-plugin-open",
+    // `export-plugin-open` STRUCK 2026-09-25 (item 141): the composition root's dropped-in
+    // export door opens each `kind: export` plugin an `export:` instance names (`open_export`).
     // `wal-corruption-verdict` STRUCK 2026-09-24 (owner ruling Q38): recover_and_truncate branches
     // on the verdict and quarantines a Corrupt remainder before the cut.
     // `crash-recovery-open-holds` STRUCK 2026-09-24 (item 127): the boot path calls `recover_all`.
     "breaker-pool-observation",
     // `plugin-abi-keyed-units` STRUCK 2026-09-24 (owner ruling Q33d/Q35; item 123).
     "hold-late-accrual-parent-exit",
-    "rate-card-multi-currency",
-    // The thirteen 1.6.0 admin verbs with no effect bound: not served (architect ruling
-    // 2026-09-24); binding each strikes its row.
+    // `rate-card-multi-currency` STRUCK 2026-09-25 (#66, spec Q4): `set_rate`/`set_fee` deleted.
+    // The 1.6.0 admin verbs with no effect bound: not served (architect ruling 2026-09-24);
+    // binding each strikes its row. Five STRUCK 2026-09-25 (owner ruling 2026-09-08: set_operator_key,
+    // set_escrow, set_dual_control, export_keyset, approve left 1.6.0 and are deleted).
     "admin-verb-verify-effect",
     "admin-verb-plane-facts-effect",
     "admin-verb-plane-record-write-effect",
-    "admin-verb-set-operator-key-effect",
-    "admin-verb-set-escrow-effect",
-    "admin-verb-set-dual-control-effect",
     "admin-verb-set-overdraft-ceiling-effect",
     "admin-verb-set-dispute-max-age-effect",
     "admin-verb-commit-upgrade-effect",
     "admin-verb-resolve-dispute-effect",
     "admin-verb-resolve-slice-effect",
-    "admin-verb-export-keyset-effect",
-    "admin-verb-approve-effect",
 ];
 
 /// The per-capability row id.

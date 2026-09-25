@@ -416,6 +416,78 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         &["no struct in the tracked"],
     ));
 
+    // ── THE PLANE-DECLARED LIFT KEYS (#49). The kernel's pre-pass spells no plane section: it lifts
+    //    what the registered planes' `PLANE_DECLARATION`s declare, so this gate reads the plane
+    //    sections off those declarations. Each case below is a way that read could go quietly wrong.
+    //
+    // A section a plane DECLARES that no carrier holds: the kernel would refuse it as an unknown
+    // field, so the grammar cannot claim it — an orphan, exactly like an undeclared lift-list key.
+    let plane_fixture = "crates/zz-plane-fixture/src/lib.rs";
+    let declaration = |config_section: &str, owned: &str| {
+        format!(
+            "pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =\n    \
+             busbar_contract::plane::PlaneDeclaration {{\n        key: \"zz\",\n        \
+             config_section: {config_section},\n        owned_config_sections: &[{owned}],\n    }};\n"
+        )
+    };
+    let mut ov = Overlay::new();
+    ov.set(plane_fixture, declaration("\"zz_no_such_carrier\"", ""));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a section a plane DECLARES that no struct carries is REFUSED",
+        &[ROW_TRACKED_SOURCES],
+        ov,
+        &["no struct in the tracked"],
+    ));
+
+    // A declared section this reader cannot resolve to a string is a section it cannot freeze.
+    let mut ov = Overlay::new();
+    ov.set(plane_fixture, declaration("ZZ_NO_SUCH_CONST", ""));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a plane-declared section the reader cannot resolve is REFUSED, never skipped",
+        &[ROW_TRACKED_SOURCES],
+        ov,
+        &["cannot resolve"],
+    ));
+
+    // Two door sections: the one door carrier cannot say which it carries.
+    let mut ov = Overlay::new();
+    ov.set(
+        plane_fixture,
+        declaration("\"zz_declaring\"", "\"zz_second_door\""),
+    );
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a SECOND declared door section is REFUSED — one carrier type carries one key",
+        &[ROW_TRACKED_SOURCES],
+        ov,
+        &["One carrier type carries one key"],
+    ));
+
+    // THE LIFT KEYS ARE READ FROM THE DECLARATIONS, not from a list the kernel keeps: the plane that
+    // owns the endpoint door stops declaring it, and the door leaves the rendered grammar.
+    let door_home = "crates/busbar-mcp/src/mcp/mod.rs";
+    let mut ov = Overlay::new();
+    ov.set(
+        door_home,
+        cx.read(door_home).unwrap_or_default().replace(
+            "owned_config_sections: &[\"mcp\"]",
+            "owned_config_sections: &[]",
+        ),
+    );
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a plane that stops DECLARING its door section drops it from the grammar (drift)",
+        &[ROW_SNAPSHOT_DRIFT],
+        ov,
+        &["STALE", "does not match the config source"],
+    ));
+
     // AN UNSUPPORTED `rename_all` would fingerprint wire keys the parser does not accept.
     let mut ov = Overlay::new();
     ov.set(

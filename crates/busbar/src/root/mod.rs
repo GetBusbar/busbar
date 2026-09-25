@@ -16,15 +16,11 @@
 //! - [`registry`] — the boot seal. Seven transports registered bottom-up and five planes registered
 //!   over them, then `check_claims`, `precedence_order` and `check_composition` answered before any
 //!   listener is bound. A cross-plane claim overlap is a boot refusal, not a runtime surprise.
-//! - [`vocabulary`] — the leak-once interner. Every config-derived open-vocabulary key becomes a
-//!   `&'static str` exactly once, at registration, and never again. A leak per dial or per frame is
-//!   a defect, so this module seals itself and refuses to intern afterwards.
 //! - [`durability`] — the WAL branch, the ledger's dual write and the audit unit's two streams.
 //!   Without a configured data directory nothing is probed, nothing is opened and no file appears:
 //!   constructing an on-disk journal *is* the decision to write to a disk.
-//! - [`transports`] — one provisioned listener per configured address. The transport-key unit
-//!   resolves the material through the secret plugin, journals the access, and hands back a handle
-//!   that carries a slot number and a fingerprint and no bytes at all.
+//! - [`transports`] — the loop's dispatch seam: the one place a unit's Route step reaches the
+//!   surface that already answers it, counted.
 //! - [`adapters`] — the seams where two units name the same object at two widths, plus the boot
 //!   assertion that the two hand-kept metric label banks still agree.
 //! - [`policy`] — the values the units take from configuration rather than from a `Default`.
@@ -63,8 +59,6 @@
 // It comes off with the last plane switch, when `main()` calls into this module.
 #![allow(dead_code)]
 
-#[cfg(any(test, feature = "test-harness"))]
-pub mod a2a_kernel_rider;
 pub mod adapters;
 pub mod auth_bindings;
 pub mod cli;
@@ -75,21 +69,23 @@ pub mod gauntlet_kernel;
 pub mod harness;
 pub mod kernel;
 pub mod ledger_identity;
+pub mod linked;
 pub mod migration;
-pub mod money_book;
 #[cfg(feature = "plane-decision")]
 pub mod plane_decision;
 pub mod policy;
 pub mod registry;
 pub mod transports;
-#[cfg(feature = "root-a2a")]
-pub mod units_a2a;
 #[cfg(feature = "root-admin")]
 pub mod units_admin;
 #[cfg(feature = "root-llm")]
 pub mod units_llm;
-#[cfg(feature = "root-mcp")]
-pub mod units_mcp;
 #[cfg(feature = "root-voice")]
 pub mod units_voice;
-pub mod vocabulary;
+
+// The per-call metering shadow on the plane-neutral kernel bridge: a plane whose one flat charge
+// fires inside `drive` rides `gauntlet_kernel::run_gauntlet_via_kernel` byte- and money-identically
+// to the substrate gauntlet.
+#[cfg(test)]
+#[path = "tests/percall_meter_shadow.rs"]
+mod percall_meter_shadow;

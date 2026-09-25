@@ -44,7 +44,7 @@ async fn a2a_rows(h: &Harness) -> Vec<busbar_api::MeteringRow> {
 async fn call_catalogue(h: &Harness, body: &serde_json::Value) -> (u16, serde_json::Value) {
     let resp = reqwest::Client::new()
         .post(format!("http://{}/a2a", h.addr))
-        .header("authorization", format!("Bearer {}", h.bearer))
+        .header("authorization", format!("Bearer {}", h.caller_token))
         .header("content-type", "application/json")
         .json(body)
         .send()

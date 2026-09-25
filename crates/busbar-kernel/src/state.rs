@@ -508,7 +508,7 @@ pub struct App {
 impl App {
     /// LAW 7, the ONE generic check: is this linked plane configured in this generation? The fallback
     /// plane always is; any other only when its declared `config_section` is present. Core names no plane.
-    pub fn plane_configured(&self, decl: &crate::plane::registry::PlaneDecl) -> bool {
+    pub fn plane_configured(&self, decl: &crate::plane::registry::PlaneDeclaration) -> bool {
         decl.fallback
             || self
                 .plane_sections

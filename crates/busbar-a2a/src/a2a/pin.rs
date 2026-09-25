@@ -38,6 +38,7 @@
 // construction `pin_a_signed_card` performs for a mechanism the sweep does not reach.
 #![cfg_attr(not(test), allow(dead_code))]
 
+use super::config::PinMechanism;
 use super::{card, jws};
 use busbar_kernel::trust::{Approval, PinnedArtifact, Sighting, TrustError};
 
@@ -53,13 +54,13 @@ pub enum CardPin {
     },
     /// An UNSIGNED card bound at the transport layer by the certificate's subject-public-key-info
     /// hash, plus the canonical fingerprint of the card that endpoint served.
-    CertSpki {
-        spki: String,
+    CertKeyPin {
+        key_pin: String,
         card_fingerprint: String,
     },
     /// An UNSIGNED card behind mutual TLS, pinned on the peer certificate's SPKI hash.
-    Mtls {
-        spki: String,
+    MutualTls {
+        key_pin: String,
         card_fingerprint: String,
     },
     /// NO authenticity root at all. Legal to register, deliberately impossible to approve, and named
@@ -75,10 +76,10 @@ impl CardPin {
             CardPin::JwsIssuerKey {
                 card_fingerprint, ..
             }
-            | CardPin::CertSpki {
+            | CardPin::CertKeyPin {
                 card_fingerprint, ..
             }
-            | CardPin::Mtls {
+            | CardPin::MutualTls {
                 card_fingerprint, ..
             } => Some(card_fingerprint),
             CardPin::Unpinned => None,
@@ -96,8 +97,8 @@ impl PinnedArtifact for CardPin {
     fn mechanism(&self) -> &'static str {
         match self {
             CardPin::JwsIssuerKey { .. } => "jws_issuer_key",
-            CardPin::CertSpki { .. } => "cert_spki",
-            CardPin::Mtls { .. } => "mtls",
+            CardPin::CertKeyPin { .. } => PinMechanism::CertKeyPin.token(),
+            CardPin::MutualTls { .. } => PinMechanism::MutualTls.token(),
             CardPin::Unpinned => "unpinned",
         }
     }
@@ -112,14 +113,20 @@ impl PinnedArtifact for CardPin {
                 issuer_key,
                 card_fingerprint,
             } => format!("jws_issuer_key:{issuer_key}+{card_fingerprint}"),
-            CardPin::CertSpki {
-                spki,
+            CardPin::CertKeyPin {
+                key_pin,
                 card_fingerprint,
-            } => format!("cert_spki:{spki}+{card_fingerprint}"),
-            CardPin::Mtls {
-                spki,
+            } => format!(
+                "{}:{key_pin}+{card_fingerprint}",
+                PinMechanism::CertKeyPin.token()
+            ),
+            CardPin::MutualTls {
+                key_pin,
                 card_fingerprint,
-            } => format!("mtls:{spki}+{card_fingerprint}"),
+            } => format!(
+                "{}:{key_pin}+{card_fingerprint}",
+                PinMechanism::MutualTls.token()
+            ),
             CardPin::Unpinned => "unpinned".to_string(),
         }
     }
@@ -142,7 +149,6 @@ impl busbar_kernel::trust::declared::Declares for CardPin {
     fn artifact(
         reading: busbar_kernel::trust::declared::Reading<'_, Self::Mechanism>,
     ) -> Option<Self> {
-        use super::config::PinMechanism;
         use busbar_kernel::trust::declared::Reading;
         match reading {
             // NAMED OUT LOUD, which is this plane's ruling and not core's: an operator reading a
@@ -166,12 +172,12 @@ impl busbar_kernel::trust::declared::Declares for CardPin {
                         issuer_key: key,
                         card_fingerprint,
                     }),
-                    PinMechanism::CertSpki => Some(CardPin::CertSpki {
-                        spki: key,
+                    PinMechanism::CertKeyPin => Some(CardPin::CertKeyPin {
+                        key_pin: key,
                         card_fingerprint,
                     }),
-                    PinMechanism::Mtls => Some(CardPin::Mtls {
-                        spki: key,
+                    PinMechanism::MutualTls => Some(CardPin::MutualTls {
+                        key_pin: key,
                         card_fingerprint,
                     }),
                     // UNREACHABLE BY CONSTRUCTION — `is_a_root` routed this mechanism to `NoRoot`
@@ -247,18 +253,18 @@ fn observed_pin(sighting: &Sighting<CardPin>) -> Option<CardPin> {
 /// nobody authenticated. So the signature is checked against the operator's out-of-band key FIRST,
 /// and the fingerprint is only computed on the document that passed.
 ///
-/// `issuer_key_spki` travels into the pin verbatim, as the operator wrote it, because that string is
+/// `issuer_key_info` travels into the pin verbatim, as the operator wrote it, because that string is
 /// what an operator compares against the value their vendor published out of band. Re-rendering it
 /// from the parsed key would produce a value that is correct and that they cannot check by eye.
 pub(crate) fn pin_a_signed_card(
     card: &serde_json::Value,
-    issuer_key_spki: &str,
+    issuer_key_info: &str,
 ) -> Result<(CardPin, jws::Verified), jws::JwsError> {
-    let issuer = jws::IssuerKey::from_spki_base64(issuer_key_spki)?;
+    let issuer = jws::IssuerKey::from_key_info_base64(issuer_key_info)?;
     let verified = jws::verify_card(card, &issuer)?;
     Ok((
         CardPin::JwsIssuerKey {
-            issuer_key: issuer_key_spki.trim().to_string(),
+            issuer_key: issuer_key_info.trim().to_string(),
             card_fingerprint: card::fingerprint(card)?,
         },
         verified,

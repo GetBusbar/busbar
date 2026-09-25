@@ -27,8 +27,8 @@ use crate::{
     admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
     core_routes, cost, durable, egress_auth, endpoints, eventstream, export, failover, governance,
     handlers, hooks, ingress, ir, json, limits, lossless, media, metrics, net_guard, oauth_as,
-    observability, operation, plane, plugin_routes, profile, proto, proxy, ratelimit, sigv4, state,
-    store, telemetry, tls, transport, trust,
+    observability, operation, plane, plugin_routes, profile, proto, proxy, ratelimit, state, store,
+    telemetry, tls, transport, trust,
 };
 use busbar_kernel::plane_host::{
     AffinityInput, AuthStyleInput, ClientSettingsInput, FailoverInput, HealthInput,
@@ -916,7 +916,7 @@ pub fn build_app_from_config(
                 .breaker
                 .as_ref()
                 .map(crate::store::breaker_cfg_to_runtime)
-                .map(|b| b.to_llm()),
+                .map(|b| b.to_breaker_input()),
         });
     }
 
@@ -1035,7 +1035,7 @@ pub fn build_app_from_config(
         );
     }
     let http1_only = upstream_bool_env_override(http1_env, cfg.limits.upstream_http1_only);
-    let llm_client_settings = ClientSettingsInput {
+    let fallback_client_settings = ClientSettingsInput {
         upstream_request_timeout_secs: cfg.limits.upstream_request_timeout_secs,
         pool_max_idle_per_host: cfg.limits.pool_max_idle_per_host,
         pool_idle_timeout_secs: cfg.limits.pool_idle_timeout_secs,
@@ -1176,9 +1176,12 @@ pub fn build_app_from_config(
         // these read identically to the former per-feature branches without naming a plane feature.
         let tools_stateful = !cfg.tool_defs.def_names().is_empty() || !cfg.tool_pools.is_empty();
         let agents_stateful = !cfg.agent_defs.def_names().is_empty() || !cfg.agent_pools.is_empty();
-        let store: Arc<dyn governance::Store> = if g.module
-            == crate::config::GOVERNANCE_STORE_MEMORY
-        {
+        // The configured store, resolved and opened on the store AXIS whichever door its row came
+        // in by (DECISIONS #2 rule (1)). A row that states itself ephemeral keeps nothing across a
+        // restart, which the operator is told before it opens.
+        let row = plugin_registry.resolve(&g.module);
+        let ephemeral = row.is_some_and(|p| p.ephemeral);
+        if ephemeral {
             diag_warn!(
                 GOVERNANCE_STORE_EPHEMERAL,
                 "store: in-memory (ephemeral) - keys, groups' usage, and ledgers reset on \
@@ -1194,19 +1197,22 @@ pub fn build_app_from_config(
             {
                 diag_warn!(STATEFUL_PLANE_EPHEMERAL_STORE, "{msg}");
             }
-            Arc::new(governance::MemoryStore::new())
-        } else {
-            // Resolve any SecretRef-typed setting (e.g. a `licenseKey`) against the secret
-            // store BEFORE the settings cross the ABI (ADR-0010). FAIL-CLOSED: an unresolvable
-            // ref refuses the store load rather than handing the plugin a dangling reference.
-            let resolved = config::secret::resolve_settings(&g.settings, secret_resolver.as_ref())
-                .map_err(|e| format!("store '{}' settings: {e}", g.module))?;
-            let cfg_json = serde_json::Value::Object(resolved).to_string();
-            match plugin_registry.open_store(&g.module, &cfg_json) {
-                Ok(s) => Arc::from(s),
-                Err(e) => return Err(format!("store '{}' plugin load failed: {e}", g.module)),
-            }
+        }
+        // Resolve any SecretRef-typed setting (e.g. a `licenseKey`) against the secret store BEFORE
+        // the settings cross the ABI (ADR-0010). FAIL-CLOSED: an unresolvable ref refuses the store
+        // load rather than handing the plugin a dangling reference. A row opened IN PROCESS is
+        // handed no settings, so it has none to resolve (the built-in store never read its own).
+        let resolved = match row.is_some_and(|p| p.in_process()) {
+            true => Default::default(),
+            false => config::secret::resolve_settings(&g.settings, secret_resolver.as_ref())
+                .map_err(|e| format!("store '{}' settings: {e}", g.module))?,
         };
+        let cfg_json = serde_json::Value::Object(resolved).to_string();
+        let store: Arc<dyn governance::Store> = Arc::from(
+            plugin_registry
+                .open_store(&g.module, &cfg_json)
+                .map_err(|e| format!("store '{}' plugin load failed: {e}", g.module))?,
+        );
         // The operator ADMIN credential: the `admin-tokens` chain entry's `token:` secret ref.
         // FAIL-CLOSED: a configured-but-unresolvable admin token refuses boot (a silently-absent
         // token would lock the admin API while the operator believes it is guarded).
@@ -1269,11 +1275,9 @@ pub fn build_app_from_config(
                 // `all_keys()` failure is non-fatal — treat as 0 keys (the enforcement gate is
                 // unaffected; we only lose the advisory). Inertness is now recomputed from CHAIN
                 // SHAPE (is `keys` in the running chain?), not the admin token.
-                let store_is_durable = g.module != crate::config::GOVERNANCE_STORE_MEMORY;
                 let key_count = gs.all_keys().map(|k| k.len()).unwrap_or(0);
-                let keys_in_chain = auth_mw.keys_in_chain;
                 if let Some(banner) =
-                    inert_durable_keys_banner(store_is_durable, key_count, keys_in_chain)
+                    inert_durable_keys_banner(!ephemeral, key_count, auth_mw.keys_in_chain)
                 {
                     eprintln!("[error] {banner}");
                     diag_error!(DURABLE_KEYS_INERT, "{banner}");
@@ -1474,38 +1478,30 @@ pub fn build_app_from_config(
         &'static str,
         Arc<dyn std::any::Any + Send + Sync>,
     > = {
-        let ctx = crate::plane::registry::BuildCtx {
-            // The `tools:` container plane's resource is TYPE-ERASED here, at the composition root,
-            // rather than inside the plane's `build` fn — so the `BuildCtx` seam carries an opaque
-            // slot and names no plane-owned resource type. It is the SAME `Arc` the plane clones into
-            // `plane_slots` and downcasts back out inside its own module, so the "one lowering, one
-            // Arc" invariant holds — the plane's own module is the only reader, through the slot.
-            // The endpoint resource is ALREADY validated and erased as `Option<Arc<dyn Any>>` by
-            // config resolution, read here through the neutral SECTION-KEYED accessor (the `tools:`
-            // plane owns the endpoint door) — so the slot is a CLONE of that one opaque `Arc`, not a
-            // re-erasure, and names no plane resource type. `None` when the block is absent or the
-            // owning plane is compiled out (resolve produced no resource then).
-            endpoint_slot: cfg
-                .endpoint_resources
-                .get(busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2])
-                .cloned(),
-            // The neutral registry section, erased as `&dyn Any` via `PlaneCfg::as_any` so `BuildCtx`
-            // names no plane-owned config type; the `agents:` container plane's `build` closure
-            // downcasts it back to its own typed config.
-            agent_defs: cfg.agent_defs.as_any(),
-            public_url: cfg.public_url.as_deref(),
-            // THE PRIOR GENERATION'S SLOTS, so a plane's `build` can CARRY accumulated coordination
-            // off its own prior runtime object across this apply (the `agents:` container plane
-            // carries its verify-on-call gate and boot-resolved card transports off its own prior
-            // runtime object) — the same neutral `&dyn PlaneSlots` a container plane's `build_runtime`
-            // receives below.
-            prior: prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
-        };
         // LAW 7: an unconfigured plane builds no slot, so it claims, admits and mounts nothing.
         crate::plane::registry::plane_decls()
             .iter()
             .filter(|decl| decl.fallback || cfg.plane_sections.contains(decl.config_section))
-            .filter_map(|decl| (decl.build)(&ctx).map(|obj| (decl.key, obj)))
+            .filter_map(|decl| {
+                let ctx = crate::plane::registry::BuildCtx {
+                    // THIS plane's own section-keyed resource, ALREADY validated and TYPE-ERASED by
+                    // config resolution: the `tools:` container plane's endpoint resource (the SAME
+                    // `Arc` it clones into `plane_slots` and downcasts inside its own module, so
+                    // "one lowering, one Arc" holds), or a raw-carried plane's `(section, value)`.
+                    // `None` when the plane's section carries none. Names no plane resource type.
+                    endpoint_slot: cfg.endpoint_resources.get(decl.config_section).cloned(),
+                    // The neutral registry section, erased as `&dyn Any` via `PlaneCfg::as_any` so
+                    // `BuildCtx` names no plane-owned config type; the `agents:` container plane's
+                    // `build` closure downcasts it back to its own typed config.
+                    agent_defs: cfg.agent_defs.as_any(),
+                    public_url: cfg.public_url.as_deref(),
+                    // THE PRIOR GENERATION'S SLOTS, so a plane's `build` can CARRY accumulated
+                    // coordination off its own prior runtime object across this apply — the same
+                    // neutral `&dyn PlaneSlots` a container plane's `build_runtime` receives below.
+                    prior: prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
+                };
+                (decl.build)(&ctx).map(|obj| (decl.key, obj))
+            })
             .collect()
     };
 
@@ -1575,14 +1571,14 @@ pub fn build_app_from_config(
 
     // Populate the NEUTRAL carrier field-by-field from the already-resolved config (pre-resolved secret
     // plaintexts + rate-card-derived costs + resolved context/tokens are in `lane_inputs`/`pool_inputs`).
-    let llm_build_input = PlaneBuildInput {
+    let fallback_build_input = PlaneBuildInput {
         lanes: lane_inputs,
         pools: pool_inputs,
         upstream_credentials: cfg.upstream_credentials,
         allow_metadata_hosts: cfg.allow_metadata_hosts.clone(),
         allow_all_metadata: cfg.allow_all_metadata,
         blocked_metadata_hosts: cfg.blocked_metadata_hosts.clone(),
-        client_settings: llm_client_settings,
+        client_settings: fallback_client_settings,
         // The cross-protocol translation seam's GLOBAL fallback max-output-tokens and effort→budget
         // table — fallback-plane vocabulary, carried through the neutral carrier so the plane's
         // `build_runtime` stamps them onto its own runtime object (they no longer live on `App`).
@@ -1617,7 +1613,7 @@ pub fn build_app_from_config(
             .and_then(|d| d.build_runtime)
         {
             let slot = f(
-                &llm_build_input as &dyn std::any::Any,
+                &fallback_build_input as &dyn std::any::Any,
                 prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
             );
             plane_slots.insert(fallback_runtime_key, slot);
