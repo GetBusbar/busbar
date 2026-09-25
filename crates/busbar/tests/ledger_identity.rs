@@ -511,8 +511,8 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
 }
 
 /// One administrative read, as bytes.
-fn get_bytes(port: u16, path: &str, bearer: &str) -> Vec<u8> {
-    let r = get(port, path, Some(bearer));
+fn get_bytes(port: u16, path: &str, token: &str) -> Vec<u8> {
+    let r = get(port, path, Some(token));
     assert_eq!(
         r.status, 200,
         "GET {path} answered {}: {}",
@@ -945,15 +945,15 @@ struct Response {
     body: String,
 }
 
-fn get(port: u16, path: &str, bearer: Option<&str>) -> Response {
-    request(port, "GET", path, bearer, None)
+fn get(port: u16, path: &str, token: Option<&str>) -> Response {
+    request(port, "GET", path, token, None)
 }
 
 fn request(
     port: u16,
     method: &str,
     path: &str,
-    bearer: Option<&str>,
+    token: Option<&str>,
     body: Option<&str>,
 ) -> Response {
     let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
@@ -969,7 +969,7 @@ fn request(
     // and a hang is still bounded.
     let _ = stream.set_read_timeout(Some(Duration::from_secs(120)));
     let mut head = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n");
-    if let Some(t) = bearer {
+    if let Some(t) = token {
         head.push_str(&format!("Authorization: Bearer {t}\r\n"));
     }
     match body {

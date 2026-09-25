@@ -314,15 +314,15 @@ fn validate_trust_gate_matches_boot() {
     let dir = fixture_dir("trust");
     write_tarball(
         &dir,
-        "sqlite.tar.gz",
-        "busbar-store-sqlite",
-        "sqlite",
+        "docstore.tar.gz",
+        "busbar-store-docstore",
+        "docstore",
         b"lib",
     );
     write_configs(
         &dir,
         &format!(
-            "{}store:\n  module: sqlite\n",
+            "{}store:\n  module: docstore\n",
             plugins_block(&dir, true, false)
         ),
     );
@@ -337,7 +337,7 @@ fn validate_trust_gate_matches_boot() {
     write_configs(
         &dir,
         &format!(
-            "{}store:\n  module: sqlite\n",
+            "{}store:\n  module: docstore\n",
             plugins_block(&dir, true, true)
         ),
     );
@@ -375,24 +375,30 @@ fn validate_fails_on_alias_conflict_naming_both() {
 #[test]
 fn list_plugins_reports_statuses_without_loading() {
     let dir = fixture_dir("list");
-    write_tarball(&dir, "good.tar.gz", "busbar-store-sqlite", "sqlite", b"g");
+    write_tarball(
+        &dir,
+        "good.tar.gz",
+        "busbar-store-docstore",
+        "docstore",
+        b"g",
+    );
     write_tarball(&dir, "third.tar.gz", "acme-store-dynamo", "dynamo", b"t");
     std::fs::write(dir.join("plugins/junk.tar.gz"), b"garbage").unwrap();
-    // allow_unsigned so the sqlite one is loadable; the store selects it.
+    // allow_unsigned so the docstore one is loadable; the store selects it.
     write_configs(
         &dir,
         &format!(
-            "{}store:\n  module: sqlite\n",
+            "{}store:\n  module: docstore\n",
             plugins_block(&dir, true, true)
         ),
     );
     let (code, stdout, _stderr) = run_busbar(&dir, &["--list-plugins"]);
     assert_eq!(code, 0, "list-plugins is informational: {stdout}");
     assert!(
-        stdout.contains("LOADS (store.module: sqlite)"),
+        stdout.contains("LOADS (store.module: docstore)"),
         "the selected store row: {stdout}"
     );
-    assert!(stdout.contains("busbar-store-sqlite"), "{stdout}");
+    assert!(stdout.contains("busbar-store-docstore"), "{stdout}");
     assert!(stdout.contains("acme-store-dynamo"), "{stdout}");
     assert!(stdout.contains("ready"), "{stdout}");
     assert!(stdout.contains("INVALID"), "the junk row: {stdout}");
@@ -415,32 +421,32 @@ fn list_plugins_selected_row_requires_every_conjunct() {
     write_tarball(
         &dir,
         "byname.tar.gz",
-        "sqlite",
+        "docstore",
         "totally-different-alias",
         b"n",
     );
     write_configs(
         &dir,
         &format!(
-            "{}store:\n  module: sqlite\n",
+            "{}store:\n  module: docstore\n",
             plugins_block(&dir, true, true)
         ),
     );
     let (code, stdout, _stderr) = run_busbar(&dir, &["--list-plugins"]);
     assert_eq!(code, 0, "{stdout}");
     assert!(
-        stdout.contains("LOADS (store.module: sqlite)"),
+        stdout.contains("LOADS (store.module: docstore)"),
         "a NAME match alone (alias differs) must still select: {stdout}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 
     // (2) matching name, but UNTRUSTED (not allow_unsigned) so status != "ready".
     let dir = fixture_dir("list-untrusted-match");
-    write_tarball(&dir, "untrusted.tar.gz", "sqlite", "sqlite", b"u");
+    write_tarball(&dir, "untrusted.tar.gz", "docstore", "docstore", b"u");
     write_configs(
         &dir,
         &format!(
-            "{}store:\n  module: sqlite\n",
+            "{}store:\n  module: docstore\n",
             plugins_block(&dir, true, false)
         ),
     );
@@ -454,11 +460,11 @@ fn list_plugins_selected_row_requires_every_conjunct() {
 
     // (3) matching name AND ready, but plugins.enabled: false.
     let dir = fixture_dir("list-disabled-match");
-    write_tarball(&dir, "disabled.tar.gz", "sqlite", "sqlite", b"d");
+    write_tarball(&dir, "disabled.tar.gz", "docstore", "docstore", b"d");
     write_configs(
         &dir,
         &format!(
-            "{}store:\n  module: sqlite\n",
+            "{}store:\n  module: docstore\n",
             plugins_block(&dir, false, true)
         ),
     );
@@ -542,11 +548,11 @@ fn migrate_config_omits_changes_and_warnings_sections_when_empty() {
 fn validate_fails_when_a_plugin_is_referenced_but_plugins_are_disabled() {
     // store.module referencing a non-memory backend with plugins.enabled left at its default false.
     let dir = fixture_dir("gate-store");
-    write_configs(&dir, "store:\n  module: sqlite\n");
+    write_configs(&dir, "store:\n  module: docstore\n");
     let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(code, 1, "{stderr}");
     assert!(
-        stderr.contains("store.module: 'sqlite' requires the plugin subsystem")
+        stderr.contains("store.module: 'docstore' requires the plugin subsystem")
             && stderr.contains("plugins.enabled is false"),
         "got {stderr}"
     );
@@ -947,11 +953,11 @@ fn validate_refuses_a_publish_as_collision_with_a_namespaced_default() {
         &dir,
         r#"tools:
   foo:
-    url: "https://foo.internal/mcp"
+    url: "https://foo.internal/rpc"
     pin: { mechanism: unpinned }
     tools_allow: { bar: {} }
   other:
-    url: "https://other.internal/mcp"
+    url: "https://other.internal/rpc"
     pin: { mechanism: unpinned }
     tools_allow:
       anything:
@@ -978,11 +984,11 @@ fn validate_refuses_a_publish_as_collision_with_a_namespaced_default() {
         &dir,
         r#"tools:
   foo:
-    url: "https://foo.internal/mcp"
+    url: "https://foo.internal/rpc"
     pin: { mechanism: unpinned }
     tools_allow: { bar: {} }
   other:
-    url: "https://other.internal/mcp"
+    url: "https://other.internal/rpc"
     pin: { mechanism: unpinned }
     tools_allow:
       anything:
@@ -1386,7 +1392,7 @@ fn validate_ok_on_a_good_decisions_config() {
     write_decisions_configs(
         &dir,
         "jev",
-        "decisions:\n  models:\n    jev:\n      provider: mock\n",
+        "decisions:\n  models:\n    verdicts:\n      provider: mock\n",
     );
     let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(
@@ -1405,7 +1411,7 @@ fn validate_refuses_a_decisions_model_naming_an_undefined_provider() {
     write_decisions_configs(
         &dir,
         "jev",
-        "decisions:\n  models:\n    jev:\n      provider: ghost\n",
+        "decisions:\n  models:\n    verdicts:\n      provider: ghost\n",
     );
     let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(
@@ -1413,7 +1419,7 @@ fn validate_refuses_a_decisions_model_naming_an_undefined_provider() {
         "an undefined provider reference fails validate: {stderr}"
     );
     assert!(
-        stderr.contains("decisions.models.jev.provider"),
+        stderr.contains("decisions.models.verdicts.provider"),
         "the refusal names the key path: {stderr}"
     );
     assert!(
@@ -1435,7 +1441,7 @@ fn validate_refuses_a_decisions_hook_naming_an_undefined_hook() {
     write_decisions_configs(
         &dir,
         "jev",
-        "decisions:\n  models:\n    jev:\n      provider: mock\n  hooks: [ghost-hook]\n",
+        "decisions:\n  models:\n    verdicts:\n      provider: mock\n  hooks: [ghost-hook]\n",
     );
     let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(
@@ -1460,17 +1466,20 @@ fn validate_refuses_a_decisions_hook_naming_an_undefined_hook() {
 /// gets by simply OMITTING `protocol:` on a provider meant for the decisions plane.
 #[cfg(feature = "plane-decision")]
 #[test]
-fn validate_refuses_a_decisions_model_whose_provider_speaks_a_non_jev_dialect() {
+fn validate_refuses_a_decisions_model_whose_provider_speaks_a_foreign_dialect() {
     let dir = fixture_dir("decisions-baddialect");
     write_decisions_configs(
         &dir,
         "anthropic",
-        "decisions:\n  models:\n    jev:\n      provider: mock\n",
+        "decisions:\n  models:\n    verdicts:\n      provider: mock\n",
     );
     let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
-    assert_eq!(code, 1, "a non-jev dialect fails closed: {stderr}");
+    assert_eq!(
+        code, 1,
+        "a dialect the decision plane does not speak fails closed: {stderr}"
+    );
     assert!(
-        stderr.contains("decisions.models.jev.provider"),
+        stderr.contains("decisions.models.verdicts.provider"),
         "the refusal names the key path: {stderr}"
     );
     assert!(
@@ -1518,13 +1527,13 @@ fn validate_unknown_protocol_lists_only_the_configured_planes_dialects() {
 /// the section, which validates clean.)
 #[cfg(feature = "plane-decision")]
 #[test]
-fn validate_refuses_the_jev_protocol_when_no_decisions_section_is_configured() {
-    let dir = fixture_dir("jev-no-decisions");
+fn validate_refuses_the_decision_protocol_when_no_decisions_section_is_configured() {
+    let dir = fixture_dir("decision-protocol-no-decisions");
     write_decisions_configs(&dir, "jev", "");
     let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(
         code, 1,
-        "jev with no decision plane configured fails validate: {stderr}"
+        "the decision protocol with no decision plane configured fails validate: {stderr}"
     );
     assert!(
         stderr.contains(&format!(

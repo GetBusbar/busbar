@@ -530,7 +530,7 @@ pub(crate) const ADMIN_TOKEN_HEADER: &str = "x-admin-token";
 /// because deciding what an unrecognised scheme means is the chain's and not this reader's.
 #[cfg(feature = "root-admin")]
 pub(crate) fn presented_credential(headers: &axum::http::HeaderMap) -> Option<String> {
-    let bearer = headers
+    let authorization = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .map(|value| {
@@ -545,7 +545,7 @@ pub(crate) fn presented_credential(headers: &axum::http::HeaderMap) -> Option<St
         .filter(|credential| !credential.is_empty());
     // The order is the legacy fold's: both carriers are recognised and either identifies, so a
     // request that sends only the second is a request that presented a credential.
-    bearer.or_else(|| {
+    authorization.or_else(|| {
         headers
             .get(ADMIN_TOKEN_HEADER)
             .and_then(|value| value.to_str().ok())

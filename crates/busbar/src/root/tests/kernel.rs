@@ -711,8 +711,11 @@ fn the_boot_install_raises_both_halves_of_the_rate_seam_and_main_calls_it() {
 
 /// The flat lane the history tests price.
 const FLAT_LANE: &str = "gpt";
-/// The `mcp` plane's own lane (#47): its card prices it, at twice the flat card's rate.
-const PLANE_LANE: &str = "mcp\u{1f}search";
+/// The plane whose own card (#47) the history tests price. Any plane key reads the same: the card,
+/// its presence key and its fee lane are keyed on the string, never on which plane it is.
+const PLANE: &str = "planex";
+/// That plane's own lane (#47): its card prices it, at twice the flat card's rate.
+const PLANE_LANE: &str = "planex\u{1f}search";
 
 /// When the history tests' events land, in wall-clock milliseconds.
 const BOOT_A: u64 = 1_000;
@@ -732,18 +735,18 @@ fn tiers(input: f64) -> busbar_substrate_values::billing::RawTierRates {
 }
 
 /// The deployment's lanes at one price: [`FLAT_LANE`] at `price` micro-units an input token, and
-/// the `mcp` plane's card (its presence key and [`PLANE_LANE`]) at twice that.
+/// the [`PLANE`] plane's card (its presence key and [`PLANE_LANE`]) at twice that.
 fn lanes_at(price: f64) -> Vec<(String, busbar_substrate_values::billing::RawTierRates)> {
     vec![
         (FLAT_LANE.to_string(), tiers(price)),
-        ("mcp\u{1f}".to_string(), tiers(0.0)),
+        (format!("{PLANE}\u{1f}"), tiers(0.0)),
         (PLANE_LANE.to_string(), tiers(2.0 * price)),
     ]
 }
 
 fn plane_fees() -> busbar_kernel::config::PlaneFeesMap {
     busbar_kernel::config::PlaneFeesMap::from([(
-        "mcp".to_string(),
+        PLANE.to_string(),
         busbar_kernel_ledger::cost::PlaneFees {
             per_request: 7,
             per_session: 11,
@@ -1117,12 +1120,12 @@ fn an_applied_card_round_trips_the_journal_as_the_same_card_on_every_plane() {
     let read = super::CardApplied::from_body(&applied.body()).expect("the body reads back");
     assert_eq!(read, applied);
     let rebuilt = read.form.card();
-    let fee_lane = busbar_kernel_ledger::cost::plane_fee_lane("mcp");
+    let fee_lane = busbar_kernel_ledger::cost::plane_fee_lane(PLANE);
     for lane in [
         FLAT_LANE,
         PLANE_LANE,
         "other",
-        "mcp\u{1f}other",
+        "planex\u{1f}other",
         fee_lane.as_str(),
     ] {
         assert_eq!(

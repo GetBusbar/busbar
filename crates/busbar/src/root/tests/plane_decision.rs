@@ -76,7 +76,7 @@ fn the_boot_fold_keeps_the_decision_plane() {
 // compile time instead, which is strictly earlier than a test run would catch it.
 const _: () = assert!(
     !PLANE_DECL.fallback,
-    "the fallback catch-all is the LLM plane's flag and exactly one plane sets it"
+    "the fallback catch-all is another plane's flag and exactly one plane sets it"
 );
 
 /// IDENTITY ONLY. Installing this declaration must mount no route, bind no audience and contribute
@@ -96,7 +96,7 @@ fn the_declaration_mounts_nothing_and_admits_nobody() {
 /// ONE WIRE FORMAT, so the plane earns no superset IR. jev names its operation in the request line,
 /// not in a body member, and there is no second dialect to meet a first one in.
 #[test]
-fn the_plane_declares_the_one_wire_format_jev_speaks() {
+fn the_plane_declares_its_one_wire_format() {
     assert_eq!(
         (PLANE_DECL.wire_format_names)(),
         &[busbar_kernel::plane::WIRE_HTTP_JSON]
@@ -165,7 +165,7 @@ fn a_typo_d_member_of_the_decisions_block_is_refused() {
 fn a_valid_decisions_block_lands_as_the_plane_s_own_typed_section() {
     let _reg = decisions_registered();
     let deploy = busbar_kernel::config::deploy_from_yaml_str(&doc(
-        "decisions:\n  models:\n    jev: { provider: typesafe, upstream_model: jev-1.13.0 }\n",
+        "decisions:\n  models:\n    verdicts: { provider: typesafe, upstream_model: judge-1.13.0 }\n",
     ))
     .expect("a valid `decisions:` block must parse");
 
@@ -180,10 +180,10 @@ fn a_valid_decisions_block_lands_as_the_plane_s_own_typed_section() {
     let model = section
         .0
         .models
-        .get("jev")
+        .get("verdicts")
         .expect("the operator's model entry must survive the lowering");
     assert_eq!(model.provider, "typesafe");
-    assert_eq!(model.upstream_model.as_deref(), Some("jev-1.13.0"));
+    assert_eq!(model.upstream_model.as_deref(), Some("judge-1.13.0"));
     assert!(deploy.decisions.0.is_present());
 }
 

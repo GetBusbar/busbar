@@ -355,7 +355,7 @@ fn http_request(
     method: &str,
     path: &str,
     body: Option<&str>,
-    bearer: Option<&str>,
+    token: Option<&str>,
 ) -> (u16, String) {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async {
@@ -367,8 +367,8 @@ fn http_request(
             "POST" => client.post(format!("http://{addr}{path}")),
             _ => client.get(format!("http://{addr}{path}")),
         };
-        if let Some(t) = bearer {
-            req = req.bearer_auth(t);
+        if let Some(t) = token {
+            req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {t}"));
         }
         if let Some(b) = body {
             req = req

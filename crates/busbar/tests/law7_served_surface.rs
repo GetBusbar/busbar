@@ -165,7 +165,7 @@ models:
     booted
 }
 
-fn request(addr: &str, method: &str, path: &str, bearer: Option<&str>) -> (u16, String) {
+fn request(addr: &str, method: &str, path: &str, token: Option<&str>) -> (u16, String) {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async {
         let client = reqwest::Client::builder()
@@ -174,8 +174,8 @@ fn request(addr: &str, method: &str, path: &str, bearer: Option<&str>) -> (u16, 
             .expect("client");
         let method = reqwest::Method::from_bytes(method.as_bytes()).expect("method");
         let mut req = client.request(method, format!("http://{addr}{path}"));
-        if let Some(t) = bearer {
-            req = req.bearer_auth(t);
+        if let Some(t) = token {
+            req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {t}"));
         }
         let resp = req.send().await.expect("request");
         (
@@ -239,7 +239,7 @@ fn a_1_5_5_config_serves_the_1_5_5_surface_and_each_configured_plane_serves_its_
         let (_, body) = request(&b.data, "POST", door, None);
         assert!(
             !is_plane_door(&body),
-            "POST {door} must fall to the LLM catch-all on a 1.5.5 config, not a plane door: {body}"
+            "POST {door} must fall to the fallback catch-all on a 1.5.5 config, not a plane door: {body}"
         );
     }
     drop(b);
@@ -337,6 +337,6 @@ fn a_1_5_5_config_boot_prints_nothing_from_an_unconfigured_plane() {
     let out = boot_181_output("streams:\n  context_window_tokens: 16384\n");
     assert!(
         out.contains(PLANE_LINE),
-        "with `streams:` configured the voice root's provisioning runs:\n{out}"
+        "with `streams:` configured the plane root's provisioning runs:\n{out}"
     );
 }
