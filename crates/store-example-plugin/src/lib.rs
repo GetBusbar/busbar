@@ -230,12 +230,11 @@ impl FileStore {
     /// makes the load-apply-write one critical section across every handle and every process, so the
     /// read-modify-write really is atomic the way a real backend's single transaction is.
     ///
-    /// The persist itself is ATOMIC, through this crate's own [`durable_write`] (inlined from
-    /// `busbar_api::durable::write`, the one non-shape symbol this
-    /// crate took from `busbar-api`):
-    /// sibling temp, fsync, rename, temp cleaned on every error path. The rename publish means even a
-    /// reader that does NOT hold the lock (`read` below) sees either the old complete state or the new
-    /// complete state, never a tear.
+    /// The persist itself is ATOMIC, through the one blessed publisher (`busbar_api::durable::write`:
+    /// sibling temp, fsync, rename, temp cleaned on every error path). It is the `structure-lint`
+    /// durable-write choke point, so this fixture does not re-roll the dance. The rename publish
+    /// means even a reader that does NOT hold the lock (`read` below) sees either the old complete
+    /// state or the new complete state, never a tear.
     fn mutate<T>(&self, f: impl FnOnce(&mut Durable) -> T) -> StoreResult<T> {
         let _guard = self
             .gate
@@ -247,7 +246,7 @@ impl FileStore {
         let mut state = self.load()?;
         let out = f(&mut state);
         let bytes = serde_json::to_vec(&state).map_err(|e| StoreError(e.to_string()))?;
-        durable_write(&self.path, &bytes).map_err(|e| StoreError(e.to_string()))?;
+        busbar_api::durable::write(&self.path, &bytes).map_err(|e| StoreError(e.to_string()))?;
         Ok(out)
     }
 
@@ -261,93 +260,11 @@ impl FileStore {
     }
 }
 
-/// Atomically + durably publish `bytes` to `path`: create a sibling temp in `path`'s own directory,
-/// `write_all → flush → fsync` it, `rename` it onto `path` (atomic for a concurrent reader), then
-/// best-effort fsync the holding directory so the rename's own directory entry survives a power
-/// loss. On any error before the rename the temp is removed (an RAII guard, not a manual cleanup, so
-/// no early `?` can leave one behind) and `path` is left untouched.
-///
-/// Inlined from `busbar_api::durable::write`: this plugin took exactly one
-/// non-shape symbol from `busbar-api`, and a `kind: store` plugin's own persistence choke point does
-/// not need the rest of that crate's shared primitive (`DurableOpts`, `remove`, `create_dir_all`,
-/// fault injection) to make one JSON file durable. Same sequence, same guarantees, same temp-naming
-/// scheme as the original, so the on-disk shape and the crash-safety properties this fixture's
-/// durability tests exercise are unchanged.
-fn durable_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write as _;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    // Process-monotonic sequence for a per-call-unique temp name, so two concurrent writers to the
-    // same target never collide on the temp and a leftover temp from a crashed run never matches.
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-
-    // The directory that HOLDS `path`. A RELATIVE `path` has an empty parent (`Some("")`, which
-    // cannot be opened), so it resolves to "." (the CWD, where the file actually lives).
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| std::path::Path::new("."));
-    let file_name = path.file_name().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "durable_write: path has no file name",
-        )
-    })?;
-    let mut tmp_name = std::ffi::OsString::from(".");
-    tmp_name.push(file_name);
-    tmp_name.push(format!(
-        ".{}-{}.tmp",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    let tmp = parent.join(tmp_name);
-
-    // RAII: the temp is removed on EVERY early return unless disarmed after a successful rename.
-    struct TmpGuard<'a> {
-        tmp: &'a std::path::Path,
-        armed: bool,
-    }
-    impl Drop for TmpGuard<'_> {
-        fn drop(&mut self) {
-            if self.armed {
-                let _ = std::fs::remove_file(self.tmp);
-            }
-        }
-    }
-    let mut guard = TmpGuard {
-        tmp: &tmp,
-        armed: true,
-    };
-
-    {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp)?; // ? → guard drops → temp removed
-        f.write_all(bytes)?; // ? → cleaned
-        f.flush()?; // ? → cleaned
-        f.sync_all()?; // ? → cleaned (fsync the CONTENTS before the rename)
-                       // `f` dropped here (closed) before the rename — Windows dislikes renaming an open handle.
-    }
-    std::fs::rename(&tmp, path)?; // ? → cleaned (temp may already be consumed; remove is best-effort)
-    guard.armed = false; // published: the temp was consumed by the rename; disarm.
-
-    // fsync the parent dir, best-effort, so the rename's directory entry is itself durable. Not
-    // every filesystem supports opening a directory for fsync, and on Windows this is a no-op (the
-    // handle open itself fails without `FILE_FLAG_BACKUP_SEMANTICS`); the file CONTENTS are already
-    // durable at this point regardless.
-    if let Ok(dir) = std::fs::File::open(parent) {
-        let _ = dir.sync_all();
-    }
-    Ok(())
-}
-
 /// The sibling advisory-lock file for a `durable_path`. A DEDICATED file (`.<name>.lock`), never the
-/// data file: the data file is republished by an atomic rename on every write (`durable_write`), so
+/// data file: the data file is republished by an atomic rename on every write (`durable::write`), so
 /// its inode changes and a lock taken on it would not span the rename. The lock file is created once
 /// and never renamed or removed, so a lock on it is stable across the whole RMW. It shares the
-/// data file's holding directory but has a name that cannot collide with `durable_write`'s temps
+/// data file's holding directory but has a name that cannot collide with `durable::write`'s temps
 /// (`.<name>.<pid>-<seq>.tmp`).
 // Only the `#[cfg(unix)]` advisory-lock path calls this; on Windows the whole function is unused, and
 // `-D warnings` turns that dead code into a hard error. It computes the lock file's path, which is a
