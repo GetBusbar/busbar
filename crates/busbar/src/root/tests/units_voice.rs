@@ -2362,11 +2362,12 @@ fn one_turn_at_a_time(group: &str) -> busbar_kernel_budget::GroupTable {
     )]);
     // Through the interner the root uses at boot, so the name the slot records is the same
     // static the vocabulary holds rather than one this fixture invented.
-    let mut vocabulary = crate::root::vocabulary::Vocabulary::new();
-    let ids = vocabulary.group_ids(&crate::root::vocabulary::ConfigKeys {
-        groups: vec![group.to_string()],
-        ..crate::root::vocabulary::ConfigKeys::default()
-    });
+    let ids = std::collections::BTreeMap::from([(
+        group.to_string(),
+        crate::root::kernel::new_registration()
+            .key(group)
+            .expect("a boot-time key interns"),
+    )]);
     crate::root::policy::group_table(&groups, &ids)
 }
 

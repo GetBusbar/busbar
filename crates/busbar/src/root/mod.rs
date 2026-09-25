@@ -16,9 +16,6 @@
 //! - [`registry`] — the boot seal. Seven transports registered bottom-up and five planes registered
 //!   over them, then `check_claims`, `precedence_order` and `check_composition` answered before any
 //!   listener is bound. A cross-plane claim overlap is a boot refusal, not a runtime surprise.
-//! - [`vocabulary`] — the leak-once interner. Every config-derived open-vocabulary key becomes a
-//!   `&'static str` exactly once, at registration, and never again. A leak per dial or per frame is
-//!   a defect, so this module seals itself and refuses to intern afterwards.
 //! - [`durability`] — the WAL branch, the ledger's dual write and the audit unit's two streams.
 //!   Without a configured data directory nothing is probed, nothing is opened and no file appears:
 //!   constructing an on-disk journal *is* the decision to write to a disk.
@@ -91,7 +88,6 @@ pub mod units_llm;
 pub mod units_mcp;
 #[cfg(feature = "root-voice")]
 pub mod units_voice;
-pub mod vocabulary;
 
 // The per-call metering shadow on the plane-neutral kernel bridge: a plane whose one flat charge
 // fires inside `drive` rides `gauntlet_kernel::run_gauntlet_via_kernel` byte- and money-identically
