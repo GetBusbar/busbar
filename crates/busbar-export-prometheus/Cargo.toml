@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "busbar-export-prometheus"
+version = "1.5.0"
+publish = false
+edition = "2021"
+rust-version = "1.97"
+description = "The prometheus export sink: renders the host recorder's snapshot as the Prometheus text exposition the host serves at the well-known /metrics. Linked into the shipped binary, or dropped in as a signed tarball — one registration, one contract."
+license = "Apache-2.0"
+
+[lib]
+# `rlib` is the LINKED door (the composition root links `linked::EXPORT` through its linked tables);
+# `cdylib` is the DROPPED-IN door (the same crate packed into a signed tarball). Both are the same
+# boundary — `BUSBAR_COLD_ENTRY` references exactly the functions the `cdylib` exports.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+busbar-plugin-sdk = { path = "../plugin-sdk" }
+# The settings shape this sink validates (`buffer_seconds`, `key_gauge_limit`) is parsed with serde so
+# its refusals read exactly as the configuration's own settings errors always have.
+serde = { workspace = true }
+serde_json = { workspace = true }

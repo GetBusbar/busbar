@@ -50,6 +50,10 @@ pub mod __abi {
     pub use busbar_plugin::cold::{ColdEntry, LogSinkFn};
 }
 
+/// The boundary a LINKED build hands the loader in place of a library (the macro's
+/// `BUSBAR_COLD_ENTRY`): named here so a plugin's linked-door entry can state its type.
+pub use busbar_plugin::cold::ColdEntry;
+
 /// The handle type behind the opaque `*mut c_void` for a store plugin (a boxed trait object). Named at
 /// the module level so the `export_plugin!` expansion can pass it to `close_boundary::<$ty>`.
 pub type StoreHandle = Box<dyn Store>;

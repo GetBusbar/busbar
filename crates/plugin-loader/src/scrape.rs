@@ -146,6 +146,33 @@ impl DynExport {
     }
 }
 
+impl crate::PluginRegistry {
+    /// THE SCRAPE SINK QUESTION, asked while the host validates its configuration (K9d): does the
+    /// sink `module` names carry the `metrics` stream and claim a route at `path` — the well-known
+    /// exposition path the host serves by snapshotting its recorder and having that sink render?
+    /// The claimed route, as the sink declared it; `None` for a module that is not a `kind: export`
+    /// row, a sink that will not open here (its open refuses the boot naming the instance), or one
+    /// that claims no such route.
+    pub fn scrape_route(
+        &self,
+        module: &str,
+        path: &str,
+        settings: &serde_json::Value,
+    ) -> Option<busbar_plugin::cold::endpoint::Route> {
+        let p = self
+            .resolve(module)
+            .filter(|p| p.manifest.kind == busbar_plugin::cold::kind::EXPORT)?;
+        let cfg = settings.to_string();
+        let sink =
+            crate::load_export_image(p.image(), &cfg, &p.manifest.name, &p.manifest.kind).ok()?;
+        let metrics = sink
+            .streams()
+            .contains(&busbar_plugin::cold::export::ExportStream::Metrics);
+        let claimed = sink.routes().iter().find(|r| r.path == path).cloned();
+        claimed.filter(|_| metrics)
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/scrape_tests.rs"]
 pub(crate) mod tests;

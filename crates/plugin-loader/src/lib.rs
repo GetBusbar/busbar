@@ -23,8 +23,8 @@ use busbar_api::{
     PlaneSelector, Store, StoreError, StoreResult, UsageDelta, UsageLedger, VirtualKey,
 };
 use busbar_plugin::cold::{
-    kind as abi_kind, symbol, CallFn, CloseFn, ColdEntry, FreeFn, PluginKindFn, StoreRequest,
-    StoreResponse, MAX_PLUGIN_RESPONSE_LEN, STATUS_ERR, STATUS_OK, STATUS_PANIC, STATUS_PROTOCOL,
+    kind as abi_kind, symbol, CallFn, CloseFn, FreeFn, PluginKindFn, StoreRequest, StoreResponse,
+    MAX_PLUGIN_RESPONSE_LEN, STATUS_ERR, STATUS_OK, STATUS_PANIC, STATUS_PROTOCOL,
     STATUS_UNSUPPORTED, TRANSPORT_VERSION,
 };
 use libloading::Library;
@@ -65,6 +65,22 @@ pub use export::{load_export_from_bytes, load_export_image, DynExport};
 // rather than taking a second, direct dependency on the ABI crate.
 pub use busbar_plugin::cold::export::{ExportField, ExportStream};
 pub use busbar_plugin::cold::export::{HostResult, HttpRequest, HttpResponse};
+/// A cold plugin's LINKED boundary (`BUSBAR_COLD_ENTRY`), named for the composition root's linked
+/// tables, which hand it to [`LinkedPlugin::boundary`].
+pub use busbar_plugin::cold::ColdEntry;
+
+impl LinkedPlugin {
+    /// A FIRST-PARTY cold plugin a build links: `name` (its own alias) of `kind`, at the newest
+    /// payload schema this loader speaks for the kind, published by busbar — the manifest its release
+    /// tarball states — over `entry`, the boundary its `cdylib` exports under the frozen symbols.
+    pub fn first_party(kind: &str, name: &str, entry: &'static ColdEntry) -> Self {
+        let mut row = LinkedPlugin::store(name, |_| Err(String::new()), false);
+        row.manifest.kind = kind.into();
+        row.manifest.abi_version = supported_abi(kind).iter().copied().max().unwrap_or(0);
+        row.entry = LinkedEntry::Boundary(entry);
+        row
+    }
+}
 /// The borrowed-string range of that decl's declaration tail, re-exported beside it.
 pub use busbar_plugin::hot::DeclStr as HotDeclStr;
 /// The HOT-lane plane declaration, re-exported for the reason the endpoint types above are: the
