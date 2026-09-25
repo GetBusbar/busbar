@@ -834,7 +834,7 @@ fn test_writer_tool_call_args_capped_at_max_len() {
     // Inspect the accumulator directly (before BlockStop consumes it) to prove the byte cap held.
     {
         let guard = writer.open_tools.lock().unwrap();
-        let (_, _, args) = guard.iter().find(|(idx, _, _)| *idx == 1).expect("open");
+        let args = &guard.iter().find(|t| t.index == 1).expect("open").args;
         assert!(
             args.len() <= cap,
             "accumulated args buffer must never exceed translate_body_max_bytes() ({}), got {}",
@@ -1465,13 +1465,18 @@ fn test_response_identity_roundtrip_preserves_id_and_model() {
 
 /// F2 conformance: a foreign / novel IR stop_reason (`refusal` from Responses, `error` from
 /// Cohere) must NOT upper-case-leak into `finishReason` (e.g. "REFUSAL"/"ERROR" are outside
-/// Gemini's `FinishReason` enum and a strict google-genai client rejects them). It maps to the
-/// native `OTHER` member, on both the whole-body and streamed paths.
+/// Gemini's `FinishReason` enum and a strict google-genai client rejects them). `error`/`other` map
+/// to the native `OTHER` member and a `refusal` to its policy stop `SAFETY` (IR audit GEM-14), on
+/// both the whole-body and streamed paths.
 #[test]
 fn foreign_stop_reason_maps_to_other_not_verbatim() {
     use crate::ir::IrStopReason as S;
     let writer = GeminiWriter;
-    for foreign in [S::Refusal, S::Error, S::Other] {
+    for (foreign, native) in [
+        (S::Refusal, "SAFETY"),
+        (S::Error, "OTHER"),
+        (S::Other, "OTHER"),
+    ] {
         let ir = crate::ir::IrResponse {
             logprobs: Vec::new(),
             role: crate::ir::IrRole::Assistant,
@@ -1499,8 +1504,8 @@ fn foreign_stop_reason_maps_to_other_not_verbatim() {
         let wire = writer.write_response(&ir);
         assert_eq!(
             wire["candidates"][0]["finishReason"],
-            serde_json::json!("OTHER"), // golden wire-contract literal (kept bare on purpose)
-            "whole-body: foreign stop_reason {foreign:?} must map to OTHER: {wire}"
+            serde_json::json!(native),
+            "whole-body: foreign stop_reason {foreign:?} must map to {native}: {wire}"
         );
         let ev = IrStreamEvent::MessageDelta {
             stop_reason: Some(foreign),
@@ -1518,8 +1523,8 @@ fn foreign_stop_reason_maps_to_other_not_verbatim() {
             .expect("MessageDelta must emit a frame");
         assert_eq!(
             frame["candidates"][0]["finishReason"],
-            serde_json::json!("OTHER"), // golden wire-contract literal (kept bare on purpose)
-            "streamed: foreign stop_reason {foreign:?} must map to OTHER: {frame}"
+            serde_json::json!(native),
+            "streamed: foreign stop_reason {foreign:?} must map to {native}: {frame}"
         );
     }
 }

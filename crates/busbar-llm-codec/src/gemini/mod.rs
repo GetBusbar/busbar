@@ -619,6 +619,354 @@ fn synth_tool_call_id(call_index: usize, function_name: &str, turn_salt: &str) -
     format!("call_{:016x}", hasher.finish())
 }
 
+/// The native call id Gemini carries on a `functionCall` / `functionResponse` object (IR audit
+/// GEM-08). Gemini's `FunctionCall.id` and `FunctionResponse.id` are optional: when a model (or a
+/// client echoing one) populates them, the response is paired with its call by that id. `None` when
+/// absent or empty, so the caller falls back to its synthesized id.
+fn gemini_call_id(obj: &serde_json::Value) -> Option<&str> {
+    obj.get("id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+}
+
+/// Read one Gemini attachment part — `inlineData{mimeType,data}` or `fileData{fileUri,mimeType}` —
+/// into its IR block. Shared by the request reader (a user turn's attachments), the
+/// `functionResponse.parts` reader (GEM-07) and the response reader (a model's image/audio output,
+/// GEM-17), so the three agree on routing. `None` when the part is neither.
+///
+/// Gemini's `inlineData` carries ANY mime type — `audio/mp3`, `application/pdf`, `video/mp4` as
+/// readily as `image/png`. Images route to `Image`, everything else to the typed `Media` block whose
+/// writers know which target has a native slot for it (an `audio/*` payload described to Anthropic
+/// as an `image` is a 400). `fileData` carries an OPTIONAL `mimeType` beside the uri, and it is the
+/// only thing that says whether the reference is an image, a PDF or a video; an absent mimeType keeps
+/// the historical behaviour: an unqualified URL reads as an image, the shape every dialect's
+/// `image_url` can carry.
+fn read_gemini_media_part(part: &serde_json::Value) -> Option<crate::ir::IrBlock> {
+    if let Some(inline_data) = part.get("inlineData") {
+        let mime_type = inline_data
+            .get("mimeType")
+            .and_then(|m| m.as_str())
+            .unwrap_or("")
+            .to_string();
+        let data = inline_data
+            .get("data")
+            .and_then(|d| d.as_str())
+            .unwrap_or("")
+            .to_string();
+        return Some(if mime_type.to_ascii_lowercase().starts_with("image/") {
+            crate::ir::IrBlock::Image {
+                source: crate::ir::IrImageSource::Base64 {
+                    media_type: mime_type,
+                    data,
+                },
+                cache_control: None,
+            }
+        } else {
+            crate::ir::IrBlock::Media {
+                kind: crate::ir::IrMediaKind::from_media_type(&mime_type),
+                source: crate::ir::IrImageSource::Base64 {
+                    media_type: mime_type,
+                    data,
+                },
+                name: None,
+                cache_control: None,
+            }
+        });
+    }
+    if let Some(file_data) = part.get("fileData") {
+        let uri = file_data
+            .get("fileUri")
+            .and_then(|u| u.as_str())
+            .unwrap_or("")
+            .to_string();
+        let mime = file_data
+            .get("mimeType")
+            .and_then(|m| m.as_str())
+            .unwrap_or("");
+        return Some(
+            if mime.is_empty() || mime.to_ascii_lowercase().starts_with("image/") {
+                crate::ir::IrBlock::Image {
+                    source: crate::ir::IrImageSource::Url(uri),
+                    cache_control: None,
+                }
+            } else {
+                crate::ir::IrBlock::Media {
+                    kind: crate::ir::IrMediaKind::from_media_type(mime),
+                    source: crate::ir::IrImageSource::Url(uri),
+                    name: None,
+                    cache_control: None,
+                }
+            },
+        );
+    }
+    None
+}
+
+/// Write one IR attachment block as its Gemini part (`inlineData` / `fileData`). The inverse of
+/// [`read_gemini_media_part`], used for a tool result's attachments (`functionResponse.parts`,
+/// GEM-06). `None` for a non-attachment block or a vendor-scoped handle Gemini cannot resolve.
+fn write_gemini_media_part(block: &crate::ir::IrBlock) -> Option<serde_json::Value> {
+    let (source, url_mime): (&crate::ir::IrImageSource, &str) = match block {
+        crate::ir::IrBlock::Image { source, .. } => (
+            source,
+            match source {
+                crate::ir::IrImageSource::Url(u) => gemini_image_mime_for_url(u),
+                _ => "",
+            },
+        ),
+        crate::ir::IrBlock::Media { kind, source, .. } => (source, gemini_mime_for_kind(*kind)),
+        _ => return None,
+    };
+    match source {
+        crate::ir::IrImageSource::Url(uri) => Some(serde_json::json!({
+            "fileData": { "fileUri": uri, "mimeType": url_mime }
+        })),
+        crate::ir::IrImageSource::Base64 { media_type, data } => Some(serde_json::json!({
+            "inlineData": { "mimeType": media_type, "data": data }
+        })),
+        crate::ir::IrImageSource::Vendor { .. } => None,
+    }
+}
+
+/// A representative `mimeType` for a media kind whose source is a bare URL and therefore carries no
+/// mime of its own (an Anthropic `document.source.url`, an OpenAI `image_url`-style file URL).
+///
+/// Gemini's `fileData` requires a `mimeType` to decode the referenced file, so omitting it is worse
+/// than a well-formed generic: `application/pdf` is the document form Gemini's own docs use in the
+/// `fileData` example, and the audio/video generics are the standard container-agnostic types. This
+/// is a WRITE-side default, never a claim about the referenced bytes — a source that knows its real
+/// mime (every `Base64` one) never routes through here.
+fn gemini_mime_for_kind(kind: crate::ir::IrMediaKind) -> &'static str {
+    match kind {
+        crate::ir::IrMediaKind::Document => "application/pdf",
+        crate::ir::IrMediaKind::Audio => "audio/mpeg",
+        crate::ir::IrMediaKind::Video => "video/mp4",
+    }
+}
+
+/// A representative `image/*` `mimeType` for an image whose source is a bare URL (an OpenAI
+/// `image_url`, an Anthropic `image.source.url`) and therefore carries no mime of its own. Gemini's
+/// `fileData` REQUIRES a `mimeType` to decode the referenced file (this file's invariant, above), so
+/// omitting it is worse than a well-formed guess. Derived from the URL's file extension, defaulting
+/// to `image/jpeg` (the most common web image type) when the extension is absent or unrecognized.
+/// This is a WRITE-side default, never a claim about the referenced bytes — a `Base64` image always
+/// knows its real mime and never routes through here.
+fn gemini_image_mime_for_url(uri: &str) -> &'static str {
+    // Compare only the path's extension, lowercased, ignoring any `?query`/`#fragment` suffix.
+    let path = uri.split(['?', '#']).next().unwrap_or(uri);
+    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "heic" => "image/heic",
+        "heif" => "image/heif",
+        _ => "image/jpeg",
+    }
+}
+
+/// Gemini's `thinkingConfig.thinkingLevel` (Gemini 3) → the IR effort ask (IR audit GEM-09). The
+/// level is Gemini's word-form reasoning knob, the same concept as OpenAI's `reasoning_effort`, so
+/// it maps onto [`crate::ir::IrReasoningEffort`] one-for-one. Case-insensitive (the REST enum is
+/// upper-case, the documentation examples lower-case). `None` for an unrecognized level.
+fn read_gemini_thinking_level(level: &str) -> Option<crate::ir::IrReasoningAsk> {
+    let effort = match level.to_ascii_lowercase().as_str() {
+        "minimal" => crate::ir::IrReasoningEffort::Minimal,
+        "low" => crate::ir::IrReasoningEffort::Low,
+        "medium" => crate::ir::IrReasoningEffort::Medium,
+        "high" => crate::ir::IrReasoningEffort::High,
+        _ => return None,
+    };
+    Some(crate::ir::IrReasoningAsk::Effort(effort))
+}
+
+/// The tool entries Gemini carries beside `functionDeclarations` in `tools[]` — `googleSearch`,
+/// `codeExecution`, `urlContext`, … — each read as a HOSTED IR tool carrying its raw
+/// `{<key>: <config>}` object (IR audit GEM-10). They used to vanish in the reader without a trace;
+/// parked as `hosted`, the cross-protocol seam's hosted-tool drop names them. The neutral
+/// hosted-tool kind a foreign dialect could project them onto is IR-11.
+fn read_gemini_hosted_tools(tool_val: &serde_json::Value) -> Vec<crate::ir::IrTool> {
+    let Some(obj) = tool_val.as_object() else {
+        return Vec::new();
+    };
+    obj.iter()
+        .filter(|(k, _)| k.as_str() != "functionDeclarations")
+        .map(|(k, v)| {
+            tracing::warn!(
+                hosted_tool = %k,
+                "gemini hosted tool read as a hosted IR tool: no neutral hosted-tool kind exists \
+                 to project it onto a foreign dialect, so a cross-protocol hop drops it"
+            );
+            let mut raw = serde_json::Map::new();
+            raw.insert(k.clone(), v.clone());
+            crate::ir::IrTool {
+                name: String::new(),
+                description: None,
+                input_schema: serde_json::Value::Null,
+                cache_control: None,
+                hosted: Some(serde_json::Value::Object(raw)),
+                strict: None,
+            }
+        })
+        .collect()
+}
+
+/// Normalize a Gemini OpenAPI-subset `Schema` (`parameters`, `responseSchema`) into JSON Schema for
+/// the IR (IR audit GEM-11). Gemini's native enum spells types in upper case (`OBJECT`, `STRING`, …)
+/// and marks optional-null with `nullable: true`; every foreign target validates JSON Schema, where
+/// `"OBJECT"` is not a type and `nullable` is not a keyword, so the schema reached them malformed.
+/// Walks only schema positions (`properties` values, `items`, `prefixItems`, `anyOf`/`oneOf`/`allOf`,
+/// a schema-valued `additionalProperties`, `$defs`/`definitions` values) so an `enum`/`example`/
+/// `default` VALUE that happens to hold a `type` key is never rewritten. `parametersJsonSchema` /
+/// `responseJsonSchema` are already JSON Schema and never pass through here.
+fn gemini_openapi_schema_to_json_schema(schema: &serde_json::Value) -> serde_json::Value {
+    fn walk(v: &serde_json::Value, depth: usize) -> serde_json::Value {
+        let Some(obj) = v.as_object() else {
+            return v.clone();
+        };
+        if depth > GEMINI_SCHEMA_INLINE_MAX_DEPTH {
+            return v.clone();
+        }
+        let mut out = serde_json::Map::new();
+        for (k, val) in obj {
+            let mapped = match k.as_str() {
+                "type" => match val.as_str() {
+                    Some(t) => match t {
+                        "STRING" | "NUMBER" | "INTEGER" | "BOOLEAN" | "ARRAY" | "OBJECT"
+                        | "NULL" => serde_json::json!(t.to_ascii_lowercase()),
+                        _ => val.clone(),
+                    },
+                    None => val.clone(),
+                },
+                "properties" | "$defs" | "definitions" => match val.as_object() {
+                    Some(m) => serde_json::Value::Object(
+                        m.iter()
+                            .map(|(pk, pv)| (pk.clone(), walk(pv, depth + 1)))
+                            .collect(),
+                    ),
+                    None => val.clone(),
+                },
+                "items" | "additionalProperties" => walk(val, depth + 1),
+                "anyOf" | "oneOf" | "allOf" | "prefixItems" => match val.as_array() {
+                    Some(a) => {
+                        serde_json::Value::Array(a.iter().map(|s| walk(s, depth + 1)).collect())
+                    }
+                    None => val.clone(),
+                },
+                _ => val.clone(),
+            };
+            out.insert(k.clone(), mapped);
+        }
+        // `nullable: true` → a `"null"` member in `type`; `nullable: false` is the default and
+        // simply goes. A `nullable` with no string `type` beside it is left alone (nothing to widen).
+        if let Some(nullable) = out.get("nullable").and_then(|n| n.as_bool()) {
+            match out.get("type").and_then(|t| t.as_str()).map(str::to_string) {
+                Some(t) => {
+                    out.remove("nullable");
+                    if nullable && t != "null" {
+                        out.insert("type".to_string(), serde_json::json!([t, "null"]));
+                    }
+                }
+                None if !nullable => {
+                    out.remove("nullable");
+                }
+                None => {}
+            }
+        }
+        serde_json::Value::Object(out)
+    }
+    walk(schema, 0)
+}
+
+/// Convert Vertex's RFC 3339 `createTime` (`2025-06-01T12:34:56.123456Z`, or with a `±HH:MM`
+/// offset) into Unix epoch SECONDS — the IR's `created` (IR audit GEM-18). `None` for anything that
+/// is not a well-formed RFC 3339 date-time, so a malformed value leaves `created` for the seam to
+/// stamp exactly as before. Fractional seconds are truncated (the IR's `created` is whole seconds).
+fn gemini_rfc3339_to_epoch(s: &str) -> Option<u64> {
+    let b = s.as_bytes();
+    let num = |r: std::ops::Range<usize>| -> Option<i64> {
+        let part = b.get(r)?;
+        if part.is_empty() || !part.iter().all(u8::is_ascii_digit) {
+            return None;
+        }
+        std::str::from_utf8(part).ok()?.parse().ok()
+    };
+    if b.len() < 20
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || !matches!(b[10], b'T' | b't')
+        || b[13] != b':'
+        || b[16] != b':'
+    {
+        return None;
+    }
+    let (year, month, day) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (hour, minute, second) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return None;
+    }
+    let mut i = 19;
+    if b.get(i) == Some(&b'.') {
+        i += 1;
+        let start = i;
+        while b.get(i).is_some_and(u8::is_ascii_digit) {
+            i += 1;
+        }
+        if i == start {
+            return None;
+        }
+    }
+    let offset_secs: i64 = match b.get(i) {
+        Some(b'Z' | b'z') if i + 1 == b.len() => 0,
+        Some(sign @ (b'+' | b'-')) if i + 6 == b.len() && b[i + 3] == b':' => {
+            let (oh, om) = (num(i + 1..i + 3)?, num(i + 4..i + 6)?);
+            if oh > 23 || om > 59 {
+                return None;
+            }
+            let o = oh * 3600 + om * 60;
+            if *sign == b'+' {
+                o
+            } else {
+                -o
+            }
+        }
+        _ => return None,
+    };
+    // days_from_civil (Howard Hinnant's public-domain algorithm).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let epoch = days * 86_400 + hour * 3600 + minute * 60 + second - offset_secs;
+    u64::try_from(epoch).ok()
+}
+
+/// The `AUDIO` entry of a Gemini `promptTokensDetails` / `candidatesTokensDetails` modality list
+/// (`[{"modality":"AUDIO","tokenCount":N}, …]`) — the audio slice the IR carries as
+/// `input_audio_tokens` / `output_audio_tokens` (IR audit GEM-12). Attribution only: both IR fields
+/// are slices of totals `billable_tokens` never reads. `None` when the list has no AUDIO entry.
+fn gemini_modality_count(
+    usage: Option<&serde_json::Value>,
+    list: &str,
+    modality: &str,
+) -> Option<u64> {
+    usage?
+        .get(list)?
+        .as_array()?
+        .iter()
+        .find(|e| e.get("modality").and_then(|m| m.as_str()) == Some(modality))
+        .and_then(|e| e.get("tokenCount"))
+        .and_then(read_count_u64)
+}
+
 /// Gemini's `logprobsResult` — two PARALLEL arrays, `chosenCandidates[i]` (the generated token at
 /// position i) and `topCandidates[i].candidates[]` (the alternatives at that position) — zipped
 /// into the neutral IR entries. Gemini carries no byte arrays (`bytes: None`; an OpenAI writer
@@ -1322,9 +1670,15 @@ fn map_gemini_finish_reason(finish_reason: &str) -> crate::ir::IrStopReason {
         | "IMAGE_SAFETY"
         | "SPII"
         | "BLOCKLIST"
-        | GEMINI_FINISH_PROHIBITED_CONTENT => S::Safety,
+        | GEMINI_FINISH_PROHIBITED_CONTENT
+        // The image-generation content-policy stops (IR audit GEM-15): the same policy refusal
+        // as their text siblings above, applied to an image the model was generating.
+        | "IMAGE_PROHIBITED_CONTENT"
+        | "IMAGE_RECITATION" => S::Safety,
         // The model produced an invalid function call: an abnormal stop with no runnable tool call.
-        GEMINI_FINISH_MALFORMED_FUNCTION_CALL => S::Error,
+        // `UNEXPECTED_TOOL_CALL` (the model called a tool while none was enabled) is the same
+        // failed generation — there is no call the client could run (GEM-15).
+        GEMINI_FINISH_MALFORMED_FUNCTION_CALL | "UNEXPECTED_TOOL_CALL" => S::Error,
         // OTHER / LANGUAGE / any novel future reason.
         _ => S::Other,
     }
@@ -1342,7 +1696,9 @@ fn prompt_block_stop_reason(block_reason: &str) -> crate::ir::IrStopReason {
         GEMINI_FINISH_SAFETY
         | "BLOCKLIST"
         | GEMINI_FINISH_PROHIBITED_CONTENT
-        | GEMINI_FINISH_RECITATION => S::Safety,
+        | GEMINI_FINISH_RECITATION
+        // A prompt blocked for its IMAGE content is the same policy block (IR audit GEM-15).
+        | "IMAGE_SAFETY" => S::Safety,
         _ => S::Other,
     }
 }
@@ -1356,8 +1712,10 @@ fn write_gemini_stop_reason(reason: crate::ir::IrStopReason) -> &'static str {
     match reason {
         S::EndTurn | S::StopSequence | S::ToolUse => GEMINI_FINISH_STOP,
         S::MaxTokens => GEMINI_FINISH_MAX_TOKENS,
-        S::Safety => GEMINI_FINISH_SAFETY,
-        S::Refusal | S::Error | S::PauseTurn | S::Other => GEMINI_FINISH_OTHER,
+        // A refusal is the model declining on policy grounds — Gemini's SAFETY stop, not an
+        // unenumerated OTHER (IR audit GEM-14).
+        S::Safety | S::Refusal => GEMINI_FINISH_SAFETY,
+        S::Error | S::PauseTurn | S::Other => GEMINI_FINISH_OTHER,
     }
 }
 
@@ -1371,13 +1729,19 @@ fn read_gemini_response_format(
 ) -> Option<crate::ir::IrResponseFormat> {
     let gc = gen_config?;
     let mime = gc.get(FIELD_RESPONSE_MIME_TYPE).and_then(|m| m.as_str());
-    let schema = gc.get("responseSchema");
+    // Two schema slots: the OpenAPI-subset `responseSchema` (normalized to JSON Schema, GEM-11) and
+    // the JSON-Schema `responseJsonSchema` (read as-is, GEM-04 — it used to be ignored, so JSON mode
+    // reached a foreign target with no schema). The API accepts one or the other.
+    let schema = gc
+        .get("responseSchema")
+        .map(gemini_openapi_schema_to_json_schema)
+        .or_else(|| gc.get("responseJsonSchema").cloned());
     if mime.is_none() && schema.is_none() {
         return None;
     }
     Some(crate::ir::IrResponseFormat {
         json: schema.is_some() || mime == Some(MIME_APPLICATION_JSON),
-        schema: schema.cloned(),
+        schema,
         name: None,
         strict: None,
         description: None,
@@ -1822,6 +2186,9 @@ fn gemini_billed_usage(data: &serde_json::Value) -> Result<crate::ir::IrUsage, I
             // rather than dropped so it round-trips; see the field's own doc comment for why it
             // rides the usage-detail bag (OWNER RULING Q1, docs/design/1.6.0-QUESTIONS.md Q36).
             create_time: read_gemini_create_time(data),
+            // The AUDIO slices of the prompt and of the answer (GEM-12) — attribution only.
+            input_audio_tokens: gemini_modality_count(u, "promptTokensDetails", "AUDIO"),
+            output_audio_tokens: gemini_modality_count(u, "candidatesTokensDetails", "AUDIO"),
             ..Default::default()
         },
     })
@@ -1981,8 +2348,18 @@ fn gemini_error_status_class(status: Option<&str>, code: Option<u64>) -> StatusC
 /// `StreamTranslate::new` builds a FRESH `Protocol::gemini()` (hence a fresh `GeminiWriter` with an
 /// empty buffer) for each stream, so this state is stream-scoped by construction — exactly the
 /// precedent `ResponsesWriter`'s per-stream `sequence`/`response_id` fields established.
+/// One open streaming tool call in [`GeminiWriter::open_tools`]: the IR block `index` its
+/// `BlockStart` opened, its function `name` and every `InputJsonDelta` fragment concatenated into
+/// `args`.
+#[derive(Clone, Debug)]
+struct GeminiOpenTool {
+    index: usize,
+    name: String,
+    args: String,
+}
+
 pub struct GeminiWriter {
-    /// The currently open streaming tool calls, one `(index, name, args)` tuple per OPEN tool block:
+    /// The currently open streaming tool calls, one [`GeminiOpenTool`] per OPEN tool block:
     /// - `index` is the IR block index from the opening `BlockStart`, used to match subsequent
     ///   `BlockDelta`/`BlockStop` events to THE RIGHT tool block (parallel tool calls share no slot).
     /// - `name` is the function name buffered off the `BlockStart`.
@@ -1997,7 +2374,7 @@ pub struct GeminiWriter {
     /// `Mutex` (not `Cell`) so the writer stays `Sync` as the `ProtocolWriter` trait requires; a
     /// stream is single-threaded at any instant so contention is nil, and a poisoned lock degrades
     /// to the stateless behavior rather than panicking on the request path.
-    open_tools: std::sync::Mutex<Vec<(usize, String, String)>>,
+    open_tools: std::sync::Mutex<Vec<GeminiOpenTool>>,
     /// THIS STREAM'S `responseId`, minted ONCE and replayed on every later identity frame.
     ///
     /// A stream is not guaranteed to carry exactly one `MessageStart`: the Anthropic reader emits
@@ -2008,6 +2385,20 @@ pub struct GeminiWriter {
     /// `responseId` is fixed for the response, so the first one wins. Same `Mutex` /
     /// poison-degrades discipline as `open_tools`.
     response_id: std::sync::Mutex<Option<String>>,
+    /// THIS STREAM'S answer text so far, and the byte offset each text block started at — what a
+    /// streamed citation's CHARACTER offsets (the IR contract, relative to their own text block) are
+    /// converted against to become the candidate-wide BYTE offsets Gemini's `citationSources` carry
+    /// (IR audit GEM-16), exactly as the buffered writer converts them. Same `Mutex` /
+    /// poison-degrades discipline as `open_tools`; a poisoned lock passes offsets through unconverted.
+    stream_text: std::sync::Mutex<GeminiStreamText>,
+}
+
+/// The streamed answer text [`GeminiWriter::stream_text`] accumulates: the concatenated `text` and
+/// one `(ir_block_index, byte_start)` per text block, in the order the blocks first carried text.
+#[derive(Clone, Debug, Default)]
+struct GeminiStreamText {
+    text: String,
+    block_starts: Vec<(usize, usize)>,
 }
 
 /// Value-namespace constructor for [`GeminiWriter`]. A `const` and a struct may share a name (they
@@ -2028,6 +2419,10 @@ pub struct GeminiWriter {
 pub const GeminiWriter: GeminiWriter = GeminiWriter {
     open_tools: std::sync::Mutex::new(Vec::new()),
     response_id: std::sync::Mutex::new(None),
+    stream_text: std::sync::Mutex::new(GeminiStreamText {
+        text: String::new(),
+        block_starts: Vec::new(),
+    }),
 };
 
 impl Clone for GeminiWriter {
@@ -2045,6 +2440,12 @@ impl Clone for GeminiWriter {
             // A mid-stream clone is still the SAME response, so it keeps the id already announced.
             response_id: std::sync::Mutex::new(
                 self.response_id.lock().map(|id| id.clone()).unwrap_or(None),
+            ),
+            stream_text: std::sync::Mutex::new(
+                self.stream_text
+                    .lock()
+                    .map(|t| t.clone())
+                    .unwrap_or_default(),
             ),
         }
     }
@@ -2315,3 +2716,7 @@ mod usage_identity_tests;
 #[cfg(test)]
 #[path = "tests/float_usage_tests.rs"]
 mod float_usage_tests;
+
+#[cfg(test)]
+#[path = "tests/ir_mapping_tests.rs"]
+mod ir_mapping_tests;

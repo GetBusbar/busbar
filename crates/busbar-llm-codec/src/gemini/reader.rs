@@ -364,11 +364,10 @@ impl ProtocolReader for GeminiReader {
                 };
 
                 let mut msg_content = Vec::new();
-                // Track functionResponse names seen IN THIS TURN: Gemini correlates a tool result
-                // only by `name`, which we map to `tool_use_id`. Two results with the same name in
-                // one turn collide into a duplicate `tool_use_id`, making cross-protocol correlation
-                // ambiguous. We do NOT synthesize disambiguating ids (that would break Gemini->Gemini
-                // passthrough, which round-trips the name verbatim) — we only warn.
+                // Track functionResponse names seen IN THIS TURN: a result with no native `id` is
+                // correlated only by `name`, which we map to `tool_use_id`. Two such results with the
+                // same name in one turn collide into a duplicate `tool_use_id`, making cross-protocol
+                // correlation ambiguous — we only warn.
                 let mut seen_func_resp_names: std::collections::HashSet<String> =
                     std::collections::HashSet::new();
                 // EDGE-VALIDATE the per-turn `parts` TYPE. Gemini's `Content.parts` is array-only; a
@@ -433,14 +432,16 @@ impl ProtocolReader for GeminiReader {
                             // input is an argument map; a no-arg call is `{}`). Keeps the request
                             // reader consistent with the response readers' args handling.
                             let args = empty_object_if_absent(func_call.get("args"));
-                            // Gemini carries no tool-call id; synthesize a stable, non-empty one
-                            // keyed by (index, name). The Gemini writer ignores the ToolUse `id`
-                            // (it round-trips `name`), so this is safe for same-protocol passthrough
-                            // and gives cross-protocol Anthropic/OpenAI egress a non-empty id.
-                            // No turn salt needed here: `tool_call_index` is global across the whole
-                            // `contents` array (every turn in the visible history), so it already has
-                            // no cross-turn collision (see `synth_tool_call_id`'s doc comment).
-                            let id = synth_tool_call_id(tool_call_index, &name, "");
+                            // The call's native `id` when Gemini (or the client echoing it) carries
+                            // one (GEM-08); otherwise a stable, non-empty synthesized one keyed by
+                            // (index, name). No turn salt needed: `tool_call_index` is global across
+                            // the whole `contents` array (every turn in the visible history), so it
+                            // has no cross-turn collision (see `synth_tool_call_id`'s doc comment).
+                            // The index advances for every call, so a synthesized id does not depend
+                            // on whether an earlier call carried a native one.
+                            let id = gemini_call_id(func_call)
+                                .map(str::to_string)
+                                .unwrap_or_else(|| synth_tool_call_id(tool_call_index, &name, ""));
                             tool_call_index += 1;
                             // `thoughtSignature` is a sibling of `functionCall` on the `Part` object
                             // (NOT nested inside it) — same placement as the `thought:true` block's
@@ -476,112 +477,55 @@ impl ProtocolReader for GeminiReader {
                             let response_text =
                                 busbar_substrate_values::json::to_string(&response_val)
                                     .unwrap_or_else(|_| "unknown".to_string());
-                            // ACCEPTED GEMINI-PROTOCOL LIMITATION: a Gemini `functionResponse`
-                            // carries only a `name` (no call id). We set `tool_use_id` to the
-                            // function name — the only correlation handle Gemini provides on the
-                            // RESULT side. This is deliberate and load-bearing for SAME-PROTOCOL
-                            // (Gemini→Gemini) passthrough: the writer round-trips `tool_use_id`
-                            // straight back into `functionResponse.name`, so it MUST stay the name
-                            // (NOT the synthetic id we mint for the `functionCall` ToolUse above —
-                            // the writer ignores the ToolUse `id`, so synthesizing it there is safe,
-                            // but it must not leak onto the result name here). Cross-protocol egress
-                            // that correlates strictly by id is the pre-existing Gemini limitation:
-                            // the result still carries the name as its handle.
-                            if !name.is_empty() && !seen_func_resp_names.insert(name.clone()) {
-                                tracing::warn!(
-                                    tool_name = %name,
-                                    "duplicate gemini functionResponse name in one turn yields a \
-                                     duplicate tool_use_id; cross-protocol correlation is ambiguous"
-                                );
+                            // The result's `tool_use_id`: the response's own native `id` when
+                            // Gemini (or the client echoing it) carries one — the same id its
+                            // `functionCall` carried, so the pair survives a foreign backend (GEM-08).
+                            // Without one, the function NAME, the only other handle Gemini gives the
+                            // result side; the Gemini writer round-trips it back into
+                            // `functionResponse.name`.
+                            let tool_use_id = match gemini_call_id(func_resp) {
+                                Some(id) => id.to_string(),
+                                None => {
+                                    if !name.is_empty()
+                                        && !seen_func_resp_names.insert(name.clone())
+                                    {
+                                        tracing::warn!(
+                                            tool_name = %name,
+                                            "duplicate gemini functionResponse name in one turn yields \
+                                             a duplicate tool_use_id; cross-protocol correlation is \
+                                             ambiguous"
+                                        );
+                                    }
+                                    name.clone()
+                                }
+                            };
+                            // Gemini documents `response.output` for a result and `response.error`
+                            // for a failure (GEM-05): an `error` key with no `output` beside it is
+                            // the failed tool call every other dialect flags `is_error`.
+                            let is_error = response_val.as_object().is_some_and(|o| {
+                                o.get("error").is_some_and(|e| !e.is_null())
+                                    && !o.contains_key("output")
+                            });
+                            let mut content = vec![crate::ir::IrBlock::Text {
+                                text: response_text,
+                                cache_control: None,
+                                citations: Vec::new(),
+                            }];
+                            // A multimodal result's attachments ride in `functionResponse.parts`
+                            // (GEM-07) — carried into the result's content beside the JSON.
+                            if let Some(parts) = func_resp.get("parts").and_then(|p| p.as_array()) {
+                                content.extend(parts.iter().filter_map(read_gemini_media_part));
                             }
                             msg_content.push(crate::ir::IrBlock::ToolResult {
-                                tool_use_id: name,
-                                content: vec![crate::ir::IrBlock::Text {
-                                    text: response_text,
-                                    cache_control: None,
-                                    citations: Vec::new(),
-                                }],
-                                is_error: false,
+                                tool_use_id,
+                                content,
+                                is_error,
                                 cache_control: None,
                             });
                         }
-                        // InlineData (Image, base64)
-                        else if let Some(inline_data) = part.get("inlineData") {
-                            let mime_type = inline_data
-                                .get("mimeType")
-                                .and_then(|m| m.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let data = inline_data
-                                .get("data")
-                                .and_then(|d| d.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            // Gemini's `inlineData` carries ANY mime type — `audio/mp3`,
-                            // `application/pdf`, `video/mp4` as readily as `image/png`. Mapping ALL
-                            // of them onto `IrBlock::Image` (the prior behaviour) was wrong twice
-                            // over: the Anthropic writer then emitted
-                            // `{"type":"image","source":{"media_type":"audio/mp3"}}`, which that API
-                            // rejects with a 400, and a caller's PDF was described to every other
-                            // dialect as an image. Route on the mime prefix instead: images to
-                            // `Image`, everything else to the typed `Media` block whose writers know
-                            // which target has a native slot for it.
-                            let block = if mime_type.to_ascii_lowercase().starts_with("image/") {
-                                crate::ir::IrBlock::Image {
-                                    source: crate::ir::IrImageSource::Base64 {
-                                        media_type: mime_type,
-                                        data,
-                                    },
-                                    cache_control: None,
-                                }
-                            } else {
-                                crate::ir::IrBlock::Media {
-                                    kind: crate::ir::IrMediaKind::from_media_type(&mime_type),
-                                    source: crate::ir::IrImageSource::Base64 {
-                                        media_type: mime_type,
-                                        data,
-                                    },
-                                    name: None,
-                                    cache_control: None,
-                                }
-                            };
-                            msg_content.push(block);
-                        }
-                        // FileData (Image by URI) → a remote URL reference, carried as the typed
-                        // `Url` source so it survives into the IR exactly as the OpenAI/Responses
-                        // readers store a remote image URL.
-                        else if let Some(file_data) = part.get("fileData") {
-                            let uri = file_data
-                                .get("fileUri")
-                                .and_then(|u| u.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            // `fileData` carries an OPTIONAL `mimeType` beside the uri, and it is
-                            // the only thing that says whether this reference is an image, a PDF or
-                            // a video. Reading it routes the block to the right IR variant (and its
-                            // `kind` is what the Gemini writer re-emits `mimeType` from, so it
-                            // survives the round-trip instead of being dropped). Absent mimeType
-                            // keeps the historical behaviour: an unqualified URL reads as an image,
-                            // the shape every dialect's `image_url` can carry.
-                            let mime = file_data
-                                .get("mimeType")
-                                .and_then(|m| m.as_str())
-                                .unwrap_or("");
-                            let block = if mime.is_empty()
-                                || mime.to_ascii_lowercase().starts_with("image/")
-                            {
-                                crate::ir::IrBlock::Image {
-                                    source: crate::ir::IrImageSource::Url(uri),
-                                    cache_control: None,
-                                }
-                            } else {
-                                crate::ir::IrBlock::Media {
-                                    kind: crate::ir::IrMediaKind::from_media_type(mime),
-                                    source: crate::ir::IrImageSource::Url(uri),
-                                    name: None,
-                                    cache_control: None,
-                                }
-                            };
+                        // InlineData (base64) / FileData (by URI) → Image or Media, routed on the
+                        // mime type (see `read_gemini_media_part`).
+                        else if let Some(block) = read_gemini_media_part(part) {
                             msg_content.push(block);
                         }
                         // Code-execution parts (`executableCode` / `codeExecutionResult`) are the
@@ -633,9 +577,17 @@ impl ProtocolReader for GeminiReader {
                         let description = func_decl
                             .get("description")
                             .and_then(|d| d.as_str().map(String::from));
+                        // Two schema slots: `parametersJsonSchema` (JSON Schema, read as-is —
+                        // it used to be ignored, leaving a foreign target an empty schema, GEM-03)
+                        // and the OpenAPI-subset `parameters` (normalized to JSON Schema, GEM-11).
                         let parameters = func_decl
-                            .get("parameters")
+                            .get("parametersJsonSchema")
                             .cloned()
+                            .or_else(|| {
+                                func_decl
+                                    .get("parameters")
+                                    .map(gemini_openapi_schema_to_json_schema)
+                            })
                             .unwrap_or(serde_json::Value::Null);
 
                         tools.push(crate::ir::IrTool {
@@ -648,6 +600,7 @@ impl ProtocolReader for GeminiReader {
                         });
                     }
                 }
+                tools.extend(read_gemini_hosted_tools(tool_val));
             }
         }
 
@@ -731,16 +684,22 @@ impl ProtocolReader for GeminiReader {
         // copy) or OpenAI's reasoning_effort (bucketized). The raw thinkingConfig ALSO survives
         // same-protocol via the preserved generationConfig in extra; the writer overlays a fresh
         // thinkingConfig from the typed field on cross-protocol egress.
-        let reasoning = obj
+        let thinking_config = obj
             .get("generationConfig")
-            .and_then(|gc| gc.get("thinkingConfig"))
-            .and_then(|tc| tc.get("thinkingBudget"))
-            .and_then(|v| v.as_i64())
-            .and_then(|n| match n {
+            .and_then(|gc| gc.get("thinkingConfig"));
+        let reasoning = match thinking_config.and_then(|tc| tc.get("thinkingBudget")) {
+            Some(budget) => budget.as_i64().and_then(|n| match n {
                 -1 => Some(crate::ir::IrReasoningAsk::Dynamic),
                 n if n > 0 => u32::try_from(n).ok().map(crate::ir::IrReasoningAsk::Budget),
                 _ => None, // 0 = thinking off; absent ask carries "off" faithfully
-            });
+            }),
+            // Gemini 3's word-form knob, `thinkingLevel`, is the effort ask (GEM-09). The API
+            // takes one of the two, so a budget, when present, is the ask.
+            None => thinking_config
+                .and_then(|tc| tc.get("thinkingLevel"))
+                .and_then(|v| v.as_str())
+                .and_then(read_gemini_thinking_level),
+        };
         let stream = obj.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
         // Promote Gemini's native `toolConfig.functionCallingConfig` into the IR `tool_choice` union
         // so a forced / targeted directive survives the cross-protocol seam instead of
@@ -1054,8 +1013,13 @@ impl ProtocolReader for GeminiReader {
                             // of Gemini's part ordering; the index is then stable for the stream.
                             if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
                                 if !text.is_empty() {
-                                    let ti =
-                                        state.text_index.unwrap_or_else(|| state.claim_ir_index());
+                                    // A text block CLOSED earlier (by a functionCall) keeps its index
+                                    // for a late citation (GEM-20); new text after it is a NEW block.
+                                    let ti = match state.text_index {
+                                        Some(ti) if !state.text_block_closed => ti,
+                                        _ => state.claim_ir_index(),
+                                    };
+                                    state.text_block_closed = false;
                                     if state.thinking_block_open {
                                         state.thinking_block_open = false;
                                         out.push(IrStreamEvent::BlockStop { index: 0 });
@@ -1118,7 +1082,7 @@ impl ProtocolReader for GeminiReader {
                                     // not index arithmetic) — the ID space is unrelated to the IR
                                     // index space. Recorded in `open_tools` so the finishReason
                                     // handler emits a matching BlockStop for every tool block.
-                                    let text_base = usize::from(state.text_index.is_some());
+                                    let text_base = usize::from(state.text_block_open);
                                     let ir_idx = state.claim_ir_index();
                                     state.open_tools.insert(ir_idx);
 
@@ -1135,9 +1099,14 @@ impl ProtocolReader for GeminiReader {
                                     // the text and tool blocks both open — overlapping content blocks
                                     // that break strict bracketing. Mirror the finishReason-path text
                                     // close (`text_base` above was already captured pre-close).
+                                    // The closed block KEEPS its index (latched `text_block_closed`)
+                                    // so a citation Gemini sends on a subsequent chunk still annotates
+                                    // the text it cites instead of opening a new, empty text block
+                                    // beside the open tool (GEM-20).
                                     if state.text_block_open {
                                         state.text_block_open = false;
-                                        let ti = state.text_index.take().unwrap_or(0);
+                                        state.text_block_closed = true;
+                                        let ti = state.text_index.unwrap_or(0);
                                         out.push(IrStreamEvent::BlockStop { index: ti });
                                     }
 
@@ -1163,11 +1132,16 @@ impl ProtocolReader for GeminiReader {
                                     // `synth_tool_call_id`'s doc comment).
                                     let turn_salt =
                                         data.get(FIELD_RESPONSE_ID).and_then(|v| v.as_str());
-                                    let id = synth_tool_call_id(
-                                        ir_idx - text_base,
-                                        &name_val,
-                                        turn_salt.unwrap_or(""),
-                                    );
+                                    // The native `id` when the model sent one (GEM-08).
+                                    let id = gemini_call_id(func_call)
+                                        .map(str::to_string)
+                                        .unwrap_or_else(|| {
+                                            synth_tool_call_id(
+                                                ir_idx - text_base,
+                                                &name_val,
+                                                turn_salt.unwrap_or(""),
+                                            )
+                                        });
                                     out.push(IrStreamEvent::BlockStart {
                                         index: ir_idx,
                                         block: crate::ir::IrBlockMeta::ToolUse {
@@ -1228,7 +1202,17 @@ impl ProtocolReader for GeminiReader {
                 .unwrap_or_default()
                 .to_vec();
             state.citations_emitted = state.citations_emitted.max(all_citations.len());
-            if !citations.is_empty() {
+            if !citations.is_empty() && state.text_block_closed && !state.text_block_open {
+                // The text these sources cite was already closed by a functionCall (GEM-20): the
+                // citation annotates THAT block, at the index its text was delivered under, rather
+                // than a new empty text block opened beside the still-open tool.
+                if let Some(ti) = state.text_index {
+                    out.push(IrStreamEvent::BlockDelta {
+                        index: ti,
+                        delta: crate::ir::IrDelta::CitationsDelta(citations),
+                    });
+                }
+            } else if !citations.is_empty() {
                 // Claim the text block's index from the monotone counter (see `claim_ir_index`),
                 // exactly like the text-part arm — otherwise a citation/logprobs delta arriving
                 // before the first answer-text part could reuse an index another block already
@@ -1265,9 +1249,15 @@ impl ProtocolReader for GeminiReader {
                 // Claim the text block's index from the monotone counter (see `claim_ir_index`),
                 // exactly like the text-part arm — otherwise a citation/logprobs delta arriving
                 // before the first answer-text part could reuse an index another block already
-                // claimed, colliding and corrupting cross-protocol block-index mapping.
-                let ti = state.text_index.unwrap_or_else(|| state.claim_ir_index());
+                // claimed, colliding and corrupting cross-protocol block-index mapping. A text
+                // block already CLOSED keeps its index only for a late citation (GEM-20); anything
+                // that opens a text block after it claims a fresh index, as it did before.
+                let ti = match state.text_index {
+                    Some(ti) if !state.text_block_closed => ti,
+                    _ => state.claim_ir_index(),
+                };
                 if !state.text_block_open {
+                    state.text_block_closed = false;
                     // Close a still-open thinking block first (the text-part arm does this too);
                     // otherwise two blocks are open at once and the downstream translator sees an
                     // invariant violation.
@@ -1524,7 +1514,12 @@ impl ProtocolReader for GeminiReader {
                     // reader's note): the tool-call input is an argument map, so a no-arg call is `{}`.
                     let args = empty_object_if_absent(func_call.get("args"));
 
-                    let id = synth_tool_call_id(tool_call_index, &name_val, tool_id_turn_salt);
+                    // The native `id` when the model sent one (GEM-08), else synthesized.
+                    let id = gemini_call_id(func_call)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| {
+                            synth_tool_call_id(tool_call_index, &name_val, tool_id_turn_salt)
+                        });
                     tool_call_index += 1;
                     // `thoughtSignature` is a sibling of `functionCall` on the `Part` object, same
                     // placement as the thought block's signature above. Gemini 3 REQUIRES this
@@ -1643,7 +1638,12 @@ impl ProtocolReader for GeminiReader {
             usage,
             model,
             id,
-            created: None,
+            // Vertex's `createTime` IS the response's creation time; carried as the epoch `created`
+            // so a foreign client sees when the backend answered rather than a seam-stamped "now"
+            // (GEM-18). The verbatim string still rides `usage.detail.create_time` for Gemini.
+            created: read_gemini_create_time(body)
+                .as_deref()
+                .and_then(gemini_rfc3339_to_epoch),
             system_fingerprint: None,
             stop_sequence: None,
 
