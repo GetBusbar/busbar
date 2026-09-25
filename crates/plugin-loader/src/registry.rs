@@ -25,6 +25,7 @@
 
 use crate::sign::{evaluate, validate_structure, Manifest, TrustPolicy, Verdict, HOST_IDENTITY};
 use crate::tarball;
+use busbar_plugin::cold::ColdEntry;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -108,14 +109,52 @@ pub fn kind_refusal_note(kind: &str) -> &'static str {
     }
 }
 
-/// A plugin that passed phases 1 + 2 and MAY load: its signed manifest, the trust verdict, and the
-/// exact verified library bytes (what the loader will map - never re-read from disk).
+/// ONE ROW of the cold-kind axis: a plugin the registry resolves by name or alias and loads over its
+/// [`crate::Image`]. A DROPPED-IN row passed phases 1 + 2 — its signed manifest, the trust verdict,
+/// and the exact verified library bytes (what the loader will map, never re-read from disk). A
+/// LINKED row ([`LinkedPlugin`], [`PluginRegistry::link`]) states the same manifest and carries its
+/// boundary instead of bytes. Both are registered by the one [`PluginRegistry`] admission and loaded
+/// by the one load; nothing downstream reads which door a row came in by.
 pub struct LoadablePlugin {
-    /// The tarball filename (diagnostics only - identity is the manifest).
+    /// The tarball filename (diagnostics only - identity is the manifest). A linked row's is
+    /// [`LINKED_FILE`].
     pub file: String,
     pub manifest: Manifest,
     pub verdict: Verdict,
     pub lib_bytes: Vec<u8>,
+    /// A linked row's boundary; `None` for a dropped-in row, whose boundary is `lib_bytes`.
+    entry: Option<&'static ColdEntry>,
+}
+
+impl LoadablePlugin {
+    /// What the one load runs over: the linked boundary, or the verified bytes.
+    pub fn image(&self) -> crate::Image<'_> {
+        match self.entry {
+            Some(entry) => crate::Image::Linked(entry),
+            None => crate::Image::Bytes(&self.lib_bytes),
+        }
+    }
+}
+
+/// The `file` a linked row reports: it has no tarball.
+pub const LINKED_FILE: &str = "(linked)";
+
+/// The kinds the LINKED door serves: the cold kinds whose load is the one [`crate::Image`] load. A
+/// plane is linked through [`crate::link_plane`] (its HOT-lane airlock); an export sink's linked
+/// door is its own kind's work (item 141).
+const LINKED_KINDS: &[&str] = &[
+    busbar_plugin::cold::kind::STORE,
+    busbar_plugin::cold::kind::SECRET,
+    busbar_plugin::cold::kind::AUTH,
+    busbar_plugin::cold::kind::HOOK,
+];
+
+/// A cold-lane plugin LINKED into this build (DECISIONS #2 rule (1)): the manifest its signed
+/// tarball would carry — every statement about the plugin, none about an artifact (`sha256` and
+/// `signature` describe a file it does not have) — and its boundary, the SDK's `BUSBAR_COLD_ENTRY`.
+pub struct LinkedPlugin {
+    pub manifest: Manifest,
+    pub entry: &'static ColdEntry,
 }
 
 /// A plugin that failed phase 2 (untrusted, no matching opt-in; or an anti-downgrade reject) and is
@@ -133,24 +172,24 @@ pub struct SkippedPlugin {
 /// after all three phases pass; this is the ONLY resolution surface (`governance.store:` etc.), so
 /// nothing outside the validated set can ever be selected.
 pub struct PluginRegistry {
-    loadable: Vec<LoadablePlugin>,
+    /// Every row, in registration order: the linked rows, then the plugins directory's.
+    rows: Vec<LoadablePlugin>,
+    /// How many of `rows` are linked (they lead).
+    linked: usize,
     skipped: Vec<SkippedPlugin>,
-    /// name -> index into `loadable`; alias -> index (aliases equal to the own name are fine).
+    /// name -> index into `rows`; alias -> index (aliases equal to the own name are fine).
     by_name: HashMap<String, usize>,
     by_alias: HashMap<String, usize>,
 }
 
 impl std::fmt::Debug for PluginRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names = |rows: &[LoadablePlugin]| -> Vec<String> {
+            rows.iter().map(|p| p.manifest.name.clone()).collect()
+        };
         f.debug_struct("PluginRegistry")
-            .field(
-                "loadable",
-                &self
-                    .loadable
-                    .iter()
-                    .map(|p| p.manifest.name.as_str())
-                    .collect::<Vec<_>>(),
-            )
+            .field("linked", &names(self.linked()))
+            .field("loadable", &names(self.loadable()))
             .field(
                 "skipped",
                 &self
@@ -166,12 +205,69 @@ impl std::fmt::Debug for PluginRegistry {
 impl PluginRegistry {
     /// An empty registry (plugins disabled / empty dir).
     pub fn empty() -> Self {
-        PluginRegistry {
-            loadable: Vec::new(),
-            skipped: Vec::new(),
+        Self::of(Vec::new(), 0, Vec::new())
+    }
+
+    /// A registry over `rows` (the first `linked` of them linked) and the skip list, each row
+    /// registered through [`Self::admit`] in order.
+    fn of(rows: Vec<LoadablePlugin>, linked: usize, skipped: Vec<SkippedPlugin>) -> Self {
+        let mut registry = PluginRegistry {
+            rows: Vec::new(),
+            linked,
+            skipped,
             by_name: HashMap::new(),
             by_alias: HashMap::new(),
+        };
+        for row in rows {
+            registry.admit(row);
         }
+        registry
+    }
+
+    /// THE REGISTRATION of one row on the axis — the ONE function both doors call (DECISIONS #2
+    /// rule (1)): the row becomes resolvable by its name and by its alias. The FIRST row to register
+    /// a name or alias holds it, so a linked row (registered first) is not displaced by a dropped-in
+    /// one spelling the same name, and two dropped-in rows never share one: phase 3 refused that set
+    /// before any of it got here.
+    fn admit(&mut self, row: LoadablePlugin) {
+        let i = self.rows.len();
+        self.by_name.entry(row.manifest.name.clone()).or_insert(i);
+        self.by_alias.entry(row.manifest.alias.clone()).or_insert(i);
+        self.rows.push(row);
+    }
+
+    /// THE LINKED DOOR: register `linked` ahead of every row already here, each through the SAME
+    /// admission a dropped-in row takes — its manifest through the structural gate a signed one
+    /// passes (every check but the artifact's integrity, which it has no artifact for), then the one
+    /// registration (`admit`). FAIL-CLOSED: a linked plugin that would not pass is a refusal naming
+    /// it, as an invalid tarball is.
+    pub fn link(self, linked: Vec<LinkedPlugin>) -> Result<Self, String> {
+        let mut rows = Vec::with_capacity(linked.len() + self.rows.len());
+        for LinkedPlugin { manifest, entry } in linked {
+            crate::sign::validate_identity(&manifest, crate::sign::HOST_IDENTITY)
+                .and_then(|()| crate::sign::validate_abi(&manifest, &supported_abi))
+                .and_then(|()| match LINKED_KINDS.contains(&manifest.kind.as_str()) {
+                    true => Ok(()),
+                    false => Err(format!(
+                        "kind '{}' is not linked through this door",
+                        manifest.kind
+                    )),
+                })
+                .map_err(|e| format!("linked plugin '{}': {e}", manifest.name))?;
+            rows.push(LoadablePlugin {
+                file: LINKED_FILE.to_string(),
+                verdict: Verdict::Trusted {
+                    publisher: manifest.publisher.clone(),
+                    first_party: false,
+                },
+                manifest,
+                lib_bytes: Vec::new(),
+                entry: Some(entry),
+            });
+        }
+        let n = rows.len() + self.linked;
+        rows.extend(self.rows);
+        Ok(Self::of(rows, n, self.skipped))
     }
 
     /// Resolve `name_or_alias` (canonical name first, then alias) to a loadable plugin.
@@ -179,7 +275,7 @@ impl PluginRegistry {
         self.by_name
             .get(name_or_alias)
             .or_else(|| self.by_alias.get(name_or_alias))
-            .map(|&i| &self.loadable[i])
+            .map(|&i| &self.rows[i])
     }
 
     /// Why a reference cannot be resolved: if a SKIPPED plugin matches it, name the skip reason -
@@ -190,9 +286,15 @@ impl PluginRegistry {
             .find(|s| s.manifest.name == name_or_alias || s.manifest.alias == name_or_alias)
     }
 
-    /// Every loadable plugin (for logging / catalog).
+    /// Every plugin the plugins DIRECTORY admitted (for logging / catalog / its own conflict and
+    /// anti-downgrade bookkeeping, which are facts about that directory's tarballs).
     pub fn loadable(&self) -> &[LoadablePlugin] {
-        &self.loadable
+        &self.rows[self.linked..]
+    }
+
+    /// Every plugin this build linked, in registration order.
+    pub fn linked(&self) -> &[LoadablePlugin] {
+        &self.rows[..self.linked]
     }
 
     /// Every skipped plugin (for logging / catalog).
@@ -200,14 +302,15 @@ impl PluginRegistry {
         &self.skipped
     }
 
-    /// Open a STORE plugin resolved by name or alias: verifies the resolved plugin's `kind` is
-    /// `store`, then loads the VERIFIED bytes over the store C ABI (memfd on Linux, private temp
-    /// staging elsewhere) and `open`s it with `cfg_json`. The one engine-facing load entrypoint.
-    pub fn open_store(
+    /// Resolve `name_or_alias` to a row of `kind`, or say why not — the one explanation every
+    /// `open_*` below gives: a skipped match names the skip, a miss names the loadable set, a row of
+    /// another kind says it cannot `role`.
+    fn resolve_kind(
         &self,
         name_or_alias: &str,
-        cfg_json: &str,
-    ) -> Result<Box<dyn busbar_api::Store>, String> {
+        kind: &str,
+        role: &str,
+    ) -> Result<&LoadablePlugin, String> {
         let Some(p) = self.resolve(name_or_alias) else {
             return Err(match self.unresolved_reason(name_or_alias) {
                 Some(s) => format!(
@@ -217,7 +320,7 @@ impl PluginRegistry {
                 None => format!(
                     "no plugin named or aliased '{name_or_alias}' is available (loadable plugins: \
                      [{}])",
-                    self.loadable
+                    self.loadable()
                         .iter()
                         .map(|p| p.manifest.name.as_str())
                         .collect::<Vec<_>>()
@@ -225,16 +328,29 @@ impl PluginRegistry {
                 ),
             });
         };
-        if p.manifest.kind != "store" {
+        if p.manifest.kind != kind {
             return Err(format!(
-                "plugin '{}' has kind '{}', not 'store' - it cannot back the governance store",
+                "plugin '{}' has kind '{}', not '{kind}' - it cannot {role}",
                 p.manifest.name, p.manifest.kind
             ));
         }
+        Ok(p)
+    }
+
+    /// Open a STORE plugin resolved by name or alias: verifies the resolved plugin's `kind` is
+    /// `store`, then loads it over the store C ABI (its verified bytes staged — memfd on Linux,
+    /// private temp elsewhere — or its linked boundary) and `open`s it with `cfg_json`. The one
+    /// engine-facing load entrypoint.
+    pub fn open_store(
+        &self,
+        name_or_alias: &str,
+        cfg_json: &str,
+    ) -> Result<Box<dyn busbar_api::Store>, String> {
+        let p = self.resolve_kind(name_or_alias, "store", "back the governance store")?;
         // Hand the manifest's payload schema to the loader: a store built against an older schema
         // is spoken to in the shape it can decode (the usage-ledger ops changed shape in 1.6.0).
-        crate::load_store_from_bytes_at_abi(
-            &p.lib_bytes,
+        crate::load_store_image(
+            p.image(),
             cfg_json,
             &p.manifest.name,
             &p.manifest.kind,
@@ -243,43 +359,16 @@ impl PluginRegistry {
     }
 
     /// Open an AUTH plugin resolved by name or alias: verifies the resolved plugin's `kind` is `auth`,
-    /// then loads the VERIFIED bytes over the kind-neutral C ABI and `open`s it with `cfg_json`,
-    /// returning `Box<dyn AuthModule>` — the seam the engine's auth chain consumes. Same trust and
-    /// load pipeline as store/secret; only the kind (and the consuming seam) differs. FAIL-CLOSED.
+    /// then loads it over the kind-neutral C ABI and `open`s it with `cfg_json`, returning
+    /// `Box<dyn AuthModule>` — the seam the engine's auth chain consumes. Same trust and load
+    /// pipeline as store/secret; only the kind (and the consuming seam) differs. FAIL-CLOSED.
     pub fn open_auth(
         &self,
         name_or_alias: &str,
         cfg_json: &str,
     ) -> Result<Box<dyn busbar_api::AuthModule>, String> {
-        let Some(p) = self.resolve(name_or_alias) else {
-            return Err(match self.unresolved_reason(name_or_alias) {
-                Some(s) => format!(
-                    "plugin '{name_or_alias}' is present ({}) but was not loaded: {}",
-                    s.file, s.reason
-                ),
-                None => format!(
-                    "no plugin named or aliased '{name_or_alias}' is available (loadable plugins: \
-                     [{}])",
-                    self.loadable
-                        .iter()
-                        .map(|p| p.manifest.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            });
-        };
-        if p.manifest.kind != "auth" {
-            return Err(format!(
-                "plugin '{}' has kind '{}', not 'auth' - it cannot serve as an auth module",
-                p.manifest.name, p.manifest.kind
-            ));
-        }
-        crate::auth::load_auth_from_bytes(
-            &p.lib_bytes,
-            cfg_json,
-            &p.manifest.name,
-            &p.manifest.kind,
-        )
+        let p = self.resolve_kind(name_or_alias, "auth", "serve as an auth module")?;
+        crate::auth::load_auth_image(p.image(), cfg_json, &p.manifest.name, &p.manifest.kind)
     }
 
     /// Open an AUTH plugin as the unified [`busbar_api::AuthPlugin`] handle (verify + LOGIN) —
@@ -292,45 +381,19 @@ impl PluginRegistry {
         name_or_alias: &str,
         cfg_json: &str,
     ) -> Result<(Box<dyn busbar_api::AuthPlugin>, u32), String> {
-        let Some(p) = self.resolve(name_or_alias) else {
-            return Err(match self.unresolved_reason(name_or_alias) {
-                Some(s) => format!(
-                    "plugin '{name_or_alias}' is present ({}) but was not loaded: {}",
-                    s.file, s.reason
-                ),
-                None => format!(
-                    "no plugin named or aliased '{name_or_alias}' is available (loadable plugins: \
-                     [{}])",
-                    self.loadable
-                        .iter()
-                        .map(|p| p.manifest.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            });
-        };
-        if p.manifest.kind != "auth" {
-            return Err(format!(
-                "plugin '{}' has kind '{}', not 'auth' - it cannot serve as a login module",
-                p.manifest.name, p.manifest.kind
-            ));
-        }
+        let p = self.resolve_kind(name_or_alias, "auth", "serve as a login module")?;
         let abi_version = p.manifest.abi_version;
-        let module = crate::auth::load_login_from_bytes(
-            &p.lib_bytes,
-            cfg_json,
-            &p.manifest.name,
-            &p.manifest.kind,
-        )?;
+        let module =
+            crate::auth::load_login_image(p.image(), cfg_json, &p.manifest.name, &p.manifest.kind)?;
         Ok((module, abi_version))
     }
 
     /// Open a HOOK plugin resolved by name or alias: verifies the resolved plugin's `kind` is `hook`,
-    /// then loads the VERIFIED bytes over the kind-neutral C ABI and `open`s it with `cfg_json`,
-    /// returning `Arc<dyn RoutingPolicy>` — the seam the engine's routing/hook chains consume. Same
-    /// trust and load pipeline as store/secret/auth; only the kind (and consuming seam) differs.
-    /// `name` is the hook's registry name (metrics id); `projectors` are the engine's fail-closed
-    /// projection/parse closures. FAIL-CLOSED on any resolution/kind/load failure.
+    /// then loads it over the kind-neutral C ABI and `open`s it with `cfg_json`, returning
+    /// `Arc<dyn RoutingPolicy>` — the seam the engine's routing/hook chains consume. Same trust and
+    /// load pipeline as store/secret/auth; only the kind (and consuming seam) differs. `name` is the
+    /// hook's registry name (metrics id); `projectors` are the engine's fail-closed projection/parse
+    /// closures. FAIL-CLOSED on any resolution/kind/load failure.
     pub fn open_hook(
         &self,
         name_or_alias: &str,
@@ -338,31 +401,9 @@ impl PluginRegistry {
         name: &str,
         projectors: std::sync::Arc<crate::hook::HookProjectors>,
     ) -> Result<std::sync::Arc<dyn busbar_api::RoutingPolicy>, String> {
-        let Some(p) = self.resolve(name_or_alias) else {
-            return Err(match self.unresolved_reason(name_or_alias) {
-                Some(s) => format!(
-                    "plugin '{name_or_alias}' is present ({}) but was not loaded: {}",
-                    s.file, s.reason
-                ),
-                None => format!(
-                    "no plugin named or aliased '{name_or_alias}' is available (loadable plugins: \
-                     [{}])",
-                    self.loadable
-                        .iter()
-                        .map(|p| p.manifest.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            });
-        };
-        if p.manifest.kind != "hook" {
-            return Err(format!(
-                "plugin '{}' has kind '{}', not 'hook' - it cannot serve as a routing hook",
-                p.manifest.name, p.manifest.kind
-            ));
-        }
-        crate::hook::load_hook_from_bytes(
-            &p.lib_bytes,
+        let p = self.resolve_kind(name_or_alias, "hook", "serve as a routing hook")?;
+        crate::hook::load_hook_image(
+            p.image(),
             cfg_json,
             &p.manifest.name,
             &p.manifest.kind,
@@ -372,39 +413,17 @@ impl PluginRegistry {
     }
 
     /// Open a SECRET plugin resolved by name or alias: verifies the resolved plugin's `kind` is
-    /// `secret`, then loads the VERIFIED bytes over the secret C ABI and `open`s it with
-    /// `cfg_json`. Same trust and load pipeline as a store plugin - only the kind (and the seam
-    /// consuming it) differs. FAIL-CLOSED: any resolution/kind/load failure is an error the caller
-    /// surfaces as an unresolvable secret.
+    /// `secret`, then loads it over the secret C ABI and `open`s it with `cfg_json`. Same trust and
+    /// load pipeline as a store plugin - only the kind (and the seam consuming it) differs.
+    /// FAIL-CLOSED: any resolution/kind/load failure is an error the caller surfaces as an
+    /// unresolvable secret.
     pub fn open_secret(
         &self,
         name_or_alias: &str,
         cfg_json: &str,
     ) -> Result<Box<dyn busbar_api::SecretModule>, String> {
-        let Some(p) = self.resolve(name_or_alias) else {
-            return Err(match self.unresolved_reason(name_or_alias) {
-                Some(s) => format!(
-                    "plugin '{name_or_alias}' is present ({}) but was not loaded: {}",
-                    s.file, s.reason
-                ),
-                None => format!(
-                    "no plugin named or aliased '{name_or_alias}' is available (loadable plugins: \
-                     [{}])",
-                    self.loadable
-                        .iter()
-                        .map(|p| p.manifest.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            });
-        };
-        if p.manifest.kind != "secret" {
-            return Err(format!(
-                "plugin '{}' has kind '{}', not 'secret' - it cannot resolve config secrets",
-                p.manifest.name, p.manifest.kind
-            ));
-        }
-        crate::load_secret_from_bytes(&p.lib_bytes, cfg_json, &p.manifest.name, &p.manifest.kind)
+        let p = self.resolve_kind(name_or_alias, "secret", "resolve config secrets")?;
+        crate::load_secret_image(p.image(), cfg_json, &p.manifest.name, &p.manifest.kind)
     }
 
     /// Open an EXPORT sink resolved by name or alias: verifies the resolved plugin's `kind` is
@@ -417,29 +436,7 @@ impl PluginRegistry {
         name_or_alias: &str,
         cfg_json: &str,
     ) -> Result<crate::export::DynExport, String> {
-        let Some(p) = self.resolve(name_or_alias) else {
-            return Err(match self.unresolved_reason(name_or_alias) {
-                Some(s) => format!(
-                    "plugin '{name_or_alias}' is present ({}) but was not loaded: {}",
-                    s.file, s.reason
-                ),
-                None => format!(
-                    "no plugin named or aliased '{name_or_alias}' is available (loadable plugins: \
-                     [{}])",
-                    self.loadable
-                        .iter()
-                        .map(|p| p.manifest.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            });
-        };
-        if p.manifest.kind != "export" {
-            return Err(format!(
-                "plugin '{}' has kind '{}', not 'export' - it cannot serve as a telemetry sink",
-                p.manifest.name, p.manifest.kind
-            ));
-        }
+        let p = self.resolve_kind(name_or_alias, "export", "serve as a telemetry sink")?;
         crate::export::load_export_from_bytes(
             &p.lib_bytes,
             cfg_json,
@@ -455,29 +452,7 @@ impl PluginRegistry {
     /// load pipeline as store/secret/auth/hook/export; only the kind (and the driving seam) differs.
     /// FAIL-CLOSED on any resolution/kind/load failure. The 1.6.0 S4 both-ways entrypoint for planes.
     pub fn open_plane(&self, name_or_alias: &str) -> Result<crate::DynPlane, String> {
-        let Some(p) = self.resolve(name_or_alias) else {
-            return Err(match self.unresolved_reason(name_or_alias) {
-                Some(s) => format!(
-                    "plugin '{name_or_alias}' is present ({}) but was not loaded: {}",
-                    s.file, s.reason
-                ),
-                None => format!(
-                    "no plugin named or aliased '{name_or_alias}' is available (loadable plugins: \
-                     [{}])",
-                    self.loadable
-                        .iter()
-                        .map(|p| p.manifest.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            });
-        };
-        if p.manifest.kind != "plane" {
-            return Err(format!(
-                "plugin '{}' has kind '{}', not 'plane' - it cannot serve as a protocol plane",
-                p.manifest.name, p.manifest.kind
-            ));
-        }
+        let p = self.resolve_kind(name_or_alias, "plane", "serve as a protocol plane")?;
         crate::plane::load_plane_from_bytes(&p.lib_bytes, &p.manifest.name, &p.manifest.kind)
     }
 
@@ -485,7 +460,7 @@ impl PluginRegistry {
     /// a dropped-in plugins directory contributes to the plane axis. The first that will not load
     /// fails the whole set, naming it: a trusted plane that cannot be admitted is not skipped.
     pub fn open_planes(&self) -> Result<Vec<crate::DynPlane>, String> {
-        self.loadable
+        self.loadable()
             .iter()
             .filter(|p| p.manifest.kind == busbar_plugin::cold::kind::PLANE)
             .map(|p| self.open_plane(&p.manifest.name))
@@ -614,6 +589,7 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
             manifest: unpacked.manifest,
             verdict,
             lib_bytes: unpacked.lib_bytes,
+            entry: None,
         }),
         Err(rejected) => FileOutcome::Skipped(SkippedPlugin {
             file,
@@ -713,18 +689,7 @@ pub fn scan_and_validate(dir: &Path, policy: &TrustPolicy) -> Result<PluginRegis
     if !errors.is_empty() {
         return Err(errors);
     }
-    let mut by_name = HashMap::new();
-    let mut by_alias = HashMap::new();
-    for (i, p) in loadable.iter().enumerate() {
-        by_name.insert(p.manifest.name.clone(), i);
-        by_alias.insert(p.manifest.alias.clone(), i);
-    }
-    Ok(PluginRegistry {
-        loadable,
-        skipped,
-        by_name,
-        by_alias,
-    })
+    Ok(PluginRegistry::of(loadable, 0, skipped))
 }
 
 /// One row of the MANIFEST-ONLY inventory behind `busbar --list-plugins` and the admin catalog:

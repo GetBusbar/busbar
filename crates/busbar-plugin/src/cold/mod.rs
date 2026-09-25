@@ -695,6 +695,35 @@ pub type FreeFn = unsafe extern "C-unwind" fn(ptr: *mut u8, len: usize);
 /// `busbar_close` — drop the instance behind `handle`. Called once, at shutdown/unload.
 pub type CloseFn = unsafe extern "C-unwind" fn(handle: *mut c_void);
 
+/// A cold-lane plugin's boundary, LINKED rather than dropped in: the SAME functions its `cdylib`
+/// exports under the [`symbol`] names, referenced where the loader would otherwise look them up.
+///
+/// DECISIONS #2 rule (1): a plugin is compiled in OR dropped in over one contract and one loading
+/// path. For the cold kinds that contract IS these functions and the JSON they carry, so a linked
+/// plugin hands the loader exactly what `dlsym` would have found, and the loader runs the one load it
+/// runs for a library (transport handshake, kind cross-check, log bridge, `open`) over it. Nothing on
+/// the far side of the boundary can tell which door it came in by. The SDK's export macro emits one
+/// beside the symbols (`BUSBAR_COLD_ENTRY`), so every SDK-built plugin is linkable by construction.
+#[derive(Clone, Copy)]
+pub struct ColdEntry {
+    /// [`symbol::ABI`].
+    pub abi: AbiFn,
+    /// [`symbol::PLUGIN_KIND`].
+    pub kind: PluginKindFn,
+    /// [`symbol::SET_LOG_SINK`] — optional on the dropped-in door, always present on this one. A
+    /// linked plugin shares the host's `tracing` dispatcher, so what this installs is the sink its
+    /// explicit log records take, never a forwarder of the host's own events back into itself.
+    pub set_log_sink: SetLogSinkFn,
+    /// [`symbol::OPEN`].
+    pub open: OpenFn,
+    /// [`symbol::CALL`].
+    pub call: CallFn,
+    /// [`symbol::FREE`].
+    pub free: FreeFn,
+    /// [`symbol::CLOSE`].
+    pub close: CloseFn,
+}
+
 #[cfg(test)]
 #[path = "tests/lib_tests.rs"]
 mod tests;

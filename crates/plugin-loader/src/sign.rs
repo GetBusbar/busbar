@@ -592,6 +592,27 @@ pub fn validate_structure(
     supported_abi: &dyn Fn(&str) -> &'static [u32],
     host_identity: &str,
 ) -> Result<(), String> {
+    validate_identity(m, host_identity)?;
+    if m.sha256.len() != 64 || !m.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!(
+            "manifest sha256 '{}' is not a 64-char hex digest",
+            m.sha256
+        ));
+    }
+    if sha256_hex(lib_bytes) != m.sha256.to_ascii_lowercase() {
+        return Err(
+            "library bytes do not match the manifest sha256 (integrity failure)".to_string(),
+        );
+    }
+    validate_abi(m, supported_abi)
+}
+
+/// The STATEMENT half of [`validate_structure`] — everything a manifest says about the plugin rather
+/// than about the artifact file (`sha256` is the file's): name, alias, kind, version, publisher,
+/// host. A plugin linked into the build has no artifact, and states exactly this; the registry's
+/// linked door runs it, then [`validate_abi`], so a linked row passes the same structural gate a
+/// dropped-in one does.
+pub fn validate_identity(m: &Manifest, host_identity: &str) -> Result<(), String> {
     if !valid_name(&m.name) {
         return Err(format!(
             "manifest name '{}' is not a valid plugin name (lowercase [a-z0-9-]+)",
@@ -640,17 +661,15 @@ pub fn validate_structure(
             ));
         }
     }
-    if m.sha256.len() != 64 || !m.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(format!(
-            "manifest sha256 '{}' is not a 64-char hex digest",
-            m.sha256
-        ));
-    }
-    if sha256_hex(lib_bytes) != m.sha256.to_ascii_lowercase() {
-        return Err(
-            "library bytes do not match the manifest sha256 (integrity failure)".to_string(),
-        );
-    }
+    Ok(())
+}
+
+/// The payload-schema negotiation of [`validate_structure`]: the manifest's `abi_version` against the
+/// binary's supported range for its kind.
+pub fn validate_abi(
+    m: &Manifest,
+    supported_abi: &dyn Fn(&str) -> &'static [u32],
+) -> Result<(), String> {
     // `supported_abi` returns a CONTIGUOUS `[floor, max]` inclusive range (its endpoints) of the
     // PAYLOAD-schema versions the binary speaks for this kind. Negotiate the manifest's declared
     // `abi_version` against it: in range → ok; below floor / above max → refuse LOUD naming both.

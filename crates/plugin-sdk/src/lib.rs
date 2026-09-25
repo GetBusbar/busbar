@@ -47,7 +47,7 @@ pub use busbar_plugin::cold::{Signal, SignalBag, SignalValue};
 /// direct `busbar-plugin` dependency just to name the log-sink type in the generated symbol.
 #[doc(hidden)]
 pub mod __abi {
-    pub use busbar_plugin::cold::LogSinkFn;
+    pub use busbar_plugin::cold::{ColdEntry, LogSinkFn};
 }
 
 /// The handle type behind the opaque `*mut c_void` for a store plugin (a boxed trait object). Named at
@@ -399,12 +399,28 @@ pub mod hostlog {
     /// # Safety
     /// `sink` must stay callable, and `ctx` valid, for the life of the plugin.
     pub unsafe fn install(sink: LogSinkFn, ctx: *mut std::ffi::c_void, max_level: u32) {
-        CTX.store(ctx, Ordering::Release);
-        MAX_LEVEL.store(max_level, Ordering::Release);
-        SINK.store(sink as usize, Ordering::Release);
+        unsafe { install_sink(sink, ctx, max_level) };
         // Light up every `tracing` call site already in this plugin, including in library crates
         // that never depended on this SDK.
         install_tracing_bridge();
+    }
+
+    /// Record the host's sink WITHOUT the `tracing` bridge — what a LINKED plugin's entry
+    /// (`BUSBAR_COLD_ENTRY`) installs. The bridge exists because a `cdylib` carries its own copy of
+    /// `tracing-core`, so its events reach no host subscriber unless forwarded. A linked plugin has
+    /// no copy of its own: its events already reach the host's dispatcher, which is exactly where the
+    /// bridge would have forwarded them. Installing the bridge anyway would put a forwarder INTO the
+    /// host's dispatcher — every host event would then re-enter the sink it forwards to. Explicit
+    /// [`log`] calls still reach the host through the sink, as on the dropped-in door. (Linked
+    /// plugins share this SDK's statics, so the last one to install is the `ctx` those explicit
+    /// records are attributed to; their `tracing` events carry their own targets.)
+    ///
+    /// # Safety
+    /// As [`install`].
+    pub unsafe fn install_sink(sink: LogSinkFn, ctx: *mut std::ffi::c_void, max_level: u32) {
+        CTX.store(ctx, Ordering::Release);
+        MAX_LEVEL.store(max_level, Ordering::Release);
+        SINK.store(sink as usize, Ordering::Release);
     }
 
     /// Emit one record at `level`. Goes to the host's subscriber when a sink is installed, else to
@@ -1040,6 +1056,8 @@ macro_rules! export_hook_plugin {
 /// `boundary::open_boundary`/`call_boundary`/`close_boundary`/`free_boundary`. There is NO seam on which
 /// an author can get a boundary facet wrong: `$dispatch` returns a [`BoundaryOutcome`] that cannot name
 /// a raw pointer or a status integer, and these SIX symbols are the ONLY `#[no_mangle]` exports.
+/// Beside them it emits `BUSBAR_COLD_ENTRY`, the same boundary for a host that LINKS the plugin
+/// (DECISIONS #2 rule (1): compiled in or dropped in, one contract, one loading path).
 ///
 /// - `$kind` — a `&'static str` kind (`"store"` | `"secret"` | `"auth"` | `"hook"`).
 /// - `$dispatch` — the per-kind SDK `dispatch` adapter (`store_dispatch`/`auth_dispatch`/…).
@@ -1048,25 +1066,28 @@ macro_rules! export_hook_plugin {
 #[macro_export]
 macro_rules! export_plugin {
     (kind = $kind:expr, dispatch = $dispatch:path, ctor = $ctor:path, handle = $handle:ty $(,)?) => {
-        /// # Safety
-        /// Read only by the busbar loader as the frozen TRANSPORT handshake.
-        ///
-        /// `extern "C-unwind"` (matches [`busbar_plugin::cold::AbiFn`]): a panic that unwinds out of
-        /// this symbol propagates as a DEFINED forced unwind the engine's `catch_unwind` can catch,
-        /// rather than an immediate abort at this frame (which plain `extern "C"` would force).
-        #[no_mangle]
-        pub extern "C-unwind" fn busbar_abi() -> u32 {
+        // THE BOUNDARY, ONCE. Each function below is the body of one exported symbol, under a
+        // mangled name. The `#[no_mangle]` exports (in `__busbar_exports`) are one-line calls into
+        // these, and `BUSBAR_COLD_ENTRY` references them: the dropped-in door (`dlsym` on the
+        // `cdylib`) and the linked door (the `rlib`'s entry) reach the SAME code. The exports live in
+        // a module of their own so that linking the entry does not also pull them in — two plugins
+        // linked into one binary would otherwise both define `busbar_call`.
+
+        /// `busbar_abi` — the frozen TRANSPORT handshake.
+        #[doc(hidden)]
+        pub extern "C-unwind" fn __busbar_cold_abi() -> u32 {
             $crate::transport_version()
         }
 
-        /// # Safety
-        /// The returned pointer is to a `'static` NUL-terminated string owned by this library.
-        #[no_mangle]
-        pub extern "C-unwind" fn busbar_plugin_kind() -> *const u8 {
+        /// `busbar_plugin_kind` — a `'static` NUL-terminated string owned by this library.
+        #[doc(hidden)]
+        pub extern "C-unwind" fn __busbar_cold_kind() -> *const u8 {
             const KIND_NUL: &str = concat!($kind, "\0");
             KIND_NUL.as_ptr()
         }
 
+        /// `busbar_set_log_sink`.
+        ///
         /// # Safety
         /// Called at most once by the busbar loader, immediately after a successful `busbar_open`
         /// and before any `busbar_call`, with a sink that stays callable for this plugin's life.
@@ -1074,8 +1095,8 @@ macro_rules! export_plugin {
         /// OPTIONAL on both sides: a host that never calls it leaves the plugin logging to stderr,
         /// and a host that looks it up on an older plugin simply does not find it. That is what
         /// keeps this additive rather than a transport bump.
-        #[no_mangle]
-        pub unsafe extern "C-unwind" fn busbar_set_log_sink(
+        #[doc(hidden)]
+        pub unsafe extern "C-unwind" fn __busbar_cold_set_log_sink(
             sink: $crate::__abi::LogSinkFn,
             ctx: *mut ::std::ffi::c_void,
             max_level: u32,
@@ -1083,12 +1104,14 @@ macro_rules! export_plugin {
             unsafe { $crate::hostlog::install(sink, ctx, max_level) };
         }
 
+        /// `busbar_open`.
+        ///
         /// # Safety
         /// Called only by the busbar loader with ABI-valid pointers. Routes through
         /// `boundary::open_boundary`: the ctor runs under a mandatory `catch_unwind`, the handle is
         /// published only into a confirmed non-null slot (else dropped), and the status is total.
-        #[no_mangle]
-        pub unsafe extern "C-unwind" fn busbar_open(
+        #[doc(hidden)]
+        pub unsafe extern "C-unwind" fn __busbar_cold_open(
             cfg: *const u8,
             cfg_len: usize,
             out_handle: *mut *mut ::core::ffi::c_void,
@@ -1105,12 +1128,14 @@ macro_rules! export_plugin {
             )
         }
 
+        /// `busbar_call`.
+        ///
         /// # Safety
         /// Called only by the busbar loader with a live handle and ABI-valid pointers. Routes through
         /// `boundary::call_boundary`: null-handle → protocol, dispatch under mandatory `catch_unwind`,
         /// alloc-after-check buffer publish, total status.
-        #[no_mangle]
-        pub unsafe extern "C-unwind" fn busbar_call(
+        #[doc(hidden)]
+        pub unsafe extern "C-unwind" fn __busbar_cold_call(
             handle: *mut ::core::ffi::c_void,
             req: *const u8,
             req_len: usize,
@@ -1122,20 +1147,126 @@ macro_rules! export_plugin {
             })
         }
 
+        /// `busbar_free`.
+        ///
         /// # Safety
         /// Called only by the busbar loader with a buffer this plugin returned. Catch-wrapped dealloc.
-        #[no_mangle]
-        pub unsafe extern "C-unwind" fn busbar_free(ptr: *mut u8, len: usize) {
+        #[doc(hidden)]
+        pub unsafe extern "C-unwind" fn __busbar_cold_free(ptr: *mut u8, len: usize) {
             $crate::boundary::free_boundary(ptr, len)
         }
 
+        /// `busbar_close`.
+        ///
         /// # Safety
         /// Called only by the busbar loader with a live handle, once. Routes through
         /// `boundary::close_boundary`: the box is owned BEFORE the `catch_unwind`, so a panicking Drop
         /// frees the allocation and never unwinds out of this symbol.
-        #[no_mangle]
-        pub unsafe extern "C-unwind" fn busbar_close(handle: *mut ::core::ffi::c_void) {
+        #[doc(hidden)]
+        pub unsafe extern "C-unwind" fn __busbar_cold_close(handle: *mut ::core::ffi::c_void) {
             $crate::boundary::close_boundary::<$handle>(handle)
+        }
+
+        /// `busbar_set_log_sink` on the LINKED door: the sink, without the `tracing` bridge a linked
+        /// plugin must not install (see `hostlog::install_sink`).
+        ///
+        /// # Safety
+        /// As `__busbar_cold_set_log_sink`.
+        #[doc(hidden)]
+        pub unsafe extern "C-unwind" fn __busbar_linked_set_log_sink(
+            sink: $crate::__abi::LogSinkFn,
+            ctx: *mut ::std::ffi::c_void,
+            max_level: u32,
+        ) {
+            unsafe { $crate::hostlog::install_sink(sink, ctx, max_level) };
+        }
+
+        /// The boundary for the LINKED door (`busbar_plugin::cold::ColdEntry`): a build that compiles
+        /// this plugin in hands the loader these functions instead of a library to look them up in,
+        /// and the loader runs its one cold-lane load over them (DECISIONS #2 rule (1)).
+        pub static BUSBAR_COLD_ENTRY: $crate::__abi::ColdEntry = $crate::__abi::ColdEntry {
+            abi: __busbar_cold_abi,
+            kind: __busbar_cold_kind,
+            set_log_sink: __busbar_linked_set_log_sink,
+            open: __busbar_cold_open,
+            call: __busbar_cold_call,
+            free: __busbar_cold_free,
+            close: __busbar_cold_close,
+        };
+
+        /// The dropped-in door: the six (+ the optional log-sink) `#[no_mangle]` symbols the loader
+        /// looks up in the `cdylib`, each the boundary above under its frozen name.
+        #[doc(hidden)]
+        pub mod __busbar_exports {
+            /// # Safety
+            /// Read only by the busbar loader as the frozen TRANSPORT handshake.
+            ///
+            /// `extern "C-unwind"` (matches [`busbar_plugin::cold::AbiFn`]): a panic that unwinds out
+            /// of this symbol propagates as a DEFINED forced unwind the engine's `catch_unwind` can
+            /// catch, rather than an immediate abort at this frame (which plain `extern "C"` would
+            /// force).
+            #[no_mangle]
+            pub extern "C-unwind" fn busbar_abi() -> u32 {
+                super::__busbar_cold_abi()
+            }
+
+            /// # Safety
+            /// The returned pointer is to a `'static` NUL-terminated string owned by this library.
+            #[no_mangle]
+            pub extern "C-unwind" fn busbar_plugin_kind() -> *const u8 {
+                super::__busbar_cold_kind()
+            }
+
+            /// # Safety
+            /// See `__busbar_cold_set_log_sink`.
+            #[no_mangle]
+            pub unsafe extern "C-unwind" fn busbar_set_log_sink(
+                sink: $crate::__abi::LogSinkFn,
+                ctx: *mut ::std::ffi::c_void,
+                max_level: u32,
+            ) {
+                unsafe { super::__busbar_cold_set_log_sink(sink, ctx, max_level) }
+            }
+
+            /// # Safety
+            /// See `__busbar_cold_open`.
+            #[no_mangle]
+            pub unsafe extern "C-unwind" fn busbar_open(
+                cfg: *const u8,
+                cfg_len: usize,
+                out_handle: *mut *mut ::core::ffi::c_void,
+                out_err: *mut *mut u8,
+                out_err_len: *mut usize,
+            ) -> i32 {
+                unsafe { super::__busbar_cold_open(cfg, cfg_len, out_handle, out_err, out_err_len) }
+            }
+
+            /// # Safety
+            /// See `__busbar_cold_call`.
+            #[no_mangle]
+            pub unsafe extern "C-unwind" fn busbar_call(
+                handle: *mut ::core::ffi::c_void,
+                req: *const u8,
+                req_len: usize,
+                out: *mut *mut u8,
+                out_len: *mut usize,
+            ) -> i32 {
+                unsafe { super::__busbar_cold_call(handle, req, req_len, out, out_len) }
+            }
+
+            /// # Safety
+            /// See `__busbar_cold_free`.
+            #[no_mangle]
+            pub unsafe extern "C-unwind" fn busbar_free(ptr: *mut u8, len: usize) {
+                unsafe { super::__busbar_cold_free(ptr, len) }
+            }
+
+            /// # Safety
+            /// See `__busbar_cold_close`.
+            #[no_mangle]
+            pub unsafe extern "C-unwind" fn busbar_close(handle: *mut ::core::ffi::c_void) {
+                unsafe { super::__busbar_cold_close(handle) }
+            }
         }
     };
 }
