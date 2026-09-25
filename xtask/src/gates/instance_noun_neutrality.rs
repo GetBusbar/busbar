@@ -40,6 +40,17 @@
 //! goes GREEN only when the baseline is empty — i.e. when the app knows no concrete instance
 //! outside its family.
 //!
+//! ## FROZEN TEXT IS MARKED, NEVER ALLOW-LISTED BY FILE
+//!
+//! A noun inside frozen customer- or operator-visible text (a diagnostics catalog entry, an error
+//! string) cannot be drained without changing what a customer sees. Such a literal carries
+//! `// noun-neutrality: frozen-literal pinned-by=<drift test or rendered doc> <reason>` — the same
+//! per-line, reasoned shape as plane-purity-strict's frozen-wire pragma. It exempts the LITERAL
+//! only (never an identifier on the line), it is refused unless the cited file exists and contains
+//! the literal, and the pragma count is ratcheted by `[pragma_ceiling] frozen_literal` in the
+//! ledger, so it can only fall. See the `exempt` module. `:frozen-literal` reds a refused marker;
+//! `:pragma-ceiling` reds a count that moved off its ceiling in either direction.
+//!
 //! Regenerate the baseline from the live census with
 //! `XTASK_INSN_EMIT_BASELINE=1 cargo xtask gate instance-noun-neutrality 2>qa/instance-noun-neutrality.toml`
 //! then review every row by hand — the emitter derives category and wave mechanically; a human
@@ -51,6 +62,9 @@ use crate::ctx::{Ctx, Overlay, WalkSpec};
 use crate::gates::{execute, prove_rows_red_at, Case, Expect, Gate, Report};
 use crate::ledger::{Row, Status, Verdict};
 use crate::scan::strip_comment_line;
+
+mod cases;
+mod exempt;
 
 pub const BASELINE: &str = "qa/instance-noun-neutrality.toml";
 const CROSS_ROW: &str = "instance-noun-neutrality";
@@ -68,6 +82,12 @@ pub const ROW_STALE: &str = "instance-noun-neutrality:stale-baseline";
 /// (a real file whose leak is gone). A row missing its `noun` or `file` key is the same false zero
 /// (it used to be dropped silently) and is refused here too.
 pub const ROW_DEAD_PATH: &str = "instance-noun-neutrality:dead-path";
+/// Every `frozen-literal` pragma is reasoned, literal-only and pinned (see the `exempt` module).
+pub const ROW_FROZEN_LITERAL: &str = "instance-noun-neutrality:frozen-literal";
+/// THE RATCHET: the live pragma count equals `[pragma_ceiling] frozen_literal` in the ledger. A count
+/// above the ceiling is a new exemption nobody armed; a count below it is slack the ledger must give
+/// back — so the number can only fall.
+pub const ROW_PRAGMA_CEILING: &str = "instance-noun-neutrality:pragma-ceiling";
 
 /// THE NEEDLE every per-noun census row carries. `--all` excuses this gate's standing red only when
 /// every red row names it (see the REPORT_ONLY posture); the `:undocumented` and `:stale-baseline`
@@ -84,6 +104,14 @@ struct Noun {
     family: &'static [&'static str],
     /// Word/CamelCase tokens. All are lowercase; the CamelCase rule capitalises the first letter.
     tokens: &'static [&'static str],
+    /// EXACT CamelCase needles (`StreamingPlane`), matched by the CamelCase rule as written — for a
+    /// plane type whose name is two words, which capitalising one token cannot spell.
+    camel: &'static [&'static str],
+    /// A plane's config SECTION key (`streams`), matched only where it IS the top-level section:
+    /// `streams:` opening a literal, after an escaped `\n`, or at column 0 of a multi-line literal.
+    /// The key must end its line (its value is a mapping block): an export sink's `streams: [logs]`
+    /// projection list, indented or not, is a different key.
+    section: Option<&'static str>,
 }
 
 // ── PLANES (DECISION #1 / #18 / #48) ──────────────────────────────────────────────────────────
@@ -153,30 +181,58 @@ const NOUNS: &[Noun] = &[
         kind: "plane",
         family: FAM_MCP,
         tokens: &["mcp"],
+        camel: &[],
+        section: None,
     },
     Noun {
         key: "a2a",
         kind: "plane",
         family: FAM_A2A,
         tokens: &["a2a"],
+        camel: &[],
+        section: None,
     },
     Noun {
         key: "llm",
         kind: "plane",
         family: FAM_LLM,
         tokens: &["llm"],
+        camel: &[],
+        section: None,
     },
+    // `streaming` — KEYED ON THE PLANE'S OWN SPELLINGS, NEVER ON THE BARE WORD. The plane is named
+    // `streaming` (#18), but the word is also ordinary HTTP vocabulary: a streamed response, a
+    // `stream: true` request, a "non-streaming" body, tonic's `Streaming<T>` and `Grpc::streaming`.
+    // The bare word hit 74 files, and those are an adjective, not a coupling. What names the PLANE is
+    // its crate/feature/module path (`busbar_plane_streaming`, `plane-streaming`, `plane_streaming`),
+    // its types (`StreamingPlane…`, the `streams:` section's `StreamsSection`/`StreamsCfg`), and the
+    // top-level `streams:` section key itself (#47). The spec's neutrality witness bans protocol
+    // nouns from ABI, capability and carrier NAMES; these are those names.
     Noun {
         key: "streaming",
         kind: "plane",
         family: FAM_STREAM,
-        tokens: &["streaming"],
+        tokens: &[
+            "plane_streaming",
+            "plane-streaming",
+            "streaming_plane",
+            "streaming-plane",
+        ],
+        camel: &[
+            "StreamingPlane",
+            "PlaneStreaming",
+            "StreamsSection",
+            "StreamsCfg",
+        ],
+        section: Some("streams"),
     },
     Noun {
         key: "voice",
         kind: "plane",
         family: FAM_STREAM,
         tokens: &["voice"],
+        camel: &[],
+        section: None,
     },
     // The `decisions` plane (#48) — KEYED ON `jev`, THE DIALECT IT SPEAKS, NEVER ON `decision`.
     // Both match rules here are name-shaped (`word_ci` treats `_` as a boundary; `camel_hit`
@@ -194,6 +250,8 @@ const NOUNS: &[Noun] = &[
         kind: "plane",
         family: FAM_DECISION,
         tokens: &["jev"],
+        camel: &[],
+        section: None,
     },
     // Transports — KEYED ON THE PLUGIN-INSTANCE IDENTIFIER, NOT THE BARE PROTOCOL WORD. Bare
     // `http`/`tcp`/`tls`/… are the wire protocols and the `http` crate's own types, used as neutral
@@ -206,12 +264,16 @@ const NOUNS: &[Noun] = &[
         kind: "transport",
         family: FAM_HTTP,
         tokens: &["busbar_transport_http", "transport_http", "transport-http"],
+        camel: &[],
+        section: None,
     },
     Noun {
         key: "ws",
         kind: "transport",
         family: FAM_WS,
         tokens: &["busbar_transport_ws", "transport_ws", "transport-ws"],
+        camel: &[],
+        section: None,
     },
     Noun {
         key: "stdio",
@@ -222,30 +284,40 @@ const NOUNS: &[Noun] = &[
             "transport_stdio",
             "transport-stdio",
         ],
+        camel: &[],
+        section: None,
     },
     Noun {
         key: "tcp",
         kind: "transport",
         family: FAM_TCP,
         tokens: &["busbar_transport_tcp", "transport_tcp", "transport-tcp"],
+        camel: &[],
+        section: None,
     },
     Noun {
         key: "tls",
         kind: "transport",
         family: FAM_TLS,
         tokens: &["busbar_transport_tls", "transport_tls", "transport-tls"],
+        camel: &[],
+        section: None,
     },
     Noun {
         key: "sse",
         kind: "transport",
         family: FAM_SSE,
         tokens: &["busbar_transport_sse", "transport_sse", "transport-sse"],
+        camel: &[],
+        section: None,
     },
     Noun {
         key: "grpc",
         kind: "transport",
         family: FAM_GRPC,
         tokens: &["busbar_transport_grpc", "transport_grpc", "transport-grpc"],
+        camel: &[],
+        section: None,
     },
     // Stores — no backend crate in this tree, so the family is empty and every hit is a leak.
     Noun {
@@ -253,24 +325,32 @@ const NOUNS: &[Noun] = &[
         kind: "store",
         family: FAM_NONE,
         tokens: &["postgres"],
+        camel: &[],
+        section: None,
     },
     Noun {
         key: "mysql",
         kind: "store",
         family: FAM_NONE,
         tokens: &["mysql"],
+        camel: &[],
+        section: None,
     },
     Noun {
         key: "valkey",
         kind: "store",
         family: FAM_NONE,
         tokens: &["valkey", "redis"],
+        camel: &[],
+        section: None,
     },
     Noun {
         key: "sqlite",
         kind: "store",
         family: FAM_NONE,
         tokens: &["sqlite"],
+        camel: &[],
+        section: None,
     },
     // Stores that DO have a crate (item 197). The four above are censused on backends with no crate
     // here; these two ARE the store kind's in-tree instances, and until this row they had no Noun
@@ -281,44 +361,44 @@ const NOUNS: &[Noun] = &[
         kind: "store",
         family: FAM_STORE_MEMORY,
         tokens: &["busbar_store_memory"],
+        camel: &[],
+        section: None,
     },
     Noun {
         key: "store",
         kind: "store",
         family: FAM_STORE_EXAMPLE,
         tokens: &["busbar_store_example_plugin"],
+        camel: &[],
+        section: None,
     },
     // Auth schemes — matched on the unambiguous scheme name only. `aws` (broad infra) is left to
     // its precise scheme spelling `sigv4`.
-    Noun {
-        key: "bearer",
-        kind: "auth",
-        family: FAM_AUTH,
-        tokens: &["bearer"],
-    },
-    Noun {
-        key: "mtls",
-        kind: "auth",
-        family: FAM_AUTH,
-        tokens: &["mtls"],
-    },
+    //
+    // `bearer`, `mtls` and `spki` ARE NOT HERE, AND THAT IS A RULING, NOT AN OMISSION. They are
+    // standards, not plugin instances: `Bearer` is the RFC 6750 HTTP authentication scheme every
+    // OAuth 2.0 client and server speaks, mutual TLS is the RFC 8705 client-certificate binding, and
+    // an SPKI pin is the RFC 7469 public-key fingerprint. An auth plugin INSTANCE is a crate
+    // (`auth-static-plugin`, an `auth-github`); a word every one of them speaks names none of them.
+    // BUSBAR-1.6.0.md "Owner rulings — 2026-09-23", Q1: "Auth vocabulary (`bearer`, `spki`, `mtls`)
+    // is protocol vocabulary, not an instance noun … The neutrality gate exempts the three."
+    // Censused, `bearer` alone hit 135 files and the three together 248. `sigv4` stays (same
+    // ruling): it is AWS's scheme, and an AWS-signing plugin is the instance it spells.
     Noun {
         key: "sigv4",
         kind: "auth",
         family: FAM_AUTH,
         tokens: &["sigv4"],
+        camel: &[],
+        section: None,
     },
     Noun {
         key: "gcp",
         kind: "auth",
         family: FAM_AUTH,
         tokens: &["gcp"],
-    },
-    Noun {
-        key: "spki",
-        kind: "auth",
-        family: FAM_AUTH,
-        tokens: &["spki"],
+        camel: &[],
+        section: None,
     },
     // Secret / hook / export — bare `secret`/`hook`/`export` are core subsystems (secret-ref,
     // busbar-core-hooks, export verbs), so the ENFORCEABLE instance token is the example/test
@@ -328,12 +408,16 @@ const NOUNS: &[Noun] = &[
         kind: "secret",
         family: FAM_SECRET,
         tokens: &["secret_example_plugin"],
+        camel: &[],
+        section: None,
     },
     Noun {
         key: "hook",
         kind: "hook",
         family: FAM_HOOK,
         tokens: &["hook_test_plugin"],
+        camel: &[],
+        section: None,
     },
     // The hook kind's one in-tree instance (item 197), on its crate identifier.
     Noun {
@@ -341,12 +425,16 @@ const NOUNS: &[Noun] = &[
         kind: "hook",
         family: FAM_HOOKS_RANKING,
         tokens: &["busbar_hooks_ranking"],
+        camel: &[],
+        section: None,
     },
     Noun {
         key: "export",
         kind: "export",
         family: FAM_EXPORT,
         tokens: &["export_example_plugin"],
+        camel: &[],
+        section: None,
     },
 ];
 
@@ -424,10 +512,122 @@ fn camel_hit(code: &str, needle: &str) -> bool {
     false
 }
 
+/// An EXACT CamelCase needle, with [`camel_hit`]'s boundaries: not the tail of a lowercase word, and
+/// followed by an uppercase letter, a non-identifier character, or end of line.
+fn camel_exact_spans(chars: &[char], needle: &str) -> Vec<(usize, usize)> {
+    let n: Vec<char> = needle.chars().collect();
+    let mut out = Vec::new();
+    if n.is_empty() || n.len() > chars.len() {
+        return out;
+    }
+    for i in 0..=(chars.len() - n.len()) {
+        if chars[i..i + n.len()] != n[..] {
+            continue;
+        }
+        if i > 0 && chars[i - 1].is_ascii_lowercase() {
+            continue;
+        }
+        match chars.get(i + n.len()) {
+            None => out.push((i, i + n.len())),
+            Some(c) if c.is_ascii_uppercase() || !c.is_ascii_alphanumeric() => {
+                out.push((i, i + n.len()))
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// A plane's top-level config section key, ending its line: `<key>:` opening a literal, after an
+/// escaped newline (`\nstreams:`), or at column 0 (a multi-line literal's own line).
+fn section_spans(chars: &[char], key: &str) -> Vec<(usize, usize)> {
+    let n: Vec<char> = format!("{key}:").chars().collect();
+    let mut out = Vec::new();
+    if n.len() > chars.len() {
+        return out;
+    }
+    for i in 0..=(chars.len() - n.len()) {
+        if chars[i..i + n.len()] != n[..] {
+            continue;
+        }
+        let top = i == 0
+            || chars[i - 1] == '"'
+            || (i >= 2 && chars[i - 2] == '\\' && chars[i - 1] == 'n');
+        // A plane section's value is a MAPPING block, so the key ends its line; an export sink's
+        // `streams: [logs]` projection list carries its value inline and is a different key.
+        let rest = &chars[i + n.len()..];
+        let block = rest.iter().all(|c| c.is_whitespace())
+            || rest.first() == Some(&'"')
+            || (rest.first() == Some(&'\\') && rest.get(1) == Some(&'n'));
+        if top && block {
+            out.push((i, i + n.len()));
+        }
+    }
+    out
+}
+
+/// Every occurrence of `needle` [`word_ci`] would accept, as char spans over `lower`.
+fn word_spans(lower: &[char], needle: &str) -> Vec<(usize, usize)> {
+    let n: Vec<char> = needle.chars().collect();
+    let mut out = Vec::new();
+    if n.is_empty() || n.len() > lower.len() {
+        return out;
+    }
+    for i in 0..=(lower.len() - n.len()) {
+        if lower[i..i + n.len()] != n[..] {
+            continue;
+        }
+        let before_ok = i == 0 || !is_word_char(lower[i - 1]);
+        let after_ok = i + n.len() == lower.len() || !is_word_char(lower[i + n.len()]);
+        if before_ok && after_ok {
+            out.push((i, i + n.len()));
+        }
+    }
+    out
+}
+
+/// Every occurrence of `needle` [`camel_hit`] would accept, as char spans over `chars`.
+fn camel_spans(chars: &[char], needle: &str) -> Vec<(usize, usize)> {
+    let mut cap: Vec<char> = needle.chars().collect();
+    if cap.is_empty() {
+        return Vec::new();
+    }
+    cap[0] = cap[0].to_ascii_uppercase();
+    camel_exact_spans(chars, &cap.iter().collect::<String>())
+}
+
+/// The noun's occurrences on one line, as char spans. `orig` and `lower` MUST be char-aligned (an
+/// ASCII lowercasing), which the pragma analysis guarantees; the census proper asks [`line_hits`].
+fn noun_spans(orig: &[char], lower: &[char], noun: &Noun) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    for t in noun.tokens {
+        out.extend(word_spans(lower, t));
+        out.extend(camel_spans(orig, t));
+    }
+    for c in noun.camel {
+        out.extend(camel_exact_spans(orig, c));
+    }
+    if let Some(key) = noun.section {
+        out.extend(section_spans(orig, key));
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 fn line_hits(orig: &str, lower: &str, noun: &Noun) -> bool {
     noun.tokens
         .iter()
         .any(|t| word_ci(lower, t) || camel_hit(orig, t))
+        || (!noun.camel.is_empty() || noun.section.is_some()) && {
+            let chars: Vec<char> = orig.chars().collect();
+            noun.camel
+                .iter()
+                .any(|c| !camel_exact_spans(&chars, c).is_empty())
+                || noun
+                    .section
+                    .is_some_and(|k| !section_spans(&chars, k).is_empty())
+        }
 }
 
 /// The crate directory name for a `crates/<name>/...` path, or `None` for anything else.
@@ -476,11 +676,29 @@ fn categorize(krate: &str, file: &str) -> (&'static str, &'static str) {
 /// THE SCAN. Walks every `.rs` under `crates/`, strips comments (test code kept), and records one
 /// entry per (noun, file) where a non-family crate names the noun. Also returns every path it
 /// scanned, so a baseline row can be checked against what the census can actually measure.
-fn census(cx: &Ctx) -> Result<(Vec<Leak>, std::collections::BTreeSet<String>), String> {
+/// The census's findings: the live leaks, every path it scanned, and every reviewed pragma it met
+/// (honoured or refused) — see the `exempt` module.
+struct Census {
+    leaks: Vec<Leak>,
+    scanned: std::collections::BTreeSet<String>,
+    pragmas: Vec<exempt::Pragma>,
+}
+
+/// The nouns a file in `krate` at `rel` may not name.
+fn counted_nouns<'n>(krate: &str, rel: &str) -> Vec<&'n Noun> {
+    NOUNS
+        .iter()
+        .filter(|n| !n.family.contains(&krate))
+        .filter(|n| !(n.key == "gcp" && GCP_GENERIC_MENTION_FILES.contains(&rel)))
+        .collect()
+}
+
+fn census(cx: &Ctx) -> Result<Census, String> {
     let files = cx
         .walk(&WalkSpec::new(["crates"]).ext("rs").min_files(1))
         .map_err(|e| e.to_string())?;
     let mut leaks: Vec<Leak> = Vec::new();
+    let mut pragmas: Vec<exempt::Pragma> = Vec::new();
     let mut scanned: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for f in &files {
         let rel = f.rel_str();
@@ -499,16 +717,38 @@ fn census(cx: &Ctx) -> Result<(Vec<Leak>, std::collections::BTreeSet<String>), S
                 (s, lower)
             })
             .collect();
-        for noun in NOUNS {
-            if noun.family.contains(&krate) {
-                continue;
-            }
-            if noun.key == "gcp" && GCP_GENERIC_MENTION_FILES.contains(&rel.as_str()) {
-                continue;
-            }
+        let nouns = counted_nouns(krate, &rel);
+        // THE PRAGMAS, only where a marker is spelled: every other file is judged exactly as before.
+        let lexed = f
+            .text
+            .contains(exempt::MARKER)
+            .then(|| exempt::lex(&f.text));
+        let mut exempt_ids = std::collections::BTreeSet::new();
+        if let Some(fl) = &lexed {
+            let mut found = exempt::collect(&rel, fl);
+            let spans = |idx: usize| {
+                let (orig, lower) = fl.line(idx);
+                nouns
+                    .iter()
+                    .flat_map(|n| noun_spans(orig, lower, n))
+                    .collect::<Vec<_>>()
+            };
+            exempt::judge(cx, fl, &mut found, &spans);
+            exempt_ids = exempt::exempt_literals(&found);
+            pragmas.extend(found);
+        }
+        for noun in nouns {
             let count = lines
                 .iter()
-                .filter(|(orig, lower)| line_hits(orig, lower, noun))
+                .enumerate()
+                .filter(|(_, (orig, lower))| line_hits(orig, lower, noun))
+                .filter(|(idx, _)| match &lexed {
+                    Some(fl) if !exempt_ids.is_empty() && *idx < fl.lines() => {
+                        let (orig, lower) = fl.line(*idx);
+                        !exempt::line_exempt(fl, *idx, &noun_spans(orig, lower, noun), &exempt_ids)
+                    }
+                    _ => true,
+                })
                 .count();
             if count == 0 {
                 continue;
@@ -525,7 +765,11 @@ fn census(cx: &Ctx) -> Result<(Vec<Leak>, std::collections::BTreeSet<String>), S
         }
     }
     leaks.sort_by(|a, b| (a.noun, &a.file).cmp(&(b.noun, &b.file)));
-    Ok((leaks, scanned))
+    Ok(Census {
+        leaks,
+        scanned,
+        pragmas,
+    })
 }
 
 /// One baseline `[[leak]]` row: its `(noun, file)` key and the `count` it recorded. A row with no
@@ -585,7 +829,7 @@ fn undocumented_leaks(leaks: &[Leak], baseline: &[BaselineRow]) -> Vec<String> {
 }
 
 /// The baseline TOML for the current census — mechanical category/wave, one `[[leak]]` per pair.
-fn emit_baseline(leaks: &[Leak]) -> String {
+fn emit_baseline(leaks: &[Leak], ceiling: usize) -> String {
     let mut out = String::new();
     out.push_str(
         "# instance-noun-neutrality burndown ledger — AUTO-DERIVED, HUMAN-REVIEWED.\n\
@@ -594,6 +838,13 @@ fn emit_baseline(leaks: &[Leak]) -> String {
          # Regenerate: XTASK_INSN_EMIT_BASELINE=1 cargo xtask gate instance-noun-neutrality \
          2>qa/instance-noun-neutrality.toml\n\n",
     );
+    // The pragma ceilings are carried, never raised: a regeneration writes the LOWER of the
+    // recorded ceiling and the live count, so re-running the emitter cannot arm a new exemption.
+    out.push_str(&format!(
+        "# Reviewed `noun-neutrality: frozen-literal` pragmas. May only fall.\n\
+         [pragma_ceiling]\n{} = {ceiling}\n\n",
+        exempt::CEILING_KEY
+    ));
     for l in leaks {
         out.push_str("[[leak]]\n");
         out.push_str(&format!("noun = \"{}\"\n", l.noun));
@@ -604,6 +855,79 @@ fn emit_baseline(leaks: &[Leak]) -> String {
         out.push_str(&format!("wave = \"{}\"\n\n", l.wave.replace('"', "'")));
     }
     out
+}
+
+/// The validity row: every marker honoured, or the refused ones named with every reason.
+fn pragma_row(pragmas: &[exempt::Pragma]) -> Row {
+    let refused: Vec<String> = pragmas
+        .iter()
+        .filter(|p| !p.honoured())
+        .map(|p| format!("{} — {}", p.site(), p.problems.join("; ")))
+        .collect();
+    if refused.is_empty() {
+        let listing: Vec<String> = pragmas
+            .iter()
+            .map(|p| {
+                format!(
+                    "{} ({} — {})",
+                    p.site(),
+                    p.cite.as_deref().unwrap_or(""),
+                    p.reason
+                )
+            })
+            .collect();
+        Row::pass(
+            ROW_FROZEN_LITERAL,
+            "every frozen-literal pragma is reasoned, literal-only and pinned",
+            format!(
+                "{} pragma(s) honoured: {}",
+                pragmas.len(),
+                listing.join(" ")
+            ),
+        )
+    } else {
+        Row::fail(
+            ROW_FROZEN_LITERAL,
+            "a frozen-literal pragma is refused — it exempts nothing",
+            format!(
+                "{} of {} pragma(s) refused: {}",
+                refused.len(),
+                pragmas.len(),
+                refused.join(" | ")
+            ),
+        )
+    }
+}
+
+/// THE RATCHET ROW: the live pragma count against its ledger ceiling, exactly.
+fn ceiling_row(ceiling: &Result<usize, String>, live: usize) -> Row {
+    let key = exempt::CEILING_KEY;
+    let bad = match ceiling {
+        Ok(c) if live == *c => None,
+        Ok(c) if live > *c => Some(format!(
+            "{key} ROSE: {live} > ceiling {c} — a new exemption nobody armed"
+        )),
+        Ok(c) => Some(format!(
+            "{key} fell to {live} under ceiling {c} — lower `[pragma_ceiling] {key} = {live}` in \
+             {BASELINE} so it cannot climb back"
+        )),
+        Err(raw) => Some(format!(
+            "{key} ceiling `{raw}` is not a bare non-negative integer — an uncomparable ceiling \
+             enforces nothing"
+        )),
+    };
+    match bad {
+        None => Row::pass(
+            ROW_PRAGMA_CEILING,
+            "the frozen-literal pragma count sits exactly at its ledger ceiling",
+            format!("{key} {live} == ceiling {live}"),
+        ),
+        Some(why) => Row::fail(
+            ROW_PRAGMA_CEILING,
+            "the frozen-literal pragma count moved off its ledger ceiling",
+            why,
+        ),
+    }
 }
 
 pub struct InstanceNounNeutralityGate;
@@ -619,12 +943,14 @@ impl Gate for InstanceNounNeutralityGate {
         ids.push(ROW_UNDOCUMENTED.to_string());
         ids.push(ROW_STALE.to_string());
         ids.push(ROW_DEAD_PATH.to_string());
+        ids.push(ROW_FROZEN_LITERAL.to_string());
+        ids.push(ROW_PRAGMA_CEILING.to_string());
         ids
     }
 
     fn run(&self, cx: &Ctx) -> Verdict {
-        let (leaks, scanned) = match census(cx) {
-            Ok(l) => l,
+        let census = match census(cx) {
+            Ok(c) => c,
             Err(e) => {
                 let mut rows = vec![Row::fail(
                     ROW_SCAN_FLOOR,
@@ -644,19 +970,24 @@ impl Gate for InstanceNounNeutralityGate {
                     DID_NOT_RUN,
                 ));
                 rows.push(Row::fail(ROW_STALE, "the scan did not run", DID_NOT_RUN));
-                rows.push(Row::fail(
-                    ROW_DEAD_PATH,
-                    "the scan did not run",
-                    DID_NOT_RUN,
-                ));
+                for id in [ROW_DEAD_PATH, ROW_FROZEN_LITERAL, ROW_PRAGMA_CEILING] {
+                    rows.push(Row::fail(id, "the scan did not run", DID_NOT_RUN));
+                }
                 return Verdict::of(rows);
             }
         };
+        let Census {
+            leaks,
+            scanned,
+            pragmas,
+        } = census;
+        let ceiling = exempt::ceiling(cx.read(BASELINE).ok().as_deref());
 
         // The baseline-regeneration affordance: print the census as TOML and keep going, so the
         // ordinary verdict still prints too.
         if std::env::var("XTASK_INSN_EMIT_BASELINE").as_deref() == Ok("1") {
-            eprint!("{}", emit_baseline(&leaks));
+            let carried = ceiling.clone().unwrap_or(0).min(pragmas.len());
+            eprint!("{}", emit_baseline(&leaks, carried));
         }
 
         let (baseline, malformed) = baseline_keys(cx);
@@ -793,6 +1124,9 @@ impl Gate for InstanceNounNeutralityGate {
                 ),
             )
         });
+
+        rows.push(pragma_row(&pragmas));
+        rows.push(ceiling_row(&ceiling, pragmas.len()));
 
         Verdict::of(rows)
     }
@@ -959,6 +1293,10 @@ impl Gate for InstanceNounNeutralityGate {
                 }
             },
         });
+
+        // THE FROZEN-LITERAL PRAGMA, ITS RATCHET, AND THE PRECISE `streaming` RULE — each a
+        // GREEN->RED transition over the fixture (see `cases`).
+        cases::push(self, cx, FIX, &mut report);
 
         report
     }
