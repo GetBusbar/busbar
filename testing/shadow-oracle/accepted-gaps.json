@@ -24,7 +24,8 @@
     "in-scope cell (any cell outside the mcp/a2a conformance-rig families) that the committed golden",
     "does not owe, each with the reason it has no golden reference. They carry no accepted-differences",
     "twin. scripts/verify-1.6.0-done.sh (assert_golden_bookkeeping, run by its --selftest over this",
-    "tree) refuses an in-scope cell the golden does not owe and no entry here names."
+    "tree) refuses an in-scope cell the golden does not owe and no entry here names.",
+    "The three entries from `admin-kernel-verbs-new-in-1.6.0` onward name the 83 admin.ops cells the admin corpus gained when it was reconciled against the served router: operations 1.5.5 never had, so the 1.5.5 golden cannot owe them. Each regex enumerates its operations; none is a family blanket."
   ],
   "accepted": [
     {
@@ -92,6 +93,24 @@
       "cells": "^llm\\|responses\\|responses\\|request\\|ok_citation$",
       "owner": "llm-plane",
       "rationale": "The cell's answer carries a URL citation (mock_control {\"citation\": true}), the annotation shape the `ok` fixture's bare-text answer never exercises; it is needs_fixture in cells.json. It is not recorded because the committed 1.5.5 golden (testing/shadow-oracle/golden/1.5.5, meta.json at 2026-09-16) scored it a needs_fixture SKIP, and giving it a golden reference means re-taking that recording from the published 1.5.5 binary, which only the owner's golden re-take (TODO item 50, the oracle-rerecord workflow) may do; an agent may not bless or re-record a golden (KICKOFF 9.2). Named here (TODO item 51) so the missing reference is an owned decision rather than a SKIP nobody wrote a reason for."
+    },
+    {
+      "id": "admin-kernel-verbs-new-in-1.6.0",
+      "cells": "^admin\\.ops\\|(GetAuditHead|GetAuditKeys|GetAuditRange|GetLedgerCheckpoints|GetLedgerMigration|GetLedgerOpenapiJson|GetLedgerReconciliation|GetLedgerTotals|GetPlaneFacts|GetVerify|PostAdjust|PostApprove|PostChainBreak|PostCommitUpgrade|PostDisputeMaxAge|PostDisputesResolve|PostDualControl|PostEscrow|PostExportKeyset|PostLedgerAmendRateHistory|PostOperatorKey|PostOverdraftCeiling|PostPlaneRecordWrite|PostResealEpochFloor|PostSlicesResolve|PostStoreRestore)\\|(ok|unauth)$|^admin\\.ops\\|PostStoreRestore\\|bad-body$",
+      "owner": "admin",
+      "rationale": "The 53 admin.ops cells (ok + unauth for each of the 26 operations the node's administrative kernel loop serves, plus PostStoreRestore's bad-body) that the admin corpus gained when it was reconciled against the served router (items 44/45/46). It is not recorded because the committed 1.5.5 golden (testing/shadow-oracle/golden/1.5.5, meta.json at 2026-09-16) was taken before the cell existed and the published 1.5.5 binary has no such operation: its served document (admin.ops|GetOpenapiJson|ok, 49 paths) names none of these paths, so a 1.5.5 recording could only capture the router's unmatched-path 404. This is NEW 1.6.0 surface, not a difference from 1.5.5, so no accepted-differences.json twin exists or is owed; the cell is judged by its own contract (the served-surface reconciliation test, crates/busbar-core-admin/src/v1/json/tests/served_surface.rs) until the 1.6.0 golden is cut."
+    },
+    {
+      "id": "admin-tools-plane-ops-new-in-1.6.0",
+      "cells": "^admin\\.ops\\|(DeleteToolsName|GetTools|GetToolsName|GetToolsNameChanges|GetToolsNameHealth|PatchToolsNameSettings|PostToolsNameConnect|PutToolsName)\\|(ok|unauth)$",
+      "owner": "admin",
+      "rationale": "The 16 admin.ops cells (ok + unauth for each of the 8 `tools:` plane admin operations, mounted only when `tools:` is configured) that the admin corpus gained in the same reconciliation; the ok cells are needs_fixture in cells.json because the oracle config mounts no `tools:` section. It is not recorded because the committed 1.5.5 golden (testing/shadow-oracle/golden/1.5.5, meta.json at 2026-09-16) was taken before the cell existed and the published 1.5.5 binary has no such operation: its served document (admin.ops|GetOpenapiJson|ok, 49 paths) names none of these paths, so a 1.5.5 recording could only capture the router's unmatched-path 404. This is NEW 1.6.0 surface, not a difference from 1.5.5, so no accepted-differences.json twin exists or is owed; the cell is judged by its own contract (the served-surface reconciliation test, crates/busbar-core-admin/src/v1/json/tests/served_surface.rs) until the 1.6.0 golden is cut."
+    },
+    {
+      "id": "admin-agents-plane-ops-new-in-1.6.0",
+      "cells": "^admin\\.ops\\|(DeleteAgentsName|GetAgents|GetAgentsName|PatchAgentsNameSettings|PostAgentsNameApprove|PostAgentsNameConnect|PutAgentsName)\\|(ok|unauth)$",
+      "owner": "admin",
+      "rationale": "The 14 admin.ops cells (ok + unauth for each of the 7 `agents:` plane admin operations, mounted only when `agents:` is configured) that the admin corpus gained in the same reconciliation; the ok cells are needs_fixture in cells.json because the oracle config mounts no `agents:` section. It is not recorded because the committed 1.5.5 golden (testing/shadow-oracle/golden/1.5.5, meta.json at 2026-09-16) was taken before the cell existed and the published 1.5.5 binary has no such operation: its served document (admin.ops|GetOpenapiJson|ok, 49 paths) names none of these paths, so a 1.5.5 recording could only capture the router's unmatched-path 404. This is NEW 1.6.0 surface, not a difference from 1.5.5, so no accepted-differences.json twin exists or is owed; the cell is judged by its own contract (the served-surface reconciliation test, crates/busbar-core-admin/src/v1/json/tests/served_surface.rs) until the 1.6.0 golden is cut."
     }
   ]
 }
