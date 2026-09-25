@@ -303,33 +303,37 @@ fn every_billing_plane_reaches_the_usage_seam_on_its_teller_meter_step() {
 /// A billing plane the kernel-loop rider serves, and the step on its served path that puts its
 /// declared class on the principal's ledger.
 struct ServedLeg {
-    /// The plane crate's directory under `crates/`.
-    plane: &'static str,
-    /// The production file, relative to the plane crate, that holds the ledger step.
-    file: &'static str,
-    /// The ledger step's signature, as the scan finds it.
-    step: &'static str,
-    /// The call the served path makes to reach it (the step's name followed by its open paren).
-    call: &'static str,
-    /// The plane's declared class constant the step ledgers under.
+    /// `<plane crate directory under crates/>/<production file under it>` — where the step lives.
+    at: &'static str,
+    /// The ledger step's name: the scan finds `fn <name>(` and the served path's `<name>(` calls.
+    name: &'static str,
+    /// The plane's declared class constant the step ledgers under, found as `::meta::<class>`.
     class: &'static str,
+}
+
+impl ServedLeg {
+    /// The plane crate's directory under `crates/`.
+    fn plane(&self) -> &'static str {
+        self.at.split_once('/').map_or(self.at, |(plane, _)| plane)
+    }
+
+    /// The production file, relative to the plane crate.
+    fn file(&self) -> &'static str {
+        self.at.split_once('/').map_or("", |(_, file)| file)
+    }
 }
 
 /// Every billing plane the rider serves, with its served ledger step.
 const BILLING_PLANE_SERVED_LEGS: &[ServedLeg] = &[
     ServedLeg {
-        plane: "busbar-mcp",
-        file: "src/mcp/method.rs",
-        step: "fn ledger_tool_call(",
-        call: "ledger_tool_call(",
-        class: "::meta::CLASS_TOOL_CALLS",
+        at: "busbar-mcp/src/mcp/method.rs",
+        name: "ledger_tool_call",
+        class: "CLASS_TOOL_CALLS",
     },
     ServedLeg {
-        plane: "busbar-a2a",
-        file: "src/a2a/receive.rs",
-        step: "fn ledger_hop_bytes(",
-        call: "ledger_hop_bytes(",
-        class: "::meta::CLASS_BYTES",
+        at: "busbar-a2a/src/a2a/receive.rs",
+        name: "ledger_hop_bytes",
+        class: "CLASS_BYTES",
     },
 ];
 
@@ -350,7 +354,11 @@ fn served_leg_offences(
     lines: &[common::Line],
     crate_lines: &[common::Line],
 ) -> Vec<String> {
-    let (plane, file, step) = (leg.plane, leg.file, leg.step);
+    let (plane, file) = (leg.plane(), leg.file());
+    let step = format!("fn {}(", leg.name);
+    let call = format!("{}(", leg.name);
+    let class = format!("::meta::{}", leg.class);
+    let step = step.as_str();
     let Some(body) = common::item_body(lines, step) else {
         return vec![format!(
             "{plane}: {file} has NO production `{step}` — the served path has no step that puts \
@@ -364,22 +372,20 @@ fn served_leg_offences(
              — the served path ledgers nothing, and the principal is charged nothing for this class"
         ));
     }
-    if !body.iter().any(|l| l.code.contains(leg.class)) {
+    if !body.iter().any(|l| l.code.contains(&class)) {
         out.push(format!(
             "{plane}: `{step}` in {file} does not ledger under the plane's declared class \
-             ({}) — a count under an undeclared class is one no card, cap or usage row can name",
-            leg.class
+             ({class}) — a count under an undeclared class is one no card, cap or usage row can name"
         ));
     }
     let callers = crate_lines
         .iter()
-        .filter(|l| l.code.contains(leg.call) && !l.code.contains(step))
+        .filter(|l| l.code.contains(&call) && !l.code.contains(step))
         .count();
     if callers == 0 {
         out.push(format!(
-            "{plane}: nothing in the plane's production source calls `{}` — the ledger step exists \
-             and the served path never reaches it",
-            leg.call
+            "{plane}: nothing in the plane's production source calls `{call}` — the ledger step \
+             exists and the served path never reaches it"
         ));
     }
     out
@@ -398,7 +404,7 @@ fn every_billing_plane_the_rider_serves_ledgers_its_declared_class_on_the_served
             .count();
         let served = BILLING_PLANE_SERVED_LEGS
             .iter()
-            .filter(|l| l.plane == *plane)
+            .filter(|l| l.plane() == *plane)
             .count();
         assert_eq!(
             on_root + served,
@@ -425,13 +431,13 @@ fn every_billing_plane_the_rider_serves_ledgers_its_declared_class_on_the_served
     }
 
     for leg in BILLING_PLANE_SERVED_LEGS {
-        let dir = root.join(leg.plane);
-        let path = dir.join(leg.file);
+        let dir = root.join(leg.plane());
+        let path = dir.join(leg.file());
         assert!(
             path.is_file(),
             "billing plane `{}` names served leg {}, which does not exist — this gate is scanning \
              the wrong tree",
-            leg.plane,
+            leg.plane(),
             path.display()
         );
         let lines = common::production_lines(&path);
@@ -451,7 +457,8 @@ fn every_billing_plane_the_rider_serves_ledgers_its_declared_class_on_the_served
         if found.is_empty() {
             println!(
                 "  {:<13} {:<20} served ledger seam reached",
-                leg.plane, leg.step
+                leg.plane(),
+                leg.name
             );
         }
         offenders.extend(found);
@@ -472,11 +479,9 @@ fn every_billing_plane_the_rider_serves_ledgers_its_declared_class_on_the_served
 #[test]
 fn selftest_the_served_leg_judgement_fires() {
     let leg = ServedLeg {
-        plane: "busbar-demo",
-        file: "src/demo.rs",
-        step: "fn ledger_demo(",
-        call: "ledger_demo(",
-        class: "::meta::CLASS_DEMO",
+        at: "busbar-demo/src/demo.rs",
+        name: "ledger_demo",
+        class: "CLASS_DEMO",
     };
     let prod = |src: &str| -> Vec<common::Line> {
         common::classify(src, false)
