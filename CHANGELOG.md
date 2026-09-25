@@ -583,6 +583,10 @@ moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
 
 ### Added
 
+- **`POST /api/v1/admin/adjust` names the pool it corrects.** A count correction now carries a required
+  `pool` (a configured pool, else 400 `invalid_request`), sealed on the record, so a pool-scoped group
+  budget takes the correction and its `/groups` usage and `/metrics` bucket gauges agree with
+  `/admin/usage`. Adjusts sealed before this read exactly as they did (unscoped).
 - **One OpenAPI document describes every administrative operation, and a node serves only what
   it mounts.** The document is generated from the code and now also describes the 26 operations
   1.6.0 adds — the money-governance verbs, the five ledger views and the three audit-chain reads —
