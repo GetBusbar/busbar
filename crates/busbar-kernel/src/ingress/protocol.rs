@@ -16,7 +16,6 @@
 // `plane-mcp`/`plane-a2a`, so `not(feature = "jsonrpc-ingress")` is byte-identical to the original
 // `not(any(feature = "plane-mcp", feature = "plane-a2a"))` gate this replaced.
 #![cfg_attr(not(feature = "jsonrpc-ingress"), allow(dead_code, unused_imports))]
-#![cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
 use axum::response::Response;
 
 // Glob, so the re-export is never an unused import when a plane consumer is compiled out.
