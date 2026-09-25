@@ -127,12 +127,20 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
         //         atomic-write dance would silently drop whichever facet (parent fsync / temp
         //         cleanup / 0600 mode) its author forgot.
         //
-        //         LEDGERED EXEMPTION, `fs::rename`, for the request-log sink's rotate-by-rename:
-        //         rotation renames a file whose bytes are already fully on disk, and `fs::rename`
-        //         moves a directory entry without touching them, so there is no torn state to
-        //         protect. LEDGERED EXEMPTION, `sync_[ad]` and `create_dir_all`, for the WAL: it is
-        //         a SIBLING durability primitive, not a consumer — a log appends into a segment
-        //         that stays put and fsyncs it IN PLACE, and it performs the parent fsync itself.
+        //         LEDGERED EXEMPTION, `fs::rename`, for the request-log sink's rotate-by-rename,
+        //         which the plugin host performs for an export destination
+        //         (`crates/plugin-loader/src/host.rs`): rotation renames a file whose bytes are
+        //         already fully on disk, and `fs::rename` moves a directory entry without touching
+        //         them, so there is no torn state to protect. LEDGERED EXEMPTION, `sync_[ad]` and
+        //         `create_dir_all`, for the WAL: it is a SIBLING durability primitive, not a
+        //         consumer — a log appends into a segment that stays put and fsyncs it IN PLACE,
+        //         and it performs the parent fsync itself. The same host's `flush` is that shape
+        //         too, and ledgered for `sync_[ad]` on the same terms: it fsyncs an append-only
+        //         destination IN PLACE, and nothing is published by rename.
+        //
+        //         LEDGERED EXEMPTION, `create_dir_all`, for the kernel test kit
+        //         (`test_support/`): a scratch directory under the OS temp dir that a test builds
+        //         and discards is not a durable publication.
         //
         //         CORE-TIER: the owner is a kernel-tier primitive a plugin-kind crate cannot name
         //         (#40), so a plugin's own persistence is its own I/O and out of this row's scope.
@@ -146,7 +154,10 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
                 BanRule::new(
                     r"fs::rename\(",
                     "hand-rolled rename-to-publish",
-                    &["crates/api/src/durable.rs".into(), format!("{core}/export/file.rs")],
+                    &[
+                        "crates/api/src/durable.rs".into(),
+                        "crates/plugin-loader/src/host.rs".into(),
+                    ],
                 )
                 .core_tier(),
                 BanRule::new(
@@ -155,6 +166,7 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
                     &[
                         "crates/api/src/durable.rs".into(),
                         "crates/busbar-kernel-wal/src/backend.rs".into(),
+                        "crates/plugin-loader/src/host.rs".into(),
                     ],
                 )
                 .core_tier(),
@@ -164,6 +176,7 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
                     &[
                         "crates/api/src/durable.rs".into(),
                         format!("{core}/test_support/mod.rs"),
+                        format!("{core}/test_support/export_axis.rs"),
                         "crates/busbar-kernel-wal/src/backend.rs".into(),
                     ],
                 )
@@ -234,7 +247,11 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
                         format!("{core}/state.rs"),
                     ],
                 )
-                .unless("Ordering::"),
+                // An ATOMIC swap is not an AppHandle swap: it carries a memory ordering, spelled
+                // `Ordering::X` or, with the variant imported, bare (`counter.swap(0, Relaxed)`).
+                .unless(
+                    r"(Ordering::|\.swap\([^)]*,[[:space:]]*(Relaxed|Acquire|Release|AcqRel|SeqCst)[[:space:]]*\))",
+                ),
                 BanRule::new(
                     r"AppHandle::swap\(",
                     "direct AppHandle::swap outside a transaction",

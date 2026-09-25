@@ -524,6 +524,37 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         ov,
     ));
 
+    // AN ATOMIC SWAP IS NOT AN APPHANDLE SWAP. The mutation rule's `.swap(` matches both; the one
+    // that carries a memory ordering — `Ordering::X`, or the variant imported bare — is a counter,
+    // and a sink draining its counters mutates no config. The handle swap still reds, by line.
+    let mut ov = Overlay::new();
+    ov.set(
+        format!("{}/planted_swap.rs", roots::CORE),
+        "pub fn publish(h: &AppHandle) {\n    h.swap(next);\n}\n",
+    );
+    report.push(debt_free_case(
+        cx,
+        gate,
+        "a direct AppHandle swap outside a transaction is named by file and line",
+        &[choke_points::ROW_BYPASS],
+        without_existing(&existing.choke_bypass),
+        ov,
+        &["MUTATION-BYPASS", "planted_swap.rs:2"],
+    ));
+    let mut ov = without_existing(&existing.choke_bypass);
+    ov.set(
+        format!("{}/planted_atomic_swap.rs", roots::CORE),
+        "pub fn drain(c: &AtomicU64, d: &AtomicBool) -> u64 {\n    \
+         d.swap(true, Ordering::SeqCst);\n    c.swap(0, Relaxed)\n}\n",
+    );
+    report.push(green_case(
+        cx,
+        gate,
+        "an atomic swap carrying its memory ordering is a counter, not an AppHandle swap",
+        &[choke_points::ROW_BYPASS],
+        ov,
+    ));
+
     // A LINE INSIDE A `#[cfg(test)]` REGION IS NOT A BYPASS, and neither is one in a comment. Both
     // shapes were provably exploitable against the scanner this replaces.
     let mut ov = without_existing(&existing.choke_bypass);
