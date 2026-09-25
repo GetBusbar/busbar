@@ -100,6 +100,11 @@ busbar-export-example-plugin = { path = "../export-example-plugin" }
 # requires the two to round-trip a plane scope grant (`mcp_tool`) identically — a dropped-in store's
 # copy of the scope-kind registry is never populated by the engine's boot registration.
 busbar-store-example-plugin = { path = "../store-example-plugin" }
+# The `kind: secret` BOTH-WAYS fixture (K5), on the same terms: `secret_conformance_tests` links its
+# `rlib`'s `BUSBAR_COLD_ENTRY` (the linked door) and signs its `cdylib` into a temp `plugins/` (the
+# dropped-in door), and requires the two registry rows and what the two opened modules resolve to be
+# byte-identical (DECISIONS #2 rule (1)).
+busbar-secret-example-plugin = { path = "../secret-example-plugin" }
 
 [target.'cfg(unix)'.dependencies]
 # memfd_create (Linux zero-disk loads) + kill(pid, 0) liveness for the dead-pid staging sweep.

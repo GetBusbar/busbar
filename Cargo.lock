@@ -904,6 +904,7 @@ dependencies = [
  "busbar-kernel-wal",
  "busbar-plugin",
  "busbar-plugin-example-plane",
+ "busbar-secret-example-plugin",
  "busbar-secret-ref",
  "busbar-store-example-plugin",
  "ed25519-dalek",

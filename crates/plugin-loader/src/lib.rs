@@ -2034,3 +2034,8 @@ mod both_ways;
 #[cfg(test)]
 #[path = "tests/store_conformance_tests.rs"]
 mod store_conformance_tests;
+
+/// `kind: secret` through both doors: one row, one module.
+#[cfg(test)]
+#[path = "tests/secret_conformance_tests.rs"]
+mod secret_conformance_tests;
