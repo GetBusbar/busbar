@@ -3508,6 +3508,10 @@ mod disposition_matrix_tests {
                     subject: None,
                     auth: None,
                     allow_metadata_hosts: Vec::new(),
+                    max_output_key: None,
+                    anthropic_adaptive_thinking: None,
+                    native_structured_output: None,
+                    model_capabilities: Vec::new(),
                 },
             );
             let mut models = HashMap::new();

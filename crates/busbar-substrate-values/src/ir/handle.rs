@@ -63,13 +63,6 @@ pub mod handle_impl {
         /// no-op (the `Invoke`/`Subscribe`/leaf arms carry nothing to reshape); chat overrides.
         fn prepare_for_egress(&mut self, _prep: &EgressPrep) {}
 
-        /// Record the egress LANE's declared request-shape capabilities
-        /// ([`crate::ir::egress_prep::LaneCaps`]) — resolved by the seam from the lane's provider
-        /// entry and model patterns, exactly as the `EgressPrep` gates are — for the egress write to
-        /// hand to the dialect writer, the only party that knows what each one changes. Default:
-        /// ignored (a handle whose writes depend on no capability).
-        fn set_lane_caps(&mut self, _caps: crate::ir::egress_prep::LaneCaps) {}
-
         /// Stamp the resolved wire model onto this request. Default no-op (URL-model ops carry none).
         fn set_model(&mut self, _model: &str) {}
 

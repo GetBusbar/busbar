@@ -232,6 +232,10 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
             subject: _,
             auth: _,
             allow_metadata_hosts: _,
+            max_output_key: _,
+            anthropic_adaptive_thinking: _,
+            native_structured_output: _,
+            model_capabilities: _,
         } = p;
         refs.push((format!("providers.{name}.api_key"), api_key));
     }

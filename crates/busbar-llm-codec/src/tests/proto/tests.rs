@@ -594,6 +594,7 @@ fn cache_breakpoints_gated_by_lane_capability_on_bedrock() {
         reasoning_budgets: [1024, 4096, 8192, 16384],
         prompt_caching_allowed: allowed,
         cache_control_cap: None,
+        lane_caps: Default::default(),
     };
     let contains_cache_point =
         |wire: &serde_json::Value| serde_json::to_string(wire).unwrap().contains("cachePoint");

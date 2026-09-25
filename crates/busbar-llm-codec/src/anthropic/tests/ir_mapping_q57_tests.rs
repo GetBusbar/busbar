@@ -26,6 +26,7 @@ fn xreq(ingress: &'static str, egress: &str, body: &Value) -> Value {
             reasoning_budgets: crate::ir::REASONING_BUDGET_DEFAULTS,
             prompt_caching_allowed: true,
             cache_control_cap: None,
+            lane_caps: Default::default(),
         },
     );
     egress_p.writer().write_request(&req)
@@ -56,6 +57,7 @@ fn xreq_lane(
             reasoning_budgets: crate::ir::REASONING_BUDGET_DEFAULTS,
             prompt_caching_allowed: true,
             cache_control_cap: None,
+            lane_caps: Default::default(),
         },
     );
     egress_p

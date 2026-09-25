@@ -16,6 +16,10 @@ fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
         subject: None,
         auth: None,
         allow_metadata_hosts: Vec::new(),
+        max_output_key: None,
+        anthropic_adaptive_thinking: None,
+        native_structured_output: None,
+        model_capabilities: Vec::new(),
     }
 }
 
@@ -33,6 +37,10 @@ fn provider_deploy(env_var: &str) -> ProviderDeploy {
         subject: None,
         auth: None,
         allow_metadata_hosts: None,
+        max_output_key: None,
+        anthropic_adaptive_thinking: None,
+        native_structured_output: None,
+        model_capabilities: None,
         health: None,
     }
 }
@@ -4208,4 +4216,57 @@ fn a_flat_rate_card_resolves_to_itself() {
         let root = resolve(&deploy, &HashMap::new()).expect("resolves");
         assert_eq!(root.rate_card, deploy.rate_card, "{text}");
     }
+}
+
+// ── lane capabilities (architect ruling on OAI-01, ANT-07/09/10) ────────────────────────────────
+
+#[test]
+fn lane_caps_default_to_the_pre_capability_forms_and_resolve_provider_then_model_rule() {
+    use busbar_substrate_values::ir::egress_prep::{LaneCaps, MaxOutputKey};
+    let mut def = provider_def("openai", "https://api.example.com");
+    let deploy = provider_deploy("K");
+    // Nothing declared: every default.
+    let cfg = merge_provider_fallback(&def, &deploy);
+    assert_eq!(cfg.lane_caps_for("gpt-4o"), LaneCaps::NONE);
+    // A provider-level key applies to every model; the first matching model rule overrides it.
+    def.max_output_key = Some(crate::config::providers::MaxOutputKeyCfg::MaxCompletionTokens);
+    def.model_capabilities = vec![crate::config::providers::ModelCapabilities {
+        models: vec!["claude-opus-5*".to_string(), "*-sonnet-5*".to_string()],
+        max_output_key: Some(crate::config::providers::MaxOutputKeyCfg::MaxTokens),
+        anthropic_adaptive_thinking: Some(true),
+        native_structured_output: Some(true),
+    }];
+    let cfg = merge_provider_fallback(&def, &deploy);
+    assert_eq!(
+        cfg.lane_caps_for("gpt-5").max_output_key,
+        MaxOutputKey::MaxCompletionTokens
+    );
+    let newest = cfg.lane_caps_for("claude-sonnet-5-20260101");
+    assert!(newest.anthropic_adaptive_thinking && newest.native_structured_output);
+    assert_eq!(newest.max_output_key, MaxOutputKey::MaxTokens);
+    let older = cfg.lane_caps_for("claude-sonnet-4-5");
+    assert!(!older.anthropic_adaptive_thinking && !older.native_structured_output);
+    // A deployment value overrides the catalog's.
+    let mut deploy2 = provider_deploy("K");
+    deploy2.max_output_key = Some(crate::config::providers::MaxOutputKeyCfg::MaxTokens);
+    let cfg = merge_provider_fallback(&def, &deploy2);
+    assert_eq!(
+        cfg.lane_caps_for("gpt-5").max_output_key,
+        MaxOutputKey::MaxTokens
+    );
+}
+
+#[test]
+fn lane_caps_glob_matches_star_runs_only() {
+    use crate::config::providers::glob_match;
+    assert!(glob_match("claude-opus-4-7*", "claude-opus-4-7"));
+    assert!(glob_match("claude-opus-4-7*", "claude-opus-4-7-20260301"));
+    assert!(glob_match(
+        "*sonnet-5*",
+        "us.anthropic.claude-sonnet-5-v1:0"
+    ));
+    assert!(glob_match("gpt-5", "gpt-5"));
+    assert!(!glob_match("gpt-5", "gpt-5-mini"));
+    assert!(!glob_match("claude-opus-4-7*", "claude-opus-4-6"));
+    assert!(!glob_match("a*b*c", "acb"));
 }

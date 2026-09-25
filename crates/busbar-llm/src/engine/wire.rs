@@ -366,6 +366,10 @@ pub(crate) fn translate_request_cross_protocol(
             prompt_caching_allowed: EngineTables::new(rt).lanes()[i].prompt_caching
                 || !egress_decl.is_some_and(|d| d.cache_markers_model_gated),
             cache_control_cap: egress_decl.and_then(|d| d.max_cache_control_breakpoints),
+            // The lane's declared request-shape capabilities (provider entry + model patterns,
+            // resolved at boot): which cap spelling, reasoning form and structured-output form this
+            // upstream model accepts. The writer cannot see them from the request.
+            lane_caps: EngineTables::new(rt).lanes()[i].lane_caps,
             // thoughtSignature sentinel fill — the DIALECT declares whether it fills one
             // (`ProtocolDecl::fills_thought_signature`), ANDed with the LANE's URL shape: NEVER a
             // Vertex-style path-model lane (`path_base.is_some()`), which is not confirmed to honor the

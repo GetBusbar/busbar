@@ -554,8 +554,12 @@ impl Plane for LlmPlane {
             // Two calls, ONE writer: what the second rewrites is what the first wrote, so the pair
             // is a single question asked of a single instance — which is what the closure form
             // gives, without either call reaching the heap for the writer that answers it.
+            // Written for THIS upstream: its model and its declared capabilities (the output-cap
+            // spelling, the reasoning form, the structured-output form), which the dialect writer
+            // cannot see from the request (OAI-01, ANT-07/09/10 lane-capability ruling).
             let written = with_writer(egress.name, |w| {
-                let mut written = w.write_request(&request);
+                let mut written =
+                    w.write_request_for_lane(&request, upstream.model, &upstream.caps);
                 w.rewrite_model_if_needed(&mut written, upstream.model);
                 written
             })

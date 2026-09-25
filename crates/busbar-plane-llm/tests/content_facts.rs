@@ -27,6 +27,7 @@ const ANTHROPIC_UPSTREAMS: &[Upstream] = &[Upstream {
     host: "anthropic.invalid",
     dialect: "anthropic",
     model: "claude",
+    caps: busbar_plane_llm::LaneCaps::NONE,
 }];
 
 const COHERE_UPSTREAMS: &[Upstream] = &[Upstream {
@@ -34,6 +35,7 @@ const COHERE_UPSTREAMS: &[Upstream] = &[Upstream {
     host: "cohere.invalid",
     dialect: "cohere",
     model: "command-r",
+    caps: busbar_plane_llm::LaneCaps::NONE,
 }];
 
 /// Decode one whole (non-streamed) answer and return the `content_facts` the plane reads off it.

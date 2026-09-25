@@ -4154,6 +4154,7 @@ fn test_n_gt_1_clamped_to_one_on_cross_protocol_egress() {
             reasoning_budgets: crate::ir::REASONING_BUDGET_DEFAULTS,
             prompt_caching_allowed: true,
             cache_control_cap: None,
+            lane_caps: Default::default(),
         }
     }
 

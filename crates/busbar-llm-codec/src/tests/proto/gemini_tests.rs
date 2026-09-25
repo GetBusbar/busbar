@@ -761,6 +761,7 @@ fn gemini_cached_content_warns_naming_truncation_and_billing() {
         reasoning_budgets: crate::ir::REASONING_BUDGET_DEFAULTS,
         prompt_caching_allowed: true,
         cache_control_cap: None,
+        lane_caps: Default::default(),
     };
 
     // The cachedContent drop was reclassified benign-recurring (per-request cross-protocol seam) and

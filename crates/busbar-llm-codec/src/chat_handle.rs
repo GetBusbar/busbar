@@ -337,7 +337,7 @@ pub fn chat_usage(r: &IrResponse) -> Option<Billing> {
 // ─────────────────────────────── the handles ───────────────────────────────
 
 /// The chat REQUEST handle: the request, plus the egress lane's declared capabilities, which the
-/// seam records through `set_lane_caps` and the egress write hands to the writer.
+/// seam hands over in the [`EgressPrep`] (`prepare_for_egress`) and the egress write hands to the writer.
 pub struct ChatReqHandle(pub IrRequest, pub super::proto_codec::LaneCaps);
 /// The chat RESPONSE handle.
 pub struct ChatRespHandle(pub IrResponse);
@@ -357,9 +357,7 @@ impl IrHandle for ChatReqHandle {
     }
     fn prepare_for_egress(&mut self, prep: &EgressPrep) {
         chat_prepare_for_egress(&mut self.0, prep);
-    }
-    fn set_lane_caps(&mut self, caps: busbar_substrate_values::ir::egress_prep::LaneCaps) {
-        self.1 = caps;
+        self.1 = prep.lane_caps;
     }
     fn egress_dropped_controls(&self, egress_proto: &str) -> Vec<&'static str> {
         super::proto_codec::protocol_for(egress_proto)
@@ -372,7 +370,7 @@ impl IrHandle for ChatReqHandle {
     fn write_egress_request(&mut self, egress_proto: &str, model: &str) -> EgressWire {
         // Chat is always a JSON body the router post-shapes (write_request_value == Some). The lane
         // model rides along for the dialects whose spelling depends on the model family, and the
-        // lane's declared capabilities (recorded by `set_lane_caps`) for the dialects whose
+        // lane's declared capabilities (recorded at `prepare_for_egress`) for the dialects whose
         // spelling depends on what that model accepts.
         super::proto_codec::protocol_for(egress_proto)
             .map(|p| EgressWire::Json(p.writer().write_request_for_lane(&self.0, model, &self.1)))

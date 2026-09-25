@@ -16,6 +16,7 @@ fn lane_with_auth(auth: Option<&str>) -> Lane {
         egress_targets: std::collections::HashMap::new(),
         reasoning: false,
         prompt_caching: false,
+        lane_caps: Default::default(),
         default_max_tokens: None,
         model: "gpt-4o".to_string(),
         provider: "azure".to_string(),

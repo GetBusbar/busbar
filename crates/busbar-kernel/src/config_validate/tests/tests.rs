@@ -75,6 +75,10 @@ fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::P
         subject: None,
         auth: None,
         allow_metadata_hosts: Vec::new(),
+        max_output_key: None,
+        anthropic_adaptive_thinking: None,
+        native_structured_output: None,
+        model_capabilities: Vec::new(),
     }
 }
 

@@ -24,6 +24,14 @@ anthropic:
   protocol: anthropic
   base_url: https://api.anthropic.com
   error_map: {}
+  # Lane capabilities (see docs/providers.md "Lane capabilities"). The newest Claude generations take
+  # reasoning ONLY as adaptive thinking (they 400 on `thinking.budget_tokens`) and reject the forced
+  # tool the older structured-output path uses, so they are sent adaptive thinking and native
+  # `output_config.format`. Every other model keeps the defaults (budget_tokens, forced tool).
+  model_capabilities:
+    - models: ["claude-opus-4-7*", "claude-opus-5*", "claude-sonnet-5*", "claude-fable-5*"]
+      anthropic_adaptive_thinking: true
+      native_structured_output: true
 
 # z.ai exposes two surfaces. `z.ai` is the Anthropic-compatible coding-agent endpoint
 # (/api/anthropic + /v1/messages). `zai-api` (below, in the OpenAI section) is the general
@@ -44,6 +52,10 @@ openai:
   error_map:
     insufficient_quota: billing
     rate_limit_exceeded: rate_limit
+  # OpenAI's API deprecates `max_tokens`, and its o-series / gpt-5 models reject it: a request that
+  # crosses from another protocol writes its output cap as `max_completion_tokens` on this provider.
+  # (OpenAI-compatible hosts below keep the default `max_tokens`, which is what they all accept.)
+  max_output_key: max_completion_tokens
 
 # Oracle OCI Generative AI, the OpenAI-compatible surface (/openai/v1/chat/completions), serving
 # OCI's hosted catalog (OpenAI, Meta Llama, xAI, Google, and Cohere models). Since Jan 2026 OCI
@@ -281,6 +293,7 @@ wandb:
 #     auth: api-key                                  # send `api-key: <key>` instead of bearer
 #     path: /openai/deployments/YOUR-DEPLOYMENT/chat/completions?api-version=2024-06-01
 #     error_map: {}
+#     max_output_key: max_completion_tokens           # OpenAI models on Azure reject max_tokens (o-series / gpt-5)
 #     api_key_env: AZURE_OPENAI_KEY
 #
 # Azure OpenAI via Microsoft Entra ID (AAD) instead of an API key: same OpenAI protocol + deployment
@@ -296,6 +309,7 @@ wandb:
 #     token_url: https://login.microsoftonline.com/YOUR-TENANT/oauth2/v2.0/token
 #     scope: https://cognitiveservices.azure.com/.default
 #     error_map: {}
+#     max_output_key: max_completion_tokens           # OpenAI models on Azure reject max_tokens (o-series / gpt-5)
 #     api_key_env: AZURE_ENTRA_CREDS                 # value = "client_id:client_secret"
 
 

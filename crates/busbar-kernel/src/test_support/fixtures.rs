@@ -34,6 +34,10 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
         subject: None,
         auth: None,
         allow_metadata_hosts: Vec::new(),
+        max_output_key: None,
+        anthropic_adaptive_thinking: None,
+        native_structured_output: None,
+        model_capabilities: Vec::new(),
     };
     let mut providers = std::collections::HashMap::new();
     providers.insert("acme".to_string(), provider);

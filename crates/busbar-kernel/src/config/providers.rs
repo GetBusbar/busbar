@@ -54,6 +54,26 @@ pub struct ProviderCfg {
     /// Optional auth-style override (see ProviderDef::auth).
     #[serde(default)]
     pub auth: Option<ProviderAuth>,
+    /// The key this provider's upstream expects a CROSS-PROTOCOL output-token cap under, for the
+    /// dialect with two spellings (OpenAI Chat Completions: `max_tokens` | `max_completion_tokens`).
+    /// Omitted = `max_tokens`, what 1.5.5 wrote and what every OpenAI-compatible host accepts; set
+    /// `max_completion_tokens` for OpenAI's own API (its o-series / gpt-5 models reject `max_tokens`).
+    #[serde(default)]
+    pub max_output_key: Option<MaxOutputKeyCfg>,
+    /// The upstream accepts Anthropic ADAPTIVE thinking (`thinking:{type:"adaptive"}` +
+    /// `output_config.effort`). Omitted = false: a reasoning ask is written as
+    /// `thinking.budget_tokens`, the form every other Claude model accepts.
+    #[serde(default)]
+    pub anthropic_adaptive_thinking: Option<bool>,
+    /// The upstream accepts NATIVE structured outputs (`output_config.format`). Omitted = false: a
+    /// structured-output directive takes the dialect's pre-capability form (a forced tool).
+    #[serde(default)]
+    pub native_structured_output: Option<bool>,
+    /// Per-MODEL overrides of the three capabilities above, for a provider that serves models of
+    /// several generations: the FIRST rule whose `models` glob list matches the lane's wire model
+    /// sets every capability it names. Evaluated after the provider-level values.
+    #[serde(default)]
+    pub model_capabilities: Vec<ModelCapabilities>,
     /// Per-provider SURGICAL escape hatch: the cloud-metadata hosts/IPs to UNBLOCK for THIS
     /// provider's `base_url` (and path-override composition) only. Each entry carves a single
     /// exception out of the metadata denylist (hardcoded ∪ `security.blocked_metadata_hosts`) — e.g.
@@ -68,6 +88,96 @@ pub struct ProviderCfg {
     /// (all metadata blocked).
     #[serde(default)]
     pub allow_metadata_hosts: Vec<String>,
+}
+
+/// The spelling of a cross-protocol output-token cap a provider expects (see
+/// `ProviderDef::max_output_key`).
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MaxOutputKeyCfg {
+    /// `max_tokens` — the default.
+    MaxTokens,
+    /// `max_completion_tokens`.
+    MaxCompletionTokens,
+}
+
+/// One per-model capability rule (see `ProviderDef::model_capabilities`).
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ModelCapabilities {
+    /// Wire-model globs (`*` matches any run of characters), e.g. `claude-opus-4-7*`.
+    pub models: Vec<String>,
+    /// See `ProviderDef::max_output_key`.
+    #[serde(default)]
+    pub max_output_key: Option<MaxOutputKeyCfg>,
+    /// See `ProviderDef::anthropic_adaptive_thinking`.
+    #[serde(default)]
+    pub anthropic_adaptive_thinking: Option<bool>,
+    /// See `ProviderDef::native_structured_output`.
+    #[serde(default)]
+    pub native_structured_output: Option<bool>,
+}
+
+impl ProviderCfg {
+    /// The lane capabilities of this provider for one wire model: every default is the
+    /// pre-capability form; the provider-level values apply, then the FIRST matching model rule.
+    pub fn lane_caps_for(
+        &self,
+        wire_model: &str,
+    ) -> busbar_substrate_values::ir::egress_prep::LaneCaps {
+        use busbar_substrate_values::ir::egress_prep::{LaneCaps, MaxOutputKey};
+        let key = |k: MaxOutputKeyCfg| match k {
+            MaxOutputKeyCfg::MaxTokens => MaxOutputKey::MaxTokens,
+            MaxOutputKeyCfg::MaxCompletionTokens => MaxOutputKey::MaxCompletionTokens,
+        };
+        let mut caps = LaneCaps::default();
+        if let Some(k) = self.max_output_key {
+            caps.max_output_key = key(k);
+        }
+        if let Some(b) = self.anthropic_adaptive_thinking {
+            caps.anthropic_adaptive_thinking = b;
+        }
+        if let Some(b) = self.native_structured_output {
+            caps.native_structured_output = b;
+        }
+        if let Some(rule) = self
+            .model_capabilities
+            .iter()
+            .find(|r| r.models.iter().any(|g| glob_match(g, wire_model)))
+        {
+            if let Some(k) = rule.max_output_key {
+                caps.max_output_key = key(k);
+            }
+            if let Some(b) = rule.anthropic_adaptive_thinking {
+                caps.anthropic_adaptive_thinking = b;
+            }
+            if let Some(b) = rule.native_structured_output {
+                caps.native_structured_output = b;
+            }
+        }
+        caps
+    }
+}
+
+/// `*`-only glob: `*` matches any (possibly empty) run of characters; every other character matches
+/// itself. Enough for model-family patterns (`claude-opus-4-7*`, `*sonnet-5*`) without a dependency.
+pub fn glob_match(pattern: &str, text: &str) -> bool {
+    let parts: Vec<&str> = pattern.split('*').collect();
+    if parts.len() == 1 {
+        return pattern == text;
+    }
+    let (first, last) = (parts[0], parts[parts.len() - 1]);
+    if !text.starts_with(first) || text.len() < first.len() + last.len() || !text.ends_with(last) {
+        return false;
+    }
+    let mut rest = &text[first.len()..text.len() - last.len()];
+    for mid in &parts[1..parts.len() - 1] {
+        match rest.find(mid) {
+            Some(i) => rest = &rest[i + mid.len()..],
+            None => return false,
+        }
+    }
+    true
 }
 
 /// Default provider protocol when not specified. Wire-contract: providers.yaml catalog entries
@@ -173,6 +283,26 @@ pub struct ProviderDef {
     /// its `path`). Recognized values: `bearer` (default) | `api-key`.
     #[serde(default)]
     pub auth: Option<ProviderAuth>,
+    /// The key this provider's upstream expects a CROSS-PROTOCOL output-token cap under, for the
+    /// dialect with two spellings (OpenAI Chat Completions: `max_tokens` | `max_completion_tokens`).
+    /// Omitted = `max_tokens`, what 1.5.5 wrote and what every OpenAI-compatible host accepts; set
+    /// `max_completion_tokens` for OpenAI's own API (its o-series / gpt-5 models reject `max_tokens`).
+    #[serde(default)]
+    pub max_output_key: Option<MaxOutputKeyCfg>,
+    /// The upstream accepts Anthropic ADAPTIVE thinking (`thinking:{type:"adaptive"}` +
+    /// `output_config.effort`). Omitted = false: a reasoning ask is written as
+    /// `thinking.budget_tokens`, the form every other Claude model accepts.
+    #[serde(default)]
+    pub anthropic_adaptive_thinking: Option<bool>,
+    /// The upstream accepts NATIVE structured outputs (`output_config.format`). Omitted = false: a
+    /// structured-output directive takes the dialect's pre-capability form (a forced tool).
+    #[serde(default)]
+    pub native_structured_output: Option<bool>,
+    /// Per-MODEL overrides of the three capabilities above, for a provider that serves models of
+    /// several generations: the FIRST rule whose `models` glob list matches the lane's wire model
+    /// sets every capability it names. Evaluated after the provider-level values.
+    #[serde(default)]
+    pub model_capabilities: Vec<ModelCapabilities>,
     /// Catalog default for the per-provider metadata allow-override (see
     /// `ProviderCfg::allow_metadata_hosts`). A deployment's `allow_metadata_hosts` (`Some`) replaces
     /// this; `None` falls back to the catalog list. Default empty (all metadata blocked).
@@ -213,6 +343,27 @@ pub struct ProviderDeploy {
     /// Optional auth-style override (see ProviderDef::auth).
     #[serde(default)]
     pub auth: Option<ProviderAuth>,
+    /// The key this provider's upstream expects a CROSS-PROTOCOL output-token cap under, for the
+    /// dialect with two spellings (OpenAI Chat Completions: `max_tokens` | `max_completion_tokens`).
+    /// Omitted = `max_tokens`, what 1.5.5 wrote and what every OpenAI-compatible host accepts; set
+    /// `max_completion_tokens` for OpenAI's own API (its o-series / gpt-5 models reject `max_tokens`).
+    #[serde(default)]
+    pub max_output_key: Option<MaxOutputKeyCfg>,
+    /// The upstream accepts Anthropic ADAPTIVE thinking (`thinking:{type:"adaptive"}` +
+    /// `output_config.effort`). Omitted = false: a reasoning ask is written as
+    /// `thinking.budget_tokens`, the form every other Claude model accepts.
+    #[serde(default)]
+    pub anthropic_adaptive_thinking: Option<bool>,
+    /// The upstream accepts NATIVE structured outputs (`output_config.format`). Omitted = false: a
+    /// structured-output directive takes the dialect's pre-capability form (a forced tool).
+    #[serde(default)]
+    pub native_structured_output: Option<bool>,
+    /// Per-MODEL overrides of the three capabilities above, for a provider that serves models of
+    /// several generations: the FIRST rule whose `models` glob list matches the lane's wire model
+    /// sets every capability it names. Evaluated after the provider-level values. `Some` REPLACES the
+    /// catalog list; each provider-level value above overrides the catalog's when set.
+    #[serde(default)]
+    pub model_capabilities: Option<Vec<ModelCapabilities>>,
     /// Per-provider metadata allow-override (see `ProviderCfg::allow_metadata_hosts`). `Some` REPLACES
     /// the catalog default; `None` falls back to the catalog's `allow_metadata_hosts`.
     #[serde(default)]

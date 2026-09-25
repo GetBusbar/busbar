@@ -6502,6 +6502,7 @@ fn test_outage_cross_protocol_tool_use_gets_sentinel_thought_signature() {
             reasoning_budgets: [1024, 4096, 8192, 16384],
             prompt_caching_allowed: true,
             cache_control_cap: None,
+            lane_caps: Default::default(),
         },
     );
     let ir = &ir_req;
@@ -6578,6 +6579,7 @@ fn test_prepare_for_egress_does_not_overwrite_real_thought_signature() {
             reasoning_budgets: [1024, 4096, 8192, 16384],
             prompt_caching_allowed: true,
             cache_control_cap: None,
+            lane_caps: Default::default(),
         },
     );
     let ir = &ir_req;
@@ -6645,6 +6647,7 @@ fn test_vertex_lane_gets_no_sentinel_thought_signature() {
             reasoning_budgets: [1024, 4096, 8192, 16384],
             prompt_caching_allowed: true,
             cache_control_cap: None,
+            lane_caps: Default::default(),
         },
     );
     let ir = &ir_req;
@@ -6719,6 +6722,7 @@ fn test_prepare_for_egress_fills_only_missing_signatures_in_parallel_calls() {
             reasoning_budgets: [1024, 4096, 8192, 16384],
             prompt_caching_allowed: true,
             cache_control_cap: None,
+            lane_caps: Default::default(),
         },
     );
     let ir = &ir_req;

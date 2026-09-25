@@ -67,6 +67,7 @@ const UPSTREAMS: &[Upstream] = &[Upstream {
     host: "openai.invalid",
     dialect: "openai",
     model: MODEL,
+    caps: busbar_plane_llm::LaneCaps::NONE,
 }];
 
 /// A request the lane relays unchanged: its dialect and its model are both the lane's own.

@@ -43,6 +43,11 @@ pub struct EgressPrep<'a> {
     /// no `path_base` override, i.e. not a Vertex-style URL-model lane) before constructing
     /// `EgressPrep`, matching how `reasoning_allowed`/`prompt_caching_allowed` are resolved.
     pub thought_signature_fill: bool,
+    /// The egress LANE's declared request-shape capabilities (see [`LaneCaps`]), resolved by the
+    /// caller from the lane's provider entry and model patterns exactly as `reasoning_allowed` /
+    /// `prompt_caching_allowed` are. The request handle keeps them for the egress write, whose
+    /// dialect writer is the only party that knows what each one changes.
+    pub lane_caps: LaneCaps,
 }
 
 /// Which key a dialect with two spellings of the output-token cap writes a CROSS-PROTOCOL cap under
@@ -75,4 +80,14 @@ pub struct LaneCaps {
     /// output directive is written in the dialect's pre-capability form (a forced tool on the
     /// Anthropic wire).
     pub native_structured_output: bool,
+}
+
+impl LaneCaps {
+    /// The capabilities of a lane that declares none — every pre-capability form. The same value as
+    /// `LaneCaps::default()`, usable in a `const` (a static upstream table).
+    pub const NONE: LaneCaps = LaneCaps {
+        max_output_key: MaxOutputKey::MaxTokens,
+        anthropic_adaptive_thinking: false,
+        native_structured_output: false,
+    };
 }

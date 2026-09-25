@@ -2152,6 +2152,19 @@ pub fn merge_provider_fallback(def: &ProviderDef, deploy_cfg: &ProviderDeploy) -
             .allow_metadata_hosts
             .clone()
             .unwrap_or_else(|| def.allow_metadata_hosts.clone()),
+        // Lane capabilities: each deployment value overrides the catalog's; a deployment rule list
+        // replaces the catalog's.
+        max_output_key: deploy_cfg.max_output_key.or(def.max_output_key),
+        anthropic_adaptive_thinking: deploy_cfg
+            .anthropic_adaptive_thinking
+            .or(def.anthropic_adaptive_thinking),
+        native_structured_output: deploy_cfg
+            .native_structured_output
+            .or(def.native_structured_output),
+        model_capabilities: deploy_cfg
+            .model_capabilities
+            .clone()
+            .unwrap_or_else(|| def.model_capabilities.clone()),
     }
 }
 

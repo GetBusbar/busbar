@@ -6534,6 +6534,7 @@ fn test_hosted_tools_dropped_cross_protocol() {
             reasoning_budgets: [0, 0, 0, 0],
             prompt_caching_allowed: true,
             cache_control_cap: None,
+            lane_caps: Default::default(),
         },
     );
     let ir = req;
