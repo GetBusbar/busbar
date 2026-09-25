@@ -641,7 +641,7 @@ pub const CONFIG_PASSTHROUGH_UNUSED_APIKEY: Diagnostic = Diagnostic {
               `passthrough`, under which the upstream key is the caller's own token (or empty), so \
               the configured api_key is NEVER forwarded — it is inert dead config. A legitimate \
               passthrough provider that itself signs per-request via SigV4 and needs no static \
-              key, hence a warning rather than a hard reject.",
+              key, hence a warning rather than a hard reject.", // noun-neutrality: frozen-literal pinned-by=docs/diagnostics.md BUSBAR catalog summary, operator-visible; drift-tested render
     action: "If you intended static-key gating, use `upstream_credentials: own` (plus an auth \
              chain). Otherwise clear the referenced provider secret so the config reflects that no \
              static key is used on that passthrough provider.",
@@ -1064,15 +1064,15 @@ pub const OAUTH_AS_SWEEP_FAILED: Diagnostic = Diagnostic {
 pub const SIGV4_HMAC_INIT_FAILED: Diagnostic = Diagnostic {
     code: 4024,
     class: Class::Auth,
-    slug: "sigv4-hmac-init-failed",
-    title: "SigV4 HMAC-SHA256 init failed (documented unreachable)",
+    slug: "sigv4-hmac-init-failed", // noun-neutrality: frozen-literal pinned-by=docs/diagnostics.md BUSBAR-4024 slug, operator-visible; drift-tested render
+    title: "SigV4 HMAC-SHA256 init failed (documented unreachable)", // noun-neutrality: frozen-literal pinned-by=docs/diagnostics.md BUSBAR-4024 title, operator-visible; drift-tested render
     severity: Severity::Actionable,
     summary: "Initializing HMAC-SHA256 for AWS SigV4 signing failed. This is documented as \
               unreachable — HMAC-SHA256 accepts a key of any length — so reaching it indicates a \
               serious crypto-library inconsistency. busbar returns an empty signature, which the \
-              upstream rejects.",
+              upstream rejects.", // noun-neutrality: frozen-literal pinned-by=docs/diagnostics.md BUSBAR-4024 summary, operator-visible; drift-tested render
     action: "Capture the logged error and file a bug; this should not be possible. SigV4-signed \
-             egress fails to authenticate until it is resolved.",
+             egress fails to authenticate until it is resolved.", // noun-neutrality: frozen-literal pinned-by=docs/diagnostics.md BUSBAR-4024 action, operator-visible; drift-tested render
     since: "1.6.0",
     retired: false,
 };
@@ -1789,7 +1789,7 @@ pub const STATEFUL_PLANE_EPHEMERAL_STORE: Diagnostic = Diagnostic {
               durable store is opt-in and RAM is the convenience default.",
     action: "Configure a durable store (sqlite/postgres) so plane task state survives a restart. \
              No action is needed if losing in-flight task state on restart is acceptable for this \
-             deployment.",
+             deployment.", // noun-neutrality: frozen-literal pinned-by=docs/diagnostics.md BUSBAR catalog action, operator-visible; drift-tested render
     since: "1.6.0",
     retired: false,
 };

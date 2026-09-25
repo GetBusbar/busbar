@@ -116,7 +116,7 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
         // The STDIO SERVE MODE is not an exit-and-print flag: it proceeds to the ordinary boot and
         // is read again inside `run()`, where it swaps the two TCP listeners for the process's own
         // stdin/stdout. Recognised here so it is not refused as an unknown argument.
-        Some("--mcp-stdio") => None,
+        Some("--mcp-stdio") => None, // noun-neutrality: frozen-literal pinned-by=crates/busbar/tests/mcp_stdio_serve.rs operator CLI flag (CHANGELOG 1.6.0)
         Some("--validate") => Some(validate_config_command()),
         Some("--generate-signing-key") => Some(generate_signing_key_command()),
         Some("--list-plugins") => Some(list_plugins_command()),

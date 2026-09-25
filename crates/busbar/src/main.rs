@@ -109,7 +109,7 @@ fn safe_mode_requested(mut args: impl Iterator<Item = String>) -> bool {
 /// rather than a `handle_cli_flags` exit arm, because it modifies how `run()` serves rather than
 /// replacing the run.
 fn mcp_stdio_requested(mut args: impl Iterator<Item = String>) -> bool {
-    args.any(|a| a == "--mcp-stdio")
+    args.any(|a| a == "--mcp-stdio") // noun-neutrality: frozen-literal pinned-by=crates/busbar/tests/mcp_stdio_serve.rs operator CLI flag (CHANGELOG 1.6.0)
 }
 
 /// Cap on `advanced.worker_threads`/`TOKIO_WORKER_THREADS` (see the `.min(MAX_WORKER_THREADS)` call in
