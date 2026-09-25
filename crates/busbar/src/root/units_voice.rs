@@ -626,14 +626,14 @@ impl OpenToolCalls {
 
 /// The node's open-call table, as the session runtime reaches it.
 ///
-/// The two moments [`OpenToolCalls`] does not own a call site for are the ones that happen on a
-/// socket: a client's reply arriving, and the tick beside the pump. Both live in `busbar-voice`, and
-/// neither can be a method on one of the four seams above — a seam that answered "which unit does
+/// The three moments [`OpenToolCalls`] does not own a call site for are the ones that happen on a
+/// socket: the pump planning a client-served leg, a client's reply arriving, and the tick beside the
+/// pump. All three live in `busbar-voice`, and none can be a method on one of the four seams above — a seam that answered "which unit does
 /// this reply wake" would be the I/O half deciding it.
 ///
 /// So the direction inverts here, exactly once, and it inverts the way the plane's tool executor
-/// already does: `busbar-voice` declares the port, the root implements it, and what crosses is two
-/// facts and no more. The runtime never learns which unit a call belongs to, how long its deadline
+/// already does: `busbar-voice` declares the port, the root implements it, and what crosses is a
+/// session and a call identifier and no more. The runtime never learns which unit a call belongs to, how long its deadline
 /// is, or what a refusal costs.
 ///
 /// A node's own calls, held by `Arc` because a session outlives the frame that opened it and the
@@ -642,6 +642,10 @@ impl OpenToolCalls {
 #[derive(Clone)]
 pub struct NodeCalls {
     node: std::sync::Arc<VoiceNode>,
+    /// The unit key each planned client-served leg is entered under. A served session runs no
+    /// kernel unit per call, so the port mints one: unique on this node, which is all the table's
+    /// per-session map needs of it.
+    next_unit: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[cfg(feature = "plane-voice")]
@@ -658,12 +662,32 @@ impl NodeCalls {
     /// Bind the port to one node's table.
     #[must_use]
     pub fn new(node: std::sync::Arc<VoiceNode>) -> Self {
-        NodeCalls { node }
+        NodeCalls {
+            node,
+            next_unit: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
+        }
     }
 }
 
 #[cfg(feature = "plane-voice")]
 impl busbar_voice::runtime::GovernedCalls for NodeCalls {
+    fn planned(&self, session: u64, call_id: &str, now_ms: u64) -> bool {
+        // The leg the plane declares, keyed by the identifier the model minted — the same pair
+        // `replied` answers under, so the wait entered here is the one a reply wakes.
+        let unit = UnitKey::new(
+            self.next_unit
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        );
+        let correlation_out = CorrelationRef {
+            fact_key: busbar_plane_streaming::plane::FACT_TOOL_CORRELATION,
+            value: CorrelationValue::Str(call_id),
+        };
+        self.node
+            .tool_calls
+            .planned(session, unit, TOOL_REPLY_LEG, Some(correlation_out), now_ms)
+            .is_ok()
+    }
+
     fn replied(
         &self,
         session: u64,
@@ -2220,7 +2244,7 @@ fn mount_root(
 /// The node is built here rather than passed in because nothing about the table configuration
 /// decides: [`OpenToolCalls`] is empty at boot and its whole contents are what the
 /// sessions running on this node have opened since. What the served path reaches through the port is
-/// that table and nothing else — two questions, `replied` and `expired`, neither of which reads the
+/// that table and nothing else — `planned`, `replied` and `expired`, none of which reads the
 /// node's door, its pricer, its auth chain or its journal.
 ///
 /// So the parts below are the ones the table's own two answers need, and the rest are the root's

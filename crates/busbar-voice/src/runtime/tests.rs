@@ -632,13 +632,20 @@ impl crate::runtime::ToolExecutor for ServesOnly {
     }
 }
 
-/// The node's table, as the runtime is allowed to see it: which identifiers are open, and a sweep.
+/// The node's table, as the runtime is allowed to see it: which identifiers are open (entered as the
+/// runtime plans them), and a sweep.
 #[derive(Debug, Default)]
 struct TableFake {
     sessions: std::sync::Mutex<std::collections::BTreeMap<u64, Vec<String>>>,
 }
 
 impl crate::runtime::GovernedCalls for TableFake {
+    fn planned(&self, session: u64, call_id: &str, _now_ms: u64) -> bool {
+        let mut s = self.sessions.lock().unwrap();
+        s.entry(session).or_default().push(call_id.to_string());
+        true
+    }
+
     fn replied(&self, session: u64, call_id: &str) -> Result<(), crate::runtime::ReplyRefusal> {
         let mut s = self.sessions.lock().unwrap();
         let open = s

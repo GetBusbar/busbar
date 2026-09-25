@@ -1238,6 +1238,124 @@ fn the_served_composition_has_no_ungoverned_session_left_in_it() {
     );
 }
 
+/// A tool executor that serves no tool: every call the session sees is the client's to answer.
+#[cfg(feature = "plane-voice")]
+#[derive(Debug)]
+struct ServesNoTool;
+
+#[cfg(feature = "plane-voice")]
+#[async_trait::async_trait]
+impl busbar_voice::runtime::ToolExecutor for ServesNoTool {
+    fn serves(&self, _name: &str) -> bool {
+        false
+    }
+    async fn execute(&self, _name: &str, _arguments: &[u8]) -> Vec<u8> {
+        b"{\"executed\":\"in-process\"}".to_vec()
+    }
+}
+
+/// A real session pump bound to `node`'s own table as `session`, serving no tool.
+#[cfg(feature = "plane-voice")]
+fn pump_serving_no_tool(
+    node: &std::sync::Arc<VoiceNode>,
+    session: u64,
+) -> busbar_voice::runtime::SessionCore<busbar_voice::ir::codec::OpenAiRealtimeCodec> {
+    busbar_voice::runtime::SessionCore::new(
+        busbar_voice::ir::codec::OpenAiRealtimeCodec,
+        None,
+        std::sync::Arc::new(ServesNoTool),
+        busbar_voice::runtime::Carrier::sideband(),
+        None,
+    )
+    .with_governed(busbar_voice::runtime::GovernedSession {
+        session,
+        calls: std::sync::Arc::new(NodeCalls::new(std::sync::Arc::clone(node))),
+    })
+}
+
+/// One OpenAI Realtime wire frame.
+#[cfg(feature = "plane-voice")]
+fn realtime_frame(json: &serde_json::Value) -> busbar_voice::ir::codec::WireEvent {
+    busbar_voice::ir::codec::WireEvent(bytes::Bytes::from(serde_json::to_vec(json).unwrap()))
+}
+
+/// The upstream frames a plan writes, as one string.
+#[cfg(feature = "plane-voice")]
+fn upstream_text(plan: &busbar_voice::runtime::Outbound) -> String {
+    plan.upstream
+        .iter()
+        .map(|w| String::from_utf8_lossy(&w.0).to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// **Q72(1) / R4: the served session plans the client-served leg, so the client's answer is taken.**
+///
+/// No hand-entered wait and no `VoiceUnit`: the call is announced to a real session pump bound to
+/// this node's real table, and the pump is the only thing that can have entered the wait. The tool
+/// is one the node does not serve, so nothing is executed in-process; the client's own
+/// `function_call_output` for that call is then accepted and carried to the model. Before the
+/// writer was wired the table stayed empty and this reply was refused (`refused_reply`). The RED
+/// arm: a reply naming a call nobody planned is still refused and reaches the model on no wire.
+#[cfg(feature = "plane-voice")]
+#[tokio::test]
+async fn a_served_session_plans_the_client_leg_and_accepts_its_reply() {
+    let node = std::sync::Arc::new(node(serviceable()));
+    let session = 5_151;
+    let core = pump_serving_no_tool(&node, session);
+
+    for f in [
+        serde_json::json!({"type":"response.output_item.added",
+            "item":{"type":"function_call","call_id":"call_cli","name":"client_tool"}}),
+        serde_json::json!({"type":"response.function_call_arguments.delta",
+            "call_id":"call_cli","delta":"{}"}),
+        serde_json::json!({"type":"response.function_call_arguments.done","call_id":"call_cli"}),
+    ] {
+        let plan = core.on_server_frame(realtime_frame(&f)).await;
+        assert!(
+            plan.upstream.is_empty(),
+            "a tool the node does not serve is never executed in-process: {}",
+            upstream_text(&plan)
+        );
+    }
+    assert_eq!(
+        node.tool_calls.open(),
+        1,
+        "the pump planned the client-served leg into the node's own table"
+    );
+
+    // THE RED ARM: a reply for a call nobody planned is refused, and nothing reaches the model.
+    let forged = core.on_client_frame(realtime_frame(&serde_json::json!({
+        "type":"conversation.item.create",
+        "item":{"type":"function_call_output","call_id":"call_unplanned","output":"1"}})));
+    assert!(
+        forged.refused_reply,
+        "a reply for an unplanned call is refused"
+    );
+    assert!(
+        forged.upstream.is_empty(),
+        "and it reaches the model on no wire at all: {}",
+        upstream_text(&forged)
+    );
+
+    // THE GREEN ARM: the client's reply for the planned call is accepted and carried upstream.
+    let answered = core.on_client_frame(realtime_frame(&serde_json::json!({
+        "type":"conversation.item.create",
+        "item":{"type":"function_call_output","call_id":"call_cli","output":"42"}})));
+    assert!(
+        !answered.refused_reply,
+        "the client's reply for a planned client-served call is accepted"
+    );
+    let up = upstream_text(&answered);
+    assert!(
+        up.contains("function_call_output")
+            && up.contains("call_cli")
+            && up.contains("response.create"),
+        "the accepted reply reaches the model and asks it to continue: {up}"
+    );
+    assert_eq!(node.tool_calls.open(), 0, "and the wait left the table");
+}
+
 /// A conversation that is over cannot answer anything.
 #[test]
 fn a_closed_session_stops_waiting_on_the_calls_it_had_open() {

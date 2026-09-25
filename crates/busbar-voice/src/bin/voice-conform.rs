@@ -1337,13 +1337,15 @@ fn probe_provider_credential() -> (&'static str, String) {
 
 // ── the governed tool-call wait, driven through a real session ───────────────────────────────────
 
-/// The node's open-call table, as a session reaches it — the same two questions the composition root's
-/// own implementor answers, over a table this probe can watch.
+/// The node's open-call table, as a session reaches it — the same port the composition root's own
+/// implementor answers, over a table this probe can watch.
 #[derive(Debug, Default)]
 struct ProbeCalls {
     open: std::sync::Mutex<Vec<ProbeCall>>,
     woken: std::sync::Mutex<Vec<String>>,
     refused: std::sync::Mutex<Vec<String>>,
+    /// The client-served legs the session itself planned, by call identifier.
+    planned: std::sync::Mutex<Vec<String>>,
     /// The calls the tick ended because nobody answered them, and the wall each was ended at.
     ended: std::sync::Mutex<Vec<(String, u64)>>,
 }
@@ -1377,6 +1379,13 @@ impl ProbeCalls {
 }
 
 impl busbar_voice::runtime::GovernedCalls for ProbeCalls {
+    fn planned(&self, _session: u64, call_id: &str, _now_ms: u64) -> bool {
+        // Recorded, not entered: the leg below enters its waits at a fixed wall so the deadline it
+        // pins is arithmetic rather than a reading of the clock.
+        self.planned.lock().unwrap().push(call_id.to_string());
+        true
+    }
+
     fn replied(
         &self,
         session: u64,
@@ -1505,6 +1514,14 @@ where
                 w.dialect
             ));
         }
+    }
+
+    // THE PLAN. The session itself tells the node's table the leg is the client's to answer.
+    if table.planned.lock().unwrap().as_slice() != ["call_x"] {
+        return Err(format!(
+            "{}: the session never planned the client-served leg",
+            w.dialect
+        ));
     }
 
     // THE WAKE. The root entered the wait where it planned the leg; the client's reply names it.
