@@ -1260,7 +1260,8 @@ pub struct StreamDecodeState {
     /// a duplicate `BlockStart` at the same claimed index, an unbalanced stream (two `content_block_start`
     /// for one index) on an Anthropic egress. The open sites gate on `!text_block_closed` so an
     /// out-of-spec upstream that resumes text after tools is dropped rather than un-balancing the stream.
-    /// Cohere reader only; other readers leave it false.
+    /// Cohere and Gemini readers (Gemini keeps the closed block's index so a late citation still
+    /// annotates it, GEM-20); other readers leave it false.
     pub text_block_closed: bool,
     pub open_tools: std::collections::BTreeSet<usize>,
     /// Set once a reasoning (chain-of-thought) delta is seen on the stream. When true, the
@@ -1331,6 +1332,13 @@ pub struct StreamDecodeState {
     /// delta stopped, so each chunk emits only the tail it ADDED. Gemini reader only; other readers
     /// leave it 0.
     pub citations_emitted: usize,
+    /// The answer text streamed so far, in arrival order (GEM-16 reader half). Gemini states a
+    /// streamed citation's `startIndex`/`endIndex` as UTF-8 BYTE offsets into the whole response
+    /// text, while [`IrCitation::start_index`] is a CHARACTER offset; converting needs the text the
+    /// offsets index into, which on a stream exists only as the deltas already emitted. The Gemini
+    /// reader appends each text delta here and converts a citation's offsets against it. Empty for
+    /// every other reader.
+    pub streamed_text: String,
 }
 
 impl StreamDecodeState {
