@@ -16,12 +16,13 @@ license = "Apache-2.0"
 # two both-ways witnesses in the tree (`plugin-loader/src/tests/{plane,export}_conformance_tests.rs`);
 # this crate was the one fixture that could not, being cdylib-only.
 #
-# ADDING THE ARTIFACT IS NOT THE WITNESS — the witness is
-# `plugin-loader/src/tests/auth_conformance_tests.rs` (K5). The compiled-in door is reached through
-# the `rlib`'s `BUSBAR_COLD_ENTRY` (the same boundary functions `export_auth_plugin!` exports from the
-# `cdylib`), registered by `PluginRegistry::link`; the dropped-in door is the `cdylib` signed into
-# `plugins/`. Both rows and both opened modules' answers must be byte-identical. `open` stays private:
-# the linked door drives the boundary, not the Rust constructor behind it.
+# ADDING THE ARTIFACT IS NOT THE WITNESS. The compiled-in door exists (K5): the `rlib`'s
+# `BUSBAR_COLD_ENTRY` is the same boundary `export_auth_plugin!` exports from the `cdylib`, and
+# `PluginRegistry::link` registers it on the one cold-kind axis the dropped-in door feeds. What is
+# missing is a test crate allowed to LINK this `rlib`: kind-isolation refuses any new edge to a
+# `kind: auth` crate (`plugin-tooling -> auth` is neither an architecture nor a TCB edge), and #2's
+# ordered cost names exactly that edge — `plugin-loader`'s dev-dependency on this crate — as its step
+# (4). The witness (`plugin-loader` `auth_conformance_tests`) waits on that ruling.
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
