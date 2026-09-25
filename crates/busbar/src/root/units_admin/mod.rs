@@ -1246,7 +1246,7 @@ fn amend_rate_history_effect(
             Some(fee)
         }
     };
-    let mut entries: Vec<(busbar_kernel_ledger::cost::LaneClass, f64)> = Vec::new();
+    let mut entries: Vec<(busbar_kernel_ledger::cost::LaneClass, u64)> = Vec::new();
     if let Some(rates) = obj.get("rates") {
         for row in rates.as_array().ok_or(GovernanceError::Validation)? {
             let r = row.as_object().ok_or(GovernanceError::Validation)?;
@@ -1260,16 +1260,19 @@ fn amend_rate_history_effect(
                 .and_then(serde_json::Value::as_str)
                 .filter(|s| !s.is_empty())
                 .ok_or(GovernanceError::Validation)?;
-            let micro = r
-                .get("micro_per_unit")
-                .and_then(serde_json::Value::as_f64)
-                .ok_or(GovernanceError::Validation)?;
-            if !micro.is_finite() || micro < 0.0 {
-                return Err(GovernanceError::Validation);
+            // THE WIRE KEEPS ITS DECIMAL; THE CARD GETS AN INTEGER, EXACTLY OR NOT AT ALL. The rate
+            // is written in micro-units per unit — the decimal form 1.5.5's own rate card took — and
+            // becomes the card's integer nano-units here, at the edge, with no float arithmetic. A
+            // figure finer than one nano-unit, negative, or too large is REFUSED: rounding it would
+            // seal a price the signer did not sign.
+            let nanos = match r.get("micro_per_unit") {
+                Some(serde_json::Value::Number(n)) => exact_nano_rate(&n.to_string()),
+                _ => None,
             }
+            .ok_or(GovernanceError::Validation)?;
             entries.push((
                 busbar_kernel_ledger::cost::LaneClass::new(lane, class),
-                micro,
+                nanos,
             ));
         }
     }
@@ -1282,7 +1285,7 @@ fn amend_rate_history_effect(
         .iter()
         .map(|(cell, _)| (cell.lane.clone(), cell.class.clone()))
         .collect();
-    let card = busbar_kernel_ledger::cost::RateCard::from_micro_rates(
+    let card = busbar_kernel_ledger::cost::RateCard::from_nano_rates(
         entries,
         per_request_fee.unwrap_or(0),
     );
@@ -1454,7 +1457,7 @@ pub struct AmendmentRecord {
     /// [`busbar_kernel_ledger::cost::RateCard`] already resolved (`card.fee()`), never the
     /// operator's raw JSON field. Kept off the `per_request_fee`/`fee_cents` spellings on purpose —
     /// `[rules.one-pricing-site.fee_allowed.amend-rate-history]` reviews exactly four reads of that
-    /// wire name in this file (the parse, the shape refusal, the relay to `from_micro_rates`, and
+    /// wire name in this file (the parse, the shape refusal, the relay to `from_nano_rates`, and
     /// the signed payload's own key literal); a durable record's encode/decode is not one of them,
     /// and giving it the wire's own name would silently spend two of the grant's four slots on a
     /// binary journal format that was never reviewed as a wire reader.
@@ -1626,6 +1629,60 @@ impl AmendmentJournal {
             .map(|_| ())
             .map_err(|_| busbar_core_admin::GovernanceError::Store)
     }
+}
+
+/// A rate in micro-units per unit, as its decimal TEXT, to the integer nano-units per unit the card
+/// holds — exactly, or `None`. `1.5` is `1500`, `0.001` is `1`, `2e-3` is `2`; `0.0015` (a
+/// half-nano-unit), a negative figure and one past `u64` are `None`. Decimal digits are shifted,
+/// never multiplied as a float, so no value is rounded into a price nobody wrote.
+fn exact_nano_rate(text: &str) -> Option<u64> {
+    let (mantissa, exponent) = match text.split_once(['e', 'E']) {
+        Some((m, e)) => (m, e.parse::<i32>().ok()?),
+        None => (text, 0),
+    };
+    let (negative, mantissa) = match mantissa.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, mantissa),
+    };
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    if whole.is_empty()
+        || !whole
+            .bytes()
+            .chain(fraction.bytes())
+            .all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let digits = format!("{whole}{fraction}");
+    let digits = digits.trim_start_matches('0');
+    if digits.is_empty() {
+        // Zero, however spelled (`-0.0` included): the operator configured the cell free.
+        return Some(0);
+    }
+    if negative {
+        return None;
+    }
+    // Nano-units are micro-units shifted three places left.
+    let shift = i64::from(exponent) + 3 - i64::try_from(fraction.len()).ok()?;
+    let digits = if shift < 0 {
+        let cut = usize::try_from(-shift).ok()?;
+        let keep = digits.len().checked_sub(cut)?;
+        if !digits[keep..].bytes().all(|b| b == b'0') {
+            return None;
+        }
+        &digits[..keep]
+    } else {
+        digits
+    };
+    let mut value: u64 = if digits.is_empty() {
+        0
+    } else {
+        digits.parse().ok()?
+    };
+    for _ in 0..shift.max(0) {
+        value = value.checked_mul(10)?;
+    }
+    Some(value)
 }
 
 /// The exact bytes the operator's detached signature is verified over.

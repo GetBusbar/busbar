@@ -3895,86 +3895,75 @@ fn a_sealed_amendment_survives_a_restart_with_its_figures() {
         .expect("the recorded signature verifies over the recorded payload");
 }
 
-/// **A CELL THE SEALED CARD REFUSED STILL REFUSES AFTER A RESTART** (#42).
+/// **A CORRECTION'S RATE BECOMES THE CARD'S INTEGER EXACTLY, OR IS REFUSED** (architect ruling
+/// 2026-09-24, no-float-money).
 ///
-/// A correction naming a sub-quantum rate (`0.0001` micro-units a token, below the half-nano-unit
-/// quantum) seals a card on which that cell is UNPRICED: a hit on it refuses. The record used to
-/// write that cell as nanos 0, so the entry a restart rebuilt from the chain priced the class at
-/// ZERO where the live card refused it — a silent 0 after every restart. The rebuilt entry must
-/// refuse exactly the cell the live one refuses, and price the one it prices.
+/// The wire keeps the decimal micro-units-per-unit form (1.5.5's rate card took its rates as
+/// decimals); the edge turns it into integer nano-units by shifting decimal digits, never by float
+/// arithmetic. A figure the card can hold exactly is sealed as exactly that integer. A figure finer
+/// than one nano-unit used to be ROUNDED (half away from zero) or, below the half-nano quantum,
+/// sealed as an UNPRICED cell under a signature that covered a price — a card that was not the card
+/// its signer signed. It is now refused, and nothing is appended to the history or the journal.
 #[test]
-fn a_refused_cell_of_a_sealed_amendment_still_refuses_after_a_restart() {
-    let scratch = AmendScratch::new("refused-cell");
-    let live = {
+fn a_correction_rate_is_sealed_as_an_exact_integer_or_refused() {
+    for (micro, nanos) in [
+        (serde_json::json!(1.5), 1_500),
+        (serde_json::json!(0.001), 1),
+        (serde_json::json!(2e-3), 2),
+        (serde_json::json!(7), 7_000),
+        (serde_json::json!(0.0), 0),
+    ] {
+        let scratch = AmendScratch::new("exact-rate");
         let book = scratch.book();
-        let history = a_seeded_history();
         amend_rate_history_effect(
-            &history,
+            &a_seeded_history(),
             Some(&a_journal_over(&book)),
-            &signed_correction(serde_json::json!({
-                "effective_from": 4_000,
-                "effective_until": 9_000,
-                "per_request_fee": 0,
-                "rates": [
-                    { "lane": "gpt", "class": "input", "micro_per_unit": 1.5 },
-                    { "lane": "gpt", "class": "output", "micro_per_unit": 0.0001 },
-                ],
-                "reason": "a sub-quantum output rate",
-                "operator_fingerprint": a_test_operator_fingerprint(),
-            })),
+            &a_priced_correction(0, micro.clone()),
             6,
             a_sealed_operator(),
             &an_attribution(),
         )
-        .expect("the correction applies");
-        let history = history.history().expect("a history");
-        let (_, card) = history
-            .current()
-            .card_at(5_000)
-            .map(|(seq, card)| (seq, card.clone()))
-            .expect("the correction covers its window");
-        card
-    };
-    let live_rates = live
-        .lane_rates("gpt")
-        .expect("the live card names the lane");
-    assert!(
-        !live_rates.class_priced("output"),
-        "the live card refuses the sub-quantum cell"
-    );
-
-    // RESTART: the entry the boot rebuilds from the chain.
-    let restarted = scratch.book();
-    let records = restarted
-        .lock()
-        .unwrap()
-        .journal
-        .replay()
-        .expect("the journal reads back")
-        .expect("the journal verifies");
-    let rebuilt = crate::root::kernel::journalled_cards(&records)
-        .into_iter()
-        .find_map(|card| match card {
-            crate::root::kernel::JournalledCard::Amended(draft) => Some(draft.card),
-            crate::root::kernel::JournalledCard::Applied(_) => None,
-        })
-        .expect("the amendment is on the chain");
-    let rebuilt_rates = rebuilt
-        .lane_rates("gpt")
-        .expect("the rebuilt card names the lane");
-    assert!(
-        !rebuilt_rates.class_priced("output"),
-        "after a restart the sub-quantum cell priced at {} nanos where the live card refused it",
-        rebuilt_rates.nanos_per_unit("output")
-    );
-    assert_eq!(
-        (
-            rebuilt_rates.class_priced("input"),
-            rebuilt_rates.nanos_per_unit("input")
-        ),
-        (true, live_rates.nanos_per_unit("input")),
-        "the priced cell still prices at its sealed figure"
-    );
+        .unwrap_or_else(|e| panic!("{micro} is exactly {nanos} nano-units: {e:?}"));
+        let records = replayed_amendments(&book.lock().unwrap());
+        assert_eq!(
+            records[0].rates,
+            vec![("gpt".to_string(), "input".to_string(), Some(nanos))],
+            "{micro} micro per unit is sealed as exactly {nanos} nano per unit"
+        );
+    }
+    for micro in [
+        serde_json::json!(0.0001),
+        serde_json::json!(0.0015),
+        serde_json::json!(-1.0),
+        serde_json::json!(1e30),
+        serde_json::json!("1.5"),
+    ] {
+        let scratch = AmendScratch::new("inexact-rate");
+        let book = scratch.book();
+        let history = a_seeded_history();
+        let before = history.history().expect("a history").len();
+        let refused = amend_rate_history_effect(
+            &history,
+            Some(&a_journal_over(&book)),
+            &a_priced_correction(0, micro.clone()),
+            6,
+            a_sealed_operator(),
+            &an_attribution(),
+        );
+        assert!(
+            matches!(refused, Err(busbar_core_admin::GovernanceError::Validation)),
+            "{micro} is not an exact integer of nano-units and must be refused: {refused:?}"
+        );
+        assert_eq!(
+            history.history().expect("a history").len(),
+            before,
+            "{micro}: a refused correction appends nothing to the history"
+        );
+        assert!(
+            replayed_amendments(&book.lock().unwrap()).is_empty(),
+            "{micro}: a refused correction journals nothing"
+        );
+    }
 }
 
 /// **VOLUME DOES NOT ERASE AN AMENDMENT** (item 30). The legacy ring prunes at a thousand entries;
