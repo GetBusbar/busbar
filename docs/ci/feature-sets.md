@@ -89,6 +89,41 @@ default `plane-voice` today, because that reachability is a property of a DEFAUL
 this whole document is about is a default moving. A row that NAMES the feature is coverage that
 survives the default being flipped; reachability is not.
 
+### The single-plane rows
+
+Every row above turns a feature ON over the defaults. None of them builds the root binary with its
+defaults OFF and exactly one plane on — the build a deployment that wants one plane ships — and no
+other job did either: `check` builds every plane, `no-default-features` builds none, and
+`deletion-test-matrix` builds only the neutral crates. Two defects lived in that gap, both green on
+both ends:
+
+- `crates/busbar/src/root/tests/linked.rs` calls the router it built as a tower service, and the
+  only `tower` edge was `root-admin`'s optional one, so no `--no-default-features --features <plane>`
+  test build compiled. The test now has its own dev-dependency edge.
+- the served-rider tests in `crates/busbar/src/root/tests/gauntlet_kernel.rs` required SOME linked
+  served plane to carry each witness — a claim about every served plane at once. An mcp-only build
+  was asked for a witness only a2a carries (`net-guard`), an a2a-only build for two only mcp carries
+  (`disposition`, `egress-auth`). A build now owes what the ledgers cite among the planes it links.
+
+| row | features | clippy and tests |
+| --- | --- | --- |
+| `single plane llm` | `busbar/proto-llm` | `-p busbar --bin busbar --no-default-features` |
+| `single plane mcp` | `busbar/plane-mcp` | `-p busbar --bin busbar --no-default-features` |
+| `single plane a2a` | `busbar/plane-a2a` | `-p busbar --bin busbar --no-default-features` |
+| `single plane voice` | `busbar/plane-voice` | `-p busbar --bin busbar --no-default-features` |
+| `single plane decision` | `busbar/plane-decision` | `-p busbar --bin busbar --no-default-features` |
+
+A row with `scope: package` runs its clippy step over its `tests:` selectors (plus `--all-targets`)
+instead of `--workspace`: `--no-default-features` over the workspace would be a different build of
+every other crate. No row adds `root-admin`; no plane needs it — every one of the five, and the
+no-default and default builds, builds and passes the binary's suite without it.
+
+The test step is the binary's own suite. Two integration suites under `crates/busbar/tests` assume
+every plane is linked — measured on an mcp-only build, 303 pass and 2 fail: `cli_validate.rs`
+configures a provider on a wire codec the build does not carry, and `plane_isomorphism.rs` reads its
+allowlist rows for unlinked planes as stale — so the integration suites stay the `check` job's until
+they read the linked roster; clippy still compiles and lints them in every single-plane row.
+
 ## The cost
 
 Measured on the development host (4 build jobs, `--locked`, a target directory the baseline had

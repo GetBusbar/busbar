@@ -2057,8 +2057,9 @@ jobs:
     # plus one set of crate test binaries; `check`'s own workspace clippy+build+test is ~13 min warm
     # and ~40 cold, and a row is a strict subset of that work. 45 leaves cold-cache headroom.
     timeout-minutes: 60
-    # FULL TIER ONLY. Eight legs, each a near-full workspace recompile under a distinct feature
-    # closure — a promotion check, not a per-commit one. Skipped on pushes to non-promotion branches
+    # FULL TIER ONLY. Thirteen legs: eight a near-full workspace recompile under a distinct feature
+    # closure, five (the single-plane rows) one root-package build with its defaults off — a
+    # promotion check, not a per-commit one. Skipped on pushes to non-promotion branches
     # (integration/**); runs on every pull request, on dev/qa/main, and on workflow_dispatch. `dev`
     # is train-write-only (DECISIONS #67), so skipping only integration/** costs ~the same as a
     # qa-only guard while keeping this job COUNTED and enforced in ci-umbrella. See the tier note at
@@ -2128,6 +2129,38 @@ jobs:
           - name: contract test-seal
             features: busbar-contract/test-seal
             tests: -p busbar-contract
+          # THE SINGLE-PLANE BINARIES. Every row above turns a feature ON over the defaults; none
+          # builds the root binary with its defaults OFF and exactly ONE plane on, which is the build
+          # a deployment that wants one plane ships. `check` builds all planes, `no-default-features`
+          # builds none, and the cells in between were built by nobody: a root test reached for the
+          # optional `tower` edge only `root-admin` brings, and the served-rider tests asked a
+          # one-plane build for a witness only an unlinked plane carries, and both were green on both
+          # ends. `scope: package` runs the clippy step over `tests:` (the root package, defaults off)
+          # instead of `--workspace`, because `--no-default-features` over the workspace is a
+          # different build of every other crate, not this one. Clippy's `--all-targets` still
+          # compiles and lints every target of the package; the test step runs the binary's own
+          # suite (`--bin busbar`), the one that reads the build's linked roster. The integration
+          # suites under crates/busbar/tests boot all-plane fixtures and are the `check` job's.
+          - name: single plane llm
+            features: busbar/proto-llm
+            tests: -p busbar --bin busbar --no-default-features
+            scope: package
+          - name: single plane mcp
+            features: busbar/plane-mcp
+            tests: -p busbar --bin busbar --no-default-features
+            scope: package
+          - name: single plane a2a
+            features: busbar/plane-a2a
+            tests: -p busbar --bin busbar --no-default-features
+            scope: package
+          - name: single plane voice
+            features: busbar/plane-voice
+            tests: -p busbar --bin busbar --no-default-features
+            scope: package
+          - name: single plane decision
+            features: busbar/plane-decision
+            tests: -p busbar --bin busbar --no-default-features
+            scope: package
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
@@ -2143,7 +2176,7 @@ jobs:
             ${{ env.CARGO_HOME }}/git
             target
       - name: Clippy — ${{ matrix.name }}
-        run: cargo clippy --workspace --all-targets --features "${{ matrix.features }}" --locked -- -D warnings
+        run: cargo clippy ${{ matrix.scope == 'package' && matrix.tests || '--workspace' }} --all-targets --features "${{ matrix.features }}" --locked -- -D warnings
       - name: Plugin cdylibs the suites dlopen
         # MEASURED, not precautionary. `cargo test -p busbar-core` alone fails eleven tests with
         # "the busbar-store-example-plugin cdylib is not built at target/debug/…", and
