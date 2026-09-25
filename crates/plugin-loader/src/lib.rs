@@ -1887,3 +1887,10 @@ mod loader_seam_tests;
 #[cfg(test)]
 #[path = "tests/export_conformance_tests.rs"]
 mod export_conformance_tests;
+
+/// DECISIONS #11 for `kind: store`: the in-tree store example, LINKED and `dlopen`ed, must hand back
+/// a key carrying a plane scope grant byte-identically — the scope-kind vocabulary must not depend
+/// on which process registered it (1.6.0 SDK-SCOPEKINDS).
+#[cfg(test)]
+#[path = "tests/store_scope_kind_conformance_tests.rs"]
+mod store_scope_kind_conformance_tests;

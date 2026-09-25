@@ -63,14 +63,26 @@ impl ScopeRef {
     }
 }
 
-/// THE NEUTRAL SCOPE-KIND WIRE REGISTRY — the set of `ScopeRef` kinds (beyond the built-in `pool`)
-/// that have a named wire field on [`VirtualKey`]. This crate names NO concrete plane kind: the
-/// registry starts with only `pool` (core's own admission kind) and every plane kind
-/// (`mcp_server`, `mcp_tool`, an A2A `agent`, …) is registered at boot by the composition root,
-/// which iterates each installed `PlaneDecl.scope_kinds` and calls [`register_scope_kind`]. The
-/// wire-field NAME for a kind is the frozen convention `allowed_{kind}s` (`pool`→`allowed_pools`,
-/// `mcp_server`→`allowed_mcp_servers`, …), so the config grammar keys stay byte-identical while the
-/// vocabulary itself lives in the registry rather than being hard-coded here.
+/// THE NEUTRAL SCOPE-KIND REGISTRY — the ENGINE's vocabulary of `ScopeRef` kinds (beyond the
+/// built-in `pool`). This crate names NO concrete plane kind: the registry starts with only `pool`
+/// (core's own admission kind) and every plane kind (`mcp_server`, `mcp_tool`, an A2A `agent`, …) is
+/// registered at boot by the composition root, which iterates each installed `PlaneDecl.scope_kinds`
+/// and calls [`register_scope_kind`]. The wire-field NAME for a kind is the frozen convention
+/// `allowed_{kind}s` (`pool`→`allowed_pools`, `mcp_server`→`allowed_mcp_servers`, …), so the config
+/// grammar keys stay byte-identical while the vocabulary itself lives here rather than being
+/// hard-coded.
+///
+/// ## The registry does NOT gate the wire (1.6.0 SDK-SCOPEKINDS)
+///
+/// The [`VirtualKey`] wire is a pure, lossless CARRIER: every kind, registered or not, serializes to
+/// its own `allowed_{kind}s` field and reads back as the same kind (the naming convention is a
+/// bijection, see [`scope_kinds::kind_for_wire_field`]). It used to refuse to serialize an
+/// unregistered kind, and that made a DROPPED-IN store plugin unable to hand back a key it had just
+/// been given: a `cdylib` statically links its own copy of this crate, so its registry is a
+/// DIFFERENT, EMPTY static that the engine's boot registration never reaches, while a compiled-in
+/// store shares the engine's. The same plugin behaved differently by build (DECISIONS #11 / spec
+/// Part 2 #2). Kind VALIDATION is the engine's — it owns the registry and asks
+/// [`scope_kinds::is_registered`]; a plugin is an opaque carrier of the kind string.
 pub mod scope_kinds {
     use std::collections::BTreeSet;
     use std::sync::RwLock;
@@ -81,15 +93,17 @@ pub mod scope_kinds {
 
     static REGISTERED: RwLock<BTreeSet<String>> = RwLock::new(BTreeSet::new());
 
-    /// REGISTER a scope kind so a grant of that kind may be persisted (its wire field is
-    /// `allowed_{kind}s`). Idempotent. Called at boot for every `PlaneDecl.scope_kinds` entry — the
-    /// composition root supplies the string, so no plane token is ever a literal in a neutral crate.
+    /// REGISTER a scope kind into the engine's vocabulary. Idempotent. Called at boot for every
+    /// `PlaneDecl.scope_kinds` entry — the composition root supplies the string, so no plane token
+    /// is ever a literal in a neutral crate. Registration is NOT required to persist a grant of the
+    /// kind: the wire carries every kind (see the module doc).
     pub fn register(kind: &str) {
         let mut w = REGISTERED.write().unwrap_or_else(|e| e.into_inner());
         w.insert(kind.to_string());
     }
 
-    /// Whether `kind` may be serialized to a named wire field. `pool` is always registered.
+    /// Whether `kind` is in the ENGINE's vocabulary. `pool` is always registered. Only meaningful in
+    /// the engine's own process: a dropped-in plugin's copy of this registry is never populated.
     pub fn is_registered(kind: &str) -> bool {
         if kind == BUILTIN_POOL_KIND {
             return true;
@@ -135,10 +149,13 @@ pub fn register_scope_kind(kind: &str) {
 ///   `allowed_pools: Option<Vec<String>>` (absent grant = `null`, explicit `[]` = empty set);
 ///   the per-kind fields are OMITTED unless that kind has entries, so a pre-1.6.0 row/reader never
 ///   sees them;
-/// - a kind with NO registered wire field is a HARD serialize error - never silently remapped
-///   into `allowed_pools` (the pre-P0 defect: an `mcp_server` grant became a POOL grant on any
-///   store round-trip - a lost MCP grant AND a pool-access escalation) and never silently dropped
-///   (which would WIDEN a `Some([unknown])` = no-scopes grant toward the `None` = all wildcard);
+/// - EVERY non-`pool` kind, registered or not, is written to its OWN `allowed_{kind}s` field and
+///   read back as the same kind - never silently remapped into `allowed_pools` (the pre-P0 defect:
+///   an `mcp_server` grant became a POOL grant on any store round-trip - a lost MCP grant AND a
+///   pool-access escalation) and never silently dropped (which would WIDEN a `Some([unknown])` =
+///   no-scopes grant toward the `None` = all wildcard). The wire consults no registry, so a
+///   dropped-in store plugin (whose registry copy is empty) round-trips exactly what a compiled-in
+///   one does;
 /// - reassembly is canonical-by-kind (pools, then the remaining kinds in wire-field order).
 ///   `scope_allowed` is a pure membership test, so cross-kind order is never consulted.
 ///
@@ -188,37 +205,29 @@ mod virtual_key_wire {
     /// every non-`pool` kind's grant under its frozen wire-field name.
     pub(super) type ScopePartition = (Option<Vec<String>>, BTreeMap<String, Vec<String>>);
 
-    /// Partition `allowed_scopes` into the per-kind wire fields. `Err` names the offending kind:
-    /// an unregistered kind must fail the WRITE, loudly, at the boundary - see the module doc.
-    pub(super) fn partition_scopes(
-        scopes: &Option<Vec<ScopeRef>>,
-    ) -> Result<ScopePartition, String> {
+    /// Partition `allowed_scopes` into the per-kind wire fields. Total and lossless: every
+    /// non-`pool` kind gets its own `allowed_{kind}s` entry, whether or not this process registered
+    /// it - see the module doc.
+    pub(super) fn partition_scopes(scopes: &Option<Vec<ScopeRef>>) -> ScopePartition {
         let Some(list) = scopes else {
-            return Ok((None, BTreeMap::new()));
+            return (None, BTreeMap::new());
         };
         let mut pools = Vec::new();
         let mut by_kind: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for sr in list {
             if sr.kind == "pool" {
                 pools.push(sr.value.clone());
-            } else if scope_kinds::is_registered(&sr.kind) {
+            } else {
                 by_kind
                     .entry(scope_kinds::wire_field_for(&sr.kind))
                     .or_default()
                     .push(sr.value.clone());
-            } else {
-                return Err(format!(
-                    "scope kind '{}' has no registered wire field: refusing to serialize (a kind \
-                     is never silently remapped into allowed_pools or dropped - register it via \
-                     its plane's `PlaneDecl.scope_kinds` first)",
-                    sr.kind
-                ));
             }
         }
         // `allowed_pools` is ALWAYS present for an explicit grant (even empty) so `Some([])` =
         // no-scopes survives the trip; the per-kind fields are additive and omitted when empty
         // (a kind with no values never gets a map entry above).
-        Ok((Some(pools), by_kind))
+        (Some(pools), by_kind)
     }
 
     /// Reassemble the per-kind wire fields into kind-tagged scopes. All three absent = the
@@ -256,8 +265,7 @@ mod virtual_key_wire {
         where
             S: serde::Serializer,
         {
-            let (allowed_pools, allowed_by_kind) =
-                partition_scopes(&self.allowed_scopes).map_err(serde::ser::Error::custom)?;
+            let (allowed_pools, allowed_by_kind) = partition_scopes(&self.allowed_scopes);
             VirtualKeyWire {
                 id: self.id.clone(),
                 generation_hash: self.generation_hash.clone(),

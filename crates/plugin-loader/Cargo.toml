@@ -66,6 +66,11 @@ busbar-plugin-example-plane = { path = "../plane-example" }
 # the test separately `dlopen`s. DECISIONS #11 says compiled-in ≡ dropped-in; `export_conformance_tests`
 # is what makes that checkable for the thing #11 was silently false about — what a plugin OBSERVES.
 busbar-export-example-plugin = { path = "../export-example-plugin" }
+# The `kind: store` BOTH-WAYS fixture, on the same terms: its `rlib` gives the test the COMPILED-IN
+# `Box<dyn Store>` (its `pub fn open`), its `cdylib` is `dlopen`ed. `store_scope_kind_conformance_tests`
+# requires the two to round-trip a plane scope grant (`mcp_tool`) identically — a dropped-in store's
+# copy of the scope-kind registry is never populated by the engine's boot registration.
+busbar-store-example-plugin = { path = "../store-example-plugin" }
 
 [target.'cfg(unix)'.dependencies]
 # memfd_create (Linux zero-disk loads) + kill(pid, 0) liveness for the dead-pid staging sweep.
