@@ -620,3 +620,60 @@ fn coh12_all_strict_foreign_tools_render_as_strict_tools() {
     let out = translate_request("openai", "cohere", &mixed);
     assert!(out.get("strict_tools").is_none(), "{out}");
 }
+
+// ── COH-13 / COH-14: log probabilities ────────────────────────────────────────────────────────────
+
+/// COH-13: a buffered Cohere response's `logprobs[]` reach a foreign client (they used to be dropped
+/// with a warn). A multi-token chunk's figure is the sum of its token log probabilities.
+#[test]
+fn coh13_buffered_logprobs_reach_a_foreign_client() {
+    let body = json!({
+        "id": "c-1", "finish_reason": "COMPLETE",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": "hello world"}]},
+        "usage": {"tokens": {"input_tokens": 3, "output_tokens": 2}},
+        "logprobs": [
+            {"token_ids": [1], "text": "hello", "logprobs": [-0.25]},
+            {"token_ids": [2, 3], "text": " world", "logprobs": [-0.5, -0.25]}
+        ]
+    });
+    let ir = crate::proto_codec::protocol_for("cohere")
+        .expect("cohere")
+        .reader()
+        .read_response(&body)
+        .expect("read");
+    let got: Vec<(String, f64)> = ir
+        .logprobs
+        .iter()
+        .map(|l| (l.token.clone(), l.logprob))
+        .collect();
+    assert_eq!(
+        got,
+        vec![("hello".to_string(), -0.25), (" world".to_string(), -0.75)],
+        "COH-13"
+    );
+    let out = translate_response("cohere", "openai", &body);
+    let content = &out["choices"][0]["logprobs"]["content"];
+    assert_eq!(content[0]["token"], json!("hello"), "COH-13: {out}");
+    assert_eq!(content[0]["logprob"], json!(-0.25), "COH-13: {out}");
+    assert_eq!(content[1]["token"], json!(" world"), "COH-13: {out}");
+}
+
+/// COH-14: a streamed content-delta's `logprobs` reach a foreign client on the text block.
+#[test]
+fn coh14_streamed_logprobs_reach_a_foreign_client() {
+    use crate::ir::{IrDelta, IrStreamEvent as E};
+    let evs = read_events(&reasoning_stream());
+    assert!(
+        evs.iter().any(|e| matches!(
+            e,
+            E::BlockDelta { index: 1, delta: IrDelta::LogprobsDelta(l) }
+                if l.len() == 1 && l[0].token == "hello" && l[0].logprob == -0.1
+        )),
+        "COH-14: {evs:?}"
+    );
+    let out = translate_stream("cohere", "openai", &reasoning_stream());
+    let carried = sse_data(&out)
+        .into_iter()
+        .any(|v| v["choices"][0]["logprobs"]["content"][0]["token"] == json!("hello"));
+    assert!(carried, "COH-14: {out}");
+}

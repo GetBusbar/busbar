@@ -358,35 +358,45 @@ fn cohere_response_billed_units_survive_roundtrip() {
     );
 }
 
-/// Watches: `response/logprobs`. Cohere v2 response logprobs are TOKEN-ID sequences with no neutral
-/// (token-string) shape, so they are NOT promoted to the IR — a same-protocol hop keeps them via the
-/// verbatim relay, and a cross-protocol hop DROPS them with a documented `warn!`. This asserts the
-/// drop is warned (never silent) and that the round-tripped body carries no fabricated `logprobs`.
+/// Watches: `response/logprobs`. Cohere v2 response logprobs map to the neutral per-span entries
+/// (COH-13: the chunk's `text`, and the sum of its token log probabilities), so a foreign client
+/// receives them. The Cohere WRITER cannot re-emit them — a Cohere `LogprobItem` needs the token ids,
+/// which no other dialect reports — so on that side the drop is warned (never silent) and the body
+/// carries no fabricated `logprobs`.
 #[test]
 fn cohere_response_logprobs_drop_is_warned() {
     let body = json!({
         "id": "c1",
         "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
         "finish_reason": "COMPLETE",
-        "logprobs": [{"token_ids": [4, 2], "text": "hi", "logprobs": [-0.1, -0.2]}],
+        "logprobs": [{"token_ids": [4, 2], "text": "hi", "logprobs": [-0.25, -0.5]}],
         "usage": {"tokens": {"input_tokens": 1, "output_tokens": 1}}
     });
 
     let cap = WarnCapture::default();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
-    let out = tracing::subscriber::with_default(subscriber, || {
+    let (ir, out) = tracing::subscriber::with_default(subscriber, || {
         let ir = CohereReader
             .read_response(&body)
             .expect("cohere response parses");
         let w = CohereWriter;
-        w.write_response(&ir)
+        let out = w.write_response(&ir);
+        (ir, out)
     });
 
+    assert_eq!(
+        ir.logprobs.len(),
+        1,
+        "COH-13: the logprobs map: {:?}",
+        ir.logprobs
+    );
+    assert_eq!(ir.logprobs[0].token, "hi");
+    assert_eq!(ir.logprobs[0].logprob, -0.75);
     assert!(
         cap.messages()
             .iter()
             .any(|m| m.contains("logprobs") && m.contains("no")),
-        "dropping cohere response logprobs cross-protocol must warn (never silent): {:?}",
+        "dropping logprobs on the Cohere writer must warn (never silent): {:?}",
         cap.messages()
     );
     assert!(

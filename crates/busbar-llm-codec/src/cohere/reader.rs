@@ -946,6 +946,16 @@ impl ProtocolReader for CohereReader {
                         }
                     }
                 }
+                // The chunk's log probabilities ride the content-delta frame itself
+                // (`logprobs: {text, token_ids, logprobs}`), mapped exactly as the buffered
+                // `logprobs[]` items are, onto the text block they describe. They used to be
+                // dropped (COH-14).
+                if let Some(lp) = data.get("logprobs").and_then(read_cohere_logprob) {
+                    out.push(IrStreamEvent::BlockDelta {
+                        index: text_idx,
+                        delta: crate::ir::IrDelta::LogprobsDelta(vec![lp]),
+                    });
+                }
             }
             // Cohere v2 streams the assistant's pre-tool-call reasoning as `tool-plan-delta`
             // frames (one token each at `delta.message.tool_plan`) that PRECEDE the
@@ -1468,22 +1478,14 @@ impl ProtocolReader for CohereReader {
             },
         };
 
-        // Cohere v2 response `logprobs` are TOKEN-ID sequences (integer ids + per-chunk floats), not
-        // the token-STRING shape the neutral `IrTokenLogprob` (and the OpenAI/Gemini logprobs it
-        // carries between) models — there is no faithful cross-protocol mapping, so they are NOT
-        // promoted to `IrResponse.logprobs`. A same-protocol Cohere->Cohere response preserves them
-        // byte-exact via the verbatim relay (this read->write path is never taken same-protocol). On
-        // a CROSS-protocol hop they are dropped; warn HERE (the only Cohere site that still sees the
-        // inbound `logprobs` before the IR is rebuilt for a foreign writer) so the loss is
-        // operator-visible rather than silent — the same drop-with-warn discipline as native
-        // `documents`.
-        if obj.contains_key("logprobs") {
-            tracing::warn!(
-                "cohere: response carries native `logprobs` (token-id sequences) with no \
-                 cross-protocol analog; they survive a same-protocol Cohere->Cohere relay byte-exact \
-                 but are DROPPED when this response is translated to a non-Cohere client"
-            );
-        }
+        // Cohere v2 response `logprobs[]`: one item per decoded text chunk, mapped to the neutral
+        // per-span entries a foreign client reads (`read_cohere_logprob`). They used to be dropped
+        // with a warn on every cross-protocol hop (COH-13).
+        let logprobs: Vec<crate::ir::IrTokenLogprob> = obj
+            .get("logprobs")
+            .and_then(|l| l.as_array())
+            .map(|items| items.iter().filter_map(read_cohere_logprob).collect())
+            .unwrap_or_default();
 
         let model = obj.get("model").and_then(|m| m.as_str()).map(String::from);
 
@@ -1500,7 +1502,7 @@ impl ProtocolReader for CohereReader {
             .or_else(|| Some(synthesize_cohere_id()));
 
         Ok(crate::ir::IrResponse {
-            logprobs: Vec::new(),
+            logprobs,
             role: crate::ir::IrRole::Assistant,
             content,
             stop_reason,

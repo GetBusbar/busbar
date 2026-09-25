@@ -1027,6 +1027,16 @@ impl ProtocolWriter for CohereWriter {
             .map(write_cohere_stop_reason)
             .unwrap_or(COHERE_FINISH_COMPLETE);
 
+        // A Cohere `LogprobItem` is keyed by the token ids the text decodes from, which no other
+        // dialect reports, so a foreign backend's log probabilities have no Cohere form. Dropped,
+        // observably.
+        if !resp.logprobs.is_empty() {
+            tracing::warn!(
+                "dropping response logprobs on Cohere egress: a Cohere logprobs item needs the token \
+                 ids, which the source dialect has no field for"
+            );
+        }
+
         // Cohere format: usage.tokens.input_tokens, usage.tokens.output_tokens
         let mut tokens_map = serde_json::Map::new();
         // The WHOLE prompt, cached share included — see `cohere_prompt_tokens`.

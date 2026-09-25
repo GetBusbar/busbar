@@ -462,6 +462,31 @@ fn write_cohere_reasoning(ask: crate::ir::IrReasoningAsk, table: [u32; 4]) -> se
     }
 }
 
+/// Read one Cohere v2 `LogprobItem` — `{"text": "<chunk>", "token_ids": [..], "logprobs": [..]}` —
+/// into the neutral [`crate::ir::IrTokenLogprob`] (COH-13 / COH-14).
+///
+/// Cohere reports log probabilities per decoded text chunk: the chunk's text, the ids of the tokens
+/// it decodes from, and one log probability per token. The IR's unit is a text span with its log
+/// probability, so a chunk maps with its `text` as the span and the SUM of its token log
+/// probabilities as the span's log probability — the joint log probability of exactly that text,
+/// which for the usual one-token chunk is its token's own figure. A chunk with no text, no
+/// log probabilities, or an unreadable one carries no span to report and is skipped (never
+/// invented). Cohere reports no alternatives, so `top` is empty.
+fn read_cohere_logprob(item: &serde_json::Value) -> Option<crate::ir::IrTokenLogprob> {
+    let text = item.get("text")?.as_str()?;
+    let lps = item.get("logprobs")?.as_array()?;
+    if lps.is_empty() {
+        return None;
+    }
+    let logprob = lps.iter().map(|v| v.as_f64()).sum::<Option<f64>>()?;
+    Some(crate::ir::IrTokenLogprob {
+        token: text.to_string(),
+        logprob,
+        bytes: None,
+        top: Vec::new(),
+    })
+}
+
 /// Cohere v2 native `finish_reason` → canonical [`crate::ir::IrStopReason`]. The ONLY place that knows
 /// Cohere's finish vocabulary on the read side; an unmodeled token maps to `Other`.
 fn read_cohere_stop_reason(token: &str) -> crate::ir::IrStopReason {
