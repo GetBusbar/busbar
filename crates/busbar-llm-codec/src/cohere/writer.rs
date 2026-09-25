@@ -13,13 +13,6 @@ impl ProtocolWriter for CohereWriter {
 
     fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value {
         let _t = busbar_timing::timeit!("cohere_write_request");
-        // The reasoning carry has no Cohere shape in this pass; dropped observably (matching
-        // the penalties/top_k convention) rather than silently.
-        if req.reasoning.is_some() {
-            tracing::warn!(
-                "dropping cross-protocol reasoning/thinking ask: no Cohere mapping in this release"
-            );
-        }
         let mut out = serde_json::Map::new();
         let mut messages_arr: Vec<serde_json::Value> = Vec::new();
 
@@ -567,6 +560,18 @@ impl ProtocolWriter for CohereWriter {
         // writer likewise never emits `stream` in the body.
         if req.stream {
             out.insert("stream".to_string(), serde_json::json!(true));
+        }
+        // The reasoning ASK in Cohere v2's native `thinking` param (COH-06). It used to be dropped
+        // with a warn, as if Cohere had no reasoning control; it has `thinking.token_budget`.
+        if let Some(ask) = req.reasoning {
+            out.insert(
+                "thinking".to_string(),
+                write_cohere_reasoning(
+                    ask,
+                    req.reasoning_budgets
+                        .unwrap_or(crate::ir::REASONING_BUDGET_DEFAULTS),
+                ),
+            );
         }
         for (key, value) in &req.extra {
             out.insert(key.clone(), value.clone());

@@ -433,6 +433,35 @@ fn write_cohere_response_format(rf: &crate::ir::IrResponseFormat) -> serde_json:
     }
 }
 
+/// Read Cohere v2's request `thinking` param into the IR reasoning ask — see `read_request`.
+/// `{type:"enabled", token_budget:N}` is `Budget(N)`; `{type:"enabled"}` with no (or a `null`) budget
+/// is `Dynamic` ("the model decides"). Anything else — `disabled`, a budget that is not a `u32` — is
+/// no promotable ask (`None`).
+fn read_cohere_reasoning(v: Option<&serde_json::Value>) -> Option<crate::ir::IrReasoningAsk> {
+    let t = v?.as_object()?;
+    if t.get("type").and_then(|ty| ty.as_str()) != Some("enabled") {
+        return None;
+    }
+    match t.get("token_budget") {
+        None | Some(serde_json::Value::Null) => Some(crate::ir::IrReasoningAsk::Dynamic),
+        Some(b) => b
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .map(crate::ir::IrReasoningAsk::Budget),
+    }
+}
+
+/// Project the IR reasoning ask into Cohere v2's `thinking` param — the inverse of
+/// [`read_cohere_reasoning`]. A numeric budget is emitted as-is and a word-form effort goes through
+/// the operator's effort-budget table; `Dynamic` ("the model decides") is Cohere's own
+/// `{type:"enabled"}` with no budget, so it needs no table guess here.
+fn write_cohere_reasoning(ask: crate::ir::IrReasoningAsk, table: [u32; 4]) -> serde_json::Value {
+    match ask {
+        crate::ir::IrReasoningAsk::Dynamic => serde_json::json!({ "type": "enabled" }),
+        other => serde_json::json!({ "type": "enabled", "token_budget": other.to_budget(table) }),
+    }
+}
+
 /// Cohere v2 native `finish_reason` → canonical [`crate::ir::IrStopReason`]. The ONLY place that knows
 /// Cohere's finish vocabulary on the read side; an unmodeled token maps to `Other`.
 fn read_cohere_stop_reason(token: &str) -> crate::ir::IrStopReason {

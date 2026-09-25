@@ -496,3 +496,74 @@ fn coh09_streamed_thinking_is_a_thinking_content_block() {
     assert!(back.contains("\"thinking\":\"hmm\""), "{back}");
     assert!(back.contains("hello"), "{back}");
 }
+
+// ── COH-05 / COH-06: the reasoning ask ────────────────────────────────────────────────────────────
+
+/// COH-05: a Cohere `thinking.token_budget` is a numeric reasoning budget; it reaches an Anthropic
+/// backend as `thinking.budget_tokens` and an OpenAI one as the effort word the table maps it to.
+#[test]
+fn coh05_cohere_thinking_budget_reaches_a_foreign_reasoning_backend() {
+    let body = json!({
+        "model": "m", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 20000,
+        "thinking": {"type": "enabled", "token_budget": 4096}
+    });
+    let out = translate_request("cohere", "anthropic", &body);
+    assert_eq!(
+        out["thinking"],
+        json!({"type": "enabled", "budget_tokens": 4096}),
+        "COH-05: {out}"
+    );
+    let out = translate_request("cohere", "openai", &body);
+    assert_eq!(out["reasoning_effort"], json!("low"), "COH-05: {out}");
+    // No budget: the model decides (the IR's Dynamic), which Gemini spells -1.
+    let dynamic = json!({
+        "model": "m", "messages": [{"role": "user", "content": "hi"}],
+        "thinking": {"type": "enabled"}
+    });
+    let out = translate_request("cohere", "gemini", &dynamic);
+    assert_eq!(
+        out["generationConfig"]["thinkingConfig"]["thinkingBudget"],
+        json!(-1),
+        "COH-05: {out}"
+    );
+    // `disabled` is no ask.
+    let off = json!({
+        "model": "m", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 20000,
+        "thinking": {"type": "disabled"}
+    });
+    let out = translate_request("cohere", "anthropic", &off);
+    assert!(out.get("thinking").is_none(), "{out}");
+}
+
+/// COH-06: a foreign reasoning ask reaches a Cohere backend as `thinking` — a budget as-is, an
+/// effort word through the table, Gemini's "model decides" as Cohere's own budget-less form.
+#[test]
+fn coh06_foreign_reasoning_ask_reaches_a_cohere_backend() {
+    let anthropic = json!({
+        "model": "claude", "max_tokens": 20000,
+        "messages": [{"role": "user", "content": "hi"}],
+        "thinking": {"type": "enabled", "budget_tokens": 3000}
+    });
+    let out = translate_request("anthropic", "cohere", &anthropic);
+    assert_eq!(
+        out["thinking"],
+        json!({"type": "enabled", "token_budget": 3000}),
+        "COH-06: {out}"
+    );
+    let openai = json!({
+        "model": "o3", "messages": [{"role": "user", "content": "hi"}],
+        "reasoning_effort": "medium"
+    });
+    let out = translate_request("openai", "cohere", &openai);
+    assert_eq!(
+        out["thinking"],
+        json!({"type": "enabled", "token_budget": 8192}),
+        "COH-06: {out}"
+    );
+    let gemini = json!({
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "generationConfig": {"thinkingConfig": {"thinkingBudget": -1}}
+    });
+    let out = translate_request("gemini", "cohere", &gemini);
+    assert_eq!(out["thinking"], json!({"type": "enabled"}), "COH-06: {out}");
+}

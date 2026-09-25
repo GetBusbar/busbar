@@ -687,8 +687,21 @@ impl ProtocolReader for CohereReader {
             }
         }
 
+        // The reasoning ASK: Cohere v2 `thinking: {type:"enabled", token_budget:N}` is a numeric
+        // thinking-token budget, the IR's `Budget` (the Anthropic `budget_tokens` / Gemini
+        // `thinkingBudget` spelling of the same thing). `{type:"enabled"}` with no budget leaves the
+        // amount to the model — the IR's `Dynamic`. It used to ride `extra` and die at the seam, so a
+        // Cohere caller's reasoning ask never reached a foreign reasoning model (COH-05). Any other
+        // form (`disabled`, an unreadable budget) stays in `extra` untouched, as the Anthropic reader
+        // does.
+        let reasoning = read_cohere_reasoning(obj.get("thinking"));
+        if reasoning.is_some() {
+            // Promoted: the writer re-emits it from the typed field, so it must not also ride extra.
+            extra.remove("thinking");
+        }
+
         Ok(crate::ir::IrRequest {
-            reasoning: None,
+            reasoning,
             reasoning_budgets: None,
             // Cohere v2 request `logprobs` (bool) promoted so the ask carries cross-protocol.
             logprobs,
