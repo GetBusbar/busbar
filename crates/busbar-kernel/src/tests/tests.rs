@@ -778,7 +778,8 @@ fn the_built_in_store_is_a_linked_row_of_the_store_axis() {
     .expect("the default boot resolves its store on the axis");
     let row = reg.resolve(name).expect("the default store is a row");
     assert_eq!((row.manifest.kind.as_str(), row.ephemeral), ("store", true));
-    assert_eq!((reg.linked().len(), reg.loadable().len()), (1, 0));
+    let stores = reg.linked().iter().filter(|p| p.manifest.kind == "store");
+    assert_eq!((stores.count(), reg.loadable().len()), (1, 0));
     reg.open_store(name, "{}")
         .expect("the row opens through open_store");
 
@@ -807,6 +808,66 @@ fn the_built_in_store_is_a_linked_row_of_the_store_axis() {
         "the dropped-in row is still the directory's"
     );
     assert_eq!(reg.resolve("acme-ram").map(|p| p.ephemeral), Some(false));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// K5b (DECISIONS #2 rule (1)) — THE BUILT-IN SECRET MODULES ARE ROWS OF THE SECRET AXIS. `env` and
+/// `file` are registered through `PluginRegistry::link` beside the default store, a reference to
+/// either resolves through its row's `open_secret` (not a name the resolver matches), and a
+/// resolution's failure text is the built-in's own, unwrapped. A dropped-in plugin spelling `env`
+/// leaves the linked row holding the name.
+///
+/// RED by planting the door bypass: `linked_rows()` registering no secret row leaves `env` a plugin
+/// reference, which the built-ins-only resolver refuses as "not a built-in".
+#[test]
+fn the_built_in_secret_modules_are_linked_rows_of_the_secret_axis() {
+    use crate::config::secret::{SecretRef, SecretResolver};
+    let reg = crate::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &crate::config::PluginsCfg::default(),
+        &Default::default(),
+    )
+    .expect("the default boot registers its linked rows");
+    for name in ["env", "file"] {
+        let row = reg
+            .resolve(name)
+            .expect("a built-in secret module is a row");
+        assert_eq!(row.manifest.kind, "secret");
+        assert!(row.in_process() && reg.open_secret(name, "{}").is_ok());
+    }
+    let var = "BUSBAR_K5B_LINKED_SECRET_ROW";
+    std::env::set_var(var, "hunter2");
+    let resolver = SecretResolver::builtins_only();
+    assert_eq!(resolver.resolve(&SecretRef::env(var)).unwrap(), b"hunter2");
+    let missing = resolver
+        .resolve(&SecretRef::env("BUSBAR_K5B_NO_SUCH_VARIABLE"))
+        .expect_err("an unset variable refuses");
+    assert_eq!(
+        missing,
+        "secret env:BUSBAR_K5B_NO_SUCH_VARIABLE cannot resolve: environment variable \
+         'BUSBAR_K5B_NO_SUCH_VARIABLE' is unset"
+    );
+    std::env::remove_var(var);
+
+    let dir = tmp_plugin_dir("linked-secret");
+    let tarball = unsigned_tarball(plugin_manifest("env", "acme-env", "acme"), b"lib");
+    std::fs::write(dir.join("env.tar.gz"), tarball).unwrap();
+    let mut cfg = plugins_cfg(&dir, true);
+    cfg.trust.allow_unsigned = true;
+    let reg = crate::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &cfg,
+        &Default::default(),
+    )
+    .expect("the directory scans");
+    let row = reg.resolve("env").expect("the name still resolves");
+    assert!(row.in_process(), "the linked row holds its name");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

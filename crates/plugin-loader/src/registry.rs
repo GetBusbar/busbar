@@ -134,7 +134,10 @@ impl LoadablePlugin {
     /// Whether this row opens IN PROCESS ([`LinkedEntry::Store`]) rather than over the C ABI —
     /// such a row is handed no configuration across a boundary, so there is none to resolve for it.
     pub fn in_process(&self) -> bool {
-        matches!(self.entry, Some(LinkedEntry::Store(_)))
+        matches!(
+            self.entry,
+            Some(LinkedEntry::Store(_) | LinkedEntry::BuiltinSecret)
+        )
     }
 
     /// What the one load runs over: the linked boundary, or the verified bytes.
@@ -193,6 +196,10 @@ pub enum LinkedEntry {
     /// otherwise run the image load; everything before that (the row, its registration, name and
     /// alias resolution, the kind check) is the axis every other row takes.
     Store(fn(&str) -> Result<Box<dyn busbar_api::Store>, String>),
+    /// A BUILT-IN secret module (`env`, `file`): the row's own name is the reference
+    /// [`busbar_api::resolve_builtin`] resolves, in process. `open_secret` opens it where it would
+    /// otherwise run the image load, on the same axis as [`LinkedEntry::Store`].
+    BuiltinSecret,
 }
 
 impl LinkedPlugin {
@@ -211,14 +218,39 @@ impl LinkedPlugin {
         open: fn(&str) -> Result<Box<dyn busbar_api::Store>, String>,
         ephemeral: bool,
     ) -> Self {
+        let (kind, abi) = (
+            busbar_plugin::cold::kind::STORE,
+            busbar_plugin::cold::ABI_VERSION,
+        );
+        Self::built_in(name, kind, abi, LinkedEntry::Store(open), ephemeral)
+    }
+
+    /// The built-in SECRET module named `name` (its own alias), at this binary's secret payload
+    /// schema.
+    pub fn builtin_secret(name: &str) -> Self {
+        let (kind, abi) = (
+            busbar_plugin::cold::kind::SECRET,
+            busbar_plugin::cold::SECRET_ABI_VERSION,
+        );
+        Self::built_in(name, kind, abi, LinkedEntry::BuiltinSecret, false)
+    }
+
+    /// The row a built-in states: the manifest a first-party tarball of `kind` would carry.
+    fn built_in(
+        name: &str,
+        kind: &str,
+        abi_version: u32,
+        entry: LinkedEntry,
+        ephemeral: bool,
+    ) -> Self {
         LinkedPlugin {
             manifest: Manifest {
                 name: name.into(),
                 alias: name.into(),
-                kind: busbar_plugin::cold::kind::STORE.into(),
+                kind: kind.into(),
                 version: env!("CARGO_PKG_VERSION").into(),
                 publisher: crate::sign::FIRST_PARTY_PUBLISHER.into(),
-                abi_version: busbar_plugin::cold::ABI_VERSION,
+                abi_version,
                 sha256: String::new(),
                 signature: String::new(),
                 description: String::new(),
@@ -230,9 +262,25 @@ impl LinkedPlugin {
                 host: None,
                 declares: Default::default(),
             },
-            entry: LinkedEntry::Store(open),
+            entry,
             ephemeral,
         }
+    }
+}
+
+/// An opened [`LinkedEntry::BuiltinSecret`] row: a reference to it resolves as
+/// [`busbar_api::resolve_builtin`] resolves a reference to the row's name — the failure text is the
+/// built-in's own, carried as the error's message.
+struct BuiltinSecret(String);
+
+impl busbar_api::SecretModule for BuiltinSecret {
+    fn resolve(
+        &self,
+        settings: &serde_json::Map<String, serde_json::Value>,
+    ) -> busbar_api::SecretResult<Vec<u8>> {
+        let (module, settings) = (self.0.clone(), settings.clone());
+        busbar_api::resolve_builtin(&busbar_api::SecretRef { module, settings })
+            .map_err(busbar_api::SecretError::internal)
     }
 }
 
@@ -511,6 +559,9 @@ impl PluginRegistry {
         cfg_json: &str,
     ) -> Result<Box<dyn busbar_api::SecretModule>, String> {
         let p = self.resolve_kind(name_or_alias, "secret", "resolve config secrets")?;
+        if let Some(LinkedEntry::BuiltinSecret) = p.entry {
+            return Ok(Box::new(BuiltinSecret(p.manifest.name.clone())));
+        }
         crate::load_secret_image(p.image(), cfg_json, &p.manifest.name, &p.manifest.kind)
     }
 

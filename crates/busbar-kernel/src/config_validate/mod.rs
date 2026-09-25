@@ -1837,10 +1837,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     // per-reference). A non-built-in module additionally requires the plugin subsystem, which the
     // shared `plugins_preflight` verifies against the registry at boot.
     for module in cfg.secrets.keys() {
-        if matches!(
-            module.as_str(),
-            crate::config::secret::SECRET_MODULE_ENV | crate::config::secret::SECRET_MODULE_FILE
-        ) {
+        if crate::preflight::builtin_secret(module).is_some() {
             errors.push(format!(
                 "secrets.{module}: the built-in '{module}' secret module takes no module-level \
                  config; its settings (`key` / `path`) belong on each individual secret reference, \

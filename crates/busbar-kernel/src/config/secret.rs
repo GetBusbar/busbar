@@ -78,12 +78,15 @@ impl SecretResolver {
     /// the plugin resolver (fail-closed if none is wired or it fails).
     pub(crate) fn resolve(&self, secret: &SecretRef) -> Result<Vec<u8>, String> {
         match secret.module.as_str() {
-            // `none` routes to the built-in resolver too, which refuses it: it declares the
-            // ABSENCE of a credential, so it must never be mistaken for a plugin module name and
-            // dispatched to a `kind: secret` plugin that happens to be called `none`.
-            SECRET_MODULE_ENV | SECRET_MODULE_FILE | SECRET_MODULE_NONE => resolve_builtin(secret),
-            module => match &self.plugin {
-                Some(f) => {
+            // `none` routes to the built-in resolver, which refuses it: it declares the ABSENCE of
+            // a credential, so it must never be mistaken for a plugin module name and dispatched to
+            // a `kind: secret` plugin that happens to be called `none`.
+            SECRET_MODULE_NONE => resolve_builtin(secret),
+            // A module the build links onto the secret axis resolves in process through its row
+            // (DECISIONS #2 rule (1)); any other is a `kind: secret` plugin.
+            module => match (crate::preflight::builtin_secret(module), &self.plugin) {
+                (Some(row), _) => row.resolve(&secret.settings).map_err(|e| e.message),
+                (None, Some(f)) => {
                     let settings = serde_json::Value::Object(secret.settings.clone()).to_string();
                     let bytes = f(module, &settings).map_err(|e| {
                         format!(
@@ -101,7 +104,7 @@ impl SecretResolver {
                     }
                     Ok(bytes)
                 }
-                None => Err(format!(
+                (None, None) => Err(format!(
                     "secret module '{module}' is not a built-in (`env` / `file`) and the plugin \
                      subsystem is not enabled, so no secret plugin can resolve {}; a secret that \
                      cannot resolve is a hard error (fail-closed)",

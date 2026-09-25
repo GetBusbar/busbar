@@ -43,16 +43,25 @@ pub fn fleet_data_dir() -> Option<std::path::PathBuf> {
 }
 
 /// The rows this build LINKS onto the cold-kind axis, ahead of the plugins directory's: its
-/// in-process default store, which states itself ephemeral. Registered through
-/// `PluginRegistry::link`, the admission a dropped-in plugin's row takes (DECISIONS #2 rule (1)).
+/// in-process default store, which states itself ephemeral, and its built-in secret modules.
+/// Registered through `PluginRegistry::link`, the admission a dropped-in plugin's row takes
+/// (DECISIONS #2 rule (1)).
 fn linked_rows() -> Vec<busbar_plugin_loader::LinkedPlugin> {
     let memory = |_: &str| -> Result<Box<dyn governance::Store>, String> {
         Ok(Box::new(governance::MemoryStore::new()))
     };
     let name = config::GOVERNANCE_STORE_MEMORY;
-    vec![busbar_plugin_loader::LinkedPlugin::store(
-        name, memory, true,
-    )]
+    vec![
+        busbar_plugin_loader::LinkedPlugin::store(name, memory, true),
+        busbar_plugin_loader::LinkedPlugin::builtin_secret(config::secret::SECRET_MODULE_ENV),
+        busbar_plugin_loader::LinkedPlugin::builtin_secret(config::secret::SECRET_MODULE_FILE),
+    ]
+}
+
+/// The build's own secret module `module` names on the secret axis — a linked `kind: secret` row,
+/// opened in process — or `None` when `module` is a plugin the directory must supply.
+pub(crate) fn builtin_secret(module: &str) -> Option<Box<dyn busbar_api::SecretModule>> {
+    linked().ok()?.open_secret(module, "{}").ok()
 }
 
 /// A configured reference to a `kind` plugin, in the words its refusals use: how it `names` the
@@ -626,7 +635,7 @@ pub(crate) fn validate_secret_module(
     registry: &busbar_plugin_loader::PluginRegistry,
     module: &str,
 ) -> Result<String, String> {
-    if module == config::secret::SECRET_MODULE_ENV || module == config::secret::SECRET_MODULE_FILE {
+    if builtin_secret(module).is_some() {
         return Err(format!(
             "secrets.{module}: '{module}' is a built-in secret resolver, not a plugin; it takes no \
              module-level configuration. Remove this `secrets:` entry (reference it inline as \
@@ -756,8 +765,7 @@ pub(crate) fn validate_secret_refs(
     cfg: &config::RootCfg,
 ) -> Result<(), String> {
     for (what, r) in config_validate::secret_refs(cfg) {
-        if r.module == config::secret::SECRET_MODULE_ENV
-            || r.module == config::secret::SECRET_MODULE_FILE
+        if builtin_secret(&r.module).is_some()
             // `none` names no module at all — it declares the ABSENCE of a credential — so there is
             // nothing here for the registry to resolve, and it must never be looked up as though a
             // `kind: secret` plugin called `none` could back it. WHERE it is permitted is
@@ -812,9 +820,7 @@ pub(crate) fn validate_secret_refs(
 pub fn validate_builtin_secrets_resolve(cfg: &config::RootCfg) -> Result<(), String> {
     let builtins = config::secret::SecretResolver::builtins_only();
     for (what, r) in config_validate::boot_resolved_secret_refs(cfg) {
-        if r.module != config::secret::SECRET_MODULE_ENV
-            && r.module != config::secret::SECRET_MODULE_FILE
-        {
+        if builtin_secret(&r.module).is_none() {
             // `none` is a declared ABSENCE, not a source: there is nothing to resolve and nothing
             // that can fail. Every other non-built-in module is plugin-backed — the plugin may not
             // be loadable here, and pre-flight covers it.
