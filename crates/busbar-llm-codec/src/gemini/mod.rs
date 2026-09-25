@@ -2202,13 +2202,10 @@ fn gemini_billed_usage(data: &serde_json::Value) -> Result<crate::ir::IrUsage, I
         // `completion_tokens` — Gemini is the only family that splits the term out, so it is the
         // only one that needs the add.
         //
-        // WIRE CONSEQUENCE (deliberate): the Gemini WRITER reconstructs `candidatesTokenCount` from
-        // `output_tokens`, so a CROSS-PROTOCOL egress into the Gemini dialect now reports the
-        // thinking tokens inside `candidatesTokenCount` rather than as their own field. The
-        // `totalTokenCount` it synthesizes becomes RIGHT (it was short by the thinking tokens
-        // before), which is the number clients reconcile against a bill. Same-protocol Gemini
-        // traffic passes through byte-for-byte and never reaches the writer, so no native client
-        // sees a reshaped `usageMetadata`.
+        // WIRE: the Gemini WRITER splits the two back apart — `candidatesTokenCount` is
+        // `output_tokens` minus the reasoning sub-bucket and `thoughtsTokenCount` is that sub-bucket
+        // (IR audit GEM-13, `insert_gemini_output_counts`) — so a read→write keeps Google's shape and
+        // the synthesized `totalTokenCount` still counts every generated token once.
         output_tokens: candidates.saturating_add(thoughts.unwrap_or(0)),
         cache_creation_input_tokens: None,
         cache_read_input_tokens: cached,

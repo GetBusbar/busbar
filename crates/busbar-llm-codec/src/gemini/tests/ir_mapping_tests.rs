@@ -556,3 +556,40 @@ fn gem08_call_ids_reach_gemini() {
         "{frame}"
     );
 }
+
+/// GEM-13: reasoning tokens reach a Gemini client as `thoughtsTokenCount`, beside a
+/// `candidatesTokenCount` that counts only the answer — buffered and streamed; the total is unchanged.
+#[test]
+fn gem13_reasoning_tokens_are_thoughts_for_a_gemini_client() {
+    let resp = json!({"id": "chatcmpl-1", "object": "chat.completion", "created": 1, "model": "o3",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "42"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 30, "total_tokens": 40,
+            "completion_tokens_details": {"reasoning_tokens": 20}}});
+    let out = xresp("openai", "gemini", &resp);
+    let um = &out["usageMetadata"];
+    assert_eq!(um["candidatesTokenCount"], json!(10), "{out}");
+    assert_eq!(um["thoughtsTokenCount"], json!(20), "{out}");
+    assert_eq!(um["totalTokenCount"], json!(40), "{out}");
+
+    let writer = GeminiWriter;
+    let (_, frame) = writer
+        .write_response_event(&IrStreamEvent::MessageDelta {
+            stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+            stop_sequence: None,
+            usage: crate::ir::IrUsage {
+                input_tokens: 10,
+                output_tokens: 30,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
+                detail: crate::ir::IrUsageDetail {
+                    reasoning_tokens: Some(20),
+                    ..Default::default()
+                },
+            },
+        })
+        .expect("terminal frame");
+    let um = &frame["usageMetadata"];
+    assert_eq!(um["candidatesTokenCount"], json!(10), "{frame}");
+    assert_eq!(um["thoughtsTokenCount"], json!(20), "{frame}");
+    assert_eq!(um["totalTokenCount"], json!(40), "{frame}");
+}

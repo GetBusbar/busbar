@@ -1155,10 +1155,7 @@ impl ProtocolWriter for GeminiWriter {
                     FIELD_PROMPT_TOKEN_COUNT.to_string(),
                     serde_json::json!(prompt_total),
                 );
-                usage_metadata.insert(
-                    FIELD_CANDIDATES_TOKEN_COUNT.to_string(),
-                    serde_json::json!(usage.output_tokens),
-                );
+                insert_gemini_output_counts(&mut usage_metadata, usage);
                 usage_metadata.insert(
                     FIELD_TOTAL_TOKEN_COUNT.to_string(),
                     serde_json::json!(total),
@@ -1392,10 +1389,7 @@ impl ProtocolWriter for GeminiWriter {
             FIELD_PROMPT_TOKEN_COUNT.to_string(),
             serde_json::json!(prompt_total),
         );
-        usage_metadata.insert(
-            FIELD_CANDIDATES_TOKEN_COUNT.to_string(),
-            serde_json::json!(resp.usage.output_tokens),
-        );
+        insert_gemini_output_counts(&mut usage_metadata, &resp.usage);
         if resp.usage.cache_read_input_tokens.is_some() {
             usage_metadata.insert(
                 FIELD_CACHED_CONTENT_TOKEN_COUNT.to_string(),
@@ -1521,5 +1515,29 @@ impl ProtocolWriter for GeminiWriter {
 
     fn clone_box(&self) -> Box<dyn ProtocolWriter> {
         Box::new(self.clone())
+    }
+}
+
+/// `candidatesTokenCount` and `thoughtsTokenCount` from the IR usage (IR audit GEM-13). The IR folds
+/// reasoning INTO `output_tokens` (every dialect's reasoning count is a slice of its output total), but
+/// Gemini states the two apart: `candidatesTokenCount` is the visible answer and the ADDITIVE
+/// `thoughtsTokenCount` is the thinking. Writing the whole output as `candidatesTokenCount` told a
+/// Gemini client the thinking was answer. `thoughtsTokenCount` is emitted only for a non-zero
+/// reasoning count (native Gemini omits it when the model did not think); the total is unchanged.
+fn insert_gemini_output_counts(
+    usage_metadata: &mut serde_json::Map<String, serde_json::Value>,
+    usage: &crate::ir::IrUsage,
+) {
+    let thoughts = usage
+        .detail
+        .reasoning_tokens
+        .filter(|&t| t > 0)
+        .map(|t| t.min(usage.output_tokens));
+    usage_metadata.insert(
+        FIELD_CANDIDATES_TOKEN_COUNT.to_string(),
+        serde_json::json!(usage.output_tokens.saturating_sub(thoughts.unwrap_or(0))),
+    );
+    if let Some(t) = thoughts {
+        usage_metadata.insert(FIELD_THOUGHTS_TOKEN_COUNT.to_string(), serde_json::json!(t));
     }
 }
