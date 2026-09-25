@@ -216,3 +216,32 @@ pub fn read_url_annotations(annotations: &serde_json::Value) -> Vec<crate::ir::I
     }
     out
 }
+
+/// The OpenAI Files API id an IR attachment references, if it references one (SHR-03).
+///
+/// OpenAI Chat (`file.file_id`) and Responses (`input_file.file_id`, `input_image.file_id`) name
+/// ONE namespace — the organisation's OpenAI Files uploads — but each reader tags the opaque
+/// [`crate::ir::IrImageSource::Vendor`] reference with its own dialect name (`"openai"`,
+/// `"responses"`), and each writer re-emitted only its own tag. So a Chat caller's uploaded PDF
+/// never reached a Responses lane (and back), although the id is valid on both. Both readers store
+/// the same `{"file_id": <id>}` value; this accepts either tag, so a writer calls this instead of
+/// comparing against its own tag and the id crosses between the two OpenAI dialects. Any other
+/// vendor (a Bedrock `s3Location`, an Anthropic Files id) is `None`: those namespaces do not
+/// resolve at OpenAI.
+pub fn openai_file_id(source: &crate::ir::IrImageSource) -> Option<&str> {
+    match source {
+        crate::ir::IrImageSource::Vendor { vendor, value }
+            if OPENAI_FILES_VENDOR_TAGS.contains(vendor) =>
+        {
+            value
+                .get("file_id")
+                .and_then(|i| i.as_str())
+                .filter(|id| !id.is_empty())
+        }
+        _ => None,
+    }
+}
+
+/// The `Vendor` tags that name the OpenAI Files namespace: the Chat and the Responses readers'.
+/// Kept in step with their `VENDOR_NAME` consts by `openai_file_vendor_tags_are_the_dialect_names`.
+pub const OPENAI_FILES_VENDOR_TAGS: [&str; 2] = ["openai", "responses"];

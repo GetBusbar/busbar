@@ -166,3 +166,65 @@ fn seam_still_mints_a_native_id_and_clears_the_chat_only_fingerprint() {
     assert!(id.starts_with("msg_"), "foreign id leaked: {out}");
     assert!(out.get("system_fingerprint").is_none(), "{out}");
 }
+
+/// SHR-03: one OpenAI Files id namespace, two dialect tags. The shared helper reads the id off a
+/// reference either OpenAI reader produced, and nothing else.
+#[test]
+fn shr03_openai_file_id_is_read_from_either_openai_dialects_reference() {
+    use crate::ir::IrImageSource;
+    for vendor in crate::openai_annotations::OPENAI_FILES_VENDOR_TAGS {
+        let src = IrImageSource::Vendor {
+            vendor,
+            value: json!({"file_id": "file-abc"}),
+        };
+        assert_eq!(
+            crate::openai_annotations::openai_file_id(&src),
+            Some("file-abc"),
+            "{vendor}"
+        );
+    }
+    let s3 = IrImageSource::Vendor {
+        vendor: "bedrock",
+        value: json!({"file_id": "file-abc"}),
+    };
+    assert_eq!(crate::openai_annotations::openai_file_id(&s3), None);
+    let empty = IrImageSource::Vendor {
+        vendor: "openai",
+        value: json!({"file_id": ""}),
+    };
+    assert_eq!(crate::openai_annotations::openai_file_id(&empty), None);
+}
+
+/// The tags ARE what the two OpenAI readers stamp: a Chat `file.file_id` part and a Responses
+/// `input_file.file_id` part both read into a reference the helper resolves — if either reader
+/// renames its tag, this fails rather than the id silently stopping to cross.
+#[test]
+fn shr03_both_openai_readers_produce_a_reference_the_helper_resolves() {
+    fn first_media_source(ir: &crate::ir::IrRequest) -> crate::ir::IrImageSource {
+        ir.messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .find_map(|b| match b {
+                crate::ir::IrBlock::Media { source, .. } => Some(source.clone()),
+                _ => None,
+            })
+            .expect("a Media block")
+    }
+    let chat = json!({"model": "m", "messages": [{"role": "user", "content": [
+        {"type": "file", "file": {"file_id": "file-abc"}}]}]});
+    let responses = json!({"model": "m", "input": [{"role": "user", "content": [
+        {"type": "input_file", "file_id": "file-abc"}]}]});
+    for (dialect, body) in [("openai", chat), ("responses", responses)] {
+        let ir = crate::proto_codec::protocol_for(dialect)
+            .expect("dialect")
+            .reader()
+            .read_request(&body)
+            .expect("read_request");
+        let src = first_media_source(&ir);
+        assert_eq!(
+            crate::openai_annotations::openai_file_id(&src),
+            Some("file-abc"),
+            "{dialect}: {src:?}"
+        );
+    }
+}
