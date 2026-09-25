@@ -91,7 +91,7 @@ fn a_pin_must_carry_exactly_the_material_its_mechanism_needs() {
     parse("s:\n  url: \"https://x/\"\n  pin: { mechanism: unpinned }\n")
         .expect("unpinned is legal");
     parse("s:\n  url: \"https://x/\"\n  pin: { mechanism: mtls, key: \"k\" }\n")
-        .expect("mtls with material is legal");
+        .expect("the client-certificate binding with material is legal");
 }
 
 /// THE SEPARATOR RULE, and the asymmetry in it.

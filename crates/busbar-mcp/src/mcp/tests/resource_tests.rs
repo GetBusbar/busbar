@@ -84,7 +84,7 @@ async fn a_credential_less_client_can_walk_from_the_401_to_the_metadata_document
         .to_string();
     assert!(
         challenge.starts_with("Bearer "),
-        "the challenge scheme must be Bearer: {challenge}"
+        "the challenge must name the RFC 6750 scheme: {challenge}"
     );
     assert!(
         !challenge.contains("error="),

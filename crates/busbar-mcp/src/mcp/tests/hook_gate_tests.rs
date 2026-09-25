@@ -70,12 +70,14 @@ fn gate(settings: serde_json::Value) -> serde_json::Value {
 /// stops running while the run stays green and nobody reads the line. It is not hypothetical for
 /// THIS file: with the firing sites reverted and the cdylib missing, all four tests here reported
 /// `ok`. The panic names the command that fixes it.
+///
+/// The acceptance criterion this battery answers, verbatim: "a hook fires on a non-LLM protocol".
 fn hook_env() -> HookEnvHandle {
     engine()
         .hook_env(&["test-hook"], HookNeed::Rw, HookNeed::Ro)
     .expect(
         "the busbar-hook-test-plugin cdylib is not built. This battery is the acceptance test for \
-         \"a hook fires on a non-LLM protocol\" and it CANNOT be skipped: with no gate to load, \
+         a hook firing on the MCP plane (the criterion is quoted on `hook_env`) and it CANNOT be skipped: with no gate to load, \
          every assertion below is vacuous and reports a green. Build it: `cargo build -p \
          busbar-hook-test-plugin`.",
     )

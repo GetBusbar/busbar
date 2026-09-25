@@ -190,7 +190,7 @@ fn the_mirrored_method_header_matches_the_body() {
 /// send an empty `Authorization: Bearer ` to a public upstream, which is a malformed credential
 /// header rather than an absent one.
 #[test]
-fn the_bearer_is_present_only_when_one_was_planned() {
+fn the_credential_is_present_only_when_one_was_planned() {
     for verb in UpstreamVerb::all() {
         let bare = verb.build("https://u.example.com/mcp", 1, None);
         assert!(

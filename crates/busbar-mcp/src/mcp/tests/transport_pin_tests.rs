@@ -144,7 +144,7 @@ async fn refresh_against(
 /// THE GREEN HALF: an operator who correctly copied the endpoint's SPKI into `pin.key:` gets an
 /// `approved` registration, because the observed certificate now genuinely matches it.
 #[tokio::test]
-async fn a_cert_spki_pin_matching_the_served_certificate_is_approved() {
+async fn a_certificate_key_pin_matching_the_served_certificate_is_approved() {
     let report = refresh_against(McpPinMechanism::CertSpki, &TEST_CA.expected_pin).await;
     assert_eq!(
         report.failure, None,
@@ -153,7 +153,7 @@ async fn a_cert_spki_pin_matching_the_served_certificate_is_approved() {
     assert_eq!(
         report.state_word(),
         "approved",
-        "the served certificate's SPKI is exactly the pinned one: {report:?}"
+        "the served certificate's public key is exactly the pinned one: {report:?}"
     );
     assert!(
         report.drift.is_empty(),
@@ -173,7 +173,7 @@ async fn a_cert_spki_pin_matching_the_served_certificate_is_approved() {
 /// the sighting now carries what the socket actually presented, and it disagrees with what the
 /// operator wrote down.
 #[tokio::test]
-async fn a_cert_spki_pin_mismatched_against_the_served_certificate_is_quarantined() {
+async fn a_certificate_key_pin_mismatched_against_the_served_certificate_is_quarantined() {
     let wrong_pin = "sha256/NOT-THE-SERVED-KEY=";
     assert_ne!(
         wrong_pin, TEST_CA.expected_pin,
@@ -205,14 +205,18 @@ async fn a_cert_spki_pin_mismatched_against_the_served_certificate_is_quarantine
 // mechanism, so `TransportPin::mtls` is proven wired rather than merely uncommented.
 
 #[tokio::test]
-async fn an_mtls_pin_matching_the_served_certificate_is_approved() {
-    let report = refresh_against(McpPinMechanism::Mtls, &TEST_CA.expected_pin).await;
+async fn a_client_cert_binding_pin_matching_the_served_certificate_is_approved() {
+    let report = refresh_against(McpPinMechanism::ClientCertBinding, &TEST_CA.expected_pin).await;
     assert_eq!(report.state_word(), "approved", "{report:?}");
 }
 
 #[tokio::test]
-async fn an_mtls_pin_mismatched_against_the_served_certificate_is_quarantined() {
-    let report = refresh_against(McpPinMechanism::Mtls, "sha256/SOMEBODY-ELSES-KEY=").await;
+async fn a_client_cert_binding_pin_mismatched_against_the_served_certificate_is_quarantined() {
+    let report = refresh_against(
+        McpPinMechanism::ClientCertBinding,
+        "sha256/SOMEBODY-ELSES-KEY=",
+    )
+    .await;
     assert_eq!(report.state_word(), "quarantined", "{report:?}");
     assert!(report.drift.pin_changed, "{:?}", report.drift);
 }

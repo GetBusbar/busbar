@@ -200,7 +200,7 @@ impl HttpTransport {
         Ok(TransportResponse {
             status,
             body,
-            peer_spki: buffered.peer_spki,
+            peer_key_digest: buffered.peer_spki,
         })
     }
 }

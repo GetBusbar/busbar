@@ -10,6 +10,7 @@
 
 use crate::mcp::client::catalogue::{ServerCatalogue, ToolDef, TransportPin};
 use crate::mcp::client::identity::{ServerId, ToolKey};
+use crate::mcp::config::McpPinMechanism;
 use busbar_api::{ScopeRef, VirtualKey};
 
 /// A server id that is known-good, so a test asserting something else does not fail on a name.
@@ -75,7 +76,7 @@ pub(super) fn key_wildcard(id: &str) -> VirtualKey {
 /// machine.
 pub(super) fn approved_server(id: &str, tools: Vec<ToolDef>) -> ServerCatalogue {
     let mut sc = ServerCatalogue::registered(sid(id));
-    let pin = TransportPin::cert_spki(&format!("sha256/{id}-pin"));
+    let pin = TransportPin::of(McpPinMechanism::CertSpki, &format!("sha256/{id}-pin"));
     sc.observe(Some(pin), tools);
     sc.approval
         .approve(&sc.sighting, None)

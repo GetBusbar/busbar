@@ -507,9 +507,9 @@ pub(crate) async fn call(
                 stage: busbar_kernel::failover::Stage::BeforeFirstByte,
             }
         })?;
-    let bearer = match plan {
+    let access_token = match plan {
         CredentialPlan::None => None,
-        CredentialPlan::Bearer(b) => Some(b.expose_secret().to_string()),
+        CredentialPlan::Token(b) => Some(b.expose_secret().to_string()),
         CredentialPlan::Exchange(req) => Some(
             exchange(pool, &req, auth.policy, auth.timeout)
                 .await
@@ -530,7 +530,7 @@ pub(crate) async fn call(
         key,
         arguments,
         request_id,
-        bearer.as_deref(),
+        access_token.as_deref(),
         // Each capability is declared exactly when this deployment can answer it for THIS server:
         // the operator granted the ask AND declared its satisfier. See `jsonrpc::tools_call` for
         // why declaring anything else would be dishonest either way.

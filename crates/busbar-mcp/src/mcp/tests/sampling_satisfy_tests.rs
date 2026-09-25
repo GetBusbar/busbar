@@ -444,9 +444,10 @@ async fn a_caller_whose_key_does_not_reach_the_pool_cannot_be_spent_through() {
 #[test]
 fn the_sampling_policy_is_refused_at_boot_when_it_cannot_mean_what_it_says() {
     let base = || {
-        let mut cfg: crate::mcp::config::McpServerDefCfg = serde_yaml::from_str(
-            "url: https://tools.internal.example/mcp\npin: { mechanism: cert_spki, key: \"sha256/AAA=\" }\n",
-        )
+        let mut cfg: crate::mcp::config::McpServerDefCfg = serde_yaml::from_str(&format!(
+            "url: https://tools.internal.example/mcp\npin: {{ mechanism: {}, key: \"sha256/AAA=\" }}\n",
+            crate::mcp::config::McpPinMechanism::CertSpki.token(),
+        ))
         .expect("a minimal registration parses");
         cfg.grants.sampling = true;
         cfg.sampling = Some(declared_sampling(5));

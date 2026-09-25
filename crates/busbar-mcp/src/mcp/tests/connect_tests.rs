@@ -193,11 +193,14 @@ fn an_approval_projects_onto_the_config_fields_the_build_reads_back() {
     use busbar_kernel::trust::{Approval, Observation, Sighting};
 
     let mut approval: Approval<TransportPin> = Approval::declared(
-        TransportPin::declared("cert_spki", "sha256/OLD="),
+        TransportPin::of(crate::mcp::config::McpPinMechanism::CertSpki, "sha256/OLD="),
         Default::default(),
     );
     let observation = Sighting::Seen(Observation {
-        pin: Some(TransportPin::declared("cert_spki", "sha256/OLD=")),
+        pin: Some(TransportPin::of(
+            crate::mcp::config::McpPinMechanism::CertSpki,
+            "sha256/OLD=",
+        )),
         capabilities: [("read".to_string(), "sha256:aaa".to_string())]
             .into_iter()
             .collect(),
@@ -240,13 +243,19 @@ fn the_projected_approval_rebuilds_into_the_same_dispatch_answer() {
     use busbar_kernel::trust::{Approval, Observation, Sighting};
 
     let mut approval: Approval<TransportPin> = Approval::declared(
-        TransportPin::declared("cert_spki", "sha256/PEER="),
+        TransportPin::of(
+            crate::mcp::config::McpPinMechanism::CertSpki,
+            "sha256/PEER=",
+        ),
         Default::default(),
     );
     approval
         .approve(
             &Sighting::Seen(Observation {
-                pin: Some(TransportPin::declared("cert_spki", "sha256/PEER=")),
+                pin: Some(TransportPin::of(
+                    crate::mcp::config::McpPinMechanism::CertSpki,
+                    "sha256/PEER=",
+                )),
                 capabilities: [("read".to_string(), "sha256:aaa".to_string())]
                     .into_iter()
                     .collect(),
@@ -260,7 +269,7 @@ fn the_projected_approval_rebuilds_into_the_same_dispatch_answer() {
     let mut cfg: crate::mcp::config::McpServerDefCfg = serde_json::from_value(serde_json::json!({
         "url": "https://upstream.example.com/mcp",
         "pin": {
-            "mechanism": "cert_spki",
+            "mechanism": crate::mcp::config::McpPinMechanism::CertSpki.token(),
             "key": patch.pointer("/tools/servers/fs/pin/key").unwrap(),
         },
         "tools_allow": {

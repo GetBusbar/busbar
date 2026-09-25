@@ -115,8 +115,10 @@ pub enum McpPinMechanism {
     /// No server-side signature exists, so the pin degrades to the endpoint's certificate SPKI hash
     /// — a real network-layer authenticity root, and still not trust-on-first-use.
     CertSpki,
-    /// Mutual TLS; pinned on the peer certificate SPKI hash.
-    Mtls,
+    /// A client-certificate-authenticated (mutual TLS) binding; pinned on the peer certificate SPKI
+    /// hash. The operator's config word for it is fixed by the explicit rename below.
+    #[serde(rename = "mtls")]
+    ClientCertBinding,
     /// NO authenticity root. Registrable, never approvable — low-risk dev use has to be spelled out
     /// loud rather than inferred from an absent field.
     Unpinned,
@@ -135,12 +137,25 @@ impl McpPinMechanism {
         !matches!(self, McpPinMechanism::Unpinned)
     }
 
+    /// Can an MCP hop independently attest a pin declared under `token`? True for the two
+    /// mechanisms pinned on the peer certificate's key (the certificate-key pin and the
+    /// client-certificate binding); `pinned_pubkey` names an MCP-native manifest signature this
+    /// build does not verify and `unpinned` has no root, so neither has an observation source.
+    pub(crate) fn observes_the_peer_certificate(token: &str) -> bool {
+        [
+            McpPinMechanism::CertSpki,
+            McpPinMechanism::ClientCertBinding,
+        ]
+        .iter()
+        .any(|m| m.token() == token)
+    }
+
     /// The config token, for diagnostics. Deliberately the same string `serde` accepts.
     pub(crate) fn token(self) -> &'static str {
         match self {
             McpPinMechanism::PinnedPubkey => "pinned_pubkey",
             McpPinMechanism::CertSpki => "cert_spki",
-            McpPinMechanism::Mtls => "mtls",
+            McpPinMechanism::ClientCertBinding => "mtls",
             McpPinMechanism::Unpinned => "unpinned",
         }
     }

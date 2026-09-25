@@ -44,7 +44,7 @@ pub(crate) struct TransportResponse {
     /// consumer: a `cert_spki`/`mtls`-pinned registration's declared pin is compared against THIS
     /// value, never against itself, which is what makes the pin an observed fact rather than an
     /// operator's assertion echoed back as its own proof.
-    pub(crate) peer_spki: Option<String>,
+    pub(crate) peer_key_digest: Option<String>,
 }
 
 /// Why a transport-level send failed. Kept distinct from a JSON-RPC error: an upstream that answered

@@ -14,6 +14,7 @@
 use crate::mcp::client::catalogue::{CatalogueCache, TransportPin};
 use crate::mcp::client::dispatch::{resolve, revalidate, DispatchRefusal};
 use crate::mcp::client::support::{approved_server, key_wildcard, sid, simple_tool};
+use crate::mcp::config::McpPinMechanism;
 use busbar_kernel::trust::TrustState;
 
 /// AN UNRELATED SERVER'S APPLY BUMPS THE CACHE-WIDE GENERATION, refusing an in-flight call selected
@@ -91,7 +92,7 @@ fn a_quarantine_survives_a_later_catalogue_republish() {
 
     // The server drifts: it re-serves `read` at a CHANGED description, so the digest moves off the
     // approved one. Same pin, so this is capability drift and derives `Quarantined`.
-    let pin = TransportPin::cert_spki("sha256/driftsrv-pin");
+    let pin = TransportPin::of(McpPinMechanism::CertSpki, "sha256/driftsrv-pin");
     cache.apply(|servers| {
         servers
             .get_mut("driftsrv")

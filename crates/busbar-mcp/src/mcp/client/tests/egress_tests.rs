@@ -110,8 +110,8 @@ fn a_static_credential_is_returned_verbatim_and_a_none_credential_sends_nothing(
     )
     .unwrap();
     match plan {
-        CredentialPlan::Bearer(b) => assert_eq!(b.expose_secret(), "server-secret"),
-        other => panic!("expected a bearer, got {other:?}"),
+        CredentialPlan::Token(b) => assert_eq!(b.expose_secret(), "server-secret"),
+        other => panic!("expected a verbatim token, got {other:?}"),
     }
     let none = plan_credential(
         &sid("s"),
@@ -135,8 +135,8 @@ fn passthrough_forwards_the_callers_upstream_credential() {
     )
     .unwrap();
     match plan {
-        CredentialPlan::Bearer(b) => assert_eq!(b.expose_secret(), "caller-holds-this"),
-        other => panic!("expected a bearer, got {other:?}"),
+        CredentialPlan::Token(b) => assert_eq!(b.expose_secret(), "caller-holds-this"),
+        other => panic!("expected a verbatim token, got {other:?}"),
     }
 }
 
@@ -162,6 +162,6 @@ fn two_servers_authenticate_independently() {
         &tkey("b", "t"),
     )
     .unwrap();
-    assert!(matches!(a, CredentialPlan::Bearer(_)));
+    assert!(matches!(a, CredentialPlan::Token(_)));
     assert!(matches!(b, CredentialPlan::Exchange(_)));
 }

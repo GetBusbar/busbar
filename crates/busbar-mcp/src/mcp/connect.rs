@@ -37,7 +37,7 @@
 //! is fully observed: it is re-hashed from the bytes the upstream actually sent. The identity axis is
 //! now observed too, for the two mechanisms MCP can actually check it on: [`observed_pin`] builds a
 //! [`TransportPin`] from the SPKI the live HTTP hop presented
-//! (`super::client::wire::TransportResponse::peer_spki`, itself
+//! (`super::client::wire::TransportResponse::peer_key_digest`, itself
 //! `busbar_kernel::egress::seam::Buffered::peer_spki`) and hands THAT to [`ServerCatalogue::observe`], never
 //! the declared pin echoed back as its own proof. A rotated or substituted certificate now disagrees
 //! with the locked pin exactly as a changed tool digest does, and `Approval::drift`'s `pin_changed`
@@ -59,6 +59,7 @@ use super::client::jsonrpc::{self, RpcOutcome};
 use super::client::pool::McpConnectionPool;
 use super::client::ssrf::SsrfPolicy;
 use super::client::wire::WireLeg;
+use super::config::McpPinMechanism;
 use busbar_kernel::trust::{Drift, PinnedArtifact, TrustState};
 use std::time::Duration;
 
@@ -171,9 +172,9 @@ fn refresh_credential(server: &ServerEntry) -> Result<RefreshCredential, Refresh
     let mode = super::upstream::credential_mode(server).map_err(RefreshRefusal::Credential)?;
     match mode {
         UpstreamCredential::None => Ok(RefreshCredential::None),
-        UpstreamCredential::Static(secret) => Ok(RefreshCredential::Bearer(
-            secret.expose_secret().to_string(),
-        )),
+        UpstreamCredential::Static(secret) => {
+            Ok(RefreshCredential::Token(secret.expose_secret().to_string()))
+        }
         UpstreamCredential::Passthrough => Err(RefreshRefusal::Credential(format!(
             "server `{}` is configured `upstream_credentials: passthrough`, so its credential \
              belongs to a caller; an operator-driven refresh has no caller and busbar will not \
@@ -211,7 +212,7 @@ fn refresh_scope(server: &ServerEntry) -> String {
 /// What a refresh will send, decided before any I/O.
 enum RefreshCredential {
     None,
-    Bearer(String),
+    Token(String),
     Exchange(ExchangeRequest),
 }
 
@@ -231,9 +232,9 @@ pub(crate) async fn refresh(
         allow_private: server.upstream.allow_private,
     };
     let credential = refresh_credential(server)?;
-    let bearer = match credential {
+    let access_token = match credential {
         RefreshCredential::None => None,
-        RefreshCredential::Bearer(b) => Some(b),
+        RefreshCredential::Token(b) => Some(b),
         RefreshCredential::Exchange(req) => {
             // REFRESH_TIMEOUT, not the server's dispatch deadline: this leg is the verify fetch's,
             // not a caller's, and it is bounded by the same budget as the `tools/list` it is about
@@ -256,7 +257,7 @@ pub(crate) async fn refresh(
     let request = super::client::verb::UpstreamVerb::ToolsList.build(
         &server.url,
         REFRESH_REQUEST_ID,
-        bearer.as_deref(),
+        access_token.as_deref(),
     );
     // THE SAME VTABLE THE DISPATCH PATH USES, and it has to be. This was a direct
     // `HttpTransport::send`, which was correct while there was one transport and became a real
@@ -350,7 +351,7 @@ pub(crate) async fn refresh(
     let observed = tools.len();
     // THE OBSERVED IDENTITY: see the module header. `cert_spki`/`mtls` compare against what THIS hop
     // actually presented; everything else still degrades to the declared pin.
-    let presented = observed_pin(server, response.peer_spki.as_deref());
+    let presented = observed_pin(server, response.peer_key_digest.as_deref());
     let entry = publish(cache, server, &server_id, |sc| sc.observe(presented, tools));
     Ok(ConnectReport {
         server: server.id.clone(),
@@ -374,22 +375,19 @@ pub(crate) async fn refresh(
 ///
 /// `cert_spki` and `mtls` are the only mechanisms an MCP hop can independently attest: both degrade
 /// to the same peer-certificate SPKI check, because this plane has no client-identity presentation
-/// to check `mtls`'s mutual half against (see [`super::client::catalogue::TransportPin::mtls`]).
+/// to check `mtls`'s mutual half against (see [`super::client::catalogue::TransportPin`]).
 /// `pinned_pubkey` names an MCP-native manifest signature this build does not verify, so it has no
 /// independent observation source and degrades to the declared pin, unchanged from before this hop
 /// was wired up — see the module header.
-fn observed_pin(server: &ServerEntry, peer_spki: Option<&str>) -> Option<TransportPin> {
+fn observed_pin(server: &ServerEntry, peer_key_digest: Option<&str>) -> Option<TransportPin> {
     let declared = server.approval.pin()?;
-    match declared.mechanism() {
-        "cert_spki" | "mtls" => {
-            let spki = peer_spki.map(str::trim).filter(|s| !s.is_empty())?;
-            Some(match declared.mechanism() {
-                "cert_spki" => TransportPin::cert_spki(spki),
-                _ => TransportPin::mtls(spki),
-            })
-        }
-        _ => Some(declared.clone()),
+    if !McpPinMechanism::observes_the_peer_certificate(declared.mechanism()) {
+        return Some(declared.clone());
     }
+    // The observation carries the operator's own word for the mechanism, so it compares like with
+    // like against the declared pin; only the key digest is the hop's.
+    let key = peer_key_digest.map(str::trim).filter(|s| !s.is_empty())?;
+    Some(TransportPin::declared(declared.mechanism(), key))
 }
 
 /// Record a failed contact and derive the report from it.

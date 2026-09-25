@@ -162,9 +162,9 @@ pub(crate) async fn issue(
         record(OUTCOME_REFUSED, reason.clone());
         return Err(reason);
     }
-    let bearer = match plan {
+    let access_token = match plan {
         CredentialPlan::None => None,
-        CredentialPlan::Bearer(b) => Some(b.expose_secret().to_string()),
+        CredentialPlan::Token(b) => Some(b.expose_secret().to_string()),
         CredentialPlan::Exchange(req) => {
             match crate::mcp::upstream::exchange(pool, &req, auth.policy, auth.timeout).await {
                 Ok(token) => Some(token),
@@ -176,7 +176,7 @@ pub(crate) async fn issue(
         }
     };
 
-    let outbound = verb.build(&auth.url, request_id, bearer.as_deref());
+    let outbound = verb.build(&auth.url, request_id, access_token.as_deref());
     // THE DISPATCH ARM, and it is a vtable lookup rather than a branch. `upstream_wire` is the only place
     // in the tree that asks the transport axis which variant it is; from here down the leg is bytes
     // out and bytes back, identically for an HTTPS POST and for a write to a child's stdin.

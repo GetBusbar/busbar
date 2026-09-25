@@ -662,26 +662,26 @@ fn answered(status: u16, body: &serde_json::Value) -> bool {
 /// At 6a32b3a67 the llm card was applied to the MCP class: call 2 was refused on budget, the read
 /// failed "cannot be priced", and the llm door blocked the whole group.
 #[tokio::test]
-async fn an_llm_card_does_not_price_mcp_tool_calls_they_are_ledgered_and_nothing_refuses() {
+async fn a_pools_card_does_not_price_mcp_tool_calls_they_are_ledgered_and_nothing_refuses() {
     metrics_init();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
-    let server = "llmcardfs";
-    let llm_card: Card =
-        serde_yaml::from_str("gpt-x: { input_utok: 1 }\n").expect("an llm card parses");
+    let server = "poolscardfs";
+    let pools_card: Card =
+        serde_yaml::from_str("gpt-x: { input_utok: 1 }\n").expect("a pools card parses");
     let (app, gov, cost) = budgeted_app(
         &peer,
         server,
-        Some(&llm_card),
+        Some(&pools_card),
         0,
         vec![per_day(LimitMetric::Budget, 1)],
     );
-    let key = budgeted_key("k-mcp-llm-card", server);
+    let key = budgeted_key("k-mcp-pools-card", server);
 
     for n in 1..=5 {
         let (status, body) = read_once(&app, &key, server).await;
         assert!(
             answered(status, &body),
-            "call {n}: the llm card does not price MCP, so nothing refuses: {status} {body}"
+            "call {n}: the pools card does not price MCP, so nothing refuses: {status} {body}"
         );
     }
     assert_eq!(peer.mcp_hits(), 5);
@@ -715,23 +715,23 @@ async fn an_llm_card_does_not_price_mcp_tool_calls_they_are_ledgered_and_nothing
     );
 
     gov.try_admit(&*cost, &key, "gpt-x", now)
-        .expect("llm traffic in the same group still passes the budget door");
+        .expect("pools traffic in the same group still passes the budget door");
 }
 
 /// THE POSITIVE CONTROL while no MCP card can be expressed: a `requests:` COUNT cap of 3 trips on
 /// call 4, beside an llm card and a group `budget:` that MCP's unpriced counts must NOT trip first. At
 /// 6a32b3a67 call 2 was refused on budget. With no card at all the same traffic is served (reads 0).
 #[tokio::test]
-async fn a_requests_cap_trips_on_mcp_tool_calls_and_the_llm_budget_does_not() {
+async fn a_requests_cap_trips_on_mcp_tool_calls_and_the_pools_budget_does_not() {
     metrics_init();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
     let server = "countfs";
-    let llm_card: Card =
-        serde_yaml::from_str("gpt-x: { input_utok: 1 }\n").expect("an llm card parses");
+    let pools_card: Card =
+        serde_yaml::from_str("gpt-x: { input_utok: 1 }\n").expect("a pools card parses");
     let (app, _gov, _cost) = budgeted_app(
         &peer,
         server,
-        Some(&llm_card),
+        Some(&pools_card),
         0,
         vec![
             per_day(LimitMetric::Budget, 1_000),
@@ -876,7 +876,7 @@ async fn a_present_tools_card_silent_about_a_tool_refuses() {
 /// The llm plane's card never prices an MCP row, even an entry spelt exactly like the tool: with no
 /// `tools` card the MCP plane is billing OFF and a 1-minor-unit budget never trips.
 #[tokio::test]
-async fn an_llm_card_entry_named_like_a_tool_never_prices_it() {
+async fn an_pools_card_entry_named_like_a_tool_never_prices_it() {
     metrics_init();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
     let server = "namesakefs";
@@ -890,7 +890,7 @@ async fn an_llm_card_entry_named_like_a_tool_never_prices_it() {
         0,
         vec![per_day(LimitMetric::Budget, 1)],
     );
-    let key = budgeted_key("k-mcp-llm-namesake", server);
+    let key = budgeted_key("k-mcp-pools-namesake", server);
     for n in 1..=4 {
         let (status, body) = read_once(&app, &key, server).await;
         assert!(answered(status, &body), "call {n}: {status} {body}");
@@ -906,7 +906,7 @@ async fn an_llm_card_entry_named_like_a_tool_never_prices_it() {
         .expect("reads");
     assert_eq!(
         read.spend_cents, 0,
-        "the llm card never prices the MCP lane"
+        "the pools card never prices the MCP lane"
     );
 }
 
