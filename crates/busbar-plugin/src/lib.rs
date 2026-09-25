@@ -64,7 +64,13 @@ pub const ABI_MAGIC: u64 = u64::from_le_bytes(*b"BUSPLANE");
 /// The MAJOR airlock version. Bumping this is a no-turning-back linker event: a reorder/resize/
 /// removal of any frozen field, a preamble change, or any non-append-only alteration. Peers with
 /// different majors are INCOMPATIBLE and [`check_preamble`] refuses them.
-pub const ABI_MAJOR: u32 = 1;
+///
+/// 1→2 (1.6.0, item 410): minor 21 RESIZED an interior field — `hot::BuildCtx.host_ctx`, 8 → 16
+/// bytes, shifting `config_ptr`/`config_len`/`resolved_refs_*` by 8 — under the old major, so
+/// `check_preamble` admitted a peer built at any earlier minor and that peer read those fields from
+/// the wrong offsets. A resize is not append-only (rule 2 above), so it is this bump. The minor is not
+/// reset: it keeps counting append-only additions, and the plane manifest's payload axis reads it.
+pub const ABI_MAJOR: u32 = 2;
 
 /// The MINOR airlock version. Bumped for every APPEND-ONLY addition (a new trailing struct field, a
 /// new reserved `#[repr(u8)]` variant, a new trailing vtable slot). A newer minor is compatible with
@@ -77,8 +83,9 @@ pub const ABI_MAJOR: u32 = 1;
 /// tag (it becomes a `#[repr(C)]` opaque handle instead of a bare `*mut c_void`), so the host rejects a
 /// stale host handle at slot entry instead of dereferencing it (a use-after-free guard). Append-only on
 /// the NEW-in-1.6.0 hot plane/transport ABI (no 1.5.5 byte-identity constraint, nothing on the money
-/// JSON path); the version-locked planes rebuild in lockstep. `check_preamble` still accepts an older
-/// minor (append-only compatibility).
+/// JSON path); the version-locked planes rebuild in lockstep. That change RESIZED `BuildCtx.host_ctx`
+/// and shifted the fields after it — a MAJOR event, not an append — so it is carried under
+/// [`ABI_MAJOR`] 2, which refuses every major-1 peer (item 410).
 pub const ABI_MINOR: u32 = 21;
 
 /// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,

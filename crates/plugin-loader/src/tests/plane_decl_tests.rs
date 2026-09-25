@@ -169,6 +169,28 @@ fn a_decl_attesting_more_than_this_builds_struct_is_refused() {
     assert_eq!(plane_over(&d).unwrap().name(), "memplane");
 }
 
+// ── Item 410: a decl stamped with the pre-resize airlock is refused at admission ─────────────
+
+#[test]
+fn a_decl_stamped_with_the_pre_resize_airlock_is_refused() {
+    let _s = serial();
+    for abi_minor in [20, 21] {
+        let mut d = decl();
+        d.abi = AbiPreamble {
+            abi_major: 1,
+            abi_minor,
+            ..AbiPreamble::CURRENT
+        };
+        let got = plane_over(&d);
+        assert!(
+            got.as_ref()
+                .is_err_and(|e| e.contains("preamble refused") && e.contains("MajorMismatch")),
+            "a 1.{abi_minor} decl predates the BuildCtx resize and must not be admitted: {:?}",
+            got.map(|p| p.honoured_size)
+        );
+    }
+}
+
 // ── Item 386: the plane's state is freed, and cannot outlive the image ───────────────────────
 
 #[test]

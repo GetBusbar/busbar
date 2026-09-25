@@ -48,6 +48,30 @@ fn check_preamble_fails_closed_on_magic_and_major() {
     );
 }
 
+/// ITEM 410 — THE PRE-RESIZE LAYOUT IS REFUSED, NOT ACCEPTED. Minor 21 RESIZED an interior field
+/// (`BuildCtx.host_ctx`, 8 → 16 bytes) and shifted every field after it, so a peer stamped with the
+/// major that layout change left behind (`1`, at minor 20 or at the 21 that carried the resize under
+/// the old major) reads `config_ptr`/`config_len`/`resolved_refs_*` from the wrong offsets. A layout
+/// change is a MAJOR event: the airlock must refuse every such peer before a sized struct is read.
+#[test]
+fn check_preamble_refuses_a_peer_of_the_pre_resize_layout() {
+    for abi_minor in [20, 21] {
+        let old = AbiPreamble {
+            magic: ABI_MAGIC,
+            abi_major: 1,
+            abi_minor,
+        };
+        assert_eq!(
+            check_preamble(&old),
+            Err(PreambleError::MajorMismatch {
+                ours: ABI_MAJOR,
+                theirs: 1,
+            }),
+            "a 1.{abi_minor} peer predates the BuildCtx resize and must be refused"
+        );
+    }
+}
+
 #[test]
 fn sized_field_guard_hides_truncated_tail() {
     let g = Facts::new(10, 100, 1, 0, 0, b"pool");
