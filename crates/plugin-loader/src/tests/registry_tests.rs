@@ -658,10 +658,9 @@ fn first_party_downgrade_is_rejected_in_pipeline() {
 
     // Pinned above its version: rejected with the anti-downgrade reason, end to end.
     let mut pinned = policy(&release);
-    pinned.first_party_floors.insert(
-        "busbar-store-gamma-plugin".to_string(),
-        "1.0.1".to_string(),
-    );
+    pinned
+        .first_party_floors
+        .insert("busbar-store-gamma-plugin".to_string(), "1.0.1".to_string());
     let reg = scan_and_validate(&dir, &pinned).expect("scan");
     assert!(reg.resolve("gamma").is_none());
     assert!(reg.skipped()[0].reason.contains("anti-downgrade"));

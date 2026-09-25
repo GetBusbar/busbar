@@ -674,8 +674,10 @@ fn the_egress_capabilities_never_print_what_they_carry() {
 #[test]
 fn a_sealed_destination_carries_the_lane_the_money_side_reads() {
     let k = Kernel::new();
-    let dest =
-        VerifiedDestination::seal(&Grant::<Dial>::mint(&k.seal), LaneId::new("vendor-a:gpt-4o"));
+    let dest = VerifiedDestination::seal(
+        &Grant::<Dial>::mint(&k.seal),
+        LaneId::new("vendor-a:gpt-4o"),
+    );
     assert_eq!(dest.lane().as_str(), "vendor-a:gpt-4o");
 
     let decoration = AuthDecoration::decorate(

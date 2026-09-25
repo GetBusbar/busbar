@@ -650,7 +650,9 @@ fn every_io_error_kind_maps_through_the_table() {
 /// registry this cell never needs. Built directly on `tokio`, already an ordinary dependency
 /// below, so no workspace-crate edge is added, and every byte still crosses a real socket.
 struct RawSocketAcceptor {
-    listeners: StdArc<std::sync::Mutex<std::collections::HashMap<String, StdArc<tokio::net::TcpListener>>>>,
+    listeners: StdArc<
+        std::sync::Mutex<std::collections::HashMap<String, StdArc<tokio::net::TcpListener>>>,
+    >,
     conns: StdArc<std::sync::Mutex<std::collections::HashMap<u64, Option<tokio::net::TcpStream>>>>,
     next_id: StdArc<std::sync::atomic::AtomicU64>,
 }
@@ -700,7 +702,10 @@ impl Plugin for RawSocketAcceptor {
 }
 
 impl Transport for RawSocketAcceptor {
-    fn arrival(&self, conn: &busbar_contract::transport::wire::Conn) -> busbar_contract::transport::wire::ArrivalRecord {
+    fn arrival(
+        &self,
+        conn: &busbar_contract::transport::wire::Conn,
+    ) -> busbar_contract::transport::wire::ArrivalRecord {
         let has_it = self
             .conns
             .lock()
@@ -756,7 +761,9 @@ impl Transport for RawSocketAcceptor {
                 .accept()
                 .await
                 .map_err(|_| busbar_contract::transport::wire::TransportError::Closed)?;
-            let id = self.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let id = self
+                .next_id
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             self.conns.lock().unwrap().insert(id, Some(stream));
             Ok(busbar_contract::transport::wire::Conn::new(StdArc::new(
                 RawSocketConnHandle {
@@ -772,7 +779,9 @@ impl Transport for RawSocketAcceptor {
         _dest: &'a busbar_contract::VerifiedDestination,
         _keys: &'a TransportKeyHandle,
     ) -> busbar_contract::transport::Fut<'a, busbar_contract::transport::wire::Conn> {
-        Box::pin(async move { Err(busbar_contract::transport::wire::TransportError::HandoffMismatch) })
+        Box::pin(
+            async move { Err(busbar_contract::transport::wire::TransportError::HandoffMismatch) },
+        )
     }
 
     fn frames(
@@ -797,7 +806,9 @@ impl Transport for RawSocketAcceptor {
         _stream: StreamId,
         _bytes: ScratchBytes<'a>,
     ) -> busbar_contract::transport::Fut<'a, usize> {
-        Box::pin(async move { Err(busbar_contract::transport::wire::TransportError::HandoffMismatch) })
+        Box::pin(
+            async move { Err(busbar_contract::transport::wire::TransportError::HandoffMismatch) },
+        )
     }
 
     fn encode_envelope<'a>(
@@ -815,10 +826,15 @@ impl Transport for RawSocketAcceptor {
         _conn: busbar_contract::transport::wire::Conn,
         _keys: &'a TransportKeyHandle,
     ) -> busbar_contract::transport::Fut<'a, busbar_contract::transport::wire::Conn> {
-        Box::pin(async move { Err(busbar_contract::transport::wire::TransportError::HandoffMismatch) })
+        Box::pin(
+            async move { Err(busbar_contract::transport::wire::TransportError::HandoffMismatch) },
+        )
     }
 
-    fn detach(&self, conn: &busbar_contract::transport::wire::Conn) -> Option<busbar_contract::transport::wire::RawStream> {
+    fn detach(
+        &self,
+        conn: &busbar_contract::transport::wire::Conn,
+    ) -> Option<busbar_contract::transport::wire::RawStream> {
         let stream = self.conns.lock().unwrap().get_mut(&conn.id())?.take()?;
         Some(busbar_contract::transport::wire::RawStream::new(
             "tcp",
@@ -840,7 +856,9 @@ impl Transport for RawSocketAcceptor {
         _refusal: &'a busbar_contract::Refusal,
         _bytes: ScratchBytes<'a>,
     ) -> busbar_contract::transport::Fut<'a, ()> {
-        Box::pin(async move { Err(busbar_contract::transport::wire::TransportError::HandoffMismatch) })
+        Box::pin(
+            async move { Err(busbar_contract::transport::wire::TransportError::HandoffMismatch) },
+        )
     }
 }
 

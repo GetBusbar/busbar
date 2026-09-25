@@ -158,9 +158,7 @@ fn oversized_manifest_member_is_refused() {
 
 #[test]
 fn tarball_extension_matcher() {
-    assert!(is_plugin_tarball(
-        "busbar-store-gamma-1.5.0-aarch64.tar.gz"
-    ));
+    assert!(is_plugin_tarball("busbar-store-gamma-1.5.0-aarch64.tar.gz"));
     assert!(is_plugin_tarball("x.tgz"));
     assert!(!is_plugin_tarball("x.so"));
     assert!(!is_plugin_tarball("x.tar"));

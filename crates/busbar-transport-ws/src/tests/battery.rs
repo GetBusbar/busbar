@@ -1045,4 +1045,3 @@ fn a_redial_reuses_the_interned_address_rather_than_leaking_a_new_one() {
     assert!(!std::ptr::eq(first, other));
     assert_eq!(other, "elsewhere.invalid:8443");
 }
-

@@ -56,7 +56,8 @@ impl busbar_contract::ConfigView for HttpCfg {
         None
     }
     fn get_int(&self, k: &str) -> Option<i64> {
-        self.1.filter(|_| k == busbar_transport_ws::MESSAGE_MAX_BYTES_KEY)
+        self.1
+            .filter(|_| k == busbar_transport_ws::MESSAGE_MAX_BYTES_KEY)
     }
     fn get_bool(&self, _k: &str) -> Option<bool> {
         None

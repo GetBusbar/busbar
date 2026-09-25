@@ -294,7 +294,10 @@ fn the_scan_would_catch_a_planted_name() {
     ));
     // The manifest form, for a plane and for core.
     let planted = vocab.text("PLANE_LINE");
-    assert!(vocab.plane_crates.iter().any(|c| planted.contains(c.as_str())));
+    assert!(vocab
+        .plane_crates
+        .iter()
+        .any(|c| planted.contains(c.as_str())));
     let planted_core = "busbar-kernel = { path = \"../busbar-kernel\" }";
     assert!(CORE_NAMES.iter().any(|c| planted_core.contains(c)));
     // And the one call a transport would make if it reached past the driver seam at all.

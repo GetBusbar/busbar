@@ -2169,12 +2169,7 @@ fn a_plugin_predating_the_task_variants_still_gets_the_pre_existing_defaults() {
         (),
         "append_call",
     );
-    under_old_plugin_shapes(
-        &store,
-        |s| n_list_calls(s, "vk"),
-        Vec::new(),
-        "list_calls",
-    );
+    under_old_plugin_shapes(&store, |s| n_list_calls(s, "vk"), Vec::new(), "list_calls");
     under_old_plugin_shapes(
         &store,
         |s| n_list_call_principals(s),

@@ -14,8 +14,8 @@ use futures::StreamExt;
 
 use busbar_contract::transport::registry::status_ns;
 use busbar_contract::transport::wire::{
-    ArrivalRecord, CloseReason, Conn, ConnHandle, Listener, RawStream, TransportError,
-    WireStatus, WireStatusClass,
+    ArrivalRecord, CloseReason, Conn, ConnHandle, Listener, RawStream, TransportError, WireStatus,
+    WireStatusClass,
 };
 use busbar_contract::{
     Fut, Kind, Plugin, Refusal, ScratchBytes, StreamId, Transport, TransportConfigView,
@@ -136,7 +136,10 @@ impl Transport for RawSocketDialer {
         &self,
         _conn: Conn,
     ) -> std::pin::Pin<
-        Box<dyn futures::Stream<Item = Result<(StreamId, busbar_contract::Frame), TransportError>> + Send>,
+        Box<
+            dyn futures::Stream<Item = Result<(StreamId, busbar_contract::Frame), TransportError>>
+                + Send,
+        >,
     > {
         Box::pin(futures::stream::empty())
     }
