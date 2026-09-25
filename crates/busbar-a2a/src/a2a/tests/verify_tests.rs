@@ -557,7 +557,7 @@ fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
     // `detection_backoff:` or `demotion_grace:`, and both would be a window an upstream can open
     // for itself by flapping. The cadence's own field set is enumerated here, and the ONLY held
     // direction it may name is recovery.
-    // `reverify.rs` moved to `src/trust/` when the MCP refresh timer became its second consumer.
+    // `reverify.rs` moved to `src/trust/` when a sibling plane's refresh timer became a consumer.
     // The ratchet moved with it — a path that silently stopped resolving would be this guard
     // quietly covering nothing, which is the failure mode it exists to prevent, turned inward.
     let read = |rel: &str| -> String {
@@ -572,18 +572,13 @@ fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
     let reverify_src = read("../busbar-kernel/src/trust/reverify.rs");
     let config_src = read("src/a2a/config.rs");
     let verify_src = read("src/a2a/verify.rs");
-    // THE OTHER PLANE'S BOUND, held to the identical rule, PLUS THE SHARED GATE BOTH PLANES NOW RUN.
-    // MCP has a `verify_ttl:` and a fetch of its own, and both drive the SAME `due`. A knob that
-    // slowed detection or delayed a quarantine would be exactly as dangerous there, and a ratchet
-    // that guarded only the plane it was written for would be the plane-local drift this release has
-    // already been bitten by. `trust/verify.rs` — the on-call single-flight gate that REPLACED the
+    // THE SHARED GATE EVERY PLANE RUNS, held to the identical rule. Every plane with a `verify_ttl:`
+    // drives the SAME `due`. `trust/verify.rs` — the on-call single-flight gate that REPLACED the
     // background sweep — is the one place a per-subject cooldown or a "skip if it failed recently"
-    // fast path could now be introduced for BOTH planes at once, which makes it the single most
+    // fast path could be introduced for EVERY plane at once, which makes it the single most
     // important file on this list.
-    // The MCP plane's sources moved to the `busbar-mcp` crate (Phase-B B2); the ratchet MOVED WITH
-    // THEM rather than dropping the path — the sibling-crate spelling reaches the same two files.
-    let mcp_config_src = read("../busbar-mcp/src/mcp/config.rs");
-    let mcp_fetch_src = read("../busbar-mcp/src/mcp/connect.rs");
+    // The sibling plane's own config grammar and connect path are held to this rule by that plane's
+    // own battery (the plane tests itself; a plane never reads another plane's sources).
     let shared_verify_src = read("../busbar-kernel/src/trust/verify.rs");
 
     let code = |s: &str| -> String {
@@ -600,8 +595,6 @@ fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
         ("trust/reverify.rs", code(&reverify_src)),
         ("a2a/config.rs", code(&config_src)),
         ("a2a/verify.rs", code(&verify_src)),
-        ("mcp/config.rs", code(&mcp_config_src)),
-        ("mcp/connect.rs", code(&mcp_fetch_src)),
         ("trust/verify.rs", code(&shared_verify_src)),
     ] {
         for banned in [
