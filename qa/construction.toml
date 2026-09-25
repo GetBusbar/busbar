@@ -346,7 +346,7 @@ needle = "busbar_kernel::"
 busbar-llm = 263
 busbar-mcp = 287
 busbar-a2a = 236
-busbar-voice = 89
+busbar-voice = 88
 
 [rules.ports-only-tests]
 why = """The same reach from test code. Tests that name core internals pin the plane to core's \
@@ -356,7 +356,7 @@ counts can trend to zero at their own pace."""
 # TODAY's measurement on the committed tree (HEAD b091b4e83). Downward only from here.
 [rules.ports-only-tests.max_per_crate]
 busbar-llm = 1002
-busbar-mcp = 199
+busbar-mcp = 197
 busbar-a2a = 98
 busbar-voice = 43
 
@@ -788,7 +788,7 @@ kernel_crate = "busbar-kernel"
 # budget-book read fix). Pinned at the measurement, no slack. It RATCHETS DOWN when item 142's
 # breaker fold lands (store/in_memory/breaker.rs, ~580 code lines), which takes the kernel back
 # under 51439; that commit lowers this figure to what it then measures.
-kernel_ceiling = 51744
+kernel_ceiling = 51742
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
@@ -919,7 +919,7 @@ patterns = ["registry.rs"]
 # RE-BASELINED 2026-09-22: 887 -> 724, the measurement. The pattern still matches three files by
 # basename — `registry.rs` 314, `plane/registry.rs` 389, `proto/registry.rs` 21 — and all three
 # have drained since the ceiling was last pinned.
-ceiling = 715
+ceiling = 687
 
 [rules.loc-ceilings.kernel_files.grammars]
 label = "grammars incl. JSON span scanner"
@@ -2014,32 +2014,32 @@ scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
 # deleted crate; busbar_substrate's root reach was already fully retired). 17 (busbar_llm,
 # unchanged) + 5 + 3 + 12 = 37, the same root reach, now counted instead of a false zero. Pinned at
 # TODAY's measurement on the committed tree (HEAD b091b4e83). Downward only from here.
-ceiling = 37
+ceiling = 20
 
 [rules.legacy-reach.prefixes.busbar_llm]
 prefix = "busbar_llm::"
 # The plane's own unit modules are where the rebuilt steps live; they are not legacy engine reach.
 exclude = ["busbar_llm::unit"]
 because = "the llm engine's non-unit paths: arrival parsing, proto codecs, the stream translator"
-figure = 17
+figure = 11
 
 [rules.legacy-reach.prefixes.busbar_mcp]
 prefix = "busbar_mcp::"
 exclude = []
 because = "item 381 (Q11/Q32): the retiring mcp engine, the root still names by prefix"
-figure = 5
+figure = 1
 
 [rules.legacy-reach.prefixes.busbar_a2a]
 prefix = "busbar_a2a::"
 exclude = []
 because = "item 381 (Q11/Q32): the retiring a2a engine, the root still names by prefix"
-figure = 3
+figure = 1
 
 [rules.legacy-reach.prefixes.busbar_voice]
 prefix = "busbar_voice::"
 exclude = []
 because = "item 381 (Q11/Q32): the retiring voice engine, the root still names by prefix"
-figure = 12
+figure = 7
 
 # ── 31. no-test-doubles-in-production ────────────────────────────────────────────────────────────
 [rules.no-test-doubles-in-production]
