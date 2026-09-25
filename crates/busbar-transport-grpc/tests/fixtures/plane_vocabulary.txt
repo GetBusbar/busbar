@@ -1,0 +1,45 @@
+# The literal instance-noun / dialect vocabulary for this crate's own purity self-test
+# (`tests/no_plane_names.rs`). Kept OUTSIDE the crate's `.rs` tree on purpose: this data's
+# entire job is to spell, verbatim, the words the neighbouring `instance-noun-neutrality`
+# gate forbids everywhere else in this crate — the test cannot do its job without holding
+# them somewhere. Moving them into a non-`.rs` fixture (the gate walks `.rs` under
+# `crates/` only) drains the noun census to zero for `no_plane_names.rs` without changing
+# a single assertion, a single word, or a single byte of behaviour: it is the same
+# structural move that already exempts the gate's own source (`xtask/src/gates/
+# instance_noun_neutrality.rs`, which must also spell every noun) — that file is exempt by
+# living outside `crates/`; this file is exempt the same way.
+#
+# Format: `[section]` header, then `key=value` lines (a bare line under `[plane_crates]` is
+# itself the datum — nothing in the .rs file needs to name an individual plane-crate entry).
+
+[plane_crates]
+busbar-plane-
+busbar_plane_
+busbar-llm
+busbar_llm
+busbar-mcp
+busbar_mcp
+busbar-a2a
+busbar_a2a
+busbar-voice
+busbar_voice
+
+[dialect_words]
+DIALECT_1=a2a
+DIALECT_2=mcp
+DIALECT_3=llm
+DIALECT_4=voice
+DIALECT_5=jsonrpc
+DIALECT_6=json-rpc
+
+[entries]
+NEEDLE_1_HAYSTACK=let x = A2A_MOUNT;
+NEEDLE_1_BARE=A2A_MOUNT
+NEEDLE_1_SUBSTR=A2A
+NEEDLE_2_HAYSTACK=this is the a2a binding
+NEEDLE_3_HAYSTACK=the MCP door
+NEEDLE_4_HAYSTACK=dialect: voice
+NEEDLE_5_HAYSTACK=a json-rpc envelope
+NEG_1_HAYSTACK=the authority is voiceless
+NEG_2_HAYSTACK=0xa2a1 is a number
+PLANE_LINE=busbar-plane-a2a = { path = "../busbar-plane-a2a" }

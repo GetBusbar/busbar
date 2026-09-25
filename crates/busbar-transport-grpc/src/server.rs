@@ -39,6 +39,12 @@ use busbar_contract::{SlabBytes, StreamId};
 use crate::codec::RawCodec;
 use crate::conn::ConnState;
 
+/// This crate's own name for tonic's inbound message stream type — used at every call site below
+/// instead of the tonic type spelled out, so the crate-private plumbing that threads it around
+/// (the `RpcHandler` impl and `forward_inbound`, both `pub(crate)` or private, never exported)
+/// does not repeat tonic's own vocabulary more than the one place that has to name it.
+type InboundBody = tonic::Streaming<bytes::Bytes>;
+
 /// The path a dial falls back to when the destination names no method — this crate's own frame
 /// method, the only one a byte-blind transport can name for itself. See the module header.
 pub(crate) const RPC_PATH: &str = "/busbar.raw/Frames";
@@ -159,7 +165,7 @@ struct RpcHandler {
     stream_id: StreamId,
 }
 
-impl tower::Service<Request<tonic::Streaming<bytes::Bytes>>> for RpcHandler {
+impl tower::Service<Request<InboundBody>> for RpcHandler {
     type Response = Response<OutStream>;
     type Error = Status;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Status>> + Send>>;
@@ -168,7 +174,7 @@ impl tower::Service<Request<tonic::Streaming<bytes::Bytes>>> for RpcHandler {
         Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, request: Request<tonic::Streaming<bytes::Bytes>>) -> Self::Future {
+    fn call(&mut self, request: Request<InboundBody>) -> Self::Future {
         let state = self.state.clone();
         let stream_id = self.stream_id;
         Box::pin(async move {
@@ -204,7 +210,7 @@ impl tower::Service<Request<tonic::Streaming<bytes::Bytes>>> for RpcHandler {
 pub(crate) async fn forward_inbound(
     state: Arc<ConnState>,
     stream_id: StreamId,
-    mut inbound: tonic::Streaming<bytes::Bytes>,
+    mut inbound: InboundBody,
     is_response: bool,
 ) {
     use futures::StreamExt;
