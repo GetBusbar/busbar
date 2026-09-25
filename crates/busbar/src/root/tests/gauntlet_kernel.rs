@@ -330,6 +330,33 @@ fn install_flips_voice_session_onto_the_unified_kernel_loop() {
     );
 }
 
+/// THE KEY A PLANE ASKS ITS RUNNER UNDER IS ITS DECLARATION'S KEY (K2d precondition).
+///
+/// Each plane's gauntlet asks the host-selection seam for a runner under `<crate>::PLANE_KEY` (the
+/// constant its pure plane / codec crate owns, re-exported), while the plane table registers it under
+/// `PLANE_DECLARATION.key`. `install()` may flip a plane by the second only while the two are one
+/// string: a drift would register the runner under a key the plane never asks for, and the plane
+/// would run the inline fallback with every flip still "present".
+#[test]
+fn every_flipped_plane_asks_for_its_runner_under_its_declaration_key() {
+    #[cfg(feature = "plane-mcp")]
+    {
+        assert_eq!(busbar_mcp::PLANE_KEY, busbar_plane_mcp::PLANE_KEY);
+        assert_eq!(busbar_mcp::PLANE_KEY, busbar_mcp::PLANE_DECLARATION.key);
+    }
+    #[cfg(feature = "plane-a2a")]
+    {
+        assert_eq!(busbar_a2a::PLANE_KEY, busbar_plane_a2a::PLANE_KEY);
+        assert_eq!(busbar_a2a::PLANE_KEY, busbar_a2a::PLANE_DECLARATION.key);
+    }
+    // `busbar_voice::PLANE_KEY` is `busbar_voice_codec::PLANE_KEY` re-exported (the binary has no
+    // edge to the codec crate); the declaration spells its own literal, so that is the pair to hold.
+    #[cfg(feature = "plane-voice")]
+    assert_eq!(busbar_voice::PLANE_KEY, busbar_voice::PLANE_DECLARATION.key);
+    #[cfg(feature = "proto-llm")]
+    assert_eq!(busbar_llm::PLANE_KEY, busbar_llm::PLANE_DECLARATION.key);
+}
+
 /// THE ROOT'S PROSE AGREES WITH `install()` (item 238).
 ///
 /// The four tests above prove `install()` registers the kernel-loop runner for every plane in the
