@@ -259,7 +259,7 @@ fn test_event_type_exception_strips_namespace_prefix() {
     let mut h2 = string_header(HDR_MESSAGE_TYPE, MSG_TYPE_EXCEPTION);
     h2.extend_from_slice(&string_header(
         HDR_EXCEPTION_TYPE,
-        "aws.bedrock/InternalServerException",
+        "aws.service/InternalServerException",
     ));
     assert_eq!(event_type_for_frame(&h2), "internalServerException");
 

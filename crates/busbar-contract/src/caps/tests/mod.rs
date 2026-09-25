@@ -675,12 +675,12 @@ fn the_egress_capabilities_never_print_what_they_carry() {
 fn a_sealed_destination_carries_the_lane_the_money_side_reads() {
     let k = Kernel::new();
     let dest =
-        VerifiedDestination::seal(&Grant::<Dial>::mint(&k.seal), LaneId::new("openai:gpt-4o"));
-    assert_eq!(dest.lane().as_str(), "openai:gpt-4o");
+        VerifiedDestination::seal(&Grant::<Dial>::mint(&k.seal), LaneId::new("vendor-a:gpt-4o"));
+    assert_eq!(dest.lane().as_str(), "vendor-a:gpt-4o");
 
     let decoration = AuthDecoration::decorate(
         &Grant::<Sign>::mint(&k.seal),
-        vec![("authorization".into(), "Bearer {slot}".into())],
+        vec![("authorization".into(), "Scheme {slot}".into())],
         true,
         vec![SecretSlot::declare(
             &Grant::<Sign>::mint(&k.seal),

@@ -131,7 +131,7 @@ fn a_serving_deployment() -> SeededRows {
             window_figure("team-a", 86_400, "gpt-4", "input", 6_000),
             window_figure("team-a", 86_400, "gpt-4", "output", 2_500),
             window_figure("team-a", 86_400, "claude", "input", 500),
-            meter_figure("team-a", 86_400, "gpt-4", "openai", "input", 4_000),
+            meter_figure("team-a", 86_400, "gpt-4", "vendor-a", "input", 4_000),
             meter_figure("team-a", 86_400, "gpt-4", "azure", "input", 2_000),
             window_figure("team-b", 86_400, "gpt-4", "input", 40),
         ],
@@ -209,7 +209,7 @@ fn the_opening_figures_are_the_legacy_figures_exactly() {
             totals,
             "team-a",
             CapDimension::Class("input".into()),
-            meter_pool_scope("gpt-4", "openai"),
+            meter_pool_scope("gpt-4", "vendor-a"),
             86_400,
         )
         .settled,
@@ -374,7 +374,7 @@ fn two_rows_for_one_balance_sum() {
 ///
 /// The metering pool joins two components that are both free text read off the previous release's
 /// rows. Joined on a slash — `format!("meter:{lane}/{provider}")` — the lane `gpt/4` with provider
-/// `openai` and the lane `gpt` with provider `4/openai` both spell `meter:gpt/4/openai`. They are
+/// `vendor-a` and the lane `gpt` with provider `4/vendor-a` both spell `meter:gpt/4/vendor-a`. They are
 /// two different rows charged to two different providers, and one key means ONE balance holding
 /// their SUM: two customers' money in one bucket, opened as a single wrong number with nothing left
 /// to compare it against. Length-framing each component fixes the boundary with a count the rows
@@ -384,10 +384,10 @@ fn two_rows_for_one_balance_sum() {
 /// only compared strings would still pass a framing that separated the keys but merged the figures.
 #[test]
 fn two_providers_that_collide_across_a_bare_delimiter_keep_their_own_opening_balances() {
-    // `"gpt/4" + "openai"` and `"gpt" + "4/openai"` — one string under the old join, two rows here.
+    // `"gpt/4" + "vendor-a"` and `"gpt" + "4/vendor-a"` — one string under the old join, two rows here.
     let figures = vec![
-        meter_figure("team-a", 86_400, "gpt/4", "openai", "input", 4_000),
-        meter_figure("team-a", 86_400, "gpt", "4/openai", "input", 25),
+        meter_figure("team-a", 86_400, "gpt/4", "vendor-a", "input", 4_000),
+        meter_figure("team-a", 86_400, "gpt", "4/vendor-a", "input", 25),
     ];
     let totals = opening_totals(&figures).expect("two figures open");
 
@@ -395,21 +395,21 @@ fn two_providers_that_collide_across_a_bare_delimiter_keep_their_own_opening_bal
         totals.len(),
         2,
         "two metering rows for two different (lane, provider) pairs are two balances, not one \
-         holding their sum — a bare `/` join spells both as `meter:gpt/4/openai`"
+         holding their sum — a bare `/` join spells both as `meter:gpt/4/vendor-a`"
     );
 
     let first = figures_for(
         &totals,
         "team-a",
         CapDimension::Class("input".into()),
-        meter_pool_scope("gpt/4", "openai"),
+        meter_pool_scope("gpt/4", "vendor-a"),
         86_400,
     );
     let second = figures_for(
         &totals,
         "team-a",
         CapDimension::Class("input".into()),
-        meter_pool_scope("gpt", "4/openai"),
+        meter_pool_scope("gpt", "4/vendor-a"),
         86_400,
     );
 
@@ -419,13 +419,13 @@ fn two_providers_that_collide_across_a_bare_delimiter_keep_their_own_opening_bal
     );
     assert_eq!(
         second.settled, 25,
-        "and so does the `4/openai` provider on the `gpt` lane"
+        "and so does the `4/vendor-a` provider on the `gpt` lane"
     );
 
     // The framing itself: the two keys are distinct, and neither is the merged spelling.
     assert_ne!(
-        meter_pool_scope("gpt/4", "openai"),
-        meter_pool_scope("gpt", "4/openai"),
+        meter_pool_scope("gpt/4", "vendor-a"),
+        meter_pool_scope("gpt", "4/vendor-a"),
         "a delimiter inside a component must not be able to move the boundary onto its neighbour"
     );
 }
