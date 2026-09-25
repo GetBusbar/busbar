@@ -320,7 +320,7 @@ async fn a_never_closing_event_stream_delivers_its_events_as_they_arrive() {
     for i in 0..2 {
         let (_s, frame) = tokio::time::timeout(std::time::Duration::from_secs(2), frames.next())
             .await
-            .expect("an event arrives while the upstream is still streaming")
+            .expect("an event arrives while the upstream connection is still open")
             .unwrap()
             .unwrap();
         let (event, data) = proto::parse_sse_frame(frame.bytes.as_slice()).unwrap();
