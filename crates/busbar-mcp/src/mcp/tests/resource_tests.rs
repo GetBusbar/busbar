@@ -27,13 +27,11 @@ const METADATA_PATH: &str = "/.well-known/oauth-protected-resource/mcp";
 
 async fn serve() -> (String, tokio::task::JoinHandle<()>) {
     use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
-    use busbar_store_memory::MemoryStore;
-    use std::sync::Arc;
 
     metrics_init();
     let gov = engine()
         .governance(
-            Arc::new(MemoryStore::new()),
+            engine().scratch_store(),
             Some("admintok".to_string()),
             Some(TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID)),
         )

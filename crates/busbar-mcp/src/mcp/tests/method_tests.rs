@@ -521,10 +521,9 @@ async fn the_method_table_is_reachable_through_the_real_mounted_route() {
 /// back out of the real store after a real flush.
 #[tokio::test]
 async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane() {
-    use busbar_store_memory::MemoryStore;
     metrics_init();
 
-    let store = Arc::new(MemoryStore::new());
+    let store = engine().scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[3u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,

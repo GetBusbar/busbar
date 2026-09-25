@@ -231,11 +231,10 @@ async fn a_grant_for_a_different_tool_on_the_same_server_is_refused() {
 async fn the_callers_busbar_key_appears_nowhere_on_the_upstream_wire() {
     use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_store_memory::MemoryStore;
     metrics_init();
 
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
-    let store = Arc::new(MemoryStore::new());
+    let store = engine().scratch_store();
     // Two handles on the SAME key material: one inside `GovState` (which consumes it) and one for
     // the test to mint the caller's audience-bound token with. Same bytes, same kid, so the verifier
     // busbar runs is verifying a token this test really minted.

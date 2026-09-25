@@ -69,7 +69,7 @@ fn swapped_arguments() -> serde_json::Value {
 fn signing_governance() -> Arc<dyn GovKit> {
     engine()
         .governance(
-            Arc::new(busbar_store_memory::MemoryStore::new()),
+            engine().scratch_store(),
             None,
             Some(
                 busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(

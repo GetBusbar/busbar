@@ -44,11 +44,7 @@ fn token_signer(seed: u8) -> TokenSigner {
 /// the bytes are identical.
 fn app_signed_by(seed: u8) -> std::sync::Arc<dyn EngineAppPlus> {
     let gov = engine()
-        .governance(
-            std::sync::Arc::new(busbar_store_memory::MemoryStore::new()),
-            None,
-            Some(token_signer(seed)),
-        )
+        .governance(engine().scratch_store(), None, Some(token_signer(seed)))
         .expect("a memory-store governance registry with a signing key constructs");
     // An a2a plane must exist for `card_signer` to reach the public issuer key off the plane's own
     // slot (where the fixture's build stashes it from governance, mirroring the `a2a_start` hook).

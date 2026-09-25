@@ -1155,14 +1155,14 @@ async fn a_list_with_no_open_task_of_this_callers_makes_no_hop() {
 /// The shipped `busbar-store-memory` implements NONE of the task methods — it is documented as
 /// genuinely ephemeral and the boot-restore path relies on that — so a sink is the only way to read
 /// the chain back from outside the engine. Every non-task method takes the trait's own default or
-/// delegates to the real `MemoryStore`; only the two task-event methods are backed, because those
+/// delegates to the real scratch store; only the two task-event methods are backed, because those
 /// are the whole subject.
 ///
 /// Reads are TASK-SCOPED (`list_task_events(task_id)`), which is what makes this safe against the
 /// global sink: a sibling test dispatching through `TASKS` at the same time writes rows for ITS
 /// task ids, and they cannot enter this test's assertions.
 struct ChainSink {
-    inner: busbar_store_memory::MemoryStore,
+    inner: std::sync::Arc<dyn busbar_api::Store>,
     /// `(task_id, body)` — the OPAQUE stored task-event bodies a durable backend holds (the neutral
     /// `{seq,prev_hash,hash,content}` the P5-C9 seam persists), kept verbatim and reconstructed to a
     /// typed view on read via the plane store's `task_event_row_from_body`.
@@ -1172,7 +1172,7 @@ struct ChainSink {
 impl ChainSink {
     fn new() -> Self {
         Self {
-            inner: busbar_store_memory::MemoryStore::new(),
+            inner: crate::testkit::engine_boot::engine().scratch_store(),
             events: std::sync::Mutex::new(Vec::new()),
         }
     }
@@ -1349,7 +1349,7 @@ async fn the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_
     );
 
     crate::taskstore::TASKS.set_sink(busbar_kernel::plane::store::PlaneStoreView::narrow(
-        std::sync::Arc::new(busbar_store_memory::MemoryStore::new()),
+        crate::testkit::engine_boot::engine().scratch_store(),
     ));
 }
 
@@ -1430,6 +1430,6 @@ async fn a_failed_hop_is_chained_too_and_the_chain_carries_its_terminal_outcome(
         .expect("the failed leg's persisted chain must verify against its own hashes");
 
     crate::taskstore::TASKS.set_sink(busbar_kernel::plane::store::PlaneStoreView::narrow(
-        std::sync::Arc::new(busbar_store_memory::MemoryStore::new()),
+        crate::testkit::engine_boot::engine().scratch_store(),
     ));
 }

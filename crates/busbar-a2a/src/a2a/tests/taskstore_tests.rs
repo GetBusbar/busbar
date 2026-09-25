@@ -26,14 +26,14 @@ const NOW: u64 = 1_770_000_000;
 // ── the two stores under test ────────────────────────────────────────────────────────────────
 
 /// TEST-ONLY durable-task double, and the reason it exists is the same one
-/// `admin/tests/audit_tests.rs::DurableTestStore` gives for its own: `busbar_store_memory` is
+/// `admin/tests/audit_tests.rs::DurableTestStore` gives for its own: the engine's scratch store is
 /// DOCUMENTED as genuinely ephemeral (`main.rs`'s boot-restore path and `docs/configuration.md` both
 /// rely on it), so teaching it to persist tasks just to suit a test would silently change a product
-/// contract. This wraps the real `MemoryStore` for every other `Store` method and backs ONLY the
+/// contract. This wraps the real scratch store for every other `Store` method and backs ONLY the
 /// task methods with its own ledger — "durable" for exactly as long as this test process lives,
 /// which is what lets a second `TaskRegistry` over the SAME handle stand in for "process 2".
 struct DurableTaskStore {
-    inner: busbar_store_memory::MemoryStore,
+    inner: std::sync::Arc<dyn busbar_api::Store>,
     tasks: std::sync::Mutex<BTreeMap<String, TaskRow>>,
     /// The chained events as the OPAQUE stored BODIES a durable backend holds — the plane's own typed
     /// [`TaskEventRow`] JSON the seam persists — keyed by `(task_id, seq)`. A typed view is
@@ -45,7 +45,7 @@ struct DurableTaskStore {
 impl DurableTaskStore {
     fn new() -> Self {
         Self {
-            inner: busbar_store_memory::MemoryStore::new(),
+            inner: crate::testkit::engine_boot::engine().scratch_store(),
             tasks: std::sync::Mutex::new(BTreeMap::new()),
             events: std::sync::Mutex::new(BTreeMap::new()),
         }
@@ -221,7 +221,7 @@ fn durable() -> Arc<DurableTaskStore> {
 /// The SHIPPED RAM default, which implements none of the task methods and therefore drops
 /// everything. Used to prove the durability assertions are not vacuous.
 fn ram_default() -> Arc<dyn busbar_api::Store> {
-    Arc::new(busbar_store_memory::MemoryStore::new())
+    crate::testkit::engine_boot::engine().scratch_store()
 }
 
 // ── the sequence both durability tests run ───────────────────────────────────────────────────
@@ -851,7 +851,7 @@ fn an_unreadable_row_is_counted_rather_than_silently_dropped() {
 #[test]
 fn a_failed_durable_write_leaves_the_working_set_agreeing_with_the_store() {
     /// A store whose task writes always fail (a full disk, a dead connection).
-    struct RefusingStore(busbar_store_memory::MemoryStore);
+    struct RefusingStore(std::sync::Arc<dyn busbar_api::Store>);
     impl busbar_api::Store for RefusingStore {
         fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
             self.0.put_key(key)
@@ -896,8 +896,9 @@ fn a_failed_durable_write_leaves_the_working_set_agreeing_with_the_store() {
         }
     }
 
-    let store: Arc<dyn busbar_api::Store> =
-        Arc::new(RefusingStore(busbar_store_memory::MemoryStore::new()));
+    let store: Arc<dyn busbar_api::Store> = Arc::new(RefusingStore(
+        crate::testkit::engine_boot::engine().scratch_store(),
+    ));
     let h = TaskTestHarness::over(store);
     let reg = &h.reg;
     let task = Task::submitted("t-1", "ctx", "key-1", Direction::Inbound, NOW)

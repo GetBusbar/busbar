@@ -730,7 +730,7 @@ async fn harness_core(
     use busbar_kernel::governance::NewKeySpec;
     engine().metrics_init();
 
-    let store: Arc<dyn busbar_api::Store> = Arc::new(busbar_store_memory::MemoryStore::new());
+    let store: Arc<dyn busbar_api::Store> = engine().scratch_store();
     // Two handles on the SAME key material: one inside the governance registry (which consumes it)
     // and one for the test to mint the caller's audience-bound token with, so the verifier busbar
     // runs is verifying a token this test really minted.

@@ -584,7 +584,7 @@ fn budgeted_app(
     std::sync::Arc<dyn busbar_kernel::test_support::engine_kit::GovKit>,
     std::sync::Arc<dyn busbar_kernel::test_support::engine_kit::CostKit>,
 ) {
-    let store = std::sync::Arc::new(busbar_store_memory::MemoryStore::new());
+    let store = engine().scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,

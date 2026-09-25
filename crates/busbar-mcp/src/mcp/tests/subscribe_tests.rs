@@ -648,11 +648,7 @@ async fn the_relay_filters_unasked_uris_and_refuses_another_servers_announcement
 #[test]
 fn a_recorded_update_is_not_delivered_to_a_caller_whose_grant_does_not_reach_it() {
     let gov = engine()
-        .governance(
-            std::sync::Arc::new(busbar_store_memory::MemoryStore::new()),
-            None,
-            None,
-        )
+        .governance(engine().scratch_store(), None, None)
         .expect("a memory-backed registry constructs");
     let (wide, _s1) = gov
         .create_key(
@@ -851,11 +847,7 @@ fn a_revoked_key_stops_being_served_on_the_next_poll() {
     use std::time::Duration;
 
     let gov = engine()
-        .governance(
-            std::sync::Arc::new(busbar_store_memory::MemoryStore::new()),
-            None,
-            None,
-        )
+        .governance(engine().scratch_store(), None, None)
         .expect("a memory-backed registry constructs");
     // A LIVE, ADMITTED key — exactly what the auth middleware resolves and attaches at ingress. The
     // fixture must start live, because the defect is about what happens to a key AFTER it was

@@ -79,12 +79,6 @@ serde_urlencoded = { workspace = true }
 # so the edge is optional on that feature and absent from every shipped build; plain
 # `cargo test -p` reaches it via [dev-dependencies].
 reqwest = { workspace = true, features = ["http2", "json"], optional = true }
-# TEST MACHINERY ONLY, same edge as reqwest: the plane's test batteries mint governance registries
-# over the in-memory store (formerly reached as the engine's `governance::MemoryStore` re-export; now
-# named directly, so the tests spell no engine path). Optional on `test-support` because the one
-# battery a dependent test binary compiles in (`admin_view::adminverbs_tests`) needs it in the
-# LIBRARY build; absent from every shipped build.
-busbar-store-memory = { path = "../store-memory", optional = true }
 indexmap = { workspace = true }
 futures = { workspace = true }
 base64 = { workspace = true }
@@ -145,7 +139,6 @@ test-support = [    "busbar-kernel/test-support",
     "busbar-kernel/plane-mcp",
     "busbar-kernel/plane-a2a",
     "dep:reqwest",
-    "dep:busbar-store-memory",
 ]
 
 [dev-dependencies]
@@ -162,7 +155,6 @@ reqwest = { workspace = true, features = ["json"] }
 rcgen = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
-busbar-store-memory = { path = "../store-memory" }
 busbar-secret-ref = { path = "../secret-ref" }
 # THE ADMIN JSON-REST SERVICE, dev-only — a dev-dep BACK-EDGE, not linked into any shipped target
 # (the same shape as the `busbar-llm` back-edge above). `/api/v1/admin/*` is served by busbar-admin,

@@ -148,7 +148,7 @@ async fn serve(
     install_admin_mount();
     let gov = engine()
         .governance(
-            Arc::new(busbar_store_memory::MemoryStore::new()),
+            engine().scratch_store(),
             Some(TOKEN.to_string()),
             Some(
                 busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(

@@ -1289,7 +1289,7 @@ async fn a_delete_whose_durable_clear_fails_keeps_the_config_and_returns_the_err
     /// A store whose task-row upserts fail for EXACTLY ONE task id (this test's) and delegate for
     /// every other, so the failure is deterministic without disturbing any concurrent test that
     /// writes through the same process-global registry while the sink is attached.
-    struct RefuseOneTaskRow(busbar_store_memory::MemoryStore);
+    struct RefuseOneTaskRow(std::sync::Arc<dyn busbar_api::Store>);
     impl busbar_api::Store for RefuseOneTaskRow {
         fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
             self.0.put_key(key)
@@ -1331,7 +1331,7 @@ async fn a_delete_whose_durable_clear_fails_keeps_the_config_and_returns_the_err
         }
     }
     let refusing: std::sync::Arc<dyn busbar_api::Store> =
-        std::sync::Arc::new(RefuseOneTaskRow(busbar_store_memory::MemoryStore::new()));
+        std::sync::Arc::new(RefuseOneTaskRow(engine().scratch_store()));
     TASKS.set_sink(busbar_kernel::plane::store::PlaneStoreView::narrow(
         refusing,
     ));
