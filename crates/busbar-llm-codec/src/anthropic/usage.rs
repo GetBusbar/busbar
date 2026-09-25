@@ -158,7 +158,7 @@ pub(super) fn write_usage_object(usage: Option<&crate::ir::IrUsage>) -> serde_js
 /// Anthropic has no word for it. The IR slot can carry OpenAI-family words (a Chat backend's
 /// `flex` / `scale`, which the Chat reader keeps so the two OpenAI dialects agree); an Anthropic
 /// client's SDK types the member as `standard | priority | batch`, so an unknown word is never
-/// written — it is DROPPED with a warn and the member takes its absent form (round 3 item 10).
+/// written — it is DROPPED with a warn and the member takes its absent form.
 /// OpenAI's `default` IS the standard tier.
 pub(super) fn anthropic_served_tier(tier: Option<&str>) -> Option<&'static str> {
     let word = tier?;
