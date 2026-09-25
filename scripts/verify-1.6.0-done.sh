@@ -1017,6 +1017,16 @@ if [ "$SELFTEST" -eq 1 ]; then
   st_expect refuse "a gap entry with no rationale does not name anything"                assert_golden_bookkeeping "$st_tmp/g-whole" "$st_tmp/base-good.txt"  "$st_tmp/gaps-noreason.json" "$st_tmp/cells.json"
   st_expect accept "THIS tree: owed-baseline IS the golden, every in-scope gap is named" assert_golden_bookkeeping "$PARITY_COMMITTED_GOLDEN" testing/shadow-oracle/owed-baseline.txt testing/shadow-oracle/accepted-gaps.json testing/shadow-oracle/cells.json
 
+  # ── THE MIGRATION CORPUS HAS SEEN EVERY SHIPPED RELEASE (item 48) ─────────────────────────────
+  # v1.5.3/1.5.4/1.5.5 never joined it, so the migrator was never run over the configs the release
+  # under comparison actually shipped. refresh.sh --check derives the shipped set from the release
+  # tags and requires every file byte-identical; the plant removes the newest release's config.
+  mkdir -p "$st_tmp/corpus"
+  cp -R tests/migration-corpus/from-tags tests/migration-corpus/providers "$st_tmp/corpus/" 2>/dev/null || true
+  rm -f "$st_tmp/corpus/from-tags/v${PARITY_BASELINE_VERSION}_config.yaml"
+  st_expect refuse "a migration corpus missing the v$PARITY_BASELINE_VERSION config it shipped" bash tests/migration-corpus/refresh.sh --check --corpus-dir "$st_tmp/corpus"
+  st_expect accept "THIS migration corpus holds every config every release tag shipped"     bash tests/migration-corpus/refresh.sh --check
+
   # ── BUILD: no full-gate register is RED, not three plain builds (item 529) ────────────────────
   # Driven through the REAL run_build_group with `step` stubbed to a recorder, so no cargo runs.
   st_build() {  # $1 = FAST ; $2 = register path  -> exit 0 iff the group came out GREEN

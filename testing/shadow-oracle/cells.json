@@ -55,10 +55,10 @@
     }
   ],
   "counts": {
-    "total": 2401,
+    "total": 2419,
     "by_plane": {
       "a2a": 468,
-      "core": 872,
+      "core": 890,
       "llm": 149,
       "mcp": 912
     },
@@ -72,7 +72,7 @@
       "cli": 14,
       "concurrency": 3,
       "config": 1,
-      "config.migrate": 138,
+      "config.migrate": 156,
       "cooldown": 1,
       "crosscut.traps": 5,
       "documented": 28,
@@ -18725,6 +18725,330 @@
         ],
         "mode": "validate",
         "config": "migrated:tests/migration-corpus/from-tags/v1.5.2_config.yaml",
+        "env": {}
+      },
+      "why": "the migrated document under --validate"
+    },
+    {
+      "id": "config.migrate|v1.5.3_docker|migrate",
+      "plane": "core",
+      "family": "config.migrate",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--migrate-config",
+          "tests/migration-corpus/from-tags/v1.5.3_docker_config.yaml"
+        ],
+        "mode": "cli",
+        "config": "none",
+        "env": {}
+      },
+      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "bindings": [
+        "PB-50"
+      ]
+    },
+    {
+      "id": "config.migrate|v1.5.3_docker|validate-migrated",
+      "plane": "core",
+      "family": "config.migrate",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "migrated:tests/migration-corpus/from-tags/v1.5.3_docker_config.yaml",
+        "env": {}
+      },
+      "why": "the migrated document under --validate"
+    },
+    {
+      "id": "config.migrate|v1.5.3_examples_claude-code-bedrock|migrate",
+      "plane": "core",
+      "family": "config.migrate",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--migrate-config",
+          "tests/migration-corpus/from-tags/v1.5.3_examples_claude-code-bedrock_config.yaml"
+        ],
+        "mode": "cli",
+        "config": "none",
+        "env": {}
+      },
+      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "bindings": [
+        "PB-50"
+      ]
+    },
+    {
+      "id": "config.migrate|v1.5.3_examples_claude-code-bedrock|validate-migrated",
+      "plane": "core",
+      "family": "config.migrate",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "migrated:tests/migration-corpus/from-tags/v1.5.3_examples_claude-code-bedrock_config.yaml",
+        "env": {}
+      },
+      "why": "the migrated document under --validate"
+    },
+    {
+      "id": "config.migrate|v1.5.3|migrate",
+      "plane": "core",
+      "family": "config.migrate",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--migrate-config",
+          "tests/migration-corpus/from-tags/v1.5.3_config.yaml"
+        ],
+        "mode": "cli",
+        "config": "none",
+        "env": {}
+      },
+      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "bindings": [
+        "PB-50"
+      ]
+    },
+    {
+      "id": "config.migrate|v1.5.3|validate-migrated",
+      "plane": "core",
+      "family": "config.migrate",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "migrated:tests/migration-corpus/from-tags/v1.5.3_config.yaml",
+        "env": {}
+      },
+      "why": "the migrated document under --validate"
+    },
+    {
+      "id": "config.migrate|v1.5.4_docker|migrate",
+      "plane": "core",
+      "family": "config.migrate",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--migrate-config",
+          "tests/migration-corpus/from-tags/v1.5.4_docker_config.yaml"
+        ],
+        "mode": "cli",
+        "config": "none",
+        "env": {}
+      },
+      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "bindings": [
+        "PB-50"
+      ]
+    },
+    {
+      "id": "config.migrate|v1.5.4_docker|validate-migrated",
+      "plane": "core",
+      "family": "config.migrate",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "migrated:tests/migration-corpus/from-tags/v1.5.4_docker_config.yaml",
+        "env": {}
+      },
+      "why": "the migrated document under --validate"
+    },
+    {
+      "id": "config.migrate|v1.5.4_examples_claude-code-bedrock|migrate",
+      "plane": "core",
+      "family": "config.migrate",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--migrate-config",
+          "tests/migration-corpus/from-tags/v1.5.4_examples_claude-code-bedrock_config.yaml"
+        ],
+        "mode": "cli",
+        "config": "none",
+        "env": {}
+      },
+      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "bindings": [
+        "PB-50"
+      ]
+    },
+    {
+      "id": "config.migrate|v1.5.4_examples_claude-code-bedrock|validate-migrated",
+      "plane": "core",
+      "family": "config.migrate",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "migrated:tests/migration-corpus/from-tags/v1.5.4_examples_claude-code-bedrock_config.yaml",
+        "env": {}
+      },
+      "why": "the migrated document under --validate"
+    },
+    {
+      "id": "config.migrate|v1.5.4|migrate",
+      "plane": "core",
+      "family": "config.migrate",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--migrate-config",
+          "tests/migration-corpus/from-tags/v1.5.4_config.yaml"
+        ],
+        "mode": "cli",
+        "config": "none",
+        "env": {}
+      },
+      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "bindings": [
+        "PB-50"
+      ]
+    },
+    {
+      "id": "config.migrate|v1.5.4|validate-migrated",
+      "plane": "core",
+      "family": "config.migrate",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "migrated:tests/migration-corpus/from-tags/v1.5.4_config.yaml",
+        "env": {}
+      },
+      "why": "the migrated document under --validate"
+    },
+    {
+      "id": "config.migrate|v1.5.5_docker|migrate",
+      "plane": "core",
+      "family": "config.migrate",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--migrate-config",
+          "tests/migration-corpus/from-tags/v1.5.5_docker_config.yaml"
+        ],
+        "mode": "cli",
+        "config": "none",
+        "env": {}
+      },
+      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "bindings": [
+        "PB-50"
+      ]
+    },
+    {
+      "id": "config.migrate|v1.5.5_docker|validate-migrated",
+      "plane": "core",
+      "family": "config.migrate",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "migrated:tests/migration-corpus/from-tags/v1.5.5_docker_config.yaml",
+        "env": {}
+      },
+      "why": "the migrated document under --validate"
+    },
+    {
+      "id": "config.migrate|v1.5.5_examples_claude-code-bedrock|migrate",
+      "plane": "core",
+      "family": "config.migrate",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--migrate-config",
+          "tests/migration-corpus/from-tags/v1.5.5_examples_claude-code-bedrock_config.yaml"
+        ],
+        "mode": "cli",
+        "config": "none",
+        "env": {}
+      },
+      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "bindings": [
+        "PB-50"
+      ]
+    },
+    {
+      "id": "config.migrate|v1.5.5_examples_claude-code-bedrock|validate-migrated",
+      "plane": "core",
+      "family": "config.migrate",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "migrated:tests/migration-corpus/from-tags/v1.5.5_examples_claude-code-bedrock_config.yaml",
+        "env": {}
+      },
+      "why": "the migrated document under --validate"
+    },
+    {
+      "id": "config.migrate|v1.5.5|migrate",
+      "plane": "core",
+      "family": "config.migrate",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--migrate-config",
+          "tests/migration-corpus/from-tags/v1.5.5_config.yaml"
+        ],
+        "mode": "cli",
+        "config": "none",
+        "env": {}
+      },
+      "why": "YAML to stdout, banner to stderr, exit 0/1/2",
+      "bindings": [
+        "PB-50"
+      ]
+    },
+    {
+      "id": "config.migrate|v1.5.5|validate-migrated",
+      "plane": "core",
+      "family": "config.migrate",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "migrated:tests/migration-corpus/from-tags/v1.5.5_config.yaml",
         "env": {}
       },
       "why": "the migrated document under --validate"
