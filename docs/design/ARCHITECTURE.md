@@ -1541,7 +1541,7 @@ injection is unified onto the degraded/fallback path so a fallback stream to an 
 longer bills zero tokens — registered as `improvement` (owner sign-off; money-affecting) ·
 busbar is a byte-governance router.
 
-### Decisions 2026-09-05 (orchestrator, resolving the consolidated contract gaps in `docs/design/1.6.0-contract-gaps.md`)
+### Contract rules decided 2026-09-05
 
 - **CG-20 `KernelSeal` means one thing.** The caps unit struct. The contract's trait of the same name
   cannot be removed — `busbar-caps` implements it on every token and sits above the contract, and Rust
@@ -1588,7 +1588,7 @@ busbar is a byte-governance router.
   different specificity overlap by the conservative rule and are resolved by the sealed most-specific-wins
   order; only an overlap at equal precedence between claims whose scheme sets are compatible is a boot
   refusal. Claims with disjoint scheme sets never overlap. **CG-63:** a claim on a transport that has no
-  crate is a boot refusal; the voice plane's telephony claim waits for its transport (Phase 0.5).
+  crate is a boot refusal; the voice plane's telephony claim is refused until its transport exists.
 - **CG-51 the network guard is the trust unit's check** over `VerifiedDestination`, applied before any
   transport `dial`; transports do no resolution policy of their own.
 - **CG-51 / CG-28 (2026-09-05, status): one address judgement, two spellings still.** The guard's
