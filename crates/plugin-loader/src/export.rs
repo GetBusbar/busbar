@@ -11,7 +11,7 @@
 //! metrics/audit/logs pipelines lands separately — this seam just proves an export plugin LOADS and
 //! reports the streams it carries.
 
-use crate::{stage, wire_up_raw, RawPlugin};
+use crate::RawPlugin;
 use busbar_plugin::cold::{
     endpoint::{EndpointRequest, EndpointResponse, Route},
     export::{ExportRequest, ExportResponse, ExportStream},
@@ -88,10 +88,17 @@ impl DynExport {
     /// decides exactly as it does for an envelope; nothing here trusts the sink's entries.
     ///
     /// ADDITIVE on exactly one arm, like `routes` at load: a sink built before the op cannot decode
-    /// it and says so out of band, which is the sink having nothing to report — `Ok(())`. Every
-    /// OTHER failure is the sink failing to answer and is an `Err` naming it; the caller logs it and
-    /// renders without this sink's contribution rather than failing the scrape.
-    pub fn status(&self) -> Result<(), String> {
+    /// it and says so out of band, which is the sink having nothing to report. Every OTHER failure is
+    /// the sink failing to answer: it is logged naming the sink, and the host renders without this
+    /// sink's contribution rather than failing the scrape.
+    pub fn status(&self) {
+        if let Err(e) = self.status_report() {
+            tracing::warn!(error = %e, "export plugin status failed");
+        }
+    }
+
+    /// [`DynExport::status`]'s answer, with a failure returned rather than logged.
+    pub fn status_report(&self) -> Result<(), String> {
         match self
             .raw
             .transport_call_status::<ExportRequest, ExportResponse>(&ExportRequest::Status)
@@ -121,6 +128,40 @@ impl DynExport {
     }
 }
 
+impl DynExport {
+    /// Serve one inbound request matched to this sink's route, as the route table relays it: a sink
+    /// that cannot answer is a `502` with no body to the client and a warning naming it to the
+    /// operator — the exchange never fails open into a partial response.
+    pub fn serve(&self, request: &EndpointRequest) -> EndpointResponse {
+        self.handle_http(request).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "export plugin route failed");
+            EndpointResponse {
+                status: 502,
+                headers: Vec::new(),
+                body: Vec::new(),
+            }
+        })
+    }
+
+    /// Hand one batch across the ABI OFF the calling thread — the host's delivery, which must never
+    /// touch the request that produced it. `hold` is released when the call returns (the caller's
+    /// in-flight permit); a sink that errors is logged (the error names it) and the batch is dropped.
+    pub fn deliver_detached(
+        self: &std::sync::Arc<Self>,
+        stream: ExportStream,
+        payload: std::sync::Arc<serde_json::Value>,
+        hold: impl Send + 'static,
+    ) {
+        let sink = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let _hold = hold;
+            if let Err(e) = sink.deliver(stream, &payload) {
+                tracing::warn!(error = %e, "export plugin delivery failed; this batch was dropped");
+            }
+        });
+    }
+}
+
 impl std::fmt::Debug for DynExport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DynExport")
@@ -141,15 +182,19 @@ pub fn load_export_from_bytes(
     display: &str,
     manifest_kind: &str,
 ) -> Result<DynExport, String> {
-    let (lib, staged) = stage::load_library_from_bytes(bytes, display)?;
-    let raw = wire_up_raw(
-        lib,
-        cfg_json,
-        display.to_string(),
-        abi_kind::EXPORT,
-        manifest_kind,
-        Some(staged),
-    )?;
+    load_export_image(crate::Image::Bytes(bytes), cfg_json, display, manifest_kind)
+}
+
+/// Load an EXPORT sink over either door's [`crate::Image`] — the one load [`load_export_from_bytes`]
+/// runs, and the one a LINKED export plugin's boundary takes: the same handshake, kind cross-check,
+/// `open`, and the same `streams`/`routes` questions at load.
+pub fn load_export_image(
+    image: crate::Image<'_>,
+    cfg_json: &str,
+    display: &str,
+    manifest_kind: &str,
+) -> Result<DynExport, String> {
+    let raw = crate::load_image(image, cfg_json, display, abi_kind::EXPORT, manifest_kind)?;
     export_from_raw(raw, display)
 }
 

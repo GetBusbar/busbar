@@ -132,7 +132,7 @@ fn run_dropped_in() -> Option<()> {
                 sink.deliver(stream, &payload).expect("deliver");
             }
             ExportRequest::Streams => {
-                assert_eq!(sink.streams(), &[ExportStream::Metrics]);
+                assert_eq!(sink.streams(), &[ExportStream::Metrics, ExportStream::Logs]);
             }
             _ => unreachable!("the script only uses deliver + streams"),
         }
@@ -230,6 +230,72 @@ fn the_reported_observations_are_the_ones_the_sink_produced() {
         // A DELTA of one, not a running total of one-then-two.
         assert_eq!(metrics[0]["value"], 1.0);
     }
+}
+
+/// **THE AXIS, BOTH WAYS** (DECISIONS #2 rule (1), K5's harness, item 141). The export kind's
+/// fixture (reached by KIND, `[package.metadata.busbar.both-ways]`) registered through the LINKED
+/// door (its `rlib`'s `BUSBAR_COLD_ENTRY`, through
+/// [`PluginRegistry::link`]) and the DROPPED-IN door (its `cdylib`, signed into `plugins/`) resolves to
+/// the byte-identical registry row, and the sink each door's `open_export` opens — the one load over
+/// either image — answers the same streams and routes and hands the host byte-identical folds for
+/// the same script. This is the equivalence above taken through the real registration and load a
+/// node runs, rather than through the SDK's op-dispatch.
+///
+/// RED by taking `export` out of the linked door's kinds (what the tree had before item 141):
+/// `link` refuses the row and the linked arm never opens.
+#[test]
+fn a_linked_and_a_dropped_in_export_sink_register_one_row_and_fold_the_same() {
+    let manifest = super::both_ways::statement(
+        "export",
+        "export-fixture",
+        "the-sink",
+        busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+    );
+    let _guard = crate::observe::testing::exclusive();
+    let transcript = |sink: &crate::export::DynExport| {
+        let before = crate::observe::testing::folds().len();
+        for n in [1, 2] {
+            sink.deliver(ExportStream::Logs, &serde_json::json!({ "n": n }))
+                .expect("deliver");
+        }
+        let folds: Vec<Compared> = crate::observe::testing::folds()[before..]
+            .iter()
+            .filter(|(who, ..)| who == "export-fixture")
+            .map(|(_, k, m, d)| (k.clone(), m.clone(), d.clone()))
+            .collect();
+        serde_json::json!({
+            "streams": sink.streams(),
+            "routes": sink.routes().len(),
+            "folds": folds,
+        })
+        .to_string()
+    };
+    let Some([linked, dropped]) = super::both_ways::both_doors(
+        manifest,
+        |registry| {
+            registry
+                .open_export("the-sink", "{}")
+                .expect("the export sink opens through its alias")
+        },
+        transcript,
+    ) else {
+        eprintln!("skip: the export fixture's cdylib is not built");
+        return;
+    };
+    assert!(
+        !linked.0.starts_with("no row"),
+        "the linked door registered no row: {}",
+        linked.0
+    );
+    assert!(
+        linked.1.contains(r#""counter""#),
+        "the linked sink reported its deliveries: {}",
+        linked.1
+    );
+    assert_eq!(
+        linked, dropped,
+        "the two doors must register one row and fold the same"
+    );
 }
 
 /// The host-assigned name the RED arm's pre-envelope build loads under — its own filter, for the
@@ -359,7 +425,9 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
             ExportResponse::Delivered => {
                 assert!(matches!(req, ExportRequest::Deliver { .. }), "{req:?}")
             }
-            ExportResponse::Streams(s) => assert_eq!(s, vec![ExportStream::Metrics]),
+            ExportResponse::Streams(s) => {
+                assert_eq!(s, vec![ExportStream::Metrics, ExportStream::Logs])
+            }
             other => panic!("unexpected response {other:?}"),
         }
     }

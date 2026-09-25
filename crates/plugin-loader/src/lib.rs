@@ -57,7 +57,7 @@ pub use auth::DynAuth;
 pub use busbar_plugin::cold::endpoint::{
     EndpointRequest, EndpointResponse, Route, RouteAuth, RouteMethod,
 };
-pub use export::{load_export_from_bytes, DynExport};
+pub use export::{load_export_from_bytes, load_export_image, DynExport};
 // The export PROJECTION vocabulary (the frozen `streams:` / `fields:` word-space). Re-exported for
 // the same reason the endpoint types above are: the engine names these through the loader
 // rather than taking a second, direct dependency on the ABI crate.
@@ -588,7 +588,7 @@ pub enum Image<'a> {
 
 /// Run the one cold-lane load over `image`: stage and map BYTES first (the dropped-in door), then
 /// [`wire_up`] either way. `expected_kind` is the seam's kind, `manifest_kind` the row's statement.
-fn load_image(
+pub(crate) fn load_image(
     image: Image<'_>,
     cfg_json: &str,
     display: &str,

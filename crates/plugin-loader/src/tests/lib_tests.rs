@@ -1498,7 +1498,7 @@ fn hermetic_export_plugin_path() -> Option<std::path::PathBuf> {
 }
 
 /// END-TO-END over the REAL export-example-plugin cdylib: load it through the loader (which queries
-/// `Streams` once at load), assert it reports `[Metrics]`, then `Deliver` a metrics batch and
+/// `Streams` once at load), assert it reports `[Metrics, Logs]`, then `Deliver` a metrics batch and
 /// assert the sink acks `Delivered` (an `Ok(())`). This is the exact seam the engine's
 /// observability export will consume: verified bytes in, a `DynExport` out.
 #[test]
@@ -1512,8 +1512,8 @@ fn load_and_exercise_export_plugin() {
     let sink = export::load_export_from_bytes(&bytes, "{}", "export-example", "export")
         .expect("load export example plugin over the ABI");
 
-    // Streams was queried once at load and reports exactly [Metrics].
-    assert_eq!(sink.streams(), &[ExportStream::Metrics]);
+    // Streams was queried once at load and reports exactly [Metrics, Logs].
+    assert_eq!(sink.streams(), &[ExportStream::Metrics, ExportStream::Logs]);
 
     // A delivery for the declared stream acks Delivered (Ok).
     sink.deliver(

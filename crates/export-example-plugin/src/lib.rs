@@ -2,13 +2,13 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A **hermetic trivial `kind: export` plugin** — a `cdylib` exporting the export C ABI. It declares
-//! it carries the single [`ExportStream::Metrics`] stream, COUNTS every delivered batch, and drops
-//! it. It is the in-tree ABI-crossing coverage for the `kind: export` seam, the
+//! it carries the [`ExportStream::Metrics`] and [`ExportStream::Logs`] streams, COUNTS every delivered
+//! batch, and drops it. It is the in-tree ABI-crossing coverage for the `kind: export` seam, the
 //! export-seam analogue of `busbar-secret-example-plugin` (secret) and
 //! `busbar-hook-test-plugin` (hook) — a real, loadable, signable export plugin for the `DynExport`
 //! dlopen seam to round-trip through.
 //!
-//! It does NO real telemetry export: `streams()` reports `[Metrics]` and `deliver()` drops the batch
+//! It does NO real telemetry export: `streams()` reports `[Metrics, Logs]` and `deliver()` drops the batch
 //! after counting it. Config JSON is ignored (this sink has no configurable shape), mirroring
 //! `busbar-store-example-plugin`'s config-less posture.
 
@@ -35,8 +35,11 @@ struct ExampleExport {
 const DELIVERED_TOTAL: &str = "example_export_deliveries_total";
 
 impl ExportHandler for ExampleExport {
+    /// `metrics` and `logs`: `logs` because it is the stream the host PUSHES today (the request-log
+    /// line), so an `export:` instance naming this plugin is actually handed batches — which is what
+    /// the composition root's "a dropped-in export plugin serves" test observes.
     fn streams(&self) -> Vec<ExportStream> {
-        vec![ExportStream::Metrics]
+        vec![ExportStream::Metrics, ExportStream::Logs]
     }
 
     /// Count the batch and drop it — this sink ships nothing anywhere.

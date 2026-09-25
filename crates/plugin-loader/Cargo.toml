@@ -126,3 +126,4 @@ libc = { workspace = true }
 [package.metadata.busbar.both-ways]
 store = "busbar-store-example-plugin"
 secret = "busbar-secret-example-plugin"
+export = "busbar-export-example-plugin"

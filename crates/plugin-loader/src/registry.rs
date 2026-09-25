@@ -139,14 +139,15 @@ impl LoadablePlugin {
 /// The `file` a linked row reports: it has no tarball.
 pub const LINKED_FILE: &str = "(linked)";
 
-/// The kinds the LINKED door serves: the cold kinds whose load is the one [`crate::Image`] load. A
-/// plane is linked through [`crate::link_plane`] (its HOT-lane airlock); an export sink's linked
-/// door is its own kind's work (item 141).
+/// The kinds the LINKED door serves: the cold kinds whose load is the one [`crate::Image`] load —
+/// an export sink's included (item 141). A plane is linked through [`crate::link_plane`] (its
+/// HOT-lane airlock).
 const LINKED_KINDS: &[&str] = &[
     busbar_plugin::cold::kind::STORE,
     busbar_plugin::cold::kind::SECRET,
     busbar_plugin::cold::kind::AUTH,
     busbar_plugin::cold::kind::HOOK,
+    busbar_plugin::cold::kind::EXPORT,
 ];
 
 /// A cold-lane plugin LINKED into this build (DECISIONS #2 rule (1)): the manifest its signed
@@ -427,7 +428,8 @@ impl PluginRegistry {
     }
 
     /// Open an EXPORT sink resolved by name or alias: verifies the resolved plugin's `kind` is
-    /// `export`, then loads the VERIFIED bytes over the kind-neutral C ABI and `open`s it with
+    /// `export`, then loads it over the kind-neutral C ABI (its verified bytes, or its linked
+    /// boundary) and `open`s it with
     /// `cfg_json`, returning a [`crate::export::DynExport`] whose declared streams were queried once at
     /// load. Same trust and load pipeline as store/secret/auth/hook; only the kind (and the consuming
     /// seam) differs. FAIL-CLOSED on any resolution/kind/load failure.
@@ -437,12 +439,7 @@ impl PluginRegistry {
         cfg_json: &str,
     ) -> Result<crate::export::DynExport, String> {
         let p = self.resolve_kind(name_or_alias, "export", "serve as a telemetry sink")?;
-        crate::export::load_export_from_bytes(
-            &p.lib_bytes,
-            cfg_json,
-            &p.manifest.name,
-            &p.manifest.kind,
-        )
+        crate::export::load_export_image(p.image(), cfg_json, &p.manifest.name, &p.manifest.kind)
     }
 
     /// Open a PLANE resolved by name or alias: verifies the resolved plugin's `kind` is `plane`, then

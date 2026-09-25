@@ -4,6 +4,7 @@
 //! Tests for `crates/plugin-loader/src/export.rs`.
 
 use super::*;
+use crate::{stage, wire_up_raw};
 use busbar_plugin::cold::{STATUS_OK, STATUS_PANIC, STATUS_UNSUPPORTED};
 use std::ffi::c_void;
 
@@ -329,7 +330,7 @@ fn status_folds_what_the_sink_reports_and_an_older_sink_reports_nothing() {
     let _guard = crate::observe::testing::exclusive();
 
     *STATUS_ANSWER.lock().unwrap_or_else(|p| p.into_inner()) = STATUS_OK;
-    sink.status().expect("a sink that answers status");
+    sink.status_report().expect("a sink that answers status");
     let folds: Vec<_> = crate::observe::testing::folds()
         .into_iter()
         .filter(|(who, ..)| who == "fake-call-export")
@@ -341,7 +342,7 @@ fn status_folds_what_the_sink_reports_and_an_older_sink_reports_nothing() {
     assert!(diagnostics.is_empty());
 
     *STATUS_ANSWER.lock().unwrap_or_else(|p| p.into_inner()) = STATUS_UNSUPPORTED;
-    let older = sink.status();
+    let older = sink.status_report();
     *STATUS_ANSWER.lock().unwrap_or_else(|p| p.into_inner()) = STATUS_OK;
     older.expect("a sink that predates the status op has nothing to report — not a fault");
     assert_eq!(
