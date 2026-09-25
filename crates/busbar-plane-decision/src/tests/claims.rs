@@ -5,10 +5,10 @@ use busbar_contract::grammar::Selector;
 fn both_claims_are_exact_paths_on_http() {
     assert_eq!(CLAIMS.len(), 2);
     for claim in CLAIMS {
-        assert_eq!(claim.transport, TRANSPORT_HTTP);
+        assert_eq!(claim.transport, TRANSPORT);
         assert!(matches!(claim.selector, Selector::ExactPath(_)));
         assert_eq!(claim.scheme, Some(SCHEME));
-        assert_eq!(claim.scheme_alternatives, &[ALT_BEARER]);
+        assert_eq!(claim.scheme_alternatives, &[ALT_TOKEN]);
     }
 }
 

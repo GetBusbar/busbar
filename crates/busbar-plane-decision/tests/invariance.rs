@@ -33,6 +33,31 @@ fn manifest() -> String {
         .expect("the manifest is readable")
 }
 
+/// Every OTHER plane crate directory under `crates/`, read live off the tree rather than spelled by
+/// name — the forbidden list below forbids by SHAPE (`busbar-plane-*`, minus this crate itself)
+/// instead of a plane naming its siblings, which is the broker-law violation DECISION #8 forbids in
+/// the first place. It also stays true automatically if the plane roster (#48) ever changes.
+fn sibling_plane_dirs() -> Vec<String> {
+    let crates_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("this crate sits under crates/")
+        .to_path_buf();
+    let this = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("this crate has a directory name")
+        .to_string();
+    let mut out: Vec<String> = std::fs::read_dir(&crates_dir)
+        .expect("crates/ is readable")
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .filter(|name| name.starts_with("busbar-plane-") && *name != this)
+        .collect();
+    out.sort();
+    out
+}
+
 fn walk(dir: &Path, f: &mut impl FnMut(&Path, &str)) {
     for entry in std::fs::read_dir(dir)
         .expect("the source directory is readable")
@@ -128,22 +153,20 @@ fn the_manifest_names_only_what_this_plane_may_name() {
             continue;
         }
         let name = line.split_whitespace().next().unwrap_or_default();
-        for forbidden in [
+        let mut forbidden: Vec<String> = vec![
             // The edge this plane alone had, and the one that reached banned source. It is a ban,
             // not an exception, since `UpstreamCreds` moved to `busbar-contract`.
-            "busbar-api",
-            "busbar-core",
-            "busbar-caps",
-            "busbar-kernel",
-            "busbar-unit-",
-            "busbar-plane-llm",
-            "busbar-plane-mcp",
-            "busbar-plane-a2a",
-            "busbar-plane-streaming",
-            "busbar-admin",
-        ] {
+            "busbar-api".to_string(),
+            "busbar-core".to_string(),
+            "busbar-caps".to_string(),
+            "busbar-kernel".to_string(),
+            "busbar-unit-".to_string(),
+            "busbar-admin".to_string(),
+        ];
+        forbidden.extend(sibling_plane_dirs());
+        for forbidden in &forbidden {
             assert!(
-                !name.starts_with(forbidden),
+                !name.starts_with(forbidden.as_str()),
                 "the plane depends on {name}, which is kernel-side or a sibling plane"
             );
         }

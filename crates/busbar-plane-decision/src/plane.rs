@@ -95,7 +95,7 @@ impl DecisionPlane {
                 lane: p.lane,
             },
             None => DestinationFacts::Upstream {
-                transport: crate::claims::TRANSPORT_HTTP,
+                transport: crate::claims::TRANSPORT,
                 address: busbar_contract::UpstreamAddress::socket(""),
                 lane: busbar_contract::ids::LaneId::new(""),
             },
@@ -369,7 +369,7 @@ impl Plane for DecisionPlane {
         // The core gateway credential, always: jev has no anonymous surface (unlike A2A's discovery
         // documents), because even `/v1/models` is billed per the provider's own account scoping.
         CredentialLocator {
-            narrowing: Some(SchemeAlt::new(crate::claims::ALT_BEARER)),
+            narrowing: Some(SchemeAlt::new(crate::claims::ALT_TOKEN)),
             from_session: ctx
                 .session()
                 .is_some_and(busbar_contract::unit::SessionView::is_bound),
