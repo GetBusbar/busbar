@@ -357,6 +357,105 @@ fn every_flipped_plane_asks_for_its_runner_under_its_declaration_key() {
     assert_eq!(busbar_llm::PLANE_KEY, busbar_llm::PLANE_DECLARATION.key);
 }
 
+// ── THE KERNEL-LOOP AXES, READ OFF THE LINKED TABLE ────────────────────────────────────────────
+// Which planes ride the unified kernel loop is manifest data: a `[package.metadata.busbar.linked-axes]`
+// row carrying `gauntlet-one-shot` or `gauntlet-session` puts the plane's declaration key in
+// `LINKED.gauntlet_one_shot` / `LINKED.gauntlet_session`, and `install()` flips every key it finds
+// there. These tests ask the registered roster, never a plane by name.
+
+/// The declaration keys this build's linked table puts on either kernel-loop axis.
+fn gauntlet_rows() -> std::collections::BTreeSet<&'static str> {
+    crate::LINKED
+        .gauntlet_one_shot
+        .iter()
+        .chain(crate::LINKED.gauntlet_session)
+        .copied()
+        .collect()
+}
+
+/// EVERY ROW IS FLIPPED ONTO THE RUNNER ITS AXIS NAMES: `install()` registers the one-shot runner
+/// under each `gauntlet-one-shot` row's key and the session runner under each `gauntlet-session`
+/// row's, and each such key is a plane this build links.
+#[test]
+fn install_flips_every_linked_gauntlet_row_onto_the_runner_its_axis_names() {
+    crate::root::gauntlet_install::install();
+    let linked = linked_planes();
+    for key in crate::LINKED.gauntlet_one_shot {
+        assert!(
+            linked.contains(*key),
+            "`{key}` is on the gauntlet-one-shot axis and is no linked plane"
+        );
+        assert!(
+            busbar_kernel::plane_host::gauntlet_runner_registered(key),
+            "install() must flip the linked plane `{key}` onto the unified kernel loop's one-shot runner"
+        );
+    }
+    for key in crate::LINKED.gauntlet_session {
+        assert!(
+            linked.contains(*key),
+            "`{key}` is on the gauntlet-session axis and is no linked plane"
+        );
+        assert!(
+            busbar_kernel::plane_host::session_runner_registered(key),
+            "install() must flip the linked plane `{key}` onto the unified kernel loop's session runner"
+        );
+    }
+}
+
+/// EVERY FLIP LANDS WHERE ITS PLANE LOOKS: for each kernel-loop row, the key its plane's gauntlet
+/// asks the host-selection seam for (`<crate>::PLANE_KEY`) is the declaration key `install()` flips
+/// it under. A drift would register a runner nobody asks for, and the plane would run the inline
+/// fallback with its flip still "present".
+#[test]
+fn every_gauntlet_row_is_flipped_under_the_key_its_plane_asks_for() {
+    let asks: std::collections::BTreeSet<&str> = crate::LINKED_GAUNTLET_ASKS
+        .iter()
+        .map(|(declared, _)| *declared)
+        .collect();
+    assert_eq!(
+        asks,
+        gauntlet_rows(),
+        "the generated ask table covers exactly the kernel-loop rows"
+    );
+    for (declared, asked) in crate::LINKED_GAUNTLET_ASKS {
+        assert_eq!(
+            declared, asked,
+            "plane `{declared}` is flipped under its declaration key and its gauntlet asks for a \
+             runner under `{asked}`"
+        );
+    }
+}
+
+/// EVERY LINKED PLANE THE TELLER LEDGER RUNS RIDES THE KERNEL LOOP. `qa/teller-steps.json` holds a
+/// row of Teller steps for each plane the unified loop carries (DECISIONS #28); every such plane this
+/// build links must be on a kernel-loop axis and flipped. Drop a row's gauntlet axis from the
+/// manifest and that plane is unflipped: this goes red.
+#[test]
+fn every_linked_plane_the_teller_ledger_runs_rides_the_kernel_loop() {
+    crate::root::gauntlet_install::install();
+    let steps = ledger("teller-steps.json");
+    let rows = gauntlet_rows();
+    let linked = linked_planes();
+    let owed: Vec<&String> = steps["matrix"]
+        .as_object()
+        .expect("`matrix` is an object")
+        .keys()
+        .filter(|plane| linked.contains(*plane))
+        .collect();
+    for plane in owed {
+        assert!(
+            rows.contains(plane.as_str()),
+            "the linked plane `{plane}` runs the Teller steps and its linked-axes row carries no \
+             gauntlet axis: install() never flips it onto the unified kernel loop"
+        );
+        assert!(
+            busbar_kernel::plane_host::gauntlet_runner_registered(plane)
+                || busbar_kernel::plane_host::session_runner_registered(plane),
+            "the linked plane `{plane}` has no kernel-loop runner registered after install()"
+        );
+    }
+}
+
 /// THE ROOT'S PROSE AGREES WITH `install()` (item 238).
 ///
 /// The four tests above prove `install()` registers the kernel-loop runner for every plane in the

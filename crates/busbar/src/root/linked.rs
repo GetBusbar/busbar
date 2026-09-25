@@ -77,6 +77,10 @@ pub struct Linked {
     pub stdio_serve: &'static [StdioServe],
     /// The export axis: each linked export sink's statement and boundary (see [`LinkedExport`]).
     pub exports: &'static [LinkedExport],
+    /// The kernel-loop axes (#28): the declaration key of each plane `gauntlet_install::install()`
+    /// flips onto the unified loop's ONE-SHOT runner, and of each it flips onto the SESSION runner.
+    pub gauntlet_one_shot: &'static [&'static str],
+    pub gauntlet_session: &'static [&'static str],
 }
 
 /// A linked EXPORT sink's entry (K9b): `(name, alias, declares, boundary)` — what its signed tarball

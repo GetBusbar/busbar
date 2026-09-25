@@ -37,6 +37,18 @@ pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("compose", "compose", "compose"),
     ("stdio-serve", "stdio_serve", "stdio_serve"),
     ("exports", "exports", "EXPORT"),
+    // The unified kernel loop (#28): the key a plane is flipped onto its one-shot or session runner
+    // under — its declaration's key, so these two rows ride on `plane` (refused without it).
+    (
+        "gauntlet-one-shot",
+        "gauntlet_one_shot",
+        "PLANE_DECLARATION.key",
+    ),
+    (
+        "gauntlet-session",
+        "gauntlet_session",
+        "PLANE_DECLARATION.key",
+    ),
 ];
 
 /// The root-bound seams: an axis a crate DRIVES rather than fills, emitted as a cfg the root binds
@@ -151,6 +163,11 @@ pub(crate) fn linked_source(
                 "Cargo.toml: `{krate}` names an unknown linked axis `{axis}`"
             );
         }
+        let gauntlet = list.iter().filter(|a| a.starts_with("gauntlet-")).count();
+        assert!(
+            gauntlet == 0 || (gauntlet == 1 && list.iter().any(|a| a == "plane")),
+            "Cargo.toml: `{krate}` rides the kernel loop on one gauntlet axis, beside `plane`"
+        );
         list
     };
 
@@ -211,6 +228,23 @@ pub(crate) fn linked_source(
         out.push_str("],\n");
     }
     out.push_str("};\n");
+    // Test builds only: each gauntlet row's declaration key beside the key its plane's gauntlet asks
+    // the host-selection seam for (`<crate>::PLANE_KEY`), so the flip is proven to land where the
+    // plane looks.
+    out.push_str(
+        "/// Each kernel-loop row's (declaration key, key its gauntlet asks its runner under).\n\
+         #[cfg(test)]\n\
+         static LINKED_GAUNTLET_ASKS: &[(&str, &str)] = &[\n",
+    );
+    for ((entry, list), (_, krate)) in linked.iter().zip(&on) {
+        if list.iter().any(|a| a.starts_with("gauntlet-")) {
+            out.push_str(&format!(
+                "    ({entry}::PLANE_DECLARATION.key, {}::PLANE_KEY),\n",
+                ident(krate)
+            ));
+        }
+    }
+    out.push_str("];\n");
 
     out.push_str(
         "/// Every enabled root unit, in manifest order.\n\

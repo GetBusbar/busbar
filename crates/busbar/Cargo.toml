@@ -335,11 +335,13 @@ export-file = "busbar-export-file"
 # kernel-side), `protocols`, `path-ingress`, `body-ingress`, `protocol-seams`, `diagnostics`,
 # `ws-arrivals`, `on-host`, `compose`, `stdio-serve`, `exports` — each an item of the crate's entry
 # module — and the root-bound seams it drives: `egress`, `plane-sections`, `admin-envelope`.
+# `gauntlet-one-shot` / `gauntlet-session`: the plane rides the unified kernel loop (#28) —
+# `gauntlet_install::install()` flips its `PLANE_DECLARATION.key` onto the one-shot or session runner.
 [package.metadata.busbar.linked-axes]
-proto-llm = "plane protocols path-ingress body-ingress protocol-seams on-host"
-plane-mcp = "plane protocols diagnostics egress stdio-serve"
-plane-a2a = "plane diagnostics egress plane-sections admin-envelope"
-plane-voice = "plane diagnostics ws-arrivals compose"
+proto-llm = "plane protocols path-ingress body-ingress protocol-seams on-host gauntlet-one-shot"
+plane-mcp = "plane protocols diagnostics egress stdio-serve gauntlet-one-shot"
+plane-a2a = "plane diagnostics egress plane-sections admin-envelope gauntlet-one-shot"
+plane-voice = "plane diagnostics ws-arrivals compose gauntlet-session"
 plane-decision = "plane"
 export-file = "exports"
 
