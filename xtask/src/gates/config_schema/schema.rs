@@ -631,10 +631,72 @@ fn norm_type(t: &str) -> (String, bool) {
     (t, false)
 }
 
+/// THE PRE-PASS'S LIFT DECLARATIONS, read from its own source: every key it lifts
+/// (`const LIFTED_*KEYS` string lists) and, per carrier TYPE, the key that type is lifted from
+/// (`impl LiftableSection for T { const KEY … = <literal> | LIFTED_*KEYS[n]; }`).
+struct Lift {
+    keys: BTreeSet<String>,
+    carriers: BTreeMap<String, String>,
+}
+
+impl Lift {
+    fn read(sources: &[(String, Vec<char>)]) -> Result<Lift, String> {
+        let mut keys: BTreeSet<String> = BTreeSet::new();
+        let mut lists: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (_, src) in sources {
+            for (name, body) in scan::lift_lists_named(src) {
+                let lits = scan::string_literals(&body);
+                keys.extend(lits.iter().cloned());
+                lists.entry(name).or_default().extend(lits);
+            }
+        }
+        let mut carriers: BTreeMap<String, String> = BTreeMap::new();
+        for (path, src) in sources {
+            for (ty, expr) in scan::lift_carriers(src) {
+                // An expression this reader cannot resolve to a literal is left unrecorded: the
+                // carrier then matches by its field's own name, exactly as an undeclared one does,
+                // and a key it failed to carry is still an orphan below — never a silent pass.
+                let Some(key) = resolve_lift_key(&expr, &lists) else {
+                    continue;
+                };
+                if let Some(prior) = carriers.insert(ty.clone(), key.clone()) {
+                    if prior != key {
+                        return Err(format!(
+                            "config-schema: the carrier type '{ty}' is declared lifted from both \
+                             '{prior}' and '{key}' ({path}). One carrier type carries one key."
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(Lift { keys, carriers })
+    }
+
+    /// The wire key a carrier field of type `ty` is lifted from, when the pre-pass declares one.
+    fn key_of(&self, ty: &str) -> Option<String> {
+        let bare = ty.rsplit("::").next().unwrap_or(ty).trim();
+        self.carriers.get(bare).cloned()
+    }
+}
+
+/// `"lit"` → `lit`; `[path::]LIFTED_*KEYS[n]` → the n-th literal of that list; anything else `None`.
+fn resolve_lift_key(expr: &str, lists: &BTreeMap<String, Vec<String>>) -> Option<String> {
+    let e = expr.trim();
+    if let Some(lit) = scan::string_literals(e).into_iter().next() {
+        if e.starts_with('"') && e.ends_with('"') {
+            return Some(lit);
+        }
+    }
+    let (head, idx) = e.strip_suffix(']')?.rsplit_once('[')?;
+    let name = head.rsplit("::").next()?.trim();
+    let n: usize = idx.trim().parse().ok()?;
+    lists.get(name)?.get(n).cloned()
+}
+
 fn parse_struct(
     body: &str,
     csd: &Container,
-    lifted: &BTreeSet<String>,
+    lifted: &Lift,
     carried: &mut BTreeSet<String>,
 ) -> Result<Map<String, Value>, String> {
     let mut fields: Map<String, Value> = Map::new();
@@ -662,10 +724,17 @@ fn parse_struct(
             // THE PRE-PASS EXCEPTION. A skipped field whose wire key the pre-pass lifts is still
             // grammar. It is recorded OPTIONAL because a carrier is: `skip` requires `Default`, so
             // an absent key leaves the default in place.
-            if lifted.contains(&serde_name) {
-                let (inner, _) = norm_type(&ty);
-                fields.insert(serde_name.clone(), field_value(&inner, true));
-                carried.insert(serde_name);
+            //
+            // The carrier's wire key is read off its TYPE when the pre-pass declares one for it
+            // (`impl LiftableSection for T`), and off the field's own serde name otherwise: a
+            // carrier field need not be named after the key it is lifted from (the endpoint
+            // carrier is the field `endpoint`), and the fingerprint records the KEY — what an
+            // operator writes — never the Rust ident.
+            let (inner, _) = norm_type(&ty);
+            let key = lifted.key_of(&inner).unwrap_or(serde_name);
+            if lifted.keys.contains(&key) {
+                fields.insert(key.clone(), field_value(&inner, true));
+                carried.insert(key);
             }
             continue;
         }
@@ -823,7 +892,7 @@ fn manual_de_detail(
 fn declared_shape(
     src: &[char],
     item: &scan::Item,
-    lifted: &BTreeSet<String>,
+    lifted: &Lift,
     carried: &mut BTreeSet<String>,
 ) -> Result<Map<String, Value>, String> {
     let csd = container_serde(&item.attrs);
@@ -890,12 +959,7 @@ pub fn extract(files: &[(String, String)]) -> Result<Value, String> {
     // The pre-pass's lift list, read from its own declarations and BEFORE any declaration is
     // parsed: it decides which skipped fields are still grammar, and a list declared in one file
     // governs a carrier declared in another.
-    let mut lifted: BTreeSet<String> = BTreeSet::new();
-    for (_, src) in &sources {
-        for body in scan::lift_lists(src) {
-            lifted.extend(scan::string_literals(&body));
-        }
-    }
+    let lifted = Lift::read(&sources)?;
     let mut carried: BTreeSet<String> = BTreeSet::new();
 
     let mut decls: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
@@ -1001,7 +1065,7 @@ pub fn extract(files: &[(String, String)]) -> Result<Value, String> {
 
     // EVERY LIFTED KEY MUST HAVE A CARRIER FIELD THAT WAS KEPT BECAUSE OF IT. Without this the
     // lift list would be a way to keep a field in the fingerprint after deleting it.
-    let orphans: Vec<&String> = lifted.difference(&carried).collect();
+    let orphans: Vec<&String> = lifted.keys.difference(&carried).collect();
     if !orphans.is_empty() {
         return Err(format!(
             "config-schema: the config pre-pass lifts {orphans:?} but no struct in the tracked \

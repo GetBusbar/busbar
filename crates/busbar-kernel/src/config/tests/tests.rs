@@ -55,7 +55,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         decisions: Default::default(),
         listen: DEFAULT_LISTEN_ADDR.into(),
         // Left at its type default (unset).
-        mcp: Default::default(),
+        endpoint: Default::default(),
         oauth_as: None,
         public_url: None,
         tls: None,

@@ -383,14 +383,6 @@ impl<'de> serde::Deserialize<'de> for DecisionsSection {
 #[derive(Debug, Default)]
 pub struct EndpointSection(pub Option<Box<dyn PlaneEndpointCfg>>);
 
-impl EndpointSection {
-    /// The top-level key the endpoint block is lifted from, read off the pre-pass's lift list — the
-    /// one place the key is spelled (see [`DecisionsSection::SECTION`] for why it is a list entry).
-    /// It is 1.6.0-additive (`v1.5.3` and `v1.5.5` ship no such `DeployCfg` field, item 2), so no
-    /// frozen-wire exemption covers it.
-    pub(crate) const SECTION: &'static str = crate::config::prepass::LIFTED_TOP_LEVEL_KEYS[0];
-}
-
 impl<'de> serde::Deserialize<'de> for EndpointSection {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -405,11 +397,6 @@ impl<'de> serde::Deserialize<'de> for EndpointSection {
         .map(EndpointSection)
     }
 }
-
-/// The spelling `DeployCfg`'s endpoint carrier field is declared with, because
-/// `config/config-schema.snapshot.json` records the field's type under this name and the snapshot
-/// must not move. Nothing else names it: the carrier is [`EndpointSection`].
-pub type McpEndpointSection = EndpointSection;
 
 /// EVERY TOP-LEVEL CONFIG SECTION a bare hook reference could be reaching onto, DERIVED from the two
 /// tables that declare the config grammar rather than written as a literal.

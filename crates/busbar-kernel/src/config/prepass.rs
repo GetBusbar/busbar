@@ -66,7 +66,7 @@ trait LiftableSection: for<'de> Deserialize<'de> {
 }
 
 impl LiftableSection for EndpointSection {
-    const KEY: &'static str = EndpointSection::SECTION;
+    const KEY: &'static str = LIFTED_TOP_LEVEL_KEYS[0];
     fn bank(self, into: &mut Lifted) {
         into.endpoint = Some(self);
     }
@@ -125,7 +125,7 @@ impl LiftableSection for crate::config::AuthPolicyCfg {
 /// authorization server; then, one per registered plane that declares a top-level config section
 /// of its own — a remote-endpoint registry, a named-definition registry, a session-policy section,
 /// and a decision-model registry. The ORDER is read by position: the endpoint and decision-model
-/// carriers take their key from entries 0 and 5 (`EndpointSection::SECTION`,
+/// carriers take their key from entries 0 and 5 (`LiftableSection for EndpointSection`,
 /// `DecisionsSection::SECTION`), so this list is the only place either key is spelled.
 pub(crate) const LIFTED_TOP_LEVEL_KEYS: &[&str] =
     &["mcp", "oauth_as", "tools", "agents", "streams", "decisions"];
@@ -161,7 +161,7 @@ impl Lifted {
         deploy.plane_rate_cards = self.plane_rate_cards;
         deploy.plane_fees = self.plane_fees;
         if let Some(v) = self.endpoint {
-            deploy.mcp = v;
+            deploy.endpoint = v;
         }
         if let Some(v) = self.oauth_as {
             deploy.oauth_as = v;

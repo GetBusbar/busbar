@@ -86,7 +86,7 @@ fn base_deploy() -> DeployCfg {
         streams: Default::default(),
         decisions: Default::default(),
         listen: DEFAULT_LISTEN_ADDR.into(),
-        mcp: Default::default(),
+        endpoint: Default::default(),
         oauth_as: None,
         public_url: None,
         tls: None,

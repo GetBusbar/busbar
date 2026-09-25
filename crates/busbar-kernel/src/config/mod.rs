@@ -49,8 +49,9 @@ pub use crate::breaker::status_class_from_str;
 use crate::diagnostics::{
     diag_warn, CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
 };
-use crate::plane::config::McpEndpointSection;
-use crate::plane::config::{AgentsSection, DecisionsSection, StreamsSection, ToolsSection};
+use crate::plane::config::{
+    AgentsSection, DecisionsSection, EndpointSection, StreamsSection, ToolsSection,
+};
 use busbar_kernel_ledger::cost::compose_plane_cards;
 
 /// Reject an env-var value that could break out of the surrounding YAML scalar when substituted
@@ -1188,9 +1189,12 @@ pub struct DeployCfg {
     ///
     /// A CARRIER, not a parsed field: the key is lifted off the document by
     /// [`crate::config::prepass`] before this struct parses, so it is never in this struct's
-    /// accepted key set and never named in its unknown-key refusal. See that module for why.
+    /// accepted key set and never named in its unknown-key refusal. See that module for why. The
+    /// field is named for what it carries, not for its wire key: the pre-pass ties the key to this
+    /// carrier's TYPE (`LiftableSection for EndpointSection`), and the config-schema fingerprint
+    /// records it under that key.
     #[serde(skip)]
-    pub mcp: McpEndpointSection,
+    pub endpoint: EndpointSection,
     /// `oauth_as:` — busbar AS an OAuth 2.1 authorization server, for the deployment that has no
     /// identity provider (or has one that will not do dynamic registration). ABSENT BY DEFAULT, and
     /// absent means nothing is built: see `crate::oauth_as`.
@@ -2726,7 +2730,7 @@ pub fn resolve(
     // collected verbatim. With that plane compiled out there is no hook: a PRESENT `mcp:` block
     // names a plane this build does not carry, so it is refused (the config deletion-gate leg) with
     // the same wording.
-    let endpoint_block = deploy.mcp.0.as_ref();
+    let endpoint_block = deploy.endpoint.0.as_ref();
     // The endpoint's owning plane is looked up by its CONFIG SECTION (the `tools:` plane owns the
     // `mcp:` door), so no plane key is named here. Compiled out ⇒ no decl ⇒ the deletion-gate refusal.
     let endpoint_section = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2];

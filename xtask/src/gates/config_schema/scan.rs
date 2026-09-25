@@ -553,6 +553,16 @@ pub fn type_aliases(src: &[char]) -> Vec<(String, String)> {
 
 /// `const\s+LIFTED_[A-Z0-9_]*KEYS\s*:\s*&\[&(?:'static\s+)?str\]\s*=\s*&\[(.*?)\]\s*;`
 pub fn lift_lists(src: &[char]) -> Vec<String> {
+    lift_lists_named(src)
+        .into_iter()
+        .map(|(_, body)| body)
+        .collect()
+}
+
+/// [`lift_lists`] with each list's own NAME (`LIFTED_TOP_LEVEL_KEYS`, …) beside its body, so a
+/// carrier whose key is written as an index into a list (`LIFTED_TOP_LEVEL_KEYS[0]`) can be resolved
+/// to the literal it names — see [`lift_carriers`].
+pub fn lift_lists_named(src: &[char]) -> Vec<(String, String)> {
     let n = src.len();
     let mut out = Vec::new();
     let mut i = 0usize;
@@ -632,10 +642,76 @@ pub fn lift_lists(src: &[char]) -> Vec<String> {
         }
         match end {
             Some(e) => {
-                out.push(text(src, body_start..e));
+                out.push((text(src, w..kend), text(src, body_start..e)));
                 i = e + 1;
             }
             None => i += 1,
+        }
+    }
+    out
+}
+
+// ── LIFT_CARRIER_RE ──────────────────────────────────────────────────────────────────────────────
+
+/// `impl\s+LiftableSection\s+for\s+(TYPE)\s*\{ … const\s+KEY\s*:[^=]*=\s*(EXPR)\s*; … \}` — every
+/// carrier TYPE the pre-pass lifts a key into, with the (unevaluated) expression its `KEY` const is
+/// written as. This is what ties a carrier FIELD to its wire key when the field's own Rust name is
+/// not the key (the endpoint carrier is the field `endpoint`, lifted from the key its owning plane
+/// declares): the field is matched by its TYPE, the type by this impl, the impl's key by
+/// [`lift_lists_named`]. A type written with generics (`Option<…>`) is not recorded — no carrier
+/// field is matched by such a type, it is matched by its own name exactly as before.
+pub fn lift_carriers(src: &[char]) -> Vec<(String, String)> {
+    const HEAD: &str = "LiftableSection";
+    let n = src.len();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        if !(starts_with(src, i, "impl") && boundary(src, i) && boundary(src, i + 4)) {
+            i += 1;
+            continue;
+        }
+        let mut k = skip_ws(src, i + 4);
+        if !(starts_with(src, k, HEAD) && boundary(src, k + HEAD.len())) {
+            i += 1;
+            continue;
+        }
+        k = skip_ws(src, k + HEAD.len());
+        if !(starts_with(src, k, "for") && boundary(src, k + 3)) {
+            i += 1;
+            continue;
+        }
+        k = skip_ws(src, k + 3);
+        let ts = k;
+        while k < n && src[k] != '{' {
+            k += 1;
+        }
+        if k >= n {
+            break;
+        }
+        let ty = text(src, ts..k).trim().to_string();
+        let end = match_block(src, k);
+        let body = &src[k..end.min(n)];
+        i = end.max(k + 1);
+        if ty.contains('<') {
+            continue;
+        }
+        let bare = ty.rsplit("::").next().unwrap_or(&ty).trim().to_string();
+        let mut b = 0usize;
+        while b < body.len() {
+            if starts_with(body, b, "const") && boundary(body, b) {
+                let w = skip_ws(body, b + 5);
+                if starts_with(body, w, "KEY") && boundary(body, w + 3) {
+                    let Some(eq) = (w..body.len()).find(|x| body[*x] == '=') else {
+                        break;
+                    };
+                    let Some(semi) = (eq..body.len()).find(|x| body[*x] == ';') else {
+                        break;
+                    };
+                    out.push((bare.clone(), text(body, eq + 1..semi).trim().to_string()));
+                    break;
+                }
+            }
+            b += 1;
         }
     }
     out

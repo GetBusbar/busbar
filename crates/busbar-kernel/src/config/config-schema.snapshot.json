@@ -450,7 +450,7 @@
         },
         "mcp": {
           "optional": true,
-          "type": "McpEndpointSection"
+          "type": "EndpointSection"
         },
         "models": {
           "optional": false,
