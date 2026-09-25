@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/plugin-sdk/src/pack.rs`.
+//! Tests for `crates/plugin-loader/src/pack.rs`.
 
 use super::*;
 

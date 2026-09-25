@@ -7,6 +7,25 @@ rust-version = "1.97"
 description = "The busbar plugin subsystem: signed-tarball discovery, in-memory unpack + verification, the three-phase (structural/trust/conflict) load validation, the name/alias registry, and the memfd/private-temp dynamic loader over the plugin C ABI. All FFI unsafe is isolated here so the engine crate keeps its forbid(unsafe_code) invariant."
 license = "Apache-2.0"
 
+# AUTHOR-SIDE PACKAGING (roster def 14): the `busbar-plugin-pack` CLI. It drives this crate's own
+# signing engine (`sign`) and tarball writer (`tarball`), so it lives beside them. It moved here from
+# `busbar-plugin-sdk` (batch 68/69 D1): an optional feature on the SDK is still an edge in the closure
+# of every plugin that names the SDK (`kind-isolation:closure` scores the union of feature
+# configurations), and this crate carries `busbar-kernel-ledger` and `busbar-kernel-wal`. Here it
+# reaches no plugin's closure: no plugin-kind crate may name this crate.
+#
+# OPTIONAL ON PURPOSE. This crate is in the `busbar` binary's graph, and `jsonschema` is tooling that
+# must never reach the engine. Behind `required-features`, a default build of the loader (and of
+# `busbar`) compiles none of it. Build the tool with
+#   cargo build --release -p busbar-plugin-loader --features pack --bin busbar-plugin-pack
+[features]
+pack = ["dep:busbar-secret-ref", "dep:jsonschema"]
+
+[[bin]]
+name = "busbar-plugin-pack"
+path = "src/pack.rs"
+required-features = ["pack"]
+
 [dependencies]
 busbar-api = { path = "../api" }
 busbar-plugin = { path = "../busbar-plugin" }
@@ -51,6 +70,16 @@ tar = { workspace = true }
 flate2 = { workspace = true }
 # Random staging-directory suffix (a pid alone is predictable to a pre-planter).
 getrandom = { workspace = true }
+# ── the `pack` feature's own dependencies; see the note above [features]. OPTIONAL, never default.
+# (`hex` and `getrandom` above are this crate's own unconditional deps; `keygen` draws its ed25519
+# seed from the OS RNG through the same `getrandom`.)
+# The extracted SecretRef reference type, so the x-busbar-secret `oneOf` shape is derived from the
+# REAL type the engine deserializes rather than a hand-written parallel copy that can drift.
+busbar-secret-ref = { path = "../secret-ref", optional = true }
+# Pack-time gate for --settings-schema-file: reject a syntactically-invalid JSON Schema 2020-12
+# document at PACK time, not at UI-render time on some operator's machine. Tooling-only, and behind
+# the feature, so it never reaches a plugin or the engine.
+jsonschema = { workspace = true, optional = true }
 
 [dev-dependencies]
 # The end-to-end DlopenPolicy test drives the async RoutingPolicy methods, so the test needs a

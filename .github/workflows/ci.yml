@@ -2103,20 +2103,22 @@ jobs:
             features: busbar-oauth2/test-support
             tests: -p busbar-oauth2
           # The author-side packaging CLI (roster def 14) is a `[[bin]]` behind `required-features`
-          # ON PURPOSE: DECISIONS #84 makes the SDK's own busbar closure the thing every plugin
-          # links, so `busbar-plugin-pack`'s edge to the host-facing loader -- which carries the
-          # ledger -- must not be a plain dependency. `required-features` means the DEFAULT build
-          # never type-checks pack.rs, which is precisely the rot this job exists to catch, so the
-          # feature earns its own row rather than a declaration line.
+          # ON PURPOSE. It lives on `busbar-plugin-loader` (batch 68/69 D1), beside the signing engine
+          # and tarball writer it drives; it moved OFF `busbar-plugin-sdk` because DECISIONS #84 makes
+          # the SDK's own busbar closure the thing every plugin links, and even an optional `pack`
+          # feature there put the loader -- which carries the ledger -- into six plugin closures.
+          # `required-features` means the DEFAULT build never type-checks pack.rs, which is precisely
+          # the rot this job exists to catch, so the feature earns its own row rather than a
+          # declaration line.
           #
           # STRUCK BY MISTAKE ONCE (afe12ec00, "repoint every check that still named a crate the
           # folds deleted"): that commit correctly struck the `mcp-codec test-support` row beside
           # this one, because `busbar-mcp-codec` was folded away -- and took this row with it.
-          # `busbar-plugin-sdk` was never folded and `pack` never stopped existing, so the only
-          # thing that changed was that nothing compiled `src/pack.rs` any more.
-          - name: sdk pack
-            features: busbar-plugin-sdk/pack
-            tests: -p busbar-plugin-sdk
+          # `pack` never stopped existing, so the only thing that changed was that nothing
+          # compiled `src/pack.rs` any more.
+          - name: loader pack
+            features: busbar-plugin-loader/pack
+            tests: -p busbar-plugin-loader
           # The contract's ONE dev-only seam (#65, item 112): `plugin::TestKernelSeal` and its two
           # impls in `caps/token.rs` compile only under `test-seal`. Twelve crates switch it on from
           # `[dev-dependencies]`, so the plain workspace test build unifies it in -- but a row that
