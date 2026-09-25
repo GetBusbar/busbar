@@ -531,6 +531,7 @@ fn cohere_stream_citation_end_pairs_with_start() {
     let w = CohereWriter;
 
     let citation = IrCitation {
+        domain: None,
         kind: Some("char_location".to_string()),
         cited_text: Some("grounded".to_string()),
         title: None,

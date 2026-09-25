@@ -1079,6 +1079,8 @@ impl ProtocolWriter for ResponsesWriter {
                 // buffered body.
                 &crate::ir::IrDelta::ThinkingDelta(_)
                 | crate::ir::IrDelta::RedactedReasoningDelta(_) => Vec::new(),
+                // IR-21: no Responses stream event carries a generated media part.
+                crate::ir::IrDelta::MediaDelta(_) => Vec::new(),
                 // Responses carries citations as `annotations` on the assembled `output_text`
                 // part, not as a standalone delta frame — so there is nothing to emit HERE, but the
                 // citations must survive until `BlockStop` builds that part. Buffer them; dropping

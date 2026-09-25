@@ -961,9 +961,15 @@ fn write_bedrock_citation(c: &crate::ir::IrCitation) -> Option<serde_json::Value
                  union and this citation's `documentChar` member already fills it"
             );
         } else {
+            // BED-14 (round 3 item 14): `domain` beside the url when the IR carries it.
+            let mut web = serde_json::Map::new();
+            web.insert("url".to_string(), serde_json::json!(u));
+            if let Some(d) = c.domain.as_deref().filter(|d| !d.is_empty()) {
+                web.insert("domain".to_string(), serde_json::json!(d));
+            }
             obj.insert(
                 "location".to_string(),
-                serde_json::json!({ "web": { "url": u } }),
+                serde_json::json!({ "web": serde_json::Value::Object(web) }),
             );
         }
     }
@@ -1040,7 +1046,13 @@ fn read_bedrock_citation(c: &serde_json::Value) -> crate::ir::IrCitation {
                 .collect()
         })
         .unwrap_or_default();
+    // BED-14 (round 3 item 14): the `web` location's `domain` member rides IrCitation.domain.
+    let domain = member("web")
+        .and_then(|m| m.get("domain"))
+        .and_then(|d| d.as_str())
+        .map(String::from);
     crate::ir::IrCitation {
+        domain,
         kind: kind.map(String::from),
         cited_text: (!quoted.is_empty()).then(|| quoted.concat()),
         title: c.get("title").and_then(|t| t.as_str()).map(String::from),
@@ -1553,6 +1565,33 @@ fn bedrock_signature_origin(model: Option<&str>) -> Option<crate::ir::IrSignatur
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
     names_provider.then_some(crate::ir::IrSignatureOrigin::BedrockOther)
+}
+
+/// Converse request member for the processing tier (IR-04, round 3 item 14).
+const FIELD_SERVICE_TIER: &str = "serviceTier";
+
+/// Converse `serviceTier: {type}` → the IR tier: `priority` → Priority, `default` → Default,
+/// `flex` → Flex. `reserved` (provisioned capacity) has no IR tier: `None`.
+fn read_bedrock_service_tier(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> Option<crate::ir::IrServiceTier> {
+    match obj.get(FIELD_SERVICE_TIER)?.get("type")?.as_str()? {
+        "priority" => Some(crate::ir::IrServiceTier::Priority),
+        "default" => Some(crate::ir::IrServiceTier::Default),
+        "flex" => Some(crate::ir::IrServiceTier::Flex),
+        _ => None,
+    }
+}
+
+/// The IR tier → the Converse `serviceTier.type` word, or `None` for a tier Converse has no word
+/// for (Auto, Scale): dropped with a warn and reported by `dropped_egress_controls`.
+fn write_bedrock_service_tier(tier: crate::ir::IrServiceTier) -> Option<&'static str> {
+    match tier {
+        crate::ir::IrServiceTier::Priority => Some("priority"),
+        crate::ir::IrServiceTier::Default => Some("default"),
+        crate::ir::IrServiceTier::Flex => Some("flex"),
+        crate::ir::IrServiceTier::Auto | crate::ir::IrServiceTier::Scale => None,
+    }
 }
 
 /// Converse `requestMetadata` (string → string, filters the caller's invocation logs) → the typed

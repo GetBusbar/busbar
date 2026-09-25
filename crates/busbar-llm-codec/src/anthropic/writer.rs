@@ -830,6 +830,9 @@ impl ProtocolWriter for AnthropicWriter {
                     // native redacted shape. This PRESERVES the encrypted reasoning-reuse blob
                     // end-to-end on a cross-protocol stream (e.g. Bedrock-backend→Anthropic-client), the
                     // blob a later turn must replay for extended-thinking continuity.
+                    // IR-21: an Anthropic assistant message has no image / attachment block (ANT-15);
+                    // its start emitted no frame either.
+                    IrDelta::MediaDelta(_) => return None,
                     IrDelta::RedactedReasoningDelta(bytes) => {
                         // Writing the start and marking the index open are the SAME decision: this
                         // is the frame the paired `content_block_stop` closes. `mark_block_open`

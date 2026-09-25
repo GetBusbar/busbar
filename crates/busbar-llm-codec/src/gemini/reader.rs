@@ -1044,7 +1044,13 @@ impl ProtocolReader for GeminiReader {
                                     // for a late citation (GEM-20); new text after it is a NEW block.
                                     let ti = match state.text_index {
                                         Some(ti) if !state.text_block_closed => ti,
-                                        _ => state.claim_ir_index(),
+                                        _ => {
+                                            // A NEW text block: its citations are relative to
+                                            // where it begins in the streamed answer (GEM-16).
+                                            state.text_block_start =
+                                                state.streamed_text.chars().count();
+                                            state.claim_ir_index()
+                                        }
                                     };
                                     state.text_block_closed = false;
                                     if state.thinking_block_open {
@@ -1229,10 +1235,22 @@ impl ProtocolReader for GeminiReader {
             // the first citation once per chunk. A shorter-than-watermark list (an upstream that
             // resets rather than accumulates) yields an empty tail and no delta, never a panic.
             let all_citations = read_gemini_citations(candidate, Some(&state.streamed_text));
+            // GEM-16 (round 3 item 18): the converted offsets index the WHOLE streamed answer; the
+            // IR's index the text block the citation annotates, so shift by where that block began.
+            let block_start = i64::try_from(state.text_block_start).unwrap_or(i64::MAX);
             let citations: Vec<crate::ir::IrCitation> = all_citations
                 .get(state.citations_emitted..)
                 .unwrap_or_default()
-                .to_vec();
+                .iter()
+                .cloned()
+                .map(|mut c| {
+                    if block_start > 0 {
+                        c.start_index = c.start_index.map(|s| (s - block_start).max(0));
+                        c.end_index = c.end_index.map(|e| (e - block_start).max(0));
+                    }
+                    c
+                })
+                .collect();
             state.citations_emitted = state.citations_emitted.max(all_citations.len());
             if !citations.is_empty() && state.text_block_closed && !state.text_block_open {
                 // The text these sources cite was already closed by a functionCall (GEM-20): the

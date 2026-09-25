@@ -788,6 +788,7 @@ fn gemini_thoughts_token_count_is_the_reasoning_sub_bucket() {
 #[test]
 fn streamed_citations_reach_openai_and_cohere_clients() {
     let citation = crate::ir::IrCitation {
+        domain: None,
         kind: Some("web_search_result_location".to_string()),
         cited_text: Some("quoted".to_string()),
         title: Some("T".to_string()),
@@ -996,6 +997,7 @@ fn streamed_citations_reach_a_bedrock_client() {
     let ev = crate::ir::IrStreamEvent::BlockDelta {
         index: 3,
         delta: crate::ir::IrDelta::CitationsDelta(vec![crate::ir::IrCitation {
+            domain: None,
             kind: Some("char_location".to_string()),
             cited_text: Some("Paris".to_string()),
             title: Some("Atlas".to_string()),
@@ -1032,6 +1034,7 @@ fn bedrock_citation_omits_a_location_it_cannot_honestly_fill() {
     let ev = crate::ir::IrStreamEvent::BlockDelta {
         index: 0,
         delta: crate::ir::IrDelta::CitationsDelta(vec![crate::ir::IrCitation {
+            domain: None,
             kind: Some("page_location".to_string()),
             cited_text: Some("clause 4".to_string()),
             title: Some("Contract".to_string()),

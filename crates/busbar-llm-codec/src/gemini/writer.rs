@@ -170,6 +170,8 @@ impl ProtocolWriter for GeminiWriter {
             let mut parts_arr: Vec<serde_json::Value> = Vec::new();
             for block in &msg.content {
                 match block {
+                    // COH-17: an empty text part carrying only citations has no Gemini form.
+                    b @ crate::ir::IrBlock::Text { .. } if b.is_citation_carrier() => {}
                     crate::ir::IrBlock::Text { text, .. } => {
                         parts_arr.push(serde_json::json!({ "text": text }))
                     }
@@ -1085,6 +1087,20 @@ impl ProtocolWriter for GeminiWriter {
                 // A streamed redacted-reasoning delta (opaque encrypted bytes) has no Gemini analog —
                 // drop it rather than emit a non-native part.
                 crate::ir::IrDelta::RedactedReasoningDelta(_) => None,
+                // IR-21 (round 3 item 17): a generated image / audio part re-emits as the Gemini
+                // `inlineData` / `fileData` part the buffered writer uses.
+                crate::ir::IrDelta::MediaDelta(block) => {
+                    super::write_gemini_media_part(block).map(|part| {
+                        (
+                            "".to_string(),
+                            serde_json::json!({
+                                "candidates": [{
+                                    "content": { "role": "model", "parts": [part] }
+                                }]
+                            }),
+                        )
+                    })
+                }
 
                 // STREAMING citations → emit a candidate-level `citationMetadata.citationSources`
                 // chunk, mirroring the non-stream `read_response`/`write_response` shape (Gemini

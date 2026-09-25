@@ -803,8 +803,10 @@ impl ProtocolWriter for CohereWriter {
                         "delta": { "message": { "content": { "thinking": text } } }
                     }),
                 )),
+                // IR-21: Cohere has no streamed media member.
                 crate::ir::IrDelta::SignatureDelta(_)
-                | crate::ir::IrDelta::RedactedReasoningDelta(_) => None,
+                | crate::ir::IrDelta::RedactedReasoningDelta(_)
+                | crate::ir::IrDelta::MediaDelta(_) => None,
                 // Cohere v2's SSE vocabulary DOES include `citation-start` (paired with
                 // `citation-end`), so a streamed citation re-emits natively instead of being
                 // suppressed. Suppressing it made the SAME request against the SAME backend return

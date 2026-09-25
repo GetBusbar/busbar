@@ -378,6 +378,7 @@ fn gem16_streamed_citation_offsets_are_bytes_for_a_gemini_client() {
         delta: crate::ir::IrDelta::TextDelta("héllo wörld".to_string()),
     });
     let citation = crate::ir::IrCitation {
+        domain: None,
         kind: Some("url_citation".to_string()),
         cited_text: None,
         title: None,

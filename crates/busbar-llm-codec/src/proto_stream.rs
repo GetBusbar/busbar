@@ -1310,12 +1310,30 @@ pub fn response_to_ir_events(ir: &crate::ir::IrResponse) -> Vec<crate::ir::IrStr
                 events.push(IrStreamEvent::BlockStop { index });
                 index += 1;
             }
+            // Generated media rides the stream AFTER the other blocks (IR-21, below).
+            IrBlock::Image { .. } | IrBlock::Media { .. } => {}
             // No streamed analog: skipped without spending an index. Enumerated explicitly so a new
             // block kind is a compile error here rather than silent data loss.
-            IrBlock::ToolResult { .. }
-            | IrBlock::Image { .. }
-            | IrBlock::Media { .. }
-            | IrBlock::Json(_) => {}
+            IrBlock::ToolResult { .. } | IrBlock::Json(_) => {}
+        }
+    }
+    // IR-21 (round 3 item 17): a GENERATED image / audio part (a Bedrock response `image`, a
+    // Gemini `inlineData`) streams whole as `MediaDelta` in its own block. These blocks TRAIL the
+    // answer's other blocks, so a client dialect that has no streamed media (and emits no frame for
+    // the block) still sees contiguous block indices.
+    for block in ir.content.iter() {
+        if matches!(block, IrBlock::Image { .. } | IrBlock::Media { .. }) {
+            events.push(IrStreamEvent::BlockStart {
+                index,
+                block: IrBlockMeta::Image,
+                refusal: false,
+            });
+            events.push(IrStreamEvent::BlockDelta {
+                index,
+                delta: IrDelta::MediaDelta(Box::new(block.clone())),
+            });
+            events.push(IrStreamEvent::BlockStop { index });
+            index += 1;
         }
     }
     // A completion that called a tool stops for `tool_use` when the upstream body named no reason.

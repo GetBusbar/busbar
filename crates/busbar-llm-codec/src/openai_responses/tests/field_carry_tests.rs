@@ -1193,6 +1193,7 @@ fn responses_reset_clears_citation_and_logprob_accumulators() {
     w.append_citations(
         0,
         &[crate::ir::IrCitation {
+            domain: None,
             kind: Some("web_search_result_location".to_string()),
             cited_text: None,
             title: Some("stale".to_string()),

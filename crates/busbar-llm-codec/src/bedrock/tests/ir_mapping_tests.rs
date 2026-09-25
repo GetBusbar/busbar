@@ -454,6 +454,7 @@ fn bed13_history_citations_write_citations_content() {
 #[test]
 fn bed14_web_citation_url_rides_the_web_location() {
     let cit = crate::ir::IrCitation {
+        domain: None,
         kind: Some("web_search_result_location".into()),
         cited_text: None,
         title: Some("Why the sky is blue".into()),

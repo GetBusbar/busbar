@@ -5129,6 +5129,7 @@ fn stream_refusal_deltas_open_a_text_block_and_promote_the_stop_reason() {
 #[test]
 fn write_response_carries_citations_with_join_relative_offsets() {
     let cite = |quote: &str, title: &str, url: &str| crate::ir::IrCitation {
+        domain: None,
         kind: Some("web_search_result_location".into()),
         cited_text: Some(quote.into()),
         title: Some(title.into()),
@@ -5198,6 +5199,7 @@ fn write_response_carries_citations_with_join_relative_offsets() {
 #[test]
 fn url_annotation_offset_saturates_on_absurd_upstream_index() {
     let citations = vec![crate::ir::IrCitation {
+        domain: None,
         kind: Some("web_search_result_location".into()),
         cited_text: None,
         title: Some("T".into()),
@@ -5224,6 +5226,7 @@ fn url_annotation_offset_saturates_on_absurd_upstream_index() {
 #[test]
 fn url_annotation_base_accumulates_in_characters() {
     let cite = |quote: &str, url: &str| crate::ir::IrCitation {
+        domain: None,
         kind: Some("web_search_result_location".into()),
         cited_text: Some(quote.into()),
         title: None,
@@ -5291,6 +5294,7 @@ fn url_annotation_base_accumulates_in_characters() {
 #[test]
 fn url_annotation_quote_recovery_reports_character_indices() {
     let citations = vec![crate::ir::IrCitation {
+        domain: None,
         kind: Some("web_search_result_location".into()),
         cited_text: Some("wörld".into()),
         title: None,
@@ -5417,6 +5421,7 @@ fn anthropic_sourced_citation_indices_are_not_double_converted() {
     // quote starting at character 6 of "héllo wörld claim." (which is BYTE offset 7). Simulate
     // exactly what the Anthropic reader would populate: start_index/end_index already in chars.
     let citations = vec![crate::ir::IrCitation {
+        domain: None,
         kind: Some("web_search_result_location".into()),
         cited_text: None,
         title: Some("T".into()),

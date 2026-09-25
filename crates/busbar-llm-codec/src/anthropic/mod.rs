@@ -1359,6 +1359,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
                 Vec::new()
             } else {
                 vec![crate::ir::IrCitation {
+                    domain: None,
                     kind: Some("search_result_location".to_string()),
                     cited_text: None,
                     title: (!title.is_empty()).then(|| title.to_string()),
@@ -1969,6 +1970,7 @@ fn read_citation(val: &serde_json::Value) -> crate::ir::IrCitation {
         .and_then(|v| v.as_str())
         .map(str::to_string);
     crate::ir::IrCitation {
+        domain: None,
         kind,
         cited_text,
         title,
@@ -2590,6 +2592,13 @@ fn write_message(
                 }
             }
             if !attachment_is_sendable(block) {
+                return None;
+            }
+            if block.is_citation_carrier() {
+                tracing::warn!(
+                    "dropping citations with no text on Anthropic egress: an empty text block is \
+                     rejected (COH-17)"
+                );
                 return None;
             }
             // A parked unmodeled block (e.g. `document`) at this exact position: splice the

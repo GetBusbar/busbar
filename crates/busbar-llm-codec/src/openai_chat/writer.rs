@@ -746,8 +746,10 @@ impl ProtocolWriter for OpenAiWriter {
                     // Lossy-by-necessity: OpenAI has no thinking stream equivalent.
                     None
                 }
+                // IR-21: a Chat chunk has no generated-image member (streamed audio is not carried).
                 crate::ir::IrDelta::SignatureDelta(_)
-                | crate::ir::IrDelta::RedactedReasoningDelta(_) => {
+                | crate::ir::IrDelta::RedactedReasoningDelta(_)
+                | crate::ir::IrDelta::MediaDelta(_) => {
                     // Lossy-by-necessity: OpenAI has no signature/redacted-reasoning stream analog.
                     None
                 }

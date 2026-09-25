@@ -1362,6 +1362,7 @@ fn stream_anthropic_single_citations_project_to_valid_gemini_citation_metadata()
     let mk = |url: &str| crate::ir::IrStreamEvent::BlockDelta {
         index: 0,
         delta: crate::ir::IrDelta::CitationsDelta(vec![crate::ir::IrCitation {
+            domain: None,
             kind: Some("web_search_result_location".to_string()),
             cited_text: None,
             title: Some("T".to_string()),

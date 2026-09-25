@@ -354,6 +354,9 @@ impl ProtocolWriter for BedrockWriter {
                 )),
                 // A streamed redacted-reasoning delta re-emits the opaque bytes under `redactedContent`
                 // (never as a plaintext `signature`) — the streaming inverse of `bedrock_reasoning_block`.
+                // IR-21: the Converse stream has no generated-media delta member; its start emitted
+                // no frame either.
+                crate::ir::IrDelta::MediaDelta(_) => None,
                 crate::ir::IrDelta::RedactedReasoningDelta(redacted) => Some((
                     ET_CONTENT_BLOCK_DELTA.to_string(),
                     serde_json::json!({
@@ -944,6 +947,14 @@ impl BedrockWriter {
                 // attachment); a cachePoint is only placed after a block that was actually written.
                 let written_before = content_arr.len();
                 match block {
+                    // COH-17: an empty text block carrying only citations — Converse rejects blank
+                    // text, so the carrier is omitted.
+                    b @ crate::ir::IrBlock::Text { .. } if b.is_citation_carrier() => {
+                        tracing::warn!(
+                            "dropping citations with no text on Bedrock egress: blank text is \
+                             rejected (COH-17)"
+                        );
+                    }
                     crate::ir::IrBlock::Text {
                         text, citations, ..
                     } => {
@@ -1599,6 +1610,18 @@ impl BedrockWriter {
                 out.insert(super::FIELD_REQUEST_METADATA.to_string(), m);
             }
         }
+        // BED-14 / IR-04 (round 3 item 14): the tier is Converse's `serviceTier: {type}`. A
+        // same-protocol body's own raw member (in `extra`) wins.
+        if let Some(word) = req
+            .service_tier
+            .filter(|_| !req.extra.contains_key(super::FIELD_SERVICE_TIER))
+            .and_then(super::write_bedrock_service_tier)
+        {
+            out.insert(
+                super::FIELD_SERVICE_TIER.to_string(),
+                serde_json::json!({ "type": word }),
+            );
+        }
         // The Q57 request slots with no Converse form — the same set `dropped_egress_controls`
         // reports for the seam's audit.
         for control in bedrock_unrepresentable_slots(req) {
@@ -1654,12 +1677,15 @@ impl BedrockWriter {
 
 /// The typed request slots (Q57) a Converse body has no member for — each is dropped with a warn by
 /// `write_request` and reported by `dropped_egress_controls`, so the seam audits the degradation:
-/// `store`, `safety_identifier`, `prompt_cache_key`, `verbosity`, `service_tier` (the IR-04 contract
-/// names no Converse spelling), a non-text output modality (Converse answers in text), and every
+/// `store`, `safety_identifier`, `prompt_cache_key`, `verbosity`, a `service_tier` Converse has no
+/// `serviceTier.type` word for (Auto, Scale), a non-text output modality (Converse answers in text), and every
 /// provider-hosted tool kind (Converse has no hosted web search / code execution / web fetch).
 fn bedrock_unrepresentable_slots(req: &crate::ir::IrRequest) -> Vec<&'static str> {
     let mut dropped = Vec::new();
-    if req.service_tier.is_some() {
+    if req
+        .service_tier
+        .is_some_and(|t| super::write_bedrock_service_tier(t).is_none())
+    {
         dropped.push("service_tier");
     }
     if req.store.is_some() {

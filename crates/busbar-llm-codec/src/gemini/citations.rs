@@ -130,6 +130,7 @@ pub(super) fn read_gemini_citations(
                 None => (raw_start, raw_end),
             };
             crate::ir::IrCitation {
+                domain: None,
                 kind: Some("web_search_result_location".to_string()),
                 cited_text: None,
                 title: src
@@ -265,6 +266,7 @@ pub(super) fn read_gemini_grounding_citations(
                 continue;
             }
             out.push(crate::ir::IrCitation {
+                domain: None,
                 kind: Some("web_search_result_location".to_string()),
                 cited_text: cited_text.clone(),
                 title,
@@ -291,6 +293,7 @@ pub(super) fn read_gemini_grounding_citations(
                 continue;
             }
             out.push(crate::ir::IrCitation {
+                domain: None,
                 kind: Some("web_search_result_location".to_string()),
                 cited_text: None,
                 title,

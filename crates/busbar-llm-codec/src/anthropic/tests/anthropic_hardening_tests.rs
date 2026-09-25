@@ -3817,6 +3817,7 @@ fn anthropic_writes_web_search_citation_from_neutral_fields() {
         text: "answer".to_string(),
         cache_control: None,
         citations: vec![crate::ir::IrCitation {
+            domain: None,
             kind: Some("web_search_result_location".to_string()),
             cited_text: None,
             title: Some("Source Title".to_string()),

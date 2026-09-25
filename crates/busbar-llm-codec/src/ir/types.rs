@@ -762,6 +762,13 @@ impl IrBlock {
     /// the content". Note it does not coincide with "`text` is safe to read": when this returns
     /// true, `text` is either empty (Responses) or the ciphertext ITSELF (Anthropic/Bedrock), so a
     /// consumer must check this BEFORE touching `text`, never after.
+    /// COH-17 (round 3 item 13): an EMPTY text block that exists only to carry citations (a
+    /// grounded turn with no text part). A writer whose dialect rejects an empty text block
+    /// (Anthropic, Bedrock, Gemini) omits it; the citations have no text to anchor to there.
+    pub fn is_citation_carrier(&self) -> bool {
+        matches!(self, IrBlock::Text { text, citations, .. } if text.is_empty() && !citations.is_empty())
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn is_opaque(&self) -> bool {
         match self {
@@ -978,6 +985,9 @@ pub struct IrCitation {
     /// `citationSources[]` entry here so a same-protocol Gemini path could re-emit it faithfully.
     /// `None` for a citation synthesized purely from neutral fields.
     pub raw: Option<Value>,
+    /// BED-14 (round 3 item 14): the web source's domain — the Converse `web` citation location's
+    /// `domain` member (`{url, domain}`). Only Bedrock carries it natively; `None` elsewhere.
+    pub domain: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -1346,6 +1356,15 @@ pub enum IrDelta {
     /// `logprobsResult`. Writers that model streaming logprobs (OpenAI, Gemini) re-emit natively;
     /// protocols with no shape for it simply don't emit it.
     LogprobsDelta(Vec<IrTokenLogprob>),
+    /// IR-21 (GEM-17 stream, round 3 item 17): a whole GENERATED media part — an
+    /// [`IrBlock::Image`] or [`IrBlock::Media`] — carried on the stream as the one delta of the
+    /// block opened by `BlockStart { block: IrBlockMeta::Image }`. Generated media is not
+    /// incremental, so the block rides whole. The buffered-to-stream synthesis emits it (after the
+    /// answer's other blocks, so a client dialect with no streamed media keeps contiguous block
+    /// indices); the Gemini writer re-emits it as an `inlineData` / `fileData` part; every other
+    /// writer drops it (Anthropic has no assistant image block, ANT-15; Chat, Responses, Cohere and
+    /// the Converse stream have no streamed media member).
+    MediaDelta(Box<IrBlock>),
 }
 
 /// Per-request decode state for stateful stream fan-out.
@@ -1457,6 +1476,11 @@ pub struct StreamDecodeState {
     /// reader appends each text delta here and converts a citation's offsets against it. Empty for
     /// every other reader.
     pub streamed_text: String,
+    /// GEM-16 (round 3 item 18): the CHARACTER offset into [`Self::streamed_text`] where the
+    /// current text block began. IR citation offsets are relative to the text block they annotate,
+    /// so a citation on a later text block (text -> tool -> text) is shifted by this. 0 for the
+    /// first text block (and for every other reader).
+    pub text_block_start: usize,
 }
 
 impl StreamDecodeState {
@@ -1485,15 +1509,17 @@ impl StreamDecodeState {
 // emits NOTHING for an absent slot — so a request or response that never set a slot keeps its bytes.
 
 /// Which capacity tier the caller asks to be served from (IR-04). OpenAI Chat and Responses
-/// `service_tier`, Anthropic `service_tier`.
+/// `service_tier`, Anthropic `service_tier`, Bedrock Converse `serviceTier: {type}` (BED-14).
 ///
-/// | IR          | OpenAI Chat / Responses | Anthropic        |
-/// |-------------|-------------------------|------------------|
-/// | `Auto`      | `"auto"`                | `"auto"`         |
-/// | `Default`   | `"default"`             | `"standard_only"`|
-/// | `Flex`      | `"flex"`                | — (not representable: omit + warn) |
-/// | `Scale`     | `"scale"`               | — (not representable: omit + warn) |
-/// | `Priority`  | `"priority"`            | `"auto"` (Anthropic serves priority capacity under `auto` when the org has it; closest honest ask) |
+/// | IR          | OpenAI Chat / Responses | Anthropic        | Bedrock Converse `serviceTier.type` |
+/// |-------------|-------------------------|------------------|-------------------------------------|
+/// | `Auto`      | `"auto"`                | `"auto"`         | — (omit + warn) |
+/// | `Default`   | `"default"`             | `"standard_only"`| `"default"` |
+/// | `Flex`      | `"flex"`                | — (not representable: omit + warn) | `"flex"` |
+/// | `Scale`     | `"scale"`               | — (not representable: omit + warn) | — (omit + warn) |
+/// | `Priority`  | `"priority"`            | `"auto"` (Anthropic serves priority capacity under `auto` when the org has it; closest honest ask) | `"priority"` |
+///
+/// Converse's fourth word, `reserved` (provisioned capacity), has no IR tier and is not read.
 ///
 /// Cohere v2 `priority` is an integer queue ordering, not a capacity tier — a different concept, so
 /// it is NOT read into this slot. The RESPONSE-side "tier that actually served" stays on
