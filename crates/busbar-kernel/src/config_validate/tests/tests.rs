@@ -4481,7 +4481,7 @@ fn test_validate_holds_a_plane_card_to_the_card_shape_and_leaves_the_flat_plane_
 /// THE CONTROL: billing OFF (no `rate_card:`) and the same plane configured must
 /// still boot. #42: *"rate_card ABSENT ⇒ NOT billed … no boot-refusal"*.
 #[test]
-fn test_validate_allows_a_non_llm_plane_when_billing_is_off() {
+fn test_validate_allows_a_non_fallback_plane_when_billing_is_off() {
     let mut cfg = cost_cfg(&["claude-sonnet"]);
     assert!(cfg.rate_card.is_none(), "the fixture starts billing-off");
     cfg.tool_defs = present_tools_section();

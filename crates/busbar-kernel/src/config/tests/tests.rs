@@ -4093,7 +4093,7 @@ fn a_decisions_section_with_no_owning_plane_is_refused_as_an_unknown_key() {
     let err = crate::config::deploy_from_yaml_str(
         "decisions:\n  \
            models:\n    \
-             jev: { provider: typesafe }\n\
+             verdict: { provider: typesafe }\n\
          providers: {}\nmodels: {}\npools: {}\n",
     )
     .expect_err("a `decisions:` block no registered plane declares must be refused")

@@ -2576,7 +2576,7 @@ fn migrate_rewrites_a_lingering_at_key_on_a_named_hook_def() {
 /// carried over, and a loud WARNING names the server and the semantics change (a former sweep cadence
 /// is now a drift-serving window on the call path).
 #[test]
-fn migrate_renames_mcp_refresh_ttl_to_verify_ttl_with_a_warning() {
+fn migrate_renames_a_tool_server_refresh_ttl_to_verify_ttl_with_a_warning() {
     let raw = r#"
 tools:
   servers:

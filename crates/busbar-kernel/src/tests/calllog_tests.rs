@@ -34,7 +34,7 @@ use std::sync::Arc;
 /// writes the `call` stream through the generic `PlaneRecord` ABI, decoding each opaque neutral journal
 /// body into the neutral [`CallRecorded`] the seam persists.
 trait CallStoreTestExt: Store {
-    fn append_mcp_call(&self, rec: &CallRecorded) -> StoreResult<()> {
+    fn append_call(&self, rec: &CallRecorded) -> StoreResult<()> {
         self.append_plane_record(&busbar_api::PlaneRecord {
             kind: KIND_CALL.to_string(),
             id: rec.principal.clone(),
@@ -45,13 +45,13 @@ trait CallStoreTestExt: Store {
             body: call_record_to_journal_body(rec)?,
         })
     }
-    fn list_mcp_calls(&self, principal: &str) -> StoreResult<Vec<CallRecorded>> {
+    fn list_calls(&self, principal: &str) -> StoreResult<Vec<CallRecorded>> {
         self.list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.to_string()))?
             .iter()
             .map(|b| call_record_from_body(principal, b))
             .collect()
     }
-    fn list_mcp_call_principals(&self) -> StoreResult<Vec<String>> {
+    fn list_call_principals(&self) -> StoreResult<Vec<String>> {
         self.list_plane_record_parents(KIND_CALL)
     }
 }
@@ -59,7 +59,7 @@ impl<T: Store + ?Sized> CallStoreTestExt for T {}
 
 // ── the two stores these tests are held against ──────────────────────────────────────────────
 
-/// TEST-ONLY DURABLE double. `busbar_store_memory::MemoryStore` deliberately implements none of the
+/// TEST-ONLY DURABLE double. `crate::governance::MemoryStore` deliberately implements none of the
 /// call-log methods — `store: memory` is documented and relied on as genuinely EPHEMERAL, and making
 /// it persist here to suit a test would change that product contract. So this wraps a real
 /// `MemoryStore` for every other `Store` method and backs ONLY the call-log methods with its own
@@ -71,7 +71,7 @@ impl<T: Store + ?Sized> CallStoreTestExt for T {}
 /// occupied `(principal, seq)` is the retry and succeeds; a DIFFERENT one is a forked log and
 /// errors.
 struct DurableCallStore {
-    inner: busbar_store_memory::MemoryStore,
+    inner: crate::governance::MemoryStore,
     /// The chained calls as the OPAQUE stored BODIES a durable backend holds — the neutral
     /// `{seq,prev_hash,hash,content}` the P5 seam persists — keyed by `(principal, seq)` so a read-back
     /// comes out in chain order and a re-write at the same position overwrites (a real backend's
@@ -86,7 +86,7 @@ struct DurableCallStore {
 impl DurableCallStore {
     fn new() -> Self {
         Self {
-            inner: busbar_store_memory::MemoryStore::new(),
+            inner: crate::governance::MemoryStore::new(),
             calls: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             fail_appends: std::sync::Mutex::new(None),
         }
@@ -314,13 +314,13 @@ fn same_call_ignoring_request_id(a: &CallRecorded, b: &CallRecorded) -> bool {
 /// them is the `Store` trait's own default. This is not a weakened double — it is the exact
 /// behaviour `store: memory` and every pre-existing signed store plugin present.
 struct RamDefaultStore {
-    inner: busbar_store_memory::MemoryStore,
+    inner: crate::governance::MemoryStore,
 }
 
 impl RamDefaultStore {
     fn new() -> Self {
         Self {
-            inner: busbar_store_memory::MemoryStore::new(),
+            inner: crate::governance::MemoryStore::new(),
         }
     }
 }
@@ -835,7 +835,7 @@ fn rewriting_only_a_persisted_rows_link_is_reported_as_a_link_mismatch() {
         row.prev_hash = written[0].hash.clone();
     });
     let relinked = {
-        let rows = store.list_mcp_calls(P).expect("read");
+        let rows = store.list_calls(P).expect("read");
         rows[2].clone()
     };
     // Repair the self-digest THROUGH THE SEAM, using the engine's own chain arithmetic rather than a
@@ -907,7 +907,7 @@ fn a_foreign_principals_record_in_a_chain_is_its_own_break_kind() {
     // nonetheless belongs to another chain. Read the real persisted chain back and relabel the middle
     // record's scope — a `CallRecorded` carries its own `principal` — which is exactly the row a
     // corrupted principal column, or a mis-keyed backend, would return in this principal's list.
-    let mut chain = store.list_mcp_calls(P).expect("read");
+    let mut chain = store.list_calls(P).expect("read");
     assert_eq!(chain.len(), 3, "all three rows are still returned for {P}");
     chain[1].principal = "key_beta".to_string();
     let brk = crate::calllog::verify_call_rows(&chain).expect_err("the foreign row is detected");
@@ -988,10 +988,7 @@ fn an_enumerated_principal_with_no_rows_is_reported_as_an_empty_chain() {
         backing.drop_row(P, seq);
     }
     assert!(
-        store
-            .list_mcp_call_principals()
-            .expect("enumerate")
-            .is_empty(),
+        store.list_call_principals().expect("enumerate").is_empty(),
         "with no rows at all an honest backend names no principals"
     );
     let control = CallTestHarness::over(Arc::new(RamDefaultStore::new()));
@@ -1062,14 +1059,14 @@ impl Store for NamesOnePrincipalWithNoRows {
     }
     fn list_plane_record_parents(&self, kind: &str) -> busbar_api::StoreResult<Vec<String>> {
         match kind {
-            crate::plane::store::KIND_CALL => self.list_mcp_call_principals(),
+            crate::plane::store::KIND_CALL => self.list_call_principals(),
             _ => Ok(Vec::new()),
         }
     }
 }
 
 impl NamesOnePrincipalWithNoRows {
-    fn list_mcp_call_principals(&self) -> busbar_api::StoreResult<Vec<String>> {
+    fn list_call_principals(&self) -> busbar_api::StoreResult<Vec<String>> {
         Ok(vec![P.to_string()])
     }
 }
@@ -1250,13 +1247,13 @@ fn an_occupied_chain_position_takes_the_retry_and_refuses_the_fork() {
         .expect("records");
 
     assert!(
-        store.append_mcp_call(&first).is_ok(),
+        store.append_call(&first).is_ok(),
         "the byte-identical retry succeeds"
     );
     let mut fork = first.clone();
     fork.tool = "fs_write".to_string();
     assert!(
-        store.append_mcp_call(&fork).is_err(),
+        store.append_call(&fork).is_err(),
         "a DIFFERENT record claiming seq 1 is a forked log and is refused, never overwritten"
     );
 }
@@ -1292,7 +1289,7 @@ fn retention_purges_rows_without_rewinding_the_chain() {
 
 /// An EMPTY chain verifies, and that is stated rather than quietly true: "this principal made no
 /// calls" is indistinguishable from "every record was deleted" using the records alone. The gap is
-/// closed by `list_mcp_call_principals` naming the principal, which is why the restore counts it.
+/// closed by `list_call_principals` naming the principal, which is why the restore counts it.
 #[test]
 fn an_empty_chain_verifies_because_the_records_alone_cannot_say_otherwise() {
     assert!(crate::calllog::verify_call_rows(&[]).is_ok());

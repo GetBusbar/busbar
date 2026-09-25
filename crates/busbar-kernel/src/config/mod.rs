@@ -2253,7 +2253,7 @@ pub fn resolve(
             }
             None
         };
-        let mut non_llm: Vec<String> = Vec::new();
+        let mut non_fallback: Vec<String> = Vec::new();
         for (pool_name, pool) in pools.iter() {
             // The pool's kind = its members' shared kind. Determine it from the FIRST resolvable
             // member, then require every other member to agree (homogeneity).
@@ -2280,7 +2280,7 @@ pub fn resolve(
                     //     `tool_pools_derived` / `agent_pools_derived`, and `check_failover_pool`
                     //     below refuses this same member against that plane's registry with the
                     //     message that names the section it looked in.
-                    // There is no third road: `non_llm` is only ever pushed on the two projected
+                    // There is no third road: `non_fallback` is only ever pushed on the two projected
                     // arms, so a pool leaves `pools` only by entering a map that is checked.
                     None => {}
                     Some(k) => match kind {
@@ -2312,12 +2312,12 @@ pub fn resolve(
                 repeatable,
             };
             derived.insert(pool_name.clone(), candidates);
-            non_llm.push(pool_name.clone());
+            non_fallback.push(pool_name.clone());
         }
         // A pool that is NOT a fallback-lane pool must not remain in the fallback `pools` map (its
         // bare members do not resolve to `models:` and would fail the fallback-lane build). Remove
         // the projected ones.
-        for name in non_llm {
+        for name in non_fallback {
             pools.remove(&name);
         }
     }
