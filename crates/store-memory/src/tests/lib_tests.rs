@@ -28,7 +28,7 @@ fn credential(id: &str, key_id: &str, public_id: &str) -> CredentialSecret {
         meta: CredentialMeta {
             id: id.to_string(),
             key_id: key_id.to_string(),
-            kind: "sigv4".to_string(),
+            kind: "generic".to_string(),
             slot: 0,
             public_id: public_id.to_string(),
             secret_form: SecretForm::Recoverable,
@@ -257,13 +257,13 @@ fn lookup_credential_secret_resolves_by_kind_and_public_id() {
     s.put_key(&key("a")).unwrap();
     s.put_credential(&credential("c1", "a", "AKIA1")).unwrap();
     let found = s
-        .lookup_credential_secret("sigv4", "AKIA1")
+        .lookup_credential_secret("generic", "AKIA1")
         .unwrap()
         .unwrap();
     assert_eq!(found.meta.key_id, "a");
     assert_eq!(found.secret, "v1:plain:sek");
     assert!(s
-        .lookup_credential_secret("sigv4", "unknown")
+        .lookup_credential_secret("generic", "unknown")
         .unwrap()
         .is_none());
 }
@@ -616,19 +616,19 @@ fn put_credential_sweeps_stale_revoked_creds() {
     }
 
     assert!(
-        s.lookup_credential_secret("sigv4", "AKIA_OLD")
+        s.lookup_credential_secret("generic", "AKIA_OLD")
             .unwrap()
             .is_none(),
         "a credential revoked past the 31-day retention ceiling must be pruned"
     );
     assert!(
-        s.lookup_credential_secret("sigv4", "AKIA_LIVE")
+        s.lookup_credential_secret("generic", "AKIA_LIVE")
             .unwrap()
             .is_some(),
         "a live (never-revoked) credential must never be pruned, regardless of age"
     );
     assert!(
-        s.lookup_credential_secret("sigv4", "AKIA_RECENT")
+        s.lookup_credential_secret("generic", "AKIA_RECENT")
             .unwrap()
             .is_some(),
         "a credential revoked within the retention window must survive"
@@ -696,7 +696,7 @@ fn put_credential_refuses_a_tombstoned_or_absent_key() {
         "a credential minted onto a TOMBSTONED key must be refused"
     );
     assert!(
-        s.lookup_credential_secret("sigv4", "AKIA1")
+        s.lookup_credential_secret("generic", "AKIA1")
             .unwrap()
             .is_none(),
         "the refused credential must not resolve — that is the whole point of the cascade"
@@ -706,7 +706,7 @@ fn put_credential_refuses_a_tombstoned_or_absent_key() {
 /// The key+credential mint is ATOMIC or it is nothing. The trait's default is the two-call sequence
 /// (`put_key` then `put_credential`), and the credential leg fails on an ordinary operator mistake —
 /// a `public_id` already in use. Under the default the key leg has already committed by then, so the
-/// mint reports failure while leaving a live bearer key with no credential behind it: a row the
+/// mint reports failure while leaving a live key with no credential behind it: a row the
 /// caller does not know exists and will never clean up.
 #[test]
 fn put_key_with_credential_leaves_no_key_behind_when_the_credential_is_refused() {
