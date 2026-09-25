@@ -176,3 +176,117 @@ fn coh01_thinking_then_tool_call_is_balanced() {
         "{evs:?}"
     );
 }
+
+/// A buffered backend response (`egress` dialect) translated for a client speaking `ingress`.
+fn translate_response(egress: &str, ingress: &'static str, body: &Value) -> Value {
+    let egress_p = crate::proto_codec::protocol_for(egress).expect("egress");
+    let ingress_p = crate::proto_codec::protocol_for(ingress).expect("ingress");
+    let mut resp = egress_p
+        .reader()
+        .read_response(body)
+        .expect("read_response");
+    crate::chat_handle::chat_prepare_for_ingress(&mut resp, ingress, 1_752_000_000);
+    ingress_p.writer().write_response(&resp)
+}
+
+// ── COH-10: the prompt-token count a Cohere client is told (MONEY) ────────────────────────────────
+
+/// COH-10, buffered, OpenAI backend: 10 prompt tokens, 4 of them cached. Cohere's
+/// `tokens.input_tokens` is the whole prompt and `cached_tokens` the hit; the writer used to emit
+/// the IR's UNCACHED share (6) and no `cached_tokens` at all.
+#[test]
+fn coh10_openai_cached_prompt_reaches_a_cohere_client_whole() {
+    let body = json!({
+        "id": "chatcmpl-1", "object": "chat.completion", "created": 1, "model": "gpt",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "hello"},
+                     "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
+                  "prompt_tokens_details": {"cached_tokens": 4}}
+    });
+    let out = translate_response("openai", "cohere", &body);
+    assert_eq!(out["usage"]["tokens"]["input_tokens"], json!(10), "{out}");
+    assert_eq!(out["usage"]["tokens"]["output_tokens"], json!(5), "{out}");
+    assert_eq!(out["usage"]["cached_tokens"], json!(4), "{out}");
+}
+
+/// COH-10, buffered, Anthropic backend: 10 uncached + 4 cache-read + 3 cache-written = a 17-token
+/// prompt. Cohere has no cache-write tier, so the written share is ordinary prompt input here.
+#[test]
+fn coh10_anthropic_cache_tiers_sum_into_the_cohere_prompt() {
+    let body = json!({
+        "id": "msg_1", "type": "message", "role": "assistant", "model": "claude",
+        "content": [{"type": "text", "text": "hello"}],
+        "stop_reason": "end_turn", "stop_sequence": null,
+        "usage": {"input_tokens": 10, "output_tokens": 5,
+                  "cache_creation_input_tokens": 3, "cache_read_input_tokens": 4}
+    });
+    let out = translate_response("anthropic", "cohere", &body);
+    assert_eq!(out["usage"]["tokens"]["input_tokens"], json!(17), "{out}");
+    assert_eq!(out["usage"]["cached_tokens"], json!(4), "{out}");
+    // An uncached response gains no fabricated `cached_tokens`.
+    let plain = json!({
+        "id": "msg_2", "type": "message", "role": "assistant", "model": "claude",
+        "content": [{"type": "text", "text": "hi"}], "stop_reason": "end_turn",
+        "stop_sequence": null, "usage": {"input_tokens": 7, "output_tokens": 2}
+    });
+    let out = translate_response("anthropic", "cohere", &plain);
+    assert_eq!(out["usage"]["tokens"]["input_tokens"], json!(7), "{out}");
+    assert!(out["usage"].get("cached_tokens").is_none(), "{out}");
+}
+
+/// COH-10 round trip: what the Cohere writer emits, the Cohere reader reads back to the same
+/// uncached + cache-read split (the writer is the reader's inverse).
+#[test]
+fn coh10_cohere_usage_is_the_inverse_of_the_cohere_reader() {
+    let body = json!({
+        "id": "chatcmpl-1", "object": "chat.completion", "created": 1, "model": "gpt",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "hello"},
+                     "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
+                  "prompt_tokens_details": {"cached_tokens": 4}}
+    });
+    let out = translate_response("openai", "cohere", &body);
+    let back = crate::proto_codec::protocol_for("cohere")
+        .expect("cohere")
+        .reader()
+        .read_response(&out)
+        .expect("read back");
+    assert_eq!(back.usage.input_tokens, 6, "{back:?}");
+    assert_eq!(back.usage.cache_read_input_tokens, Some(4), "{back:?}");
+}
+
+/// COH-10, streamed, Anthropic backend: the prompt counts ride `message_start`; the Cohere
+/// `message-end` must carry the whole 17-token prompt and the 4-token cache hit.
+#[test]
+fn coh10_streamed_message_end_carries_the_whole_prompt_and_the_cache_hit() {
+    let raw = concat!(
+        "event: message_start\n",
+        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":1,\"cache_read_input_tokens\":4,\"cache_creation_input_tokens\":3}}}\n\n",
+        "event: content_block_start\n",
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n",
+        "event: content_block_stop\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "event: message_delta\n",
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":5}}\n\n",
+        "event: message_stop\n",
+        "data: {\"type\":\"message_stop\"}\n\n",
+    );
+    let out = translate_stream("anthropic", "cohere", raw);
+    let end = sse_data(&out)
+        .into_iter()
+        .find(|v| v["type"] == "message-end")
+        .unwrap_or_else(|| panic!("no message-end: {out}"));
+    assert_eq!(
+        end["delta"]["usage"]["tokens"]["input_tokens"],
+        json!(17),
+        "{out}"
+    );
+    assert_eq!(
+        end["delta"]["usage"]["tokens"]["output_tokens"],
+        json!(5),
+        "{out}"
+    );
+    assert_eq!(end["delta"]["usage"]["cached_tokens"], json!(4), "{out}");
+}

@@ -765,12 +765,19 @@ impl ProtocolWriter for CohereWriter {
                 // client tracking billing/rate-limit data from the stream is not silently zeroed.
                 // IrUsage is always present (not Option); when upstream supplied nothing it is
                 // zero-valued, which serializes here as a safe `{input_tokens:0,output_tokens:0}`.
+                // Cohere's `tokens.input_tokens` is the WHOLE prompt, cached share included, with the
+                // cache hit reported beside it as `cached_tokens` — see `cohere_prompt_tokens`.
                 let mut usage_obj = serde_json::json!({
                     "tokens": {
-                        "input_tokens": usage.input_tokens,
+                        "input_tokens": cohere_prompt_tokens(usage),
                         "output_tokens": usage.output_tokens
                     }
                 });
+                if let (Some(cached), Some(uo)) =
+                    (usage.cache_read_input_tokens, usage_obj.as_object_mut())
+                {
+                    uo.insert("cached_tokens".to_string(), serde_json::json!(cached));
+                }
                 // The separately-billed search units, in Cohere's native `billed_units` slot — the
                 // same field the buffered writer emits. `search_units` is not a token count at all,
                 // so its absence is invisible in a token total that reconciles perfectly; emitting
@@ -973,9 +980,10 @@ impl ProtocolWriter for CohereWriter {
 
         // Cohere format: usage.tokens.input_tokens, usage.tokens.output_tokens
         let mut tokens_map = serde_json::Map::new();
+        // The WHOLE prompt, cached share included — see `cohere_prompt_tokens`.
         tokens_map.insert(
             "input_tokens".to_string(),
-            serde_json::json!(resp.usage.input_tokens),
+            serde_json::json!(cohere_prompt_tokens(&resp.usage)),
         );
         tokens_map.insert(
             "output_tokens".to_string(),
@@ -1040,6 +1048,12 @@ impl ProtocolWriter for CohereWriter {
         // Wrap tokens under "tokens" key per Cohere API spec
         let mut usage_map = serde_json::Map::new();
         usage_map.insert("tokens".to_string(), serde_json::Value::Object(tokens_map));
+        // The prompt-cache hit, in Cohere's native `usage.cached_tokens` slot (beside `tokens`, the
+        // same member this dialect's reader reads it from). Emitted only when the source reported a
+        // cache read, so an uncached response does not acquire a fabricated `cached_tokens: 0`.
+        if let Some(cached) = resp.usage.cache_read_input_tokens {
+            usage_map.insert("cached_tokens".to_string(), serde_json::json!(cached));
+        }
         // Cohere's native `billed_units` slot: the separately-metered BILLED attribution, distinct
         // from the raw `tokens` bucket above. Each member is emitted only when the source actually
         // reported it (so a plain chat response does not acquire a fabricated `billed_units` object,

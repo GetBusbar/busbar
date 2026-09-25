@@ -480,6 +480,28 @@ fn write_cohere_stop_reason(reason: crate::ir::IrStopReason) -> &'static str {
     }
 }
 
+/// Cohere's `usage.tokens.input_tokens` for an IR usage: the WHOLE prompt.
+///
+/// The two sides count the prompt differently. The IR's `input_tokens` is the UNCACHED share only,
+/// with the cache read and the cache write carried ADDITIVELY beside it (`IrUsage`'s documented
+/// convention). Cohere's `tokens.input_tokens` is the whole prompt, the cached share included, and
+/// it reports the cache hit separately as `usage.cached_tokens` — which is exactly why this
+/// dialect's reader SUBTRACTS `cached_tokens` out of `tokens.input_tokens` on the way in.
+///
+/// The writer used to copy the IR's uncached count straight into `tokens.input_tokens`, so a
+/// Cohere-dialect client of a foreign backend was told a prompt SMALLER than the one it sent: an
+/// OpenAI turn of 10 prompt tokens, 4 of them cached, reached it as `input_tokens: 6` with no
+/// `cached_tokens`; an Anthropic turn of 10 uncached + 4 cache-read + 3 cache-written reached it as
+/// `input_tokens: 10` (COH-10). The inverse of the reader restores what the backend reported: the
+/// uncached, cache-read and cache-written shares summed. Cohere has no cache-WRITE tier, so a cache
+/// write is ordinary prompt input on this wire.
+fn cohere_prompt_tokens(usage: &crate::ir::IrUsage) -> u64 {
+    usage
+        .input_tokens
+        .saturating_add(usage.cache_read_input_tokens.unwrap_or(0))
+        .saturating_add(usage.cache_creation_input_tokens.unwrap_or(0))
+}
+
 /// The request keys this reader models explicitly (and therefore must NOT echo back through
 /// `extra`). Built once per process via `OnceLock` instead of being reconstructed on every
 /// `read_request` call — the rebuild was a pointless per-request allocation on the Cohere ingress
