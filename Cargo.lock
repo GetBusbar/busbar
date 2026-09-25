@@ -900,7 +900,6 @@ dependencies = [
  "busbar-api",
  "busbar-contract",
  "busbar-export-example-plugin",
- "busbar-hook-test-plugin",
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
  "busbar-plugin",

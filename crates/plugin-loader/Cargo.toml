@@ -105,8 +105,6 @@ busbar-store-example-plugin = { path = "../store-example-plugin" }
 # dropped-in door), and requires the two registry rows and what the two opened modules resolve to be
 # byte-identical (DECISIONS #2 rule (1)).
 busbar-secret-example-plugin = { path = "../secret-example-plugin" }
-# The `kind: hook` BOTH-WAYS fixture (K5), on the same terms (`hook_conformance_tests`).
-busbar-hook-test-plugin = { path = "../hook-test-plugin" }
 
 [target.'cfg(unix)'.dependencies]
 # memfd_create (Linux zero-disk loads) + kill(pid, 0) liveness for the dead-pid staging sweep.

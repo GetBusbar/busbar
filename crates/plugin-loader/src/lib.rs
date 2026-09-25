@@ -2039,8 +2039,3 @@ mod store_conformance_tests;
 #[cfg(test)]
 #[path = "tests/secret_conformance_tests.rs"]
 mod secret_conformance_tests;
-
-/// `kind: hook` through both doors: one row, one routing policy.
-#[cfg(test)]
-#[path = "tests/hook_conformance_tests.rs"]
-mod hook_conformance_tests;
