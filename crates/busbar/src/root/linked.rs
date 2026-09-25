@@ -523,8 +523,14 @@ pub fn dropped_from_config(
         eprintln!("busbar: {refusal}");
         std::process::exit(2);
     });
-    Some(Box::leak(Box::new(registry)))
+    // Kept for the process — the export axis and the diagnostics axis read it for as long as it
+    // serves — in the one registry slot boot fills.
+    Some(REGISTRY.get_or_init(|| registry))
 }
+
+/// The one plugin registry [`dropped_from_config`] builds, held for the process.
+static REGISTRY: std::sync::OnceLock<busbar_plugin_loader::PluginRegistry> =
+    std::sync::OnceLock::new();
 
 /// The configured `plugins.dir`'s admitted rows (see [`dropped_from_config`]).
 fn scan_configured() -> Option<busbar_plugin_loader::PluginRegistry> {

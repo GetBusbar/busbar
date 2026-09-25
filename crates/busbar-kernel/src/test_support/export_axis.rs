@@ -35,7 +35,7 @@ fn write_row(dir: &std::path::Path, name: &str, alias: &str, lib: &[u8]) {
 }
 
 /// A registry scanned from a fresh directory holding one export row per `(name, alias)`.
-pub fn registry_of(tag: &str, rows: &[(&str, &str)]) -> &'static PluginRegistry {
+pub fn registry_of(tag: &str, rows: &[(&str, &str)]) -> PluginRegistry {
     let dir = std::env::temp_dir().join(format!("busbar-export-axis-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("plugins dir");
@@ -49,9 +49,11 @@ pub fn registry_of(tag: &str, rows: &[(&str, &str)]) -> &'static PluginRegistry 
     }))
     .expect("a plugins block");
     let policy = plugins.to_policy().expect("a trust policy");
-    let registry = busbar_plugin_loader::scan_and_validate(&dir, &policy).expect("the scan");
-    Box::leak(Box::new(registry))
+    busbar_plugin_loader::scan_and_validate(&dir, &policy).expect("the scan")
 }
+
+/// The registry [`install_export_axis`] installs, kept for the test binary's life.
+static AXIS: std::sync::OnceLock<PluginRegistry> = std::sync::OnceLock::new();
 
 /// The axis every test in this binary resolves `export:` against — installed once, as the
 /// composition root does. Besides a neutral row (`k9-axis-sink`, alias `k9-tail`) it holds a row
@@ -61,15 +63,15 @@ pub fn registry_of(tag: &str, rows: &[(&str, &str)]) -> &'static PluginRegistry 
 /// bytes are not a library, so each sink validates nothing and opens nothing — enough for the
 /// configuration layer, which is all a kernel test drives.
 pub fn install_export_axis() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        crate::export::plugin::install(registry_of(
+    let registry = AXIS.get_or_init(|| {
+        registry_of(
             "installed",
             &[
                 ("k9-axis-sink", "k9-tail"),
                 ("k9b-log-file", "request-log-file"),
                 ("k9c-webhook", "request-log-webhook"),
             ],
-        ));
+        )
     });
+    crate::export::plugin::install(registry);
 }

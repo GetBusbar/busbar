@@ -108,7 +108,11 @@ impl Admission {
             n => usize::try_from(n).unwrap_or(usize::MAX),
         };
         let bound = bound.clamp(1, tokio::sync::Semaphore::MAX_PERMITS);
-        let gate = leak(if gate.is_empty() { module } else { &gate });
+        let gate = if gate.is_empty() {
+            module.to_string()
+        } else {
+            gate
+        };
         Admission {
             live,
             gate: AdmissionGate::new(bound, gate),
@@ -207,11 +211,6 @@ pub fn start() {
             let _ = s.admission.set(Admission::of(&s.module, stated));
         }
     }
-}
-
-/// A module name as the `'static` gate label (boot-time, once per configured instance).
-fn leak(module: &str) -> &'static str {
-    Box::leak(module.to_string().into_boxed_str())
 }
 
 /// Ask every opened sink for its `status`, folded by the loader into this process's recorder —
