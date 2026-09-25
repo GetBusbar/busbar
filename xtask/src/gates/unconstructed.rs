@@ -147,9 +147,11 @@ pub const ROW_STALE: &str = "unconstructed:stale-declaration";
 /// shrinks as the debts drain. Armed 2026-09-23 at the eighteen the file declares today.
 pub const KNOWN_UNSHIPPED: &[&str] = &[
     "audit-chain-signing",
-    "breaker-request-budget",
+    // `breaker-request-budget` STRUCK 2026-09-25 (item 142, the breaker fold): every lane's
+    // `max_requests` is declared through `BreakerUnit::set_budget` and spent on that one counter.
     "breaker-error-map",
-    "breaker-with-limits",
+    // `breaker-with-limits` STRUCK 2026-09-25 (item 142): the one breaker is built `with_limits`
+    // from the two live `limits.*` keys.
     // `budget-pricer-card` STRUCK 2026-09-25 (#43/item 104): `Pricer::with_card` deleted,
     // superseded by `Pricer::from_card`.
     "ledger-checkpoint-seal",
