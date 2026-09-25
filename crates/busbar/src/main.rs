@@ -940,19 +940,10 @@ async fn run(data_workers: usize) {
         .then(|| open_boot_book(&app_handle.load()));
 
     // THE ROOT UNITS' BOOK STEP, once the book is open and before either listener binds: the
-    // transport-key unit provisions the two configured listeners' TLS material (after the book,
-    // because the access entry per secret read goes on the node's own chain; before the bind, because
-    // a key resolved after a listener is accepting is a listener that accepted without one), and the
     // root-driven exit arm is bound to the book, so a posting the loop hands back has somewhere to go.
     if let Some(book) = &book {
         let app = app_handle.load();
-        let ctx = root::linked::BookCtx {
-            book,
-            app: &app,
-            resolver: &*tls_secret_resolver,
-            data: (&listen, tls_cfg.as_ref()),
-            admin: (&admin_listen, admin_tls_cfg.as_ref()),
-        };
+        let ctx = root::linked::BookCtx { book, app: &app };
         for step in ROOT_UNITS.iter().filter_map(|u| u.on_book) {
             step(&ctx);
         }

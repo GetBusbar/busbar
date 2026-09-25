@@ -2133,40 +2133,18 @@ pub const fn handshake_scope() -> &'static str {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
 /// THE VOICE PLANE'S ROOT UNIT: once the deployment's limits are resolved the root is sealed and this
-/// plane mounted onto it ([`mount_root`], then its governed-call table composed); once the node's book
-/// is open, every configured listener's TLS material is provisioned through the transport-key unit
-/// ([`crate::root::transports::provision_root_listeners`]) — LAW 7: only where this plane is configured.
+/// plane mounted onto it ([`mount_root`], then its governed-call table composed). It opens no book and
+/// so has no book step: the listeners' TLS material is resolved by the path that serves them, once.
 pub const ROOT_UNIT: crate::root::linked::RootUnit = crate::root::linked::RootUnit {
     seal: None,
     path_ingress: &[],
     body_ingress: &[],
     on_config: Some(|limits| {
-        // The sealed registry is what the book step provisions into; sealing a second one to read
-        // it would be a second composition disagreeing with the first about what this boot is.
-        let _ = SEALED_ROOT.set(mount_root(limits));
+        let _ = mount_root(limits);
     }),
     opens_book: false,
-    on_book: Some(|ctx| {
-        // LAW 7: the unit is this plane's root wiring, so it runs only where the plane is configured
-        // — a 1.5.5 config resolves, journals and warns about nothing here.
-        if !ctx.app.plane_configured(&busbar_voice::PLANE_DECLARATION) {
-            return;
-        }
-        if let Some(sealed) = SEALED_ROOT.get() {
-            crate::root::transports::provision_root_listeners(
-                sealed,
-                ctx.resolver,
-                &ctx.book.durability,
-                ctx.data,
-                ctx.admin,
-            );
-        }
-    }),
+    on_book: None,
 };
-
-/// The registry [`mount_root`] sealed at boot, kept for the book step.
-static SEALED_ROOT: std::sync::OnceLock<crate::root::registry::BootRegistry> =
-    std::sync::OnceLock::new();
 
 /// SEAL THE COMPOSITION ROOT AND MOUNT THE VOICE PLANE ONTO IT — the switch-over, behind
 /// `root-voice`, which the shipped binary carries.
@@ -2193,11 +2171,6 @@ static SEALED_ROOT: std::sync::OnceLock<crate::root::registry::BootRegistry> =
 /// the config loads) rather than beside the axis registrations in `main()`: the axes are installed
 /// before any reader because `--validate` reads them, and this reads configuration instead. It
 /// still answers before any listener is bound, which is the property the refusal is for.
-///
-/// Hands the sealed [`crate::root::registry::BootRegistry`] back to the caller, which is what lets `run()`
-/// reach the composed transports again later — the TLS sink a listener's provisioned config lands
-/// in is one of them, and sealing a second registry just to read it would be a second composition
-/// disagreeing with the first about what this boot is.
 fn mount_root(
     limits: &busbar_kernel::config::limits::LimitsResolved,
 ) -> crate::root::registry::BootRegistry {

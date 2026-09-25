@@ -152,19 +152,14 @@ pub struct RootUnit {
     pub on_book: Option<fn(&BookCtx<'_>)>,
 }
 
-/// What a unit's [`RootUnit::on_book`] step is handed: the node's one book and the boot facts beside
-/// it that were resolved before any listener binds.
+/// What a unit's [`RootUnit::on_book`] step is handed: the node's one book and the boot generation.
+/// No secret resolver and no listener TLS block: the listeners' material is resolved by the path
+/// that serves them, once, and a book step has no second reading of it to make.
 pub struct BookCtx<'a> {
     /// The process's one book, opening already sealed.
     pub book: &'a crate::root::durability::NodeBook,
     /// The boot generation.
     pub app: &'a busbar_kernel::state::App,
-    /// The deployment's secret resolver.
-    pub resolver: &'a dyn busbar_api::SecretResolve,
-    /// The data listener: bind address and TLS block.
-    pub data: (&'a str, Option<&'a busbar_kernel::config::TlsCfg>),
-    /// The admin listener: bind address and TLS block.
-    pub admin: (&'a str, Option<&'a busbar_kernel::config::TlsCfg>),
 }
 
 /// THE PROTOCOL AXIS: every entry's declarations and its path- and body-model arrivals (a root unit's

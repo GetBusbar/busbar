@@ -155,14 +155,13 @@ impl std::error::Error for BootRefusal {}
 /// The composed transports the root keeps a concrete handle on.
 ///
 /// The registry holds every transport as an `Arc<dyn Plugin>`, which is all the registry needs. The
-/// root needs more than that in two places: the TLS transport is the sink the transport-key unit
-/// registers a resolved config into, and the HTTP transport is the concrete lower layer SSE is
+/// root needs more than that in one place: the HTTP transport is the concrete lower layer SSE is
 /// composed over. Holding them here is the difference between a stack that is declared and a stack
 /// that is wired.
 pub struct ComposedTransports {
     /// The bottom layer.
     pub tcp: Arc<TcpTransport>,
-    /// The TLS layer, and the sink a provisioned listener's config lands in.
+    /// The TLS layer.
     pub tls: Arc<TlsTransport>,
     /// The HTTP layer, and the concrete lower layer SSE takes.
     pub http: Arc<HttpTransport>,

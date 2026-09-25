@@ -19,9 +19,8 @@
 //! - [`durability`] — the WAL branch, the ledger's dual write and the audit unit's two streams.
 //!   Without a configured data directory nothing is probed, nothing is opened and no file appears:
 //!   constructing an on-disk journal *is* the decision to write to a disk.
-//! - [`transports`] — one provisioned listener per configured address. The transport-key unit
-//!   resolves the material through the secret plugin, journals the access, and hands back a handle
-//!   that carries a slot number and a fingerprint and no bytes at all.
+//! - [`transports`] — the loop's dispatch seam: the one place a unit's Route step reaches the
+//!   surface that already answers it, counted.
 //! - [`adapters`] — the seams where two units name the same object at two widths, plus the boot
 //!   assertion that the two hand-kept metric label banks still agree.
 //! - [`policy`] — the values the units take from configuration rather than from a `Default`.
