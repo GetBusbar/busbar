@@ -48,14 +48,12 @@
 use busbar_contract::caps::{Pass, Route};
 use busbar_contract::WireStatusClass;
 use busbar_kernel_breaker::cfg::BreakerCfg;
-use busbar_kernel_breaker::classify::Diagnostics;
-use busbar_kernel_breaker::journal::NoopJournal;
+use busbar_kernel_breaker::classify::NoopDiagnostics;
 use busbar_kernel_breaker::{Breaker as BreakerUnitTrait, BreakerUnit, DestinationId};
 use busbar_kernel_egress::ports::{
     Admit, Breaker, Classified, Outcome, Unavailable, UpstreamStatus,
 };
 use std::collections::HashMap;
-use std::sync::Arc;
 
 /// The per-pool breaker configuration the adapter closes over.
 ///
@@ -107,85 +105,33 @@ impl BreakerPolicy {
     }
 }
 
-/// The breaker unit's `error_map` diagnostic sink, as the root holds one.
-///
-/// A shared trait object rather than a concrete type, so the sink a deployment binds and the sink a
-/// test asserts against are the same shape and the breaker unit's type parameter does not become a
-/// parameter of everything that holds a [`BreakerAdapter`]. The breaker crate already implements
-/// its own trait for `Arc<S>`, which is what makes the handle usable on both sides at once.
-pub type DiagnosticsSink = Arc<dyn Diagnostics + Send + Sync>;
-
-/// The breaker unit as this root composes it: no journal, and a real diagnostics sink.
-pub type RootBreakerUnit = BreakerUnit<NoopJournal, DiagnosticsSink>;
-
-/// The breaker unit's one diagnostic, delivered through the node's own logging.
-///
-/// The breaker crate takes no logging dependency, so the warning an unrecognized `error_map` class
-/// deserves has to be raised by something that does. This is that something, and it is deliberately
-/// nothing more: it formats no policy, decides no disposition, and cannot change what the mapping
-/// classified as — the mapping is ignored either way, exactly as the previous release ignored it.
-/// What it adds is the line saying so.
-///
-/// The line is a `WARN` carrying the catalog's `diag` field, which is the same tracing path every
-/// other operator-facing configuration warning takes, so an operator greps for the code and lands on
-/// the entry that explains it. It fires on the first upstream error that reaches an unrecognized
-/// mapping and never at boot — which is why a configuration the previous release booted silently
-/// still boots with exactly the lines it booted with then.
-///
-/// Warned ONCE per distinct value: the dedup is the breaker crate's own `WarnOnceDiagnostics`, which
-/// [`root_diagnostics`] wraps this in, rather than a second copy of the same set here.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct TracingDiagnostics;
-
-impl Diagnostics for TracingDiagnostics {
-    fn unrecognized_error_map_value(&self, value: &str) {
-        tracing::warn!(
-            diag = %busbar_substrate_values::diagnostics::CONFIG_ERROR_MAP_CLASS_UNRECOGNIZED.banner(),
-            error_map_value = value,
-            "error_map maps an error to an unrecognized status class; the mapping is IGNORED and \
-             classification falls through to HTTP status. Valid classes: rate_limit, overloaded, \
-             server_error, timeout, network, auth, billing, client_error, context_length"
-        );
-    }
-}
-
-/// The sink the root binds the breaker unit to: the node's logging, warned once per distinct value.
-#[must_use]
-pub fn root_diagnostics() -> DiagnosticsSink {
-    Arc::new(busbar_kernel_breaker::classify::WarnOnceDiagnostics::new(
-        TracingDiagnostics,
-    ))
-}
-
 /// The egress unit's breaker port, bound to the breaker unit.
 ///
 /// A thin wrapper with no policy of its own beyond the two folds the module doc names. What it must
 /// never do is decide anything: a disposition is the breaker unit's data and a route is the egress
 /// unit's walk, and an adapter that split the difference would be a third opinion nobody asked for.
 pub struct BreakerAdapter {
-    unit: RootBreakerUnit,
+    unit: BreakerUnit,
     policy: BreakerPolicy,
 }
 
 impl BreakerAdapter {
     /// Bind the egress port to a breaker unit, under a declared per-pool policy.
     #[must_use]
-    pub fn new(unit: RootBreakerUnit, policy: BreakerPolicy) -> Self {
+    pub fn new(unit: BreakerUnit, policy: BreakerPolicy) -> Self {
         BreakerAdapter { unit, policy }
     }
 
-    /// Bind the egress port to a breaker unit built over one diagnostics sink, under a declared
-    /// per-pool policy. The one-call form of [`BreakerAdapter::new`] for a caller that has a sink
-    /// rather than a unit — which is every caller in this root, because the unit has no other
-    /// configuration to make here.
+    /// Bind the egress port to a fresh breaker unit, under a declared per-pool policy. The
+    /// one-call form of [`BreakerAdapter::new`] for a caller with no unit of its own to hand in.
     #[must_use]
-    pub fn with_diagnostics(diagnostics: DiagnosticsSink, policy: BreakerPolicy) -> Self {
-        BreakerAdapter::new(BreakerUnit::with_diagnostics(diagnostics), policy)
+    pub fn with_policy(policy: BreakerPolicy) -> Self {
+        BreakerAdapter::new(BreakerUnit::new(), policy)
     }
 
     /// The breaker unit behind the port, for the boot-time hydration the root does before serving.
     #[must_use]
-    pub fn unit(&self) -> &RootBreakerUnit {
+    pub fn unit(&self) -> &BreakerUnit {
         &self.unit
     }
 
@@ -309,14 +255,17 @@ impl Breaker for BreakerAdapter {
         }
     }
 
-    fn classify(&self, destination: DestinationId, status: UpstreamStatus) -> Classified {
-        let code = Self::narrow_code(status);
-        let classified = self.unit.classify(
-            destination,
+    fn classify(&self, _destination: DestinationId, status: UpstreamStatus) -> Classified {
+        // The status alone, against no operator map: the breaker keeps none. Reading an error body
+        // against the operator's `error_map` is the plane's classifier's work, and the unit is told
+        // that verdict; this port answers only for the numbered status the walk read off the frame.
+        let classified = busbar_kernel_breaker::port::classify_upstream(
+            &HashMap::new(),
             busbar_kernel_breaker::port::UpstreamStatus {
-                code,
+                code: Self::narrow_code(status),
                 retry_after: status.retry_after,
             },
+            &NoopDiagnostics,
         );
         Classified {
             disposition: classified.disposition,

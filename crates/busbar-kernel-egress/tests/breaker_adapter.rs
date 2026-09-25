@@ -143,7 +143,7 @@ impl Breaker for BreakerAdapter {
         }
     }
 
-    fn classify(&self, destination: DestinationId, status: UpstreamStatus) -> Classified {
+    fn classify(&self, _destination: DestinationId, status: UpstreamStatus) -> Classified {
         // The namespace crosses with the number: each numbering is read against its own table on
         // the far side, and the class fold is the fallback for an answer that carried no number.
         // Asked by NAMESPACE, not by arm: the breaker's own enum is closed and names the two
@@ -163,12 +163,15 @@ impl Breaker for BreakerAdapter {
                         .map(busbar_kernel_breaker::port::UpstreamCode::Grpc)
                 }),
         };
-        let classified = self.0.classify(
-            destination,
+        // The status alone: the breaker keeps no operator `error_map` (that is the plane's
+        // classifier's to read), so the pure fold runs against none.
+        let classified = busbar_kernel_breaker::port::classify_upstream(
+            &std::collections::HashMap::new(),
             busbar_kernel_breaker::port::UpstreamStatus {
                 code,
                 retry_after: status.retry_after,
             },
+            &busbar_kernel_breaker::classify::NoopDiagnostics,
         );
         Classified {
             disposition: classified.disposition,
@@ -224,15 +227,10 @@ fn a_fresh_destination_is_ready_and_admits() {
 }
 
 #[test]
-fn classify_folds_the_declared_error_map_through_the_adapter() {
+fn classify_reads_the_status_alone_through_the_adapter() {
+    // No per-destination map exists on the breaker to fold through: a provider code an operator
+    // might map reaches the port as the bare HTTP-shaped number it is.
     let breaker = BreakerAdapter::new();
-    breaker.0.set_error_map(
-        DestinationId::new(9),
-        [("1113".to_string(), "billing".to_string())]
-            .into_iter()
-            .collect(),
-    );
-
     let out = breaker.classify(
         DestinationId::new(9),
         UpstreamStatus {
@@ -241,8 +239,8 @@ fn classify_folds_the_declared_error_map_through_the_adapter() {
             retry_after: None,
         },
     );
-    assert_eq!(out.disposition, Disposition::HardDown);
-    assert_eq!(out.outcome, Outcome::HardDown);
+    assert_eq!(out.disposition, Disposition::ClientFault);
+    assert_eq!(out.outcome, Outcome::RecordNothing);
 }
 
 #[test]

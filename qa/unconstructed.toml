@@ -149,16 +149,10 @@ switch    = "STRIKE THIS ROW in the same commit that gives the composition root 
 # mod.rs). The lane spends, refunds and reads that same counter — the unit's own, shared by handle —
 # so the cap is counted once, where it always was, and never beside it.
 
-# BREAKER — the operator's error map never reaches the breaker either.
-[[capability]]
-id        = "breaker-error-map"
-built     = "crates/busbar-kernel-breaker/src/lib.rs"
-symbol    = "set_error_map"
-construct = [".set_error_map("]
-scope     = ["crates"]
-why       = "The per-destination error map that lets an operator classify an upstream's failures is built and tested and installed by nothing, so every destination is judged by the compiled-in default classification whatever the deployment declares."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that feeds the operator's declared error_maps into the root breaker at construction time, alongside the budget row above — they are the same seam and should land together."
+# BREAKER — `breaker-error-map` STRUCK 2026-09-25 (item 142 residue, #47, Q67 one classifier):
+# `BreakerUnit::set_error_map` and `BreakerUnit::classify` are DELETED. They were a second
+# classifier nothing read; the operator's `error_map` is read once, by the plane's own classifier,
+# and the one breaker takes that classifier's verdict.
 
 # BREAKER — `breaker-with-limits` STRUCK 2026-09-25 (item 142, the breaker fold): `HealthState` builds
 # its one breaker with `BreakerUnit::new().with_limits(hard_down_cooldown_secs,

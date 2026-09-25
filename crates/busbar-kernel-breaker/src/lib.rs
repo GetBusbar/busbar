@@ -46,7 +46,6 @@ use budget::LifetimeBudget;
 use busbar_contract::caps::{Pass, Route};
 use cell::{BreakerCell, BreakerState as CellState, BreakerVerdict, DeniedBy, ProbeAdmit};
 use cfg::BreakerCfg;
-use classify::Diagnostics;
 use journal::{JournalSink, NoopJournal, ProbeEvent};
 
 /// The pool-member locator, as the contract crate defines it. The egress unit names the same one,
@@ -187,81 +186,48 @@ type CellMap = HashMap<String, HashMap<DestinationId, Arc<BreakerCell>>>;
 /// budget, behind one lock each. Cells are created lazily on first touch (a cell not yet created
 /// inherits Closed-and-unspent, matching 1.5.5's lazy per-pool cell creation).
 ///
-/// Generic over its [`JournalSink`] (`J`) and its `error_map` [`Diagnostics`] sink (`D`):
-/// both default to a noop so `BreakerUnit::new()` keeps 1.5.5's silent behavior, and a caller wires
-/// a real sink through [`Self::with_journal_and_diagnostics`] (or the single-axis
-/// [`Self::with_journal`] / [`Self::with_diagnostics`] shortcuts) without this unit taking a
-/// logging dependency of its own.
-pub struct BreakerUnit<J: JournalSink = NoopJournal, D: Diagnostics = classify::NoopDiagnostics> {
+/// Generic over its [`JournalSink`] (`J`), which defaults to a noop so `BreakerUnit::new()` keeps
+/// 1.5.5's silent behavior; a caller wires a real sink through [`Self::with_journal`] without this
+/// unit taking a logging dependency of its own.
+///
+/// The unit classifies nothing. Reading an upstream's error body against an operator's `error_map`
+/// is the plane's work, done once by the plane's own classifier; the unit is told the verdict as an
+/// [`Outcome`] and acts on it.
+pub struct BreakerUnit<J: JournalSink = NoopJournal> {
     cells: RwLock<CellMap>,
     /// Which pools exist for a given destination, so a hard-down fan-out can reach every one of
     /// them without scanning the whole cell map. Populated the first time a pool cell for that
     /// destination is touched.
     pools_by_destination: RwLock<HashMap<DestinationId, Vec<String>>>,
     budgets: RwLock<HashMap<DestinationId, Arc<LifetimeBudget>>>,
-    /// Each destination's declared operator `error_map` override (see [`Self::set_error_map`]).
-    /// Undeclared is an EMPTY map — HTTP-status classification alone still applies, matching
-    /// 1.5.5's "empty error_map is valid".
-    ///
-    /// Behind an `Arc` so a classification takes a REFERENCE-COUNT bump out from under the lock
-    /// rather than a deep copy of every entry: the map is written once per config apply and read
-    /// once per upstream answer, and copying its keys and values on each of those reads meant an
-    /// allocation per entry on the response path. The `Arc` also keeps the lock held only for the
-    /// lookup, so a classifier's own diagnostics sink cannot run while this unit's `error_maps`
-    /// lock is held.
-    error_maps: RwLock<HashMap<DestinationId, Arc<HashMap<String, String>>>>,
     hard_down_cooldown_secs: u64,
     max_honored_retry_after_secs: u64,
     journal: J,
-    /// The sink an unrecognized `error_map` value is reported to. `classify::classify`
-    /// itself never sees this — it is [`Self::classify`]'s own read of the declared `error_map`
-    /// that can produce the diagnostic, via [`port::classify_upstream`].
-    diagnostics: D,
 }
 
-impl BreakerUnit<NoopJournal, classify::NoopDiagnostics> {
-    /// A breaker unit with the ADR-0002 defaults, no journal and no diagnostics sink (both
-    /// discarded).
+impl BreakerUnit<NoopJournal> {
+    /// A breaker unit with the ADR-0002 defaults and no journal (events discarded).
     pub fn new() -> Self {
-        Self::with_journal_and_diagnostics(NoopJournal, classify::NoopDiagnostics)
+        Self::with_journal(NoopJournal)
     }
 }
 
-impl Default for BreakerUnit<NoopJournal, classify::NoopDiagnostics> {
+impl Default for BreakerUnit<NoopJournal> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<J: JournalSink> BreakerUnit<J, classify::NoopDiagnostics> {
-    /// A breaker unit with the ADR-0002 defaults, journaling probe lifecycle events to `journal`
-    /// and discarding the `error_map` diagnostic.
+impl<J: JournalSink> BreakerUnit<J> {
+    /// A breaker unit with the ADR-0002 defaults, journaling probe lifecycle events to `journal`.
     pub fn with_journal(journal: J) -> Self {
-        Self::with_journal_and_diagnostics(journal, classify::NoopDiagnostics)
-    }
-}
-
-impl<D: Diagnostics> BreakerUnit<NoopJournal, D> {
-    /// A breaker unit with the ADR-0002 defaults, no journal, reporting an unrecognized
-    /// `error_map` value to `diagnostics`.
-    pub fn with_diagnostics(diagnostics: D) -> Self {
-        Self::with_journal_and_diagnostics(NoopJournal, diagnostics)
-    }
-}
-
-impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
-    /// A breaker unit with the ADR-0002 defaults, journaling probe lifecycle events to `journal`
-    /// and reporting an unrecognized `error_map` value to `diagnostics`.
-    pub fn with_journal_and_diagnostics(journal: J, diagnostics: D) -> Self {
         Self {
             cells: RwLock::new(HashMap::new()),
             pools_by_destination: RwLock::new(HashMap::new()),
             budgets: RwLock::new(HashMap::new()),
-            error_maps: RwLock::new(HashMap::new()),
             hard_down_cooldown_secs: DEFAULT_HARD_DOWN_COOLDOWN_SECS,
             max_honored_retry_after_secs: DEFAULT_MAX_HONORED_RETRY_AFTER_SECS,
             journal,
-            diagnostics,
         }
     }
 
@@ -351,44 +317,6 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
             .get(&destination)
         {
             b.refund();
-        }
-    }
-
-    /// Declare (or replace) `destination`'s operator `error_map` override: the
-    /// provider-code/structured-type → status-class table keyed per destination.
-    /// Calling this again for the same destination replaces its map wholesale (a config-apply
-    /// rebuild, not a per-request merge), matching [`Self::set_budget`]'s own replace semantics.
-    pub fn set_error_map(&self, destination: DestinationId, error_map: HashMap<String, String>) {
-        self.error_maps
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(destination, Arc::new(error_map));
-    }
-
-    /// Turn one upstream answer into a [`port::Classified`] disposition/outcome/label, reading
-    /// `destination`'s declared `error_map` (empty when none was ever declared). The stateful
-    /// method [`port::classify_upstream`] is implemented over — this is the one the egress unit's
-    /// `Breaker::classify` port is bound to. An `error_map` value that does not name a recognized
-    /// [`classify::StatusClass`] is reported to this unit's own [`Diagnostics`] sink,
-    /// wired in at construction (see [`Self::with_diagnostics`]).
-    #[must_use]
-    pub fn classify(
-        &self,
-        destination: DestinationId,
-        status: port::UpstreamStatus,
-    ) -> port::Classified {
-        // The shared map comes out from under the lock as a reference count, never a copy, and the
-        // lock is released before the pure classification runs. A destination that declared no
-        // map classifies against a borrowed empty one, which allocates nothing at all.
-        let error_map = self
-            .error_maps
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&destination)
-            .map(Arc::clone);
-        match error_map {
-            Some(map) => port::classify_upstream(&map, status, &self.diagnostics),
-            None => port::classify_upstream(&HashMap::new(), status, &self.diagnostics),
         }
     }
 
@@ -544,9 +472,9 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
     }
 }
 
-impl<J: JournalSink, D: Diagnostics> sealed::Sealed for BreakerUnit<J, D> {}
+impl<J: JournalSink> sealed::Sealed for BreakerUnit<J> {}
 
-impl<J: JournalSink, D: Diagnostics> Breaker for BreakerUnit<J, D> {
+impl<J: JournalSink> Breaker for BreakerUnit<J> {
     fn observe(
         &self,
         pool: &str,

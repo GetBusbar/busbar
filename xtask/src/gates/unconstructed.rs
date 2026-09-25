@@ -149,7 +149,8 @@ pub const KNOWN_UNSHIPPED: &[&str] = &[
     "audit-chain-signing",
     // `breaker-request-budget` STRUCK 2026-09-25 (item 142, the breaker fold): every lane's
     // `max_requests` is declared through `BreakerUnit::set_budget` and spent on that one counter.
-    "breaker-error-map",
+    // `breaker-error-map` STRUCK 2026-09-25 (item 142 residue): `BreakerUnit::set_error_map` and
+    // `classify` deleted; the plane's classifier is the one classifier.
     // `breaker-with-limits` STRUCK 2026-09-25 (item 142): the one breaker is built `with_limits`
     // from the two live `limits.*` keys.
     // `budget-pricer-card` STRUCK 2026-09-25 (#43/item 104): `Pricer::with_card` deleted,
