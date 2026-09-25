@@ -335,7 +335,10 @@ impl ProtocolReader for CohereReader {
                                                             url,
                                                         ),
                                                     cache_control: None,
-                                                    detail: None,
+                                                    // IR-08: the requested fidelity.
+                                                    detail: read_cohere_image_detail(
+                                                        block_obj.get("image_url"),
+                                                    ),
                                                 });
                                             }
                                         }
@@ -528,15 +531,6 @@ impl ProtocolReader for CohereReader {
                     } else {
                         String::new()
                     };
-                    // The `document` parts, captured STRUCTURALLY. A Cohere v2 tool result may
-                    // carry `{"type":"document","document":{"id":…,"data":{…}}}` parts; folding
-                    // them into the text join above turned the structured document into a literal
-                    // JSON STRING in the message body — the model saw escaped JSON syntax instead
-                    // of a document. They ride the opaque `Vendor` escape because a Cohere document
-                    // (`data` is an object of arbitrary string fields, not bytes and not a mime
-                    // type) has no neutral base64/url form: this protocol re-emits its own
-                    // reference verbatim, and a foreign writer, which could only mangle it, drops
-                    // it with a warn.
                     let mut result_content: Vec<crate::ir::IrBlock> = Vec::new();
                     if !content_text.is_empty() {
                         result_content.push(crate::ir::IrBlock::Text {
@@ -546,26 +540,22 @@ impl ProtocolReader for CohereReader {
                             refusal: false,
                         });
                     }
+                    // The `document` parts, captured STRUCTURALLY (never folded into the text join
+                    // above, which turned a document into a literal JSON STRING the model read as
+                    // escaped syntax). A tool-result document is the tool's output: its `data` is
+                    // JSON, so it reads into the IR's `Json` block (a string `data` into a `Text`
+                    // block) — the tool-output carrier EVERY writer projects (Anthropic / OpenAI /
+                    // Responses / Gemini / Bedrock / Cohere tool-result JSON). It used to ride the
+                    // opaque cohere `Vendor` escape, which every foreign writer drops, so an
+                    // Anthropic backend saw an empty tool result (the ANT-17 follow-up). The
+                    // document `id` is a Cohere citation handle with no foreign analog; only a
+                    // document with no readable `data` keeps the `Vendor` escape.
                     if let Some(arr) = msg_val.get("content").and_then(|c| c.as_array()) {
                         for b in arr {
                             let Some(doc) = b.get("document") else {
                                 continue;
                             };
-                            result_content.push(crate::ir::IrBlock::Media {
-                                kind: crate::ir::IrMediaKind::Document,
-                                source: crate::ir::IrImageSource::Vendor {
-                                    vendor: VENDOR_NAME,
-                                    value: doc.clone(),
-                                },
-                                name: doc
-                                    .get("id")
-                                    .and_then(|v| v.as_str())
-                                    .filter(|s| !s.is_empty())
-                                    .map(String::from),
-                                cache_control: None,
-                                citations: None,
-                                context: None,
-                            });
+                            result_content.push(read_cohere_tool_result_document(doc));
                         }
                     }
                     // A tool result with NO parts at all still needs one (empty) text block: the
@@ -682,23 +672,6 @@ impl ProtocolReader for CohereReader {
         // provider-specific concern (see `read_response`).
         let logprobs = obj.get("logprobs").and_then(|v| v.as_bool());
 
-        // Cohere-native `documents` (RAG grounding) has NO cross-protocol analog and is NOT
-        // modeled in the IR — it stays in `extra`. On a SAME-protocol Cohere->Cohere hop it survives
-        // byte-exact (it is echoed through `extra`). On a CROSS-protocol hop, `extra` is CLEARED at
-        // the translation seam, so the `documents` grounding is silently DROPPED — and the Cohere
-        // writer never runs to observe the loss. So warn HERE, at the reader, where the inbound
-        // `documents` is still visible, whenever the request carries one. We intentionally do NOT
-        // invent an IR field for it (no faithful target mapping exists); the warn makes the
-        // potential cross-protocol loss non-silent so an operator can detect grounding that will not
-        // reach a non-Cohere backend.
-        if obj.contains_key("documents") {
-            tracing::warn!(
-                "cohere: request carries native `documents` (RAG grounding) with no cross-protocol \
-                 analog; it survives a same-protocol Cohere->Cohere hop but is DROPPED when this \
-                 request is translated to a non-Cohere backend (extra is cleared at the seam)"
-            );
-        }
-
         // Built once per process and reused across every request rather than rebuilt on each
         // read_request call (the per-request allocation/hashing was wasted work on the ingress hot
         // path — same fix the Gemini/Bedrock readers want). The set is immutable, so a OnceLock is
@@ -713,9 +686,9 @@ impl ProtocolReader for CohereReader {
         // thinking-token budget, the IR's `Budget` (the Anthropic `budget_tokens` / Gemini
         // `thinkingBudget` spelling of the same thing). `{type:"enabled"}` with no budget leaves the
         // amount to the model — the IR's `Dynamic`. It used to ride `extra` and die at the seam, so a
-        // Cohere caller's reasoning ask never reached a foreign reasoning model (COH-05). Any other
-        // form (`disabled`, an unreadable budget) stays in `extra` untouched, as the Anthropic reader
-        // does.
+        // Cohere caller's reasoning ask never reached a foreign reasoning model (COH-05).
+        // `{type:"disabled"}` is the IR's `Off` (IR-09). Any other form (an unreadable budget) stays
+        // in `extra` untouched, as the Anthropic reader does.
         // `strict_tools` is Cohere's strict-schema switch for EVERY tool of the request: the IR
         // carries the same guarantee per tool (`IrTool.strict`, OpenAI `tools[].function.strict`),
         // so it is set on each tool (COH-11). It used to ride `extra` and die at the seam, turning
@@ -728,6 +701,34 @@ impl ProtocolReader for CohereReader {
                 }
                 extra.remove("strict_tools");
             }
+        }
+
+        // Cohere's top-level `documents` (RAG grounding) read into the IR's document `Media`
+        // (IR-13), ahead of the content of the FIRST user turn: grounding is conversation-level
+        // context, and the first turn is where every foreign dialect's document slot sits (and where
+        // it stays put, turn after turn, for a prompt cache). It used to ride `extra`, which the
+        // translation seam clears, so a foreign model answered with no grounding at all. The Cohere
+        // writer lifts text documents back into `documents` (COH-18). A `documents` that is not an
+        // array stays in `extra` untouched.
+        if let Some(docs) = obj.get("documents").and_then(|d| d.as_array()) {
+            let blocks: Vec<crate::ir::IrBlock> = docs.iter().map(read_cohere_document).collect();
+            match messages
+                .iter_mut()
+                .find(|m| m.role == crate::ir::IrRole::User)
+            {
+                Some(first_user) => {
+                    first_user.content.splice(0..0, blocks);
+                }
+                None if !blocks.is_empty() => messages.insert(
+                    0,
+                    crate::ir::IrMessage {
+                        role: crate::ir::IrRole::User,
+                        content: blocks,
+                    },
+                ),
+                None => {}
+            }
+            extra.remove("documents");
         }
 
         let reasoning = read_cohere_reasoning(obj.get("thinking"));

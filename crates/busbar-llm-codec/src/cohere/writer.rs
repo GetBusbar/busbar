@@ -11,6 +11,37 @@ impl ProtocolWriter for CohereWriter {
         PATH_UPSTREAM
     }
 
+    /// The Q57 request slots Cohere v2 `/chat` has no form for (ir-slots-landed.md "N" for Cohere):
+    /// each one a request carries is dropped by [`Self::write_request`] with a warn and reported
+    /// here, so the seam audits the degradation. `service_tier` included: Cohere's `priority` is an
+    /// integer queue order, a different concept, so no tier is written.
+    fn dropped_egress_controls(&self, req: &crate::ir::IrRequest) -> Vec<&'static str> {
+        let mut dropped = Vec::new();
+        if req.metadata.is_some() {
+            dropped.push("metadata");
+        }
+        if req.service_tier.is_some() {
+            dropped.push("service_tier");
+        }
+        if req.store.is_some() {
+            dropped.push("store");
+        }
+        if req.safety_identifier.is_some() {
+            dropped.push("safety_identifier");
+        }
+        if req.prompt_cache_key.is_some() {
+            dropped.push("prompt_cache_key");
+        }
+        if req.verbosity.is_some() {
+            dropped.push("verbosity");
+        }
+        if cohere_drops_output_modalities(req) {
+            dropped.push("output_modalities");
+        }
+        dropped.extend(req.hosted_tools.iter().map(|h| h.kind_str()));
+        dropped
+    }
+
     fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value {
         let _t = busbar_timing::timeit!("cohere_write_request");
         let mut out = serde_json::Map::new();
@@ -72,12 +103,21 @@ impl ProtocolWriter for CohereWriter {
                     // A URL/base64 image projects to an `image_url`; a Responses `file_id` or
                     // Bedrock `s3Location` reference has no Cohere projection (returns None) and is
                     // skipped with a warn rather than corrupting the block.
-                    crate::ir::IrBlock::Image { source, .. } => {
+                    crate::ir::IrBlock::Image { source, detail, .. } => {
                         match super::super::ir_encode::image_url_from_ir(source) {
                             Some(url) => {
                                 has_image = true;
+                                let mut image_url = serde_json::Map::new();
+                                image_url.insert("url".to_string(), serde_json::json!(url));
+                                // IR-08: the requested fidelity, Cohere's own `image_url.detail`.
+                                if let Some(d) = detail {
+                                    image_url.insert(
+                                        "detail".to_string(),
+                                        serde_json::json!(d.as_str()),
+                                    );
+                                }
                                 parts.push(serde_json::json!({
-                                    "type": "image_url", "image_url": { "url": url }
+                                    "type": "image_url", "image_url": image_url
                                 }));
                             }
                             None => tracing::warn!(
@@ -398,16 +438,28 @@ impl ProtocolWriter for CohereWriter {
         // Per-tool `strict` renders as Cohere's request-level `strict_tools` when every tool agrees
         // (COH-12) — the same guarantee, spelled once. Tools that disagree have no Cohere form (the
         // switch cannot be set for some tools and not others), so that case stays a drop-with-warn.
-        let strict: Vec<Option<bool>> = req.tools.iter().map(|t| t.strict).collect();
+        //
+        // IR-10: an allowed-tools SUBSET has no Cohere form of its own, so it is expressed by
+        // omission — only the listed tools are sent, and `tool_choice` carries the mode (`Required`
+        // → REQUIRED, `Auto` → Cohere's default). The same constraint, spelled the way Cohere can.
+        let tools: Vec<&crate::ir::IrTool> = match &req.allowed_tools {
+            Some(allowed) => req
+                .tools
+                .iter()
+                .filter(|t| allowed.contains(&t.name))
+                .collect(),
+            None => req.tools.iter().collect(),
+        };
+        let strict: Vec<Option<bool>> = tools.iter().map(|t| t.strict).collect();
         match strict.first() {
             Some(Some(first)) if strict.iter().all(|s| *s == Some(*first)) => {
                 out.insert("strict_tools".to_string(), serde_json::json!(first));
             }
             _ => super::super::ir_encode::warn_dropped_tool_strict(&req.tools, "cohere"),
         }
-        if !req.tools.is_empty() {
+        if !tools.is_empty() {
             let mut tools_arr: Vec<serde_json::Value> = Vec::new();
-            for tool in &req.tools {
+            for tool in &tools {
                 let mut func_obj = serde_json::Map::new();
                 func_obj.insert("name".to_string(), serde_json::json!(tool.name));
                 if let Some(desc) = &tool.description {
@@ -442,7 +494,7 @@ impl ProtocolWriter for CohereWriter {
         // reachable case is a cross-protocol request whose hosted tools `prepare_for_egress`
         // stripped (`ir/variant.rs`) while the tool_choice directive survived.
         if let Some(tc) = &req.tool_choice {
-            if req.tools.is_empty() {
+            if tools.is_empty() {
                 tracing::warn!(
                     "dropping tool_choice on Cohere egress: tool_choice has no accompanying tools \
                      (likely because the hosted tools that carried it were stripped on the \
@@ -467,6 +519,14 @@ impl ProtocolWriter for CohereWriter {
             tracing::warn!(
                 "dropping parallel_tool_calls on Cohere egress: /v2/chat has no parallelism \
                  control, so the backend's default parallelism applies"
+            );
+        }
+        // The Q57 request slots with no Cohere form — the same set `dropped_egress_controls`
+        // reports for the seam's audit.
+        for control in self.dropped_egress_controls(req) {
+            tracing::warn!(
+                control = control,
+                "dropping a request control on Cohere egress: Cohere v2 /chat has no form for it"
             );
         }
 
@@ -549,10 +609,6 @@ impl ProtocolWriter for CohereWriter {
                 write_cohere_response_format(response_format),
             );
         }
-        // Cohere-native `documents` (RAG grounding) has no cross-protocol analog and is not
-        // modeled in the IR; on a same-protocol hop it flows through `extra` byte-exact below. The
-        // non-silent loss warn for the cross-protocol case lives in `read_request` (the only Cohere
-        // site that still sees an inbound `documents` before `extra` is cleared at the seam).
         // Only emit `stream` when streaming is requested. A native Cohere client omitting `stream`
         // (relying on the `false` default) produces a body WITHOUT the field; always injecting
         // `"stream": false` is a proxy tell and a same-protocol passthrough fidelity break (the
@@ -576,8 +632,9 @@ impl ProtocolWriter for CohereWriter {
         for (key, value) in &req.extra {
             out.insert(key.clone(), value.clone());
         }
-        // The lifted documents join any `documents` the request already carried (a same-protocol
-        // body keeps its own in `extra`), after them.
+        // The lifted documents join any `documents` still riding `extra` (the reader promotes an
+        // array `documents` into the IR — IR-13 — so only an unreadable one is left there), after
+        // them.
         if !documents.is_empty() {
             match out.get_mut("documents").and_then(|d| d.as_array_mut()) {
                 Some(existing) => existing.extend(documents),

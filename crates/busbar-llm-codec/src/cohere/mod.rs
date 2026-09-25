@@ -438,12 +438,16 @@ fn write_cohere_response_format(rf: &crate::ir::IrResponseFormat) -> serde_json:
 
 /// Read Cohere v2's request `thinking` param into the IR reasoning ask — see `read_request`.
 /// `{type:"enabled", token_budget:N}` is `Budget(N)`; `{type:"enabled"}` with no (or a `null`) budget
-/// is `Dynamic` ("the model decides"). Anything else — `disabled`, a budget that is not a `u32` — is
-/// no promotable ask (`None`).
+/// is `Dynamic` ("the model decides"); `{type:"disabled"}` is `Off` (IR-09). Anything else — an
+/// unknown type, a budget that is not a `u32` — is no promotable ask (`None`).
 fn read_cohere_reasoning(v: Option<&serde_json::Value>) -> Option<crate::ir::IrReasoningAsk> {
     let t = v?.as_object()?;
-    if t.get("type").and_then(|ty| ty.as_str()) != Some("enabled") {
-        return None;
+    match t.get("type").and_then(|ty| ty.as_str()) {
+        Some("enabled") => {}
+        // IR-09: reasoning switched OFF — a reasoning-by-default model stops thinking. Not the
+        // same as saying nothing.
+        Some("disabled") => return Some(crate::ir::IrReasoningAsk::Off),
+        _ => return None,
     }
     match t.get("token_budget") {
         None | Some(serde_json::Value::Null) => Some(crate::ir::IrReasoningAsk::Dynamic),
@@ -460,47 +464,74 @@ fn read_cohere_reasoning(v: Option<&serde_json::Value>) -> Option<crate::ir::IrR
 /// `{type:"enabled"}` with no budget, so it needs no table guess here.
 fn write_cohere_reasoning(ask: crate::ir::IrReasoningAsk, table: [u32; 4]) -> serde_json::Value {
     match ask {
+        // IR-09: matched FIRST — `to_budget` gives `Off` 0, which as an enable ask would invert
+        // the caller's meaning.
+        crate::ir::IrReasoningAsk::Off => serde_json::json!({ "type": "disabled" }),
         crate::ir::IrReasoningAsk::Dynamic => serde_json::json!({ "type": "enabled" }),
         other => serde_json::json!({ "type": "enabled", "token_budget": other.to_budget(table) }),
     }
 }
 
-/// Read a Cohere v2 document object (`{"id"?: "…", "data": {…}}`, a user content part's `document`)
-/// into the IR's document [`crate::ir::IrBlock::Media`] (COH-04).
+/// Read a Cohere v2 document (`{"id"?: "…", "data": {…}}` — a user content part's `document`, or
+/// an entry of the request's top-level `documents`) into the IR's document
+/// [`crate::ir::IrBlock::Media`] (COH-04, IR-13).
 ///
-/// A plain TEXT document — `data` holding a string `text` and at most a string `title` — IS a
-/// text/plain document, the one every dialect with a document slot carries (Anthropic `document`,
-/// Gemini `inlineData`, Bedrock `document`, OpenAI `file`): it maps to base64 `text/plain` bytes named
-/// by its `title` (else its `id`). Any other `data` is an arbitrary map of fields with no neutral form,
-/// so it rides the opaque `Vendor` escape exactly as a tool-result document does: this dialect's
-/// writer re-emits it, and a foreign writer, which could only mangle it, drops it with a warn.
+/// Every readable document becomes a base64 `text/plain` document — the one form every dialect with
+/// a document slot carries (Anthropic `document`, Gemini `inlineData`, Bedrock `document`, OpenAI
+/// `file`):
+/// - a plain TEXT document (`data` holding a string `text` and at most a string `title`) carries its
+///   `text`;
+/// - a bare string (a top-level `documents` entry may be one) or a string `data` carries that string;
+/// - any other `data` is a JSON map of fields (`title`/`snippet`/`url`/…, which Cohere itself renders
+///   to the model as fields of text): it carries the map's JSON text. It used to ride the opaque
+///   cohere `Vendor` escape, which every foreign writer drops, so a grounding document never reached
+///   a foreign model (Q57 — "map where it can").
+///
+/// The name is the string `title`, else the `id`. Only a document with no readable content (no
+/// `data`, or a non-string non-object `data`) keeps the `Vendor` escape: this dialect's writer
+/// re-emits it, and a foreign writer drops it with a warn.
 fn read_cohere_document(doc: &serde_json::Value) -> crate::ir::IrBlock {
+    let text_document = |text: &str, name: Option<&str>| crate::ir::IrBlock::Media {
+        kind: crate::ir::IrMediaKind::Document,
+        source: crate::ir::IrImageSource::Base64 {
+            media_type: TEXT_PLAIN.to_string(),
+            data: busbar_substrate_values::media::base64_encode(text.as_bytes()),
+        },
+        name: name.filter(|s| !s.is_empty()).map(String::from),
+        cache_control: None,
+        citations: None,
+        context: None,
+    };
+    if let Some(text) = doc.as_str() {
+        return text_document(text, None);
+    }
     let id = doc
         .get("id")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty());
-    let data = doc.get("data").and_then(|d| d.as_object());
-    let text = data.and_then(|d| d.get("text")).and_then(|t| t.as_str());
-    let title = data.and_then(|d| d.get("title")).and_then(|t| t.as_str());
-    let plain = data.is_some_and(|d| {
-        d.iter().all(|(k, v)| match k.as_str() {
-            "text" => v.is_string(),
-            "title" => v.is_string(),
-            _ => false,
-        })
-    });
-    match text {
-        Some(text) if plain => crate::ir::IrBlock::Media {
-            kind: crate::ir::IrMediaKind::Document,
-            source: crate::ir::IrImageSource::Base64 {
-                media_type: TEXT_PLAIN.to_string(),
-                data: busbar_substrate_values::media::base64_encode(text.as_bytes()),
-            },
-            name: title.filter(|s| !s.is_empty()).or(id).map(String::from),
-            cache_control: None,
-            citations: None,
-            context: None,
-        },
+    match doc.get("data") {
+        Some(serde_json::Value::String(text)) => text_document(text, id),
+        Some(serde_json::Value::Object(d)) => {
+            let title = d
+                .get("title")
+                .and_then(|t| t.as_str())
+                .filter(|s| !s.is_empty());
+            let name = title.or(id);
+            let plain = d.iter().all(|(k, v)| match k.as_str() {
+                "text" | "title" => v.is_string(),
+                _ => false,
+            });
+            match d.get("text").and_then(|t| t.as_str()) {
+                Some(text) if plain => text_document(text, name),
+                _ => text_document(
+                    &busbar_substrate_values::json::to_string(&serde_json::Value::Object(
+                        d.clone(),
+                    ))
+                    .unwrap_or_default(),
+                    name,
+                ),
+            }
+        }
         _ => crate::ir::IrBlock::Media {
             kind: crate::ir::IrMediaKind::Document,
             source: crate::ir::IrImageSource::Vendor {
@@ -508,6 +539,66 @@ fn read_cohere_document(doc: &serde_json::Value) -> crate::ir::IrBlock {
                 value: doc.clone(),
             },
             name: id.map(String::from),
+            cache_control: None,
+            citations: None,
+            context: None,
+        },
+    }
+}
+
+/// Whether a request's requested output modalities (IR-19) are lost on Cohere egress: Cohere v2
+/// `/chat` produces text only and has no modality control, so an ask for anything beyond text is
+/// dropped. A text-only ask is what Cohere does anyway — nothing is lost.
+fn cohere_drops_output_modalities(req: &crate::ir::IrRequest) -> bool {
+    req.output_modalities
+        .as_ref()
+        .is_some_and(|m| m.iter().any(|x| *x != crate::ir::IrModality::Text))
+}
+
+/// Read the `detail` of a Cohere v2 `image_url` object (`{"url": …, "detail": "auto"|"low"|"high"}`)
+/// into the IR's requested image fidelity (IR-08). An unknown word is `None`, with a warn: it is not
+/// coerced onto a fidelity the caller did not ask for.
+fn read_cohere_image_detail(
+    image_url: Option<&serde_json::Value>,
+) -> Option<crate::ir::IrImageDetail> {
+    let word = image_url?.get("detail")?.as_str()?;
+    let detail = crate::ir::IrImageDetail::parse(word);
+    if detail.is_none() {
+        tracing::warn!(
+            detail = %word,
+            "cohere: dropping an unknown image_url.detail word (not auto/low/high)"
+        );
+    }
+    detail
+}
+
+/// Read a Cohere v2 TOOL-RESULT `document` part (`{"id"?: "…", "data": …}`) into the IR (the ANT-17
+/// follow-up). A tool-result document is the tool's OUTPUT, so it takes the IR's tool-output
+/// carriers rather than an attachment slot: a JSON `data` (object / array / number / bool) is a
+/// [`crate::ir::IrBlock::Json`] block, a string `data` a `Text` block — the forms every writer
+/// projects inside a tool result (Anthropic / OpenAI / Responses / Gemini tool-result JSON as text,
+/// Bedrock `{"json": …}`, Cohere as its JSON text). The document `id` is a Cohere citation handle
+/// with no foreign analog. A document with no `data` keeps the opaque cohere `Vendor` escape.
+fn read_cohere_tool_result_document(doc: &serde_json::Value) -> crate::ir::IrBlock {
+    match doc.get("data") {
+        Some(serde_json::Value::String(text)) => crate::ir::IrBlock::Text {
+            text: text.clone(),
+            cache_control: None,
+            citations: Vec::new(),
+            refusal: false,
+        },
+        Some(data) if !data.is_null() => crate::ir::IrBlock::Json(data.clone()),
+        _ => crate::ir::IrBlock::Media {
+            kind: crate::ir::IrMediaKind::Document,
+            source: crate::ir::IrImageSource::Vendor {
+                vendor: VENDOR_NAME,
+                value: doc.clone(),
+            },
+            name: doc
+                .get("id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from),
             cache_control: None,
             citations: None,
             context: None,

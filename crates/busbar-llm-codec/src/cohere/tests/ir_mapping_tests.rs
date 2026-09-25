@@ -533,13 +533,14 @@ fn coh05_cohere_thinking_budget_reaches_a_foreign_reasoning_backend() {
         json!(-1),
         "COH-05: {out}"
     );
-    // `disabled` is no ask.
+    // `disabled` switches reasoning OFF (IR-09): the Anthropic backend is told so, rather than
+    // left to its default.
     let off = json!({
         "model": "m", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 20000,
         "thinking": {"type": "disabled"}
     });
     let out = translate_request("cohere", "anthropic", &off);
-    assert!(out.get("thinking").is_none(), "{out}");
+    assert_eq!(out["thinking"], json!({"type": "disabled"}), "IR-09: {out}");
 }
 
 /// COH-06: a foreign reasoning ask reaches a Cohere backend as `thinking` — a budget as-is, an
@@ -762,8 +763,9 @@ fn coh16_timeout_is_an_upstream_error() {
 // ── COH-04 / COH-17 / COH-18 / COH-19 / COH-20: content ──────────────────────────────────────────
 
 /// COH-04 (document half): a user `document` part used to be dropped silently. A plain text document
-/// reaches a foreign backend as a text/plain document; any other document is carried as this
-/// dialect's own document (which only a Cohere writer can emit) instead of vanishing.
+/// reaches a foreign backend as a text/plain document; any other document's `data` is a JSON map of
+/// fields and reaches it as a text/plain document holding that JSON (it rode this dialect's own
+/// `Vendor` document at first, which every foreign writer drops — Q57, "map where it can").
 #[test]
 fn coh04_request_user_document_part_is_carried() {
     let body = json!({
@@ -791,24 +793,13 @@ fn coh04_request_user_document_part_is_carried() {
             {"type": "document", "document": {"id": "d2", "data": {"title": "t", "snippet": "s"}}}
         ]}]
     });
-    let ir = crate::proto_codec::protocol_for("cohere")
-        .expect("cohere")
-        .reader()
-        .read_request(&rich)
-        .expect("read");
-    assert!(
-        matches!(
-            &ir.messages[0].content[..],
-            [crate::ir::IrBlock::Media {
-                source: crate::ir::IrImageSource::Vendor {
-                    vendor: "cohere",
-                    ..
-                },
-                ..
-            }]
-        ),
-        "COH-04: {:?}",
-        ir.messages[0].content
+    let out = translate_request("cohere", "anthropic", &rich);
+    assert_eq!(
+        out["messages"][0]["content"][0],
+        json!({"type": "document", "title": "t", "source": {
+            "type": "text", "media_type": "text/plain", "data": "{\"snippet\":\"s\",\"title\":\"t\"}"
+        }}),
+        "COH-04: {out}"
     );
 }
 
@@ -906,4 +897,252 @@ fn coh20_json_tool_result_reaches_cohere_as_text() {
         .cloned()
         .unwrap_or_else(|| panic!("no tool message: {out}"));
     assert_eq!(tool["content"], json!("{\"x\":1}"), "COH-20: {out}");
+}
+
+// ── Q57 round 2: the typed IR slots (ir-slots-landed.md) and the ANT-17 follow-up ─────────────────
+
+/// A Cohere v2 request whose tool result is a `document` part with JSON `data`.
+fn json_tool_result_document_request() -> Value {
+    json!({
+        "model": "command-r",
+        "messages": [
+            {"role": "user", "content": "weather in Paris?"},
+            {"role": "assistant", "tool_calls": [
+                {"id": "t1", "type": "function", "function": {"name": "weather", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "t1", "content": [
+                {"type": "document", "document": {"id": "d1", "data": {"temp_c": 21, "sky": "clear"}}}
+            ]}
+        ]
+    })
+}
+
+/// ANT-17 follow-up: a Cohere tool-result `document` whose `data` is JSON reads into the IR as the
+/// tool-output `Json` block, so an Anthropic backend receives it as the tool result's text. It rode
+/// the cohere `Vendor` escape, which the Anthropic writer drops (ANT-17), so Anthropic saw an empty
+/// tool result.
+#[test]
+fn ant17_followup_cohere_json_tool_result_document_reaches_anthropic_as_text() {
+    let out = translate_request("cohere", "anthropic", &json_tool_result_document_request());
+    assert_eq!(
+        out["messages"][2]["content"][0],
+        json!({"type": "tool_result", "tool_use_id": "t1", "content": [
+            {"type": "text", "text": "{\"sky\":\"clear\",\"temp_c\":21}"}
+        ]}),
+        "ANT-17 follow-up: {out}"
+    );
+    // Every other target receives it too.
+    let oai = translate_request("cohere", "openai", &json_tool_result_document_request());
+    assert_eq!(
+        oai["messages"][2]["content"],
+        json!("{\"sky\":\"clear\",\"temp_c\":21}"),
+        "{oai}"
+    );
+    let bed = translate_request("cohere", "bedrock", &json_tool_result_document_request());
+    assert_eq!(
+        bed["messages"][2]["content"][0]["toolResult"]["content"],
+        json!([{"json": {"temp_c": 21, "sky": "clear"}}]),
+        "{bed}"
+    );
+}
+
+/// IR-13: the request's top-level `documents` (RAG grounding) reach a foreign backend as documents
+/// ahead of the first user turn. They rode `extra`, which the seam clears, so the foreign model
+/// answered with no grounding.
+#[test]
+fn ir13_grounding_documents_reach_a_foreign_backend() {
+    let body = json!({
+        "model": "command-r",
+        "messages": [{"role": "user", "content": "what is the capital?"}],
+        "documents": [
+            {"id": "d1", "data": {"title": "Atlas", "text": "Paris is the capital."}},
+            "a bare document",
+            {"id": "d3", "data": {"snippet": "s", "url": "https://u"}}
+        ]
+    });
+    let out = translate_request("cohere", "anthropic", &body);
+    assert_eq!(
+        out["messages"][0]["content"],
+        json!([
+            {"type": "document", "title": "Atlas", "source": {
+                "type": "text", "media_type": "text/plain", "data": "Paris is the capital."}},
+            {"type": "document", "source": {
+                "type": "text", "media_type": "text/plain", "data": "a bare document"}},
+            {"type": "document", "title": "d3", "source": {
+                "type": "text", "media_type": "text/plain",
+                "data": "{\"snippet\":\"s\",\"url\":\"https://u\"}"}},
+            {"type": "text", "text": "what is the capital?"}
+        ]),
+        "IR-13: {out}"
+    );
+    // A Cohere writer lifts them back into `documents` once — not also re-emitted from `extra`.
+    let back = translate_request("cohere", "cohere", &body);
+    assert_eq!(
+        back["documents"].as_array().map(Vec::len),
+        Some(3),
+        "{back}"
+    );
+    assert_eq!(
+        back["documents"][0],
+        json!({"data": {"text": "Paris is the capital.", "title": "Atlas"}}),
+        "{back}"
+    );
+    assert_eq!(
+        back["messages"][0]["content"],
+        json!("what is the capital?"),
+        "{back}"
+    );
+}
+
+/// IR-08: an `image_url.detail` reads into the IR's image fidelity and is written back.
+#[test]
+fn ir08_image_detail_maps_both_ways() {
+    let body = json!({
+        "model": "command-a-vision",
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "what is this?"},
+            {"type": "image_url", "image_url": {"url": "https://img/1.png", "detail": "low"}}
+        ]}]
+    });
+    let ir = crate::proto_codec::protocol_for("cohere")
+        .expect("cohere")
+        .reader()
+        .read_request(&body)
+        .expect("read");
+    assert!(
+        matches!(
+            ir.messages[0].content[1],
+            crate::ir::IrBlock::Image {
+                detail: Some(crate::ir::IrImageDetail::Low),
+                ..
+            }
+        ),
+        "IR-08: {:?}",
+        ir.messages[0].content
+    );
+    let out = translate_request("cohere", "cohere", &body);
+    assert_eq!(
+        out["messages"][0]["content"][1],
+        json!({"type": "image_url", "image_url": {"url": "https://img/1.png", "detail": "low"}}),
+        "IR-08: {out}"
+    );
+}
+
+/// IR-09: `thinking:{type:"disabled"}` is the IR's `Off` (it used to stay in `extra`, dying at the
+/// seam), and `Off` is written as `disabled` — never as an enable ask with a zero budget.
+#[test]
+fn ir09_reasoning_off_maps_both_ways() {
+    let body = json!({
+        "model": "command-a-reasoning",
+        "messages": [{"role": "user", "content": "hi"}],
+        "thinking": {"type": "disabled"}
+    });
+    let ir = crate::proto_codec::protocol_for("cohere")
+        .expect("cohere")
+        .reader()
+        .read_request(&body)
+        .expect("read");
+    assert_eq!(ir.reasoning, Some(crate::ir::IrReasoningAsk::Off));
+    assert!(!ir.extra.contains_key("thinking"), "{:?}", ir.extra);
+    let out = crate::proto_codec::protocol_for("cohere")
+        .expect("cohere")
+        .writer()
+        .write_request(&ir);
+    assert_eq!(out["thinking"], json!({"type": "disabled"}), "IR-09: {out}");
+}
+
+fn function_tool(name: &str) -> crate::ir::IrTool {
+    crate::ir::IrTool {
+        name: name.to_string(),
+        description: None,
+        input_schema: json!({"type": "object"}),
+        cache_control: None,
+        hosted: None,
+        strict: None,
+    }
+}
+
+/// IR-10: an allowed-tools subset is expressed by omission — only the listed tools are sent — and
+/// its mode rides `tool_choice`.
+#[test]
+fn ir10_allowed_tools_send_only_the_listed_tools() {
+    let req = crate::ir::IrRequest {
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::User,
+            content: vec![crate::ir::IrBlock::Text {
+                text: "go".to_string(),
+                cache_control: None,
+                citations: Vec::new(),
+                refusal: false,
+            }],
+        }],
+        tools: vec![function_tool("a"), function_tool("b"), function_tool("c")],
+        allowed_tools: Some(vec!["b".to_string(), "c".to_string()]),
+        tool_choice: Some(crate::ir::IrToolChoice::Required),
+        ..Default::default()
+    };
+    let out = crate::proto_codec::protocol_for("cohere")
+        .expect("cohere")
+        .writer()
+        .write_request(&req);
+    let names: Vec<&str> = out["tools"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t["function"]["name"].as_str())
+        .collect();
+    assert_eq!(names, vec!["b", "c"], "IR-10: {out}");
+    assert_eq!(out["tool_choice"], json!("REQUIRED"), "IR-10: {out}");
+}
+
+/// The request slots Cohere has no form for (metadata, service_tier, store, safety_identifier,
+/// prompt_cache_key, verbosity, a non-text output modality, hosted tools) are reported by
+/// `dropped_egress_controls` so the seam audits them, and are not written.
+#[test]
+fn ir_slots_with_no_cohere_form_are_reported_dropped() {
+    let req = crate::ir::IrRequest {
+        metadata: Some(vec![("k".to_string(), "v".to_string())]),
+        service_tier: Some(crate::ir::IrServiceTier::Flex),
+        store: Some(true),
+        safety_identifier: Some("u".to_string()),
+        prompt_cache_key: Some("p".to_string()),
+        verbosity: Some(crate::ir::IrVerbosity::Low),
+        output_modalities: Some(vec![
+            crate::ir::IrModality::Text,
+            crate::ir::IrModality::Audio,
+        ]),
+        hosted_tools: vec![crate::ir::IrHostedTool::CodeExecution],
+        ..Default::default()
+    };
+    let entry = crate::proto_codec::protocol_for("cohere").expect("cohere");
+    let writer = entry.writer();
+    assert_eq!(
+        writer.dropped_egress_controls(&req),
+        vec![
+            "metadata",
+            "service_tier",
+            "store",
+            "safety_identifier",
+            "prompt_cache_key",
+            "verbosity",
+            "output_modalities",
+            "code_execution",
+        ]
+    );
+    let out = writer.write_request(&req);
+    for key in [
+        "metadata",
+        "service_tier",
+        "store",
+        "verbosity",
+        "modalities",
+    ] {
+        assert!(out.get(key).is_none(), "{key}: {out}");
+    }
+    // A text-only modality ask is what Cohere does anyway: nothing is dropped.
+    let text_only = crate::ir::IrRequest {
+        output_modalities: Some(vec![crate::ir::IrModality::Text]),
+        ..Default::default()
+    };
+    assert!(writer.dropped_egress_controls(&text_only).is_empty());
 }

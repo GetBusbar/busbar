@@ -3123,22 +3123,19 @@ fn test_read_request_tool_content_object_array_preserved() {
     );
     // A `document` part is NO LONGER folded into this text join. Serializing it there is what put a
     // literal JSON string (`{"document":{"data":…}}`) in the message body, so the model read escaped
-    // JSON syntax instead of a document. It is carried STRUCTURALLY beside the text instead — still
-    // not dropped, which is what this assertion was protecting.
+    // JSON syntax instead of a document. It is carried beside the text instead — still not dropped,
+    // which is what this assertion was protecting: its string `data` as its own text block (the
+    // ANT-17 follow-up; a JSON `data` is a `Json` block).
     assert!(
         !text.contains("doc body"),
         "the document must not be stringified into the tool-result text: {text}"
     );
     assert!(
-        tool_result.iter().any(|b| matches!(
+        tool_result.iter().skip(1).any(|b| matches!(
             b,
-            crate::ir::IrBlock::Media {
-                kind: crate::ir::IrMediaKind::Document,
-                source: crate::ir::IrImageSource::Vendor { value, .. },
-                ..
-            } if busbar_substrate_values::json::to_string(value).unwrap_or_default().contains("doc body")
+            crate::ir::IrBlock::Text { text, .. } if text == "doc body"
         )),
-        "the document must be preserved as a structured Media block: {tool_result:?}"
+        "the document's data must be preserved as its own block: {tool_result:?}"
     );
 }
 
