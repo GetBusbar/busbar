@@ -216,6 +216,20 @@ busbar-voice = ["busbar-voice-codec"]
 # base" and asked for exactly this strike. THE CEILINGS THEMSELVES DID NOT MOVE: both still read
 # 7418. The next #83/#84 merge into busbar-contract declares its own re-arm here, once.
 
+# ── THE CONTRACT CEILING PAIR, RE-ARMED AT THE MEASURE AFTER THE SD-1 SHAPES MERGE ───────────────
+
+[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
+file    = "qa/construction.toml"
+from    = 7414
+to      = 8148
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT O2: contract_caps re-arms at the MEASURED value after each owner-locked #83/#84 merge commit into busbar-contract, each in its own commit. This is the re-arm for 4db9c5349, SD-1 of the #83a substrate-values split: the substrate-values SHAPES (billing, ir/{egress_prep,facts,invoke,subscribe}, codec, protocol, diagnostic, the two upstream signal shapes) move in module-path-only and busbar-substrate-values keeps re-export shims. Measured by cargo xtask loc busbar-contract (code): 7414 before, 8148 after; the +734 is those moved items plus their module headers, nothing else."
+
+[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
+file    = "qa/construction.toml"
+from    = 7414
+to      = 8148
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT O2: contract_caps re-arms at the MEASURED value after each owner-locked #83/#84 merge commit into busbar-contract, each in its own commit. This is the re-arm for 4db9c5349, SD-1 of the #83a substrate-values split: the substrate-values SHAPES (billing, ir/{egress_prep,facts,invoke,subscribe}, codec, protocol, diagnostic, the two upstream signal shapes) move in module-path-only and busbar-substrate-values keeps re-export shims. Measured by cargo xtask loc busbar-contract (code): 7414 before, 8148 after; the +734 is those moved items plus their module headers, nothing else."
+
 # ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
 #
 # The entry declared `rules.loc-ceilings.kernel_ceiling` 51439 -> 51799: the owner approved the
@@ -299,7 +313,10 @@ busbar-voice = ["busbar-voice-codec"]
 # RATCHETED DOWN 7418 -> 7414, AT THE MEASUREMENT: rustfmt collapsed the transport-configuration
 # handle's constructor body in `transport/config_handle.rs` from five lines to one (-4), and
 # `ceiling-slack` asks for the room back. Downward only; its pair moves with it.
-contract_caps = 7414
+# RE-ARMED 7414 -> 8148, AT THE MEASUREMENT (OWNER RULING Q68(3), ARCHITECT O2), in its own commit
+# after 4db9c5349 (SD-1) moved the substrate-values shapes into the contract under #83/#83a. The
+# declared raise above carries the before/after measure.
+contract_caps = 8148
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -856,7 +873,8 @@ contract_crate = "busbar-contract"
 # RE-ARMED 7414 -> 7418 with its pair (OWNER RULING Q68(3); the `sha256_hex` #83 move, f42d27d56).
 # RATCHETED DOWN 7418 -> 7414 with its pair, at the measurement (the rustfmt collapse over
 # `[gate.surface_ceilings].contract_caps` above).
-caps_contract_ceiling = 7414
+# RE-ARMED 7414 -> 8148 with its pair (OWNER RULING Q68(3); the SD-1 shapes merge, 4db9c5349).
+caps_contract_ceiling = 8148
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
