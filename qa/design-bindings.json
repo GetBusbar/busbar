@@ -3582,9 +3582,8 @@
   {
    "id": "PB-75",
    "surface": "served OpenAPI document",
-   "binding": "`GET /admin/openapi.json` (ADM-052, one of the 66) returns the 1.5.5 blob byte-identical EXCEPT `info.version`: OWNER DECISION — `info.version` reports the running binary's version (`CARGO_PKG_VERSION`, 1.6.0), the same rule `GET /admin/info` (ADM-042) already applies, not a 1.5.5-verbatim pin; every other byte — every path, schema, description and the document's shape — is VERBATIM; the 1.6.0 verbs are described at a new path (`/api/v1/admin/ledger/openapi.json`) — \"admin API a superset\" means routes, not the legacy document's bytes",
+   "binding": "`GET /admin/openapi.json` (ADM-052, one of the 66) serves ONE generated admin document that describes every operation the admin router serves — the 1.5.5 operations and the 1.6.0 kernel verbs alike — filtered to the node's configured planes (Law 7): an operation belonging to a plane the node does not configure is absent from the served document, exactly as its route is. There is no side-car document: nothing is served at `/api/v1/admin/ledger/openapi.json`. OWNER DECISION — `info.version` reports the running binary's version (`CARGO_PKG_VERSION`, 1.6.0), the same rule `GET /admin/info` (ADM-042) already applies, not a 1.5.5-verbatim pin",
    "inventory": "routes-admin (:409), :266-284",
-   "note": "The binding's side-car clause (1.6.0 verbs described at a separate `/api/v1/admin/ledger/openapi.json` document, the legacy document's bytes left as 1.5.5) is superseded: there is ONE generated admin document describing every served operation, and the node serves it filtered to its configured planes. The served-surface tests pin that; info.version tracks the crate version (owner decision).",
    "status": "mapped",
    "checks": [
     {
