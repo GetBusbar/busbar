@@ -2053,7 +2053,7 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
                 out.otlp = typed!(OtlpSettings);
             }
             // THE EXPORT AXIS: a module some compiled-in or dropped-in export plugin registered.
-            other if crate::export::plugin::registered(other) => {
+            other if crate::export::plugin::registered(name, other, &settings, errors) => {
                 out.plugins.push(PluginExportSettings {
                     name: name.clone(),
                     def: def.clone(),

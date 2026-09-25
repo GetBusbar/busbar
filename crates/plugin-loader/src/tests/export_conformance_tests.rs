@@ -586,3 +586,64 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
         "{refused}"
     );
 }
+
+/// **K9a S2 — THE VALIDATE OP, BOTH WAYS.** The export fixture registered through the LINKED door
+/// and the DROPPED-IN door answers the host's `validate` identically: settings it accepts report
+/// nothing, and settings it refuses report the sink's own line verbatim — the text the host prints
+/// among the configuration's errors. A module that is not an export row is not the axis's to judge.
+/// RED ARM, in the same test: the same sink driven over a wire that predates the op (it answers
+/// `STATUS_UNSUPPORTED`) reports NOTHING for the settings it would refuse — what every sink did
+/// before the op, and what the op exists to change.
+#[test]
+fn a_sink_validates_its_settings_the_same_through_either_door() {
+    let manifest = super::both_ways::statement(
+        "export",
+        "s2-fixture",
+        "s2-sink",
+        busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+    );
+    let refused = serde_json::json!({ "series": 7 });
+    let transcript = |registry: &PluginRegistry| {
+        serde_json::json!({
+            "accepted": registry.validate_export("s2-sink", "tail", &serde_json::json!({})),
+            "refused": registry.validate_export("s2-sink", "tail", &refused),
+            "not_export": registry.validate_export("no-such-module", "tail", &refused),
+        })
+        .to_string()
+    };
+    let Some([linked, dropped]) = super::both_ways::both_doors(manifest, transcript, String::clone)
+    else {
+        eprintln!("skip: the export fixture's cdylib is not built");
+        return;
+    };
+    let line = "export.tail.settings.series: must be a string naming the delivery counter";
+    assert_eq!(
+        linked.1,
+        serde_json::json!({ "accepted": [], "refused": [line], "not_export": null }).to_string()
+    );
+    assert_eq!(linked, dropped, "both doors validate the same");
+
+    // RED ARM: a sink that cannot decode the op (the pre-minor-2 wire) reports nothing.
+    let registry = super::both_ways::linked(
+        super::both_ways::statement("export", "s2-older", "s2-older", 3),
+        super::both_ways::fixture("export").1,
+    );
+    let mut sink = registry
+        .open_export("s2-older", "{}")
+        .expect("the older sink opens");
+    sink.raw.call = unsupported_call;
+    assert_eq!(sink.validate("tail", &refused), Ok(Vec::new()));
+}
+
+/// A `busbar_call` from before an op existed: every request is one it cannot decode.
+unsafe extern "C-unwind" fn unsupported_call(
+    _handle: *mut std::os::raw::c_void,
+    _req: *const u8,
+    _req_len: usize,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    *out = std::ptr::null_mut();
+    *out_len = 0;
+    STATUS_UNSUPPORTED
+}

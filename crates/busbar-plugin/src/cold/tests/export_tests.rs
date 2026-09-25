@@ -180,7 +180,7 @@ fn export_abi_version_is_three() {
 /// loader gates on stays put — pinned so a seam cannot land without saying so.
 #[test]
 fn export_abi_minor_counts_the_host_seams() {
-    assert_eq!((EXPORT_ABI_VERSION, EXPORT_ABI_MINOR), (3, 1));
+    assert_eq!((EXPORT_ABI_VERSION, EXPORT_ABI_MINOR), (3, 2));
 }
 
 /// S1's declaration wire: `{"name": …, "type": …}`, the same `type` token a reported metric carries.
@@ -317,4 +317,22 @@ fn status_op_wire_is_pinned() {
         omitted,
         ExportResponse::Status { metrics, diagnostics } if metrics.is_empty() && diagnostics.is_empty()
     ));
+}
+
+/// S2's op wire: `{"op":"validate","instance":…,"settings":…}` answered `{"Validated":[…]}`.
+#[test]
+fn the_validate_op_wire_is_pinned() {
+    let req = ExportRequest::Validate {
+        instance: "tail".into(),
+        settings: serde_json::json!({"k": 1}),
+    };
+    assert_eq!(
+        serde_json::to_value(&req).expect("encode"),
+        serde_json::json!({"op": "validate", "instance": "tail", "settings": {"k": 1}})
+    );
+    let resp = ExportResponse::Validated(vec!["export.tail.settings: no".into()]);
+    assert_eq!(
+        serde_json::to_value(&resp).expect("encode"),
+        serde_json::json!({"Validated": ["export.tail.settings: no"]})
+    );
 }

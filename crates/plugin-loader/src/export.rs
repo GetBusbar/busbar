@@ -22,7 +22,7 @@ use busbar_plugin::cold::{
 /// [`RawPlugin`] whose kind was bound to `export` at load; the streams it carries are queried once at
 /// load and retained here so the engine can route deliveries only for declared streams.
 pub struct DynExport {
-    raw: RawPlugin,
+    pub(crate) raw: RawPlugin,
     /// The streams this instance reported to `Streams` at load — the minimal registry entry.
     streams: Vec<ExportStream>,
     /// The HTTP routes this instance declared to `Routes` at load — collected ONCE, retained so the
@@ -125,6 +125,65 @@ impl DynExport {
                 self.raw.path, e.message
             )),
         }
+    }
+}
+
+impl DynExport {
+    /// Ask the sink to validate `settings` for `instance` (export ABI minor 2): the problems it
+    /// found, each a complete line the host reports verbatim. A sink built before the op cannot
+    /// decode it and says so out of band — it has nothing to report, as before the op existed.
+    pub fn validate(
+        &self,
+        instance: &str,
+        settings: &serde_json::Value,
+    ) -> Result<Vec<String>, String> {
+        let req = ExportRequest::Validate {
+            instance: instance.to_string(),
+            settings: settings.clone(),
+        };
+        match self
+            .raw
+            .transport_call_status::<ExportRequest, ExportResponse>(&req)
+        {
+            Ok(ExportResponse::Validated(problems)) => Ok(problems),
+            Ok(other) => Err(format!(
+                "export plugin '{}' returned an unexpected response to validate: {other:?}",
+                self.raw.path
+            )),
+            Err(e) if e.is_unsupported() => Ok(Vec::new()),
+            Err(e) => Err(format!(
+                "export plugin '{}' could not validate its settings: {}",
+                self.raw.path, e.message
+            )),
+        }
+    }
+}
+
+impl crate::PluginRegistry {
+    /// VALIDATE an `export:` instance's settings against the sink its `module` names — the host's
+    /// question while it validates a configuration (K9a S2). `None` when `module` is not a
+    /// `kind: export` row (the caller's unknown-module diagnostic owns that). Otherwise the
+    /// problems to report among the configuration's errors: the sink's own lines verbatim, or one
+    /// naming the instance when the sink failed to answer. A sink that will not OPEN here reports
+    /// nothing — its open refuses the boot naming the instance, exactly as it did before the op.
+    pub fn validate_export(
+        &self,
+        module: &str,
+        instance: &str,
+        settings: &serde_json::Value,
+    ) -> Option<Vec<String>> {
+        let p = self
+            .resolve(module)
+            .filter(|p| p.manifest.kind == abi_kind::EXPORT)?;
+        let cfg = settings.to_string();
+        let Ok(sink) = load_export_image(p.image(), &cfg, &p.manifest.name, &p.manifest.kind)
+        else {
+            return Some(Vec::new());
+        };
+        Some(
+            sink.validate(instance, settings)
+                .unwrap_or_else(|e| vec![format!("export.{instance}: {e}")]),
+        )
     }
 }
 

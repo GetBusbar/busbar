@@ -931,6 +931,14 @@ pub trait ExportHandler: Send + Sync {
     fn drain_observations(&self) -> Observations {
         Observations::none()
     }
+
+    /// Validate the `settings` the operator wrote for the `instance` named, while the host
+    /// validates its configuration (export ABI minor 2): every problem as one complete
+    /// operator-facing line (the host reports each verbatim), or none. Default: none — a sink with
+    /// nothing to check accepts what it is given, as every sink did before the op.
+    fn validate(&self, _instance: &str, _settings: &serde_json::Value) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// The export handle behind the opaque `*mut c_void`: a boxed [`ExportHandler`]. Named at the module
@@ -973,6 +981,9 @@ pub fn dispatch_export(handler: &dyn ExportHandler, req: ExportRequest) -> Expor
                 metrics: drained.metrics,
                 diagnostics: drained.diagnostics,
             }
+        }
+        ExportRequest::Validate { instance, settings } => {
+            ExportResponse::Validated(handler.validate(&instance, &settings))
         }
     }
 }

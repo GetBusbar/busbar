@@ -122,6 +122,11 @@ fn write_tarball(dir: &Path, lib: &[u8]) {
 }
 
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
+    write_configs_with(dir, data_port, admin_port, "{}");
+}
+
+/// [`write_configs`] with the plugin instance's `settings:` block spelled `tail_settings`.
+fn write_configs_with(dir: &Path, data_port: u16, admin_port: u16, tail_settings: &str) {
     std::fs::write(
         dir.join("providers.yaml"),
         "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n",
@@ -142,7 +147,7 @@ plugins:
     allow_unsigned: true
 export:
   metrics: {{ module: prometheus, settings: {{ buffer_seconds: 60 }} }}
-  tail: {{ module: {PLUGIN}, streams: [logs] }}
+  tail: {{ module: {PLUGIN}, streams: [logs], settings: {tail_settings} }}
 providers:
   mock:
     api_key: {{ env: MOCK_KEY }}
@@ -273,5 +278,44 @@ fn a_dropped_in_export_plugin_serves() {
     }
 
     drop(child);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// K9a S2, end to end: `--validate` asks the dropped-in sink to VALIDATE its instance's settings,
+/// and a refusal is reported among the configuration's errors in the sink's own words, failing the
+/// run — the same moment and shape a built-in module's settings error has. Settings the sink
+/// accepts validate clean. RED before the op: the refused settings validated clean (exit 0).
+#[test]
+fn validate_reports_a_dropped_in_sinks_settings_errors_in_its_own_words() {
+    let Some(lib) = export_cdylib() else {
+        eprintln!("skip: no in-tree export plugin cdylib is built (run under --workspace)");
+        return;
+    };
+    let dir = fixture_dir();
+    write_tarball(&dir, &lib);
+    let validate = |tail_settings: &str| {
+        write_configs_with(&dir, free_port(), free_port(), tail_settings);
+        Command::new(env!("CARGO_BIN_EXE_busbar"))
+            .arg("--validate")
+            .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+            .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+            .env("MOCK_KEY", "x")
+            .output()
+            .expect("run busbar --validate")
+    };
+    let refused = validate("{ series: 7 }");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(!refused.status.success(), "stderr:\n{stderr}");
+    assert!(
+        stderr
+            .contains("export.tail.settings.series: must be a string naming the delivery counter"),
+        "stderr:\n{stderr}"
+    );
+    let accepted = validate("{ series: tail_deliveries_total }");
+    assert!(
+        accepted.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&accepted.stderr)
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

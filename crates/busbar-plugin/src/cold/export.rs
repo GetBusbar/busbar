@@ -83,7 +83,8 @@ pub const EXPORT_ABI_VERSION: u32 = 3;
 /// 0: `streams` / `deliver` / `routes` / `http_endpoint` / `status` (the v3 surface).
 /// 1 (K9a S1): the FIRST-PARTY METRIC NAMESPACE — a manifest's `declares.metrics`
 ///   ([`crate::cold::observe::SeriesDecl`]).
-pub const EXPORT_ABI_MINOR: u32 = 1;
+/// 2 (K9a S2): the `validate` op ([`ExportRequest::Validate`] / [`ExportResponse::Validated`]).
+pub const EXPORT_ABI_MINOR: u32 = 2;
 
 /// One observability stream an export sink can carry OUT of the engine — the FROZEN word-space of
 /// the export projection grammar, the same discipline as the hook phase names.
@@ -545,6 +546,22 @@ pub enum ExportRequest {
     /// cannot decode it and answers `STATUS_UNSUPPORTED`, which the host reads as "nothing to
     /// report" and keeps the sink loaded — the precedent is [`ExportRequest::Routes`].
     Status,
+    /// `validate` — asked by the host while it VALIDATES the configuration (`--validate`, boot, a
+    /// config apply): are `settings`, as the operator wrote them for the `instance` named, a
+    /// configuration this sink accepts? Reply: [`ExportResponse::Validated`] — every problem, each
+    /// a complete operator-facing line the host reports VERBATIM among the configuration's errors,
+    /// so a sink's settings errors surface at the same moment and in the same words a built-in
+    /// module's do (`export.<instance>.settings: …`).
+    ///
+    /// ADDITIVE (export ABI minor 2): a sink built before the op answers `STATUS_UNSUPPORTED`,
+    /// which the host reads as "nothing to report" — its settings meet the sink at `open`, as they
+    /// always did.
+    Validate {
+        /// The `export:` instance name the settings belong to (for the sink's own error lines).
+        instance: String,
+        /// The instance's `settings:` block exactly as configured.
+        settings: serde_json::Value,
+    },
 }
 
 /// The success payload for an export `call`, matched to the request variant. A module-level FAILURE (a
@@ -582,6 +599,9 @@ pub enum ExportResponse {
         #[serde(default)]
         diagnostics: Vec<serde_json::Value>,
     },
+    /// `validate` — every problem with the settings, one complete operator-facing line each;
+    /// empty when the sink accepts them.
+    Validated(Vec<String>),
 }
 
 #[cfg(test)]

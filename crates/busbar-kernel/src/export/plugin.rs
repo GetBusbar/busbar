@@ -27,6 +27,7 @@ use crate::limits::admission::AdmissionGate;
 use crate::plugin_routes::{PluginHttpDispatch, RouteDecl, RouteKind};
 use busbar_plugin_loader::PluginRegistry;
 use busbar_plugin_loader::{DynExport, EndpointRequest, EndpointResponse, ExportStream};
+use serde_json::Value;
 use std::sync::{Arc, OnceLock};
 
 /// How many deliveries ONE plugin sink may have in flight — the same floor the built-in file sink
@@ -44,10 +45,14 @@ pub fn install(registry: &'static PluginRegistry) {
 }
 
 /// Whether `module` names a `kind: export` row on the axis (what `resolve_export` asks of a module
-/// that is not a built-in).
-pub(crate) fn registered(module: &str) -> bool {
-    let row = AXIS.get().and_then(|axis| axis.resolve(module));
-    row.is_some_and(|p| p.manifest.kind == busbar_plugin::cold::kind::EXPORT)
+/// that is not a built-in) — and, when it does, the sink's own VALIDATION of the instance's
+/// `settings` (K9a S2) joins `errs` verbatim, so a plugin sink's settings errors surface at the
+/// same moment and in the same words a built-in module's do.
+pub(crate) fn registered(name: &str, module: &str, cfg: &Value, errs: &mut Vec<String>) -> bool {
+    let found = AXIS
+        .get()
+        .and_then(|a| a.validate_export(module, name, cfg));
+    found.map(|problems| errs.extend(problems)).is_some()
 }
 
 /// One opened plugin sink.

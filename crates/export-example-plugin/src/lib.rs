@@ -58,6 +58,17 @@ impl ExportHandler for ExampleExport {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// The one setting this sink has a shape for: `series`, when present, is a string (K9a S2's
+    /// witness — its error is the line a built-in module's settings error would be).
+    fn validate(&self, instance: &str, settings: &serde_json::Value) -> Vec<String> {
+        match settings.get("series") {
+            Some(v) if !v.is_string() => vec![format!(
+                "export.{instance}.settings.series: must be a string naming the delivery counter"
+            )],
+            _ => Vec::new(),
+        }
+    }
+
     /// Hand over what has happened since the last drain and RESET.
     ///
     /// `swap`, not `load`: the SDK puts whatever this returns on the current call's envelope and the
