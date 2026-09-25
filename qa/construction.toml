@@ -184,9 +184,9 @@ busbar-voice = ["busbar-voice-codec"]
 # and an entry that describes no rise is refused as stale. It cannot be left behind, and it cannot
 # cover the next raise of the same ceiling.
 
-# NO ENTRY STANDS ON THIS BRANCH. The last two (items 376 and 381, Q11/Q32, owner ruling
-# 2026-09-24) expired when their commit reached the base and are struck below, with the record of
-# what they declared.
+# ONE ENTRY STANDS: `rules.loc-ceilings.kernel_ceiling` (OWNER RULING Q50, below). The two before
+# it (items 376 and 381, Q11/Q32, owner ruling 2026-09-24) expired when their commit reached the
+# base and are struck below, with the record of what they declared.
 #
 # All twelve of the earlier set were struck on 2026-09-22 in the re-baseline below, for two
 # reasons, both of which are this section's own rules:
@@ -205,6 +205,12 @@ busbar-voice = ["busbar-voice-codec"]
 #    then the reviewed text and the read text are different text. A future raise goes HERE, once.
 #
 # The re-baseline that struck them changed no ceiling upward, so nothing below needs a declaration.
+
+[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
+file    = "qa/construction.toml"
+from    = 51439
+to      = 51799
+because = "OWNER RULING Q50 (Q61, 2026-09-24): approve the busbar-kernel LOC ceiling at today's measure. The growth is Phase 2 money and security fixes the owner ruled (role-bound re-check, decision config checks, the amendment journal, the per-pool lane gauge, the named 409, per-plane fees, token-family caps) plus the Q51 read-path fix (65ca7c874, +70). Measured by cargo xtask loc at 65ca7c874. Ratchets DOWN when item 142's breaker fold lands."
 
 # ── ITEMS 376 + 381 (Q11/Q32, OWNER-SIGNED 2026-09-24) — EXPIRED AND STRUCK ──────────────────────
 #
@@ -761,7 +767,12 @@ kernel_crate = "busbar-kernel"
 # 52950 (slack 1414)" — 1,414 lines the Teller/pump/admit surface could grow by with no row
 # reporting it. Downward only; this is the figure the crate measures, committed-tree, not the
 # working tree (whose uncommitted kernel edits read 51543 and are not this file's to bless).
-kernel_ceiling = 51439
+# ── RAISED 51439 -> 51799, OWNER RULING Q50 (answered in Q61, 2026-09-24), declared above. ──────
+# `cargo xtask loc --ref 65ca7c874 busbar-kernel`: code 51799 (51729 at b712a5763, +70 for the Q51
+# budget-book read fix). Pinned at the measurement, no slack. It RATCHETS DOWN when item 142's
+# breaker fold lands (store/in_memory/breaker.rs, ~580 code lines), which takes the kernel back
+# under 51439; that commit lowers this figure to what it then measures.
+kernel_ceiling = 51799
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
