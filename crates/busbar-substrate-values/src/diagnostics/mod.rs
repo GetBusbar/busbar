@@ -918,7 +918,7 @@ pub const OAUTH_AS_SWEEP_FAILED: Diagnostic = Diagnostic {
 };
 
 /// HMAC-SHA256 init failed during SigV4 signing — documented unreachable.
-pub const SIGV4_HMAC_INIT_FAILED: Diagnostic = Diagnostic {
+pub const REQUEST_SIGNING_HMAC_INIT_FAILED: Diagnostic = Diagnostic {
     code: 4024,
     class: Class::Auth,
     slug: "sigv4-hmac-init-failed", // noun-neutrality: frozen-literal pinned-by=docs/diagnostics.md BUSBAR-4024 slug, operator-visible; drift-tested render
@@ -2850,7 +2850,8 @@ pub const BREAKER_UNEXPECTED_STATE_CLASSIFY: Diagnostic = Diagnostic {
     slug: "breaker-unexpected-state-classify",
     title: "Unexpected breaker state on classify (fail-safe: deny admission) — RETIRED",
     severity: Severity::Actionable,
-    summary: "RETIRED. The breaker classify path read a cell state that is not one of the three valid \
+    summary:
+        "RETIRED. The breaker classify path read a cell state that is not one of the three valid \
               encodings (Closed/Open/HalfOpen). This is IMPOSSIBLE under the atomic-sentinel \
               invariant, so reaching it means a real invariant break or memory corruption. busbar \
               fails SAFE — treats the cell as never-elapsing Open so admission is denied — rather \
@@ -3433,7 +3434,7 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &TRUST_REGISTRATION_SUSPENDED,
     &TRUST_SWEEP_PANICKED,
     &OAUTH_AS_SWEEP_FAILED,
-    &SIGV4_HMAC_INIT_FAILED,
+    &REQUEST_SIGNING_HMAC_INIT_FAILED,
     &OAUTH_AS_EPHEMERAL_SIGNING_KEY,
     &USAGE_TAP_REASSEMBLY_CAP_EXCEEDED,
     &UPSTREAM_MIDSTREAM_TRANSPORT_ERROR,
