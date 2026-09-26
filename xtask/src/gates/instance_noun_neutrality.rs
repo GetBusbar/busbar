@@ -51,10 +51,12 @@
 //! ledger, so it can only fall. See the `exempt` module. `:frozen-literal` reds a refused marker;
 //! `:pragma-ceiling` reds a count that moved off its ceiling in either direction.
 //!
-//! Regenerate the baseline from the live census with
-//! `XTASK_INSN_EMIT_BASELINE=1 cargo xtask gate instance-noun-neutrality 2>qa/instance-noun-neutrality.toml`
-//! then review every row by hand — the emitter derives category and wave mechanically; a human
-//! confirms the reason.
+//! Move the ledger DOWN with `cargo xtask gate instance-noun-neutrality --write`: it lowers every
+//! row that fell and strikes every row that drained, and it REFUSES WHOLESALE — nothing written —
+//! if any row would be added or would rise, unless the ledger carries an owner-cited
+//! `[[allow_rise]]` for exactly that row (see the `write` module). A baseline never absorbs a rise.
+//! The older `XTASK_INSN_EMIT_BASELINE=1` emitter prints the same derivation (and, on a refusal, the
+//! committed ledger unchanged), so neither door can raise a row.
 
 use std::collections::BTreeMap;
 
@@ -65,6 +67,9 @@ use crate::scan::strip_comment_line;
 
 mod cases;
 mod exempt;
+mod write;
+
+pub use write::ROW_WRITE;
 
 pub const BASELINE: &str = "qa/instance-noun-neutrality.toml";
 const CROSS_ROW: &str = "instance-noun-neutrality";
@@ -831,35 +836,6 @@ fn undocumented_leaks(leaks: &[Leak], baseline: &[BaselineRow]) -> Vec<String> {
     out
 }
 
-/// The baseline TOML for the current census — mechanical category/wave, one `[[leak]]` per pair.
-fn emit_baseline(leaks: &[Leak], ceiling: usize) -> String {
-    let mut out = String::new();
-    out.push_str(
-        "# instance-noun-neutrality burndown ledger — AUTO-DERIVED, HUMAN-REVIEWED.\n\
-         # One row per (instance noun, offending file) outside the noun's own crate family.\n\
-         # The gate is RED while any row stands; it goes GREEN when this file is empty.\n\
-         # Regenerate: XTASK_INSN_EMIT_BASELINE=1 cargo xtask gate instance-noun-neutrality \
-         2>qa/instance-noun-neutrality.toml\n\n",
-    );
-    // The pragma ceilings are carried, never raised: a regeneration writes the LOWER of the
-    // recorded ceiling and the live count, so re-running the emitter cannot arm a new exemption.
-    out.push_str(&format!(
-        "# Reviewed `noun-neutrality: frozen-literal` pragmas. May only fall.\n\
-         [pragma_ceiling]\n{} = {ceiling}\n\n",
-        exempt::CEILING_KEY
-    ));
-    for l in leaks {
-        out.push_str("[[leak]]\n");
-        out.push_str(&format!("noun = \"{}\"\n", l.noun));
-        out.push_str(&format!("kind = \"{}\"\n", l.kind));
-        out.push_str(&format!("file = \"{}\"\n", l.file));
-        out.push_str(&format!("count = {}\n", l.count));
-        out.push_str(&format!("category = \"{}\"\n", l.category));
-        out.push_str(&format!("wave = \"{}\"\n\n", l.wave.replace('"', "'")));
-    }
-    out
-}
-
 /// The validity row: every marker honoured, or the refused ones named with every reason.
 fn pragma_row(pragmas: &[exempt::Pragma]) -> Row {
     let refused: Vec<String> = pragmas
@@ -933,14 +909,41 @@ fn ceiling_row(ceiling: &Result<usize, String>, live: usize) -> Row {
     }
 }
 
-pub struct InstanceNounNeutralityGate;
+/// The gate, and its `--write` construction. The write arm is a SEPARATE construction rather than
+/// a flag read off the context inside `run`, so `owed` — which the reconciliation is written
+/// against — can say what this run emits: one row, the ledger edit's own.
+pub struct InstanceNounNeutralityGate {
+    write: bool,
+}
+
+impl InstanceNounNeutralityGate {
+    /// The judging gate.
+    pub fn check() -> InstanceNounNeutralityGate {
+        InstanceNounNeutralityGate { write: false }
+    }
+
+    /// `--write`: lower and strike ledger rows to the measurement; refuse wholesale if any row
+    /// would be added or would rise without an owner-cited `[[allow_rise]]` (see the `write` module).
+    pub fn write() -> InstanceNounNeutralityGate {
+        InstanceNounNeutralityGate { write: true }
+    }
+}
 
 impl Gate for InstanceNounNeutralityGate {
     fn name(&self) -> &'static str {
         "instance-noun-neutrality"
     }
 
+    /// `write` DOES NOT SHOW IN THE NAME and it changes both the owed set and the verdict, so the
+    /// baseline cache must be told about it or one arm would be handed the other's clean run.
+    fn baseline_key(&self) -> Option<String> {
+        Some(format!("{}:write={}", self.name(), self.write))
+    }
+
     fn owed(&self) -> Vec<String> {
+        if self.write {
+            return vec![ROW_WRITE.to_string()];
+        }
         let mut ids: Vec<String> = NOUNS.iter().map(|n| row_id(n.key)).collect();
         ids.push(ROW_SCAN_FLOOR.to_string());
         ids.push(ROW_UNDOCUMENTED.to_string());
@@ -952,6 +955,9 @@ impl Gate for InstanceNounNeutralityGate {
     }
 
     fn run(&self, cx: &Ctx) -> Verdict {
+        if self.write {
+            return Verdict::of(vec![write::rule_write(cx)]);
+        }
         let census = match census(cx) {
             Ok(c) => c,
             Err(e) => {
@@ -986,11 +992,17 @@ impl Gate for InstanceNounNeutralityGate {
         } = census;
         let ceiling = exempt::ceiling(cx.read(BASELINE).ok().as_deref());
 
-        // The baseline-regeneration affordance: print the census as TOML and keep going, so the
-        // ordinary verdict still prints too.
+        // The baseline-regeneration affordance: print the ledger `--write` would write and keep
+        // going, so the ordinary verdict still prints too. It is the SAME derivation as `--write`
+        // (see the `write` module), so it can only lower a row or strike one: on a refusal (a row
+        // would be added or would rise) it prints the committed ledger unchanged, and the
+        // `:undocumented` row below names the rise.
         if std::env::var("XTASK_INSN_EMIT_BASELINE").as_deref() == Ok("1") {
-            let carried = ceiling.clone().unwrap_or(0).min(pragmas.len());
-            eprint!("{}", emit_baseline(&leaks, carried));
+            let committed = cx.read(BASELINE).unwrap_or_default();
+            match write::derive(&committed, &leaks, pragmas.len()) {
+                Ok(d) => eprint!("{}", d.text),
+                Err(_) => eprint!("{committed}"),
+            }
         }
 
         let (baseline, malformed) = baseline_keys(cx);
@@ -1136,6 +1148,15 @@ impl Gate for InstanceNounNeutralityGate {
 
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::new();
+
+        // THE WRITE ARM PROVES ITS REFUSALS, which are exactly the paths that write nothing (a
+        // battery that let the lowering path edit the ledger it is proving would make itself pass;
+        // the lowering is proved by the `write` module's unit tests instead). The same cases run in
+        // the judging battery, so a CI that never passes `--write` still proves the arm refuses.
+        cases::push_write(cx, "xtask/fixtures/instance-noun", &mut report);
+        if self.write {
+            return report;
+        }
 
         // THE SELF-TEST RUNS OVER TINY FIXTURE TREES, NOT THE 660k-LINE REPO. A census gate that
         // planted into the real workspace and re-scanned it per case measured 168 751 work units —

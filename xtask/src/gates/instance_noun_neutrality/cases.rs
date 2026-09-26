@@ -9,7 +9,9 @@ use crate::ctx::{Ctx, Overlay};
 use crate::gates::{execute, Case, Expect, Report};
 use crate::ledger::Status;
 
-use super::{row_id, InstanceNounNeutralityGate, BASELINE, ROW_FROZEN_LITERAL, ROW_PRAGMA_CEILING};
+use super::{
+    row_id, InstanceNounNeutralityGate, BASELINE, ROW_FROZEN_LITERAL, ROW_PRAGMA_CEILING, ROW_WRITE,
+};
 
 // qa-names: crates/busbar-core/src/lib.rs -- xtask/src/gates/instance_noun_neutrality/cases.rs -- an overlay-only fixture file every case plants a neutral body into; the crate is absent from the tree on purpose, so the only noun the scan meets is the planted one
 const CORE: &str = "crates/busbar-core/src/lib.rs";
@@ -330,4 +332,58 @@ pub(super) fn push(
             o
         }),
     });
+}
+
+/// THE WRITE ARM'S REFUSALS, each a GREEN->RED transition of `instance-noun-neutrality:write` over
+/// the fixture. The clean overlay's ledger already equals the measurement, so the green arm writes
+/// nothing; the planted overlay makes a row RISE or a leak NEW, which must be refused wholesale.
+pub(super) fn push_write(cx: &Ctx, fix: &str, report: &mut Report<'_>) {
+    let gate = InstanceNounNeutralityGate::write();
+    let one = "pub fn mcp_door() {}\n";
+    let ledger = |extra: &str| {
+        format!(
+            "[[leak]]\nnoun = \"mcp\"\nkind = \"plane\"\nfile = \"{CORE}\"\ncount = 1\n\
+             category = \"core\"\nwave = \"w\"\n\n{extra}"
+        )
+    };
+    let case = |name: &str, naming: &[&str], clean: Overlay, planted: Overlay| Case {
+        name: name.to_string(),
+        covers: vec![ROW_WRITE.to_string()],
+        expected: Expect::Red {
+            naming: naming.iter().map(|n| (*n).to_string()).collect(),
+        },
+        got: transition(&gate, cx, fix, ROW_WRITE, clean, planted),
+    };
+    let at = |core: &str, baseline: &str| ov(&[(CORE, core), (BASELINE, baseline)]);
+
+    // A RISING LEAK PLUS --write IS REFUSED: the row is not raised to the census.
+    report.push(case(
+        "--write refuses when a baselined leak RISES above its row",
+        &["would RISE 1 -> 2", "NOTHING was written"],
+        at(one, &ledger("")),
+        at("pub fn mcp_door() {}\npub fn mcp_seat() {}\n", &ledger("")),
+    ));
+    // A NEW LEAK PLUS --write IS REFUSED: the ledger does not learn a coupling nobody read.
+    report.push(case(
+        "--write refuses when a live leak has no ledger row",
+        &[
+            "a2a@crates/busbar-core/src/lib.rs would be ADDED at 1",
+            "NOTHING was written",
+        ],
+        at(one, &ledger("")),
+        at("pub fn mcp_door() {}\npub fn a2a_door() {}\n", &ledger("")),
+    ));
+    // AN ALLOW THAT CITES NO OWNER LICENSES NOTHING: the same rise, with an unowned allow, is
+    // still refused, naming the allow.
+    let unowned = "[[allow_rise]]\nnoun = \"mcp\"\nfile = \"crates/busbar-core/src/lib.rs\"\n\
+                   count = 2\nowner = \"me\"\nreason = \"r\"\n";
+    report.push(case(
+        "--write refuses a rise whose [[allow_rise]] cites no owner ruling",
+        &["cites no owner ruling", "NOTHING was written"],
+        at(one, &ledger("")),
+        at(
+            "pub fn mcp_door() {}\npub fn mcp_seat() {}\n",
+            &ledger(unowned),
+        ),
+    ));
 }

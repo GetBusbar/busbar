@@ -339,7 +339,11 @@ fn gate(args: &[String]) -> i32 {
         // can diff — exactly like kind-isolation and inventory-coverage.
         if matches!(
             reg.name,
-            "kind-isolation" | "inventory-coverage" | "conformance-sync" | "config-schema"
+            "kind-isolation"
+                | "inventory-coverage"
+                | "conformance-sync"
+                | "config-schema"
+                | "instance-noun-neutrality"
         ) {
             let verdict = gates::execute(gate.as_ref(), &cx);
             gates::print_verdict(reg.name, &verdict);
@@ -582,6 +586,11 @@ fn build_gate(
         // one row: the re-pin's own. Built HERE rather than in the write branch of `gate`, so
         // `--write --selftest` proves the arm it is about to run rather than a different one.
         Box::new(crate::gates::kind_isolation::KindIsolationGate::write())
+    } else if write && reg.name == "instance-noun-neutrality" {
+        // `instance-noun-neutrality --write` LOWERS AND STRIKES LEDGER ROWS, and refuses wholesale
+        // if any row would be added or would rise without an owner-cited allow. Built here for the
+        // same reason as kind-isolation's: `--write --selftest` proves the arm it runs.
+        Box::new(crate::gates::instance_noun_neutrality::InstanceNounNeutralityGate::write())
     } else {
         (reg.build)()
     })

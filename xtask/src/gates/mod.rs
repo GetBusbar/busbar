@@ -2811,7 +2811,7 @@ pub static REGISTRY: &[Registration] = &[
         // in full by release-stage.yml's `done-oracle` job on the sha being staged, on the same
         // footing as its Tier::Full siblings (reachability, plane-purity-strict, kind-isolation-ship).
         tier: Tier::Full,
-        build: || Box::new(instance_noun_neutrality::InstanceNounNeutralityGate),
+        build: || Box::new(instance_noun_neutrality::InstanceNounNeutralityGate::check()),
         summary:
             "no crate names a concrete plugin instance outside that instance's own crate family",
     },
