@@ -41,7 +41,6 @@ members = [
     "crates/store-example-plugin",
     "crates/export-example-plugin",
     "crates/busbar-export-prometheus",
-    "crates/busbar-export-file",
     "crates/busbar-export-webhook",
     "crates/plane-example",
     "crates/hooks-ranking",
@@ -341,6 +340,18 @@ tracing-subscriber = "0.3.23"
 # Already in the lock (reqwest, a2a-lf and friends all resolve it).
 url = "2"
 zeroize = "1"
+
+# ── BUSBAR'S OWN CRATES, AS A PLUGIN REPO NAMES THEM ─────────────────────────────────────────────
+#
+# A default plugin lives in its own repo (owner ruling, 1.6.0: one repo per plugin) and names busbar
+# by git: `busbar-plugin-sdk = { git = "https://github.com/GetBusbar/busbar", rev = <.busbar-ref> }`.
+# When THIS workspace links that plugin (the root pulls it at a pinned rev), every busbar crate the
+# plugin names resolves to THIS tree instead, so exactly ONE copy of the SDK — and through it of
+# busbar-plugin and busbar-contract — links into the binary, and a plugin's rev of busbar never
+# decides what the binary's contract is. Add a row here for each busbar crate a pulled plugin names
+# directly (a crate named only by a patched crate follows its path dependency and needs no row).
+[patch.'https://github.com/GetBusbar/busbar']
+busbar-plugin-sdk = { path = "crates/plugin-sdk" }
 
 [profile.release]
 # Tuned for the shipped "deploy-and-done" binary: max optimization and smallest size,

@@ -131,8 +131,10 @@ busbar-store-memory = { path = "../store-memory" }
 # under `hooks-ranking` — one row, the strategy spellings its aliases. The kernel names no hook.
 busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
 # THE REQUEST-LOG FILE SINK (`module: request-log-file`), a first-party EXPORT plugin linked through
-# the `exports` axis (K9b) — the same row a signed tarball of it registers when dropped in.
-busbar-export-file = { path = "../busbar-export-file", optional = true }
+# the `exports` axis (K9b) — the same row a signed tarball of it registers when dropped in. It lives
+# in its own repo (GetBusbar/export-file) and is pulled at a PINNED rev; the workspace `[patch]`
+# points the busbar crates it names back at this tree.
+busbar-export-file = { git = "https://github.com/GetBusbar/export-file", rev = "5ff2dadcf45cc49ce26f0cf9d0ca0b0d9fc9cb5a", optional = true }
 # THE REQUEST-LOG WEBHOOK SINK (`module: request-log-webhook`), a first-party EXPORT plugin linked
 # through the `exports` axis (K9c) — the same row a signed tarball of it registers when dropped in.
 busbar-export-webhook = { path = "../busbar-export-webhook", optional = true }
@@ -432,6 +434,10 @@ busbar-store-example-plugin = { path = "../store-example-plugin" }
 # the test links its `PLANE_DECL` (the linked door) and drops its cdylib into a temp `plugins/`
 # directory (the dropped-in door) and requires the two to install byte-identical registry rows.
 busbar-plugin-example-plane = { path = "../plane-example" }
+# The export axis's both-doors proof (`src/root/tests/linked_exports.rs`) for the FILE sink: its
+# repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-file` edge above, so the
+# test drops in the library a signed tarball of the sink carries next to the row the build links.
+busbar-export-file-plugin = { git = "https://github.com/GetBusbar/export-file", rev = "5ff2dadcf45cc49ce26f0cf9d0ca0b0d9fc9cb5a" }
 # That proof calls the router it built as the tower service it is (`ServiceExt::oneshot`). The
 # normal-edge `tower` above is `root-admin`'s own and optional, so a build without `root-admin` (every
 # single-plane build) would not compile the test; the test's edge is its own, unconditional here.

@@ -333,14 +333,75 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         // `FileSettings` — an `export.<name>.module: request-log-file` instance's `settings:` —
         // moved VERBATIM out of `busbar-kernel/src/config/mod.rs` into the sink that reads it
         // (K9b: the file sink is the `busbar-export-file` export plugin). A tracked SOURCE
-        // relocation exactly like `ModelCfg` above, so the snapshot does not move by a byte.
-        "crates/busbar-export-file/src/config.rs".to_string(),
+        // relocation exactly like `ModelCfg` above, so the snapshot does not move by a byte. The
+        // sink now lives in its own repo and the root pulls it at a PINNED rev, so the file is read
+        // from exactly the source this workspace builds: that rev's checkout, as cargo resolved it.
+        pinned_plugin_source(cx, "busbar-export-file", "src/config.rs")?,
         // `WebhookSettings` / `ExportAuthHeader` — a `request-log-webhook` instance's `settings:` —
         // moved out of `busbar-kernel/src/config/mod.rs` into the sink that reads it (K9c: the
         // webhook sink is the `busbar-export-webhook` export plugin), same tracked relocation.
         "crates/busbar-export-webhook/src/config.rs".to_string(),
     ]);
     Ok(out)
+}
+
+/// A tracked source that lives in a PLUGIN REPO the workspace pulls at a pinned git rev (owner
+/// ruling, 1.6.0: one repo per plugin): `rel` inside `package`'s checkout, as `cargo metadata`
+/// resolves it for this workspace — an absolute path, which [`Ctx::exists`]/[`Ctx::read`] take as
+/// is. The package must resolve, and from a git source: a grammar the build links must stay in the
+/// tracked set, and a path dependency back into this tree would be a second home for it.
+///
+/// The resolution is memoised per (tree, manifest, lockfile) text: the census re-derives the source
+/// set once per self-test plant, and `cargo metadata` is a subprocess. The key is the text cargo
+/// resolves from, read through the overlay, so a plant that changes the pin is never answered
+/// from another tree's resolution.
+pub fn pinned_plugin_source(cx: &Ctx, package: &str, rel: &str) -> Result<String, String> {
+    use std::sync::{Mutex, OnceLock};
+    static RESOLVED: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
+    let key = format!(
+        "{}\0{package}\0{rel}\0{}\0{}",
+        cx.root().display(),
+        cx.read("Cargo.toml").unwrap_or_default(),
+        cx.read("Cargo.lock").unwrap_or_default()
+    );
+    let cache = RESOLVED.get_or_init(|| Mutex::new(BTreeMap::new()));
+    if let Some(hit) = cache.lock().ok().and_then(|c| c.get(&key).cloned()) {
+        return Ok(hit);
+    }
+    let meta = cx
+        .cargo_metadata("Cargo.toml")
+        .map_err(|e| format!("config-schema: cargo metadata for the pinned '{package}': {e}"))?;
+    let meta: Value = serde_json::from_str(&meta)
+        .map_err(|e| format!("config-schema: cargo metadata is not JSON: {e}"))?;
+    let pkg = meta["packages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|p| p["name"] == package)
+        .ok_or_else(|| {
+            format!(
+                "config-schema: '{package}' does not resolve in this workspace, so '{rel}' — config \
+                 grammar — has left the tracked set. A coverage hole, not a move."
+            )
+        })?;
+    let source = pkg["source"].as_str().unwrap_or("");
+    if !source.starts_with("git+") {
+        return Err(format!(
+            "config-schema: '{package}' resolves from '{source}', not a pinned git source; its \
+             grammar's home is the plugin repo the root pins."
+        ));
+    }
+    let manifest = pkg["manifest_path"]
+        .as_str()
+        .ok_or_else(|| format!("config-schema: '{package}' has no manifest_path"))?;
+    let dir = std::path::Path::new(manifest)
+        .parent()
+        .ok_or_else(|| format!("config-schema: '{manifest}' has no parent"))?;
+    let path = dir.join(rel).display().to_string();
+    if let Ok(mut c) = cache.lock() {
+        c.insert(key, path.clone());
+    }
+    Ok(path)
 }
 
 /// Expand the tracked source set to a deduplicated, sorted list of `.rs` files.

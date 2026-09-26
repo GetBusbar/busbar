@@ -71,3 +71,8 @@ deny = []
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# The default plugins busbar pulls from their own repos at a PINNED rev (owner ruling, 1.6.0: one
+# repo per plugin). Each is a reviewed entry, one URL per plugin repo.
+allow-git = [
+    "https://github.com/GetBusbar/export-file",
+]

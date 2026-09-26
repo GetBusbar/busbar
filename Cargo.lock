@@ -340,6 +340,7 @@ dependencies = [
  "busbar-core-connsec",
  "busbar-export-example-plugin",
  "busbar-export-file",
+ "busbar-export-file-plugin",
  "busbar-export-prometheus",
  "busbar-export-webhook",
  "busbar-hooks-ranking",
@@ -537,11 +538,20 @@ dependencies = [
 [[package]]
 name = "busbar-export-file"
 version = "1.5.0"
+source = "git+https://github.com/GetBusbar/export-file?rev=5ff2dadcf45cc49ce26f0cf9d0ca0b0d9fc9cb5a#5ff2dadcf45cc49ce26f0cf9d0ca0b0d9fc9cb5a"
 dependencies = [
  "busbar-plugin-sdk",
  "serde",
  "serde_json",
  "tracing",
+]
+
+[[package]]
+name = "busbar-export-file-plugin"
+version = "1.5.0"
+source = "git+https://github.com/GetBusbar/export-file?rev=5ff2dadcf45cc49ce26f0cf9d0ca0b0d9fc9cb5a#5ff2dadcf45cc49ce26f0cf9d0ca0b0d9fc9cb5a"
+dependencies = [
+ "busbar-export-file",
 ]
 
 [[package]]

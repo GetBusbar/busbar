@@ -33,12 +33,39 @@ fn release() -> SigningKey {
 
 /// The built cdylib of the crate whose row is named `name` (uplifted or under `deps`, newest wins).
 /// Under CI a missing artifact is a failure, never a skip.
+///
+/// A sink pulled from its OWN repo at a pinned rev (the file sink, GetBusbar/export-file) is a git
+/// dependency: cargo builds its library under `deps` with the dependency's metadata hash
+/// (`lib<crate>-<hash>`), never uplifted, and the library a tarball of it carries is that repo's
+/// thin cdylib crate, `<crate>-plugin` (the root's dev-dependency at the same rev). Both spellings
+/// are the same row's dropped-in door.
 fn cdylib(name: &str) -> Option<Vec<u8>> {
     let exe = std::env::current_exe().ok()?;
     let profile = exe.parent()?.parent()?;
-    let file = busbar_plugin_loader::plugin_library_filename(&name.replace('-', "_"));
-    let found = [profile.join(&file), profile.join("deps").join(&file)]
+    let snake = name.replace('-', "_");
+    let file = busbar_plugin_loader::plugin_library_filename(&snake);
+    let (prefix, suffix) = file.split_once(snake.as_str())?;
+    let is_door = |f: &str| {
+        let Some(stem) = f
+            .strip_prefix(prefix)
+            .and_then(|f| f.strip_suffix(suffix))
+            .and_then(|f| f.strip_prefix(snake.as_str()))
+        else {
+            return false;
+        };
+        let stem = stem.strip_prefix("_plugin").unwrap_or(stem);
+        stem.is_empty()
+            || stem
+                .strip_prefix('-')
+                .is_some_and(|h| !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit()))
+    };
+    let in_deps = std::fs::read_dir(profile.join("deps"))
         .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.file_name().and_then(|f| f.to_str()).is_some_and(is_door));
+    let found = std::iter::once(profile.join(&file))
+        .chain(in_deps)
         .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
         .max()
         .map(|(_, p)| p);
