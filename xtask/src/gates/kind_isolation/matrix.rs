@@ -219,8 +219,8 @@ fn alias_of(a: &str, b: &str) -> bool {
 ///   about — so their bare ids count everywhere, which is how `root/units_llm.rs` and
 ///   `root-voice-serve` are caught.
 ///
-/// A plane contributes its alias too, because `voice` and `streams` are one instance until the
-/// rename lands.
+/// A plane contributes its aliases too, because `streaming`, `voice` and `streams` are one instance
+/// (`PLANE_ALIASES`).
 ///
 /// One spelling is struck: a needle that is a PROPER SEGMENT PREFIX of another crate's package name
 /// names nothing in particular. `busbar`, the composition root's package name, is the prefix of
@@ -1747,6 +1747,16 @@ fn the_accept_loop_that_named_its_plane() -> String {
     )
 }
 
+/// THE HAND-WIRED ROOT, as a fixture this battery owns: a composition-root module that names four
+/// planes' crates, nodes, units and sections by hand. Read at run time and planted at
+/// [`HAND_WIRED_ROOT_PLANT`]; stored as `.txt` so no crate, compiler or source scanner reads it
+/// where it lives.
+const HAND_WIRED_ROOT_FIXTURE: &str = "xtask/fixtures/kind-isolation-root/units_hand_wired.txt";
+
+/// Where the hand-wired root is planted: inside the composition root, where the drained
+/// `root/units_*.rs` files lived.
+const HAND_WIRED_ROOT_PLANT: &str = "crates/busbar/src/root/units_hand_wired.rs";
+
 /// A one-file plant under `dir`, without disturbing anything else in the tree.
 ///
 /// A PLANT UNDER A DIRECTORY NO MANIFEST GOVERNS IS REFUSED, LOUDLY (item 175). Every rule of this
@@ -1852,24 +1862,6 @@ pub(super) fn cell_anchor(cx: &Ctx, krate: &str, kind: &str) -> Result<String, S
         format!("the `[[cell]]` row for {krate} × {kind} has an unterminated `count`")
     })?;
     Ok(format!("{head}{}\"", &rest[..end]))
-}
-
-/// The row `[[<table>]] crate × kind` as the ledger spells it today, and its count — read off the
-/// file, never quoted, for the same reason as [`cell_anchor`].
-fn cell_anchor_in(cx: &Ctx, table: &str, krate: &str, kind: &str) -> Result<(String, i64), String> {
-    let text = cx.read(LEDGER)?;
-    let head = format!("[[{table}]]\ncrate = \"{krate}\"\nkind = \"{kind}\"\ncount = \"");
-    let at = text
-        .find(&head)
-        .ok_or_else(|| format!("no `[[{table}]]` row for {krate} × {kind} in {LEDGER}"))?;
-    let rest = &text[at + head.len()..];
-    let end = rest.find('"').ok_or_else(|| {
-        format!("the `[[{table}]]` row for {krate} × {kind} has no closing quote")
-    })?;
-    let n: i64 = rest[..end].parse().map_err(|_| {
-        format!("the `[[{table}]]` row for {krate} × {kind} has a non-numeric count")
-    })?;
-    Ok((format!("{head}{n}\""), n))
 }
 
 /// That row, and the same row with `count` moved to `count`.
@@ -1984,15 +1976,29 @@ pub fn selftest<'a>(
     ));
 
     // THE ROOT THAT HAND-WIRED FOUR PLANES. Drop the cell to what a registry-driven root would
-    // measure and the row names the four files by name.
-    report.push(plant_ledger(
-        cx,
-        gate,
-        "the root that hand-wired four planes, held to the zero a registry-driven root would measure",
-        &[ROW_MATRIX],
-        cell_subst(cx, "busbar", "plane", "0"),
-        &["ratchet", "busbar × plane", "RAISED", "units_voice.rs"],
-    ));
+    // measure and the row names the file the planes are wired in.
+    //
+    // THE FILE IS A FIXTURE, NOT A LIVE ONE. The case used to name `root/units_voice.rs`, the
+    // heaviest of the root's hand-wired units files; that file is deleted, and a case that
+    // names a live file breaks the day the drain it is measuring succeeds. The hand-wired module is
+    // now [`HAND_WIRED_ROOT_FIXTURE`], planted under the root, so the row is asked to name bytes this
+    // battery owns.
+    let hand_wired = match cx.read(HAND_WIRED_ROOT_FIXTURE) {
+        Ok(body) => cell_subst(cx, "busbar", "plane", "0")
+            .and_then(|(from, to)| ledger_with(cx, &from, &to))
+            .map(|mut ov| {
+                ov.set(HAND_WIRED_ROOT_PLANT, body);
+                ov
+            }),
+        Err(e) => Err(format!("{HAND_WIRED_ROOT_FIXTURE}: {e}")),
+    };
+    let name =
+        "the root that hand-wired four planes, held to the zero a registry-driven root would measure";
+    let naming = ["ratchet", "busbar × plane", "RAISED", "units_hand_wired.rs"];
+    match hand_wired {
+        Ok(ov) => report.push(prove_rows_red(cx, gate, name, &[ROW_MATRIX], ov, &naming)),
+        Err(why) => report.push(super::unplantable(name, &[ROW_MATRIX], &naming, why)),
+    }
 
     // A CEILING WITH SLACK IS THE OTHER HALF OF THE RATCHET.
     report.push(plant_ledger(

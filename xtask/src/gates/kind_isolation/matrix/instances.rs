@@ -748,45 +748,51 @@ pub fn selftest<'a>(
     ));
 
     // THE RATCHET IS EXACT BOTH WAYS, and a ceiling for an axis nothing measures is refused at load.
-    let kernel_export = super::cell_anchor_in(cx, TABLE, "busbar-kernel", "export");
-    match kernel_export {
-        Ok((anchor, count)) => {
-            let slack = super::ledger_with(
-                cx,
-                &anchor,
-                &anchor.replace(
-                    &format!("count = \"{count}\""),
-                    &format!("count = \"{}\"", count + 1),
-                ),
-            );
-            match slack {
-                Ok(ov) => report.push(prove_rows_red(
-                    cx,
-                    gate,
-                    "an [[instance]] ceiling left above its count is stale slack",
-                    &[ROW_MATRIX],
-                    ov,
-                    &[
-                        "instance-ratchet",
-                        "busbar-kernel \u{d7} export",
-                        "STALE SLACK",
-                    ],
-                )),
-                Err(why) => report.push(crate::gates::CasePlan::from(super::super::unplantable(
-                    "an [[instance]] ceiling left above its count is stale slack",
-                    &[ROW_MATRIX],
-                    &["STALE SLACK"],
-                    why,
-                ))),
-            }
-        }
-        Err(why) => report.push(crate::gates::CasePlan::from(super::super::unplantable(
-            "an [[instance]] ceiling left above its count is stale slack",
-            &[ROW_MATRIX],
-            &["STALE SLACK"],
-            why,
-        ))),
-    }
+    //
+    // THE STALE-SLACK CASE BUILDS ITS OWN ROW. It used to add 1 to the live `busbar-kernel ×
+    // export` ceiling, a cell whose ceiling sits BELOW its count on this tree (54 vs 79, RAISED —
+    // owner question Q77): ceiling + 1 is still below the count, so the planted run could only say
+    // RAISED again and never STALE SLACK — a proof that could not be had (item 89). The fixture
+    // here is a cell the live tree does not have: `busbar-timing` names the store instance
+    // `memory` once, in a file of its own, and the ledger gains an `[[instance]]` row for exactly
+    // that cell. At `count = "1"` the row equals its measurement and the row is GREEN (the control
+    // below); at `count = "2"` the ceiling sits one above the count, which is the stale slack this
+    // case exists to prove the ratchet refuses. Only the number differs between the two plants.
+    let slack_fixture = |count: &str| {
+        let mut ov = super::plant(
+            cx,
+            "crates/busbar-timing/src/planted_slack.rs",
+            "pub const S: &str = \"memory\";\n",
+        );
+        ov.set(
+            super::LEDGER,
+            format!(
+                "{}\n\n[[instance]]\ncrate = \"busbar-timing\"\nkind = \"store\"\ncount = \"{count}\"\n",
+                cx.read(super::LEDGER).unwrap_or_default().trim_end()
+            ),
+        );
+        ov
+    };
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "an [[instance]] ceiling equal to its count is green (the stale-slack fixture's control)",
+        &[ROW_MATRIX],
+        slack_fixture("1"),
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "an [[instance]] ceiling left above its count is stale slack",
+        &[ROW_MATRIX],
+        slack_fixture("2"),
+        &[
+            "instance-ratchet",
+            "busbar-timing \u{d7} store",
+            "ceiling 2 vs measured 1",
+            "STALE SLACK",
+        ],
+    ));
     let text = cx.read(super::LEDGER).unwrap_or_default();
     report.push(prove_rows_red(
         cx,

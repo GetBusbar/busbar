@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! A COMPOSITION-ROOT MODULE THAT WIRES FOUR PLANES BY HAND. Each plane's crate, node, unit and
+//! config section is named here instead of being read off the plane registry — the shape
+//! `kind-isolation:matrix` counts in the `busbar × plane` cell. A registry-driven root names none
+//! of it. This file is a selftest fixture: the kind-isolation battery plants it under
+//! `crates/busbar/src/root/` and nowhere else reads it.
+
+use busbar_plane_llm::{LlmNode, LlmUnit};
+use busbar_plane_mcp::{McpNode, McpUnit};
+use busbar_plane_a2a::{A2aNode, A2aUnit};
+use busbar_plane_streaming::{StreamingNode, StreamingUnit};
+
+/// The llm plane, wired by hand.
+pub fn mount_llm(root: &mut Root) {
+    let llm = LlmUnit::new(root.section("llm"));
+    root.node::<LlmNode>("llm", busbar_plane_llm::KEY);
+    root.unit("llm", llm);
+    root.route("llm", busbar_plane_llm::CLAIMS);
+    root.meter("llm", busbar_plane_llm::METER_CLASSES);
+}
+
+/// The mcp plane, wired by hand.
+pub fn mount_mcp(root: &mut Root) {
+    let mcp = McpUnit::new(root.section("mcp"));
+    root.node::<McpNode>("mcp", busbar_plane_mcp::KEY);
+    root.unit("mcp", mcp);
+    root.route("mcp", busbar_plane_mcp::CLAIMS);
+    root.meter("mcp", busbar_plane_mcp::METER_CLASSES);
+}
+
+/// The a2a plane, wired by hand.
+pub fn mount_a2a(root: &mut Root) {
+    let a2a = A2aUnit::new(root.section("a2a"));
+    root.node::<A2aNode>("a2a", busbar_plane_a2a::KEY);
+    root.unit("a2a", a2a);
+    root.route("a2a", busbar_plane_a2a::CLAIMS);
+    root.meter("a2a", busbar_plane_a2a::METER_CLASSES);
+}
+
+/// The streaming plane, wired by hand.
+pub fn mount_streaming(root: &mut Root) {
+    let streaming = StreamingUnit::new(root.section("streams"));
+    root.node::<StreamingNode>("streaming", busbar_plane_streaming::KEY);
+    root.unit("streaming", streaming);
+    root.route("streaming", busbar_plane_streaming::CLAIMS);
+    root.meter("streaming", busbar_plane_streaming::METER_CLASSES);
+}
+
+/// All four, in the order the root used to mount them.
+pub fn mount_all(root: &mut Root) {
+    mount_llm(root);
+    mount_mcp(root);
+    mount_a2a(root);
+    mount_streaming(root);
+}
