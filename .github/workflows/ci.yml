@@ -4117,6 +4117,74 @@ jobs:
             ${{ env.CARGO_HOME }}/git
             target
 
+  # ── CONSUMERS: THE PLUGIN REPOS THIS TREE'S DEFAULT BUILD PULLS, BUILT AGAINST THIS TREE ────────
+  # Every default plugin lives in its own repo (owner ruling, 1.6.0) and names busbar by git at the
+  # rev its `.busbar-ref` pins; its own CI proves it against that PIN. This job is the MOVING leg:
+  # each plugin repo's `dev`, with the busbar crates it names patched to THIS checkout, must fmt,
+  # clippy, build and pass its own suite (including its linked + dropped-in conformance). A change
+  # here that breaks a plugin's source against the contract reds here, on the push that made it,
+  # rather than on the plugin's next re-pin. One matrix row per plugin repo; `patch` lists the busbar
+  # crates that repo's manifests name (normal and dev), each patched to its path in this tree.
+  consumers:
+    name: consumer ${{ matrix.repo }} (its dev against this tree)
+    needs: [preflight]
+    runs-on: latchkey-large
+    # New job: no green history to measure a p95 from. The plugin repo builds its own small
+    # workspace (the SDK, the loader and their closure) cold in well under the floor.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - repo: export-file
+            patch: "busbar-plugin-sdk=crates/plugin-sdk busbar-plugin-loader=crates/plugin-loader"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: busbar
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: GetBusbar/${{ matrix.repo }}
+          ref: dev
+          path: plugin
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+        with:
+          components: clippy, rustfmt
+      - name: Patch the busbar crates the plugin names to this tree
+        # `[patch]` from cargo config, not an edit of the plugin's manifests: what builds is the
+        # plugin's own source, byte for byte, with only the busbar source redirected.
+        run: |
+          set -euo pipefail
+          {
+            echo '[patch."https://github.com/GetBusbar/busbar"]'
+            for row in ${{ matrix.patch }}; do
+              echo "${row%%=*} = { path = \"$GITHUB_WORKSPACE/busbar/${row#*=}\" }"
+            done
+          } > "$RUNNER_TEMP/consumer-patch.toml"
+          mkdir -p plugin/.cargo
+          cat "$RUNNER_TEMP/consumer-patch.toml" >> plugin/.cargo/config.toml
+          cat plugin/.cargo/config.toml
+      - name: fmt
+        working-directory: plugin
+        run: cargo fmt --all -- --check
+      - name: clippy
+        working-directory: plugin
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Every patch row is used (a stale row would build the plugin against its pin, not this tree)
+        working-directory: plugin
+        run: |
+          set -euo pipefail
+          if cargo metadata --format-version 1 2>&1 >/dev/null | grep -i "was not used in the crate graph"; then
+            echo "::error::a busbar patch row matched nothing the plugin names"; exit 1
+          fi
+          if grep -q 'source = "git+https://github.com/GetBusbar/busbar' Cargo.lock; then
+            grep -n 'git+https://github.com/GetBusbar/busbar' Cargo.lock
+            echo "::error::a busbar crate still resolves from the plugin's pin, not this tree"; exit 1
+          fi
+      - name: build + test (the plugin's own suite, its linked + dropped-in conformance included)
+        working-directory: plugin
+        run: cargo test --workspace
+
   ci-umbrella:
     name: ci umbrella
     if: always()
@@ -4153,6 +4221,7 @@ jobs:
       - content-debt-gates
       - gate-all
       - plugin-proofs
+      - consumers
     # report-only: plugin-proofs -- the secret and auth kinds' proofs by the REAL plugin repos
     #   (GetBusbar/hashicorp-vault, GetBusbar/auth-github). RED until both repos build against this
     #   tree: their Cargo.toml still names `../../busbar/crates/api`, and busbar-api retired at
@@ -4239,6 +4308,7 @@ jobs:
         perf-build-gate|full|${{ needs.perf-build-gate.result }}
         teller-steps|full|${{ needs.teller-steps.result }}
         construction-gate|fast|${{ needs.construction-gate.result }}
+        consumers|fast|${{ needs.consumers.result }}
     steps:
       - name: Assert every required job reported green (skip-allowlist only on a fast-tier run)
         run: |
