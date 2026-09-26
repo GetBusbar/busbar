@@ -726,6 +726,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-kernel-budget",
+ "serde_json",
  "sha2 0.11.0",
 ]
 

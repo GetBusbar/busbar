@@ -38,6 +38,9 @@ sha2 = { workspace = true }
 # disk, and it is no longer in a plugin author's compile closure because it does not.
 
 [dev-dependencies]
+# The `usage_migration` suite parses a raw pre-M1b JSON row through the frozen shapes, exactly as a
+# byte-persisting backend does. Dev-only: the ledger itself still carries no serializer.
+serde_json = { workspace = true }
 # The folded `cost` module's rate-conversion agreement test cross-checks against the budget crate's
 # `RateNanos` (former busbar-unit-cost dev-dep on busbar-unit-admission, #36). Dev-only, so the
 # budget -> ledger production edge is not made cyclic.

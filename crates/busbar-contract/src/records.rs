@@ -598,7 +598,7 @@ impl std::fmt::Debug for CredentialSecret {
 /// the one map with every open (operator/plane) unit. These constants are the single source of truth
 /// for those four names, so the pricer, the ledger, the flush primitive, and the boot migration can
 /// never disagree on the spelling. `UNIT_CACHE_WRITE` is the canonical spelling; the older
-/// `cache_creation` name is folded onto it at migration (see the usage-ledger migration (`busbar_api::usage_migration`)).
+/// `cache_creation` name is folded onto it at migration (see the usage-ledger migration (`busbar_kernel_ledger::usage_migration`)).
 pub const UNIT_INPUT: &str = "input";
 pub const UNIT_OUTPUT: &str = "output";
 pub const UNIT_CACHE_READ: &str = "cache_read";
@@ -648,7 +648,7 @@ pub const PER_PLUGIN_PRICING_IS_UNREPRESENTABLE: () = ();
 /// (non-reserved) keyed count. Opaque `key → count` DATA the store never interprets. An
 /// all-empty row serializes to `{"model":…}` (the map is skipped when empty); a pre-M1b persisted
 /// row with the old scalar `tokens` field is folded into this map ONCE by the store-versioned boot
-/// migration (see the usage-ledger migration (`busbar_api::usage_migration`)).
+/// migration (see the usage-ledger migration (`busbar_kernel_ledger::usage_migration`)).
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct ModelTokens {
     pub model: String,
@@ -778,6 +778,52 @@ impl UsageLedger {
             self.apply_model_delta(m);
         }
     }
+}
+
+// ── THE PRE-M1b ROW SHAPES — FROZEN, DESERIALIZATION-ONLY ───────────────────────────────────────
+//
+// What a usage-ledger row LOOKED LIKE on a disk before M1b dissolved `TierTokens` into the one
+// name-keyed `usage_units` map. They are SHAPES (every implementation must read the old bytes the
+// same way), so they live here beside the live shapes; the one-shot fold that turns them into the
+// live shapes is the ledger's (`busbar_kernel_ledger::usage_migration`), which re-exports them.
+// They moved here verbatim when `busbar-api` retired, because the ledger crate defines what money
+// MEANS and carries no serializer.
+
+/// FROZEN, deserialization-only. The pre-M1b `TierTokens` shape. Every field `#[serde(default)]` so
+/// an already-migrated row (no `tokens` object on disk) deserializes to all-zero — the identity the
+/// idempotent re-fold depends on.
+#[derive(Debug, Clone, Copy, Default, serde::Deserialize)]
+pub struct TierTokensV1 {
+    #[serde(default)]
+    pub input: u64,
+    #[serde(default)]
+    pub output: u64,
+    #[serde(default)]
+    pub cache_read: u64,
+    #[serde(default)]
+    pub cache_write: u64,
+}
+
+/// FROZEN, deserialization-only. The pre-M1b per-model row: the scalar `tokens` PLUS any open
+/// `usage_units` that already rode beside it (M1 additive rows).
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct ModelTokensV1 {
+    pub model: String,
+    #[serde(default)]
+    pub tokens: TierTokensV1,
+    #[serde(default)]
+    pub usage_units: std::collections::BTreeMap<String, u64>,
+}
+
+/// FROZEN, deserialization-only. The pre-M1b bucket ledger.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct UsageLedgerV1 {
+    #[serde(default)]
+    pub requests: u64,
+    #[serde(default)]
+    pub billable_requests: u64,
+    #[serde(default)]
+    pub models: Vec<ModelTokensV1>,
 }
 
 /// One model's signed unit delta inside a [`UsageDelta`] — the fleet-additive flush primitive's

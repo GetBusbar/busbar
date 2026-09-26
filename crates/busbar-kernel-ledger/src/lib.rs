@@ -82,9 +82,13 @@ pub mod digest;
 pub mod identity;
 pub mod legacy;
 pub mod migration;
+// The one-shot usage-ledger fold (1.6.0 M1b) a byte-persisting store backend runs under its own
+// schema gate. Moved here from `busbar-api` when that crate retired (the fold is ledger semantics;
+// the frozen row shapes it reads are the contract's).
 pub mod recompute;
 pub mod settle;
 pub mod totals;
+pub mod usage_migration;
 pub mod verify;
 
 pub use checkpoint::{

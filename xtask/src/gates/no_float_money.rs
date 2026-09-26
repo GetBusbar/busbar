@@ -709,7 +709,6 @@ pub const ALLOWED_COUNT_READS: &[Allow] = &[
 /// hits in the contract's `records.rs`). Nothing this list used to see is unseen now.
 const PERSISTED_RECORD_HOMES: &[&str] = &[
     "crates/busbar-contract/src/records.rs",
-    "crates/api/src/usage_migration.rs",
     "crates/plugin-loader/src/legacy_usage.rs",
 ];
 

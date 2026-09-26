@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE ONE-SHOT USAGE-LEDGER MIGRATION (1.6.0 M1b): fold the pre-M1b scalar `TierTokens` rows onto
-//! the name-keyed [`crate::store::ModelTokens::usage_units`] ledger, gated by a BACKEND-INTERNAL
+//! the name-keyed [`ModelTokens::usage_units`] ledger, gated by a BACKEND-INTERNAL
 //! usage-ledger schema version ([`USAGE_SCHEMA_V2`]).
 //!
 //! WHERE THE GATE LIVES. The schema version is a durable-backend concern, exactly like the existing
@@ -17,11 +17,11 @@
 //! WHY A MIGRATION EXISTS. Before M1b, a persisted ledger row carried a scalar `tokens: TierTokens`
 //! struct (`input`/`output`/`cache_read`/`cache_write`) BESIDE an optional open `usage_units` map.
 //! M1b dissolves `TierTokens`: the reserved four are now PLAIN KEYS in the one `usage_units` map, so
-//! the live [`crate::store::ModelTokens`] no longer has a `tokens` field. A byte-persisting backend
+//! the live [`ModelTokens`] no longer has a `tokens` field. A byte-persisting backend
 //! that deserialized an old row straight into the new type would SILENTLY DROP the `tokens` field
 //! (serde ignores unknown fields) — losing the never-rolling budget totals. This module recovers
-//! them: the frozen V1 deserialization structs below still carry `tokens`, and [`fold_v1_ledger`]
-//! folds those fields into the canonical `usage_units` keys ONCE.
+//! them: the frozen V1 deserialization structs ([`UsageLedgerV1`]) still carry `tokens`, and
+//! [`fold_v1_ledger`] folds those fields into the canonical `usage_units` keys ONCE.
 //!
 //! IDEMPOTENT BY CONSTRUCTION — THE CRASH-SAFETY PROOF. A backend migrates row-by-row: read a raw
 //! row through [`UsageLedgerV1`], [`fold_v1_ledger`] it, write the folded row back, and stamp
@@ -32,54 +32,20 @@
 //! reboot can neither double-count nor lose a budget total: the folded ledger is byte-identical to a
 //! clean single run. That equality is a HARD gate, proven by [`tests`].
 //!
-//! The V1 structs live ONLY here (never in the serving path); the pricer/ledger/flush all speak the
-//! name-keyed map exclusively.
+//! The V1 structs are read ONLY here (never in the serving path); the pricer/ledger/flush all speak
+//! the name-keyed map exclusively.
 
 use std::collections::BTreeMap;
 
-use crate::store::{
+use busbar_contract::records::{
     ModelTokens, UsageLedger, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
 };
+// The frozen pre-M1b row SHAPES are the contract's (a shape every reader must agree on); re-exported
+// here so the fold and the rows it folds are named from one module.
+pub use busbar_contract::records::{ModelTokensV1, TierTokensV1, UsageLedgerV1};
 
 /// The name-keyed usage-ledger schema version stamped after the M1b fold completes.
 pub const USAGE_SCHEMA_V2: u32 = 2;
-
-/// FROZEN, deserialization-only. The pre-M1b `TierTokens` shape. Every field `#[serde(default)]` so
-/// an already-migrated row (no `tokens` object on disk) deserializes to all-zero — the identity the
-/// idempotent re-fold depends on.
-#[derive(Debug, Clone, Copy, Default, serde::Deserialize)]
-pub struct TierTokensV1 {
-    #[serde(default)]
-    pub input: u64,
-    #[serde(default)]
-    pub output: u64,
-    #[serde(default)]
-    pub cache_read: u64,
-    #[serde(default)]
-    pub cache_write: u64,
-}
-
-/// FROZEN, deserialization-only. The pre-M1b per-model row: the scalar `tokens` PLUS any open
-/// `usage_units` that already rode beside it (M1 additive rows).
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub struct ModelTokensV1 {
-    pub model: String,
-    #[serde(default)]
-    pub tokens: TierTokensV1,
-    #[serde(default)]
-    pub usage_units: BTreeMap<String, u64>,
-}
-
-/// FROZEN, deserialization-only. The pre-M1b bucket ledger.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub struct UsageLedgerV1 {
-    #[serde(default)]
-    pub requests: u64,
-    #[serde(default)]
-    pub billable_requests: u64,
-    #[serde(default)]
-    pub models: Vec<ModelTokensV1>,
-}
 
 /// Fold `add` into `out[unit]`, canonicalizing the legacy `cache_creation` spelling onto
 /// [`UNIT_CACHE_WRITE`] so the two names never split one concept across two keys. A zero add is a

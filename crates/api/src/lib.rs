@@ -24,7 +24,6 @@ mod auth;
 pub mod durable;
 mod secret;
 mod store;
-pub mod usage_migration;
 
 // THE PLUGIN CONTRACTS LEFT THIS CRATE (DECISIONS #83/#84; the per-kind traits are the contract's,
 // #35(a)). `auth`, `hooks`, `secret` and `operation` now live in `busbar_contract` under the same
