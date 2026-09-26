@@ -5,7 +5,7 @@
 
 # Reviewed `noun-neutrality: frozen-literal` pragmas. May only fall.
 [pragma_ceiling]
-frozen_literal = 8
+frozen_literal = 7
 
 [[leak]]
 noun = "a2a"
@@ -96,14 +96,6 @@ category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
 [[leak]]
-noun = "llm"
-kind = "plane"
-file = "crates/busbar/src/tests/tests.rs"
-count = 7
-category = "composition-root"
-wave = "keystone / composition-root — register_planes both-ways self-registration"
-
-[[leak]]
 noun = "mcp"
 kind = "plane"
 file = "crates/busbar-kernel/src/test_support/mod.rs"
@@ -138,31 +130,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "memory"
 kind = "store"
-file = "crates/busbar-kernel/src/governance/mod.rs"
-count = 1
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "memory"
-kind = "store"
 file = "crates/plugin-sdk/src/tests/lib_tests.rs"
-count = 1
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "postgres"
-kind = "store"
-file = "crates/busbar-kernel/src/appbuild.rs"
-count = 1
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "postgres"
-kind = "store"
-file = "crates/busbar-kernel/src/config_validate/mod.rs"
 count = 1
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
@@ -298,30 +266,6 @@ wave = "substrate neutralization — opaque PlaneRecord across the ABI, never an
 [[leak]]
 noun = "sqlite"
 kind = "store"
-file = "crates/busbar-kernel/src/appbuild.rs"
-count = 1
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "sqlite"
-kind = "store"
-file = "crates/busbar-kernel/src/config/migrate.rs"
-count = 5
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "sqlite"
-kind = "store"
-file = "crates/busbar-kernel/src/config_validate/mod.rs"
-count = 1
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "sqlite"
-kind = "store"
 file = "crates/plugin-loader/src/tests/store_adapter_migration_tests.rs"
 count = 14
 category = "core"
@@ -358,30 +302,6 @@ file = "crates/busbar-plane-mcp/src/tests/claims.rs"
 count = 3
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "valkey"
-kind = "store"
-file = "crates/busbar-kernel/src/config/migrate.rs"
-count = 2
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "valkey"
-kind = "store"
-file = "crates/busbar-kernel/src/config/mod.rs"
-count = 4
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "valkey"
-kind = "store"
-file = "crates/busbar-kernel/src/config_validate/mod.rs"
-count = 1
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
 [[leak]]
 noun = "voice"
