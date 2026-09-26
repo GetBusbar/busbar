@@ -343,7 +343,7 @@ static KINDS: &[KindDef] = &[
         family: Family::Neutral,
         matchers: &["=busbar-substrate", "=busbar-substrate-values"],
     },
-    // There is no `api` kind: `busbar-api` retired in fold F4 (7cbf9b133) — its last pieces went to
+    // There is no `api` kind: `busbar-api` retired in fold F4 — its last pieces went to
     // the homes their definitions name — so the row matched no crate and scored `dead-kind`.
     KindDef {
         kind: "timing",
@@ -554,7 +554,7 @@ const ACCEPTED_NAMES: &[(&str, &str)] = &[(
 /// same kind of statement made about a crate that does not exist yet.
 const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // `(api, contract)` WAS HERE, a transitional grant for `busbar-api`'s re-export of the record
-    // SHAPES (#83/#84). #84's end state retired the crate (fold F4, 7cbf9b133), the `api` kind lost
+    // SHAPES (#83/#84). #84's end state retired the crate (fold F4), the `api` kind lost
     // its only member, and the grant went with it, as its own paragraph said it would.
     // THE #40 WALL, GRANTED FOR ALL SEVEN PLUGIN KINDS AT ONCE. DECISIONS #40(a), OWNER-LOCKED:
     // "a plugin crate's entire workspace dependency closure = `busbar-contract` and nothing else".
