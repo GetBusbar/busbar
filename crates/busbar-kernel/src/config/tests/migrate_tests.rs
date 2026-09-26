@@ -795,7 +795,6 @@ pools: {}
     };
     assert_eq!(
         get(&["store", "module"]).as_str(),
-        // noun-neutrality: frozen-literal pinned-by=docs/design/inventory/1.5.5-config.md the 1.4.x durable backend --migrate-config must select
         Some("sqlite"),
         "1.4.x's only durable backend -- migration must select it, not default to memory"
     );
@@ -830,7 +829,6 @@ pools: {}
         store
             .get(serde_yaml::Value::from("module"))
             .and_then(|v| v.as_str()),
-        // noun-neutrality: frozen-literal pinned-by=docs/design/inventory/1.5.5-config.md the 1.4.x durable backend --migrate-config must select
         Some("sqlite")
     );
     assert_eq!(
@@ -2203,7 +2201,6 @@ pools:
 /// `redis` and `detect_legacy_markers` returned nothing for it.
 #[test]
 fn migrate_store_module_retired_1_5_3_spellings_to_the_renamed_alias() {
-    // noun-neutrality: frozen-literal pinned-by=docs/design/inventory/1.5.5-config.md the retired 1.5.x `store.module:` values the rename must catch
     for old in ["redis", "busbar-store-redis", "busbar-store-redis-plugin"] {
         let raw = format!(
             "store:\n  module: {old}\n  settings: {{ url: \"kv://127.0.0.1:6379/0\" }}\n\
@@ -2214,7 +2211,6 @@ fn migrate_store_module_retired_1_5_3_spellings_to_the_renamed_alias() {
         let doc: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
         let joined = detect_legacy_markers(&doc).join("\n");
         assert!(
-            // noun-neutrality: frozen-literal pinned-by=testing/shadow-oracle/golden/1.5.5/cells/plugins.load__store-valkey.json the renamed 1.5.5 alias the marker must name
             joined.contains(old) && joined.contains("valkey"),
             "`store.module: {old}` must loud-fail with a marker naming the old AND new spelling; \
              got: {joined}"
@@ -2224,7 +2220,6 @@ fn migrate_store_module_retired_1_5_3_spellings_to_the_renamed_alias() {
         let (out, doc) = migrate_to_value(&raw);
         assert_eq!(
             dig(&doc, &["store", "module"]).and_then(|v| v.as_str()),
-            // noun-neutrality: frozen-literal pinned-by=testing/shadow-oracle/golden/1.5.5/cells/plugins.load__store-valkey.json the renamed 1.5.5 alias the rewrite must write
             Some("valkey"),
             "`store.module: {old}` must be rewritten to the new alias; migrated:\n{}",
             out.yaml

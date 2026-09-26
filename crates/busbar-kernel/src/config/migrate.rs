@@ -902,7 +902,6 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
     // returned early if absent) with 1.4.x's real, always-SQLite semantics is what must drive this.
     let stray_module = take(&mut gov, "store").and_then(|v| v.as_str().map(str::to_string));
     let db_path = take(&mut gov, "db_path").and_then(|v| v.as_str().map(str::to_string));
-    // noun-neutrality: frozen-literal pinned-by=docs/design/inventory/1.5.5-config.md the 1.4.x durable backend --migrate-config writes as `store.module:`
     let module = stray_module.unwrap_or_else(|| "sqlite".to_string());
     {
         let mut store = Mapping::new();
@@ -910,12 +909,10 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
         let mut settings = Mapping::new();
         match (module.as_str(), db_path) {
             ("memory", _) => {}
-            // noun-neutrality: frozen-literal pinned-by=docs/design/inventory/1.5.5-config.md the 1.4.x `store.module:` value whose db_path the migrator carries
             ("sqlite", Some(p)) => {
                 settings.insert("db_path".into(), p.into());
             }
             // No explicit db_path: 1.4.x's real default was "busbar-governance.db", not memory.
-            // noun-neutrality: frozen-literal pinned-by=docs/design/inventory/1.5.5-config.md the 1.4.x `store.module:` value whose default db_path the migrator writes
             ("sqlite", None) => {
                 settings.insert("db_path".into(), DEFAULT_GOVERNANCE_DB_1_4.into());
             }
@@ -924,7 +921,6 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
             }
             (_, None) => {}
         }
-        // noun-neutrality: frozen-literal pinned-by=docs/design/inventory/1.5.5-config.md the 1.4.x `governance:` config key the migrator reads
         if let Some(busy) = take(&mut gov, "sqlite_busy_timeout_ms") {
             settings.insert("busy_timeout_ms".into(), busy);
         }
@@ -932,7 +928,6 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
             store.insert("settings".into(), Value::Mapping(settings));
         }
         root.insert("store".into(), Value::Mapping(store));
-        // noun-neutrality: frozen-literal pinned-by=docs/design/inventory/1.5.5-plugins-stores.md the --migrate-config change line an operator reads
         changes.push("governance.db_path -> store: { module: sqlite, settings: { db_path } } (1.4.x's only durable backend was SQLite)".into());
     }
 

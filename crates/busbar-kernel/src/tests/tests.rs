@@ -334,7 +334,6 @@ fn test_stateful_plane_ephemeral_store_warn_fires_only_for_ram_plus_stateful() {
         .expect("RAM + the first stateful plane → sharper warn fires");
     assert!(
         w.contains("in-flight tasks will break")
-            // noun-neutrality: frozen-literal pinned-by=docs/diagnostics.md the durable-store fix the operator-visible warn names
             && w.contains("sqlite/postgres")
             && w.contains("NOT survive a restart"),
         "the warn must name the CONSEQUENCE and the durable-store fix; got: {w}"
@@ -1985,7 +1984,6 @@ fn migrate_config_then_load_config_from_disk_boots_the_real_migrated_file() {
     assert_eq!(loaded.deploy.listen, "0.0.0.0:8080");
     assert_eq!(
         loaded.deploy.store.as_ref().map(|s| s.module.as_str()),
-        // noun-neutrality: frozen-literal pinned-by=docs/design/inventory/1.5.5-config.md the 1.4.x durable backend --migrate-config selects
         Some("sqlite"),
         "the migrated store module must survive the real disk-load pipeline"
     );
