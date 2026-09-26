@@ -877,6 +877,7 @@ static TEST_REGISTERED_PROTOCOLS: std::sync::Mutex<Vec<&'static ProtocolDecl>> =
 /// itself.
 #[cfg(any(test, feature = "test-support"))]
 pub fn register_test_protocol(decl: &'static ProtocolDecl) {
+    arm_usage_tap_fault_reporter();
     // A name the composition root already installed is declared: this seam stands in for a root
     // in binaries that have none, and re-declaring behind a real root would make the boot fold
     // report a duplicate the operator never caused (a test-built binary would then carry boot
@@ -1094,6 +1095,16 @@ static REGISTRY: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
 /// [`registry`]'s initializer.
 static INSTALLED: std::sync::OnceLock<Vec<&'static ProtocolDecl>> = std::sync::OnceLock::new();
 
+/// Arm the host's usage-tap fault reporter (`handlers::report_usage_tap_decode_failure`) that a
+/// protocol cell's default usage tap reports through. Called wherever protocols become reachable —
+/// [`install_protocols`] and the test registration seams — so no cell can be dispatched before it
+/// is armed. Idempotent.
+fn arm_usage_tap_fault_reporter() {
+    busbar_contract::codec::install_usage_tap_fault_reporter(
+        crate::handlers::report_usage_tap_decode_failure,
+    );
+}
+
 /// INSTALL PROTOCOL DECLARATIONS — the composition root's one write into the protocol axis, and the
 /// seam an extracted protocol crate registers through. The `busbar` binary calls this from `main`,
 /// before any config read, with the `&DECL` of every protocol crate it links.
@@ -1106,6 +1117,7 @@ static INSTALLED: std::sync::OnceLock<Vec<&'static ProtocolDecl>> = std::sync::O
 /// - if called after the registry was first read.
 #[allow(dead_code)] // pub-widened and called by the busbar binary once the first protocol crate registers through it
 pub fn install_protocols(decls: Vec<&'static ProtocolDecl>) {
+    arm_usage_tap_fault_reporter();
     assert!(
         INSTALLED.set(decls).is_ok(),
         "install_protocols called twice: there is one composition root, and it registers once"
@@ -1197,6 +1209,7 @@ static TEST_BUILTINS_HOOK: std::sync::OnceLock<fn() -> &'static [&'static Protoc
 /// tail re-folds WITH it on the next read — the read is self-healing regardless of call order.
 #[cfg(any(test, feature = "test-support"))]
 pub fn set_test_builtins(f: fn() -> &'static [&'static ProtocolDecl]) {
+    arm_usage_tap_fault_reporter();
     let _ = TEST_BUILTINS_HOOK.set(f);
 }
 
