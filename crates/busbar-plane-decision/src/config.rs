@@ -87,7 +87,7 @@ pub struct DecisionsSection {
 /// is the plane's job, never the kernel's." This constant is that knowledge, kept on the plane side
 /// of the seam so no kernel file ever spells the literal `"jev"` (#49: the kernel names no plane or
 /// transport-protocol string).
-pub const JEV_PROTOCOL: &str = "jev";
+pub const PROTOCOL: &str = "jev";
 
 /// CROSS-REFERENCE VALIDATION for a parsed `decisions:` section, run once the whole document is
 /// known (siblings included) — the same moment the pools plane's own model→provider check runs
@@ -100,7 +100,7 @@ pub const JEV_PROTOCOL: &str = "jev";
 ///   * `provider_protocols`: every configured `providers:` entry's NAME mapped to its RESOLVED
 ///     `protocol` (post catalog-merge, the same value `providers.<p>.protocol` resolves to
 ///     everywhere else) — so a `decisions.models.<m>.provider` reference is checked for EXISTENCE
-///     and, when it exists, its dialect is checked against [`JEV_PROTOCOL`] (#51).
+///     and, when it exists, its dialect is checked against [`PROTOCOL`] (#51).
 ///   * `known_hooks`: every NAME defined in the top-level `hooks:` map — so a `decisions.hooks`
 ///     reference is checked for existence, exactly as `tools.hooks`/`tools.<server>.hooks` are.
 ///
@@ -137,13 +137,13 @@ pub fn validate_cross_refs(
                     }
                 ));
             }
-            Some(protocol) if protocol != JEV_PROTOCOL => {
+            Some(protocol) if protocol != PROTOCOL => {
                 errors.push(format!(
                     "decisions.models.{model_name}.provider '{}' resolves to protocol '{protocol}', \
-                     but the decision plane speaks only '{JEV_PROTOCOL}' (jev is a direct HTTP+JSON \
+                     but the decision plane speaks only '{PROTOCOL}' (jev is a direct HTTP+JSON \
                      passthrough with no translating IR — BUSBAR-1.6.0.md #51: an unknown dialect \
                      FAILS CLOSED rather than boot). Point decisions.models.{model_name} at a \
-                     provider whose protocol resolves to '{JEV_PROTOCOL}', or remove this model.",
+                     provider whose protocol resolves to '{PROTOCOL}', or remove this model.",
                     model_cfg.provider
                 ));
             }

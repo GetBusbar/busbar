@@ -22,7 +22,7 @@ fn a_good_decisions_config_passes_clean() {
     let section: DecisionsSection = serde_json::from_str(json).expect("valid shape parses");
     let errors = validate_cross_refs(
         &section,
-        &providers(&[("typesafe", JEV_PROTOCOL)]),
+        &providers(&[("typesafe", PROTOCOL)]),
         &hooks(&["redact"]),
     );
     assert!(errors.is_empty(), "good config refused: {errors:?}");
@@ -35,7 +35,7 @@ fn refuses_a_model_naming_an_undefined_provider() {
     let section: DecisionsSection = serde_json::from_str(json).expect("valid shape parses");
     let errors = validate_cross_refs(
         &section,
-        &providers(&[("typesafe", JEV_PROTOCOL)]),
+        &providers(&[("typesafe", PROTOCOL)]),
         &hooks(&[]),
     );
     assert_eq!(errors.len(), 1, "{errors:?}");
@@ -83,7 +83,7 @@ fn refuses_a_model_whose_provider_speaks_a_non_jev_dialect() {
         "{errors:?}"
     );
     assert!(errors[0].contains("anthropic"), "{errors:?}");
-    assert!(errors[0].contains(JEV_PROTOCOL), "{errors:?}");
+    assert!(errors[0].contains(PROTOCOL), "{errors:?}");
 }
 
 /// An undefined provider is reported ONCE, as the "unknown provider" defect — not also re-reported

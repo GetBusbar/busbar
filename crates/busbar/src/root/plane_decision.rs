@@ -331,7 +331,7 @@ impl busbar_kernel::plane::config::PlaneCfg for DecisionsCfg {
     /// the LLM plane — which interprets whatever dialect its provider resolves to — this plane
     /// interprets exactly one and fails closed on every other.
     fn known_dialects(&self) -> Option<&'static [&'static str]> {
-        Some(&[busbar_plane_decision::config::JEV_PROTOCOL])
+        Some(&[busbar_plane_decision::config::PROTOCOL])
     }
 
     /// True when the operator wrote CONTENT — anything other than the plane's own empty section.
