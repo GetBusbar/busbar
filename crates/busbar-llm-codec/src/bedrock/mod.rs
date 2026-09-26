@@ -110,15 +110,20 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // `tooluse_…` is Bedrock's documented native tool-call id shape.
     native_tool_id_prefix: Some("tooluse_"),
     ingress_auth: IngressAuth::SigV4,
-    // SIGV4 IS THIS DIALECT'S OWN EGRESS SCHEME AND IT TRAVELS WITH THE DIALECT. `egress_auth::
-    // resolve` used to hold a `"bedrock" => SigV4` arm whose body called back into
-    // `proto::bedrock::sigv4_sign_headers` — an agnostic layer naming a dialect for a credential
-    // shape only that dialect uses. That arm is gone; the signer is DECLARED here, exactly as the
-    // field doc describes, and the auth layer wraps whatever the declaration hands it. AWS SigV4 is
-    // not a shared scheme the way bearer/api-key are — Bedrock is the only protocol that signs.
-    egress_auth_headers: Some(writer::sigv4_sign_headers),
+    // SIGV4 IS THIS DIALECT'S OWN EGRESS SCHEME AND IT TRAVELS WITH THE DIALECT — as DECLARED DATA
+    // (#83a S2-a, O7, #40(b)): the service it signs for, the region as a pure function of the
+    // endpoint host (with the `us-east-1` fallback), and the content type the signature covers. The
+    // kernel's egress-auth unit holds the lane credential (`ACCESS:SECRET[:SESSION]`) and signs
+    // under a teller-minted grant, so the secret never passes through this plane. Never
+    // lane-constant: every signature covers the body, the time and the path.
+    egress_auth_headers: None,
     egress_auth_lane_constant: false,
-    egress_scheme: None,
+    egress_scheme: Some(EgressScheme::SigV4 {
+        service: "bedrock",
+        region_of_host: declared_sigv4_region,
+        default_region: "us-east-1",
+        content_type: busbar_substrate_values::proxy::APPLICATION_JSON,
+    }),
     // THE MODEL IS IN THE URL (`/model/{model_id}/converse`, `/converse-stream`, `/invoke`): this
     // dialect registers its arrival (`busbar_kernel::ingress::bedrock_arrival`) through
     // `busbar_llm::PATH_INGRESS`, folded into the core side-table by the composition root.
@@ -1076,6 +1081,17 @@ fn merge_marker_entries(
     out
 }
 
+/// The DECLARED SigV4 region of an upstream `host` ([`EgressScheme::SigV4`]'s `region_of_host`):
+/// [`derive_sigv4_region`], with the operator warning the signer has always given when a host names
+/// no region and the scope falls back to the declared `us-east-1`. Read once per signature.
+fn declared_sigv4_region(host: &str) -> Option<&str> {
+    let region = derive_sigv4_region(host);
+    if region.is_none() {
+        tracing::warn!(host = %host, "could not derive AWS region from Bedrock endpoint host; defaulting SigV4 scope to us-east-1 (set a bedrock-runtime[-fips].<region>.amazonaws.com host)");
+    }
+    region
+}
+
 /// Derive the AWS region for SigV4 scope from a Bedrock endpoint host.
 ///
 /// AWS resolves the signing region from the endpoint, not from a single hard-coded prefix. A naive
@@ -1097,7 +1113,7 @@ fn merge_marker_entries(
 /// `None`. The caller logs a `tracing::warn!` and falls back to
 /// `us-east-1` for `None`, so a mis-derived region is no longer silent. Pure string parsing on a
 /// `&str` — no panic, no allocation of the host.
-fn derive_sigv4_region(host: &str) -> Option<&str> {
+pub(crate) fn derive_sigv4_region(host: &str) -> Option<&str> {
     // An AWS region token: one or more alphabetic dash-parts followed by a final numeric part.
     //   3-part canonical:  us-east-1, ap-southeast-2, eu-central-1, ca-central-1
     //   4-part partitions: us-gov-west-1, us-gov-east-1 (GovCloud), us-iso-east-1, us-isob-east-1

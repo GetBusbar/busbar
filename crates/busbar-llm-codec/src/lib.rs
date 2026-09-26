@@ -158,6 +158,33 @@ pub fn ensure_test_protocols_registered() {
     REGISTER.call_once(|| busbar_substrate_values::proto::register_test_protocols(DECLS));
 }
 
+/// TEST ONLY (#83a S2-a): the credential headers the host presents for `key` on a lane of
+/// `protocol` — the kernel's egress-auth unit reading this plane's DECLARED egress scheme, exactly as
+/// an egress request is decorated. A dialect's auth is asserted through here, never through a
+/// builder of its own: the plane holds no credential.
+#[cfg(test)]
+pub(crate) fn presented_auth_headers(
+    protocol: &str,
+    key: &str,
+    ctx: &busbar_substrate_values::proto::SigningContext,
+) -> Vec<(http::HeaderName, http::HeaderValue)> {
+    ensure_test_protocols_registered();
+    busbar_kernel::egress_auth::resolve(protocol, None).headers_for(key, ctx)
+}
+
+/// TEST ONLY: a signing context for a static-credential presentation — a lane's own key, a JSON
+/// body to a plain path. A static scheme reads nothing from it but the credential mode.
+#[cfg(test)]
+pub(crate) fn test_signing_ctx() -> busbar_substrate_values::proto::SigningContext<'static> {
+    busbar_substrate_values::proto::SigningContext {
+        host: "upstream.internal",
+        canonical_uri: "/v1/chat/completions",
+        body: b"{}",
+        timestamp_epoch: 1_752_000_000,
+        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
+    }
+}
+
 /// EVERY DIALECT THIS PLUGIN DECLARES, in the order an operator sees.
 ///
 /// THE ORDER IS LOAD-BEARING AND IT IS NOT ALPHABETICAL. The composition root hands this slice to

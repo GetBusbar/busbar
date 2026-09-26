@@ -508,7 +508,7 @@ fn test_temperature_fidelity() {
 
 #[test]
 fn test_auth_headers() {
-    let headers = busbar_substrate_values::proto::bearer_auth_headers("responses", "sk-test");
+    let headers = crate::presented_auth_headers("responses", "sk-test", &crate::test_signing_ctx());
 
     assert_eq!(headers.len(), 1);
     assert_eq!(headers[0].0.as_str(), "authorization");
@@ -520,7 +520,8 @@ fn test_auth_headers() {
 /// `authorization` value (a syntactically invalid header AND a fingerprinting tell). No panic.
 #[test]
 fn auth_headers_invalid_key_omits_header_no_panic() {
-    let headers = busbar_substrate_values::proto::bearer_auth_headers("responses", "sk-bad\nkey");
+    let headers =
+        crate::presented_auth_headers("responses", "sk-bad\nkey", &crate::test_signing_ctx());
     assert!(
         headers.is_empty(),
         "an invalid key must omit the auth header, not emit an empty value"

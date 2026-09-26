@@ -4500,11 +4500,12 @@ fn test_gemini_protocol_resolves() {
     // asserting that name comes back asserts the helper echoes its argument — the header name was
     // the test's input and the Gemini protocol was never consulted, so a regression to
     // `Authorization: Bearer` (every upstream call 401s) stayed green.
-    let g_decl = decl_for("gemini").expect("gemini declares itself");
-    let build = g_decl
-        .egress_auth_headers
-        .expect("gemini declares a native egress-auth builder");
-    let headers = build("test-key", &a_signing_ctx());
+    // Since #83a S2-a the declaration states the scheme as data and the host presents it.
+    assert!(decl_for("gemini")
+        .expect("gemini declares itself")
+        .egress_scheme
+        .is_some());
+    let headers = crate::presented_auth_headers("gemini", "test-key", &a_signing_ctx());
     assert_eq!(headers.len(), 1);
     assert_eq!(headers[0].0.as_str(), "x-goog-api-key");
     assert_eq!(headers[0].1.to_str().unwrap(), "test-key");
@@ -4546,11 +4547,12 @@ fn test_bedrock_and_responses_register() {
     // argument only for a diagnostic string and returns `authorization: Bearer {key}`
     // unconditionally, so the old form asserted a constant and never consulted the protocol: if
     // Responses stopped emitting an auth header, or switched to `api-key`, it stayed green.
-    let r_decl = decl_for("responses").expect("responses declares itself");
-    let r_build = r_decl
-        .egress_auth_headers
-        .expect("responses declares a native egress-auth builder");
-    let r_headers = r_build("sk-test", &a_signing_ctx());
+    // Since #83a S2-a the declaration states the scheme as data and the host presents it.
+    assert!(decl_for("responses")
+        .expect("responses declares itself")
+        .egress_scheme
+        .is_some());
+    let r_headers = crate::presented_auth_headers("responses", "sk-test", &a_signing_ctx());
     assert_eq!(r_headers.len(), 1);
     assert_eq!(r_headers[0].0.as_str(), "authorization");
     assert_eq!(r_headers[0].1.to_str().unwrap(), "Bearer sk-test");

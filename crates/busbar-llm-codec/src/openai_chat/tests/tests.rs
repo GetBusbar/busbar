@@ -3948,7 +3948,7 @@ fn max_tokens_above_u32_max_is_rejected_not_truncated() {
 // --- auth_headers: invalid credential bytes fall back to an empty value without panic, and a
 //     valid key produces the expected single `authorization: Bearer` header.
 
-fn header_value(headers: &[(HeaderName, HeaderValue)], name: &str) -> Option<String> {
+fn header_value(headers: &[(http::HeaderName, http::HeaderValue)], name: &str) -> Option<String> {
     headers
         .iter()
         .find(|(n, _)| n.as_str() == name)
@@ -3958,7 +3958,7 @@ fn header_value(headers: &[(HeaderName, HeaderValue)], name: &str) -> Option<Str
 #[test]
 fn auth_headers_valid_key_emits_bearer_authorization() {
     let headers =
-        busbar_substrate_values::proto::bearer_auth_headers("openai", "sk-openai-good-key");
+        crate::presented_auth_headers("openai", "sk-openai-good-key", &crate::test_signing_ctx());
     assert_eq!(
         header_value(&headers, "authorization").as_deref(),
         Some("Bearer sk-openai-good-key")
@@ -3974,7 +3974,7 @@ fn auth_headers_invalid_key_omits_header_no_panic() {
     // value was both a syntactically invalid header and a fingerprinting tell. A warn line (not
     // asserted here) tells the operator the lane credential bytes are invalid.
     let headers =
-        busbar_substrate_values::proto::bearer_auth_headers("openai", "sk-openai-bad\nkey");
+        crate::presented_auth_headers("openai", "sk-openai-bad\nkey", &crate::test_signing_ctx());
     assert!(
         header_value(&headers, "authorization").is_none(),
         "invalid key must OMIT the authorization header, not emit an empty value"

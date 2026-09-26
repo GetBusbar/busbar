@@ -61,7 +61,7 @@ fn test_bedrock_sigv4_sign_request_structure() {
         timestamp_epoch: 1_440_938_160, // 20150830T123600Z
         upstream_creds: busbar_contract::config::UpstreamCreds::Own,
     };
-    let headers = super::writer::sigv4_sign_headers("AKIDEXAMPLE:SECRETKEY", &ctx);
+    let headers = crate::presented_auth_headers("bedrock", "AKIDEXAMPLE:SECRETKEY", &ctx);
 
     let get = |name: &str| {
         headers
@@ -95,7 +95,7 @@ fn test_bedrock_sigv4_session_token() {
         timestamp_epoch: 1_440_938_160,
         upstream_creds: busbar_contract::config::UpstreamCreds::Own,
     };
-    let headers = super::writer::sigv4_sign_headers("AKID:SECRET:SESSIONTOKEN", &ctx);
+    let headers = crate::presented_auth_headers("bedrock", "AKID:SECRET:SESSIONTOKEN", &ctx);
     let tok = headers
         .iter()
         .find(|(k, _)| k.as_str() == "x-amz-security-token") // golden wire-contract literal (kept bare on purpose)
@@ -121,7 +121,7 @@ fn test_bedrock_sigv4_misconfigured_key_no_signature() {
         timestamp_epoch: 1_440_938_160,
         upstream_creds: busbar_contract::config::UpstreamCreds::Own,
     };
-    assert!(super::writer::sigv4_sign_headers("not-a-valid-key", &ctx).is_empty());
+    assert!(crate::presented_auth_headers("bedrock", "not-a-valid-key", &ctx).is_empty());
 }
 
 fn bedrock_rich_fixture() -> serde_json::Value {
@@ -713,21 +713,21 @@ fn test_bedrock_sigv4_control_char_in_access_key_no_panic() {
     // CR/LF embedded in the access key id → invalid Authorization header value
     // (HeaderValue::from_str rejects ASCII control chars, including CR/LF). This is the
     // header-injection / misconfiguration vector this guards.
-    let headers = super::writer::sigv4_sign_headers("AKID\r\nINJECT:SECRET", &ctx);
+    let headers = crate::presented_auth_headers("bedrock", "AKID\r\nINJECT:SECRET", &ctx);
     assert!(
         headers.is_empty(),
         "control-char access key must yield no headers (graceful), not panic; got: {headers:?}"
     );
 
     // A bare NUL / control byte is likewise rejected gracefully rather than panicking.
-    let headers2 = super::writer::sigv4_sign_headers("AKID\u{0001}X:SECRET", &ctx);
+    let headers2 = crate::presented_auth_headers("bedrock", "AKID\u{0001}X:SECRET", &ctx);
     assert!(
         headers2.is_empty(),
         "control-char access key must yield no headers; got: {headers2:?}"
     );
 
     // Sanity: a well-formed key still produces the full signed header set.
-    let ok = super::writer::sigv4_sign_headers("AKIDEXAMPLE:SECRETKEY", &ctx);
+    let ok = crate::presented_auth_headers("bedrock", "AKIDEXAMPLE:SECRETKEY", &ctx);
     assert!(
         ok.iter().any(|(k, _)| k.as_str() == "authorization"),
         "valid key still signs"
@@ -1893,7 +1893,7 @@ fn test_bedrock_sigv4_unencodable_session_token_bails_gracefully() {
         upstream_creds: busbar_contract::config::UpstreamCreds::Own,
     };
     // Session token with an embedded control char → un-encodable HeaderValue.
-    let headers = super::writer::sigv4_sign_headers("AKID:SECRET:TOK\r\nEN", &ctx);
+    let headers = crate::presented_auth_headers("bedrock", "AKID:SECRET:TOK\r\nEN", &ctx);
     assert!(
         headers.is_empty(),
         "un-encodable session token must yield no headers (graceful), not a signed-but-absent \
@@ -1901,7 +1901,7 @@ fn test_bedrock_sigv4_unencodable_session_token_bails_gracefully() {
     );
     // A bare control byte (e.g. NUL / U+0001) likewise bails — `HeaderValue::from_str` rejects
     // ASCII control characters, the same vector as the misconfigured access-key path.
-    let headers2 = super::writer::sigv4_sign_headers("AKID:SECRET:TOK\u{0001}EN", &ctx);
+    let headers2 = crate::presented_auth_headers("bedrock", "AKID:SECRET:TOK\u{0001}EN", &ctx);
     assert!(
         headers2.is_empty(),
         "control-byte token must bail; got {headers2:?}"
@@ -1909,7 +1909,7 @@ fn test_bedrock_sigv4_unencodable_session_token_bails_gracefully() {
 
     // Sanity: a clean token still signs AND emits the token header, and the signed set commits
     // to it (so the two never diverge in the success case either).
-    let ok = super::writer::sigv4_sign_headers("AKID:SECRET:CLEANTOKEN", &ctx);
+    let ok = crate::presented_auth_headers("bedrock", "AKID:SECRET:CLEANTOKEN", &ctx);
     let auth = ok
         .iter()
         .find(|(k, _)| k.as_str() == "authorization")
@@ -3260,7 +3260,7 @@ fn test_bedrock_sigv4_fips_host_derives_correct_region() {
         timestamp_epoch: 1_440_938_160,
         upstream_creds: busbar_contract::config::UpstreamCreds::Own,
     };
-    let headers = super::writer::sigv4_sign_headers("AKID:SECRET", &ctx);
+    let headers = crate::presented_auth_headers("bedrock", "AKID:SECRET", &ctx);
     let auth = headers
         .iter()
         .find(|(k, _)| k.as_str() == "authorization")
@@ -3288,7 +3288,7 @@ fn test_bedrock_sigv4_undecodable_host_falls_back_to_us_east_1() {
         timestamp_epoch: 1_440_938_160,
         upstream_creds: busbar_contract::config::UpstreamCreds::Own,
     };
-    let headers = super::writer::sigv4_sign_headers("AKID:SECRET", &ctx);
+    let headers = crate::presented_auth_headers("bedrock", "AKID:SECRET", &ctx);
     let auth = headers
         .iter()
         .find(|(k, _)| k.as_str() == "authorization")

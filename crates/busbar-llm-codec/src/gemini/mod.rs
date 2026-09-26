@@ -126,17 +126,6 @@ fn residual_claims(path: &str) -> Option<busbar_substrate_values::proto::ClaimSt
     None
 }
 
-/// The [`ProtocolDecl::egress_auth_headers`] builder: Gemini's native credential is the raw key in a
-/// custom `x-goog-api-key` header (no Bearer, no signing context needed). Retires the
-/// `"gemini" => ApiKeyHeader{ header: "x-goog-api-key" }` arm that used to live in core's
-/// `egress_auth::resolve`.
-fn egress_auth_headers(
-    key: &str,
-    _ctx: &SigningContext,
-) -> Vec<(http::HeaderName, http::HeaderValue)> {
-    busbar_substrate_values::proto::api_key_auth_headers("x-goog-api-key", key)
-}
-
 /// GEMINI'S DECLARATION. The only protocol declaring an array-stream shim key, and the reason that
 /// key is a DECLARATION rather than a literal in the agnostic strip: `proxy` removes every declared
 /// shim key without naming one.
@@ -163,12 +152,13 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // nothing to reshape and no risk of a foreign id leaking to a Gemini client.
     native_tool_id_prefix: None,
     ingress_auth: IngressAuth::Bearer,
-    // Gemini's `x-goog-api-key` scheme is THIS dialect's own, so the builder is declared here — the
-    // field that retired the `"gemini"` arm in core's `egress_auth::resolve`. A pure function of the
-    // key (no signing context), so it is lane-constant and the boot path prebuilds it.
-    egress_auth_headers: Some(egress_auth_headers),
-    egress_auth_lane_constant: true,
-    egress_scheme: None,
+    // Gemini's native credential is the raw key in a custom `x-goog-api-key` header (no Bearer) —
+    // DECLARED here as data (#83a S2-a, #40(b)): the kernel's egress-auth unit presents the lane
+    // credential under it (lane-constant, so the boot path prebuilds it), and the key never passes
+    // through this plane.
+    egress_auth_headers: None,
+    egress_auth_lane_constant: false,
+    egress_scheme: Some(EgressScheme::header("x-goog-api-key")),
     // THE MODEL IS IN THE URL (`/v1beta/models/{model}:generateContent`): this dialect registers its
     // arrival (`busbar_kernel::ingress::gemini_arrival`) through `busbar_llm::PATH_INGRESS`, which the
     // composition root hands to the core side-table. `has_model_in_url: true` below is what the boot

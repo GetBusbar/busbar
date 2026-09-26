@@ -1,36 +1,29 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DECLARED-SCHEME DIFFERENTIAL (#83a SD-2b; O7, S2-a): every dialect's egress credential,
+//! THE DECLARED-SCHEME DIFFERENTIAL (#83a SD-2b, SD-3; O7, S2-a): every dialect's egress credential,
 //! stated as DECLARED DATA — a credential-family table, or a SigV4 signature whose region is a pure
 //! function of the host — and presented by the kernel's egress-auth unit under a teller-minted
-//! `Grant<Sign>`, writes byte-for-byte the credential headers the dialect's own builder writes
-//! today, in the same order, for every key, credential mode and request the vectors below cover.
-//! Non-credential static headers a builder also emits (a version header) are not auth and stay in
-//! the dialect writer, so they are set aside before the comparison.
+//! `Grant<Sign>`, writes byte-for-byte the credential headers the dialect's own builder wrote, in the
+//! same order, for every key, credential mode and request the vectors below cover. Non-credential
+//! static headers a builder also emits (a version header) are not auth and stay in the dialect
+//! writer, so they are set aside before the comparison.
 //!
-//! Each declared twin is registered under its own name beside the real declaration, and resolved
-//! through `busbar_kernel::egress_auth::resolve` exactly as a lane is — so the path proven is the
-//! path a lane takes once a dialect declares its scheme.
+//! Since SD-3 five of the six dialects DECLARE their scheme on their real declaration and carry no
+//! builder, so each is presented exactly as its lanes are and compared against the builder it
+//! replaced, kept here verbatim as the REFERENCE (the shared bearer and custom-header builders are
+//! still live host-side; the dialect's own SigV4 signer is reproduced below). The sixth still
+//! declares a builder, because its builder also writes a non-credential version header no
+//! declaration field carries yet; its scheme is proven here on a declared twin against that builder.
 
 use busbar_contract::config::UpstreamCreds;
 use busbar_substrate_values::proto::{
-    CredentialFamily, CredentialHeader, EgressScheme, ProtocolDecl, SigningContext,
+    CredentialFamily, CredentialHeader, EgressAuthHeaders, EgressScheme, ProtocolDecl,
+    SigningContext,
 };
 
-/// The signing twin's region function: the dotted label after the endpoint's service label, the
-/// same label the dialect writer derives for every host [`SIGNING_HOSTS`] lists.
-fn region_after_service_label(host: &str) -> Option<&str> {
-    let labels: Vec<&str> = host.split('.').collect();
-    labels
-        .iter()
-        .position(|l| l.starts_with("bedrock"))
-        .and_then(|i| labels.get(i + 1).copied())
-        .filter(|l| l.ends_with(|c: char| c.is_ascii_digit()))
-}
-
-/// Hosts the signing dialect's writer derives a region for, plus one it derives none for (the
-/// writer's and the declaration's default then apply).
+/// Hosts the signing dialect derives a region for, plus one it derives none for (the declaration's
+/// default then applies).
 const SIGNING_HOSTS: &[&str] = &[
     "bedrock-runtime.us-west-2.amazonaws.com",
     "bedrock-runtime-fips.eu-central-1.amazonaws.com",
@@ -51,30 +44,6 @@ const ANTHROPIC_FAMILIES: &[CredentialFamily] = &[
     },
 ];
 
-/// The declared twins: each dialect's scheme as data, beside the declaration whose builder it must
-/// reproduce, and the non-credential headers that builder also writes.
-struct Twin {
-    real: &'static ProtocolDecl,
-    declared: &'static ProtocolDecl,
-    not_auth: &'static [&'static str],
-}
-
-static TWIN_OPENAI: ProtocolDecl = ProtocolDecl {
-    egress_scheme: Some(EgressScheme::bearer()),
-    ..ProtocolDecl::named("declared-twin-openai")
-};
-static TWIN_RESPONSES: ProtocolDecl = ProtocolDecl {
-    egress_scheme: Some(EgressScheme::bearer()),
-    ..ProtocolDecl::named("declared-twin-responses")
-};
-static TWIN_COHERE: ProtocolDecl = ProtocolDecl {
-    egress_scheme: Some(EgressScheme::bearer()),
-    ..ProtocolDecl::named("declared-twin-cohere")
-};
-static TWIN_GEMINI: ProtocolDecl = ProtocolDecl {
-    egress_scheme: Some(EgressScheme::header("x-goog-api-key")),
-    ..ProtocolDecl::named("declared-twin-gemini")
-};
 static TWIN_ANTHROPIC: ProtocolDecl = ProtocolDecl {
     egress_scheme: Some(EgressScheme::Static {
         families: ANTHROPIC_FAMILIES,
@@ -86,46 +55,181 @@ static TWIN_ANTHROPIC: ProtocolDecl = ProtocolDecl {
     }),
     ..ProtocolDecl::named("declared-twin-anthropic")
 };
-static TWIN_BEDROCK: ProtocolDecl = ProtocolDecl {
-    egress_scheme: Some(EgressScheme::SigV4 {
-        service: "bedrock",
-        region_of_host: region_after_service_label,
-        default_region: "us-east-1",
-        content_type: "application/json",
-    }),
-    ..ProtocolDecl::named("declared-twin-bedrock")
-};
 
-fn twins() -> [Twin; 6] {
+/// The builder each declared dialect used to carry, as the reference its presentation must match.
+fn reference_openai(
+    key: &str,
+    _ctx: &SigningContext,
+) -> Vec<(http::HeaderName, http::HeaderValue)> {
+    busbar_kernel::proto::bearer_auth_headers("openai", key)
+}
+fn reference_responses(
+    key: &str,
+    _ctx: &SigningContext,
+) -> Vec<(http::HeaderName, http::HeaderValue)> {
+    busbar_kernel::proto::bearer_auth_headers("responses", key)
+}
+fn reference_cohere(
+    key: &str,
+    _ctx: &SigningContext,
+) -> Vec<(http::HeaderName, http::HeaderValue)> {
+    busbar_kernel::proto::bearer_auth_headers("cohere", key)
+}
+fn reference_gemini(
+    key: &str,
+    _ctx: &SigningContext,
+) -> Vec<(http::HeaderName, http::HeaderValue)> {
+    busbar_kernel::proto::api_key_auth_headers("x-goog-api-key", key)
+}
+
+/// The signing dialect's own SigV4 builder, as it stood when the dialect declared it (verbatim but
+/// for paths): the `ACCESS:SECRET[:SESSION]` lane key, the region from the host (default
+/// `us-east-1`), service `bedrock`, a `POST` over the JSON content type, the host and the body.
+fn reference_bedrock_signer(
+    key: &str,
+    ctx: &SigningContext,
+) -> Vec<(http::HeaderName, http::HeaderValue)> {
+    let mut parts = key.splitn(3, ':');
+    let (access, secret, token) = match (parts.next(), parts.next(), parts.next()) {
+        (Some(a), Some(s), tok) if !a.is_empty() && !s.is_empty() => (a, s, tok),
+        _ => return vec![],
+    };
+    let region = match crate::bedrock::derive_sigv4_region(ctx.host) {
+        Some(r) => r,
+        None => {
+            tracing::warn!(host = %ctx.host, "could not derive AWS region from Bedrock endpoint host; defaulting SigV4 scope to us-east-1 (set a bedrock-runtime[-fips].<region>.amazonaws.com host)");
+            "us-east-1"
+        }
+    };
+    let service = "bedrock";
+    let (amzdate, datestamp) = busbar_kernel::sigv4::format_amz_time(ctx.timestamp_epoch);
+    let payload_hash = busbar_kernel::sigv4::sha256_hex(ctx.body);
+    let token_header = match token {
+        Some(t) => match http::HeaderValue::from_str(t) {
+            Ok(v) => Some(v),
+            Err(_) => {
+                tracing::warn!("Bedrock lane session token contains a byte rejected by HeaderValue; skipping signing to avoid a signed-but-absent x-amz-security-token header.");
+                return vec![];
+            }
+        },
+        None => None,
+    };
+    let mut signed = vec![
+        (
+            "content-type".to_string(),
+            busbar_kernel::proxy::APPLICATION_JSON.to_string(),
+        ),
+        ("host".to_string(), ctx.host.to_string()),
+        (
+            busbar_kernel::sigv4::X_AMZ_CONTENT_SHA256.to_string(),
+            payload_hash.clone(),
+        ),
+        (
+            busbar_kernel::sigv4::X_AMZ_DATE.to_string(),
+            amzdate.clone(),
+        ),
+    ];
+    if let Some(t) = token {
+        signed.push((
+            busbar_kernel::sigv4::X_AMZ_SECURITY_TOKEN.to_string(),
+            t.to_string(),
+        ));
+    }
+    let (signature, signed_headers) = busbar_kernel::sigv4::sign_v4(
+        secret,
+        region,
+        service,
+        "POST",
+        ctx.canonical_uri,
+        "",
+        &signed,
+        &payload_hash,
+        &amzdate,
+        &datestamp,
+    );
+    let authorization = {
+        use busbar_kernel::sigv4::{SIGV4_ALGORITHM, SIGV4_TERMINATION};
+        format!(
+            "{SIGV4_ALGORITHM} Credential={access}/{datestamp}/{region}/{service}/{SIGV4_TERMINATION}, SignedHeaders={signed_headers}, Signature={signature}"
+        )
+    };
+    let (Ok(authorization_val), Ok(amzdate_val), Ok(payload_hash_val)) = (
+        http::HeaderValue::from_str(&authorization),
+        http::HeaderValue::from_str(&amzdate),
+        http::HeaderValue::from_str(&payload_hash),
+    ) else {
+        return vec![];
+    };
+    let mut out = vec![
+        (
+            http::HeaderName::from_static(busbar_kernel::proto::HDR_AUTHORIZATION),
+            authorization_val,
+        ),
+        (
+            http::HeaderName::from_static(busbar_kernel::sigv4::X_AMZ_DATE),
+            amzdate_val,
+        ),
+        (
+            http::HeaderName::from_static(busbar_kernel::sigv4::X_AMZ_CONTENT_SHA256),
+            payload_hash_val,
+        ),
+    ];
+    if let Some(v) = token_header {
+        out.push((
+            http::HeaderName::from_static(busbar_kernel::sigv4::X_AMZ_SECURITY_TOKEN),
+            v,
+        ));
+    }
+    out
+}
+
+/// One comparison: the declaration presented, the builder it must reproduce, whether that builder was
+/// lane-constant, and the non-credential headers that builder also wrote.
+struct Case {
+    presented: &'static ProtocolDecl,
+    reference: EgressAuthHeaders,
+    lane_constant: bool,
+    not_auth: &'static [&'static str],
+}
+
+fn cases() -> [Case; 6] {
     [
-        Twin {
-            real: &crate::openai_chat::DECL,
-            declared: &TWIN_OPENAI,
+        Case {
+            presented: &crate::openai_chat::DECL,
+            reference: reference_openai,
+            lane_constant: true,
             not_auth: &[],
         },
-        Twin {
-            real: &crate::openai_responses::DECL,
-            declared: &TWIN_RESPONSES,
+        Case {
+            presented: &crate::openai_responses::DECL,
+            reference: reference_responses,
+            lane_constant: true,
             not_auth: &[],
         },
-        Twin {
-            real: &crate::cohere::DECL,
-            declared: &TWIN_COHERE,
+        Case {
+            presented: &crate::cohere::DECL,
+            reference: reference_cohere,
+            lane_constant: true,
             not_auth: &[],
         },
-        Twin {
-            real: &crate::gemini::DECL,
-            declared: &TWIN_GEMINI,
+        Case {
+            presented: &crate::gemini::DECL,
+            reference: reference_gemini,
+            lane_constant: true,
             not_auth: &[],
         },
-        Twin {
-            real: &crate::anthropic::DECL,
-            declared: &TWIN_ANTHROPIC,
+        Case {
+            presented: &TWIN_ANTHROPIC,
+            reference: crate::anthropic::DECL
+                .egress_auth_headers
+                .expect("the anthropic dialect still declares its builder"),
+            lane_constant: crate::anthropic::DECL.egress_auth_lane_constant,
             not_auth: &["anthropic-version"],
         },
-        Twin {
-            real: &crate::bedrock::DECL,
-            declared: &TWIN_BEDROCK,
+        Case {
+            presented: &crate::bedrock::DECL,
+            reference: reference_bedrock_signer,
+            lane_constant: false,
             not_auth: &[],
         },
     ]
@@ -189,43 +293,72 @@ fn as_pairs(headers: Vec<(http::HeaderName, http::HeaderValue)>) -> Vec<(String,
         .collect()
 }
 
-/// Every dialect in this plane's declaration table has a declared twin here, so a dialect added
-/// without one fails this suite instead of passing it by omission.
+/// Every dialect in this plane's declaration table states its egress credential — a declared scheme,
+/// or (the one dialect whose builder also writes a version header) a builder with a declared twin —
+/// and every one of them is compared below, so a dialect added without either fails this suite
+/// instead of passing it by omission.
 #[test]
 fn every_dialect_declaring_a_credential_builder_has_a_declared_twin() {
-    let twinned: Vec<&str> = twins().iter().map(|t| t.real.name).collect();
+    let compared: Vec<&str> = cases()
+        .iter()
+        .map(|c| c.presented.name)
+        .chain(["anthropic"])
+        .collect();
     for decl in crate::DECLS {
-        if decl.egress_auth_headers.is_some() {
-            assert!(
-                twinned.contains(&decl.name),
-                "{} has no declared twin",
-                decl.name
-            );
-        }
+        assert!(
+            decl.egress_scheme.is_some() || decl.egress_auth_headers.is_some(),
+            "{} declares no egress credential",
+            decl.name
+        );
+        assert!(
+            compared.contains(&decl.name),
+            "{} has no declared-scheme comparison",
+            decl.name
+        );
     }
 }
 
-/// THE DIFFERENTIAL: the kernel presenting each declared twin writes exactly the credential headers
-/// the dialect's builder writes, and agrees with it on whether the credential is lane-constant.
+/// #83a S2-a: the five dialects whose credential is auth and nothing else DECLARE their scheme and
+/// carry no builder, so no credential ever passes through this plane on their lanes.
+#[test]
+fn the_declared_dialects_carry_a_scheme_and_no_builder() {
+    for decl in [
+        &crate::openai_chat::DECL,
+        &crate::openai_responses::DECL,
+        &crate::cohere::DECL,
+        &crate::gemini::DECL,
+        &crate::bedrock::DECL,
+    ] {
+        assert!(
+            decl.egress_scheme.is_some(),
+            "{} declares no scheme",
+            decl.name
+        );
+        assert!(
+            decl.egress_auth_headers.is_none(),
+            "{} still carries a credential builder",
+            decl.name
+        );
+    }
+}
+
+/// THE DIFFERENTIAL: the kernel presenting each declaration writes exactly the credential headers
+/// the builder it replaced writes, and agrees with it on whether the credential is lane-constant.
 #[test]
 fn each_declared_scheme_presents_what_its_dialect_builder_writes() {
-    let decls: Vec<&'static ProtocolDecl> = twins().iter().map(|t| t.declared).collect();
-    busbar_substrate_values::proto::register_test_protocols(&decls);
+    crate::ensure_test_protocols_registered();
+    busbar_substrate_values::proto::register_test_protocols(&[&TWIN_ANTHROPIC]);
     let mut compared = 0usize;
-    for twin in twins() {
-        let builder = twin
-            .real
-            .egress_auth_headers
-            .expect("the real dialect declares a builder");
-        let presenter = busbar_kernel::egress_auth::resolve(twin.declared.name, None);
+    for case in cases() {
+        let presenter = busbar_kernel::egress_auth::resolve(case.presented.name, None);
         assert_eq!(
             presenter.is_lane_constant(),
-            twin.real.egress_auth_lane_constant,
+            case.lane_constant,
             "{}: the declared scheme and the builder disagree on lane-constancy",
-            twin.real.name
+            case.presented.name
         );
         let signing = matches!(
-            twin.declared.egress_scheme,
+            case.presented.egress_scheme,
             Some(EgressScheme::SigV4 { .. })
         );
         let (keys, hosts) = if signing {
@@ -236,13 +369,13 @@ fn each_declared_scheme_presents_what_its_dialect_builder_writes() {
         for &host in hosts {
             for ctx in contexts(host) {
                 for &key in keys {
-                    let mut expected = as_pairs(builder(key, &ctx));
-                    expected.retain(|(k, _)| !twin.not_auth.contains(&k.as_str()));
+                    let mut expected = as_pairs((case.reference)(key, &ctx));
+                    expected.retain(|(k, _)| !case.not_auth.contains(&k.as_str()));
                     let presented = as_pairs(presenter.headers_for(key, &ctx));
                     assert_eq!(
                         presented, expected,
                         "{}: key {key:?}, host {host}, mode {:?}, uri {}",
-                        twin.real.name, ctx.upstream_creds, ctx.canonical_uri
+                        case.presented.name, ctx.upstream_creds, ctx.canonical_uri
                     );
                     compared += 1;
                 }

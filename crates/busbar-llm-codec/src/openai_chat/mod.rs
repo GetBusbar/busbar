@@ -5,7 +5,7 @@
 
 use crate::ir::{IrStreamEvent, IrUsage};
 use crate::usage_count::read_count_u64;
-use http::{header::HeaderValue, HeaderName, StatusCode};
+use http::StatusCode;
 // The openai-family error helpers (`bearer_error_code`/`context_length_prose_scan`) now live
 // in the neutral substrate; name them there so this plugin reaches no `busbar-core` path for them.
 use busbar_substrate_values::proto::{bearer_error_code, context_length_prose_scan};
@@ -41,14 +41,6 @@ mod writer;
 /// `super::anthropic::protocol`.
 pub fn protocol() -> Protocol {
     Protocol::new("openai", OpenAiReader, OpenAiWriter)
-}
-
-/// The [`ProtocolDecl::egress_auth_headers`] builder: OpenAI's native credential scheme is a plain
-/// `Authorization: Bearer <key>` header — no api-key/Bearer disambiguation (that's Anthropic's own
-/// wrinkle) and no signing context needed. Retires the `_ => StaticBearer{"openai"}` arm that used
-/// to be `egress_auth::resolve`'s catch-all default.
-fn egress_auth_headers(key: &str, _ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
-    busbar_substrate_values::proto::bearer_auth_headers("openai", key)
 }
 
 /// The [`ProtocolDecl::models_list_envelope`] builder: OpenAI's `GET /v1/models` shape. Each name
@@ -124,11 +116,12 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // `call_…` is the documented native tool-call id shape for both OpenAI surfaces.
     native_tool_id_prefix: Some("call_"),
     ingress_auth: IngressAuth::Bearer,
-    // OpenAI's native credential scheme (plain Bearer) is this dialect's own — declared here,
-    // the field that retired the `_` catch-all arm in core's `egress_auth::resolve`.
-    egress_auth_headers: Some(egress_auth_headers),
-    egress_auth_lane_constant: true,
-    egress_scheme: None,
+    // OpenAI's native credential scheme is a plain `Authorization: Bearer <key>` — DECLARED here as
+    // data (#83a S2-a, #40(b)): the kernel's egress-auth unit presents the lane credential under it,
+    // so the key never passes through this plane.
+    egress_auth_headers: None,
+    egress_auth_lane_constant: false,
+    egress_scheme: Some(EgressScheme::bearer()),
     stream_usage_requires_opt_in: true,
     // ── Promoted writer facts (G6 step A1): the same constants the `OpenAiWriter` methods returned.
     requires_max_tokens: false,
