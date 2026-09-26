@@ -156,7 +156,7 @@ fn egress_multipart_sanitizes_mime_from_any_ingress() {
         model: "whisper-1".into(),
         audio: Some(busbar_substrate_values::media::MediaBlob {
             payload: busbar_substrate_values::media::MediaPayload::Bytes(
-                bytes::Bytes::from_static(b"x"),
+                busbar_substrate_values::wire::SlabBytes::from(&b"x"[..]),
             ),
             mime_type: "audio/mp3\r\nX-Injected: evil".into(),
             pcm: None,
@@ -268,7 +268,7 @@ fn transcription_egress_carries_language_prompt_and_format() {
         prompt: Some("Glossary: API, SDK".into()),
         response_format: Some("verbose_json".into()),
         audio: Some(MediaBlob {
-            payload: MediaPayload::Bytes(Bytes::from_static(b"x")),
+            payload: MediaPayload::Bytes(SlabBytes::from(&b"x"[..])),
             mime_type: "audio/wav".into(),
             pcm: None,
         }),
@@ -297,7 +297,7 @@ fn transcription_egress_field_strips_crlf_injection() {
     let ir = crate::ir::audio::TranscriptionReq {
         model: "whisper-1\r\nContent-Disposition: form-data; name=\"evil\"\r\n\r\npwn".into(),
         audio: Some(MediaBlob {
-            payload: MediaPayload::Bytes(Bytes::from_static(b"x")),
+            payload: MediaPayload::Bytes(SlabBytes::from(&b"x"[..])),
             mime_type: "audio/wav".into(),
             pcm: None,
         }),
@@ -330,7 +330,7 @@ fn transcription_egress_audio_cannot_smuggle_a_second_model_part() {
     let ir = crate::ir::audio::TranscriptionReq {
         model: "whisper-1".into(),
         audio: Some(MediaBlob {
-            payload: MediaPayload::Bytes(Bytes::from_static(smuggled)),
+            payload: MediaPayload::Bytes(SlabBytes::from(&smuggled[..])),
             mime_type: "audio/wav".into(),
             pcm: None,
         }),
@@ -372,7 +372,7 @@ fn transcription_boundary_is_entropy_drawn_and_matches_the_declared_content_type
     let ir = crate::ir::audio::TranscriptionReq {
         model: "whisper-1".into(),
         audio: Some(MediaBlob {
-            payload: MediaPayload::Bytes(Bytes::from_static(b"x")),
+            payload: MediaPayload::Bytes(SlabBytes::from(&b"x"[..])),
             mime_type: "audio/wav".into(),
             pcm: None,
         }),
@@ -398,7 +398,7 @@ fn transcription_egress_refuses_audio_carrying_the_live_boundary() {
         let ir = crate::ir::audio::TranscriptionReq {
             model: "whisper-1".into(),
             audio: Some(MediaBlob {
-                payload: MediaPayload::Bytes(Bytes::from(payload.clone().into_bytes())),
+                payload: MediaPayload::Bytes(SlabBytes::from(payload.clone().into_bytes())),
                 mime_type: "audio/wav".into(),
                 pcm: None,
             }),
@@ -765,7 +765,7 @@ fn transcription_temperature_round_trips_openai_multipart() {
         temperature: Some(0.5),
         audio: Some(busbar_substrate_values::media::MediaBlob {
             payload: busbar_substrate_values::media::MediaPayload::Bytes(
-                bytes::Bytes::from_static(b"x"),
+                busbar_substrate_values::wire::SlabBytes::from(&b"x"[..]),
             ),
             mime_type: "audio/mpeg".into(),
             pcm: None,

@@ -15,8 +15,7 @@ use busbar_substrate_values::handlers::{
 };
 use busbar_substrate_values::ir::subscribe::{SubscribeIntent, SubscribeReq, SubscribeResp};
 use busbar_substrate_values::proto::{IngressAuth, ProtocolDecl, Registry};
-use busbar_substrate_values::wire::{EgressCtx, WireBody};
-use bytes::Bytes;
+use busbar_substrate_values::wire::{EgressCtx, SlabBytes, WireBody};
 
 /// The registry as PRODUCTION builds it, for THIS plugin's dialects — `busbar_llm::DECLS`, the slice
 /// the composition root installs. `busbar-core`'s own `builtin_decls()` is now empty under
@@ -359,8 +358,8 @@ impl busbar_substrate_values::ir::handle::IrHandle for TelexReqHandle {
     fn verb(&self) -> Operation {
         Operation::SUBSCRIBE
     }
-    fn write_egress_request_bytes(&mut self, _egress_proto: &str, _model: &str) -> Bytes {
-        Bytes::from(format!("TO {}", self.0.target))
+    fn write_egress_request_bytes(&mut self, _egress_proto: &str, _model: &str) -> SlabBytes {
+        SlabBytes::from(format!("TO {}", self.0.target))
     }
 }
 impl busbar_substrate_values::ir::handle::IrHandle for TelexRespHandle {
@@ -373,7 +372,7 @@ impl busbar_substrate_values::ir::handle::IrHandle for TelexRespHandle {
         _ingress_serves_op: bool,
     ) -> busbar_substrate_values::wire::TranslatedResponse {
         busbar_substrate_values::wire::TranslatedResponse::Typed(WireBody::typed(
-            Bytes::from(
+            SlabBytes::from(
                 self.0
                     .registration
                     .as_ref()

@@ -328,7 +328,7 @@ fn try_deliver_opaque(
                 EngineTables::new(rt).lanes().get(i),
             );
             budget_guard.disarm();
-            Some(delivery.respond(wire.content_type, wire.bytes))
+            Some(delivery.respond(wire.content_type, bytes::Bytes::from_owner(wire.bytes)))
         }
     }
 }
@@ -688,7 +688,7 @@ fn deliver_json(
         }
         // The ingress dialect's response is not JSON (binary speech): relay bytes + their CT.
         busbar_substrate_values::wire::TranslatedResponse::Typed(wire) => {
-            Some(d.respond(wire.content_type, wire.bytes))
+            Some(d.respond(wire.content_type, bytes::Bytes::from_owner(wire.bytes)))
         }
         busbar_substrate_values::wire::TranslatedResponse::Json(mut translated) => {
             // A native Bedrock Converse response always populates `metrics.latencyMs`; inject the

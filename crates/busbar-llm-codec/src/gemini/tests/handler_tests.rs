@@ -622,7 +622,7 @@ fn gemini_transcription_forwards_caller_prompt_and_temperature() {
         temperature: Some(0.5),
         audio: Some(busbar_substrate_values::media::MediaBlob {
             payload: busbar_substrate_values::media::MediaPayload::Bytes(
-                bytes::Bytes::from_static(b"x"),
+                busbar_substrate_values::wire::SlabBytes::from(&b"x"[..]),
             ),
             mime_type: "audio/mpeg".into(),
             pcm: None,

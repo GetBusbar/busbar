@@ -47,7 +47,7 @@ use busbar_substrate_values::ir::handle::IrHandle;
 use busbar_substrate_values::ir::neutral_handles::{SubscribeReqHandle, SubscribeRespHandle};
 use busbar_substrate_values::ir::subscribe::{SubscribeIntent, SubscribeReq, SubscribeResp};
 #[cfg(any(test, feature = "test-support"))]
-use busbar_substrate_values::wire::WireBody;
+use busbar_substrate_values::wire::{SlabBytes, WireBody};
 
 use busbar_plane_mcp::codec::{METHOD_RESOURCES_SUBSCRIBE, METHOD_RESOURCES_UNSUBSCRIBE};
 
@@ -204,7 +204,7 @@ pub(crate) fn subscribe_write_request(r: &SubscribeReq) -> Bytes {
 #[cfg(any(test, feature = "test-support"))]
 #[allow(dead_code)]
 pub(crate) fn subscribe_write_response(r: &SubscribeResp) -> WireBody {
-    WireBody::json(Bytes::from(
+    WireBody::json(SlabBytes::from(
         serde_json::to_vec(&serde_json::json!({
             "jsonrpc": "2.0",
             // Carried, never synthesised: a peer that returned no record does not acquire one

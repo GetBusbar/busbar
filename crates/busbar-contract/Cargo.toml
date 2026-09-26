@@ -60,8 +60,10 @@ license = "Apache-2.0"
 # a dialect's error-header attach) — the spec's own "header vocabulary only" acceptance; it resolves
 # to `bytes`/`fnv`/`itoa` and opens nothing. `memchr` is the SSE frame-boundary scan's byte search,
 # a leaf already in this crate's closure through `serde_json`. Neither reaches `libc`. The shapes
-# whose signatures name the reference-counted `bytes::Bytes` buffer (the IR handle, the wire body,
-# the media carriers) did NOT come: `tests/bounded_limits.rs` bans that type from this surface.
+# whose signatures named the reference-counted `bytes` buffer (the IR handle, the wire body, the
+# media carriers) came RE-EXPRESSED over this crate's own `SlabBytes` (#83a SD-2b): that buffer type
+# stays banned from this surface (`tests/bounded_limits.rs`), so `bytes` is still not a dependency
+# here, and the host adopts a slab as its own buffer without copying at its transport boundary.
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/media.rs`.
+//! Tests for `media.rs`.
 
 use super::*;
 
@@ -28,7 +28,7 @@ fn mediablob_pcm_required_iff_raw_pcm() {
     );
 
     let mp3 = MediaBlob {
-        payload: MediaPayload::Bytes(Bytes::from_static(b"\xff\xfb")),
+        payload: MediaPayload::Bytes(SlabBytes::from(&b"\xff\xfb"[..])),
         mime_type: "audio/mpeg".into(),
         pcm: None,
     };
@@ -37,7 +37,7 @@ fn mediablob_pcm_required_iff_raw_pcm() {
 
 #[test]
 fn base64_roundtrip_and_rfc4648_vectors() {
-    // RFC 4648 §10 test vectors — encode must match, decode must invert.
+    // RFC 4648 section 10 test vectors — encode must match, decode must invert.
     for (raw, enc) in [
         (&b""[..], ""),
         (b"f", "Zg=="),

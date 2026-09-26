@@ -17,8 +17,7 @@ use busbar_substrate_values::ir::egress_prep::EgressPrep;
 use busbar_substrate_values::ir::facts::IrFacts;
 use busbar_substrate_values::ir::handle::sealed::Sealed;
 use busbar_substrate_values::ir::handle::IrHandle;
-use busbar_substrate_values::wire::{EgressWire, TranslatedResponse};
-use bytes::Bytes;
+use busbar_substrate_values::wire::{EgressWire, SlabBytes, TranslatedResponse};
 use serde_json::Value;
 
 /// Google's documented dummy `thoughtSignature` sentinel — relocated with chat from `ir::variant`.
@@ -401,7 +400,7 @@ impl IrHandle for ChatReqHandle {
         // spelling depends on what that model accepts.
         super::proto_codec::protocol_for(egress_proto)
             .map(|p| EgressWire::Json(p.writer().write_request_for_lane(&self.0, model, &self.1)))
-            .unwrap_or_else(|| EgressWire::Bytes(Bytes::new()))
+            .unwrap_or_else(|| EgressWire::Bytes(SlabBytes::default()))
     }
 }
 

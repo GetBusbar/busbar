@@ -11,7 +11,7 @@ use busbar_substrate_values::handlers::{
     CodecError, IngressReject, OperationHandler, RequestHandler,
 };
 use busbar_substrate_values::ir::handle::IrHandle;
-use busbar_substrate_values::wire::{EgressCtx, WireBody};
+use busbar_substrate_values::wire::{EgressCtx, SlabBytes, WireBody};
 use bytes::Bytes;
 use serde_json::{json, Value};
 
@@ -225,7 +225,7 @@ pub fn write_image_request(r: &crate::ir::image::ImageReq) -> Bytes {
 /// `(image, bedrock)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
 pub fn write_image_response(r: &crate::ir::image::ImageResp) -> WireBody {
     let images: Vec<&str> = r.images.iter().filter_map(|i| i.b64.as_deref()).collect();
-    WireBody::json(Bytes::from(
+    WireBody::json(SlabBytes::from(
         serde_json::to_vec(&json!({ "images": images })).unwrap_or_default(),
     ))
 }
@@ -322,7 +322,9 @@ pub fn write_embeddings_response(r: &EmbeddingsResp) -> WireBody {
     if let Some(u) = &r.usage {
         body["inputTextTokenCount"] = json!(u.input);
     }
-    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
+    WireBody::json(SlabBytes::from(
+        serde_json::to_vec(&body).unwrap_or_default(),
+    ))
 }
 
 /// Bedrock rerank models (`cohere.rerank-*`, `amazon.rerank-*`) via `/model/{id}/invoke`:
@@ -396,7 +398,9 @@ pub fn write_rerank_response(r: &crate::ir::rerank::RerankResp) -> WireBody {
     if let Some(id) = &r.id {
         body["id"] = json!(id);
     }
-    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
+    WireBody::json(SlabBytes::from(
+        serde_json::to_vec(&body).unwrap_or_default(),
+    ))
 }
 
 #[cfg(test)]

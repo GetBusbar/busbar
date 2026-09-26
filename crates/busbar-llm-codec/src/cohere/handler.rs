@@ -11,7 +11,7 @@ use busbar_substrate_values::handlers::{
     CodecError, IngressReject, OperationHandler, RequestHandler,
 };
 use busbar_substrate_values::ir::handle::IrHandle;
-use busbar_substrate_values::wire::{EgressCtx, WireBody};
+use busbar_substrate_values::wire::{EgressCtx, SlabBytes, WireBody};
 use bytes::Bytes;
 use serde_json::{json, Value};
 
@@ -232,7 +232,9 @@ pub fn write_embeddings_response(r: &EmbeddingsResp) -> WireBody {
     if let Some(u) = &r.usage {
         body["meta"] = json!({ "billed_units": { "input_tokens": u.input } });
     }
-    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
+    WireBody::json(SlabBytes::from(
+        serde_json::to_vec(&body).unwrap_or_default(),
+    ))
 }
 
 /// Cohere v2 rerank (`/v2/rerank`): `{model, query, documents[], top_n?}` →
@@ -334,7 +336,9 @@ pub fn write_rerank_response(r: &crate::ir::rerank::RerankResp) -> WireBody {
     if let Some(su) = r.search_units {
         body["meta"] = json!({ "billed_units": { "search_units": su } });
     }
-    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
+    WireBody::json(SlabBytes::from(
+        serde_json::to_vec(&body).unwrap_or_default(),
+    ))
 }
 
 /// `results[] -> [{index, relevance_score}]` — shared by the Cohere and Bedrock rerank readers

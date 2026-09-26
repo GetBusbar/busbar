@@ -10,7 +10,7 @@ use busbar_substrate_values::handlers::{
     CodecError, IngressReject, OperationHandler, RequestHandler,
 };
 use busbar_substrate_values::ir::handle::IrHandle;
-use busbar_substrate_values::wire::{EgressCtx, WireBody};
+use busbar_substrate_values::wire::{EgressCtx, SlabBytes, WireBody};
 use bytes::Bytes;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -147,13 +147,13 @@ fn sanitize_mime_type(raw: &str) -> String {
 /// validates the base64 at its trust boundary (gemini inline_data ingress + gemini speech response),
 /// so an invalid string here is an IR-invariant violation, not normal input. Decode defensively:
 /// on the should-be-unreachable failure, log loudly rather than silently substitute empty audio.
-fn decode_ir_b64(s: &str) -> Bytes {
+fn decode_ir_b64(s: &str) -> SlabBytes {
     base64_decode(s).unwrap_or_else(|| {
         tracing::error!(
             "B64 audio payload in the IR failed to decode at egress — a reader's base64 \
              validation invariant was violated; emitting empty audio"
         );
-        Bytes::new()
+        SlabBytes::default()
     })
 }
 
@@ -422,7 +422,7 @@ pub fn write_transcription_response(r: &TranscriptionResp) -> WireBody {
     // re-emit the transcript verbatim under `text/plain` rather than JSON-wrapping it — otherwise a
     // WEBVTT/SRT response is mangled into `{"text":"WEBVTT..."}` with the wrong content-type.
     if matches!(r.response_format.as_deref(), Some("text" | "srt" | "vtt")) {
-        return WireBody::typed(Bytes::from(r.text.clone().into_bytes()), "text/plain");
+        return WireBody::typed(SlabBytes::from(r.text.clone().into_bytes()), "text/plain");
     }
     let mut body = json!({ "text": r.text });
     // `verbose_json` carries language/duration/segments/words alongside the text. These are all
@@ -482,7 +482,9 @@ pub fn write_transcription_response(r: &TranscriptionResp) -> WireBody {
         }
         _ => {}
     }
-    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
+    WireBody::json(SlabBytes::from(
+        serde_json::to_vec(&body).unwrap_or_default(),
+    ))
 }
 
 /// OpenAI transcription `usage` → `Billing`: `{type:"duration",seconds}` (whisper) or a token shape.
@@ -580,7 +582,7 @@ pub fn write_speech_request(r: &SpeechReq) -> Bytes {
 /// Byte-identical to the pre-cutover inline write.
 pub fn write_speech_response(r: &SpeechResp) -> WireBody {
     let Some(blob) = &r.audio else {
-        return WireBody::json(Bytes::new());
+        return WireBody::json(SlabBytes::default());
     };
     let bytes = match &blob.payload {
         MediaPayload::Bytes(b) => b.clone(),
@@ -693,7 +695,9 @@ pub fn write_embeddings_response(r: &EmbeddingsResp) -> WireBody {
         body["usage"] =
             json!({ "prompt_tokens": u.input, "total_tokens": u.input.saturating_add(u.output) });
     }
-    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
+    WireBody::json(SlabBytes::from(
+        serde_json::to_vec(&body).unwrap_or_default(),
+    ))
 }
 
 // ---------------------------------------------------------------- image OperationHandler (real, cross-protocol)
@@ -821,7 +825,9 @@ pub fn write_image_response(r: &ImageResp) -> WireBody {
             "total_tokens": u.input.saturating_add(u.output),
         });
     }
-    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
+    WireBody::json(SlabBytes::from(
+        serde_json::to_vec(&body).unwrap_or_default(),
+    ))
 }
 
 // ---------------------------------------------------------------- moderation cell
@@ -884,7 +890,9 @@ pub fn write_moderation_response(r: &ModerationResp) -> WireBody {
     if let Some(m) = &r.model {
         body["model"] = json!(m);
     }
-    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
+    WireBody::json(SlabBytes::from(
+        serde_json::to_vec(&body).unwrap_or_default(),
+    ))
 }
 
 // ---- helpers ----
@@ -1001,7 +1009,7 @@ pub fn read_transcription_request(
             "temperature" => req.temperature = String::from_utf8_lossy(f.value).trim().parse().ok(),
             "file" => {
                 req.audio = Some(MediaBlob {
-                    payload: MediaPayload::Bytes(Bytes::copy_from_slice(f.value)),
+                    payload: MediaPayload::Bytes(SlabBytes::from(f.value)),
                     mime_type: f
                         .content_type
                         .as_deref()
@@ -1155,7 +1163,7 @@ pub fn read_speech_response(wire: &[u8]) -> Result<crate::ir::audio::SpeechResp,
     // `response_format` implies for every format that carries a container signature.
     Ok(SpeechResp {
         audio: Some(MediaBlob {
-            payload: MediaPayload::Bytes(Bytes::copy_from_slice(wire)),
+            payload: MediaPayload::Bytes(SlabBytes::from(wire)),
             mime_type: sniff_speech_audio_mime(wire).into(),
             pcm: None,
         }),
