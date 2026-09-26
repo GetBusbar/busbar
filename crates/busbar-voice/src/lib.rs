@@ -326,6 +326,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // The fee unit this plane counts: one per opened session (`SessionAccount::open`). A turn never
         // passes per-request admission, so `streams.fees.per_request` would charge nothing — refused.
         fee_units: &[PER_SESSION],
+        metric_families: &[],
     };
 
 /// THE PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed over BESIDE

@@ -21,8 +21,8 @@
 use super::{recover, trust};
 use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
 use busbar_plugin::hot::{
-    AuthQuery, AuthResolved, Decision, EgressDesc, EgressId, EgressOpen, Facts, GovRefusal,
-    MeterOutcome, MetricSample, StatusClass, Usage,
+    AuthQuery, AuthResolved, Decision, DeclStr, Facts, GovRefusal, MeterOutcome, MetricSample,
+    StatusClass, Usage,
 };
 use busbar_plugin::AbiPreamble;
 use core::mem::MaybeUninit;
@@ -53,11 +53,11 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         breaker_settle: Some(super::breaker::breaker_settle),
         verify_lookup: Some(trust::verify_lookup),
         verify_store: Some(trust::verify_store),
-        egress_open: Some(egress_open),
-        egress_poll: Some(egress_poll),
-        egress_write: Some(egress_write),
-        egress_close: Some(egress_close),
-        egress_fault: Some(egress_fault),
+        egress_open: Some(super::egress::egress_open),
+        egress_poll: Some(super::egress::egress_poll),
+        egress_write: Some(super::egress::egress_write),
+        egress_close: Some(super::egress::egress_close),
+        egress_fault: Some(super::egress::egress_fault),
         journal_append: Some(super::journal::journal_append),
         journal_read: Some(super::journal::journal_read),
         nested_dispatch: Some(super::dispatch::nested_dispatch),
@@ -100,7 +100,7 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         // ── WIRED `guard_url` (minor-12) → the host-owned structural URL guard in `super::guard`: the
         //    SSRF/URL-guard chokepoint for a URL-shaped tool argument. Always wired (the host owns the
         //    net_guard internals whatever the plane); no plane feature gates it. ─────────────────────────
-        guard_url: Some(guard_url),
+        guard_url: Some(super::guard::guard_url),
         // ── WIRED `identity_admit` (minor-17) → the host-side inbound admission in
         //    `super::identity_admit`: the configured auth chain + the one verdict resolution over the
         //    caller's own credential, returning an opaque resolved-identity handle. Always wired (the
@@ -120,30 +120,10 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         //    the plane); no plane feature gates it. ─────────────────────────────────────────────────────
         cost_reserve: Some(super::cost_host::cost_reserve),
         cost_settle: Some(super::cost_host::cost_settle),
+        // ── WIRED `counter_add` (minor-25, the METRIC-FAMILY seam) → the recorder, over a family the
+        //    emitting plane DECLARED. Always wired; what a plane may add to is its declaration's. ──
+        counter_add: Some(counter_add),
     }
-}
-
-/// The `extern "C-unwind"` ABI shim for the URL-GUARD slot: the recovery, the `catch_unwind`, the
-/// fail-closed mapping and the structural judgement all live in [`super::guard`]; this is the ABI
-/// boundary that forwards into it (the same shape the egress shims use).
-extern "C-unwind" fn guard_url(
-    host: HostCtx,
-    url_ptr: *const u8,
-    url_len: usize,
-    allow_private: u8,
-    out: *mut MaybeUninit<busbar_plugin::hot::GuardVerdict>,
-    reason_buf: *mut u8,
-    reason_cap: usize,
-) -> StatusClass {
-    super::guard::guard_url(
-        host,
-        url_ptr,
-        url_len,
-        allow_private,
-        out,
-        reason_buf,
-        reason_cap,
-    )
 }
 
 /// WIRED `card_sign` → the REAL host-side card signer over `crate::governance` (see
@@ -301,6 +281,74 @@ extern "C-unwind" fn metrics_emit(host: HostCtx, sample: *const MetricSample) ->
     .unwrap_or(StatusClass::Fault) // caught panic → the distinct fault class, never `Ok`.
 }
 
+/// WIRED `counter_add` → the real `metrics` recorder, over a metric family the emitting plane
+/// DECLARED (ARCHITECT RULING S2-c; #2 rule (2), #65).
+///
+/// The emitter is the host's own attribution ([`super::HostState::emitter`]); the family is looked
+/// up in THAT plane's registered declaration, so a plane adds only to what it declared — and a
+/// declaration reaches the registry only through the host's boot guard, which admits a `busbar_`
+/// family only when the host lists it as one a plane may carry. The label VALUES are decoded here,
+/// for a declared family only: one per declared key, positionally, each bounded UTF-8. The series
+/// renders exactly the declared name and keys — no provenance label — so a carried first-party
+/// series is byte-identical to the host's own. The label set is bounded on the same cardinality
+/// budget every plugin-reported series spends. Anything else is `Refused`; a panic is `Fault`.
+extern "C-unwind" fn counter_add(
+    host: HostCtx,
+    family_ptr: *const u8,
+    family_len: usize,
+    values_ptr: *const DeclStr,
+    values_len: usize,
+    delta: u64,
+) -> StatusClass {
+    catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: recovery invariant (see `recover`); every range below is live for the call (ABI).
+        let emitter = unsafe { recover(host) }.and_then(|s| s.emitter);
+        let name = unsafe { borrowed(family_ptr, family_len, 64) };
+        let declared = emitter.and_then(crate::plane::registry::plane_decl_for);
+        let family = declared.and_then(|d| {
+            let mut families = d.metric_families.iter();
+            families.find(|f| name == Some(f.name.as_bytes()))
+        });
+        let (Some(emitter), Some(family)) = (emitter, family) else {
+            return StatusClass::Refused;
+        };
+        if values_len != family.label_keys.len() || (values_ptr.is_null() && values_len > 0) {
+            return StatusClass::Refused;
+        }
+        let mut labels = Vec::with_capacity(values_len);
+        for (i, key) in family.label_keys.iter().enumerate() {
+            // SAFETY: `values_ptr` addresses `values_len` live entries (ABI), each a live range.
+            let v = unsafe { core::ptr::read_unaligned(values_ptr.add(i)) };
+            let bytes =
+                unsafe { borrowed(v.ptr, v.len, crate::hooks::wire::MAX_METRIC_LABEL_CHARS) };
+            let Some(value) = bytes.and_then(|b| std::str::from_utf8(b).ok()) else {
+                return StatusClass::Refused;
+            };
+            labels.push(metrics::Label::new(*key, value.to_owned()));
+        }
+        let fingerprint = std::hash::BuildHasher::hash_one(
+            &std::hash::BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default(),
+            &labels,
+        );
+        if !crate::metrics::observe::admits_cardinality(emitter, family.name, fingerprint) {
+            return StatusClass::Refused;
+        }
+        metrics::counter!(family.name, labels).increment(delta);
+        StatusClass::Ok
+    }))
+    .unwrap_or(StatusClass::Fault) // caught panic → the distinct fault class, never `Ok`.
+}
+
+/// A plane-borrowed `(ptr, len)` range as bytes — `None` for a null range or one over `cap` bytes,
+/// judged BEFORE the slice is formed (the length is plane-attested).
+///
+/// # Safety
+/// A non-null `ptr` with `len <= cap` addresses `len` live bytes for the call (ABI discipline).
+unsafe fn borrowed<'a>(ptr: *const u8, len: usize, cap: usize) -> Option<&'a [u8]> {
+    // SAFETY: the caller's contract, with `len` bounded by `cap` before the slice exists.
+    (!ptr.is_null() && len <= cap).then(|| unsafe { std::slice::from_raw_parts(ptr, len) })
+}
+
 /// WIRED `govern_admit` → the REAL admission over `crate::governance` (see [`super::govern::admit`]):
 /// the budget gate the [`Facts`] POD encodes, then the `GovState::try_admit` limit engine. On `Admit`
 /// the RAII [`AdmitGrant`](crate::governance::AdmitGrant) it yields is REGISTERED in the
@@ -430,46 +478,8 @@ extern "C-unwind" fn meter_charge(host: HostCtx, usage: *const Usage) -> MeterOu
 // `breaker_admit` / `breaker_settle` are WIRED over the real breaker in `super::breaker` (the BREAKER
 // family fan-out); `verify_lookup` / `verify_store` are WIRED over the real trust store in
 // `super::trust` (the TRUST family fan-out); their vtable slots reference those modules directly.
-// ── WIRED EGRESS family (fan-egress): the `extern "C-unwind"` seam shims. The recovery, the
-//    catch_unwind, the fail-closed mapping and the real guarded transport all live in
-//    [`super::egress`]; these four are the ABI boundary that forwards into it. ─────────────────────
-extern "C-unwind" fn egress_open(
-    host: HostCtx,
-    desc: *const EgressDesc,
-    out: *mut MaybeUninit<EgressOpen>,
-) -> StatusClass {
-    super::egress::egress_open(host, desc, out)
-}
-extern "C-unwind" fn egress_poll(
-    host: HostCtx,
-    egress: EgressId,
-    buf: *mut u8,
-    buf_cap: usize,
-    out_written: *mut usize,
-) -> StatusClass {
-    super::egress::egress_poll(host, egress, buf, buf_cap, out_written)
-}
-extern "C-unwind" fn egress_write(
-    host: HostCtx,
-    egress: EgressId,
-    buf: *const u8,
-    len: usize,
-) -> StatusClass {
-    super::egress::egress_write(host, egress, buf, len)
-}
-extern "C-unwind" fn egress_close(host: HostCtx, egress: EgressId) -> StatusClass {
-    super::egress::egress_close(host, egress)
-}
-extern "C-unwind" fn egress_fault(
-    host: HostCtx,
-    out: *mut MaybeUninit<busbar_plugin::hot::pod::EgressFault>,
-    cause_buf: *mut u8,
-    cause_cap: usize,
-    url_buf: *mut u8,
-    url_cap: usize,
-) -> StatusClass {
-    super::egress::egress_fault(host, out, cause_buf, cause_cap, url_buf, url_cap)
-}
+// The EGRESS family (`egress_open`/`_poll`/`_write`/`_close`/`_fault`) and `guard_url` are WIRED in
+// `super::egress` and `super::guard`; their vtable slots reference those modules directly.
 // journal_append / journal_read are WIRED in `super::journal` (the JOURNAL family, over the real
 // `crate::audit` hash chain). The builder references them directly; no stub lives here.
 // `nested_dispatch` / `workhandle_open` / `workhandle_resume` / `entitlement_check` / `gate_scan`

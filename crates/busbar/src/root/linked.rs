@@ -29,6 +29,7 @@
 
 use std::sync::Arc;
 
+use busbar_contract::plane::MetricFamily;
 use busbar_kernel::ingress::arrival::{BodyIngressEntry, PathIngressEntry};
 use busbar_kernel::plane::registry::PlaneDecl;
 use busbar_kernel::plane::registry::{BillableClass, BuildCtx, PlaneDeclaration, PlaneHooks};
@@ -269,8 +270,51 @@ pub fn plane_rows(
         .map(hot_plane_row)
         .collect::<Result<Vec<PlaneDecl>, String>>()?
         .leak();
-    Ok(linked.planes.iter().chain(hot_rows).collect())
+    let rows: Vec<&'static PlaneDecl> = linked.planes.iter().chain(hot_rows).collect();
+    let declared: Vec<&PlaneDeclaration> = rows.iter().map(|d| &d.declaration).collect();
+    busbar_contract::plane::check_metric_families(&declared, PLANE_CARRIED_SERIES)?;
+    Ok(rows)
 }
+
+/// THE FIRST-PARTY SERIES A PLANE MAY CARRY — the host-owned list a plane's `busbar_`-named metric
+/// family must be on, with exactly these label keys in this order, to be admitted (ARCHITECT RULING
+/// S2-c; #65: a plane cannot mint an arbitrary `busbar_` series, and a carried one renders byte for
+/// byte as the host's). A plane adds to a family only through `counter_add`, so only COUNTERS are
+/// listed.
+///
+/// SOURCE: every `counter` row of the 1.5.5 metrics inventory, `v1.5.5:docs/observability.md`
+/// (the metric table, lines 95–119), with its label keys in the order the host emits them — which
+/// is the order the 1.5.5 exposition renders them (`busbar_route_policy_*` emit `policy` before
+/// `pool`). Plus ONE row the ruling names that 1.5.5 did not have:
+/// `busbar_billing_tap_decode_fail_total{protocol,reason}` is absent at the v1.5.5 tag (introduced
+/// at 4cab71389) and is listed because S2-c requires the seam to carry it byte-identically.
+pub const PLANE_CARRIED_SERIES: &[(&str, &[&str])] = &[
+    (
+        "busbar_requests_total",
+        &["ingress_protocol", "pool", "outcome"],
+    ),
+    ("busbar_upstream_attempts_total", &["pool", "lane"]),
+    (
+        "busbar_upstream_failures_total",
+        &["pool", "lane", "disposition"],
+    ),
+    ("busbar_breaker_trips_total", &["pool", "lane"]),
+    ("busbar_failovers_total", &["pool", "reason"]),
+    ("busbar_translations_total", &["from", "to"]),
+    ("busbar_route_policy_selections_total", &["policy", "pool"]),
+    (
+        "busbar_route_policy_rejections_total",
+        &["policy", "pool", "status"],
+    ),
+    ("busbar_billing_truncated_total", &[]),
+    ("busbar_tap_notifications_dropped_total", &[]),
+    ("busbar_webhook_logs_dropped_total", &[]),
+    ("busbar_file_logs_dropped_total", &[]),
+    (
+        "busbar_billing_tap_decode_fail_total",
+        &["protocol", "reason"],
+    ),
+];
 
 /// ADAPT ONE HOT-LANE PLANE onto the plane axis — the ONE function a linked and a dropped-in plane
 /// both pass through. The row's contract declaration is the plane's own statement, field for field:
@@ -309,6 +353,16 @@ pub fn hot_plane_row(plane: &'static DynPlane) -> Result<PlaneDecl, String> {
             .collect::<Vec<_>>()
             .leak(),
         fee_units: list(&stated.fee_units),
+        metric_families: stated
+            .metric_families
+            .iter()
+            .map(|f| MetricFamily {
+                name: &f.name,
+                kind: &f.kind,
+                label_keys: list(&f.label_keys),
+            })
+            .collect::<Vec<_>>()
+            .leak(),
     };
     HOT_PLANES
         .lock()
@@ -959,3 +1013,7 @@ mod export_webhook_conformance;
 #[cfg(test)]
 #[path = "tests/linked_scrape.rs"]
 mod scrape_tests;
+
+#[cfg(test)]
+#[path = "tests/metric_family_conformance.rs"]
+mod metric_family_conformance;

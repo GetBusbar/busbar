@@ -359,6 +359,10 @@ fn example_plane_loads_identically_compiled_in_and_dropped_in() {
     assert!(stated.signing_domain.is_some() && stated.signing_kid_prefix.is_some());
     assert!(!stated.owned_sections.is_empty() && !stated.billable_classes.is_empty());
     assert!(!stated.fee_units.is_empty() && stated.scope_kinds.len() > 1);
+    assert!(stated
+        .metric_families
+        .iter()
+        .any(|f| f.label_keys.len() > 1));
 }
 
 /// The compiled-in `PLANE_DECL`'s declaration tail, decoded straight off the static (NOT through the
@@ -396,6 +400,17 @@ fn compiled_in_declaration() -> crate::HotDeclaration {
         })
         .collect(),
         fee_units: list(d.fee_units_ptr, d.fee_units_len),
+        // SAFETY: as `list`.
+        metric_families: unsafe {
+            std::slice::from_raw_parts(d.metric_families_ptr, d.metric_families_len)
+        }
+        .iter()
+        .map(|f| crate::plane::HotMetricFamily {
+            name: vocab(f.name.ptr, f.name.len),
+            kind: vocab(f.kind.ptr, f.kind.len),
+            label_keys: list(f.label_keys_ptr, f.label_keys_len),
+        })
+        .collect(),
     }
 }
 

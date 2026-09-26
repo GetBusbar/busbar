@@ -104,7 +104,13 @@ pub const ABI_MAJOR: u32 = 2;
 /// as declared data plus `listen`/`accept`/`dial`/`read`/`write`/`close` slots over opaque handles,
 /// with configuration crossing only as the opaque `hot::WireConfig`. A new struct, so append-only:
 /// no existing offset moves, and every earlier-minor plane keeps loading.
-pub const ABI_MINOR: u32 = 24;
+///
+/// 24→25 (1.6.0, MET-1; ARCHITECT RULING S2-c; #2 rule (2), #30, #65): the METRIC-FAMILY seam.
+/// `hot::PlaneDecl` gains the append-only `metric_families` tail (each `hot::decl::DeclMetricFamily`
+/// a name, a kind and label keys), and `hot::host::PlaneHostVtable` the trailing `counter_add` slot —
+/// a plane adds to a counter family it DECLARED, and the host renders exactly the declared name and
+/// keys. A decl ending before the tail declares none. All append-only.
+pub const ABI_MINOR: u32 = 25;
 
 /// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,
 /// `abi_minor` at 12 — is a permanent contract: it may NEVER be reordered, resized, extended, or

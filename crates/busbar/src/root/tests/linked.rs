@@ -28,10 +28,13 @@ use busbar_plugin_example_plane::PLANE_DECL as LINKED_DECL;
 use busbar_plugin_loader::sign::{sign, Manifest, SigningKey, TrustPolicy};
 
 /// The linked example plane, as the build table carries it.
-static LINKED_HOT: [&HotPlaneDecl; 1] = [&LINKED_DECL];
+pub(super) static LINKED_HOT: [&HotPlaneDecl; 1] = [&LINKED_DECL];
 
 /// A table with the given plane rows and HOT-lane planes and nothing on any other axis.
-fn linked(planes: &'static [PlaneDecl], hot_planes: &'static [&'static HotPlaneDecl]) -> Linked {
+pub(super) fn linked(
+    planes: &'static [PlaneDecl],
+    hot_planes: &'static [&'static HotPlaneDecl],
+) -> Linked {
     Linked {
         planes,
         hot_planes,
@@ -67,6 +70,7 @@ fn native(key: &'static str) -> &'static [PlaneDecl] {
         owned_config_sections: &[],
         billable_classes: &[],
         fee_units: &[],
+        metric_families: &[],
     };
     let hooks = PlaneHooks {
         wire_format_names: || &[busbar_kernel::plane::WIRE_HTTP_JSON],
@@ -189,7 +193,7 @@ fn plugins_dir(tag: &str, lib: &[u8]) -> (std::path::PathBuf, TrustPolicy) {
 }
 
 /// The example plane dropped into a fresh `plugins/` directory and found by the boot scan.
-fn dropped(tag: &str) -> Option<Vec<DynPlane>> {
+pub(super) fn dropped(tag: &str) -> Option<Vec<DynPlane>> {
     let lib = std::fs::read(cdylib()?).expect("read the example plane cdylib");
     let (dir, policy) = plugins_dir(tag, &lib);
     let planes = dropped_planes(&dir, &policy).expect("the signed plane loads");
@@ -289,6 +293,16 @@ fn stated(d: &'static HotPlaneDecl) -> PlaneDeclaration {
             .collect::<Vec<_>>()
             .leak(),
         fee_units: strs(&h.fee_units),
+        metric_families: h
+            .metric_families
+            .iter()
+            .map(|f| busbar_contract::plane::MetricFamily {
+                name: f.name.as_str(),
+                kind: f.kind.as_str(),
+                label_keys: strs(&f.label_keys),
+            })
+            .collect::<Vec<_>>()
+            .leak(),
     }
 }
 

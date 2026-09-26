@@ -824,3 +824,137 @@ fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal() {
         vec!["content".to_string(), "identity".to_string()]
     );
 }
+
+// ── `counter_add` (minor 25): a plane adds only to a family it DECLARED ────────────────────────
+
+/// The families [`COUNTING_PLANE`] declares.
+const COUNTING_FAMILIES: &[busbar_contract::plane::MetricFamily] = &[
+    busbar_contract::plane::MetricFamily {
+        name: "counting_plane_units_total",
+        kind: busbar_contract::plane::COUNTER,
+        label_keys: &["unit", "outcome"],
+    },
+    busbar_contract::plane::MetricFamily {
+        name: "counting_plane_bare_total",
+        kind: busbar_contract::plane::COUNTER,
+        label_keys: &[],
+    },
+];
+
+/// A neutral plane declaring [`COUNTING_FAMILIES`].
+static COUNTING_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
+    declaration: crate::plane::registry::PlaneDeclaration {
+        key: "counting-plane",
+        fallback: false,
+        config_section: "counting",
+        metric_families: COUNTING_FAMILIES,
+        ..crate::test_support::NEUTRAL_FALLBACK.declaration
+    },
+    ..crate::test_support::NEUTRAL_FALLBACK
+};
+
+/// Borrowed label values, as a plane hands them.
+fn values(v: &[&'static str]) -> Vec<busbar_plugin::hot::DeclStr> {
+    v.iter()
+        .map(|s| busbar_plugin::hot::DeclStr::new(s))
+        .collect()
+}
+
+/// Add through the slot under `plane`'s attribution, with `COUNTING_PLANE` registered.
+fn add(
+    plane: &'static str,
+    family: &str,
+    v: &[busbar_plugin::hot::DeclStr],
+    delta: u64,
+) -> StatusClass {
+    let _registry = crate::plane::registry::TestRegistryIsolation::seeded(&[&COUNTING_PLANE]);
+    with_test_state_as(plane, |host, vt, _| {
+        (vt.counter_add.unwrap())(
+            host,
+            family.as_ptr(),
+            family.len(),
+            v.as_ptr(),
+            v.len(),
+            delta,
+        )
+    })
+}
+
+/// A declared family renders exactly its declared name and keys — no provenance label — and adds.
+#[test]
+fn counter_add_renders_a_declared_family_as_declared() {
+    crate::metrics::init();
+    let v = values(&["widget", "ok"]);
+    assert_eq!(
+        add("counting-plane", "counting_plane_units_total", &v, 3),
+        StatusClass::Ok
+    );
+    assert_eq!(
+        add("counting-plane", "counting_plane_units_total", &v, 2),
+        StatusClass::Ok
+    );
+    assert_eq!(
+        add("counting-plane", "counting_plane_bare_total", &[], 1),
+        StatusClass::Ok
+    );
+    let scrape = crate::metrics::render();
+    for line in [
+        "counting_plane_units_total{unit=\"widget\",outcome=\"ok\"} 5",
+        "counting_plane_bare_total 1",
+    ] {
+        assert!(
+            scrape.lines().any(|l| l == line),
+            "{line} not in:\n{scrape}"
+        );
+    }
+}
+
+/// RED ARMS: what the plane did not declare, and what it declared but supplied wrongly, is refused;
+/// so is a handle the host attributes to no plane, or to a plane that declared nothing.
+#[test]
+fn counter_add_refuses_what_the_plane_did_not_declare() {
+    let two = values(&["widget", "ok"]);
+    let long: &'static str = Box::leak("x".repeat(65).into_boxed_str());
+    let bad_utf8: &'static [u8] = &[0xff, 0xfe];
+    let not_utf8 = [
+        busbar_plugin::hot::DeclStr {
+            ptr: bad_utf8.as_ptr(),
+            len: 2,
+        },
+        two[1],
+    ];
+    for (plane, family, v) in [
+        ("counting-plane", "counting_plane_other_total", &two[..]),
+        ("counting-plane", "busbar_minted_total", &two[..]),
+        ("counting-plane", "counting_plane_units_total", &two[..1]),
+        (
+            "counting-plane",
+            "counting_plane_units_total",
+            &values(&[long, "ok"])[..],
+        ),
+        (
+            "counting-plane",
+            "counting_plane_units_total",
+            &not_utf8[..],
+        ),
+        (
+            "counting-plane",
+            "counting_plane_units_total",
+            &[busbar_plugin::hot::DeclStr::NONE, two[1]][..],
+        ),
+        ("undeclaring-plane", "counting_plane_units_total", &two[..]),
+    ] {
+        assert_eq!(
+            add(plane, family, v, 1),
+            StatusClass::Refused,
+            "{plane} {family}"
+        );
+    }
+    let _registry = crate::plane::registry::TestRegistryIsolation::seeded(&[&COUNTING_PLANE]);
+    with_test_state(|host, vt, _| {
+        let f = "counting_plane_bare_total";
+        let unattributed =
+            (vt.counter_add.unwrap())(host, f.as_ptr(), f.len(), core::ptr::null(), 0, 1);
+        assert_eq!(unattributed, StatusClass::Refused);
+    });
+}

@@ -488,13 +488,14 @@ unsafe fn borrowed_string(ptr: *const u8, len: usize) -> String {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// The four vtable slots. Each recovers the HostState FIRST, runs inside a MANDATORY catch_unwind,
-// and FAILS CLOSED (`Fault` / `Gone` / `Refused`) on a caught panic — never a permissive value.
+// The vtable slots, referenced by the host vtable directly. Each recovers the HostState FIRST, runs
+// inside a MANDATORY catch_unwind, and FAILS CLOSED (`Fault` / `Gone` / `Refused`) on a caught panic
+// — never a permissive value.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// Open a governed egress. On `Ok` writes an [`EgressOpen`]; on any refusal/fault the out-param is
 /// left untouched (init-only-on-Ok).
-pub(crate) fn egress_open(
+pub(crate) extern "C-unwind" fn egress_open(
     host: HostCtx,
     desc: *const EgressDesc,
     out: *mut MaybeUninit<EgressOpen>,
@@ -1136,7 +1137,7 @@ unsafe fn copy_capped(buf: *mut u8, cap: usize, bytes: &[u8]) -> usize {
 /// another strips it. The header carries the FULL lengths even when a buffer was too small, and in that
 /// case the fault is LEFT stashed so the plane can re-call with a larger buffer (the read is not
 /// destructive until it fits); a read that fit consumes it.
-pub(crate) fn egress_fault(
+pub(crate) extern "C-unwind" fn egress_fault(
     host: HostCtx,
     out: *mut MaybeUninit<EgressFault>,
     cause_buf: *mut u8,
@@ -1201,7 +1202,7 @@ unsafe fn egress_fault_body(
 
 /// Pump readable bytes from a governed egress into the caller's buffer. Blocks for the next network
 /// chunk; `Ok` with `out_written = 0` is a clean end of stream.
-pub(crate) fn egress_poll(
+pub(crate) extern "C-unwind" fn egress_poll(
     host: HostCtx,
     egress: EgressId,
     buf: *mut u8,
@@ -1268,7 +1269,7 @@ unsafe fn egress_poll_body(
 /// client-streamed body to write — a duplex request body needs HTTP/2 `Body::wrap_stream` and a
 /// method/body field on [`EgressDesc`] that the ABI does not yet carry. A known egress is answered
 /// `Unsupported` (the capability is real but not wired for this kind); an unknown one is `Gone`.
-pub(crate) fn egress_write(
+pub(crate) extern "C-unwind" fn egress_write(
     host: HostCtx,
     egress: EgressId,
     buf: *const u8,
@@ -1291,7 +1292,7 @@ pub(crate) fn egress_write(
 
 /// Close a governed egress and reclaim it. Idempotent; also run by the arena `Closer` on
 /// dispatch-drop / cancellation. `Ok` when this call closed it, `Gone` when it was already gone.
-pub(crate) fn egress_close(host: HostCtx, egress: EgressId) -> StatusClass {
+pub(crate) extern "C-unwind" fn egress_close(host: HostCtx, egress: EgressId) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
         let Some(_state) = (unsafe { recover(host) }) else {

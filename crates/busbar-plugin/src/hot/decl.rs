@@ -194,6 +194,28 @@ pub struct DeclBillableClass {
     pub family: DeclStr,
 }
 
+/// One metric family a plane declares it emits through the host's `counter_add` — borrowed in a list
+/// by [`PlaneDecl::metric_families_ptr`]. The host renders exactly this name and these label keys,
+/// in this order, and decodes label values for a declared family only.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct DeclMetricFamily {
+    /// The series name exactly as it renders.
+    pub name: DeclStr,
+    /// The family's kind (`counter`).
+    pub kind: DeclStr,
+    /// Borrowed list of the label keys, in render order.
+    pub label_keys_ptr: *const DeclStr,
+    /// Number of entries in the label-keys list.
+    pub label_keys_len: usize,
+}
+
+// SAFETY: the same borrowed-range contract as `DeclStr`: the name, kind and label-key list point
+// into the plugin image's read-only bytes for its whole life. A plane holds these in `static`s.
+unsafe impl Send for DeclMetricFamily {}
+// SAFETY: see the `Send` impl above.
+unsafe impl Sync for DeclMetricFamily {}
+
 /// The `#[repr(C)]` surface a plane exports for core to drive. Leads with the FROZEN [`AbiPreamble`]
 /// and a sized/versioned header; carries the plane's vocabulary (borrowed name/section-key/scope/
 /// label), the set of ingress carriers it provides, the fn-pointer slots, and — as its tail — the
@@ -295,6 +317,13 @@ pub struct PlaneDecl {
     pub claims: Option<ClaimsFn>,
     /// The audience the built plane binds (see [`AdmissionFn`]).
     pub admission: Option<AdmissionFn>,
+
+    // ── THE PLANE'S METRIC FAMILIES (appended at minor 25): the families the plane adds to through
+    //    the host's `counter_add`. A decl that ends before this tail declares none. ──
+    /// Borrowed list of the metric families this plane emits.
+    pub metric_families_ptr: *const DeclMetricFamily,
+    /// Number of entries in the metric-families list.
+    pub metric_families_len: usize,
 }
 
 // SAFETY: `PlaneDecl` holds `AbiPreamble` scalars, `Option<extern "C-unwind" fn>` slots — and,
@@ -360,6 +389,8 @@ impl PlaneDecl {
         fee_units_len: 0,
         claims: Some(stub::claims),
         admission: Some(stub::admission),
+        metric_families_ptr: core::ptr::null(),
+        metric_families_len: 0,
     };
 }
 

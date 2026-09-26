@@ -3646,6 +3646,7 @@ mod plane_fees_on_admin_usage {
                     owned_config_sections: &[],
                     billable_classes: &[],
                     fee_units: &[],
+                    metric_families: &[],
                 },
                 wire_format_names: || &[],
                 claims: |_| Vec::new(),

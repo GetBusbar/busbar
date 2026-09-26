@@ -154,6 +154,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // The fee unit this plane counts: one per call, admitted under its plane-qualified pool. It
         // opens no session account, so `tools.fees.per_session` would charge nothing — refused.
         fee_units: &[PER_REQUEST],
+        metric_families: &[],
     };
 
 /// [`stdio_serve::serve_stdio`], boxed to the stdio-serve axis's shape ([`crate::linked`]).

@@ -6000,6 +6000,7 @@ static CLASS_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::
         owned_config_sections: &[],
         billable_classes: &[bc("calls", "count"), bc("bytes", "byte")],
         fee_units: &[],
+        metric_families: &[],
     },
     wire_format_names: || &[],
     claims: |_| Vec::new(),

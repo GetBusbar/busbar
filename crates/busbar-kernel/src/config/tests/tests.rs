@@ -4145,6 +4145,7 @@ static CARD_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::P
         owned_config_sections: &[],
         billable_classes: &[],
         fee_units: &[],
+        metric_families: &[],
     },
     wire_format_names: || &[],
     claims: |_| Vec::new(),

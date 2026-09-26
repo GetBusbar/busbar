@@ -142,6 +142,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // No fee unit: nothing admits a decision request under this plane's key yet, so any
         // `decisions.fees` figure would charge nothing — refused at boot.
         fee_units: &[],
+        metric_families: &[],
     };
 
 /// The claims axis: the pure plane the boot seal registers, and the two exact-path claims it declares
