@@ -8,14 +8,6 @@
 frozen_literal = 2
 
 [[leak]]
-noun = "a2a"
-kind = "plane"
-file = "crates/busbar-llm-codec/src/tests/detect_tests.rs"
-count = 1
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
 noun = "hook"
 kind = "hook"
 file = "crates/plugin-loader/src/tests/hook_tests.rs"
@@ -60,22 +52,6 @@ noun = "mcp"
 kind = "plane"
 file = "crates/busbar-llm-codec/src/anthropic/tests/field_carry_tests.rs"
 count = 3
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "mcp"
-kind = "plane"
-file = "crates/busbar-llm-codec/src/tests/detect_tests.rs"
-count = 2
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "mcp"
-kind = "plane"
-file = "crates/busbar-llm-codec/src/tests/proto/registry_tests.rs"
-count = 5
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 
