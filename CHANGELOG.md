@@ -358,6 +358,12 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   Both now surface a real error to the client, record the upstream fault on the breaker, and are
   not billed as completions. The content-moderation `ERROR_TOXIC` stop is untouched: a safety
   refusal is a correctly-served response and must not fault a lane. No successful stream changes.
+- **/metrics families are emitted in a stable sorted order.** 1.5.5 printed the exposition's
+  families, and the series inside each family, in its recorder's hash order, so the same metrics
+  could scrape to different bytes from one boot to the next. Families now come out by name and
+  series by their labels; a histogram's or summary's lines stay together in their usual order
+  (buckets ascending, then `_sum`, then `_count`). Every name, label and value is unchanged, and
+  the order served is one 1.5.5 could already print.
 
 ### Breaking
 

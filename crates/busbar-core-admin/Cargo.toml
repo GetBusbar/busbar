@@ -102,7 +102,7 @@ busbar-store-memory = { path = "../store-memory" }
 # The export axis the named-map tests resolve `module: prometheus` against: the scrape sink LINKED
 # into the test binary, as the composition root links it into the shipped one — from its own repo, at
 # the SAME pinned rev the composition root links.
-busbar-export-prometheus = { git = "https://github.com/GetBusbar/export-prometheus", rev = "ccac6bd676714e87c379e14fdc6bf7518da06cb0" }
+busbar-export-prometheus = { git = "https://github.com/GetBusbar/export-prometheus", rev = "087bbcc6a9bafc63591799770407a478f2742027" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "test-util"] }
 axum = { workspace = true, features = ["http1"] }
 reqwest = { workspace = true, features = ["json"] }
