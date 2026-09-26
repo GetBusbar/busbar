@@ -246,66 +246,14 @@ switch    = "STRIKE THIS ROW in the commit that calls journal_checkpoint on a re
 
 # ─── THE 1.6.0 MONEY-GOVERNANCE VERBS WITH NO EFFECT BOUND (architect ruling 2026-09-24) ───
 #
-# Thirteen when armed; FIVE STRUCK 2026-09-25 (UC-STRIKE, owner ruling 2026-09-08, ARCHITECTURE
-# section 4.7 + admin-new-verbs-contract.md): `admin-verb-{set-operator-key,set-escrow,
-# set-dual-control,export-keyset,approve}-effect`. Those five left 1.6.0: their `KernelVerb`
-# variants, `NEW_VERBS` entries, table rows and posture code are DELETED, and their paths answer the
-# unmounted 404 exactly as they did while unbound. FOUR MORE STRUCK 2026-09-26 (UC-VERBS, #77(9),
-# owner answer Q71(1)): `admin-verb-{set-overdraft-ceiling,set-dispute-max-age,resolve-dispute,
-# resolve-slice}-effect`, deleted the same way. Four remain below.
-#
-# Each resolves in the closed verb table (`crates/busbar-core-admin/src/admin_codec/verbs.rs`) and
-# has NO effect behind it: measured 2026-09-24, every one walked the scope, operator and dual-control
-# gates, sealed a `rejected` audit row and then reached a surface with no handler, which answered
-# `404`. The ruling: a verb whose effect is not bound is NOT SERVED. `verb::effect_bound` answers
-# `false` for each, so the mount hands it to the surface's fallback (the unmounted 404, byte for
-# byte, no audit row) and the generated document does not describe it. They stay unbound until each is given a binding.
-#
-# The anchor is the one generic check the binding must extend (`effect_bound` in
-# `crates/busbar-core-admin/src/verb.rs`); the needle is the effect function's call, named as the two
-# bound new verbs already name theirs (`adjust_effect(`, `amend_rate_history_effect(`). The day a
-# verb's effect is called in production, `stale-declaration` reds until its row is struck.
-
-[[capability]]
-id        = "admin-verb-verify-effect"
-built     = "crates/busbar-core-admin/src/verb.rs"
-symbol    = "effect_bound"
-construct = ["verify_effect("]
-scope     = ["crates"]
-why       = "`GET /api/v1/admin/verify` is declared in the closed verb table but no effect is bound to it, so an operator cannot verify a claim or signature outside the normal request path; the node does not serve the path (unmounted 404, no audit row) and the document does not describe it."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that binds the effect: a production call to verify_effect( reached from the composition root's execute_new_verb, and an effect_bound arm for KernelVerb naming this verb, so the mount serves it and the generated document describes it."
-
-[[capability]]
-id        = "admin-verb-plane-facts-effect"
-built     = "crates/busbar-core-admin/src/verb.rs"
-symbol    = "effect_bound"
-construct = ["plane_facts_effect("]
-scope     = ["crates"]
-why       = "`GET /api/v1/admin/plane-facts` is declared in the closed verb table but no effect is bound to it, so an operator cannot read a plane's own declared facts; the node does not serve the path (unmounted 404, no audit row) and the document does not describe it."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that binds the effect: a production call to plane_facts_effect( reached from the composition root's execute_new_verb, and an effect_bound arm for KernelVerb naming this verb, so the mount serves it and the generated document describes it."
-
-[[capability]]
-id        = "admin-verb-plane-record-write-effect"
-built     = "crates/busbar-core-admin/src/verb.rs"
-symbol    = "effect_bound"
-construct = ["plane_record_write_effect("]
-scope     = ["crates"]
-why       = "`POST /api/v1/admin/plane-record-write` is declared in the closed verb table but no effect is bound to it, so an operator cannot write a plane record entry; the node does not serve the path (unmounted 404, no audit row) and the document does not describe it."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that binds the effect: a production call to plane_record_write_effect( reached from the composition root's execute_new_verb, and an effect_bound arm for KernelVerb naming this verb, so the mount serves it and the generated document describes it."
-
-
-
-[[capability]]
-id        = "admin-verb-commit-upgrade-effect"
-built     = "crates/busbar-core-admin/src/verb.rs"
-symbol    = "effect_bound"
-construct = ["commit_upgrade_effect("]
-scope     = ["crates"]
-why       = "`POST /api/v1/admin/commit-upgrade` is declared in the closed verb table but no effect is bound to it, so an operator cannot commit the schema/version upgrade; the node does not serve the path (unmounted 404, no audit row) and the document does not describe it."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that binds the effect: a production call to commit_upgrade_effect( reached from the composition root's execute_new_verb, and an effect_bound arm for KernelVerb naming this verb, so the mount serves it and the generated document describes it."
-
-
+# ALL THIRTEEN STRUCK. FIVE 2026-09-25 (UC-STRIKE, owner ruling 2026-09-08, ARCHITECTURE section
+# 4.7 + admin-new-verbs-contract.md): `admin-verb-{set-operator-key,set-escrow,set-dual-control,
+# export-keyset,approve}-effect` — deleted. FOUR 2026-09-26 (UC-VERBS, #77(9), owner answer
+# Q71(1)): `admin-verb-{set-overdraft-ceiling,set-dispute-max-age,resolve-dispute,
+# resolve-slice}-effect` — deleted. FOUR 2026-09-26 (UC-VERBS, owner answer Q71(2)):
+# `admin-verb-{verify,plane-facts,plane-record-write,commit-upgrade}-effect` — BOUND: each has an
+# `effect_bound` arm (`crates/busbar-core-admin/src/verb.rs`) and a production call reached from the
+# composition root's `execute_new_verb` (`crates/busbar/src/root/units_admin/bound.rs`:
+# `verify_effect(`, `plane_facts_effect(`, `plane_record_write_effect(`, `commit_upgrade_effect(`),
+# so the mount serves it and the generated document describes it. A verb added to `NEW_VERBS`
+# without an `effect_bound` arm is unserved by default and needs a row here.

@@ -216,11 +216,11 @@ fn openapi_operations_carry_stable_operation_ids() {
     // one of them noticing the other: 76 was correct for either section alone and wrong for both
     // together.
     //
-    // 94 = those 81 + the 13 of the 26 operations the 1.6.0 closed verb table adds whose effect is
-    // bound (5 money-governance verbs, 5 ledger views, 3 audit-chain reads), which the node's
-    // administrative loop answers and which the one document describes (items 45/46: no side-car
-    // document). The other 4 declare no bound effect and are not served, so not described.
-    assert_eq!(checked, 94, "expected exactly 94 admin operations");
+    // 98 = those 81 + the 17 operations the 1.6.0 closed verb table adds, every one with its effect
+    // bound since owner answer Q71(2) (9 money-governance verbs, 5 ledger views, 3 audit-chain
+    // reads), which the node's administrative loop answers and which the one document describes
+    // (items 45/46: no side-car document).
+    assert_eq!(checked, 98, "expected exactly 98 admin operations");
     // Spot-check the exact naming scheme against a few representative paths.
     assert_eq!(
         doc["paths"]["/api/v1/admin/keys"]["get"]["operationId"],
@@ -769,12 +769,13 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         "every BODYLESS entry must name a real operation; saw {bodyless_seen:?}"
     );
     assert_eq!(
-        declared, 30,
-        "30 mutating operations take a body; a change here is a deliberate API change. 30 = 22 \
+        declared, 32,
+        "32 mutating operations take a body; a change here is a deliberate API change. 32 = 22 \
          + each plane section's PUT and PATCH-settings (both DELETEs are bodyless, above) + the \
          agents plane's approve verb, whose body carries the fingerprint the \
-         operator is attesting they read + the three 1.6.0 kernel verbs that read one \
-         (`store-restore`, `adjust`, `ledger/amend-rate-history`)"
+         operator is attesting they read + the five 1.6.0 kernel verbs that read one \
+         (`store-restore`, `adjust`, `ledger/amend-rate-history`, and since owner answer Q71(2) \
+         `plane-record-write` and `commit-upgrade`)"
     );
 }
 

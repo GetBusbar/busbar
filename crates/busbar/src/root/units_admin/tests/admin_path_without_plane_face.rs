@@ -649,16 +649,12 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
     }
 }
 
-/// The four 1.6.0 verbs this build binds NO EFFECT to, as `(method, path)` — measured, not
-/// assumed: each resolved in the table, walked every gate, sealed a `rejected` row and then reached
-/// a surface with no handler for it, which answered `404`.
+/// The 1.6.0 verbs this build binds NO EFFECT to, as `(method, path)`. Empty since owner answer
+/// Q71(2) bound the last four (`verify`, `plane_facts`, `plane_record_write`, `commit_upgrade` —
+/// `the_four_q71_verbs_are_served_and_refuse_by_name`); a verb added to `NEW_VERBS` without an
+/// `effect_bound` arm lands here, measured by the one generic check below.
 #[cfg(feature = "root-admin")]
-const THE_UNBOUND_VERBS: [(&str, &str); 4] = [
-    ("GET", "/api/v1/admin/verify"),
-    ("GET", "/api/v1/admin/plane-facts"),
-    ("POST", "/api/v1/admin/plane-record-write"),
-    ("POST", "/api/v1/admin/commit-upgrade"),
-];
+const THE_UNBOUND_VERBS: [(&str, &str); 0] = [];
 
 /// The nine verbs the owner removed from 1.6.0 — on 2026-09-08 (`set_operator_key`, `set_escrow`,
 /// `set_dual_control`, `export_keyset`, `approve`) and by #77(9), owner answer Q71(1)
@@ -682,8 +678,8 @@ const THE_REMOVED_VERBS: [(&str, &str); 9] = [
 /// AN ADMIN VERB WHOSE EFFECT IS NOT BOUND IS NOT SERVED (architect ruling 2026-09-24).
 ///
 /// Under a sealed operator key and a full-scope operator — the posture in which every gate admits —
-/// each of the four (and each of the nine the owner removed, which the table no longer names)
-/// answers EXACTLY what an unmounted path answers (`404 not_found` /
+/// each unbound verb (none since Q71(2)) and each of the nine the owner removed (which the table no
+/// longer names) answers EXACTLY what an unmounted path answers (`404 not_found` /
 /// `resource not found`, byte for byte, which is also the published 1.5.5 answer for every one of
 /// these paths) and seals NO audit row. It used to be walked through the gates, sealed a `rejected`
 /// row, and then answered the same 404 from a surface with no handler for it. And the set is the
@@ -909,4 +905,385 @@ async fn a_path_the_table_does_not_declare_reaches_the_surface_without_the_loop(
         1,
         "the surface answered it, once"
     );
+}
+
+// ── the four verbs owner answer Q71(2) binds ─────────────────────────────────────────────────────
+
+/// A plane declaration for the Q71(2) cells: the one plane the lookup below serves.
+#[cfg(feature = "root-admin")]
+const A_SERVED_PLANE: busbar_contract::plane::PlaneDeclaration =
+    busbar_contract::plane::PlaneDeclaration {
+        key: "example",
+        fallback: false,
+        config_section: "examples",
+        scope_kinds: &["example"],
+        subject_noun: "example",
+        admin_noun: "example",
+        audit_kind: "example",
+        card_signing_domain: None,
+        card_kid_prefix: None,
+        owned_config_sections: &["examples"],
+        billable_classes: &[busbar_contract::plane::BillableClass {
+            class: "calls",
+            family: "count",
+        }],
+        fee_units: &[busbar_contract::plane::PER_REQUEST],
+        metric_families: &[],
+        served_op_classes: &[],
+    };
+
+/// A door that identifies ANOTHER principal than the operator: authenticated, and holding no grant.
+#[cfg(feature = "root-admin")]
+struct IdentifiesATenant;
+
+#[cfg(feature = "root-admin")]
+impl busbar_kernel_identity::module::AuthModule for IdentifiesATenant {
+    fn name(&self) -> &'static str {
+        "identifies-a-tenant"
+    }
+
+    fn authenticate(&self, candidate: Option<&str>) -> busbar_kernel_identity::module::AuthOutcome {
+        match candidate {
+            Some(THE_OPERATORS_CREDENTIAL) => {
+                busbar_kernel_identity::module::AuthOutcome::Identify(
+                    busbar_kernel_identity::principal::Principal::from_id("a-tenant"),
+                )
+            }
+            _ => busbar_kernel_identity::module::AuthOutcome::Pass,
+        }
+    }
+}
+
+/// The node the Q71(2) cells walk: a real surface, a memory-buffered journal, the given door and
+/// posture, the one served plane, and a record sink that keeps what it was handed.
+#[cfg(feature = "root-admin")]
+fn a_q71_node(
+    door: busbar_kernel_identity::AuthChain,
+    operator_key: Option<[u8; 32]>,
+) -> (
+    axum::Router,
+    Arc<std::sync::Mutex<Vec<busbar_contract::records::PlaneRecord>>>,
+) {
+    busbar_kernel::metrics::init();
+    busbar_core_admin::install();
+    let app = busbar_kernel::test_support::TestApp::new()
+        .admin_chain(vec![])
+        .build();
+    let (_data, bare, _handle) =
+        busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
+    let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
+    let durability = crate::root::durability::build(
+        &crate::root::durability::DurabilityConfig { data_dir: None },
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(rows.clone()),
+    )
+    .expect("a memory-buffered journal cannot fail to open");
+    let held = Arc::new(std::sync::Mutex::new(durability));
+    let read = Arc::new(rows);
+    let kept = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = Arc::clone(&kept);
+    let mounted = mount(
+        bare,
+        crate::root::kernel::new_kernel(),
+        1 << 20,
+        move |dispatch| {
+            let mut units =
+                crate::root::kernel::ProductionUnits::admin_only_sharing(dispatch, held, read)
+                    .with_auth_chain(door)
+                    .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+                        ADirectoryThatMintedIt,
+                    )));
+            units.admin.posture = Arc::new(SealedPosture::new(operator_key));
+            units.admin.planes =
+                Arc::new(|key: &str| (key == A_SERVED_PLANE.key).then_some(A_SERVED_PLANE));
+            units.admin.records = Some(Arc::new(
+                move |record: &busbar_contract::records::PlaneRecord| {
+                    sink.lock().expect("the sink").push(record.clone());
+                    Ok(())
+                },
+            ));
+            units
+        },
+    );
+    (mounted, kept)
+}
+
+/// One request over `router` presenting `credential` (or none).
+#[cfg(feature = "root-admin")]
+async fn over_as(
+    router: &axum::Router,
+    method: &str,
+    path: &str,
+    body: &str,
+    credential: Option<&str>,
+) -> (u16, String) {
+    use tower::ServiceExt;
+
+    let mut request = axum::http::Request::builder().method(method).uri(path);
+    if let Some(credential) = credential {
+        request = request.header(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {credential}"),
+        );
+    }
+    let request = request
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from(body.to_string()))
+        .expect("the request builds");
+    let response = router
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("the mounted router answers");
+    let status = response.status().as_u16();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("the answer's body is readable");
+    (
+        status,
+        String::from_utf8(bytes.to_vec()).expect("the answer is text"),
+    )
+}
+
+/// The four verbs as `(method, path, a body that applies)`.
+#[cfg(feature = "root-admin")]
+fn the_q71_verbs() -> [(&'static str, &'static str, String); 4] {
+    [
+        ("GET", "/api/v1/admin/verify", String::new()),
+        (
+            "GET",
+            "/api/v1/admin/plane-facts?plane=example",
+            String::new(),
+        ),
+        (
+            "POST",
+            "/api/v1/admin/plane-record-write",
+            r#"{"plane":"example","kind":"note","id":"n-1","body":{"text":"hello"}}"#.to_string(),
+        ),
+        (
+            "POST",
+            "/api/v1/admin/commit-upgrade",
+            format!(r#"{{"version":"{}"}}"#, super::bound::RUNNING_RELEASE),
+        ),
+    ]
+}
+
+/// OWNER ANSWER Q71(2): `verify`, `plane_facts`, `plane_record_write` and `commit_upgrade` ARE
+/// SERVED, each by its own effect, and each refuses a bad argument BY NAME.
+///
+/// Walked over the real mount behind the operator under a sealed operator key (the posture in which
+/// the irreducible `commit_upgrade` is admitted). Every answer is asserted by status AND body text.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn the_four_q71_verbs_are_served_and_refuse_by_name() {
+    let (node, kept) = a_q71_node(a_door_that_identifies_the_operator(), Some([7u8; 32]));
+    let op = Some(THE_OPERATORS_CREDENTIAL);
+
+    // verify: a fresh node has sealed nothing and posted nothing, and says so — `ok`, with the
+    // book NOT verified (there is no checkpoint to verify it against).
+    let (status, body) = over_as(&node, "GET", "/api/v1/admin/verify", "", op).await;
+    assert_eq!(status, 200, "verify is served: {body}");
+    assert_eq!(
+        body,
+        r#"{"book_verified":false,"checkpoints":0,"discrepancies":0,"findings":[],"identity_holds":true,"ok":true,"since":null}"#
+    );
+
+    // plane_facts: the served plane's declaration; an unserved key is 404 by name; none is 400.
+    let (status, body) = over_as(
+        &node,
+        "GET",
+        "/api/v1/admin/plane-facts?plane=example",
+        "",
+        op,
+    )
+    .await;
+    assert_eq!(status, 200, "plane_facts is served: {body}");
+    let facts: serde_json::Value = serde_json::from_str(&body).expect("JSON");
+    assert_eq!(facts["plane"], "example");
+    assert_eq!(facts["config_section"], "examples");
+    assert_eq!(
+        facts["billable_classes"],
+        serde_json::json!([{"class": "calls", "family": "count"}])
+    );
+    assert_eq!(facts["fee_units"], serde_json::json!(["per_request"]));
+    assert_eq!(
+        over_as(&node, "GET", "/api/v1/admin/plane-facts?plane=nope", "", op).await,
+        (
+            404,
+            r#"{"error":{"code":"not_found","message":"plane `nope` not found"}}"#.to_string()
+        )
+    );
+    assert_eq!(
+        over_as(&node, "GET", "/api/v1/admin/plane-facts", "", op).await,
+        (
+            400,
+            r#"{"error":{"code":"invalid_request","message":"plane is required"}}"#.to_string()
+        )
+    );
+
+    // plane_record_write: the record reaches the sink exactly as written.
+    let (_, _, write) = the_q71_verbs()[2].clone();
+    let (status, body) = over_as(
+        &node,
+        "POST",
+        "/api/v1/admin/plane-record-write",
+        &write,
+        op,
+    )
+    .await;
+    assert_eq!(status, 200, "plane_record_write is served: {body}");
+    let at = serde_json::from_str::<serde_json::Value>(&body).expect("JSON")["written_at"]
+        .as_u64()
+        .expect("written_at");
+    assert_eq!(
+        body,
+        format!(
+            r#"{{"id":"n-1","kind":"note","parent":null,"plane":"example","terminal":false,"written_at":{at}}}"#
+        )
+    );
+    {
+        let kept = kept.lock().expect("the sink");
+        assert_eq!(kept.len(), 1, "exactly one record written");
+        assert_eq!(
+            (kept[0].kind.as_str(), kept[0].id.as_str(), kept[0].ts),
+            ("note", "n-1", at)
+        );
+        assert_eq!(kept[0].body, br#"{"text":"hello"}"#.to_vec());
+        assert_eq!(
+            kept[0].disposition,
+            busbar_contract::records::PlaneDisposition::Active
+        );
+    }
+    assert_eq!(
+        over_as(
+            &node,
+            "POST",
+            "/api/v1/admin/plane-record-write",
+            r#"{"plane":"example","id":"n-1","body":{}}"#,
+            op
+        )
+        .await,
+        (
+            400,
+            r#"{"error":{"code":"invalid_request","message":"kind is required"}}"#.to_string()
+        )
+    );
+    assert_eq!(
+        over_as(
+            &node,
+            "POST",
+            "/api/v1/admin/plane-record-write",
+            r#"{"plane":"nope","kind":"note","id":"n-1","body":{}}"#,
+            op
+        )
+        .await,
+        (
+            404,
+            r#"{"error":{"code":"not_found","message":"plane `nope` not found"}}"#.to_string()
+        )
+    );
+    assert_eq!(
+        kept.lock().expect("the sink").len(),
+        1,
+        "a refusal writes nothing"
+    );
+
+    // commit_upgrade: the running release is committed and sealed on the journal; any other is a
+    // named conflict.
+    let (_, _, commit) = the_q71_verbs()[3].clone();
+    let (status, body) = over_as(&node, "POST", "/api/v1/admin/commit-upgrade", &commit, op).await;
+    assert_eq!(status, 200, "commit_upgrade is served: {body}");
+    let committed: serde_json::Value = serde_json::from_str(&body).expect("JSON");
+    assert_eq!(committed["committed"], super::bound::RUNNING_RELEASE);
+    assert_eq!(committed["hash"].as_str().map(str::len), Some(64));
+    assert_eq!(
+        over_as(
+            &node,
+            "POST",
+            "/api/v1/admin/commit-upgrade",
+            r#"{"version":"0.0.1"}"#,
+            op
+        )
+        .await,
+        (
+            409,
+            format!(
+                r#"{{"error":{{"code":"conflict","message":"this node runs `{}`; it cannot commit `0.0.1`"}}}}"#,
+                super::bound::RUNNING_RELEASE
+            )
+        )
+    );
+}
+
+/// THE Q71(2) VERBS ARE AUTHORIZED LIKE EVERY OTHER ADMIN VERB, AND REFUSE BY THE DOOR'S AND THE
+/// SCOPE'S OWN TEXT.
+///
+/// No credential is the door's `401`; a caller the door identifies as somebody other than the
+/// operator holds no grant and is told the scope the endpoint needed (`read-only` for the two
+/// reads, `full` for the two writes); and the irreducible `commit_upgrade` on a fleet with no
+/// sealed operator key is refused at the ceremony gate — nothing is written in any of them.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn the_four_q71_verbs_refuse_an_unauthorized_caller_by_text() {
+    const DOOR: &str = r#"{"error":{"code":"unauthorized","message":"missing or invalid admin credential (Bearer or x-admin-token)"}}"#;
+    let scope = |needed: &str| {
+        format!(
+            r#"{{"error":{{"code":"forbidden","message":"insufficient scope: this endpoint requires `{needed}`"}}}}"#
+        )
+    };
+
+    let (node, kept) = a_q71_node(a_door_that_identifies_the_operator(), Some([7u8; 32]));
+    for (method, path, body) in the_q71_verbs() {
+        assert_eq!(
+            over_as(&node, method, path, &body, None).await,
+            (401, DOOR.to_string()),
+            "{method} {path}: no credential is the door"
+        );
+    }
+
+    let tenant = busbar_kernel_identity::AuthChain::new(
+        vec![busbar_kernel_identity::chain::ChainEntry {
+            provider: "identifies-a-tenant".to_string(),
+            module: Box::new(IdentifiesATenant),
+        }],
+        false,
+    );
+    let (tenants_node, tenants_kept) = a_q71_node(tenant, Some([7u8; 32]));
+    for (method, path, body) in the_q71_verbs() {
+        let needed = if method == "GET" { "read-only" } else { "full" };
+        assert_eq!(
+            over_as(
+                &tenants_node,
+                method,
+                path,
+                &body,
+                Some(THE_OPERATORS_CREDENTIAL)
+            )
+            .await,
+            (403, scope(needed)),
+            "{method} {path}: an identified caller with no grant is told the scope"
+        );
+    }
+
+    let (unsealed, unsealed_kept) = a_q71_node(a_door_that_identifies_the_operator(), None);
+    let (_, _, commit) = the_q71_verbs()[3].clone();
+    assert_eq!(
+        over_as(
+            &unsealed,
+            "POST",
+            "/api/v1/admin/commit-upgrade",
+            &commit,
+            Some(THE_OPERATORS_CREDENTIAL)
+        )
+        .await,
+        (403, scope("full")),
+        "commit_upgrade is irreducible: refused while no operator key is sealed"
+    );
+
+    for sink in [kept, tenants_kept, unsealed_kept] {
+        assert!(
+            sink.lock().expect("the sink").is_empty(),
+            "no refusal wrote a record"
+        );
+    }
 }

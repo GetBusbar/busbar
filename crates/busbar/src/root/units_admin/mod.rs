@@ -386,7 +386,33 @@ pub trait LedgerView: Send + Sync {
     fn recorded_counts(&self, _amends: &str) -> Option<RecordedCounts> {
         None
     }
+
+    /// What the `verify` verb checks (owner answer Q71(2)): the sealed checkpoints, oldest first,
+    /// and the book's balances as they stand NOW — both as of one moment, so a settlement landing
+    /// between the two reads cannot read as an imbalance.
+    ///
+    /// The book is an option, and `None` is "this view holds no book", NEVER "the book is empty":
+    /// the verifier then checks the checkpoints alone and says it did not verify a book. The default
+    /// is exactly that, which is the true answer for a view with no book behind it.
+    fn verify_snapshot(
+        &self,
+    ) -> (
+        Vec<busbar_kernel_ledger::checkpoint::Checkpoint>,
+        Option<BookTotals>,
+    ) {
+        (self.checkpoints(), None)
+    }
 }
+
+/// The book's balances, per bucket, dimension, scope and window — what a checkpoint seals and what
+/// `verify` measures the checkpoint against.
+pub type BookTotals = std::collections::BTreeMap<
+    (
+        busbar_kernel_ledger::totals::TotalsKey,
+        busbar_kernel_ledger::totals::WindowStart,
+    ),
+    busbar_kernel_ledger::totals::Totals,
+>;
 
 /// The view a node has before a ledger is bound behind it.
 ///
@@ -651,6 +677,20 @@ impl LedgerView for NodeLedger {
     /// Read off this node's own journal, under the same lock every other read takes.
     fn recorded_counts(&self, amends: &str) -> Option<RecordedCounts> {
         adjust::recorded_in(&self.lock(), amends)
+    }
+
+    /// Both halves under ONE hold of the lock a settlement takes.
+    fn verify_snapshot(
+        &self,
+    ) -> (
+        Vec<busbar_kernel_ledger::checkpoint::Checkpoint>,
+        Option<BookTotals>,
+    ) {
+        let durability = self.lock();
+        (
+            durability.checkpoints.clone(),
+            Some(durability.ledger.book().snapshot()),
+        )
     }
 }
 
@@ -953,6 +993,12 @@ pub struct CoreGovernance {
     /// Which pool names `adjust` accepts (Q64/Q67): the node's configured pools. Knows none until
     /// a root binds them, so an unbound node refuses every correction's pool.
     pools: PoolKnown,
+    /// Which planes this node serves, for `plane_facts` and `plane_record_write` (Q71(2)). Knows
+    /// none until a root binds the registry, so an unbound node answers every plane `404`.
+    planes: PlaneLookup,
+    /// Where `plane_record_write` lands its record. `None` refuses the write (`Store`): a record
+    /// nothing kept was not written.
+    records: Option<PlaneRecordSink>,
 }
 
 impl CoreGovernance {
@@ -978,7 +1024,17 @@ impl CoreGovernance {
             },
             granted: VerbScope::ReadOnly,
             pools: no_pools(),
+            planes: no_planes(),
+            records: None,
         }
+    }
+
+    /// Bind the planes this node serves and where a plane record is written (Q71(2)).
+    #[must_use]
+    pub fn planed(mut self, planes: PlaneLookup, records: Option<PlaneRecordSink>) -> Self {
+        self.planes = planes;
+        self.records = records;
+        self
     }
 
     /// Bind the pool names `adjust` accepts (Q64/Q67).
@@ -1101,6 +1157,37 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 self.ledger.recorded_counts(amends)
             })
             .map(|answer| answer.pack());
+        }
+        // The four verbs owner answer Q71(2) binds (see `bound`). Admitted by the verbs unit —
+        // scope, rate class, and for the irreducible `commit_upgrade` the operator ceremony — before
+        // this seam was reached; none of them is the mounted router's.
+        match verb {
+            KernelVerb::Verify => {
+                return bound::verify_effect(self.ledger.as_ref()).map(|a| a.pack());
+            }
+            KernelVerb::PlaneFacts => {
+                return bound::plane_facts_effect(&self.request.path, &*self.planes)
+                    .map(|a| a.pack());
+            }
+            KernelVerb::PlaneRecordWrite => {
+                return bound::plane_record_write_effect(
+                    request,
+                    self.request.at,
+                    &*self.planes,
+                    self.records.as_ref(),
+                )
+                .map(|a| a.pack());
+            }
+            KernelVerb::CommitUpgrade => {
+                return bound::commit_upgrade_effect(
+                    request,
+                    self.request.at,
+                    &self.attribution.principal,
+                    self.amendments.as_deref(),
+                )
+                .map(|a| a.pack());
+            }
+            _ => {}
         }
         Ok(self.run())
     }
@@ -1650,6 +1737,35 @@ impl AmendmentJournal {
             )
             .map(|_| ())
             .map_err(|_| busbar_core_admin::GovernanceError::Store)
+    }
+
+    /// Append one `Policy`-class record whose body the caller built, dated `wall_secs`, and answer
+    /// with its node sequence and chain hash — the position an operator cites it by.
+    ///
+    /// # Errors
+    ///
+    /// `Store` when the journal could not make the record durable; the caller then refuses.
+    pub fn seal_policy(
+        &self,
+        body: Vec<u8>,
+        wall_secs: u64,
+    ) -> Result<(u64, [u8; 32]), busbar_core_admin::GovernanceError> {
+        let entry = busbar_kernel_wal::Entry::new(busbar_kernel_wal::RecordClass::Policy, body)
+            .at(wall_secs, 0);
+        let mut durability = self.book.lock().unwrap_or_else(|p| p.into_inner());
+        let ack = durability
+            .journal
+            .append(
+                &self.token,
+                busbar_contract::caps::StepName::Route,
+                &[entry],
+            )
+            .map_err(|_| busbar_core_admin::GovernanceError::Store)?;
+        let sealed = ack
+            .sealed
+            .last()
+            .ok_or(busbar_core_admin::GovernanceError::Store)?;
+        Ok((sealed.node_seq, sealed.hash))
     }
 }
 
@@ -2376,6 +2492,12 @@ pub struct AdminBinding {
     /// Knows none until a root binds them, so a node composed without a configuration refuses every
     /// correction's pool rather than accepting one it cannot check.
     pub pools: PoolKnown,
+    /// Which planes this node serves, and what each declares (`plane_facts`, `plane_record_write`;
+    /// Q71(2)). Knows none until a root binds the registry over its live configuration (Law 7).
+    pub planes: PlaneLookup,
+    /// Where `plane_record_write` lands a record: the plane-facing store seam. `None` until a root
+    /// binds one, and the verb then refuses rather than accept a write nothing keeps.
+    pub records: Option<PlaneRecordSink>,
     /// The requests currently being walked.
     pub units: AdminUnits,
 }
@@ -2508,6 +2630,8 @@ impl AdminBinding {
             amendments: None,
             claims: None,
             pools: no_pools(),
+            planes: no_planes(),
+            records: None,
             units: AdminUnits::new(),
         }
     }
@@ -2881,7 +3005,8 @@ pub(crate) fn route(
             },
         )
         .granted(granted)
-        .pooled(Arc::clone(&binding.pools)),
+        .pooled(Arc::clone(&binding.pools))
+        .planed(Arc::clone(&binding.planes), binding.records.clone()),
         StoreRef(store),
         ArrivalNonce(request.at),
         PackedReplay,
@@ -3644,6 +3769,8 @@ pub(crate) use admin_mount::*;
 // ── `adjust` and the idempotency claim journal: sibling modules, re-exported here ─────────────────
 mod adjust;
 pub use adjust::RecordedCounts;
+mod bound;
+pub use bound::{live_planes, live_records, no_planes, PlaneLookup, PlaneRecordSink};
 mod claims;
 pub use claims::RootClaimJournal;
 

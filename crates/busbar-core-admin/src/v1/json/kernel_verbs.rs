@@ -18,10 +18,11 @@
 //! verb's contract below is what the root's code does — its request shape, its success body and
 //! the statuses its refusals map to (`units_admin::answer_for`) — never what a design once intended.
 //!
-//! FOUR OF THE NINE MONEY-GOVERNANCE VERBS HAVE NO EFFECT BOUND IN THIS BUILD
-//! (`crate::verb::effect_bound`). They are not served — the node's mount hands them to the
-//! surface's own fallback, which answers the unmounted `404` — so this document does not describe
-//! them either: [`operations`] asks the same one question the mount asks.
+//! A NEW VERB WITH NO EFFECT BOUND IN THIS BUILD (`crate::verb::effect_bound`) is not served — the
+//! node's mount hands it to the surface's own fallback, which answers the unmounted `404` — so this
+//! document does not describe it either: [`operations`] asks the same one question the mount asks.
+//! Since owner answer Q71(2) bound `verify`, `plane_facts`, `plane_record_write` and
+//! `commit_upgrade`, every one of the nine is bound.
 
 #[cfg(feature = "openapi-schema")]
 use crate::admin_codec::verbs::ResolvedVerb;
@@ -450,6 +451,150 @@ pub(crate) struct AmendRateHistoryView {
     reason_sha256: String,
 }
 
+/// `GET /verify`: everything that has to be true of this node's ledger, checked. A failed
+/// verification is still a `200`; `ok` is the answer.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+#[allow(dead_code)]
+pub(crate) struct VerifyView {
+    /// How many sealed checkpoints the node holds.
+    checkpoints: u64,
+    /// The checkpoint the book was verified against (the last sealed one); null when none is sealed.
+    since: Option<VerifySince>,
+    /// Whether the book as it stands was measured against `since` (false with no checkpoint, or a
+    /// node that binds no book).
+    book_verified: bool,
+    /// Each thing verification found, in words: a checkpoint edited after it was sealed, a node
+    /// sequence that went backwards, a balance out of identity, a sealed balance no longer in the
+    /// book, a closed window that moved.
+    findings: Vec<String>,
+    /// Whether the ledger's postings reconcile with the previous release's rows.
+    identity_holds: bool,
+    /// How many rows do not reconcile (`GET /ledger/reconciliation` names them).
+    discrepancies: u64,
+    /// True when there is no finding and the identity holds.
+    ok: bool,
+}
+
+/// The checkpoint `verify` measured against.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+#[allow(dead_code)]
+pub(crate) struct VerifySince {
+    checkpoint_seq: u64,
+    node: u64,
+    /// When it was sealed, in whole seconds.
+    wall: u64,
+}
+
+/// `GET /plane-facts`: what a plane this node serves declares about itself.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+#[allow(dead_code)]
+pub(crate) struct PlaneFactsView {
+    /// The plane's registry key.
+    plane: String,
+    /// Whether it is the fallback catch-all plane.
+    fallback: bool,
+    /// The config section whose presence declares the plane.
+    config_section: String,
+    owned_config_sections: Vec<String>,
+    scope_kinds: Vec<String>,
+    subject_noun: String,
+    admin_noun: String,
+    audit_kind: String,
+    billable_classes: Vec<PlaneFactsClass>,
+    fee_units: Vec<String>,
+    metric_families: Vec<PlaneFactsMetric>,
+    served_op_classes: Vec<PlaneFactsServed>,
+}
+
+/// One billable class a plane ledgers.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+#[allow(dead_code)]
+pub(crate) struct PlaneFactsClass {
+    class: String,
+    family: String,
+}
+
+/// One metric family a plane emits.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+#[allow(dead_code)]
+pub(crate) struct PlaneFactsMetric {
+    name: String,
+    kind: String,
+    label_keys: Vec<String>,
+}
+
+/// One operation class a plane serves one level down.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+#[allow(dead_code)]
+pub(crate) struct PlaneFactsServed {
+    op: String,
+    name: String,
+}
+
+/// `POST /plane-record-write`: one plane record, upserted by `(kind, id)`.
+#[cfg(feature = "openapi-schema")]
+#[derive(Deserialize, JsonSchema)]
+#[allow(dead_code)]
+pub(crate) struct PlaneRecordWriteReq {
+    /// The key of a plane this node serves.
+    plane: String,
+    /// The record kind.
+    kind: String,
+    /// The record's identity within its kind.
+    id: String,
+    /// The parent the record hangs off, for a child kind.
+    #[serde(default)]
+    parent: Option<String>,
+    /// Whether retention may drop the record once it is old (default false).
+    #[serde(default)]
+    terminal: Option<bool>,
+    /// The record's row, stored as its JSON bytes and never decoded by the store.
+    body: serde_json::Value,
+}
+
+/// `POST /plane-record-write`'s answer: what was written, and when.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+#[allow(dead_code)]
+pub(crate) struct PlaneRecordWriteView {
+    plane: String,
+    kind: String,
+    id: String,
+    parent: Option<String>,
+    terminal: bool,
+    /// The arrival second the record was written at.
+    written_at: u64,
+}
+
+/// `POST /commit-upgrade`: the release the fleet commits to.
+#[cfg(feature = "openapi-schema")]
+#[derive(Deserialize, JsonSchema)]
+#[allow(dead_code)]
+pub(crate) struct CommitUpgradeReq {
+    /// The release this node runs. Any other is refused.
+    version: String,
+}
+
+/// `POST /commit-upgrade`'s answer: the committed release and the journal record that seals it.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+#[allow(dead_code)]
+pub(crate) struct CommitUpgradeView {
+    committed: String,
+    /// The arrival second.
+    committed_at: u64,
+    /// The record's position on the node journal.
+    seq: u64,
+    /// The record's chain hash.
+    hash: String,
+}
+
 /// `POST /store-restore`: the backup to restore. There is no default and no empty one.
 #[cfg(feature = "openapi-schema")]
 #[derive(Deserialize, JsonSchema)]
@@ -616,6 +761,121 @@ fn doc_for(
             ],
         },
 
+        // ── the four verbs owner answer Q71(2) binds ──
+        KernelVerb::Verify => VerbDoc {
+            summary: "Verify this node's ledger: checkpoints, sequences, the book and the identity",
+            description: "Every sealed checkpoint must re-hash to its own body, no node's sequence \
+                          may go backwards between two checkpoints, the book as it stands is \
+                          measured against the last checkpoint, and the ledger's postings must \
+                          reconcile with the previous release's rows. A failed verification is \
+                          still a 200: `ok` is the answer and `findings` says why. A read: it \
+                          mutates nothing and needs `read-only`."
+                .to_string(),
+            success: Success::Json(
+                schema_of(gen.subschema_for::<VerifyView>()),
+                "What verification found",
+            ),
+            request: None,
+            query: Vec::new(),
+            errors: vec![unavailable_503(
+                "the node could not take the unit, or the book holds a refused counts row the \
+                 identity cannot be measured over",
+            )],
+        },
+        KernelVerb::PlaneFacts => VerbDoc {
+            summary: "What a plane this node serves declares about itself",
+            description: "The plane's registry key, config sections, grant kinds, nouns, billable \
+                          classes, fee units, metric families and served operation classes. A \
+                          read: it mutates nothing and needs `read-only`."
+                .to_string(),
+            success: Success::Json(
+                schema_of(gen.subschema_for::<PlaneFactsView>()),
+                "The plane's declared facts",
+            ),
+            request: None,
+            query: vec![json!({
+                "name": "plane", "in": "query", "required": true,
+                "schema": {"type": "string"},
+                "description": "The registry key of a plane this node serves.",
+            })],
+            errors: vec![
+                (
+                    "400",
+                    "`invalid_request`: `plane is required`".to_string(),
+                ),
+                (
+                    "404",
+                    "`not_found`: ``plane `<key>` not found`` — no plane is registered under the \
+                     key, or this node does not configure it"
+                        .to_string(),
+                ),
+                unavailable_503("the node could not take the unit"),
+            ],
+        },
+        KernelVerb::PlaneRecordWrite => VerbDoc {
+            summary: "Upsert one record of a plane this node serves",
+            description: "Upserted by `(kind, id)` through the plane-facing store the planes \
+                          persist through. `body` is stored as its JSON bytes and never decoded by \
+                          the store; `terminal` is the retention disposition."
+                .to_string(),
+            success: Success::Json(
+                schema_of(gen.subschema_for::<PlaneRecordWriteView>()),
+                "What was written, and when",
+            ),
+            request: Some(schema_of(req_gen.subschema_for::<PlaneRecordWriteReq>())),
+            query: Vec::new(),
+            errors: vec![
+                (
+                    "400",
+                    format!(
+                        "`invalid_request`: malformed body, `plane is required`, `kind is \
+                         required`, `id is required`, `body is required`, a `parent` that is not \
+                         a non-empty string or null, a `terminal` that is not a boolean, or \
+                         {BODY_UNREADABLE}"
+                    ),
+                ),
+                gated_403(),
+                (
+                    "404",
+                    "`not_found`: ``plane `<key>` not found``".to_string(),
+                ),
+                unavailable_503(
+                    "the node could not take the unit, binds no record store, or the store \
+                     failed",
+                ),
+            ],
+        },
+        KernelVerb::CommitUpgrade => VerbDoc {
+            summary: "Commit the fleet to the release this node runs (irreducible)",
+            description: "The body names the release; one this node does not run is refused and \
+                          seals nothing. The committed release is sealed on the node journal \
+                          before the answer names its position and chain hash."
+                .to_string(),
+            success: Success::Json(
+                schema_of(gen.subschema_for::<CommitUpgradeView>()),
+                "The committed release and the record that seals it",
+            ),
+            request: Some(schema_of(req_gen.subschema_for::<CommitUpgradeReq>())),
+            query: Vec::new(),
+            errors: vec![
+                (
+                    "400",
+                    format!(
+                        "`invalid_request`: malformed body, `version is required`, or \
+                         {BODY_UNREADABLE}"
+                    ),
+                ),
+                gated_403(),
+                (
+                    "409",
+                    "`conflict`: ``this node runs `<release>`; it cannot commit `<version>` ``"
+                        .to_string(),
+                ),
+                unavailable_503(
+                    "the node could not take the unit, or no journal will record the commit",
+                ),
+            ],
+        },
         // ── the two money verbs whose effect is the node's amendment journal ──
         KernelVerb::Adjust => VerbDoc {
             summary: "Correct a recorded unit's COUNTS, never a money figure (irreducible above \

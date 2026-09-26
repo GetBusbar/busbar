@@ -998,6 +998,13 @@ async fn run(data_workers: usize) {
                 units.admin.pools = std::sync::Arc::new(move |pool: &str| {
                     busbar_kernel::governance::group_provision::pool_known(&live.load(), pool)
                 });
+                // Q71(2): `plane_facts` / `plane_record_write` read the planes this node serves off the
+                // live snapshot (Law 7) and write through the configured store's plane-facing seam.
+                units.admin.planes =
+                    root::units_admin::live_planes(std::sync::Arc::clone(&app_handle));
+                units.admin.records = Some(root::units_admin::live_records(std::sync::Arc::clone(
+                    &app_handle,
+                )));
                 // The root breaker is the kernel's own: one cell set on the node, read through the
                 // live snapshot so an apply's rebuilt store is the one it observes into.
                 units.breaker = root::adapters::BreakerAdapter::over_kernel(

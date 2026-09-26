@@ -702,6 +702,13 @@ pub const fn effect_bound(verb: KernelVerb) -> bool {
         // Their effect lands on the node's amendment journal (the composition root's
         // `execute_new_verb`).
         KernelVerb::Adjust | KernelVerb::AmendRateHistory => true,
+        // Owner answer Q71(2): the two reads answer from the node's own book and plane registry,
+        // the plane record write lands on the plane-facing store, and the committed release is
+        // sealed on the node journal (the composition root's `execute_new_verb`).
+        KernelVerb::Verify
+        | KernelVerb::PlaneFacts
+        | KernelVerb::PlaneRecordWrite
+        | KernelVerb::CommitUpgrade => true,
         // Any other new verb is unbound until an arm above says otherwise: a verb added to
         // `NEW_VERBS` is unserved by default, never served onto a surface with no handler for it.
         _ => !is_new_verb(verb),
