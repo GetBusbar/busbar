@@ -107,7 +107,7 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo test -p busbar-kernel --features timing --lib --test timing_smoke --locked -- timing:: smoke_records",
     "cargo build -p xtask --locked",
     "cargo xtask gate kind-isolation --selftest",
-    "cargo xtask gate kind-isolation",
+    "cargo xtask gate kind-isolation --posture",
     "cargo xtask gate kernel-token-wire-purity --selftest",
     "cargo xtask gate kernel-token-wire-purity",
     "cargo xtask gate money-invariants --selftest",

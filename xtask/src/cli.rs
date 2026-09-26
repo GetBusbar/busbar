@@ -130,6 +130,7 @@ const GATE_FLAGS: &[&str] = &[
     "--strict",
     "--write",
     "--posture",
+    "--write-standing",
     "--parity",
     "--execute",
     "--require-dated-top",
@@ -483,6 +484,12 @@ fn gate(args: &[String]) -> i32 {
             );
             return 2;
         }
+        // `--write-standing`: rewrite the gate's standing snapshot, striking and lowering and never
+        // adding. Only a gate whose posture is a snapshot has one; the first write is refused unless
+        // the snapshot does not exist yet, so an existing snapshot cannot be re-blessed upward.
+        if args.iter().any(|a| a == "--write-standing") {
+            return write_standing(reg.name, &cx, &verdict);
+        }
         if !verdict.red {
             println!("{name} --posture: green outright");
             return 0;
@@ -595,6 +602,45 @@ fn build_gate(
     } else {
         (reg.build)()
     })
+}
+
+/// `--posture --write-standing`: the snapshot's own lowering path. See
+/// [`gates::standing_snapshot::rewrite`].
+fn write_standing(name: &str, cx: &crate::ctx::Ctx, verdict: &crate::ledger::Verdict) -> i32 {
+    let Some(p) = gates::REPORT_ONLY.iter().find(|p| p.name == name) else {
+        eprintln!("xtask gate {name} --write-standing: `{name}` has no posture entry");
+        return 2;
+    };
+    let gates::Excused::Snapshot(sr) = &p.excuse else {
+        eprintln!("xtask gate {name} --write-standing: `{name}`'s posture is not a snapshot");
+        return 2;
+    };
+    let existing = match cx.read(sr.file) {
+        Ok(text) => match gates::standing_snapshot::parse(&text) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                eprintln!("xtask gate {name} --write-standing: {}: {e}", sr.file);
+                return 1;
+            }
+        },
+        Err(_) => None,
+    };
+    let text = gates::standing_snapshot::rewrite(sr, verdict, existing.as_ref());
+    if let Err(e) = std::fs::write(cx.abs(sr.file), &text) {
+        eprintln!("xtask gate {name} --write-standing: {}: {e}", sr.file);
+        return 1;
+    }
+    println!(
+        "{name} --write-standing: {} {} ({} entries)",
+        if existing.is_some() {
+            "lowered"
+        } else {
+            "created"
+        },
+        sr.file,
+        text.lines().filter(|l| !l.starts_with('#')).count()
+    );
+    0
 }
 
 /// The `--posture` refusal, naming the list THIS gate's standing reds live on. It used to name

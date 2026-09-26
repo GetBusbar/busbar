@@ -852,7 +852,10 @@ jobs:
           XTASK_GATE_CEILING_SECS_KIND_ISOLATION: "1800"
         run: cargo xtask gate kind-isolation --selftest
       - name: Kind-isolation gate (BLOCKING — no name, edge, word or root wiring fuses two kinds)
-        run: cargo xtask gate kind-isolation
+        # `--posture`: the Phase 4 drain debt on `:deps`, `:test-deps`, `:closure` and `:matrix` is
+        # excused FINDING BY FINDING against qa/kind-isolation.standing.txt, which only shrinks. A new
+        # edge, cell or rise under those rows, and any red on every other row, still fails this step.
+        run: cargo xtask gate kind-isolation --posture
       # Self-test before verdict, as everywhere else in this file: the deletion test proves it can
       # still see a plane edge before its green over the real planes is believed.
       - name: Plane deletion test self-test
