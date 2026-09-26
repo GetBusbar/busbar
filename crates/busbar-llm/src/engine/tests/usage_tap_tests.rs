@@ -1,6 +1,6 @@
 use super::{record_token_usage, stable_hash, UsageSink};
 use crate::engine::AppEngineExt as _;
-use busbar_substrate_values::billing::TokenUsage;
+use busbar_contract::billing::TokenUsage;
 use std::sync::Arc;
 
 /// `apply_rewrite_to_body` replaces the `messages` array + injects tools on a chat-shaped body,

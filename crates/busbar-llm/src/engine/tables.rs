@@ -78,7 +78,7 @@ pub(crate) struct Lane {
     pub(crate) prompt_caching: bool,
     /// The lane's declared request-shape capabilities (provider entry + model patterns), handed to
     /// the egress writer on a cross-protocol hop. See `LaneCaps`.
-    pub(crate) lane_caps: busbar_substrate_values::ir::egress_prep::LaneCaps,
+    pub(crate) lane_caps: busbar_contract::ir::egress_prep::LaneCaps,
     /// Optional default max output tokens, injected at the cross-protocol translation seam when the
     /// source request omitted `max_tokens` (legal for OpenAI) but this lane's protocol REQUIRES it
     /// (Anthropic Messages — see `ProtocolWriter::requires_max_tokens`). Falls back to

@@ -26,12 +26,13 @@ use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::Response;
 use busbar_kernel::{
+    handlers::request_handler,
     ingress::arrival::{Arrival, ArrivalCtx, ArrivalHost, BodyIngress, PathIngress},
     plane_host::{EngineHost, PlaneAnswer},
     proto::array_stream_shim_key_for,
-    proxy::ingress_error,
+    proxy::{ingress_error, POOL_LABEL_UNRESOLVED},
+    store::now,
 };
-use busbar_substrate_values::proxy::POOL_LABEL_UNRESOLVED;
 use serde_json::Value;
 
 use crate::arrival::{PathArrivalFacts, PathModelFacts};
@@ -109,7 +110,7 @@ pub(crate) async fn operation_ingress_inner(
     // App-retype WEDGE 3: the pre-routing finish/label/guard capabilities route through the `host`
     // threaded in (the arrival's `Arc<dyn EngineHost>`), so this plane names no core ingress module.
 
-    let Some(rh) = busbar_substrate_values::handlers::request_handler(proto) else {
+    let Some(rh) = request_handler(proto) else {
         return finish_rejected_via_audit(
             host,
             gov,
@@ -158,7 +159,7 @@ pub(crate) async fn operation_ingress_inner(
         match crate::engine::LazyBody::parse(&body) {
             Ok(v) => Some(v),
             Err(_) => {
-                tracing::debug!(detail = %busbar_substrate_values::json::parse_err_log(body.len()), "request body JSON parse failed");
+                tracing::debug!(detail = %busbar_llm_codec::json::parse_err_log(body.len()), "request body JSON parse failed");
                 return finish_rejected_via_audit(
                     host,
                     gov,
@@ -281,13 +282,13 @@ async fn ingress_path_model_inner(
     let charged_at = host.clock_now_secs();
     // App-retype WEDGE 3: the pre-routing finish seam routes through the threaded `host` (the body-model
     // twin does the same).
-    let mut v: Value = match busbar_substrate_values::json::parse(&body) {
+    let mut v: Value = match busbar_llm_codec::json::parse(&body) {
         Ok(v) => v,
         Err(_) => {
             // Log a SANITIZED note for operators (just the byte length), never the parser's raw error:
             // with sonic-rs it embeds a fragment of the malformed body, which can contain secrets/PII.
             // The client gets only the generic, vendor-plausible message.
-            tracing::debug!(detail = %busbar_substrate_values::json::parse_err_log(body.len()), "request body JSON parse failed");
+            tracing::debug!(detail = %busbar_llm_codec::json::parse_err_log(body.len()), "request body JSON parse failed");
             // Pre-routing failure (model never resolved): route through `finish_rejected` with the
             // bounded `"unresolved"` label so the malformed-body request is still counted in REQUESTS_TOTAL /
             // REQUEST_DURATION_SECONDS and fires the request-log webhook, mirroring the model-miss
@@ -354,7 +355,7 @@ async fn ingress_path_model_inner(
     // `Err` arm is kept as a non-panicking, protocol-shaped guard (never `unwrap`) so the request
     // path stays panic-free even if a future change introduces a non-serializable injected value;
     // it is effectively unreachable today, hence not exercised by a dedicated test.
-    let injected: Bytes = match busbar_substrate_values::json::to_vec(&v) {
+    let injected: Bytes = match busbar_llm_codec::json::to_vec(&v) {
         Ok(b) => b.into(),
         Err(_e) => {
             // Same leak class as the parse arms above: the JSON library's error Display is a
@@ -387,8 +388,7 @@ async fn ingress_path_model_inner(
     // UNIVERSAL: the caller (that protocol's routing arm) already resolved WHICH operation this is
     // (`RequestHandler::resolve_operation`); look its handler up through the registry — identical
     // for every protocol and operation. This arm's only per-protocol work was the URL parsing above.
-    let Some(op_handler) = busbar_substrate_values::handlers::request_handler(proto)
-        .and_then(|rh| rh.operation_handler(operation))
+    let Some(op_handler) = request_handler(proto).and_then(|rh| rh.operation_handler(operation))
     else {
         return finish_rejected_via_audit(
             host,
@@ -450,7 +450,7 @@ async fn gemini_ingress(
     // never reaches the path-model core, where `started` is otherwise taken) is still counted through
     // `finish_rejected` — the same pre-routing observability invariant the body/path cores enforce.
     let started = Instant::now();
-    let charged_at = busbar_substrate_values::store::now();
+    let charged_at = now();
     let facts = match crate::arrival::gemini_path_parse(&host, &ctx, &rest, &uri, &body) {
         PathArrivalFacts::PathModel(facts) => facts,
         // A pre-rendered fallback 404 (a different terminal): return its bytes unchanged.
@@ -519,7 +519,7 @@ fn bedrock_arrival(a: Arrival) -> Fut {
     // `finish_rejected` so it stays visible to Prometheus/the webhook, and the epoch it is finished
     // against is pinned before the parse rather than after it.
     let started = Instant::now();
-    let charged_at = busbar_substrate_values::store::now();
+    let charged_at = now();
     match crate::arrival::bedrock_path_parse(&host, &ctx, &path, &uri, &body) {
         PathArrivalFacts::PathModel(facts) => live(bedrock_converse(ctx, facts, headers, body)),
         PathArrivalFacts::BodyModel {

@@ -218,7 +218,7 @@ async fn the_step_accrues_the_same_metering_row_as_the_live_tap() {
     // LEG 2 — the step, on its own registry, over the same reported usage.
     let (app2, key2, server2) = rig().await;
     let (host2, rt2) = crate::engine::test_host_rt(&app2);
-    let reported = busbar_substrate_values::billing::TokenUsage {
+    let reported = busbar_contract::billing::TokenUsage {
         input: INPUT,
         output: OUTPUT,
         ..Default::default()
@@ -340,7 +340,7 @@ fn a_stream_that_died_bills_the_tokens_it_streamed_and_keeps_the_fee_it_earned()
     let host: Arc<dyn EngineHost> =
         busbar_kernel::test_support::engine_host(&crate::test_support::TestApp::new().build());
     let (seal, unit_token, usage_token) = tokens();
-    let reported = busbar_substrate_values::billing::TokenUsage {
+    let reported = busbar_contract::billing::TokenUsage {
         input: INPUT,
         output: OUTPUT,
         ..Default::default()
@@ -466,7 +466,7 @@ fn priced_rig() -> (
 /// the sealing leg. The pair the walk reads has to tell them apart too.
 #[test]
 fn the_step_says_whether_it_posted_or_only_sealed() {
-    let reported = busbar_substrate_values::billing::TokenUsage {
+    let reported = busbar_contract::billing::TokenUsage {
         input: INPUT,
         output: OUTPUT,
         ..Default::default()

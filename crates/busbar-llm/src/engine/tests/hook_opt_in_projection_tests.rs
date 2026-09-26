@@ -12,7 +12,7 @@
 //! moved, the contract did not.
 
 use super::*;
-use busbar_substrate_values::ir::facts::OPAQUE_CONTENT_MARKER;
+use busbar_contract::ir::facts::OPAQUE_CONTENT_MARKER;
 
 /// Read the fixture body into the hook seam's facts, asserting the reader accepts it.
 fn facts(v: &Value, proto: &str) -> HookFacts {

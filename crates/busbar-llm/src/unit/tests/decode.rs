@@ -268,8 +268,7 @@ fn the_ladder_floor_catches_every_shape_of_no_model() {
 fn every_registered_dialect_resolves_the_live_paths_handler() {
     registered();
     for proto in busbar_kernel::proto::known_protocols().iter().copied() {
-        let live = busbar_substrate_values::handlers::request_handler(proto)
-            .and_then(|rh| rh.operation_handler(OpVerb::CHAT));
+        let live = request_handler(proto).and_then(|rh| rh.operation_handler(OpVerb::CHAT));
         let step = handler_for(proto, OpVerb::CHAT).ok();
         match (live, step) {
             (Some(live), Some(step)) => assert!(

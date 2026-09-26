@@ -185,9 +185,9 @@ fn upstream_answer(egress: &str, shape: &Upstream) -> (&'static str, Vec<u8>) {
             ];
             let mut body = Vec::new();
             for (event, payload) in frames {
-                body.extend(busbar_substrate_values::eventstream::encode_frame(
+                body.extend(busbar_llm_codec::eventstream::encode_frame(
                     event,
-                    &busbar_substrate_values::json::to_vec(&payload).expect("frame json"),
+                    &busbar_llm_codec::json::to_vec(&payload).expect("frame json"),
                 ));
             }
             ("application/vnd.amazon.eventstream", body)

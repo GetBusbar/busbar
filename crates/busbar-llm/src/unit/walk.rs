@@ -31,7 +31,10 @@ use axum::http::HeaderMap;
 use axum::response::Response;
 
 use busbar_contract::caps::{Consumption, Decision, Grant, Meter, Outcome, Pass, Route};
-use busbar_kernel::plane_host::{EngineHost, EngineTablesView};
+use busbar_kernel::{
+    handlers::{frame, request_handler},
+    plane_host::{EngineHost, EngineTablesView},
+};
 
 use crate::unit::admit::Admitted;
 use crate::unit::arrival::BodyArrival;
@@ -143,7 +146,7 @@ pub struct LateReport {
     /// Every class the tap reported, by neutral unit class — the reserved token split and every open
     /// class beside it (a rerank's search units): the same counts the governance ledger accrued when
     /// the cell filled. Empty for a response that billed nothing.
-    pub usage: busbar_substrate_values::billing::Usage,
+    pub usage: busbar_contract::billing::Usage,
     /// How many billable requests this unit is: one for a delivered client request that reached an
     /// upstream, zero otherwise. It is the Meter step's own count, on the same base the previous
     /// release charges the flat fee on, and it is carried rather than re-decided so the two cannot
@@ -585,17 +588,15 @@ impl Walk {
                 ),
             );
         };
-        let op = busbar_substrate_values::handlers::frame(
-            busbar_substrate_values::transport::Transport::Http,
+        let op = frame(
+            busbar_contract::transport::transport::Transport::Http,
             self.operation,
             // The handler the Decode step resolved is looked up again here rather than carried,
             // because the lookup is a table read against a `&'static` registry and a borrowed vtable
             // is not a thing the carry holds. Same protocol, same operation, same table: the same
             // handler, or none — and none is unreachable, because the Decode step already refused a
             // unit whose pair has no handler.
-            match busbar_substrate_values::handlers::request_handler(self.proto)
-                .and_then(|rh| rh.operation_handler(self.operation))
-            {
+            match request_handler(self.proto).and_then(|rh| rh.operation_handler(self.operation)) {
                 Some(h) => h,
                 None => {
                     return Decision::refuse(

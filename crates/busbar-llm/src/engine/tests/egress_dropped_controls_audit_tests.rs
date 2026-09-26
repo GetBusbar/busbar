@@ -9,12 +9,12 @@
 //! rather than only a `tracing::warn!` invisible to the audit trail.
 
 use super::translate_request_cross_protocol;
-use crate::test_support::{LaneSpec, TestApp};
+use crate::test_support::{chat, LaneSpec, TestApp};
 use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
 use serde_json::json;
 
-fn http() -> busbar_substrate_values::transport::Transport {
-    busbar_substrate_values::transport::Transport::Http
+fn http() -> busbar_contract::transport::transport::Transport {
+    busbar_contract::transport::transport::Transport::Http
 }
 
 /// Cross-protocol OpenAI → Anthropic request carrying `response_format` to a lane that declares NO
@@ -37,7 +37,7 @@ fn openai_to_anthropic_response_format_forwards_and_translates_not_dropped() {
         "messages": [{"role": "user", "content": "hi"}],
         "response_format": {"type": "json_object"}
     });
-    let hop_bytes = bytes::Bytes::from(busbar_substrate_values::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_llm_codec::json::to_vec(&body).unwrap());
     // Unique principal so the assertion below reads THIS test's event out of the shared audit ring
     // without racing other tests that append to the same global log.
     let caller = "test-key-anthropic-respfmt";
@@ -47,7 +47,7 @@ fn openai_to_anthropic_response_format_forwards_and_translates_not_dropped() {
         &rt,
         0,
         "openai",
-        busbar_substrate_values::handlers::chat("openai", http()),
+        chat("openai", http()),
         Some(body),
         crate::engine::APPLICATION_JSON,
         true,
@@ -104,7 +104,7 @@ fn openai_to_bedrock_tool_choice_none_forwards_and_audits_degraded() {
         }],
         "tool_choice": "none"
     });
-    let hop_bytes = bytes::Bytes::from(busbar_substrate_values::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_llm_codec::json::to_vec(&body).unwrap());
     let caller = "test-key-bedrock-toolnone";
     let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
@@ -112,7 +112,7 @@ fn openai_to_bedrock_tool_choice_none_forwards_and_audits_degraded() {
         &rt,
         0,
         "openai",
-        busbar_substrate_values::handlers::chat("openai", http()),
+        chat("openai", http()),
         Some(body),
         crate::engine::APPLICATION_JSON,
         true,
@@ -145,7 +145,7 @@ fn openai_to_bedrock_tool_choice_none_forwards_and_audits_degraded() {
 #[test]
 fn egress_dropped_controls_reports_the_right_controls_per_dialect() {
     crate::testkit::install_test_seams();
-    let ingress = busbar_substrate_values::handlers::chat("openai", http());
+    let ingress = chat("openai", http());
     let body = json!({
         "model": "gpt-4o",
         "messages": [{"role": "user", "content": "hi"}],
@@ -180,12 +180,10 @@ fn egress_dropped_controls_reports_the_right_controls_per_dialect() {
         .op_handler
         .read_request_value(&body)
         .expect("openai body must parse to IR");
-    native.prepare_for_egress(&prep_for(
-        busbar_substrate_values::ir::egress_prep::LaneCaps {
-            native_structured_output: true,
-            ..Default::default()
-        },
-    ));
+    native.prepare_for_egress(&prep_for(busbar_contract::ir::egress_prep::LaneCaps {
+        native_structured_output: true,
+        ..Default::default()
+    }));
     assert_eq!(
         native.egress_dropped_controls("anthropic"),
         vec!["response_format"]
@@ -193,9 +191,9 @@ fn egress_dropped_controls_reports_the_right_controls_per_dialect() {
 }
 
 fn prep_for(
-    lane_caps: busbar_substrate_values::ir::egress_prep::LaneCaps,
-) -> busbar_substrate_values::ir::egress_prep::EgressPrep<'static> {
-    busbar_substrate_values::ir::egress_prep::EgressPrep {
+    lane_caps: busbar_contract::ir::egress_prep::LaneCaps,
+) -> busbar_contract::ir::egress_prep::EgressPrep<'static> {
+    busbar_contract::ir::egress_prep::EgressPrep {
         ingress_protocol: "openai",
         egress_requires_max_tokens: true,
         lane_default_max_tokens: None,
@@ -215,21 +213,21 @@ fn translate_onto(
     caller: &str,
     model: &str,
     protocol: &'static str,
-    caps: busbar_substrate_values::ir::egress_prep::LaneCaps,
+    caps: busbar_contract::ir::egress_prep::LaneCaps,
     body: serde_json::Value,
 ) -> serde_json::Value {
     crate::testkit::install_test_seams();
     let app = TestApp::new()
         .lane(LaneSpec::new(model, protocol, "http://unused.local").lane_caps(caps))
         .build();
-    let hop_bytes = bytes::Bytes::from(busbar_substrate_values::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_llm_codec::json::to_vec(&body).unwrap());
     let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
         &host,
         &rt,
         0,
         "openai",
-        busbar_substrate_values::handlers::chat("openai", http()),
+        chat("openai", http()),
         Some(body),
         crate::engine::APPLICATION_JSON,
         true,
@@ -245,7 +243,7 @@ fn translate_onto(
 /// form — is dropped AND audited as `response_format on anthropic`.
 #[test]
 fn native_structured_output_lane_drops_schema_less_json_with_audit() {
-    let native = busbar_substrate_values::ir::egress_prep::LaneCaps {
+    let native = busbar_contract::ir::egress_prep::LaneCaps {
         native_structured_output: true,
         ..Default::default()
     };
@@ -295,7 +293,7 @@ fn adaptive_thinking_is_a_lane_capability() {
         "test-key-anthropic-adaptive-on",
         "claude-opus-5",
         crate::proto_codec::PROTO_ANTHROPIC,
-        busbar_substrate_values::ir::egress_prep::LaneCaps {
+        busbar_contract::ir::egress_prep::LaneCaps {
             anthropic_adaptive_thinking: true,
             ..Default::default()
         },
@@ -327,7 +325,7 @@ fn adaptive_thinking_is_a_lane_capability() {
 /// other OpenAI-protocol lane (an OpenAI-compatible host) under `max_tokens`.
 #[test]
 fn max_output_key_is_a_lane_capability() {
-    use busbar_substrate_values::ir::egress_prep::{LaneCaps, MaxOutputKey};
+    use busbar_contract::ir::egress_prep::{LaneCaps, MaxOutputKey};
     let completion = LaneCaps {
         max_output_key: MaxOutputKey::MaxCompletionTokens,
         ..Default::default()
@@ -358,7 +356,7 @@ fn max_output_key_is_a_lane_capability() {
 
 fn translate_anthropic_onto_openai(
     caller: &str,
-    caps: busbar_substrate_values::ir::egress_prep::LaneCaps,
+    caps: busbar_contract::ir::egress_prep::LaneCaps,
     body: serde_json::Value,
 ) -> serde_json::Value {
     crate::testkit::install_test_seams();
@@ -372,14 +370,14 @@ fn translate_anthropic_onto_openai(
             .lane_caps(caps),
         )
         .build();
-    let hop_bytes = bytes::Bytes::from(busbar_substrate_values::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_llm_codec::json::to_vec(&body).unwrap());
     let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
         &host,
         &rt,
         0,
         "anthropic",
-        busbar_substrate_values::handlers::chat("anthropic", http()),
+        chat("anthropic", http()),
         Some(body),
         crate::engine::APPLICATION_JSON,
         true,

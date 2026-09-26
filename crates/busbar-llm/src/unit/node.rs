@@ -110,11 +110,13 @@ use busbar_contract::caps::{
 use busbar_contract::slice::GroupLeaseSlip;
 use busbar_contract::LaneId;
 use busbar_kernel::{
+    handlers::request_handler,
     ingress::arrival::{Arrival as ArrivalRequest, ArrivalCtx, ArrivalPayload},
     plane_host::PlaneAnswer,
+    proxy::POOL_LABEL_UNRESOLVED,
+    store::now,
     teller::{AccrualMeter, Ended, Evidence, FeeEvidence, RouteAwait, RouteLeg, UnitCtx, Units},
 };
-use busbar_substrate_values::proxy::POOL_LABEL_UNRESOLVED;
 
 use crate::arrival::PathArrivalFacts;
 use crate::unit::walk::{Walk, WalkArrival};
@@ -134,7 +136,7 @@ pub type Lent = (Resolve, Arc<AccrualMeter>, u64);
 
 /// WHAT A UNIT CONSUMED, read after its body drained: every class the tap reported, the billable
 /// count the Meter step decided, and the serving lane's config name. A report, never an amount.
-pub type Reported = (busbar_substrate_values::billing::Usage, u32, String);
+pub type Reported = (busbar_contract::billing::Usage, u32, String);
 
 /// The reading of what a drained body consumed, taken once, when the body is done with.
 pub type Late = Box<dyn FnOnce() -> Option<Reported> + Send>;
@@ -257,7 +259,7 @@ pub(crate) static NATIVE_SEATS: &[&(dyn approve::VetoSeat + Sync)] = &[];
 fn vetoed() -> audit::RefusalOutcome {
     audit::RefusalOutcome::new(
         StatusCode::FORBIDDEN,
-        busbar_substrate_values::proxy::KIND_PERMISSION,
+        busbar_contract::protocol::KIND_PERMISSION,
         "Your API key does not have permission to access this resource.",
     )
 }
@@ -267,7 +269,7 @@ fn vetoed() -> audit::RefusalOutcome {
 fn unavailable() -> audit::RefusalOutcome {
     audit::RefusalOutcome::new(
         StatusCode::SERVICE_UNAVAILABLE,
-        busbar_substrate_values::proxy::KIND_OVERLOADED,
+        busbar_contract::protocol::KIND_OVERLOADED,
         "The service is temporarily overloaded. Please retry shortly.",
     )
 }
@@ -826,8 +828,8 @@ async fn body_arrival(proto: &'static str, a: ArrivalRequest) -> PlaneAnswer {
         headers,
         body,
     } = a;
-    let Some(operation) = busbar_substrate_values::handlers::request_handler(proto)
-        .and_then(|rh| rh.resolve_operation(uri.path(), &body))
+    let Some(operation) =
+        request_handler(proto).and_then(|rh| rh.resolve_operation(uri.path(), &body))
     else {
         return PlaneAnswer::Live(host.fallback_not_found(
             &ctx,
@@ -953,7 +955,7 @@ pub(crate) fn gemini_path_arrival(
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = PlaneAnswer> + Send>> {
     // Pinned before the parse, because a parse that rejects accounts its own rejection against them.
     let started = Instant::now();
-    let charged_at = busbar_substrate_values::store::now();
+    let charged_at = now();
     let rest = crate::arrival::gemini_rest(&a.host, &a.path);
     let parsed = crate::arrival::gemini_path_parse(&a.host, &a.ctx, &rest, &a.uri, &a.body);
     match parsed {
@@ -991,7 +993,7 @@ pub(crate) fn bedrock_path_arrival(
     a: ArrivalRequest,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = PlaneAnswer> + Send>> {
     let started = Instant::now();
-    let charged_at = busbar_substrate_values::store::now();
+    let charged_at = now();
     let parsed = crate::arrival::bedrock_path_parse(&a.host, &a.ctx, &a.path, &a.uri, &a.body);
     match parsed {
         // A NAMED pre-routing refusal: render it at the audit terminal and post it through the

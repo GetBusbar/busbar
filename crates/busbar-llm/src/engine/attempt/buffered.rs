@@ -10,14 +10,9 @@
 
 use crate::engine::*;
 
+use busbar_contract::diag_debug;
 use busbar_kernel::store::BreakerCfg;
-use busbar_substrate_values::diag_debug;
-use busbar_substrate_values::diagnostics::{
-    CROSSPROTO_BINARY_CODEC_FAILED, CROSSPROTO_JSON_CODEC_FAILED,
-    CROSSPROTO_NONSTREAM_MIDTRANSFER_FAILED, CROSSPROTO_RESPONSE_NOT_TRANSLATABLE,
-    CROSSPROTO_RESPONSE_NOT_TRANSLATABLE_DEGRADED, CROSSPROTO_TRANSLATION_CAP_EXCEEDED,
-};
-use busbar_substrate_values::handlers::TranslateCodec;
+use busbar_llm_codec::translate::TranslateCodec;
 
 /// RAII refund for the headers-time `spend_budget` unit across the BUFFERED path's spend →
 /// `read_capped(...).await` window. A client disconnect parked at that await drops the future
@@ -62,9 +57,9 @@ impl Drop for BudgetSpendGuard<'_> {
 /// speech, a count of images and a flat fee are each priced off their own dimension, and inventing a
 /// token figure for any of them would put a number the provider never reported into the ledger.
 fn token_usage_of(
-    usage: &Option<busbar_substrate_values::billing::Billing>,
-) -> Option<busbar_substrate_values::billing::TokenUsage> {
-    use busbar_substrate_values::billing::Billing;
+    usage: &Option<busbar_contract::billing::Billing>,
+) -> Option<busbar_contract::billing::TokenUsage> {
+    use busbar_contract::billing::Billing;
     match usage {
         Some(Billing::Tokens(t)) => Some(t.clone()),
         // A COUNTED unit (a rerank's search units, item 134) is not a token figure either, and is
@@ -126,7 +121,7 @@ pub(crate) async fn translate_response_cross_protocol(
     rt: &Arc<NativeRuntime>,
     i: usize,
     ingress_protocol: &str,
-    op: busbar_substrate_values::handlers::Op,
+    op: Op,
     pool: &str,
     breaker_cfg: &BreakerCfg,
     r: axum::http::Response<hyper::body::Incoming>,
@@ -178,10 +173,9 @@ pub(crate) async fn translate_response_cross_protocol(
         Ok(bytes) => bytes,
         Err(resp) => return resp,
     };
-    let egress_op = busbar_substrate_values::handlers::request_handler(egress_name)
-        .and_then(|rh| rh.operation_handler(op.operation));
-    let ingress_op = busbar_substrate_values::handlers::request_handler(ingress_protocol)
-        .and_then(|rh| rh.operation_handler(op.operation));
+    let egress_op = request_handler(egress_name).and_then(|rh| rh.operation_handler(op.operation));
+    let ingress_op =
+        request_handler(ingress_protocol).and_then(|rh| rh.operation_handler(op.operation));
     let delivery = Delivery {
         rt,
         i,
@@ -193,7 +187,7 @@ pub(crate) async fn translate_response_cross_protocol(
     // bridges at the byte level through the operation codecs; a JSON body takes the Value path.
     // Token accounting happens ONLY inside an exit that actually delivers a body (a 2xx whose usage
     // parses but whose shape is unmodeled falls through to the ingress-native 500 and bills nothing).
-    let body_json = busbar_substrate_values::json::parse::<Value>(&bytes);
+    let body_json = busbar_llm_codec::json::parse::<Value>(&bytes);
     if body_json.is_err() {
         if let Some(resp) = try_deliver_opaque(
             host,
@@ -270,7 +264,7 @@ fn try_deliver_opaque(
     i: usize,
     ingress_protocol: &str,
     egress_name: &str,
-    egress_op: Option<&dyn busbar_substrate_values::handlers::OperationHandler>,
+    egress_op: Option<&dyn busbar_contract::codec::OperationHandler>,
     ingress_op_present: bool,
     bytes: &[u8],
     ingress_request_body: Option<&Value>,
@@ -282,7 +276,7 @@ fn try_deliver_opaque(
 ) -> Option<Response> {
     let eh = egress_op?;
     match eh.translate_response(
-        busbar_substrate_values::handlers::TranslateRespInput::Opaque(bytes),
+        busbar_llm_codec::translate::TranslateRespInput::Opaque(bytes),
         ingress_op_present,
         ingress_protocol,
         &EngineTables::new(rt).lanes()[i].model,
@@ -303,7 +297,7 @@ fn try_deliver_opaque(
             None
         }
         Ok((usage, delivered)) => {
-            let busbar_substrate_values::wire::TranslatedResponse::Typed(wire) = delivered else {
+            let busbar_contract::codec::TranslatedResponse::Typed(wire) = delivered else {
                 // `Untranslatable`: no client body could be written — fall through to the 500,
                 // unbilled, guard left armed so the budget unit is refunded.
                 return None;
@@ -517,7 +511,7 @@ fn failed_generation(
     d: &Delivery<'_>,
     pool: &str,
     breaker_cfg: &BreakerCfg,
-    usage: Option<busbar_substrate_values::billing::Billing>,
+    usage: Option<busbar_contract::billing::Billing>,
     usage_sink: &Option<UsageSink>,
     budget_guard: &mut BudgetSpendGuard<'_>,
     tap: &TapCell,
@@ -560,7 +554,7 @@ fn failed_generation(
 fn deliver_json(
     host: &Arc<dyn EngineHost>,
     d: &Delivery<'_>,
-    eh: &dyn busbar_substrate_values::handlers::OperationHandler,
+    eh: &dyn busbar_contract::codec::OperationHandler,
     ingress_serves_op: bool,
     rv: &Value,
     is_chat: bool,
@@ -585,7 +579,7 @@ fn deliver_json(
     // streaming wire contract), so the generic IR-frame-synthesis fork must not run for it: that
     // fork produces `text/event-stream`, which is not what a native Gemini SDK expects here.
     let (usage, delivered) = match eh.translate_response(
-        busbar_substrate_values::handlers::TranslateRespInput::Json(rv),
+        busbar_llm_codec::translate::TranslateRespInput::Json(rv),
         ingress_serves_op,
         ingress_protocol,
         &EngineTables::new(rt).lanes()[i].model,
@@ -615,9 +609,9 @@ fn deliver_json(
     // is refunded, mirroring the streaming wrapper's refund-on-non-delivery.
     let delivers = matches!(
         delivered,
-        busbar_substrate_values::wire::TranslatedResponse::StreamFrames(_)
-            | busbar_substrate_values::wire::TranslatedResponse::Typed(_)
-            | busbar_substrate_values::wire::TranslatedResponse::Json(_)
+        busbar_contract::codec::TranslatedResponse::StreamFrames(_)
+            | busbar_contract::codec::TranslatedResponse::Typed(_)
+            | busbar_contract::codec::TranslatedResponse::Json(_)
     );
     // A FAILED GENERATION (owner ruling Q31): the upstream's own stop reason says the generation
     // failed (a Cohere `finish_reason: "ERROR"`, a Gemini `MALFORMED_FUNCTION_CALL`). No ingress
@@ -662,14 +656,14 @@ fn deliver_json(
     match delivered {
         // A bedrock ingress that asked for ConverseStream but got a buffered 2xx: a native AWS SDK
         // decoder expects binary eventstream frames under the eventstream content type.
-        busbar_substrate_values::wire::TranslatedResponse::StreamFrames(frames) => Some(
+        busbar_contract::codec::TranslatedResponse::StreamFrames(frames) => Some(
             d.respond(
                 crate::engine::ingress_stream_content_type(ingress_protocol)
                     .unwrap_or(crate::engine::TEXT_EVENT_STREAM),
                 frames,
             ),
         ),
-        busbar_substrate_values::wire::TranslatedResponse::IngressUnsupported => {
+        busbar_contract::codec::TranslatedResponse::IngressUnsupported => {
             // The caller's dialect has no shape for this operation at all: no completion is
             // relayed, nothing is billed, and the end the record seals is an error rather than a
             // truncated answer.
@@ -687,10 +681,10 @@ fn deliver_json(
             ))
         }
         // The ingress dialect's response is not JSON (binary speech): relay bytes + their CT.
-        busbar_substrate_values::wire::TranslatedResponse::Typed(wire) => {
+        busbar_contract::codec::TranslatedResponse::Typed(wire) => {
             Some(d.respond(wire.content_type, bytes::Bytes::from_owner(wire.bytes)))
         }
-        busbar_substrate_values::wire::TranslatedResponse::Json(mut translated) => {
+        busbar_contract::codec::TranslatedResponse::Json(mut translated) => {
             // A native Bedrock Converse response always populates `metrics.latencyMs`; inject the
             // real elapsed (omit rather than fabricate a `0` if timing is missing).
             if let Some(dialect) =
@@ -715,18 +709,18 @@ fn deliver_json(
                 );
                 return Some(
                     rb.body(Body::from(
-                        busbar_substrate_values::json::to_vec(&arr)
+                        busbar_llm_codec::json::to_vec(&arr)
                             .unwrap_or_else(|_| arr.to_string().into_bytes()),
                     ))
                     .unwrap_or_else(|_| d.status.into_response()),
                 );
             }
             // The body is now in the client's native non-stream shape: the ingress JSON CT.
-            let body_bytes = busbar_substrate_values::json::to_vec(&translated)
+            let body_bytes = busbar_llm_codec::json::to_vec(&translated)
                 .unwrap_or_else(|_| translated.to_string().into_bytes());
             Some(d.respond(APPLICATION_JSON, body_bytes))
         }
         // Opaque-only terminal; unreachable on the JSON path — the caller's 500.
-        busbar_substrate_values::wire::TranslatedResponse::Untranslatable => None,
+        busbar_contract::codec::TranslatedResponse::Untranslatable => None,
     }
 }

@@ -149,15 +149,15 @@ async fn same_protocol_rerank_books(protocol: &'static str, body: &str) -> TwoBo
         .pool("pr", &[(0, 1)])
         .build();
     let (host, rt) = crate::engine::test_host_rt(&app);
-    let op = busbar_substrate_values::handlers::op_for(
+    let op = op_for(
         protocol,
         busbar_contract::operation::OpVerb::RERANK,
-        busbar_substrate_values::transport::Transport::Http,
+        busbar_contract::transport::transport::Transport::Http,
     )
     .expect("the protocol serves rerank");
     // The same-protocol non-stream translator the protocol's writer installs (Bedrock's body
     // translator; none for Cohere, whose same-protocol body relays verbatim).
-    let translate: Option<Box<dyn busbar_substrate_values::proto::StreamTranslator>> =
+    let translate: Option<Box<dyn busbar_contract::protocol::StreamTranslator>> =
         if protocol == crate::proto_codec::PROTO_BEDROCK {
             Some(Box::new(
                 busbar_llm_codec::bedrock::BedrockConverseBodyTranslator::new(),

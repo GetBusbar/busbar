@@ -16,6 +16,7 @@
 use super::{translate_response_cross_protocol, BudgetSpendGuard};
 use crate::engine::AppEngineExt as _;
 use crate::engine::TapCell;
+use crate::test_support::{chat, op_for, Op};
 use busbar_kernel::governance::NewKeySpec;
 use busbar_kernel::test_support::engine_kit::{CostKit, EngineTestKit as _, GovKit};
 use std::sync::Arc;
@@ -91,11 +92,7 @@ struct Outcome {
 /// governed fixture. Before the call we consume ONE unit of the lane budget — the headers-time spend
 /// the guard is responsible for refunding — then arm a `BudgetSpendGuard` exactly as the live caller
 /// does. The guard is dropped (its refund seam) before we read the budget back.
-async fn drive(
-    op: busbar_substrate_values::handlers::Op,
-    ingress: &'static str,
-    body: Vec<u8>,
-) -> Outcome {
+async fn drive(op: Op, ingress: &'static str, body: Vec<u8>) -> Outcome {
     let (app, gov, cost, key) = fixture();
     let (host, rt) = crate::engine::test_host_rt(&app);
     let sink = Some(crate::engine::UsageSink {
@@ -209,9 +206,9 @@ async fn delivered_cross_protocol_response_bills_once() {
     crate::testkit::install_test_seams();
     let body = br#"{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":13,"completion_tokens":9}}"#.to_vec();
     let out = drive(
-        busbar_substrate_values::handlers::chat(
+        chat(
             "openai",
-            busbar_substrate_values::transport::Transport::Http,
+            busbar_contract::transport::transport::Transport::Http,
         ),
         "anthropic",
         body,
@@ -242,10 +239,10 @@ async fn ingress_unsupported_404_does_not_charge() {
     let body = br#"{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2,0.3]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":42}}"#.to_vec();
     crate::testkit::install_test_seams();
     let out = drive(
-        busbar_substrate_values::handlers::op_for(
+        op_for(
             "openai",
             busbar_contract::operation::OpVerb::EMBEDDINGS,
-            busbar_substrate_values::transport::Transport::Http,
+            busbar_contract::transport::transport::Transport::Http,
         )
         .expect("openai serves embeddings"),
         "anthropic",
@@ -281,10 +278,10 @@ async fn untranslatable_500_does_not_charge() {
     ];
     crate::testkit::install_test_seams();
     let out = drive(
-        busbar_substrate_values::handlers::op_for(
+        op_for(
             "openai",
             busbar_contract::operation::OpVerb::SPEECH,
-            busbar_substrate_values::transport::Transport::Http,
+            busbar_contract::transport::transport::Transport::Http,
         )
         .expect("openai serves speech"),
         "anthropic",

@@ -318,8 +318,7 @@ fn the_url_facts_drive_the_two_steps_to_the_live_paths_answer() {
         .unwrap_or_else(|r| panic!("{path} refused at arrival: {r:?}"));
 
         // The live splice, run here on the same bytes and the same facts.
-        let mut v: serde_json::Value =
-            busbar_substrate_values::json::parse(&body).expect("live parse");
+        let mut v: serde_json::Value = busbar_llm_codec::json::parse(&body).expect("live parse");
         let obj = v.as_object_mut().expect("a native body is a document");
         obj.insert(
             "model".to_string(),
@@ -331,7 +330,7 @@ fn the_url_facts_drive_the_two_steps_to_the_live_paths_answer() {
                 obj.insert(key.to_string(), serde_json::Value::Bool(true));
             }
         }
-        let live: Bytes = busbar_substrate_values::json::to_vec(&v)
+        let live: Bytes = busbar_llm_codec::json::to_vec(&v)
             .expect("live serialize")
             .into();
         assert_eq!(
@@ -342,14 +341,13 @@ fn the_url_facts_drive_the_two_steps_to_the_live_paths_answer() {
         // STEP 1, in the path-model spelling: the live arm's one chained lookup.
         let step1 = crate::unit::decode::decode_path_model(proto, f.operation, &f.model)
             .unwrap_or_else(|r| panic!("{path} refused at decode: {r:?}"));
-        let live_handler = busbar_substrate_values::handlers::request_handler(proto)
+        let live_handler = crate::test_support::request_handler(proto)
             .and_then(|rh| rh.operation_handler(f.operation))
             .expect("the live lookup resolves this pair");
         assert!(
             std::ptr::eq(
-                live_handler as *const dyn busbar_substrate_values::handlers::OperationHandler
-                    as *const u8,
-                step1.op_handler as *const dyn busbar_substrate_values::handlers::OperationHandler
+                live_handler as *const dyn busbar_contract::codec::OperationHandler as *const u8,
+                step1.op_handler as *const dyn busbar_contract::codec::OperationHandler
                     as *const u8
             ),
             "{path}: the step resolved a different handler than the live lookup"

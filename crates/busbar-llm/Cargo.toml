@@ -76,7 +76,6 @@ webhook-receiver = ["dep:busbar-plugin"]
 # re-exports these same items, so every historical repoint from a core path to `busbar_substrate::X` /
 # `busbar_api::X` was by-identity (the very same type/const), i.e. byte-identical behaviour.
 busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["plane-llm"] }
-busbar-substrate-values = { path = "../busbar-substrate-values" }
 # THE CODECS. The pure half of this plugin, split out so `busbar-plane-llm` can name the dialect
 # readers/writers, the IR, the stream translator and the answer-normalization pass without pulling
 # this crate's HTTP stack and async runtime into a pure kind's closure. Every module that moved is

@@ -21,10 +21,12 @@ use std::time::Duration;
 
 use axum::http::header::{ACCEPT, CONTENT_TYPE, USER_AGENT};
 
+use busbar_contract::upstream::{Disposition, RawUpstreamError};
 use busbar_kernel::plane_host::{EngineHost, HealthModeInput as HealthMode};
-use busbar_kernel::store::{now, BreakerCfg};
-use busbar_substrate_values::breaker::{
-    classify, normalize_raw_error, Disposition, RawUpstreamError,
+use busbar_kernel::{
+    breaker::{classify, normalize_raw_error, parse_retry_after},
+    handlers::protocol_error,
+    store::{now, BreakerCfg},
 };
 
 use crate::engine::NativeRuntime;
@@ -429,7 +431,7 @@ pub(crate) async fn probe_lane(host: &dyn EngineHost, i: usize, timeout: Duratio
             // vocabulary for all six protocols (chat's codec delegates to that very reader), and an
             // outbound attempt with no lane behind it can be attributed the same way.
             let status = r.status();
-            let retry_after_secs = busbar_substrate_values::breaker::parse_retry_after(r.headers());
+            let retry_after_secs = parse_retry_after(r.headers());
             let body = read_capped_error_body(r.into_body(), deadline).await;
             // Stage 1a asks the CELL that spoke to this upstream. For chat over HTTP that cell's
             // `extract_error` is uniformly `protocol_error(protocol, …)` (its error vocabulary is the
@@ -437,11 +439,7 @@ pub(crate) async fn probe_lane(host: &dyn EngineHost, i: usize, timeout: Duratio
             // is byte-identical to `chat(protocol).extract_error(…)` — and does not require a concrete
             // chat codec, which core no longer carries in production (G6 A4b: `ChatOperation` and the
             // chat IR relocated to the `busbar-llm` plugin).
-            let mut raw: RawUpstreamError = busbar_substrate_values::handlers::protocol_error(
-                lane.protocol,
-                status.as_u16(),
-                &body,
-            );
+            let mut raw: RawUpstreamError = protocol_error(lane.protocol, status.as_u16(), &body);
             raw.retry_after_secs = retry_after_secs;
             (
                 classify(&normalize_raw_error(&raw, &lane.error_map)),

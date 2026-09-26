@@ -13,9 +13,8 @@
 
 use crate::engine::*;
 
+use busbar_contract::diag_debug;
 use busbar_kernel::observability::HOTPATH_LEVEL;
-use busbar_substrate_values::diag_debug;
-use busbar_substrate_values::diagnostics::ATTEMPT_TIMEOUT_DEGRADED;
 
 /// Forward one request to a specific lane and relay the response. Shared by the degraded
 /// last-resort exhaustion paths (FallbackPool routing + LeastBad). Unlike the main forward
@@ -67,7 +66,7 @@ pub(super) async fn forward_once(
     // and wins nothing), so NO guard is built and this call can never release/revert any probe — in
     // particular it can never revert a probe a concurrent PEER legitimately won on the same cell.
     probe_epoch: Option<u64>,
-    op: busbar_substrate_values::handlers::Op,
+    op: Op,
     req_content_type: &str,
     usage_sink: Option<UsageSink>,
     // The selected pool member's `reasoning` override (`WeightedLane.reasoning`), resolved by the
@@ -111,14 +110,14 @@ pub(super) async fn forward_once(
     // Re-parse body for per-lane model rewriting. An OPAQUE (non-JSON) body — multipart/binary
     // operations — parses to `None` and relays/translates at the byte level, exactly like the main
     // path; only a JSON-Content-Type body that FAILS to parse is the caller's 400.
-    let v: Option<Value> = match busbar_substrate_values::json::parse(body) {
+    let v: Option<Value> = match busbar_llm_codec::json::parse(body) {
         Ok(v) => Some(v),
         Err(_) if !req_content_type.starts_with(APPLICATION_JSON) => None,
         Err(_) => {
             // See the main forward path: log a sanitized note for operators; never the parser's raw
             // error (with sonic-rs it embeds a fragment of the input body — secrets/PII) nor leak it
             // into the client 400 body.
-            tracing::debug!(detail = %busbar_substrate_values::json::parse_err_log(body.len()), "request body JSON parse failed");
+            tracing::debug!(detail = %busbar_llm_codec::json::parse_err_log(body.len()), "request body JSON parse failed");
             // Pre-dispatch bail (no breaker outcome recorded): the armed `probe_guard` above releases
             // the POOL-cell single-flight probe on drop (owner-checked, idempotent, a no-op on the
             // default `""` / a non-HalfOpen cell), so the cell never wedges HalfOpen on this early exit.
@@ -254,7 +253,7 @@ pub(super) async fn forward_once(
     } else if ingress_protocol == egress_name {
         req_content_type
     } else {
-        busbar_substrate_values::handlers::request_handler(egress_name)
+        request_handler(egress_name)
             .and_then(|rh| rh.operation_handler(op.operation))
             .map(|h| h.egress_request_content_type())
             .unwrap_or(APPLICATION_JSON)
@@ -426,24 +425,20 @@ pub(super) async fn forward_once(
                 // ClientFault/ContextLength arms). Body-only classification here (no headers);
                 // `retry_after` only floors the cooldown, not the disposition, so it is omitted.
                 let penalize_breaker = {
-                    let raw = busbar_substrate_values::handlers::op_for(
+                    let raw = op_for(
                         egress_name,
                         op.operation,
-                        busbar_substrate_values::transport::Transport::Http,
+                        busbar_contract::transport::transport::Transport::Http,
                     )
                     .map(|cell| cell.extract_error(status.as_u16(), &bytes))
                     .unwrap_or_else(|| {
-                        busbar_substrate_values::breaker::RawUpstreamError::from_status(
-                            status.as_u16(),
-                        )
+                        busbar_contract::upstream::RawUpstreamError::from_status(status.as_u16())
                     });
-                    let sig = busbar_substrate_values::breaker::normalize_raw_error(
-                        &raw,
-                        &EngineTables::new(rt).lanes()[i].error_map,
-                    );
+                    let sig =
+                        normalize_raw_error(&raw, &EngineTables::new(rt).lanes()[i].error_map);
                     matches!(
-                        busbar_substrate_values::breaker::classify(&sig),
-                        busbar_substrate_values::breaker::Disposition::TransientUpstream
+                        classify_disposition(&sig),
+                        busbar_contract::upstream::Disposition::TransientUpstream
                     )
                 };
                 // Cross-protocol: relaying the EGRESS provider's native error body+Content-Type to a

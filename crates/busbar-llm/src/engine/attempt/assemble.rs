@@ -88,7 +88,7 @@ pub(super) async fn build(
     } else if hop.ingress_protocol == hop.egress_name {
         hop.req_content_type
     } else {
-        busbar_substrate_values::handlers::request_handler(hop.egress_name)
+        request_handler(hop.egress_name)
             .and_then(|rh| rh.operation_handler(hop.op.operation))
             .map(|h| h.egress_request_content_type())
             .unwrap_or(APPLICATION_JSON)
@@ -259,7 +259,7 @@ pub(crate) const DETAIL_STREAM_OPTIONS_NOT_OBJECT: &str =
 /// usage without reshaping the caller's value, and the caller refuses it (item 362). A body that
 /// already opted in re-serializes identically in effect.
 pub(crate) fn try_inject_openai_stream_include_usage(payload: Bytes) -> Result<Bytes, Bytes> {
-    let mut v: Value = match busbar_substrate_values::json::parse(&payload) {
+    let mut v: Value = match busbar_llm_codec::json::parse(&payload) {
         Ok(v) => v,
         Err(_) => return Ok(payload),
     };
@@ -278,7 +278,7 @@ pub(crate) fn try_inject_openai_stream_include_usage(payload: Bytes) -> Result<B
         return Err(payload);
     };
     so_obj.insert("include_usage".to_string(), Value::Bool(true));
-    match busbar_substrate_values::json::to_vec(&v) {
+    match busbar_llm_codec::json::to_vec(&v) {
         Ok(bytes) => Ok(Bytes::from(bytes)),
         Err(_) => Ok(payload),
     }

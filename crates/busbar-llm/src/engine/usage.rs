@@ -1,7 +1,6 @@
 use super::*;
 
-use busbar_substrate_values::diag_warn;
-use busbar_substrate_values::diagnostics::LANE_BREAKER_TRIPPED;
+use busbar_contract::diag_warn;
 
 /// Charge a non-streaming response's token usage to the virtual key's budget, sourced from the
 /// IR. The streaming path bills from `translate.usage()` inside `FirstByteBody`; buffered
@@ -9,7 +8,7 @@ use busbar_substrate_values::diagnostics::LANE_BREAKER_TRIPPED;
 /// terminal `IrUsage` is available WITHOUT a separate byte-scan — bill straight from `ir.usage`.
 ///
 /// Billed tokens = the normalized billable total: `uncached_input + cache_read +
-/// cache_creation + output` (see [`busbar_substrate_values::ir::IrUsage::billable_tokens`]). Readers normalize
+/// cache_creation + output` (see [`busbar_llm_codec::ir::IrUsage::billable_tokens`]). Readers normalize
 /// `input_tokens` to UNCACHED and keep the cache fields ADDITIVE, so this sum is correct
 /// provider-agnostically. This matches the streaming billing arm.
 /// OPERATION-BLIND usage recording: project the response IR's neutral `Billing` and record token
@@ -18,11 +17,11 @@ use busbar_substrate_values::diagnostics::LANE_BREAKER_TRIPPED;
 /// the client-visible body today and priced by the 1.3 engine; nothing to record here yet.
 pub(crate) fn record_resp_usage(
     host: &Arc<dyn EngineHost>,
-    usage: Option<busbar_substrate_values::billing::Billing>,
+    usage: Option<busbar_contract::billing::Billing>,
     usage_sink: &Option<UsageSink>,
     lane: Option<&crate::engine::Lane>,
 ) {
-    if let Some(busbar_substrate_values::billing::Billing::Tokens(t)) = usage {
+    if let Some(busbar_contract::billing::Billing::Tokens(t)) = usage {
         // `usage` is ALREADY the neutral `Billing::Tokens(TokenUsage)` projection the response codec
         // captured from the read IR (before `prepare_for_ingress`) and handed back through
         // `TranslateCodec::translate_response` — bill straight from it. This seam never holds the
@@ -70,9 +69,9 @@ pub(crate) fn record_resp_usage(
 /// not ledgered as a class today, so reporting one here would put a count on the durable book the
 /// governance ledger does not hold.
 pub(crate) fn open_units_of(
-    usage: &Option<busbar_substrate_values::billing::Billing>,
+    usage: &Option<busbar_contract::billing::Billing>,
 ) -> std::collections::BTreeMap<String, u64> {
-    use busbar_substrate_values::billing::Billing;
+    use busbar_contract::billing::Billing;
     match usage {
         Some(Billing::Counted { class, count }) => {
             std::collections::BTreeMap::from([(class.clone(), *count)])
@@ -105,12 +104,12 @@ pub(crate) fn ledger_open_units(
         &sink.key,
         &sink.pool,
         &lane.model,
-        &busbar_substrate_values::billing::Usage { usage_units },
+        &busbar_contract::billing::Usage { usage_units },
         sink.charged_at,
     );
 }
 
-/// Project the IR's normalized usage into the neutral name-keyed [`busbar_substrate_values::billing::Usage`]
+/// Project the IR's normalized usage into the neutral name-keyed [`busbar_contract::billing::Usage`]
 /// carrier: the four reserved units (`input`/`output`/`cache_read`/`cache_write`) as canonical map
 /// keys (M1b — `TierTokens` is dissolved). Readers normalize `input_tokens` to UNCACHED and keep the
 /// cache fields ADDITIVE, so the mapping is direct: cache-creation is the `cache_write` unit. Zero
@@ -144,8 +143,8 @@ pub(crate) fn ledger_and_meter(
     host: &Arc<dyn EngineHost>,
     sink: &UsageSink,
     lane: &crate::engine::Lane,
-    usage: Option<&busbar_substrate_values::billing::TokenUsage>,
-    tier: &busbar_substrate_values::billing::Usage,
+    usage: Option<&busbar_contract::billing::TokenUsage>,
+    tier: &busbar_contract::billing::Usage,
 ) {
     // Ledger the TIER SPLIT (uncached input / output / cache-read / cache-write — each prices
     // differently under the rate card) against the key's budget chain, in the SAME window as the
@@ -190,7 +189,7 @@ pub(crate) fn ledger_and_meter(
 /// or metered (unreachable in production: every delivered response has a serving lane).
 pub(crate) fn record_token_usage(
     host: &Arc<dyn EngineHost>,
-    usage: &busbar_substrate_values::billing::TokenUsage,
+    usage: &busbar_contract::billing::TokenUsage,
     usage_sink: &Option<UsageSink>,
     lane: Option<&crate::engine::Lane>,
 ) {

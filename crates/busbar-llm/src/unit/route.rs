@@ -58,7 +58,7 @@ use serde_json::Value;
 use busbar_contract::caps::{step::Route, Decision, LaneId, Pass, ReasonCode, Refusal, RoutePlan};
 use busbar_contract::{DestinationFacts, Leg, UpstreamAddress};
 use busbar_kernel::observability::HOTPATH_LEVEL;
-use busbar_kernel::plane_host::EngineHost;
+use busbar_kernel::{handlers::Op, plane_host::EngineHost};
 
 use crate::unit::meter::MeterFacts;
 
@@ -87,7 +87,7 @@ pub(crate) struct RouteInput<'a> {
     pub(crate) host: &'a Arc<dyn EngineHost>,
     pub(crate) rt: &'a Arc<NativeRuntime>,
     pub(crate) proto: &'static str,
-    pub(crate) op: busbar_substrate_values::handlers::Op,
+    pub(crate) op: Op,
     /// The admitted destination — post-downgrade, never the requested one.
     pub(crate) destination: &'a str,
     pub(crate) headers: &'a HeaderMap,
@@ -188,7 +188,7 @@ fn plan_over(rt: &Arc<NativeRuntime>, cands: &[WeightedLane]) -> RoutePlan {
         let facts = DestinationFacts::Upstream {
             // The family that dials an LLM lane. A lane's `protocol` is its DIALECT, which is a
             // different question from which transport carries it.
-            transport: busbar_substrate_values::transport::Transport::Http.name(),
+            transport: busbar_contract::transport::transport::Transport::Http.name(),
             address: UpstreamAddress::Socket {
                 authority: lane.authority,
                 sni: None,

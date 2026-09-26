@@ -148,14 +148,14 @@ fn the_path_model_step_injects_the_bytes_the_live_splice_injects() {
         let step = arrival_path_model(&body, "pinned-model", true, false, proto)
             .unwrap_or_else(|r| panic!("{name} refused at arrival: {r:?}"));
         // The live arm, run here on the same bytes.
-        let mut v: Value = busbar_substrate_values::json::parse(&body).expect("live parse");
+        let mut v: Value = busbar_llm_codec::json::parse(&body).expect("live parse");
         let obj = v.as_object_mut().expect("a recorded request is a document");
         obj.insert(
             "model".to_string(),
             Value::String("pinned-model".to_string()),
         );
         obj.insert("stream".to_string(), Value::Bool(true));
-        let live: Bytes = busbar_substrate_values::json::to_vec(&v)
+        let live: Bytes = busbar_llm_codec::json::to_vec(&v)
             .expect("live serialize")
             .into();
         assert_eq!(

@@ -17,7 +17,7 @@ use busbar_contract::caps::{
 use busbar_kernel::plane_host::EngineTablesView;
 use busbar_kernel::proxy::reqlog::REQUESTS;
 
-use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+use crate::test_support::{frame, LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use crate::unit::{admit, approve, arrival, audit, authenticate, decode, meter, route, verify};
 
 /// The one dialect these fixtures speak. Same-protocol openai→openai, so the comparison is about
@@ -665,7 +665,7 @@ impl Metering {
 }
 
 /// The two token figures of a report, as a pair, so a fixture can spell what it expects.
-fn split(usage: Option<&busbar_substrate_values::billing::TokenUsage>) -> Option<(u64, u64)> {
+fn split(usage: Option<&busbar_contract::billing::TokenUsage>) -> Option<(u64, u64)> {
     usage.map(|u| (u.input, u.output))
 }
 
@@ -906,8 +906,8 @@ async fn drive(
             host,
             rt,
             proto: PROTO,
-            op: busbar_substrate_values::handlers::frame(
-                busbar_substrate_values::transport::Transport::Http,
+            op: frame(
+                busbar_contract::transport::transport::Transport::Http,
                 busbar_contract::operation::OpVerb::CHAT,
                 decoded.op_handler,
             ),

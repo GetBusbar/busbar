@@ -86,7 +86,7 @@ pub(super) fn deliver<'a>(
         // body (the opaque/audio bridge) or a body that fails to parse.
         let ingress_request_body: Option<Value> = hop
             .body_is_json
-            .then(|| busbar_substrate_values::json::parse::<Value>(hop.body).ok())
+            .then(|| busbar_llm_codec::json::parse::<Value>(hop.body).ok())
             .flatten();
 
         // A non-stream cross-protocol response is buffered whole and translated egress → IR → ingress.

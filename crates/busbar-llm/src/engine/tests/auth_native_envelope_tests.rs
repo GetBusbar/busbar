@@ -17,8 +17,7 @@
 //! is the only way the auth-failure envelope reaches a client.
 
 use crate::test_support::engine_kit::EngineTestKit as _;
-use busbar_kernel::auth::AuthMiddleware;
-use busbar_substrate_values::proto::vendor_auth_failure_message;
+use busbar_kernel::{auth::AuthMiddleware, proto::vendor_auth_failure_message};
 use reqwest::header::HeaderMap;
 use reqwest::StatusCode;
 
