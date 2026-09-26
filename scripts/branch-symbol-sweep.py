@@ -896,12 +896,26 @@ SELFTEST_MARKERS = {
 }
 
 
+# The synthetic commits carry their OWN identity and a fixed date, set on the
+# plumbing subprocess only.  A CI runner has no user.name/user.email, and
+# `commit-tree` exits 128 without one; global git config is never read for this
+# and never written.  The fixed date makes every fixture SHA deterministic.
+SELFTEST_IDENTITY = {
+    "GIT_AUTHOR_NAME": "bsweep selftest",
+    "GIT_AUTHOR_EMAIL": "bsweep-selftest@invalid",
+    "GIT_AUTHOR_DATE": "1700000000 +0000",
+    "GIT_COMMITTER_NAME": "bsweep selftest",
+    "GIT_COMMITTER_EMAIL": "bsweep-selftest@invalid",
+    "GIT_COMMITTER_DATE": "1700000000 +0000",
+}
+
+
 def _mk_commit(git: Git, base_rev: str, entries: list[tuple[str, str, str]], msg: str) -> str:
     """entries = [(mode, blob_sha, path)].  Returns a dangling commit SHA."""
     fd, idx = tempfile.mkstemp(prefix="bsweep-index-")
     os.close(fd)
     os.unlink(idx)
-    env = {**os.environ, "GIT_INDEX_FILE": idx}
+    env = {**os.environ, **SELFTEST_IDENTITY, "GIT_INDEX_FILE": idx}
     try:
         subprocess.run(["git", "-C", git.repo, "read-tree", base_rev],
                        env=env, check=True, capture_output=True)
@@ -919,6 +933,62 @@ def _mk_commit(git: Git, base_rev: str, entries: list[tuple[str, str, str]], msg
     finally:
         if os.path.exists(idx):
             os.unlink(idx)
+
+
+def _identityless_env(home: str) -> dict[str, str]:
+    """The environment of a runner with NO git identity: an empty HOME, no system
+    or global config, no identity variables, and user.useConfigOnly so git cannot
+    invent one from the passwd entry and hostname."""
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("GIT_AUTHOR_", "GIT_COMMITTER_", "GIT_CONFIG"))
+           and k not in ("EMAIL", "XDG_CONFIG_HOME")}
+    env.update({"HOME": home, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "user.useConfigOnly",
+                "GIT_CONFIG_VALUE_0": "true"})
+    return env
+
+
+def _identityless_probe() -> tuple[bool, bool, bool, str]:
+    """Build fixture commits in a scratch repo under an identity-less environment.
+    Returns (bare commit-tree fails there, _mk_commit succeeds there, _mk_commit is
+    deterministic, detail).  The first is the RED arm: without it the probe could
+    pass on a machine whose identity leaked in."""
+    import types
+    saved = dict(os.environ)
+    with tempfile.TemporaryDirectory(prefix="bsweep-noid-") as tmp:
+        home = os.path.join(tmp, "home")
+        repo = os.path.join(tmp, "repo")
+        os.mkdir(home)
+        env = _identityless_env(home)
+        try:
+            subprocess.run(["git", "init", "-q", repo], env=env, check=True, capture_output=True)
+            blob = subprocess.run(["git", "-C", repo, "hash-object", "-w", "--stdin"], env=env,
+                                  input=b"bsweep identity probe\n", check=True,
+                                  capture_output=True).stdout.decode().strip()
+            tree = subprocess.run(["git", "-C", repo, "mktree"], env=env,
+                                  input=("100644 blob %s\tprobe.txt\n" % blob).encode(),
+                                  check=True, capture_output=True).stdout.decode().strip()
+            bare = subprocess.run(["git", "-C", repo, "commit-tree", tree, "-m", "probe"],
+                                  env=env, capture_output=True)
+            root = subprocess.run(["git", "-C", repo, "commit-tree", tree, "-m", "root"],
+                                  env={**env, **SELFTEST_IDENTITY}, check=True,
+                                  capture_output=True).stdout.decode().strip()
+            os.environ.clear()
+            os.environ.update(env)
+            shim = types.SimpleNamespace(repo=repo)
+            try:
+                c1 = _mk_commit(shim, root, [("100644", blob, "again.txt")], "probe fixture")
+                c2 = _mk_commit(shim, root, [("100644", blob, "again.txt")], "probe fixture")
+                made, err = True, ""
+            except subprocess.CalledProcessError as e:
+                c1 = c2 = ""
+                made, err = False, (e.stderr or b"").decode()[:200]
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+    detail = "bare commit-tree rc=%d; _mk_commit %s%s" % (
+        bare.returncode, "made %s" % c1[:12] if made else "FAILED", (" " + err.strip()) if err else "")
+    return bare.returncode != 0, made, made and c1 == c2, detail
 
 
 def _blob(git: Git, content: str) -> str:
@@ -967,6 +1037,13 @@ def cmd_selftest(a) -> int:
     def check(name, ok, detail):
         results.append((name, bool(ok), detail))
         print("  %-4s %-46s %s" % ("PASS" if ok else "FAIL", name, detail))
+
+    # ---- T0  the fixtures need no git identity from the machine ------------
+    # A CI runner has no user.name/user.email; `commit-tree` there exits 128.
+    no_id_red, no_id_made, no_id_det, no_id_detail = _identityless_probe()
+    check("T0.identityless-env-is-real", no_id_red, no_id_detail)
+    check("T0.fixtures-commit-without-identity", no_id_made, no_id_detail)
+    check("T0.fixture-commits-deterministic", no_id_det, no_id_detail)
 
     # ---- T0  the instrument is not in its own haystack ----------------------
     # Its fixtures are literals in SELF_PATH; indexed, they poison T1/T3/T5 (item 470).
