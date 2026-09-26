@@ -15,8 +15,8 @@
  },
  "counts": {
   "bindings": 104,
-  "mapped": 103,
-  "unproven": 1,
+  "mapped": 104,
+  "unproven": 0,
   "unmapped": 0,
   "gap": 0,
   "checks_by_kind": {
@@ -24,7 +24,7 @@
    "lint": 5,
    "oracle-cell": 65,
    "oracle-family": 5,
-   "test": 446
+   "test": 458
   }
  },
  "owner_decisions": {
@@ -3112,9 +3112,9 @@
   {
    "id": "PB-65",
    "surface": "egress auth wire behaviour",
-   "binding": "the 7 schemes as wire bytes: `api-key` / `x-goog-api-key` header names; the Anthropic five-way key-prefix disambiguation incl. the mode-blind arm emitting BOTH `x-api-key` and `Authorization`; `anthropic-version` always appended; SigV4's SignedHeaders set, double-encoded canonical URI, `us-east-1` fallback, `access:secret[:session]` split; `jwt-bearer` / `oauth-client-credentials` fail closed to `NoCredential`; the header is omitted on an unencodable credential",
+   "binding": "the 7 schemes as wire bytes: `api-key` / `x-goog-api-key` header names; the Anthropic five-way key-prefix disambiguation, an unrecognized credential sending ONE header chosen by the credential mode (own → `x-api-key`, passthrough → `Authorization: Bearer`) — the builder's mode-blind both-headers arm was never reachable from the wire at v1.5.5 (egress_auth/mod.rs:244 always passed a mode); `anthropic-version` always appended; SigV4's SignedHeaders set, double-encoded canonical URI, `us-east-1` fallback, `access:secret[:session]` split; `jwt-bearer` / `oauth-client-credentials` fail closed to `NoCredential`; the header is omitted on an unencodable credential",
    "inventory": "dialects; auth-secrets",
-   "status": "unproven",
+   "status": "mapped",
    "checks": [
     {
      "kind": "test",
@@ -3139,8 +3139,29 @@
     },
     {
      "kind": "test",
-     "ref": "auth_headers_unrecognized_credential_emits_both_headers",
-     "proves": "the mode-blind arm emits both headers",
+     "ref": "each_declared_scheme_presents_what_its_dialect_builder_wrote",
+     "proves": "each declared scheme presents what its dialect's builder wrote",
+     "source": "curated",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "anthropic_egress_carries_exactly_the_declared_headers",
+     "proves": "an anthropic lane's egress carries exactly the declared headers",
+     "source": "curated",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "every_egress_request_declares_the_pinned_api_version",
+     "proves": "anthropic-version is declared on every egress request",
+     "source": "curated",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "with_no_static_header_declared_the_version_header_is_absent",
+     "proves": "the version header comes from the declaration and nowhere else",
      "source": "curated",
      "status": "mapped"
     },
@@ -3180,8 +3201,8 @@
      "status": "mapped"
     }
    ],
-   "verdict": "FAIL",
-   "verdict_detail": "partly proven; a referenced check settles nothing: test:auth_headers_unrecognized_credential_emits_both_headers"
+   "verdict": "PASS",
+   "verdict_detail": "test:test_auth_headers_valid_key_emits_x_goog_api_key, test:egress_scheme_is_the_declared_credential_family_table, test:a_declared_static_header_follows_the_credential_verbatim, test:each_declared_scheme_presents_what_its_dialect_builder_wrote, test:anthropic_egress_carries_exactly_the_declared_headers, test:every_egress_request_declares_the_pinned_api_version, test:with_no_static_header_declared_the_version_header_is_absent, test:the_family_table_decides_first_and_the_mode_decides_the_rest, test:a_static_scheme_presents_the_header_its_table_names, test:test_bedrock_sigv4_sign_request_structure, test:test_bedrock_sigv4_session_token, test:a_misconfigured_or_unsendable_signing_credential_signs_nothing"
   },
   {
    "id": "PB-66",
