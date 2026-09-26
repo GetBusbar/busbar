@@ -811,6 +811,12 @@ fn empty_opening_plan() -> root::migration::MigrationConfig {
 ///     proof. The marker is the FIRST record on the chain; a settlement made afterwards lands
 ///     STRICTLY AFTER it. An opening sealed after traffic has begun is worse than useless, because
 ///     it looks authoritative while measuring from the wrong point.
+// A PROVIDER NEEDS A WIRE CODEC. `cfg_with_provider_api_key` configures one provider on the
+// registry's residual-default dialect, and a build that links no protocol (a single-plane build of a
+// plane with no body-ingress codec) has none to name: the fixture refuses, and which test happened to
+// register a dialect first decided the verdict. Gated on the linked axis that carries the codecs, as
+// the root's other provider-configuring cells are.
+#[cfg(linked_axis_body_ingress)]
 #[test]
 fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
     use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
