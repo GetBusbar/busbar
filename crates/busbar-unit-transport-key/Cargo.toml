@@ -1,18 +1,17 @@
-# busbar-unit-transport-key — the transport-key unit: the key material a transport needs.
+# busbar-unit-transport-key — EMPTIED by fold F14, awaiting its deletion commit.
 #
-# WHY A SEPARATE CRATE. `listen`/`dial`/`upgrade` need key material exactly once each, and nothing
-# downstream of that point may ever see it again: the unit resolves it through a secret source,
-# journals the access, and hands back an opaque `TransportKeyHandle` that a transport can carry
-# without being able to turn it back into bytes. That is a small, self-contained job — parse PEM,
-# build a `rustls::ServerConfig`, mint a handle — so it depends on `busbar-caps` for the handle and
-# on `rustls` for the one thing this crate actually builds, and nothing else in the tree.
+# Everything this crate held — the TLS secret→config provisioning — moved kernel-side (#36: "the TLS
+# secret→config provisioning → kernel-side machinery"; #40(b): the tls transport receives only the
+# contract's opaque config handle). No crate depends on this one. The directory stays only until the
+# gate tables that still name it by name (the kind-isolation waiver and selftest plants, the
+# `busbar-unit-*` construction scopes) are re-targeted in the same commit that deletes it.
 [package]
 name = "busbar-unit-transport-key"
 version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
 rust-version = "1.97"
-description = "The transport-key unit: resolves key material through a secret source at listen/dial/upgrade, journals Access, hands out an opaque TransportKeyHandle."
+description = "Emptied by fold F14: the transport-key provisioning moved kernel-side (#36)."
 license = "Apache-2.0"
 
 [lib]
@@ -21,7 +20,3 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
-rustls = { workspace = true }
-
-[dev-dependencies]
-rcgen = { workspace = true }

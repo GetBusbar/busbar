@@ -96,8 +96,8 @@ impl Transport for TlsTransport {
             // Every accepted connection on this listener uses the config registered for the slot
             // this listener was provisioned with in `listen` — not a fixed slot of accept's own —
             // because the listener has no per-connection SNI to route on before the handshake
-            // completes. A deployment that needs SNI-routed certs resolves that at the
-            // transport-key unit, not here.
+            // completes. A deployment that needs SNI-routed certs resolves that in the
+            // kernel-side key provisioning, not here.
             let cfg = self
                 .server_configs
                 .lock()
