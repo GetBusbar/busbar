@@ -311,7 +311,7 @@ static KINDS: &[KindDef] = &[
     // into (identity, scope, budget, ledger, egress, breaker, wal, audit). One kind, matched by the
     // exact loop name AND the `busbar-kernel-` prefix. A kernel
     // crate is NEUTRAL: it may carry no plane and no transport instance in its name, and its external
-    // deps are the neutral spine ({contract, plugin-sdk} and other kernel crates), so an edge to a
+    // deps are the neutral spine (busbar-contract and other kernel crates), so an edge to a
     // plane, a dialect, a transport or a unit is a NEW class and is refused like any other.
     KindDef {
         kind: "kernel",
@@ -567,7 +567,7 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // A kernel workflow crate may depend on other kernel crates (DECISIONS #36 group structure, e.g.
     // budget -> ledger); intra-tier edges are allowed structure, not a widening.
     ("kernel", "kernel"),
-    // A kernel crate may name the author-side plugin machinery face (the dep-wall admits plugin-sdk).
+    // A kernel crate may name the author-side plugin machinery face (the dep-wall admits plugin-tooling).
     ("kernel", "plugin-tooling"),
     ("legacy", "contract"),
     // A PLANE ADAPTER PATH-DEPS ITS OWN CODEC (DECISIONS #6/#18/#21). The codec crate is stateful

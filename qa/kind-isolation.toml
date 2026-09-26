@@ -953,7 +953,7 @@ count = "55"
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "plugin-tooling"
-count = "9"
+count = "4"
 
 [[cell]]
 crate = "busbar-plugin-loader"
@@ -2474,11 +2474,11 @@ kind = "secret"
 count = "4"
 
 # THE ONE REDIRECT: busbar's own crates, as a pulled plugin repo names them. A default plugin lives in
-# its own repo and names busbar-plugin-sdk by git at its `.busbar-ref` rev; the workspace root's
-# `[patch]` resolves that name to THIS tree's crates/plugin-sdk, so the binary links ONE SDK (and
-# through it one busbar-plugin and one busbar-contract), and the census, the edge ledger and the
-# matrix read the same crate the build compiles.
+# its own repo and names busbar-contract (#40: contract only; the SDK is busbar_contract::abi::sdk,
+# #84) by git at its `.busbar-ref` rev; the workspace root's `[patch]` resolves that name to THIS
+# tree's crates/busbar-contract, so the binary links ONE busbar-contract, and the census, the edge
+# ledger and the matrix read the same crate the build compiles.
 [[patch]]
 file = "Cargo.toml"
 entry = "patch.'https://github.com/GetBusbar/busbar'"
-reason = "ARCHITECT EXT-PILOT design (owner rulings 2026-09-25: one repo per plugin, store-mysql layout; the default build pulls default plugins at a PINNED version) item 2: the workspace root adds [patch.'https://github.com/GetBusbar/busbar'] for the busbar crates a pulled plugin names (busbar-plugin-sdk for busbar-export-file) -> local path, so ONE contract copy links. The patch substitutes this tree's own crate for the same crate at an older rev; it never substitutes a different crate."
+reason = "ARCHITECT EXT-PILOT design (owner rulings 2026-09-25: one repo per plugin, store-mysql layout; the default build pulls default plugins at a PINNED version) item 2: the workspace root adds [patch.'https://github.com/GetBusbar/busbar'] for the busbar crates a pulled plugin names (busbar-contract for the export-file, export-prometheus and export-webhook repos, EXT-REPIN) -> local path, so ONE contract copy links. The patch substitutes this tree's own crate for the same crate at an older rev; it never substitutes a different crate."

@@ -678,8 +678,8 @@ mod tests {
     #[test]
     fn an_optional_hop_is_in_the_union_closure_and_out_of_the_unconditional_one() {
         let graph = g(&[
-            ("plugin", "busbar-plugin-sdk", false, &[]),
-            ("busbar-plugin-sdk", "busbar-plugin-loader", true, &["pack"]),
+            ("plugin", "busbar-contract", false, &[]),
+            ("busbar-contract", "busbar-plugin-loader", true, &["pack"]),
             ("busbar-plugin-loader", "busbar-kernel-ledger", false, &[]),
         ]);
         assert!(!walk(&graph, "plugin", true).contains_key("busbar-kernel-ledger"));

@@ -4163,11 +4163,11 @@ jobs:
       matrix:
         include:
           - repo: export-file
-            patch: "busbar-plugin-sdk=crates/plugin-sdk busbar-plugin-loader=crates/plugin-loader"
+            patch: "busbar-contract=crates/busbar-contract busbar-plugin-loader=crates/plugin-loader"
           - repo: export-prometheus
-            patch: "busbar-plugin-sdk=crates/plugin-sdk busbar-plugin-loader=crates/plugin-loader"
+            patch: "busbar-contract=crates/busbar-contract busbar-plugin-loader=crates/plugin-loader"
           - repo: export-webhook
-            patch: "busbar-plugin-sdk=crates/plugin-sdk busbar-plugin-loader=crates/plugin-loader"
+            patch: "busbar-contract=crates/busbar-contract busbar-plugin-loader=crates/plugin-loader"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

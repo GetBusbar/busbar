@@ -11,7 +11,7 @@ kind-isolation:deps	unlisted-dep-edge	codec -> contract	2
 kind-isolation:deps	unlisted-dep-edge	kernel -> kernel	3
 kind-isolation:deps	unlisted-dep-edge	legacy -> contract	1
 kind-isolation:deps	unlisted-dep-edge	legacy -> plane	2
-kind-isolation:deps	unlisted-dep-edge	plugin-tooling -> contract	2
+kind-isolation:deps	unlisted-dep-edge	plugin-tooling -> contract	1
 kind-isolation:deps	unlisted-transitional	crates/busbar-llm	1
 kind-isolation:matrix	instance-ratchet	busbar × auth	5
 kind-isolation:matrix	instance-ratchet	busbar × secret	11
@@ -95,14 +95,14 @@ kind-isolation:matrix	unlisted-cell	busbar-contract × auth	2
 kind-isolation:matrix	unlisted-cell	busbar-contract × cleanliness	1
 kind-isolation:matrix	unlisted-cell	busbar-contract × kernel	10
 kind-isolation:matrix	unlisted-cell	busbar-contract × legacy	2
-kind-isolation:matrix	unlisted-cell	busbar-contract × plugin-tooling	9
+kind-isolation:matrix	unlisted-cell	busbar-contract × plugin-tooling	1
 kind-isolation:matrix	unlisted-cell	busbar-contract × store	1
 kind-isolation:matrix	unlisted-cell	busbar-core-admin × auth	29
 kind-isolation:matrix	unlisted-cell	busbar-core-admin × hooks	11
 kind-isolation:matrix	unlisted-cell	busbar-core-admin × kernel	148
 kind-isolation:matrix	unlisted-cell	busbar-core-admin × legacy	12
 kind-isolation:matrix	unlisted-cell	busbar-core-admin × plane	114
-kind-isolation:matrix	unlisted-cell	busbar-core-admin × plugin-tooling	94
+kind-isolation:matrix	unlisted-cell	busbar-core-admin × plugin-tooling	93
 kind-isolation:matrix	unlisted-cell	busbar-core-admin × store	3
 kind-isolation:matrix	unlisted-cell	busbar-core-admin × transport	663
 kind-isolation:matrix	unlisted-cell	busbar-core-connsec × cleanliness	2
@@ -158,7 +158,7 @@ kind-isolation:matrix	unlisted-edge	cleanliness -> hooks	11
 kind-isolation:matrix	unlisted-edge	cleanliness -> kernel	158
 kind-isolation:matrix	unlisted-edge	cleanliness -> legacy	15
 kind-isolation:matrix	unlisted-edge	cleanliness -> plane	145
-kind-isolation:matrix	unlisted-edge	cleanliness -> plugin-tooling	96
+kind-isolation:matrix	unlisted-edge	cleanliness -> plugin-tooling	95
 kind-isolation:matrix	unlisted-edge	cleanliness -> store	8
 kind-isolation:matrix	unlisted-edge	cleanliness -> transport	878
 kind-isolation:matrix	unlisted-edge	codec -> contract	887
@@ -166,7 +166,7 @@ kind-isolation:matrix	unlisted-edge	contract -> auth	2
 kind-isolation:matrix	unlisted-edge	contract -> cleanliness	1
 kind-isolation:matrix	unlisted-edge	contract -> kernel	10
 kind-isolation:matrix	unlisted-edge	contract -> legacy	2
-kind-isolation:matrix	unlisted-edge	contract -> plugin-tooling	9
+kind-isolation:matrix	unlisted-edge	contract -> plugin-tooling	1
 kind-isolation:matrix	unlisted-edge	contract -> store	1
 kind-isolation:matrix	unlisted-edge	contract -> substrate	23
 kind-isolation:matrix	unlisted-edge	export -> transport	4

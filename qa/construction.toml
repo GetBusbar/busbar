@@ -1559,7 +1559,7 @@ max_sites = 0
 #   countable, and interning is idempotent — so "leaked once" is a property of the interner rather
 #   than a hope. It is named by function, so the rest of the file is still held to the rule.
 #
-#   The plane-host, plugin-loader and plugin-sdk boundaries catch a panic crossing the ABI, which is
+#   The plane-host, plugin-loader and busbar-contract abi::sdk boundaries catch a panic crossing the ABI, which is
 #   the design: a plugin that panics must not take the node with it, and no hold is in scope on
 #   either side of those calls. busbar-core was the crate being emptied; its sites MOVED, and this
 #   list has now followed them. See the repoint note below.
