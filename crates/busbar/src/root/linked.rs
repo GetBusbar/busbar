@@ -1109,3 +1109,7 @@ mod scrape_tests;
 #[cfg(test)]
 #[path = "tests/metric_family_conformance.rs"]
 mod metric_family_conformance;
+
+#[cfg(all(test, linked_every_plane))]
+#[path = "tests/linked_protocols.rs"]
+mod linked_protocols;

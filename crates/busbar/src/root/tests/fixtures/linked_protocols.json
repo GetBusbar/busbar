@@ -1,0 +1,62 @@
+{
+  "_comment": [
+    "THE LINKED PROTOCOLS FIXTURE the root's protocol-axis tests read (root/tests/linked_protocols.rs).",
+    "Data, not code (ARCHITECT F-T): the protocol names, paths, headers and bodies the shipped build's",
+    "linked declarations are held to live here, so the test source names no plane. The declarations",
+    "themselves are read off the linked table the root installs (`crate::LINKED.protocols`).",
+    "protocol_order: the operator-visible provider protocol list, in order (metric-family index and the",
+    "  config refusal's `must be one of:` tail; the published 1.5.5 binary's order).",
+    "streaming_content_types / array_stream_shim_keys / head_keys: the registry's folded sets.",
+    "resolver: [path, [[header, value]...], [protocol, verb] or null] — detection then operation.",
+    "body_resolver: [path, body, [protocol, verb]] — the operation needs the body.",
+    "mandatory_header: [path, [[header, value]], protocol] — a mandatory header beats path ordering.",
+    "residual: [path, protocol] — the headerless residual classifier.",
+    "residual_live: [path, protocol] — the positive control that proves the residual fold is live.",
+    "residual_none: paths that name no dialect (the paths other planes mount at among them)."
+  ],
+  "protocol_order": ["anthropic", "openai", "gemini", "bedrock", "responses", "cohere"],
+  "streaming_content_types": ["application/vnd.amazon.eventstream", "text/event-stream"],
+  "array_stream_shim_keys": ["__busbar_gemini_json_array"],
+  "head_keys": ["__busbar_gemini_json_array", "model", "stream", "stream_options", "system"],
+  "resolver": [
+    ["/v1/chat/completions", [], ["openai", "chat"]],
+    ["/v1/embeddings", [], ["openai", "embeddings"]],
+    ["/v1/moderations", [], ["openai", "moderation"]],
+    ["/v1/images/generations", [], ["openai", "image"]],
+    ["/v1/audio/transcriptions", [], ["openai", "transcription"]],
+    ["/v1/audio/translations", [], ["openai", "transcription"]],
+    ["/v1/audio/speech", [], ["openai", "speech"]],
+    ["/v2/chat", [], ["cohere", "chat"]],
+    ["/v2/embed", [], ["cohere", "embeddings"]],
+    ["/v2/rerank", [], ["cohere", "rerank"]],
+    ["/v1/responses", [], ["responses", "chat"]],
+    ["/claude-3/v1/messages", [["anthropic-version", "2023-06-01"]], ["anthropic", "chat"]],
+    ["/v1/messages", [["x-api-key", "sk-ant-xxx"]], ["anthropic", "chat"]],
+    ["/v1/messages", [["anthropic-beta", "prompt-caching-2024-07-31"]], ["anthropic", "chat"]],
+    ["/v1beta/models/x:generateContent", [["x-goog-api-key", "k"]], ["gemini", "chat"]],
+    ["/v1beta/models/x:embedContent", [], ["gemini", "embeddings"]],
+    ["/v1beta/models/x:predict", [], ["gemini", "image"]],
+    ["/model/m/converse", [["authorization", "AWS4-HMAC-SHA256 Credential=x"]], ["bedrock", "chat"]],
+    ["/v1/models", [], null],
+    ["/healthz", [], null]
+  ],
+  "body_resolver": [
+    ["/model/m/invoke", "{\"inputText\":\"hi\"}", ["bedrock", "embeddings"]],
+    ["/model/m/invoke", "{\"taskType\":\"TEXT_IMAGE\",\"textToImageParams\":{\"text\":\"x\"}}", ["bedrock", "image"]],
+    ["/v1beta/models/x:generateContent", "{\"contents\":[{\"parts\":[{\"inline_data\":{\"mime_type\":\"audio/wav\",\"data\":\"AA==\"}}]}]}", ["gemini", "transcription"]],
+    ["/v1beta/models/x:generateContent", "{\"contents\":[{\"parts\":[{\"text\":\"hi\"}]}],\"generationConfig\":{\"responseModalities\":[\"AUDIO\"]}}", ["gemini", "speech"]],
+    ["/v1beta/models/x:generateContent", "{\"contents\":[{\"parts\":[{\"inline_data\":{\"mime_type\":\"image/png\",\"data\":\"AA==\"}}]}]}", ["gemini", "chat"]]
+  ],
+  "mandatory_header": ["/v1/messages", [["anthropic-version", "2023-06-01"]], "anthropic"],
+  "residual": [
+    ["/v1/models/ft:gpt-3.5-turbo:my-org::abc123", "openai"],
+    ["/v1/models/gpt-4o:deployment", "openai"],
+    ["/v1/models/gpt-4o", "openai"],
+    ["/v1/models/gemini-pro:generateContent", "gemini"],
+    ["/v1/models/gemini-pro:streamGenerateContent", "gemini"],
+    ["/v1/models/text-embedding-004:embedContent", "gemini"],
+    ["/v1/models/gemini-pro:countTokens", "gemini"]
+  ],
+  "residual_live": ["/v1/models/gpt-4o", "openai"],
+  "residual_none": ["/", "/stats", "/mcp", "/mcp/anything", "/a2a", "/totally/unknown/path", "/model/foo/bar"]
+}
