@@ -82,12 +82,14 @@
 //! Today's `*-codec` crates are the codec halves of their plane (`busbar-llm-codec` belongs to
 //! `llm`), which is why the plane-to-codec edge is in the measured graph.
 //!
-//! ## VOICE IS THE STREAMS PLANE
+//! ## VOICE AND STREAMS ARE THE STREAMING PLANE
 //!
-//! The plane the tree spells `voice` is the STREAMS plane (config section `streams:`). Until
-//! `busbar-plane-voice` and `busbar-voice-codec` are renamed, [`PLANE_ALIASES`] holds the two
-//! spellings together so both are one instance for every rule here — and holds them on a ratchet:
-//! the alias is RED once the crate it translates is gone.
+//! The fourth plane is STREAMING (DECISIONS #18): `busbar-plane-streaming`, whose `PlaneMeta::KEY`
+//! is `"streaming"`. `voice` is one dialect inside it, still spelled by `busbar-voice-codec` until
+//! the #19 codec rename, and `streams` is its config section (`streams:`). [`PLANE_ALIASES`] holds
+//! the three spellings together so they are one instance for every rule here — canonical on the
+//! plane's DECLARED key, which `:registry` reads off the plane's own source — and holds each on a
+//! ratchet: an alias is RED once the crate that spells it is gone.
 //!
 //! ## THE LEGACY CRATES ARE EXEMPT UNTIL THEY ARE DELETED, AND THE EXEMPTION RATCHETS
 //!
@@ -230,8 +232,8 @@ struct KindDef {
 }
 
 /// THE KIND TABLE. The SEVEN plugin kinds (DECISIONS #3: store, secret, auth, hook, export, plane,
-/// transport), the infra crate families that are NOT plugin kinds (unit, kernel, caps, contract,
-/// grammar, substrate, api, timing, the plugin-abi/plugin-tooling TCB, the `core` neutral spine and
+/// transport), the infra crate families that are NOT plugin kinds (unit, kernel, contract,
+/// substrate, api, timing, the plugin-abi/plugin-tooling TCB, the `core` neutral spine and
 /// the `cleanliness` compiled-in surfaces), the composition root, and the retiring legacy crates.
 ///
 /// `control` and `dialect` are NOT kinds (DECISIONS #4/#5): a dialect is a thing INSIDE a plane
@@ -334,11 +336,8 @@ static KINDS: &[KindDef] = &[
         family: Family::Neutral,
         matchers: &["=busbar-contract"],
     },
-    KindDef {
-        kind: "grammar",
-        family: Family::Neutral,
-        matchers: &["=busbar-grammar"],
-    },
+    // There is no `grammar` kind: `busbar-grammar` folded into `busbar-contract` (#40) and its
+    // manifest is gone from the tree, so the row matched no crate and scored `dead-kind`.
     KindDef {
         kind: "substrate",
         family: Family::Neutral,
@@ -400,20 +399,27 @@ static KINDS: &[KindDef] = &[
 /// is a name that has stopped saying what the crate IS.
 const MAX_NAME_SEGMENTS: usize = 4;
 
-/// PLANE SPELLINGS HELD TOGETHER UNTIL THE RENAME LANDS. `voice` is the STREAMS plane (config
-/// section `streams:`); both spellings are one instance for every rule here, both are banned
-/// vocabulary in every other kind, and the entry is RED once the crate it translates is gone.
+/// PLANE SPELLINGS HELD TOGETHER: `(spelling, canonical, the crate that forces the spelling)`.
 ///
-/// `streaming` is the SAME instance too (DECISIONS #18: the fourth plane is STREAMING; voice is one
-/// dialect inside it, and the codec rename is byte-identical). Until the #19 deletion wave renames
-/// `busbar-voice-codec` -> `busbar-streaming-codec` (and collapses `busbar-plane-voice` into
-/// `busbar-plane-streaming`), the new `busbar-plane-streaming` adapter path-deps the still-`voice`-
-/// spelled codec; canonicalising `streaming` onto `streams` is what lets that read as a plane naming
-/// ITS OWN codec rather than a cross-instance reach. The entry is RED once `busbar-voice-codec` (the
-/// crate whose name forces the alias) is gone — which is exactly when the rename has landed.
+/// The CANONICAL side is the plane's DECLARED key — `busbar-plane-streaming`'s `PlaneMeta::KEY`,
+/// `"streaming"` (DECISIONS #18: the fourth plane is STREAMING). `:registry` reads every plane
+/// crate's declared key off its `impl PlaneMeta` and refuses an alias whose canonical side no plane
+/// declares (`alias-undeclared`), so this table cannot drift from the plane it names.
+///
+/// * `voice` is one DIALECT inside the streaming plane, and `busbar-voice-codec` still spells it
+///   until the #19 wave renames it `busbar-streaming-codec` (byte-identical). `busbar-plane-voice`
+///   was the crate this entry used to key on; #18/#83 deleted it into `busbar-plane-streaming`,
+///   and the codec is the one crate left whose name forces the alias. Canonicalising
+///   `voice` onto `streaming` is what lets `busbar-plane-streaming -> busbar-voice-codec` read as a
+///   plane naming ITS OWN codec rather than a cross-instance reach.
+/// * `streams` is the plane's CONFIG SECTION (`streams:`, frozen 1.5.x wire), so it is the plane's
+///   word in every other crate's source; it expires with the plane.
+///
+/// All three spellings are one instance for every rule here and banned vocabulary in every other
+/// kind, and an entry is RED once the crate it names is gone.
 const PLANE_ALIASES: &[(&str, &str, &str)] = &[
-    ("voice", "streams", "busbar-plane-voice"),
-    ("streaming", "streams", "busbar-voice-codec"),
+    ("voice", "streaming", "busbar-voice-codec"),
+    ("streams", "streaming", "busbar-plane-streaming"),
 ];
 
 /// Kinds the target scheme defines that the tree does not carry YET, each with its reason. The
@@ -429,15 +435,16 @@ const PENDING_KINDS: &[(&str, &str)] = &[];
 const PENDING_EDGES: &[(&str, &str)] = &[
     // THE `core` KIND'S NEUTRAL SPINE, and deliberately nothing else. The crates being carved out
     // of `busbar-core` land branch by branch, so their edges cannot be measured yet; what CAN be
-    // stated in advance is the same sink set `kernel` and `caps` have. A `core` crate that reaches
+    // stated in advance is the same sink set `kernel` has. A `core` crate that reaches
     // a plane, a dialect, a transport or a unit is not on this list, so it is a NEW edge class and
     // is refused — which is the machine form of "a core crate names no plane, dialect, transport or
     // unit". A core crate that needs a sink not listed here adds the line and says why; the gate
     // names the missing class for it.
+    //
+    // `(core, caps)` and `(core, grammar)` are struck: neither `caps` nor `grammar` is a kind (both
+    // crates folded into `busbar-contract`, W2.c and #40), so they granted nothing (`dead-grant`).
     ("core", "api"),
-    ("core", "caps"),
     ("core", "contract"),
-    ("core", "grammar"),
     ("core", "kernel"),
     ("core", "substrate"),
     ("core", "timing"),
@@ -586,20 +593,18 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("secret", "contract"),
     ("store", "contract"),
     ("transport", "contract"),
-    // The pre-split dialects: a codec is written on the closed span grammar the contract re-exports.
-    ("codec", "grammar"),
-    ("contract", "grammar"),
+    // No `(codec, grammar)`, `(contract, grammar)` or `(kernel, grammar)` grant: the closed span
+    // grammar is `busbar-contract`'s own surface since `busbar-grammar` folded into it (#40), so a
+    // codec or the loop reaching it is the `-> contract` edge, and a grant naming a kind the table
+    // does not have is a `dead-grant`.
     ("kernel", "contract"),
     // The loop naming a `core` crate — a compiled-in cleanliness surface on the neutral spine — is
-    // the same shape as `kernel` naming `contract` or `grammar`. The instance that produced this
+    // the same shape as `kernel` naming `contract`. The instance that produced this
     // grant (`busbar-kernel` -> `busbar-core-config`) is GONE: #37 killed that crate and its one
     // helper came home to `busbar_kernel::config::parse`, so the class currently has no edge under
     // it. The grant stays because this list is the READ OF THE ARCHITECTURE, not a measurement of
     // the tree (see this const's own doc) — striking it would be an architecture change.
     ("kernel", "core"),
-    // `busbar-kernel` (the loop) names the closed span grammar directly; the folded capability
-    // vocabulary now lives in `busbar-contract`, so the former `kernel -> caps` edge is gone (W2.c).
-    ("kernel", "grammar"),
     // A kernel workflow crate may depend on other kernel crates (DECISIONS #36 group structure, e.g.
     // budget -> ledger); intra-tier edges are allowed structure, not a widening.
     ("kernel", "kernel"),
@@ -1862,10 +1867,10 @@ fn census(cx: &Ctx) -> Result<Vec<CrateInfo>, String> {
         let kind = overrides.get(name.as_str()).copied().or(kind);
         let (deps, dev_deps) = deps_of(&text, &renames);
         let dir = manifest_dir(&rel);
-        let declared_keys = if kind == Some("transport") {
-            declared_transport_keys(cx, &dir)
-        } else {
-            Vec::new()
+        let declared_keys = match kind {
+            Some("transport") => declared_meta_keys(cx, &dir, "TransportMeta"),
+            Some("plane") => declared_meta_keys(cx, &dir, "PlaneMeta"),
+            _ => Vec::new(),
         };
         out.push(CrateInfo {
             dir,
@@ -1885,11 +1890,14 @@ fn census(cx: &Ctx) -> Result<Vec<CrateInfo>, String> {
     Ok(out)
 }
 
-/// The registry keys a transport crate DECLARES: each `const KEY` inside an
-/// `impl TransportMeta for …` block of a `.rs` file under `<dir>/src`. Read off the source, never
-/// typed here, so a wire folded into a sibling crate stays a transport word on the commit that folds
-/// it, and a wire added as a module teaches this gate its name the way a new crate would.
-fn declared_transport_keys(cx: &Ctx, dir: &str) -> Vec<String> {
+/// The registry keys a transport or plane crate DECLARES: each `const KEY` inside an
+/// `impl <meta> for …` block (`TransportMeta`, `PlaneMeta`) of a `.rs` file under `<dir>/src`.
+/// Read off the source, never typed here, so a wire folded into a sibling crate stays a transport
+/// word on the commit that folds it, a wire added as a module teaches this gate its name the way a
+/// new crate would, and [`PLANE_ALIASES`]' canonical side is checked against the key the plane
+/// itself registers under.
+fn declared_meta_keys(cx: &Ctx, dir: &str, meta: &str) -> Vec<String> {
+    let needle = format!("{meta} for ");
     let spec = WalkSpec::new([format!("{dir}/src")])
         .ext("rs")
         .allow_empty();
@@ -1901,7 +1909,7 @@ fn declared_transport_keys(cx: &Ctx, dir: &str) -> Vec<String> {
         let mut in_meta = false;
         for line in f.text.lines() {
             let t = line.trim();
-            if t.starts_with("impl ") && t.contains("TransportMeta for ") {
+            if t.starts_with("impl ") && t.contains(&needle) {
                 in_meta = true;
             } else if in_meta && t.starts_with("const KEY: &'static str = \"") {
                 if let Some(key) = t
@@ -1943,10 +1951,12 @@ fn vocabularies(crates: &[CrateInfo]) -> (BTreeSet<String>, BTreeSet<String>) {
             _ => {}
         }
     }
-    // BOTH SPELLINGS OF A RENAMED PLANE ARE VOCABULARY. `busbar-transport-streams` has to be
-    // refused on the day the alias lands, not on the day the rename does.
+    // EVERY SPELLING OF A PLANE IS VOCABULARY. `busbar-transport-streams` has to be refused on the
+    // day the alias lands, not on the day the rename does — and `voice` stays the streaming plane's
+    // word after `busbar-plane-voice` is gone, for as long as `busbar-voice-codec` spells it.
     for (from, to, _) in PLANE_ALIASES {
-        if planes.contains(*from) {
+        if planes.contains(*from) || planes.contains(*to) {
+            planes.insert((*from).to_string());
             planes.insert((*to).to_string());
         }
     }
@@ -3452,6 +3462,25 @@ fn rule_registry(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, ship: bool)
         }
     }
 
+    // …AND THEIR CANONICAL SIDE IS A KEY A PLANE DECLARES. The alias table is typed here; the
+    // plane's own key is not — it is read off the plane's `impl PlaneMeta`. An alias onto a word no
+    // plane registers under is two spellings joined onto nothing: the rename it anticipated either
+    // landed under another key or never happened.
+    let plane_keys: BTreeSet<&str> = crates
+        .iter()
+        .filter(|c| c.kind == Some("plane"))
+        .flat_map(|c| c.declared_keys.iter().map(String::as_str))
+        .collect();
+    for (from, to, _) in PLANE_ALIASES {
+        if !plane_keys.contains(to) {
+            offenders.push(format!(
+                "alias-undeclared\t{to}\tthe `{from}` -> `{to}` plane alias canonicalises onto \
+                 `{to}`, and no plane crate declares `const KEY: &'static str = \"{to}\"` in its \
+                 `impl PlaneMeta`. Point the alias at the key the plane registers under."
+            ));
+        }
+    }
+
     // A GRANT THAT NAMES A KIND THE TABLE DOES NOT HAVE CAN NEVER MATCH AN EDGE — AND SO CAN
     // NEVER BE SCORED DEAD EITHER.
     //
@@ -3460,9 +3489,9 @@ fn rule_registry(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, ship: bool)
     // `dead-kind`, an accepted name whose crate is gone is `dead-waiver`. The three CLASS tables
     // had no such rule, and a class naming a kind that is not in [`KINDS`] falls through every one
     // of them: `verdict_for` only ever asks whether a MEASURED class is in the list, and a class
-    // that cannot be measured is never asked about. `("core", "caps")` is one — `caps` folded into
-    // `busbar-contract` under W2.c — and it has sat in [`PENDING_EDGES`] granting nothing to
-    // nothing ever since. A rule aimed at a crate that does not exist can never fire, and a grant
+    // that cannot be measured is never asked about. `("core", "caps")` was one — `caps` folded into
+    // `busbar-contract` under W2.c — and it sat in [`PENDING_EDGES`] granting nothing to nothing
+    // until this rule named it and it was struck. A rule aimed at a crate that does not exist can never fire, and a grant
     // aimed at a kind that does not exist can never be read.
     let table_kinds: BTreeSet<&str> = KINDS.iter().map(|d| d.kind).collect();
     for (table, rows) in [
@@ -6510,10 +6539,9 @@ impl Gate for KindIsolationGate {
         //
         // THE SUBJECT IS `busbar-voice-codec`, AND IT USED TO BE `busbar-plane-voice`, the twin of
         // the no-op above and for the same reason: `crates/busbar-plane-voice/Cargo.toml` is not in
-        // the tree, so removing it removed nothing, and `:registry` is standing red naming
-        // `alias-retired busbar-plane-voice` already. `PLANE_ALIASES` has two entries; this is the
-        // one whose crate is still here, so removing it is a violation the tree did not already
-        // have.
+        // the tree, so removing it removed nothing. The `voice` alias itself now keys on the codec,
+        // the one crate left that spells the dialect as a plane id, so removing it is a violation
+        // the tree does not already have.
         let mut ov = Overlay::new();
         ov.remove("crates/busbar-voice-codec/Cargo.toml");
         hold_census_floor(&mut ov, 1);
@@ -6525,6 +6553,38 @@ impl Gate for KindIsolationGate {
             ov,
             &["alias-retired", "busbar-voice-codec"],
         ));
+
+        // AN ALIAS ONTO A KEY NO PLANE DECLARES. The canonical side of `PLANE_ALIASES` is checked
+        // against the key `busbar-plane-streaming` registers under, read off its `impl PlaneMeta`;
+        // re-keying the plane leaves both aliases pointing at a word nothing registers.
+        let meta = "crates/busbar-plane-streaming/src/meta.rs";
+        let key_line = "const KEY: &'static str = \"streaming\";";
+        match cx.read(meta) {
+            Ok(text) if text.contains(key_line) => {
+                let mut ov = Overlay::new();
+                ov.set(
+                    meta,
+                    text.replacen(key_line, "const KEY: &'static str = \"rekeyed\";", 1),
+                );
+                report.push(prove_rows_red(
+                    cx,
+                    subject,
+                    "a plane alias whose canonical side is a key no plane declares",
+                    &[ROW_REGISTRY],
+                    ov,
+                    &["alias-undeclared", "streaming"],
+                ));
+            }
+            other => report.push(unplantable(
+                "a plane alias whose canonical side is a key no plane declares",
+                &[ROW_REGISTRY],
+                &["alias-undeclared"],
+                format!(
+                    "{meta} does not carry `{key_line}` to re-key ({:?})",
+                    other.err()
+                ),
+            )),
+        }
 
         // THE SECOND KIND VOCABULARY, GONE. `qa/construction.toml`'s `[gate.plugin_kinds]` renamed
         // away leaves the cross-check reading nothing, which is not the same as agreeing.
