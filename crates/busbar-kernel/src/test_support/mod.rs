@@ -80,7 +80,7 @@ pub enum MockResponse {
     /// A native AWS binary event-stream body (`application/vnd.amazon.eventstream`), as a real
     /// Bedrock ConverseStream backend emits it. `frames` is the ordered `(event_type, json_payload)`
     /// sequence (messageStart / contentBlockDelta / messageStop / metadata, …); each is encoded with
-    /// `crate::eventstream::encode_frame` so the bytes carry real prelude/message CRC32s an AWS SDK
+    /// `eventstream_frame` so the bytes carry real prelude/message CRC32s an AWS SDK
     /// validates. `amzn_request_id` is served as the `x-amzn-RequestId` response header — the value a
     /// same-protocol bedrock passthrough must forward VERBATIM rather than synthesizing a fresh UUID.
     /// Exercises the same-protocol bedrock-stream branch (verbatim binary relay, eventstream CT
@@ -92,7 +92,7 @@ pub enum MockResponse {
     },
     /// The BINARY-stream twin of `SseTransportError`: a TRUE mid-stream transport failure on a native
     /// AWS `application/vnd.amazon.eventstream` body. Emits `ok_frames` real CRC-valid binary frames
-    /// (each encoded via `crate::eventstream::encode_frame`), then PAUSES so the proxy reliably reads
+    /// (each encoded via `eventstream_frame`), then PAUSES so the proxy reliably reads
     /// and forwards the first byte to the client (crossing the after-first-byte failover boundary),
     /// THEN makes the body stream yield an `Err`, aborting the connection mid-binary-body. reqwest
     /// surfaces this as a transport error to the proxy's `FirstByteBody`, exercising the
@@ -261,6 +261,43 @@ impl MockServer {
     }
 }
 
+/// One CRC-valid AWS event-stream frame, spelled here so the mock names no dialect codec. Layout:
+/// `[total_len u32][headers_len u32][CRC32 of those 8 bytes][headers][payload][CRC32 of all before]`,
+/// big-endian; the headers are the three type-7 strings a ConverseStream event carries.
+fn eventstream_frame(event_type: &str, payload: &[u8]) -> Vec<u8> {
+    let mut headers = Vec::new();
+    let pairs = [
+        (":event-type", event_type),
+        (":content-type", "application/json"),
+        (":message-type", "event"),
+    ];
+    for (name, value) in pairs {
+        headers.push(name.len() as u8);
+        headers.extend_from_slice(name.as_bytes());
+        headers.push(7);
+        headers.extend_from_slice(&(value.len() as u16).to_be_bytes());
+        headers.extend_from_slice(value.as_bytes());
+    }
+    let total = (16 + headers.len() + payload.len()) as u32;
+    let mut frame = [total, headers.len() as u32].map(u32::to_be_bytes).concat();
+    frame.extend(crc32fast::hash(&frame).to_be_bytes());
+    frame.extend(headers);
+    frame.extend_from_slice(payload);
+    frame.extend(crc32fast::hash(&frame).to_be_bytes());
+    frame
+}
+
+/// A body that yields `frames`, PAUSES so the proxy reads and forwards the first byte (crossing the
+/// after-first-byte failover boundary), then yields an `io::Error`: a mid-body connection drop that
+/// reqwest surfaces as a transport error, never a clean EOF.
+fn frames_then_drop(frames: Vec<Bytes>) -> Body {
+    let drop = stream::once(async {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        Err(std::io::Error::other("mid-stream connection drop"))
+    });
+    Body::from_stream(stream::iter(frames.into_iter().map(Ok::<Bytes, std::io::Error>)).chain(drop))
+}
+
 async fn mock_handler(
     State(state): State<std::sync::Arc<MockServerState>>,
     request: Request<Body>,
@@ -374,17 +411,13 @@ async fn mock_handler(
                 result.push(format!("event: error\ndata: {}\n\n", err_json));
                 result
             } else {
-                // Normal completion with [DONE]
+                // Normal completion with the `[DONE]` sentinel frame, spelled here: the mock names no
+                // dialect constant.
                 let mut result: Vec<String> = events
                     .into_iter()
                     .map(|d| format!("data: {d}\n\n"))
                     .collect();
-                // Safety: SSE_DONE_FRAME is a valid UTF-8 literal.
-                result.push(
-                    std::str::from_utf8(crate::proto::SSE_DONE_FRAME)
-                        .unwrap()
-                        .to_owned(),
-                );
+                result.push("data: [DONE]\n\n".to_owned());
                 result
             };
 
@@ -405,28 +438,14 @@ async fn mock_handler(
             // propagate a transport failure (not a clean EOF), which reqwest surfaces as a transport
             // error to the proxy's `FirstByteBody`. Without the pause, on fast localhost the error can
             // race ahead of the first byte and trip pre-first-byte failover (a 503) instead.
-            // step: 0..ok_events.len() emit a real frame; the final step sleeps then errors; then end.
             let frames: Vec<Bytes> = ok_events
                 .into_iter()
                 .map(|d| Bytes::from(format!("data: {d}\n\n")))
                 .collect();
-            let s = stream::unfold((0usize, frames), |(i, frames)| async move {
-                if i < frames.len() {
-                    let item = Ok::<Bytes, std::io::Error>(frames[i].clone());
-                    Some((item, (i + 1, frames)))
-                } else if i == frames.len() {
-                    // Pause so the proxy forwards the first byte before the error arrives.
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    let item = Err(std::io::Error::other("mid-stream connection drop"));
-                    Some((item, (i + 1, frames)))
-                } else {
-                    None
-                }
-            });
             Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, "text/event-stream")
-                .body(Body::from_stream(s))
+                .body(frames_then_drop(frames))
                 .unwrap()
         }
         MockResponse::EventStream {
@@ -439,7 +458,7 @@ async fn mock_handler(
             // passthrough must relay this verbatim (never re-synthesize a fresh UUID).
             let mut bytes: Vec<u8> = Vec::new();
             for (event_type, payload) in &frames {
-                bytes.extend(crate::eventstream::encode_frame(event_type, payload));
+                bytes.extend(eventstream_frame(event_type, payload));
             }
             Response::builder()
                 .status(StatusCode::OK)
@@ -459,27 +478,13 @@ async fn mock_handler(
             // an immediate error can otherwise trip pre-first-byte failover (a 503) instead.
             let frames: Vec<Bytes> = ok_frames
                 .into_iter()
-                .map(|(event_type, payload)| {
-                    Bytes::from(crate::eventstream::encode_frame(event_type, &payload))
-                })
+                .map(|(event_type, payload)| Bytes::from(eventstream_frame(event_type, &payload)))
                 .collect();
-            let s = stream::unfold((0usize, frames), |(i, frames)| async move {
-                if i < frames.len() {
-                    let item = Ok::<Bytes, std::io::Error>(frames[i].clone());
-                    Some((item, (i + 1, frames)))
-                } else if i == frames.len() {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    let item = Err(std::io::Error::other("mid-stream connection drop"));
-                    Some((item, (i + 1, frames)))
-                } else {
-                    None
-                }
-            });
             Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, "application/vnd.amazon.eventstream")
                 .header("x-amzn-requestid", amzn_request_id)
-                .body(Body::from_stream(s))
+                .body(frames_then_drop(frames))
                 .unwrap()
         }
         MockResponse::Gated {
@@ -536,7 +541,7 @@ pub struct LaneSpec {
     default_max_tokens: Option<u32>,
     upstream_model: Option<String>,
     /// The lane's declared request-shape capabilities (default: none declared).
-    lane_caps: busbar_substrate_values::ir::egress_prep::LaneCaps,
+    lane_caps: busbar_contract::ir::egress_prep::LaneCaps,
     // LaneData-only runtime state (defaults = a fresh, healthy, unlimited lane):
     limited: bool,
     budget: i64,
@@ -570,7 +575,7 @@ impl LaneSpec {
             health: None,
             default_max_tokens: None,
             upstream_model: None,
-            lane_caps: busbar_substrate_values::ir::egress_prep::LaneCaps::NONE,
+            lane_caps: busbar_contract::ir::egress_prep::LaneCaps::NONE,
             limited: false,
             budget: -1,
             cooldown_until: 0,
@@ -628,7 +633,7 @@ impl LaneSpec {
         self
     }
     /// Declare the lane's request-shape capabilities (what its provider entry would resolve to).
-    pub fn lane_caps(mut self, caps: busbar_substrate_values::ir::egress_prep::LaneCaps) -> Self {
+    pub fn lane_caps(mut self, caps: busbar_contract::ir::egress_prep::LaneCaps) -> Self {
         self.lane_caps = caps;
         self
     }
@@ -2309,5 +2314,23 @@ fn fixture_manifest(
         schema_derived: false,
         host: None,
         declares: Default::default(),
+    }
+}
+
+#[cfg(test)]
+mod eventstream_frame_tests {
+    /// The mock's spelled event-stream encoder emits the exact wire bytes of a ConverseStream event:
+    /// the prelude (total 122, headers 81, prelude CRC32), the three type-7 string headers, the
+    /// payload, and the message CRC32. A layout or CRC slip breaks this before any plane suite runs.
+    #[test]
+    fn eventstream_frame_spells_a_crc_valid_converse_stream_event() {
+        let payload = br#"{"stopReason":"end_turn"}"#;
+        let mut want: Vec<u8> = vec![0, 0, 0, 0x7a, 0, 0, 0, 0x51, 0xca, 0x2c, 0x46, 0x65];
+        want.extend_from_slice(b"\x0b:event-type\x07\x00\x0bmessageStop");
+        want.extend_from_slice(b"\x0d:content-type\x07\x00\x10application/json");
+        want.extend_from_slice(b"\x0d:message-type\x07\x00\x05event");
+        want.extend_from_slice(payload);
+        want.extend_from_slice(&[0x5f, 0xbf, 0x09, 0xfc]);
+        assert_eq!(super::eventstream_frame("messageStop", payload), want);
     }
 }
