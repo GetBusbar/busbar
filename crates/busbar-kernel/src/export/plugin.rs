@@ -58,6 +58,13 @@ pub(crate) fn probe(
     AXIS.get()?.probe_export(module, name, cfg)
 }
 
+/// Whether `module` names a row this build LINKS on the export axis, as opposed to one a plugins
+/// directory dropped in. The unknown-module diagnostic lists these beside the kernel's own modules.
+pub(crate) fn linked(module: &str) -> bool {
+    AXIS.get()
+        .is_some_and(|axis| axis.linked().iter().any(|p| p.manifest.alias == module))
+}
+
 /// Whether `module` names a row the host grants FIRST-PARTY — linked, or dropped in signed by the
 /// release key: the only kind of sink busbar's own `/metrics` is rendered by (#65).
 pub(crate) fn first_party(module: &str) -> bool {

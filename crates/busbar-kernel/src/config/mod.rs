@@ -1943,10 +1943,18 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
                     scrape,
                 })
             }
+            // The modules THIS build serves: the kernel's own and the ones it links, in the frozen
+            // order. A default build links every sink, so its text is 1.5.5's byte for byte.
             other => errors.push(format!(
                 "export.{name}.module: unknown exporter '{other}'; the built-in export modules are \
                  {}",
-                EXPORT_MODULES.join(" | ")
+                EXPORT_MODULES
+                    .iter()
+                    .copied()
+                    .filter(|m| crate::export::projection::module_streams(m).is_some()
+                        || crate::export::plugin::linked(m))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
             )),
         }
     }

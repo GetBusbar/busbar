@@ -3653,16 +3653,18 @@ fn export_named_map_allows_two_instances_of_one_module() {
         );
     }
 
-    // An unknown module names the four built-ins rather than being silently dropped.
+    // An unknown module is refused naming the modules this build serves, never silently dropped.
+    // Which sinks are linked depends on whether this test binary's axis is installed yet (a
+    // process-global another test installs), so the kernel's own `otlp`, always served, closes it.
     let defs: crate::config::ExportDefs =
         serde_yaml::from_str("x: { module: nope }\n").expect("parses");
     let mut errors = Vec::new();
     let _ = crate::config::resolve_export(&defs, &mut errors);
     assert!(
-        errors
-            .iter()
-            .any(|e| e.contains("nope") && e.contains("request-log-webhook")),
-        "an unknown export module must name the built-ins; got {errors:?}"
+        errors.iter().any(|e| e.starts_with(
+            "export.x.module: unknown exporter 'nope'; the built-in export modules are "
+        ) && e.ends_with("otlp")),
+        "an unknown export module must name the modules this build serves; got {errors:?}"
     );
 }
 
