@@ -227,7 +227,7 @@ busbar-voice = ["busbar-voice-codec"]
 # DID NOT MOVE: both still read 9289. The next #83/#84 merge into busbar-contract declares its own
 # re-arm here, once.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED AFTER THE PLANE RECORD KINDS (aae5c08f2) ─────────────────
+# ── THE CONTRACT CEILING PAIR, RE-ARMED AFTER THE PLANE RECORD KINDS ────────────────────────────
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
