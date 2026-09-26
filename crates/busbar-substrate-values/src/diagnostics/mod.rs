@@ -1633,9 +1633,8 @@ pub const STATEFUL_PLANE_EPHEMERAL_STORE: Diagnostic = Diagnostic {
               Stateless planes are deliberately NOT warned — a restart costs \
               them nothing, so warning there would be noise. This is a WARN, not a boot refusal: a \
               durable store is opt-in and RAM is the convenience default.",
-    action: "Configure a durable store (sqlite/postgres) so plane task state survives a restart. \
-             No action is needed if losing in-flight task state on restart is acceptable for this \
-             deployment.", // noun-neutrality: frozen-literal pinned-by=docs/diagnostics.md BUSBAR catalog action, operator-visible; drift-tested render
+    action: "Configure a durable store plugin so plane task state survives a restart. No action \
+             is needed if losing in-flight task state on restart is acceptable for this deployment.",
     since: "1.6.0",
     retired: false,
 };

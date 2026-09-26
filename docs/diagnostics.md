@@ -1413,7 +1413,7 @@ busbar raised the per-plugin-name high-water marks — the automatic first-party
 
 busbar resolved the in-memory (ephemeral) store while a STATEFUL plane is configured — a plane subject (a tool, an agent, or a pool of them). Such planes carry per-task state that lives only in RAM with this store, so it is DROPPED on restart: a task that was mid-flight when the process restarts will break on its next request. Stateless planes are deliberately NOT warned — a restart costs them nothing, so warning there would be noise. This is a WARN, not a boot refusal: a durable store is opt-in and RAM is the convenience default.
 
-**What to do:** Configure a durable store (sqlite/postgres) so plane task state survives a restart. No action is needed if losing in-flight task state on restart is acceptable for this deployment.
+**What to do:** Configure a durable store plugin so plane task state survives a restart. No action is needed if losing in-flight task state on restart is acceptable for this deployment.
 
 <a id="webhook-exporter-disabled"></a>
 ### BUSBAR-7070 — Webhook log exporter disabled (invalid configuration)
