@@ -67,6 +67,9 @@ pub mod redacted;
 // the serde round-trips.
 #[allow(missing_docs)]
 pub mod records;
+// Which reply wakes which waiting unit: the AwaitReply leg's waiting table, a shape over the
+// contract's own correlation and leg types (DECISIONS #83).
+pub mod reply;
 pub mod scratch;
 #[allow(missing_docs)]
 pub mod secret;

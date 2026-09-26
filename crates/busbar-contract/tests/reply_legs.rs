@@ -10,7 +10,7 @@
 
 use busbar_contract::dest::ClientMode;
 use busbar_contract::ids::{CorrelationRef, CorrelationValue, UnitKey};
-use busbar_kernel::reply::{AwaitingReplies, NotWaiting, OwnedCorrelation};
+use busbar_contract::reply::{AwaitingReplies, NotWaiting, OwnedCorrelation};
 
 /// The fact key a plane declares its call correlation under.
 const CALL_ID: &str = "call_id";

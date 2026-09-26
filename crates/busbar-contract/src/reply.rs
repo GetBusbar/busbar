@@ -5,8 +5,12 @@
 //!
 //! A leg planned as [`ClientMode::AwaitReply`] does not finish when it is sent; it finishes when an
 //! answer carrying the right correlation comes back. Deciding *which* answer is the whole of this
-//! file, and it is the kernel's job rather than a plane's because a plane sees one unit at a time
-//! and the collision it has to avoid is between two of them.
+//! file. It is not a thing one unit can decide, because a unit sees itself and the collision to avoid
+//! is between two of them — so it is one table, held by whatever holds a node's open waits.
+//!
+//! It is a contract SHAPE (DECISIONS #83): the table is plain owned data over the contract's own
+//! correlation and leg types, with no I/O and no kernel machinery, so the kernel and a plane that
+//! holds a node's governed calls reach the same one and neither keeps a second copy of the rule.
 //!
 //! ## The two halves of a correlation, and why they are separate
 //!
@@ -17,7 +21,7 @@
 //! identifier honestly is.
 //!
 //! The two are joined here, at registration, which happens while the leg is being planned — inside
-//! the frame that built it, with the arena alive. What this table then keeps is the kernel's OWN
+//! the frame that built it, with the arena alive. What this table then keeps is its OWN
 //! copy of the identifier, owned outright, so nothing in the table borrows a unit's arena either.
 //!
 //! ## Whole values, never a digest
@@ -30,14 +34,14 @@
 
 use std::collections::HashMap;
 
-use busbar_contract::dest::ClientMode;
-use busbar_contract::ids::{CorrelationRef, CorrelationValue, UnitKey};
+use crate::dest::ClientMode;
+use crate::ids::{CorrelationRef, CorrelationValue, UnitKey};
 
-/// A correlation the kernel owns outright, lifted out of a unit's arena at registration.
+/// A correlation the table owns outright, lifted out of a unit's arena at registration.
 ///
 /// The arena-borrowed [`CorrelationValue`] cannot be kept: the unit's arena is reclaimed when the
 /// frame that planned the leg is done, and the wait outlives it by a deadline. So a string
-/// identifier is copied into the kernel's own memory, once, at the one moment it is guaranteed
+/// identifier is copied into the table's own memory, once, at the one moment it is guaranteed
 /// readable. A numeric one is copied by being what it is.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum OwnedCorrelation {
@@ -48,7 +52,7 @@ pub enum OwnedCorrelation {
 }
 
 impl OwnedCorrelation {
-    /// Lift an arena-borrowed value into the kernel's own memory.
+    /// Lift an arena-borrowed value into the table's own memory.
     #[must_use]
     pub fn of(value: CorrelationValue<'_>) -> Self {
         match value {
@@ -93,7 +97,7 @@ pub enum NotWaiting {
     /// than entered.
     NoCorrelationOut,
     /// The draft's correlation is carried under a different key than the leg named. One of the two
-    /// is wrong and the kernel cannot tell which, so it enters neither.
+    /// is wrong and the table cannot tell which, so it enters neither.
     KeyMismatch,
 }
 

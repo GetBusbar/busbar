@@ -135,7 +135,6 @@ pub mod mask;
 pub mod pump;
 pub mod recovery;
 pub mod registry;
-pub mod reply;
 pub mod scratch;
 pub mod teller;
 pub mod tick;
@@ -143,6 +142,9 @@ pub mod tick;
 // The node's slice/lease types live in busbar-contract (the ONE ABI crate, #38); re-exported so
 // `crate::slice` / `busbar_kernel::slice` paths are unchanged.
 pub use busbar_contract::slice;
+// The reply-leg waiting table is a contract shape (#83); re-exported so `busbar_kernel::reply` paths
+// are unchanged.
+pub use busbar_contract::reply;
 
 /// Milliseconds on the kernel's monotonic clock (re-exported from busbar-contract, #38).
 pub use busbar_contract::Millis;
