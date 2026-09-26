@@ -758,35 +758,6 @@ fn test_reader_classify_behavior() {
 }
 
 #[test]
-fn test_writer_auth_headers() {
-    let headers = crate::anthropic::anthropic_auth_headers("k", None);
-    // Pin the VALUES, not just the names. Asserting only that the two header names appear left the
-    // key argument and the `None` version override with no assertion at all: `x-api-key: ""` (the
-    // key dropped by the bad-bytes guard) or a stale `anthropic-version` 401s every upstream call
-    // while both name checks still pass.
-    let named: Vec<(&str, &str)> = headers
-        .iter()
-        .map(|(n, v)| (n.as_str(), v.to_str().expect("ascii header value")))
-        .collect();
-    assert_eq!(
-        named,
-        // `"k"` matches no known credential shape, so `classify_credential` returns `Ambiguous`;
-        // with `creds: None` the mode-blind primitive deliberately emits BOTH native shapes "so
-        // neither path silently drops" (anthropic/mod.rs, the `Ambiguous` arm), then the
-        // always-present version. The version is spelled as a LITERAL rather than read from the
-        // private `ANTHROPIC_API_VERSION` it pins: a golden taken from the same constant it checks
-        // would move silently with it. "2023-06-01" is Anthropic's published version string.
-        vec![
-            ("x-api-key", "k"),
-            ("authorization", "Bearer k"),
-            ("anthropic-version", "2023-06-01"),
-        ],
-        "an ambiguous key with no creds emits both native credential shapes plus the pinned API \
-         version, in that order"
-    );
-}
-
-#[test]
 fn test_irerror_bridge() {
     // `IrError` is a type alias for the breaker's `CanonicalSignal`; verify the bridge by routing
     // it through the classifier rather than re-asserting the field we just set.

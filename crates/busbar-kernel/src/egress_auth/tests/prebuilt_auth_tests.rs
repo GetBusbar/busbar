@@ -178,8 +178,8 @@ fn the_api_key_override_presents_the_shared_builders_bytes() {
 // ══ THE LLM DIALECTS' DECLARED SCHEMES, PRESENTED (#83a SD-2b, SD-3; O7, S2-a) ═══════════════════
 //
 // Since SD-3 the LLM plane's dialects DECLARE their egress credential as data and carry no builder;
-// the host presents it. The plane's own suite holds each declaration's scheme data, its signing
-// dialect's host-to-region answers and its one remaining builder to the shared fixture
+// the host presents it. The plane's own suite holds each declaration's scheme data and its signing
+// dialect's host-to-region answers to the shared fixture
 // `testing/plane-copies/declared-credentials.json` — the credential headers each dialect's own
 // builder wrote, per credential, mode and request. This half holds the HOST to the same file:
 // presented under schemes carrying exactly the fixture's data, this unit writes exactly those
@@ -187,7 +187,7 @@ fn the_api_key_override_presents_the_shared_builders_bytes() {
 // suite reaches the other's crate.
 
 mod declared_dialect_schemes {
-    use crate::egress_auth::resolve;
+    use crate::egress_auth::CredentialProvider;
     use busbar_contract::config::UpstreamCreds;
     use busbar_contract::protocol::{
         CredentialFamily, CredentialHeader, EgressScheme, ProtocolDecl, SigningContext,
@@ -278,6 +278,13 @@ mod declared_dialect_schemes {
         },
     ];
 
+    /// The presenter `resolve` builds for a twin, built here from its declaration so this suite
+    /// registers nothing in the process-global protocol table (which other suites count).
+    fn present_as(decl: &'static ProtocolDecl) -> crate::egress_auth::DeclaredScheme {
+        let scheme = decl.egress_scheme.expect("declared");
+        crate::egress_auth::DeclaredScheme(scheme, crate::teller::Kernel::new(), Some(decl))
+    }
+
     fn twin(dialect: &str) -> &'static ProtocolDecl {
         let name = format!("declared-twin-{dialect}");
         TWINS
@@ -345,12 +352,11 @@ mod declared_dialect_schemes {
     /// the fixture — and a static scheme is lane-constant, a signature never is.
     #[test]
     fn each_declared_scheme_presents_what_its_dialect_builder_wrote() {
-        crate::proto::register_test_protocols(&TWINS.iter().collect::<Vec<_>>());
         let mut compared = 0usize;
         for row in fixture()["rows"].as_array().expect("rows") {
             let dialect = row["dialect"].as_str().expect("dialect");
             let decl = twin(dialect);
-            let presenter = resolve(decl.name, None);
+            let presenter = present_as(decl);
             assert_eq!(
                 presenter.is_lane_constant(),
                 matches!(decl.egress_scheme, Some(EgressScheme::Static { .. })),
@@ -393,7 +399,6 @@ mod declared_dialect_schemes {
         uri: &'static str,
         body: &'static [u8],
     ) -> Vec<(String, String)> {
-        crate::proto::register_test_protocols(&TWINS.iter().collect::<Vec<_>>());
         let ctx = SigningContext {
             host,
             canonical_uri: uri,
@@ -401,7 +406,7 @@ mod declared_dialect_schemes {
             timestamp_epoch: 1_440_938_160, // 20150830T123600Z
             upstream_creds: UpstreamCreds::Own,
         };
-        resolve(twin("bedrock").name, None)
+        present_as(twin("bedrock"))
             .headers_for(key, &ctx)
             .into_iter()
             .map(|(k, v)| {
@@ -508,7 +513,6 @@ mod declared_dialect_schemes {
 
     #[test]
     fn a_static_credential_is_presented_verbatim_or_omitted_never_emptied() {
-        crate::proto::register_test_protocols(&TWINS.iter().collect::<Vec<_>>());
         let ctx = SigningContext {
             host: "upstream.internal",
             canonical_uri: "/v1/chat/completions",
@@ -517,7 +521,7 @@ mod declared_dialect_schemes {
             upstream_creds: UpstreamCreds::Own,
         };
         let present = |dialect: &str, key: &str| -> Vec<(String, String)> {
-            resolve(twin(dialect).name, None)
+            present_as(twin(dialect))
                 .headers_for(key, &ctx)
                 .into_iter()
                 .map(|(k, v)| {
@@ -548,5 +552,284 @@ mod declared_dialect_schemes {
         for bad in ["bad\nkey", "key\u{0000}bad"] {
             assert!(present("gemini", bad).is_empty(), "gemini: {bad:?}");
         }
+    }
+}
+
+// ══ DECLARED STATIC HEADERS AND THE UNPRESENTED-CREDENTIAL LINES (#83a S2-a; SD-3b) ═════════════
+//
+// A protocol's `static_headers` are written verbatim after its declared credential, on every request
+// the credential is presented for — the one version header its builder used to write beside the
+// credential, now declared data. And a credential the unit could not present is reported in the
+// exact line the scheme's own builder logged in 1.5.5: operator logs are frozen text (Law 7).
+
+mod declared_static_headers_and_lines {
+    use crate::egress_auth::{prebuild_auth, CredentialProvider, DeclaredScheme};
+    use crate::teller::Kernel;
+    use crate::test_support::warn_capture::WarnCapture;
+    use busbar_contract::config::UpstreamCreds;
+    use busbar_contract::protocol::{
+        CredentialFamily, CredentialHeader, EgressScheme, ProtocolDecl, SigningContext,
+    };
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    const API_KEY: CredentialHeader = CredentialHeader::Raw {
+        header: "x-api-key",
+        trim_start: false,
+    };
+
+    /// The credential-family table the versioned dialect declares.
+    const FAMILY_TABLE: EgressScheme = EgressScheme::Static {
+        families: &[
+            CredentialFamily {
+                prefix: "sk-ant-api",
+                presented_as: CredentialHeader::Raw {
+                    header: "x-api-key",
+                    trim_start: true,
+                },
+            },
+            CredentialFamily {
+                prefix: "sk-ant-oat",
+                presented_as: CredentialHeader::Bearer,
+            },
+        ],
+        own: API_KEY,
+        passthrough: CredentialHeader::Bearer,
+    };
+
+    const SIGNING: EgressScheme = EgressScheme::SigV4 {
+        service: "bedrock",
+        region_of_host: |_| None,
+        default_region: "us-east-1",
+        content_type: "application/json",
+    };
+
+    static DECLS: [ProtocolDecl; 6] = [
+        ProtocolDecl {
+            egress_scheme: Some(FAMILY_TABLE),
+            static_headers: &[("anthropic-version", "2023-06-01")],
+            ..ProtocolDecl::named("static-twin-versioned")
+        },
+        ProtocolDecl {
+            egress_scheme: Some(FAMILY_TABLE),
+            ..ProtocolDecl::named("static-twin-unversioned")
+        },
+        ProtocolDecl {
+            egress_scheme: Some(EgressScheme::bearer()),
+            ..ProtocolDecl::named("static-twin-bearer")
+        },
+        ProtocolDecl {
+            egress_scheme: Some(EgressScheme::header("x-goog-api-key")),
+            ..ProtocolDecl::named("static-twin-header")
+        },
+        ProtocolDecl {
+            egress_scheme: Some(SIGNING),
+            ..ProtocolDecl::named("static-twin-signing")
+        },
+        ProtocolDecl {
+            egress_scheme: Some(EgressScheme::bearer()),
+            static_headers: &[("x-static-one", "1"), ("x-static-two", "two")],
+            ..ProtocolDecl::named("static-twin-two-statics")
+        },
+    ];
+
+    fn ctx(upstream_creds: UpstreamCreds) -> SigningContext<'static> {
+        SigningContext {
+            host: "upstream.internal",
+            canonical_uri: "/v1/messages",
+            body: b"{}",
+            timestamp_epoch: 1_752_000_000,
+            upstream_creds,
+        }
+    }
+
+    /// The presenter the kernel resolves for the twin `name` — built here from the twin's declaration
+    /// exactly as `resolve` builds it, so this suite registers nothing in the process-global table.
+    fn presenter(name: &str) -> DeclaredScheme {
+        let decl = DECLS.iter().find(|d| d.name == name).expect("a twin");
+        DeclaredScheme(
+            decl.egress_scheme.expect("declared"),
+            Kernel::new(),
+            Some(decl),
+        )
+    }
+
+    /// Every header the unit presents for `key` on the twin `name`, in order, as strings.
+    fn presented(name: &str, key: &str, mode: UpstreamCreds) -> Vec<(String, String)> {
+        presenter(name)
+            .headers_for(key, &ctx(mode))
+            .into_iter()
+            .map(|(k, v)| {
+                (
+                    k.as_str().to_string(),
+                    v.to_str().expect("ascii").to_string(),
+                )
+            })
+            .collect()
+    }
+
+    fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
+        v.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    /// THE VERSIONED REQUEST: the declared credential, then EXACTLY the declared static header — for
+    /// each credential family and mode, and for a key no header value may carry (the credential is
+    /// omitted, the version stays). The boot-prebuilt set is those same bytes.
+    #[test]
+    fn a_declared_static_header_follows_the_credential_verbatim() {
+        let v = ("anthropic-version", "2023-06-01");
+        let own = UpstreamCreds::Own;
+        let pt = UpstreamCreds::Passthrough;
+        for (key, mode, want) in [
+            (
+                "sk-ant-api03-k",
+                own,
+                vec![("x-api-key", "sk-ant-api03-k"), v],
+            ),
+            (
+                "  sk-ant-api03-k",
+                pt,
+                vec![("x-api-key", "sk-ant-api03-k"), v],
+            ),
+            (
+                "sk-ant-oat01-t",
+                own,
+                vec![("authorization", "Bearer sk-ant-oat01-t"), v],
+            ),
+            ("opaque", own, vec![("x-api-key", "opaque"), v]),
+            ("opaque", pt, vec![("authorization", "Bearer opaque"), v]),
+            ("sk-ant-api03-bad\nkey", own, vec![v]),
+            ("sk-ant-oat01-bad\ntoken", own, vec![v]),
+        ] {
+            assert_eq!(
+                presented("static-twin-versioned", key, mode),
+                pairs(&want),
+                "key {key:?}, mode {mode:?}"
+            );
+        }
+        let cred: std::sync::Arc<dyn CredentialProvider> =
+            std::sync::Arc::new(presenter("static-twin-versioned"));
+        assert!(cred.is_lane_constant());
+        let pre = prebuild_auth(&cred, "sk-ant-api03-k", "upstream.internal").expect("prebuilds");
+        let pre: Vec<(String, String)> = pre
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.as_str().to_string(),
+                    v.to_str().expect("ascii").to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(pre, pairs(&[("x-api-key", "sk-ant-api03-k"), v]));
+        assert_eq!(
+            presented("static-twin-two-statics", "k", own),
+            pairs(&[
+                ("authorization", "Bearer k"),
+                ("x-static-one", "1"),
+                ("x-static-two", "two")
+            ]),
+            "several static headers are written in their declared order"
+        );
+    }
+
+    /// RED ARM: the same scheme with NO static header declared presents the credential alone — the
+    /// version header is absent, so it is the declaration that puts it on the wire, nothing else.
+    #[test]
+    fn with_no_static_header_declared_the_version_header_is_absent() {
+        for (key, mode) in [
+            ("sk-ant-api03-k", UpstreamCreds::Own),
+            ("opaque", UpstreamCreds::Passthrough),
+            ("sk-ant-api03-bad\nkey", UpstreamCreds::Own),
+        ] {
+            let h = presented("static-twin-unversioned", key, mode);
+            assert!(
+                h.iter().all(|(k, _)| k != "anthropic-version"),
+                "{key:?}: {h:?}"
+            );
+        }
+        assert_eq!(
+            presented(
+                "static-twin-unversioned",
+                "sk-ant-api03-k",
+                UpstreamCreds::Own
+            ),
+            pairs(&[("x-api-key", "sk-ant-api03-k")])
+        );
+    }
+
+    /// Every line the unit logged while presenting `key` on the twin `name`, DEBUG and above.
+    fn lines(name: &str, key: &str) -> Vec<String> {
+        let cap = WarnCapture::capturing_debug();
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            presented(name, key, UpstreamCreds::Own);
+        });
+        cap.messages()
+            .into_iter()
+            .map(|m| m.trim_end().to_string())
+            .collect()
+    }
+
+    /// A signing credential whose session token no header value may carry logs, word for word, the
+    /// line the dialect's own signer logged in 1.5.5 — naming the declared service — and signs
+    /// nothing. A malformed credential without that token logged nothing then and logs nothing now.
+    #[test]
+    fn an_unsendable_session_token_logs_the_signers_own_line() {
+        assert_eq!(
+            lines("static-twin-signing", "AKID:SECRET:TOK\r\nEN"),
+            vec![
+                "Bedrock lane session token contains a byte rejected by HeaderValue; skipping \
+                 signing to avoid a signed-but-absent x-amz-security-token header."
+                    .to_string()
+            ]
+        );
+        for quiet in [
+            "not-a-valid-key",
+            "AKID\r\nINJECT:SECRET",
+            "AKID:SECRET:CLEAN",
+        ] {
+            assert!(lines("static-twin-signing", quiet).is_empty(), "{quiet:?}");
+        }
+    }
+
+    /// A bearer credential with a byte no header value may carry logs the bearer builder's 1.5.5
+    /// line, naming the protocol; a static custom header's and a credential-family table's keep
+    /// theirs, each naming the header it omitted.
+    #[test]
+    fn an_unpresentable_static_credential_logs_its_builders_own_line() {
+        assert_eq!(
+            lines("static-twin-bearer", "bad\nkey"),
+            vec![
+                "authorization credential contains invalid header bytes (ASCII control \
+                 character); omitting auth header — upstream will reject with 401 \
+                 diag=BUSBAR-7087 protocol=static-twin-bearer"
+                    .to_string()
+            ]
+        );
+        assert_eq!(
+            lines("static-twin-header", "bad\nkey"),
+            vec![
+                "egress credential contains invalid header bytes (ASCII control character); \
+                 omitting auth header — upstream will reject with 401 diag=BUSBAR-4013 \
+                 header=x-goog-api-key"
+                    .to_string()
+            ]
+        );
+        for (key, header) in [
+            ("sk-ant-api03-bad\nkey", "x-api-key"),
+            ("sk-ant-oat01-bad\ntoken", "authorization"),
+        ] {
+            assert_eq!(
+                lines("static-twin-versioned", key),
+                vec![format!(
+                    "auth credential contains bytes invalid for an HTTP header value (e.g. a \
+                     trailing newline); omitting the credential header — upstream will return \
+                     401, check the key configuration protocol=static-twin-versioned \
+                     header={header}"
+                )]
+            );
+        }
+        assert!(lines("static-twin-bearer", "good-key").is_empty());
     }
 }

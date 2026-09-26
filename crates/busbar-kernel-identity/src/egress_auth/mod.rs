@@ -21,7 +21,9 @@
 //!   substituted here and a header built here are the same bytes.
 //! - [`present`] and [`presentation`] — a protocol's DECLARED egress scheme (a credential-family
 //!   table, or a signature whose region is a declared function of the host), read and decorated
-//!   here under the kernel's `Grant<Sign>`.
+//!   here under the kernel's `Grant<Sign>`; [`present_declared`] adds the declaration's static
+//!   headers and, through [`report_unpresented`], logs a credential it could not present in the
+//!   line that scheme's builder always logged.
 //! - [`sigv4`] — the signer itself, verified against AWS's published worked example.
 //! - [`substitute`] — applies a decoration's [`SecretSlot`]s to an envelope exactly once each.
 //! - [`lane_cross_check`] — the post-decoration re-check: the envelope must still equal the
@@ -43,7 +45,7 @@ mod declared;
 pub mod sigv4;
 mod token_response;
 
-pub use declared::{present, presentation};
+pub use declared::{present, present_declared, presentation, report_unpresented};
 pub use token_response::{default_expires_in, deserialize_expires_in};
 
 use busbar_contract::caps::{AuthDecoration, Grant, SecretSlot, Sign, VerifiedDestination};

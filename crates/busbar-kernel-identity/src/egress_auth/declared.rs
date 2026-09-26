@@ -12,7 +12,8 @@
 use super::{decorate, sigv4, substitute, EgressBody, Scheme, SessionToken};
 use busbar_contract::caps::{Grant, Sign};
 use busbar_contract::config::UpstreamCreds;
-use busbar_contract::protocol::{CredentialHeader, EgressScheme, SigningContext};
+use busbar_contract::diagnostic::Diagnostic;
+use busbar_contract::protocol::{CredentialHeader, EgressScheme, ProtocolDecl, SigningContext};
 
 /// How a static declared scheme presents `credential` in `mode`: the first credential-family row
 /// whose prefix the credential (leading whitespace trimmed) starts with, else the scheme's
@@ -96,6 +97,72 @@ pub fn present(
             let decoration = decorate(token, &scheme, secret, &request(ctx, &signed));
             substitute(&decoration, secret, Vec::new())
         }
+    }
+}
+
+/// [`present`] for a lane of the protocol `decl` declared (`None`: the operator's override, which
+/// declares nothing else): the credential headers, then — when none could be presented —
+/// [`report_unpresented`] under the host catalog's `codes`, then the declaration's `static_headers`
+/// verbatim, in their declared order. A static header is not auth: it rides whatever the credential.
+pub fn present_declared(
+    token: &Grant<Sign>,
+    scheme: &EgressScheme,
+    decl: Option<&ProtocolDecl>,
+    credential: &str,
+    ctx: &SigningContext<'_>,
+    codes: [&Diagnostic; 2],
+) -> Vec<(String, String)> {
+    let mut headers = present(token, scheme, credential, ctx);
+    let (protocol, statics) = decl.map_or(("", &[][..]), |d| (d.name, d.static_headers));
+    if headers.is_empty() {
+        report_unpresented(scheme, protocol, credential, ctx.upstream_creds, codes);
+    }
+    headers.extend(statics.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+    headers
+}
+
+/// Report a credential [`present`] could not present (an empty presentation), in the line its
+/// scheme's builder always logged, the key never logged: a credential-family table's line naming the
+/// header it omitted, a static header's (`codes[0]`) naming the header, a bearer's (`codes[1]`, at
+/// debug) naming `protocol`, and — for a signing scheme — the signer's line for an unsendable
+/// session token, naming the declared service. The codes are the host catalog's, handed in by the
+/// caller that owns it. A signing credential that is merely malformed logged nothing and logs nothing.
+pub fn report_unpresented(
+    scheme: &EgressScheme,
+    protocol: &str,
+    credential: &str,
+    mode: UpstreamCreds,
+    codes: [&Diagnostic; 2],
+) {
+    let (header, raw) = match presentation(scheme, credential, mode) {
+        Some(CredentialHeader::Raw { header, .. }) => (header, true),
+        Some(CredentialHeader::Bearer) => ("authorization", false),
+        None => {
+            let token = sigv4::split_credential(credential).and_then(|(_, _, t)| t);
+            let unsendable = token.is_some_and(|t| !super::is_legal_header_value(t));
+            if let (EgressScheme::SigV4 { service, .. }, true) = (scheme, unsendable) {
+                let (initial, rest) = service.split_at(service.len().min(1));
+                tracing::warn!("{}{rest} lane session token contains a byte rejected by HeaderValue; skipping signing to avoid a signed-but-absent x-amz-security-token header.", initial.to_uppercase());
+            }
+            return;
+        }
+    };
+    if matches!(scheme, EgressScheme::Static { families, .. } if !families.is_empty()) {
+        tracing::warn!(protocol, header, "auth credential contains bytes invalid for an HTTP header value (e.g. a trailing newline); omitting the credential header — upstream will return 401, check the key configuration");
+    } else if raw {
+        busbar_contract::diag_warn!(
+            codes[0],
+            header,
+            "egress credential contains invalid header bytes (ASCII control character); omitting \
+             auth header — upstream will reject with 401"
+        );
+    } else {
+        busbar_contract::diag_debug!(
+            codes[1],
+            protocol,
+            "authorization credential contains invalid header bytes (ASCII control character); \
+             omitting auth header — upstream will reject with 401"
+        );
     }
 }
 

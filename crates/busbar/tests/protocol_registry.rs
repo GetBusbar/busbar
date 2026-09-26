@@ -309,6 +309,7 @@ const TELEX_DECL: ProtocolDecl = ProtocolDecl {
     residual_default: false,
     vendor_response_metadata: None,
     list_models_fingerprint_headers: &[],
+    static_headers: &[],
 };
 
 impl RequestHandler for TelexHandler {
@@ -523,6 +524,7 @@ const fn named_decl(name: &'static str) -> ProtocolDecl {
         residual_default: false,
         vendor_response_metadata: None,
         list_models_fingerprint_headers: &[],
+        static_headers: &[],
     }
 }
 

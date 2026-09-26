@@ -453,4 +453,5 @@ pub static DECLS: busbar_kernel::proto::ProtocolDecl = busbar_kernel::proto::Pro
     residual_default: false,
     vendor_response_metadata: None,
     list_models_fingerprint_headers: &[],
+    static_headers: &[],
 };

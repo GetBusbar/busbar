@@ -33,9 +33,6 @@ mod citations;
 mod ids;
 mod slots;
 mod usage;
-pub use auth::anthropic_auth_headers;
-#[cfg(test)]
-use auth::AnthropicCredScheme;
 use blocks::*;
 use citations::*;
 use ids::*;
@@ -44,7 +41,7 @@ use slots::*;
 use usage::*;
 
 use crate::ir::{IrBlockMeta, IrDelta, IrStreamEvent, IrUsage};
-use busbar_contract::http::{header::HeaderValue, HeaderName, StatusCode};
+use busbar_contract::http::StatusCode;
 use busbar_contract::protocol::*;
 #[cfg(test)]
 use busbar_contract::upstream::CanonicalSignal;
@@ -67,13 +64,6 @@ use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming
 /// resolution, exactly as the registry's field doc requires.
 pub fn protocol() -> Protocol {
     Protocol::new("anthropic", AnthropicReader, AnthropicWriter)
-}
-
-/// The [`ProtocolDecl::egress_auth_headers`] builder: Anthropic's native credential shaping,
-/// including the `Own | Passthrough` disambiguation of an ambiguous key. Thin declared-data
-/// wrapper over [`anthropic_auth_headers`], which the hardening tests drive directly.
-fn egress_auth_headers(key: &str, ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
-    anthropic_auth_headers(key, Some(ctx.upstream_creds))
 }
 
 /// A native Anthropic stream emits `event: ping` immediately after `message_start` (and
@@ -158,12 +148,35 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // `toolu_…` is Anthropic's documented native tool-call id shape.
     native_tool_id_prefix: Some("toolu_"),
     ingress_auth: IngressAuth::Bearer,
-    // Anthropic's api-key (`sk-ant-api…` → `x-api-key`) vs Bearer (`sk-ant-oat…` → Authorization)
-    // disambiguation is THIS dialect's scheme, so the builder is declared here — the field that
-    // retired the `"anthropic"` arm in core's `egress_auth::resolve`.
-    egress_auth_headers: Some(egress_auth_headers),
-    egress_auth_lane_constant: true,
-    egress_scheme: None,
+    // Anthropic's credential scheme is DECLARED here as data (#83a S2-a, #40(b)) — a credential-family
+    // table: an API key (`sk-ant-api…`) is presented as `x-api-key` with its leading whitespace
+    // trimmed, an OAuth access token (`sk-ant-oat…`) as `authorization: Bearer`, and a credential of
+    // neither family by the lane's mode (a configured key as `x-api-key`, a forwarded caller token as
+    // a bearer). ONE scheme per request, never both: two schemes carrying one secret is a request
+    // shape no native client sends. The kernel's egress-auth unit presents the lane credential under
+    // it, so the key never passes through this plane; the version header is `static_headers` below.
+    egress_auth_headers: None,
+    egress_auth_lane_constant: false,
+    egress_scheme: Some(EgressScheme::Static {
+        families: &[
+            CredentialFamily {
+                prefix: CRED_PREFIX_API_KEY,
+                presented_as: CredentialHeader::Raw {
+                    header: HDR_X_API_KEY,
+                    trim_start: true,
+                },
+            },
+            CredentialFamily {
+                prefix: CRED_PREFIX_OAUTH,
+                presented_as: CredentialHeader::Bearer,
+            },
+        ],
+        own: CredentialHeader::Raw {
+            header: HDR_X_API_KEY,
+            trim_start: false,
+        },
+        passthrough: CredentialHeader::Bearer,
+    }),
     stream_usage_requires_opt_in: false,
     // ── Promoted writer facts (G6 step A1): the same constants the `AnthropicWriter` methods returned.
     requires_max_tokens: true,
@@ -201,6 +214,9 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // The Anthropic SDK always sends `anthropic-version`; its presence disambiguates the shared
     // list-models surface as Anthropic. NARROWER than `claims` on purpose (no `x-api-key`/path).
     list_models_fingerprint_headers: &["anthropic-version"],
+    // Every Anthropic request carries the API version it speaks, whatever its credential — not auth,
+    // so it is declared beside the scheme and written after the credential by the kernel.
+    static_headers: &[(HDR_ANTHROPIC_VERSION, ANTHROPIC_API_VERSION)],
 };
 
 /// Value of the required `anthropic-version` request header (the Messages API version busbar

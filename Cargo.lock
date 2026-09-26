@@ -717,6 +717,7 @@ dependencies = [
  "rustls",
  "serde",
  "sha2 0.11.0",
+ "tracing",
 ]
 
 [[package]]

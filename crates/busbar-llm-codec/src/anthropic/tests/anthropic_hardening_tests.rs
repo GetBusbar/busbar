@@ -24,293 +24,66 @@ fn stop_reason_egress_never_leaks_foreign_tokens() {
     assert_eq!(read_anthropic_stop_reason("some_future_reason"), S::Other);
 }
 
-fn header_value(headers: &[(HeaderName, HeaderValue)], name: &str) -> Option<String> {
-    headers
-        .iter()
-        .find(|(n, _)| n.as_str() == name)
-        .map(|(_, v)| v.to_str().unwrap_or_default().to_string())
-}
+// --- egress credential (#83a S2-a): the dialect DECLARES its scheme and the kernel presents it. The
+//     bytes the kernel writes for every credential family, mode and bad-byte key (the trim of an API
+//     key's leading whitespace, the verbatim bearer of an OAuth or forwarded token, one scheme per
+//     request and the omission of a key no header value may carry) are pinned in the host's suite
+//     over the shared fixture `testing/plane-copies/declared-credentials.json`; the version header
+//     the request always carries is pinned there too, by the static headers declared here.
 
-/// A configured API key authenticates the native way: `x-api-key` ONLY, with no
-/// `authorization` header — sending both is the upstream-distinguishability tell we fixed.
-/// `anthropic-version` is always present.
+/// The credential-family table: an API key (`sk-ant-api…`) is presented as `x-api-key` with its
+/// leading whitespace trimmed, an OAuth access token (`sk-ant-oat…`) as `authorization: Bearer`
+/// verbatim, and a credential of neither family by the lane's mode — a configured key as
+/// `x-api-key` verbatim, a forwarded caller token as a bearer. One scheme per request, never both.
 #[test]
-fn auth_headers_api_key_emits_only_x_api_key() {
-    let headers = super::anthropic_auth_headers("sk-ant-api03-secret-key", None);
-
-    assert_eq!(
-        header_value(&headers, "x-api-key").as_deref(), // golden wire-contract literal (kept bare on purpose)
-        Some("sk-ant-api03-secret-key")
-    );
-    assert!(
-        header_value(&headers, "authorization").is_none(),
-        "an API key must NOT emit an authorization header (native API-key clients never do)"
-    );
-    assert_eq!(
-        header_value(&headers, "anthropic-version").as_deref(), // golden wire-contract literal (kept bare on purpose)
-        Some("2023-06-01")
-    );
-}
-
-/// Regression: a configured API key with LEADING WHITESPACE (a common config
-/// artifact — a stray space or indentation in an env var / secrets file) classifies as `ApiKey`
-/// (because `classify_credential` matches on the trimmed key) but, before the fix, was forwarded
-/// VERBATIM — emitting `x-api-key: "  sk-ant-api…"`, a malformed header value the upstream rejects
-/// with a 401. The configured-key (`ApiKey`) scheme must now emit the key with the leading
-/// whitespace stripped, matching the value the classifier matched on.
-#[test]
-fn auth_headers_api_key_trims_leading_whitespace() {
-    // Wire path (sign_request, Token mode) and the mode-blind primitive both route a canonical
-    // `sk-ant-api…` key through the ApiKey arm — assert both emit the CLEAN header.
-    let raw = "   sk-ant-api03-secret-key";
-    let ctx = busbar_contract::protocol::SigningContext {
-        host: "api.anthropic.com",
-        canonical_uri: PATH_UPSTREAM,
-        body: b"{}",
-        timestamp_epoch: 0,
-        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
+fn egress_scheme_is_the_declared_credential_family_table() {
+    use busbar_contract::protocol::{CredentialFamily, CredentialHeader as H};
+    let Some(EgressScheme::Static {
+        families,
+        own,
+        passthrough,
+    }) = DECL.egress_scheme
+    else {
+        panic!("anthropic declares a static credential scheme");
     };
-    for headers in [
-        super::anthropic_auth_headers(raw, None),
-        super::anthropic_auth_headers(raw, Some(ctx.upstream_creds)),
-    ] {
-        assert_eq!(
-            header_value(&headers, "x-api-key").as_deref(), // golden wire-contract literal (kept bare on purpose)
-            Some("sk-ant-api03-secret-key"),
-            "the ApiKey scheme must forward the configured key with leading whitespace stripped"
-        );
-        // Still single-header (no Bearer tell) and the trim did not corrupt the value.
-        assert!(
-            header_value(&headers, "authorization").is_none(),
-            "an API key must NOT emit an authorization header"
-        );
-    }
-}
-
-/// Precision guard: the leading-whitespace trim is scoped to the configured-key
-/// (`ApiKey`) scheme ONLY. An OAuth (`sk-ant-oat…`) credential — and any Ambiguous passthrough
-/// Bearer token — must round-trip BYTE-FOR-BYTE, leading whitespace included, so a forwarded
-/// caller token reaches the upstream exactly as presented (the passthrough contract). Trimming
-/// the Bearer value here would silently rewrite a caller's credential.
-#[test]
-fn auth_headers_oauth_and_passthrough_preserve_leading_whitespace() {
-    // OAuth (sk-ant-oat) keeps its raw Bearer value verbatim — note the leading space is kept
-    // inside the value after the `Bearer ` prefix.
-    let oat = "  sk-ant-oat01-caller-token";
-    let oauth_headers = super::anthropic_auth_headers(oat, None);
-    assert_eq!(
-        header_value(&oauth_headers, "authorization").as_deref(),
-        Some("Bearer   sk-ant-oat01-caller-token"),
-        "OAuth Bearer must round-trip the credential verbatim (no trim)"
-    );
-    assert!(
-        header_value(&oauth_headers, "x-api-key").is_none(), // golden wire-contract literal (kept bare on purpose)
-        "OAuth must not emit x-api-key"
-    );
-
-    // Ambiguous passthrough Bearer (wire path) likewise round-trips verbatim.
-    let amb = "  opaque-caller-token";
-    let ctx = busbar_contract::protocol::SigningContext {
-        host: "api.anthropic.com",
-        canonical_uri: PATH_UPSTREAM,
-        body: b"{}",
-        timestamp_epoch: 0,
-        upstream_creds: busbar_contract::config::UpstreamCreds::Passthrough,
+    let api_key = H::Raw {
+        header: "x-api-key", // golden wire-contract literal (kept bare on purpose)
+        trim_start: true,
     };
-    let pt = super::anthropic_auth_headers(amb, Some(ctx.upstream_creds));
     assert_eq!(
-        header_value(&pt, "authorization").as_deref(),
-        Some("Bearer   opaque-caller-token"),
-        "passthrough Bearer must round-trip the caller token verbatim (no trim)"
+        families,
+        &[
+            CredentialFamily {
+                prefix: "sk-ant-api",
+                presented_as: api_key,
+            },
+            CredentialFamily {
+                prefix: "sk-ant-oat",
+                presented_as: H::Bearer,
+            },
+        ]
+    );
+    assert_eq!(
+        own,
+        H::Raw {
+            header: "x-api-key", // golden wire-contract literal (kept bare on purpose)
+            trim_start: false,
+        }
+    );
+    assert_eq!(passthrough, H::Bearer);
+    assert!(
+        DECL.egress_auth_headers.is_none() && !DECL.egress_auth_lane_constant,
+        "no credential passes through the plane"
     );
 }
 
-/// A credential matching neither Anthropic family (no `sk-ant-api` / `sk-ant-oat` prefix) is
-/// Ambiguous: busbar can't tell a static key from a passthrough Bearer token here, so it emits
-/// BOTH headers — preserving both paths. This is the ONLY case where both are sent; real
-/// Anthropic credentials never land here.
+/// Every Anthropic request carries the pinned API version whatever its credential, as a DECLARED
+/// static header — spelled as literals here, not read from the constants they pin.
 #[test]
-fn auth_headers_unrecognized_credential_emits_both_headers() {
-    let headers = super::anthropic_auth_headers("caller-specific-token-abc123", None);
-
+fn every_egress_request_declares_the_pinned_api_version() {
     assert_eq!(
-        header_value(&headers, "x-api-key").as_deref(), // golden wire-contract literal (kept bare on purpose)
-        Some("caller-specific-token-abc123")
-    );
-    assert_eq!(
-        header_value(&headers, "authorization").as_deref(),
-        Some("Bearer caller-specific-token-abc123")
-    );
-    assert_eq!(
-        header_value(&headers, "anthropic-version").as_deref(), // golden wire-contract literal (kept bare on purpose)
-        Some("2023-06-01")
-    );
-}
-
-/// Regression: the WIRE path (`sign_request`, which carries the front-door auth mode in the
-/// SigningContext) resolves an Ambiguous credential to a SINGLE native header — never the
-/// dual-header upstream-distinguishability tell the mode-blind `auth_headers` primitive emits.
-/// Passthrough → caller's `authorization: Bearer` only; Token/None → configured `x-api-key` only.
-#[test]
-fn sign_request_resolves_ambiguous_credential_to_single_header_by_mode() {
-    let body = b"{}";
-    let ctx = |creds| busbar_contract::protocol::SigningContext {
-        host: "api.anthropic.com",
-        canonical_uri: PATH_UPSTREAM,
-        body,
-        timestamp_epoch: 0,
-        upstream_creds: creds,
-    };
-    let amb = "caller-specific-token-abc123";
-
-    // Passthrough: forward the caller's token as Bearer ONLY (no x-api-key tell).
-    let pt = super::anthropic_auth_headers(
-        amb,
-        Some(ctx(busbar_contract::config::UpstreamCreds::Passthrough).upstream_creds),
-    );
-    assert_eq!(
-        header_value(&pt, "authorization").as_deref(),
-        Some("Bearer caller-specific-token-abc123")
-    );
-    assert!(
-        header_value(&pt, "x-api-key").is_none(), // golden wire-contract literal (kept bare on purpose)
-        "passthrough wire path must NOT also emit x-api-key (dual-header tell)"
-    );
-
-    // Own (configured lane key): present the API-key shape ONLY (no Bearer tell).
-    let h = super::anthropic_auth_headers(
-        amb,
-        Some(ctx(busbar_contract::config::UpstreamCreds::Own).upstream_creds),
-    );
-    assert_eq!(
-        header_value(&h, "x-api-key").as_deref(), // golden wire-contract literal (kept bare on purpose)
-        Some("caller-specific-token-abc123")
-    );
-    assert!(
-        header_value(&h, "authorization").is_none(),
-        "own-key wire path must NOT also emit authorization (dual-header tell)"
-    );
-
-    // Clear API-key / OAuth credentials stay single-header on the wire path regardless of mode.
-    let api = super::anthropic_auth_headers(
-        "sk-ant-api03-x",
-        Some(ctx(busbar_contract::config::UpstreamCreds::Own).upstream_creds),
-    );
-    assert!(
-        header_value(&api, "x-api-key").is_some() // golden wire-contract literal (kept bare on purpose)
-                && header_value(&api, "authorization").is_none()
-    );
-}
-
-/// classify_credential maps each credential family deterministically; leading whitespace is
-/// trimmed before matching.
-#[test]
-fn classify_credential_covers_each_family() {
-    assert_eq!(
-        AnthropicWriter::classify_credential("sk-ant-api03-key"),
-        AnthropicCredScheme::ApiKey
-    );
-    assert_eq!(
-        AnthropicWriter::classify_credential("sk-ant-oat01-token"),
-        AnthropicCredScheme::OAuth
-    );
-    assert_eq!(
-        AnthropicWriter::classify_credential("opaque-bearer"),
-        AnthropicCredScheme::Ambiguous
-    );
-    // Whitespace must not flip an API key into the Ambiguous (dual-header) bucket.
-    assert_eq!(
-        AnthropicWriter::classify_credential("  sk-ant-api03-key"),
-        AnthropicCredScheme::ApiKey
-    );
-}
-
-/// An OAuth/passthrough Bearer token (the `sk-ant-oat` family) authenticates the native way:
-/// `authorization: Bearer` ONLY, with no `x-api-key`. This preserves the passthrough path that
-/// round-trips a caller's Bearer token to upstream.
-#[test]
-fn auth_headers_oauth_token_emits_only_authorization_bearer() {
-    let headers = super::anthropic_auth_headers("sk-ant-oat01-caller-token", None);
-
-    assert_eq!(
-        header_value(&headers, "authorization").as_deref(),
-        Some("Bearer sk-ant-oat01-caller-token")
-    );
-    assert!(
-        header_value(&headers, "x-api-key").is_none(), // golden wire-contract literal (kept bare on purpose)
-        "an OAuth token must NOT emit an x-api-key header (native OAuth clients never do)"
-    );
-    assert_eq!(
-        header_value(&headers, "anthropic-version").as_deref(), // golden wire-contract literal (kept bare on purpose)
-        Some("2023-06-01")
-    );
-}
-
-/// Leading whitespace (a likely config artifact) must not cause an OAuth token to be
-/// misclassified as an API key.
-#[test]
-fn auth_headers_oauth_token_classification_trims_leading_whitespace() {
-    let headers = super::anthropic_auth_headers("  sk-ant-oat01-caller-token", None);
-    // The header value itself is the verbatim (untrimmed) credential — only the
-    // classification trims. Round-tripping the caller's exact token is the contract.
-    assert_eq!(
-        header_value(&headers, "authorization").as_deref(),
-        Some("Bearer   sk-ant-oat01-caller-token")
-    );
-    assert!(header_value(&headers, "x-api-key").is_none()); // golden wire-contract literal (kept bare on purpose)
-}
-
-/// A key with bytes invalid for an HTTP header value (e.g. a trailing newline) must not panic
-/// the worker. Under the warn+OMIT policy (matching the Bearer/Gemini/Cohere/Responses writers)
-/// the credential header is now OMITTED entirely — an empty `x-api-key: ` was both a
-/// syntactically invalid header and a fingerprinting tell. `anthropic-version` stays present so
-/// the upstream still gets a versioned (but unauthenticated) request and returns a clean 401.
-#[test]
-fn auth_headers_invalid_api_key_omits_credential_no_panic() {
-    // A recognizable API key (so the single-header API-key path is exercised) whose bytes are
-    // invalid for an HTTP header value.
-    let headers = super::anthropic_auth_headers("sk-ant-api03-bad\nkey", None);
-    assert!(
-        header_value(&headers, "x-api-key").is_none(), // golden wire-contract literal (kept bare on purpose)
-        "an invalid API key must OMIT x-api-key, not emit an empty value"
-    );
-    assert!(
-        header_value(&headers, "authorization").is_none(),
-        "an invalid API key still must not emit an authorization header"
-    );
-    // anthropic-version is static and unaffected by the bad key — it remains the only header.
-    assert_eq!(
-        header_value(&headers, "anthropic-version").as_deref(), // golden wire-contract literal (kept bare on purpose)
-        Some("2023-06-01")
-    );
-    assert_eq!(
-        headers.len(),
-        1,
-        "only anthropic-version remains on a bad key"
-    );
-}
-
-/// The same warn+OMIT guarantee on the OAuth path: an invalid OAuth token OMITS the
-/// `authorization` header (and never emits `x-api-key`), keeping only `anthropic-version`.
-#[test]
-fn auth_headers_invalid_oauth_token_omits_credential_no_panic() {
-    let headers = super::anthropic_auth_headers("sk-ant-oat01-bad\ntoken", None);
-    assert!(
-        header_value(&headers, "authorization").is_none(),
-        "an invalid OAuth token must OMIT authorization, not emit an empty value"
-    );
-    assert!(
-        header_value(&headers, "x-api-key").is_none(), // golden wire-contract literal (kept bare on purpose)
-        "an invalid OAuth token still must not emit an x-api-key header"
-    );
-    assert_eq!(
-        header_value(&headers, "anthropic-version").as_deref(), // golden wire-contract literal (kept bare on purpose)
-        Some("2023-06-01")
-    );
-    assert_eq!(
-        headers.len(),
-        1,
-        "only anthropic-version remains on a bad token"
+        DECL.static_headers,
+        &[("anthropic-version", "2023-06-01")] // golden wire-contract literal (kept bare on purpose)
     );
 }
 

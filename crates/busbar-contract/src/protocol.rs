@@ -434,8 +434,8 @@ pub struct CredentialFamily {
 /// A PROTOCOL'S DECLARED EGRESS SCHEME — how busbar presents a lane's credential to this protocol's
 /// upstream, as data the kernel's egress-auth unit reads. The plane declares WHICH scheme; the
 /// kernel holds the credential and writes (or signs) the headers, so no plane receives a secret.
-/// Non-credential static headers a dialect always sends (a version header) are not auth and stay in
-/// the dialect's writer.
+/// Non-credential static headers a dialect always sends (a version header) are not auth: they are
+/// declared beside it, in [`ProtocolDecl::static_headers`].
 #[derive(Clone, Copy, Debug)]
 pub enum EgressScheme {
     /// A static credential, presented by a credential-family table: the first row whose prefix the
@@ -711,6 +711,12 @@ pub struct ProtocolDecl {
     /// headers into the map it hands the detection fold, so it names no dialect while staying
     /// byte-identical to the prior hand-coded two-header sniff.
     pub list_models_fingerprint_headers: &'static [&'static str],
+
+    /// THE STATIC EGRESS HEADERS this protocol's upstream request always carries beside its declared
+    /// credential — `(name, value)` pairs, lowercase names, written verbatim after the credential
+    /// headers wherever the kernel presents them (a dialect's API-version header). Not auth: no
+    /// secret, no request bytes. `&[]` for a protocol that sends none.
+    pub static_headers: &'static [(&'static str, &'static str)],
 }
 
 impl ProtocolDecl {
@@ -771,6 +777,7 @@ impl ProtocolDecl {
             residual_default: false,
             vendor_response_metadata: None,
             list_models_fingerprint_headers: &[],
+            static_headers: &[],
         }
     }
 

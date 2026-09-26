@@ -138,6 +138,49 @@ async fn client_anthropic_beta_reaches_matching_anthropic_upstream() {
     server.shutdown().await;
 }
 
+/// DECLARED EGRESS HEADERS (#83a S2-a, SD-3b): the Anthropic dialect DECLARES its credential scheme
+/// and its version header and carries no builder; the kernel presents both. An Anthropic lane's
+/// upstream request carries exactly the declared headers — one credential in the header its family
+/// names (never both) and the pinned `anthropic-version` — the bytes its builder used to write.
+#[tokio::test]
+async fn anthropic_egress_carries_exactly_the_declared_headers() {
+    crate::testkit::install_test_seams();
+    for (key, x_api_key, authorization) in [
+        ("sk-ant-api03-e2e", Some("sk-ant-api03-e2e"), None),
+        ("  sk-ant-api03-e2e", Some("sk-ant-api03-e2e"), None),
+        ("sk-ant-oat01-e2e", None, Some("Bearer sk-ant-oat01-e2e")),
+        ("opaque-lane-key", Some("opaque-lane-key"), None),
+    ] {
+        let state = Arc::new(MockServerState::new());
+        state.push(MockResponse::Ok {
+            status: StatusCode::OK,
+            body: json!({ "content": [] }),
+        });
+        let server = MockServer::new(state.clone()).await;
+        let app = TestApp::new()
+            .lane(
+                LaneSpec::new(
+                    "test-model",
+                    crate::proto_codec::PROTO_ANTHROPIC,
+                    &server.base_url(),
+                )
+                .api_key(key),
+            )
+            .pool("p", &[(0, 1)])
+            .build();
+        drive(&app, "anthropic", collect(&[])).await;
+        let seen = |name: &str| state.get_last_request_header(name);
+        assert_eq!(seen("x-api-key").as_deref(), x_api_key, "{key:?}");
+        assert_eq!(seen("authorization").as_deref(), authorization, "{key:?}");
+        assert_eq!(
+            seen("anthropic-version").as_deref(),
+            Some("2023-06-01"),
+            "{key:?}: the declared version header, pinned as a literal"
+        );
+        server.shutdown().await;
+    }
+}
+
 /// FORWARD (OpenAI dialect): a client `OpenAI-Beta` on an OpenAI-ingress request routed to an OpenAI
 /// lane reaches the upstream.
 #[tokio::test]

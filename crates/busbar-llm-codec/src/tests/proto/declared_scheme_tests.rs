@@ -1,22 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DECLARED EGRESS SCHEMES, AS THIS PLANE DECLARES THEM (#83a SD-2b, SD-3; O7, S2-a). Five of
-//! the six dialects state their egress credential as DECLARED DATA — a credential-family table, or a
-//! SigV4 signature whose region is a pure function of the host — and carry no builder, so the lane
-//! key is presented by the host's egress-auth unit and never passes through this plane. The sixth
-//! still declares a builder, because that builder also writes a non-credential version header no
-//! declaration field carries yet.
+//! THE DECLARED EGRESS SCHEMES, AS THIS PLANE DECLARES THEM (#83a SD-2b, SD-3; O7, S2-a). All six
+//! dialects state their egress credential as DECLARED DATA — a credential-family table, or a SigV4
+//! signature whose region is a pure function of the host — and carry no builder, so the lane key is
+//! presented by the host's egress-auth unit and never passes through this plane. The one
+//! non-credential header a dialect always sends (a version header) is declared beside its scheme,
+//! in `static_headers`.
 //!
-//! The codec proves its own seam here and reaches no host: every declaration's scheme data, the
-//! signing dialect's host-to-region answers and the remaining builder's credential headers are held
-//! to the shared fixture `testing/plane-copies/declared-credentials.json` — the headers each
-//! dialect's own builder wrote, per credential, mode and request. The host's suite holds its
-//! egress-auth unit to the same file: presented under schemes carrying exactly this data, it writes
-//! exactly those headers. Together the two suites are the byte-identity proof of the switch.
+//! The codec proves its own seam here and reaches no host: every declaration's scheme data and the
+//! signing dialect's host-to-region answers are held to the shared fixture
+//! `testing/plane-copies/declared-credentials.json` — the headers each dialect's own builder wrote,
+//! per credential, mode and request. The host's suite holds its egress-auth unit to the same file:
+//! presented under schemes carrying exactly this data, it writes exactly those headers. Together the
+//! two suites are the byte-identity proof of the switch.
 
-use busbar_contract::config::UpstreamCreds;
-use busbar_contract::protocol::{CredentialHeader, EgressScheme, ProtocolDecl, SigningContext};
+use busbar_contract::protocol::{CredentialHeader, EgressScheme, ProtocolDecl};
 
 fn fixture() -> serde_json::Value {
     let path = concat!(
@@ -67,7 +66,8 @@ fn describe(scheme: &EgressScheme) -> serde_json::Value {
     }
 }
 
-const DECLARED: [&ProtocolDecl; 5] = [
+const DECLARED: [&ProtocolDecl; 6] = [
+    &crate::anthropic::DECL,
     &crate::openai_chat::DECL,
     &crate::openai_responses::DECL,
     &crate::cohere::DECL,
@@ -75,17 +75,17 @@ const DECLARED: [&ProtocolDecl; 5] = [
     &crate::bedrock::DECL,
 ];
 
-/// Every dialect in this plane's declaration table states its egress credential — a declared
-/// scheme, or (the one dialect whose builder also writes a version header) a builder — and the
-/// fixture carries a scheme for every one of them, so a dialect added without either fails this
-/// suite instead of passing it by omission.
+/// Every dialect in this plane's declaration table declares its egress scheme, and the fixture
+/// carries a scheme for every one of them, so a dialect added without either fails this suite instead
+/// of passing it by omission.
 #[test]
 fn every_dialect_declaring_a_credential_builder_has_a_declared_twin() {
     let doc = fixture();
+    assert_eq!(crate::DECLS.len(), DECLARED.len());
     for decl in crate::DECLS {
         assert!(
-            decl.egress_scheme.is_some() || decl.egress_auth_headers.is_some(),
-            "{} declares no egress credential",
+            decl.egress_scheme.is_some(),
+            "{} declares no egress scheme",
             decl.name
         );
         assert!(
@@ -96,9 +96,8 @@ fn every_dialect_declaring_a_credential_builder_has_a_declared_twin() {
     }
 }
 
-/// #83a S2-a: the five dialects whose credential is auth and nothing else DECLARE their scheme and
-/// carry no builder, so no credential ever passes through this plane on their lanes — and the scheme
-/// each declares is exactly the data the host's suite presents.
+/// #83a S2-a: every dialect DECLARES its scheme and carries no builder, so no credential ever passes
+/// through this plane — and the scheme each declares is exactly the data the host's suite presents.
 #[test]
 fn the_declared_dialects_carry_a_scheme_and_no_builder() {
     let doc = fixture();
@@ -139,45 +138,17 @@ fn the_declared_region_answers_every_fixture_host() {
     }
 }
 
-/// THE REMAINING BUILDER: the dialect that still declares one writes, beside its version header,
-/// exactly the credential headers the fixture records for it — the headers the host presents for its
-/// declared twin.
+/// THE STATIC HEADERS: the one dialect whose every request carries a version header declares it —
+/// exactly that pair, beside its scheme — and no other dialect declares any, so the host writes no
+/// header this plane did not declare.
 #[test]
-fn the_remaining_builder_writes_the_fixture_credential_headers() {
-    let builder = crate::anthropic::DECL
-        .egress_auth_headers
-        .expect("the anthropic dialect still declares its builder");
-    let hex = |v: &serde_json::Value| crate::hex::decode(v.as_str().expect("hex")).expect("hex");
-    let mut compared = 0usize;
-    for row in fixture()["rows"].as_array().expect("rows") {
-        if row["dialect"] != "anthropic" {
-            continue;
-        }
-        let key = String::from_utf8(hex(&row["key_hex"])).expect("utf-8 key");
-        let body = hex(&row["body_hex"]);
-        let ctx = SigningContext {
-            host: row["host"].as_str().expect("host"),
-            canonical_uri: row["canonical_uri"].as_str().expect("uri"),
-            body: &body,
-            timestamp_epoch: row["timestamp_epoch"].as_u64().expect("ts"),
-            upstream_creds: if row["mode"] == "own" {
-                UpstreamCreds::Own
-            } else {
-                UpstreamCreds::Passthrough
-            },
+fn only_the_versioned_dialect_declares_a_static_header() {
+    for decl in DECLARED {
+        let expected: &[(&str, &str)] = if decl.name == "anthropic" {
+            &[("anthropic-version", "2023-06-01")]
+        } else {
+            &[]
         };
-        let written: Vec<serde_json::Value> = builder(&key, &ctx)
-            .into_iter()
-            .filter(|(k, _)| k.as_str() != "anthropic-version")
-            .map(|(k, v)| serde_json::json!([k.as_str(), crate::hex::encode(v.as_bytes())]))
-            .collect();
-        assert_eq!(
-            serde_json::Value::Array(written),
-            row["headers"],
-            "key {key:?}, mode {}",
-            row["mode"]
-        );
-        compared += 1;
+        assert_eq!(decl.static_headers, expected, "{}", decl.name);
     }
-    assert!(compared > 0);
 }

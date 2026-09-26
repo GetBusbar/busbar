@@ -202,8 +202,7 @@ pub trait ProtocolWriter: Send + Sync {
 
     // Outbound auth moved OFF the protocol writer (protocol is post-auth): a lane's credential is
     // presented by the host's egress-auth unit under the scheme each dialect DECLARES
-    // (`ProtocolDecl::egress_scheme`, #83a S2-a); the one dialect still carrying a builder declares
-    // it (`anthropic::anthropic_auth_headers`).
+    // (`ProtocolDecl::egress_scheme`, #83a S2-a), followed by its declared `static_headers`.
 
     /// Rewrites the model field in the request body, returning whether the body actually CHANGED.
     ///
