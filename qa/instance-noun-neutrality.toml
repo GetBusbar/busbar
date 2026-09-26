@@ -5,7 +5,7 @@
 
 # Reviewed `noun-neutrality: frozen-literal` pragmas. May only fall.
 [pragma_ceiling]
-frozen_literal = 7
+frozen_literal = 2
 
 [[leak]]
 noun = "a2a"
@@ -50,30 +50,6 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "llm"
 kind = "plane"
-file = "crates/busbar-mcp/src/mcp/inputreq.rs"
-count = 1
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "llm"
-kind = "plane"
-file = "crates/busbar-plane-mcp/src/meta.rs"
-count = 1
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "llm"
-kind = "plane"
-file = "crates/busbar-plane-mcp/src/tests/plane.rs"
-count = 1
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "llm"
-kind = "plane"
 file = "crates/busbar/src/root/mod.rs"
 count = 2
 category = "composition-root"
@@ -83,7 +59,7 @@ wave = "keystone / composition-root — register_planes both-ways self-registrat
 noun = "llm"
 kind = "plane"
 file = "crates/busbar/src/root/tests/units_llm.rs"
-count = 27
+count = 8
 category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
@@ -91,7 +67,7 @@ wave = "keystone / composition-root — register_planes both-ways self-registrat
 noun = "llm"
 kind = "plane"
 file = "crates/busbar/src/root/units_llm.rs"
-count = 40
+count = 1
 category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
@@ -134,134 +110,6 @@ file = "crates/plugin-sdk/src/tests/lib_tests.rs"
 count = 1
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "sigv4"
-kind = "auth"
-file = "crates/busbar-kernel-identity/src/egress_auth/mod.rs"
-count = 8
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "sigv4"
-kind = "auth"
-file = "crates/busbar-kernel-identity/src/egress_auth/sigv4/mod.rs"
-count = 2
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "sigv4"
-kind = "auth"
-file = "crates/busbar-kernel-identity/src/egress_auth/tests.rs"
-count = 11
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "sigv4"
-kind = "auth"
-file = "crates/busbar-kernel/src/auth/mod.rs"
-count = 22
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "sigv4"
-kind = "auth"
-file = "crates/busbar-kernel/src/auth/tests/tests.rs"
-count = 51
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "sigv4"
-kind = "auth"
-file = "crates/busbar-kernel/src/governance/state.rs"
-count = 2
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "sigv4"
-kind = "auth"
-file = "crates/busbar-kernel/src/lib.rs"
-count = 1
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "sigv4"
-kind = "auth"
-file = "crates/busbar-llm-codec/src/bedrock/mod.rs"
-count = 3
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "sigv4"
-kind = "auth"
-file = "crates/busbar-llm-codec/src/bedrock/tests/tests.rs"
-count = 38
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "sigv4"
-kind = "auth"
-file = "crates/busbar-llm-codec/src/bedrock/writer.rs"
-count = 14
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "sigv4"
-kind = "auth"
-file = "crates/busbar-llm-codec/src/tests/proto/registry_tests.rs"
-count = 2
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "sigv4"
-kind = "auth"
-file = "crates/busbar-llm/src/engine/egress.rs"
-count = 2
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "sigv4"
-kind = "auth"
-file = "crates/busbar-llm/src/engine/tests/auth_dispatch_tests.rs"
-count = 1
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "sigv4"
-kind = "auth"
-file = "crates/busbar-substrate-values/src/lib.rs"
-count = 1
-category = "substrate"
-wave = "substrate neutralization — opaque PlaneRecord across the ABI, never an instance noun"
-
-[[leak]]
-noun = "sigv4"
-kind = "auth"
-file = "crates/busbar-substrate-values/src/sigv4.rs"
-count = 9
-category = "substrate"
-wave = "substrate neutralization — opaque PlaneRecord across the ABI, never an instance noun"
-
-[[leak]]
-noun = "sigv4"
-kind = "auth"
-file = "crates/busbar-substrate-values/src/tests/sigv4_tests.rs"
-count = 31
-category = "substrate"
-wave = "substrate neutralization — opaque PlaneRecord across the ABI, never an instance noun"
 
 [[leak]]
 noun = "sqlite"

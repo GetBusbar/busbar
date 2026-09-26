@@ -25,7 +25,7 @@
 //! two: as a WORD (case-insensitive, with `_` as a boundary, so `mcp_codec` and `handle_mcp` both
 //! hit but `rustls` does not hit `tls` and `assess` does not hit `sse`), and as a CamelCase segment
 //! (`McpTransport`, `SdpOffer`). Nouns whose bare 2–3 char form is hopelessly ambiguous are matched
-//! ONLY on an unambiguous identifier (`sigv4`, never bare `aws`; the example/test plugins on their
+//! ONLY on an unambiguous identifier (never bare `aws`; the example/test plugins on their
 //! full crate identifier), never on a raw substring. The result is a census of REAL couplings.
 //!
 //! ## THE BASELINE IS A BURNDOWN LEDGER, NOT AN EXCUSE
@@ -160,12 +160,12 @@ const FAM_AUTH: &[&str] = &["auth-static-plugin", "auth-admin-tokens", "busbar-o
 /// `busbar-substrate-values`'s boot diagnostic warning that the metadata-SSRF guard covers
 /// `"169.254.169.254, the GCP/Azure metadata hosts"` — never the name of a concrete `gcp`
 /// auth-scheme plugin instance. This is exactly the vocabulary problem the header note above
-/// already excludes bare `aws` for ("broad infra... left to its precise scheme spelling `sigv4`");
+/// already excludes bare `aws` for (broad infra, never an instance spelling);
 /// `gcp` was never given the same treatment even though no code anywhere in this tree defines a
 /// `"gcp"` scheme constant for either file to be leaking (checked: `auth-static-plugin`,
 /// `auth-admin-tokens`, `busbar-oauth2` name nothing spelled `gcp`). Excluded by exact file, not by
 /// loosening the token or dropping the noun — a real `gcp` auth scheme, when one lands, will get its
-/// own unambiguous scheme spelling the way `sigv4` stands in for `aws` today, and that spelling
+/// own unambiguous scheme spelling (a plugin crate identifier), and that spelling
 /// (not bare `gcp`) is what should be tracked.
 const GCP_GENERIC_MENTION_FILES: &[&str] = &[
     "crates/busbar-a2a/src/a2a/tests/fetch_tests.rs",
@@ -181,6 +181,11 @@ const FAM_EXPORT: &[&str] = &["export-example-plugin"];
 const FAM_STORE_MEMORY: &[&str] = &["store-memory"];
 const FAM_STORE_EXAMPLE: &[&str] = &["store-example-plugin"];
 const FAM_HOOKS_RANKING: &[&str] = &["hooks-ranking"];
+
+/// PROTOCOL VOCABULARY (owner rulings Q1, 2026-09-23 and Q76, 2026-09-25): wire/auth scheme words
+/// every auth instance speaks, so they name no instance and are NEVER a noun token. The selftest
+/// plants each into a core file and requires every census row to stay green.
+const PROTOCOL_VOCABULARY: &[&str] = &["bearer", "spki", "mtls", "sigv4"];
 
 const NOUNS: &[Noun] = &[
     // Planes.
@@ -380,26 +385,18 @@ const NOUNS: &[Noun] = &[
         camel: &[],
         section: None,
     },
-    // Auth schemes — matched on the unambiguous scheme name only. `aws` (broad infra) is left to
-    // its precise scheme spelling `sigv4`.
+    // Auth schemes — matched on the unambiguous scheme name only.
     //
-    // `bearer`, `mtls` and `spki` ARE NOT HERE, AND THAT IS A RULING, NOT AN OMISSION. They are
-    // standards, not plugin instances: `Bearer` is the RFC 6750 HTTP authentication scheme every
-    // OAuth 2.0 client and server speaks, mutual TLS is the RFC 8705 client-certificate binding, and
-    // an SPKI pin is the RFC 7469 public-key fingerprint. An auth plugin INSTANCE is a crate
-    // (`auth-static-plugin`, an `auth-github`); a word every one of them speaks names none of them.
-    // BUSBAR-1.6.0.md "Owner rulings — 2026-09-23", Q1: "Auth vocabulary (`bearer`, `spki`, `mtls`)
-    // is protocol vocabulary, not an instance noun … The neutrality gate exempts the three."
-    // Censused, `bearer` alone hit 135 files and the three together 248. `sigv4` stays (same
-    // ruling): it is AWS's scheme, and an AWS-signing plugin is the instance it spells.
-    Noun {
-        key: "sigv4",
-        kind: "auth",
-        family: FAM_AUTH,
-        tokens: &["sigv4"],
-        camel: &[],
-        section: None,
-    },
+    // `bearer`, `mtls`, `spki` AND `sigv4` ARE NOT HERE, AND THAT IS A RULING, NOT AN OMISSION.
+    // They are standards, not plugin instances: `Bearer` is the RFC 6750 HTTP authentication scheme
+    // every OAuth 2.0 client and server speaks, mutual TLS is the RFC 8705 client-certificate
+    // binding, an SPKI pin is the RFC 7469 public-key fingerprint, and SigV4 is AWS's published
+    // request-signing wire scheme. An auth plugin INSTANCE is a crate (`auth-static-plugin`, an
+    // `auth-github`); a word every one of them speaks names none of them. BUSBAR-1.6.0.md "Owner
+    // rulings — 2026-09-23", Q1: "Auth vocabulary (`bearer`, `spki`, `mtls`) is protocol
+    // vocabulary, not an instance noun … The neutrality gate exempts the three." 1.6.0-QUESTIONS.md
+    // OWNER ANSWERS 2026-09-25, Q76: "SigV4 is PROTOCOL VOCABULARY (joins bearer/spki/mtls; the gate
+    // stops counting it)." The words are listed in [`PROTOCOL_VOCABULARY`]; no noun may match one.
     Noun {
         key: "gcp",
         kind: "auth",

@@ -16,10 +16,10 @@
 //!
 //! ```toml
 //! [[allow_rise]]
-//! noun = "sigv4"
+//! noun = "mcp"
 //! file = "crates/x/src/lib.rs"
 //! count = 73
-//! owner = "Q76"          # an owner ruling: `Q<n>` or the word OWNER
+//! owner = "OWNER"        # an owner ruling: `Q<n>` or the word OWNER
 //! reason = "..."
 //! ```
 //!

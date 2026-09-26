@@ -309,28 +309,68 @@ pub(super) fn push(
             },
         );
     }
+    // THE VOCABULARY IS NOT A LOOPHOLE (Q76 RED arm): a NON-vocabulary auth instance noun beside the
+    // protocol words still counts. The clean core names only `sigv4`/`bearer`; the planted core
+    // adds the `gcp` auth instance and its row reds, naming the file.
+    let vocab_only = "pub fn sigv4_verify() {}\npub fn bearer_token() {}\n";
+    red(
+        "a non-vocabulary auth instance noun beside the protocol vocabulary still reds its row",
+        &row_id("gcp"),
+        CORE,
+        ov(&[(CORE, vocab_only)]),
+        ov(&[(CORE, &format!("{vocab_only}pub fn gcp_sign() {{}}\n"))]),
+    );
     // THE GENERIC VOCABULARY STAYS GREEN: the adjective, tonic's API, an export sink's indented
-    // `streams:` list, and the RFC 6750/8705/7469 auth-scheme words (no longer instance nouns).
-    let generic = "pub fn serve(streaming: bool) -> bool { streaming }\n\
+    // `streams:` list, and the PROTOCOL VOCABULARY (Q1: RFC 6750/8705/7469 `bearer`/`mtls`/`spki`;
+    // Q76: AWS's `sigv4` signing scheme) — each word planted as a snake identifier, a CamelCase
+    // type and a literal, so no noun may ever be keyed on one of them again.
+    let mut generic = "pub fn serve(streaming: bool) -> bool { streaming }\n\
                    pub const NON: &str = \"a non-streaming body; stream: true\";\n\
                    pub fn body(_b: tonic::Streaming<u8>) {}\n\
                    pub fn call(grpc: &mut Grpc) { grpc.streaming(h, r); }\n\
                    pub const EXPORT: &str = \"export:\\n  s:\\n    streams: [logs]\\n\";\n\
                    pub const SINK: &str = \"module: webhook\\nstreams: [logs]\\n\";\n\
-                   pub const AUTH: &str = \"Authorization: Bearer abc\";\n\
-                   pub fn bearer_token() {}\npub fn mtls_bind() {}\npub fn spki_pin() {}\n";
+                   pub const AUTH: &str = \"Authorization: Bearer abc\";\n"
+        .to_string();
+    for w in super::PROTOCOL_VOCABULARY {
+        let camel = format!("{}{}", w[..1].to_ascii_uppercase(), &w[1..]);
+        generic.push_str(&format!(
+            "pub fn {w}_verify() {{}}\npub struct {camel}Scheme;\n\
+             pub const {up}: &str = \"{w}\";\n",
+            up = w.to_ascii_uppercase(),
+        ));
+    }
     let mut all_nouns: Vec<String> = super::NOUNS.iter().map(|n| row_id(n.key)).collect();
     all_nouns.push(streaming.clone());
     report.push(Case {
-        name: "generic streaming/bearer/mTLS/SPKI vocabulary in a core file names no instance"
-            .to_string(),
+        name:
+            "generic streaming/bearer/mTLS/SPKI/SigV4 vocabulary in a core file names no instance"
+                .to_string(),
         covers: vec![streaming],
         expected: Expect::Green,
         got: stays_green(gate, cx, fix, &all_nouns, {
             let mut o = Overlay::new();
-            o.set(CORE, generic.to_string());
+            o.set(CORE, generic);
             o
         }),
+    });
+    // NO NOUN IS KEYED ON A VOCABULARY WORD: re-adding `sigv4` (or any of the four) as a noun token
+    // would census protocol vocabulary as an instance again.
+    let keyed: Vec<String> = super::NOUNS
+        .iter()
+        .flat_map(|n| n.tokens.iter().map(move |t| (n.key, *t)))
+        .filter(|(_, t)| super::PROTOCOL_VOCABULARY.contains(t))
+        .map(|(k, t)| format!("noun `{k}` is keyed on protocol vocabulary `{t}`"))
+        .collect();
+    report.push(Case {
+        name: "no census noun is keyed on a protocol-vocabulary word".to_string(),
+        covers: vec![row_id("gcp")],
+        expected: Expect::Green,
+        got: if keyed.is_empty() {
+            Expect::Green
+        } else {
+            Expect::Red { naming: keyed }
+        },
     });
 }
 
