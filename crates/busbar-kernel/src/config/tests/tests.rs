@@ -2593,7 +2593,7 @@ fn test_new_top_level_blocks_parse() {
 providers: {}
 models: {}
 store:
-  module: sqlite
+  module: acme-durable
   settings:
     db_path: /var/lib/busbar/gov.db
     busy_timeout_ms: 250
@@ -2616,7 +2616,7 @@ advanced:
 "#;
     let deploy: DeployCfg = serde_yaml::from_str(yaml).expect("new top-level blocks parse");
     let store = deploy.store.as_ref().expect("store block");
-    assert_eq!(store.module, "sqlite");
+    assert_eq!(store.module, "acme-durable");
     // Store settings are OPAQUE (passed to the plugin verbatim; the old governance.db_path /
     // sqlite_busy_timeout_ms now live here).
     assert_eq!(
@@ -2889,8 +2889,8 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
     let old = sign(
         &release,
         Manifest {
-            name: "busbar-store-valkey-plugin".into(),
-            alias: "valkey".into(),
+            name: "busbar-store-kv-plugin".into(),
+            alias: "kv".into(),
             kind: "store".into(),
             version: "0.9.0".into(), // below any real CARGO_PKG_VERSION (1.x)
             publisher: busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into(),
@@ -2933,10 +2933,9 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
     // EXPLICIT per-name floor (the rollback-pin seam): pinned exactly at the artifact's version,
     // it loads; the pin binds and nothing older passes (asserted below).
     let mut explicit = cfg.to_policy().expect("explicit policy");
-    explicit.first_party_floors.insert(
-        "busbar-store-valkey-plugin".to_string(),
-        "0.9.0".to_string(),
-    );
+    explicit
+        .first_party_floors
+        .insert("busbar-store-kv-plugin".to_string(), "0.9.0".to_string());
     explicit.first_party_key = Some(release.verifying_key());
     assert!(
         matches!(
@@ -2954,8 +2953,8 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
     let older = sign(
         &release,
         Manifest {
-            name: "busbar-store-valkey-plugin".into(),
-            alias: "valkey".into(),
+            name: "busbar-store-kv-plugin".into(),
+            alias: "kv".into(),
             kind: "store".into(),
             version: "0.8.0".into(),
             publisher: busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into(),
@@ -3168,7 +3167,7 @@ enabled: true
 fetch:
   - github: acme/widget@v2.0.1
     sha256: deadbeef
-  - url: https://host/plugins/store-sqlite.tar.gz
+  - url: https://host/plugins/store-durable.tar.gz
 ";
     let cfg: PluginsCfg = serde_yaml::from_str(yaml).unwrap();
     let specs = cfg.fetch_specs().expect("fetch_specs resolves");
@@ -3181,8 +3180,8 @@ fetch:
     );
     assert_eq!(specs[0].sha256.as_deref(), Some("deadbeef"));
     // url → itself, filename from basename, no pin.
-    assert_eq!(specs[1].url, "https://host/plugins/store-sqlite.tar.gz");
-    assert_eq!(specs[1].filename, "store-sqlite.tar.gz");
+    assert_eq!(specs[1].url, "https://host/plugins/store-durable.tar.gz");
+    assert_eq!(specs[1].filename, "store-durable.tar.gz");
     assert_eq!(specs[1].sha256, None);
 }
 

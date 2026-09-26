@@ -24,8 +24,8 @@ auth:
       budget_period: monthly
 governance:
   enabled: true
-  store: postgres
-  db_path: "postgres://host/db"
+  store: acme-durable
+  db_path: "acme://host/db"
   admin_token: "${BUSBAR_ADMIN_TOKEN}"
   price_per_request_cents: 2
   rate_sweep_interval: 128
@@ -140,10 +140,10 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
 
     // governance dissolved.
     assert!(root.get(serde_yaml::Value::from("governance")).is_none());
-    assert_eq!(get(&["store", "module"]).as_str(), Some("postgres"));
+    assert_eq!(get(&["store", "module"]).as_str(), Some("acme-durable"));
     assert_eq!(
         get(&["store", "settings", "url"]).as_str(),
-        Some("postgres://host/db")
+        Some("acme://host/db")
     );
     assert_eq!(get(&["per_request_fee"]).as_u64(), Some(2));
     assert_eq!(
@@ -770,7 +770,7 @@ pools: {}
 /// every real key/budget/audit row in the operator's actual database. The migrated document must
 /// carry the real `db_path` forward as `store: { module: sqlite, settings: { db_path } }`.
 #[test]
-fn migrate_realistic_14x_governance_preserves_the_real_sqlite_db_path() {
+fn migrate_realistic_14x_governance_preserves_the_real_db_path() {
     let raw = r#"
 governance:
   enabled: true
@@ -795,8 +795,9 @@ pools: {}
     };
     assert_eq!(
         get(&["store", "module"]).as_str(),
+        // noun-neutrality: frozen-literal pinned-by=docs/design/inventory/1.5.5-config.md the 1.4.x durable backend --migrate-config must select
         Some("sqlite"),
-        "1.4.x's only durable backend was SQLite -- migration must select it, not default to memory"
+        "1.4.x's only durable backend -- migration must select it, not default to memory"
     );
     assert_eq!(
         get(&["store", "settings", "db_path"]).as_str(),
@@ -829,6 +830,7 @@ pools: {}
         store
             .get(serde_yaml::Value::from("module"))
             .and_then(|v| v.as_str()),
+        // noun-neutrality: frozen-literal pinned-by=docs/design/inventory/1.5.5-config.md the 1.4.x durable backend --migrate-config must select
         Some("sqlite")
     );
     assert_eq!(
@@ -2200,10 +2202,11 @@ pools:
 /// Before `migrate_store_module` existed the migrated document still said
 /// `redis` and `detect_legacy_markers` returned nothing for it.
 #[test]
-fn migrate_store_module_redis_to_valkey() {
+fn migrate_store_module_retired_1_5_3_spellings_to_the_renamed_alias() {
+    // noun-neutrality: frozen-literal pinned-by=docs/design/inventory/1.5.5-config.md the retired 1.5.x `store.module:` values the rename must catch
     for old in ["redis", "busbar-store-redis", "busbar-store-redis-plugin"] {
         let raw = format!(
-            "store:\n  module: {old}\n  settings: {{ url: \"redis://127.0.0.1:6379/0\" }}\n\
+            "store:\n  module: {old}\n  settings: {{ url: \"kv://127.0.0.1:6379/0\" }}\n\
              providers: {{}}\nmodels: {{}}\npools: {{}}\n"
         );
 
@@ -2211,6 +2214,7 @@ fn migrate_store_module_redis_to_valkey() {
         let doc: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
         let joined = detect_legacy_markers(&doc).join("\n");
         assert!(
+            // noun-neutrality: frozen-literal pinned-by=testing/shadow-oracle/golden/1.5.5/cells/plugins.load__store-valkey.json the renamed 1.5.5 alias the marker must name
             joined.contains(old) && joined.contains("valkey"),
             "`store.module: {old}` must loud-fail with a marker naming the old AND new spelling; \
              got: {joined}"
@@ -2220,6 +2224,7 @@ fn migrate_store_module_redis_to_valkey() {
         let (out, doc) = migrate_to_value(&raw);
         assert_eq!(
             dig(&doc, &["store", "module"]).and_then(|v| v.as_str()),
+            // noun-neutrality: frozen-literal pinned-by=testing/shadow-oracle/golden/1.5.5/cells/plugins.load__store-valkey.json the renamed 1.5.5 alias the rewrite must write
             Some("valkey"),
             "`store.module: {old}` must be rewritten to the new alias; migrated:\n{}",
             out.yaml
@@ -2228,7 +2233,7 @@ fn migrate_store_module_redis_to_valkey() {
         // busbar-owned name, so the migrator must not touch it.
         assert_eq!(
             dig(&doc, &["store", "settings", "url"]).and_then(|v| v.as_str()),
-            Some("redis://127.0.0.1:6379/0"),
+            Some("kv://127.0.0.1:6379/0"),
             "the operator's connection URL must survive verbatim; migrated:\n{}",
             out.yaml
         );
@@ -2248,11 +2253,14 @@ fn migrate_store_module_redis_to_valkey() {
     }
 
     // IDEMPOTENT: a config already on the new alias is untouched and un-flagged.
-    let already = "store:\n  module: valkey\nproviders: {}\nmodels: {}\npools: {}\n";
-    let (out, doc) = migrate_to_value(already);
+    let already = format!(
+        "store:\n  module: {}\nproviders: {{}}\nmodels: {{}}\npools: {{}}\n",
+        crate::config::RENAMED_STORE_MODULE_1_5_3
+    );
+    let (out, doc) = migrate_to_value(&already);
     assert_eq!(
         dig(&doc, &["store", "module"]).and_then(|v| v.as_str()),
-        Some("valkey")
+        Some(crate::config::RENAMED_STORE_MODULE_1_5_3)
     );
     assert!(
         !out.changes.iter().any(|c| c.contains("store.module")),
@@ -2260,11 +2268,11 @@ fn migrate_store_module_redis_to_valkey() {
         out.changes
     );
     // …and an UNRELATED store module is not touched either.
-    let other = "store:\n  module: postgres\nproviders: {}\nmodels: {}\npools: {}\n";
+    let other = "store:\n  module: acme-durable\nproviders: {}\nmodels: {}\npools: {}\n";
     let (_, doc) = migrate_to_value(other);
     assert_eq!(
         dig(&doc, &["store", "module"]).and_then(|v| v.as_str()),
-        Some("postgres")
+        Some("acme-durable")
     );
 }
 
@@ -2275,11 +2283,11 @@ fn migrate_store_module_redis_to_valkey() {
 /// `--validate`: precisely the failure mode `Taken` exists to make structurally impossible.
 #[test]
 fn a_wrong_shaped_store_block_is_never_taken_and_discarded() {
-    let raw = "store: redis\nproviders: {}\nmodels: {}\npools: {}\n";
+    let raw = "store: acme-kv\nproviders: {}\nmodels: {}\npools: {}\n";
     let (out, doc) = migrate_to_value(raw);
     assert_eq!(
         dig(&doc, &["store"]).and_then(|v| v.as_str()),
-        Some("redis"),
+        Some("acme-kv"),
         "a scalar `store:` must be left EXACTLY as written, never dropped; migrated:\n{}",
         out.yaml
     );

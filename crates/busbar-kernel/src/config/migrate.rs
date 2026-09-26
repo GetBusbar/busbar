@@ -267,9 +267,9 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
                      is Valkey — artifact `{}-<ver>-<target>.tar.gz`, manifest name `{}`. The old \
                      name/alias resolve against NOTHING, so this would fail at boot with a generic \
                      unresolved-plugin error; run `busbar --migrate-config`)",
-                    crate::config::STORE_MODULE_VALKEY,
-                    crate::config::STORE_MODULE_VALKEY_ASSET_STEM,
-                    crate::config::STORE_MODULE_VALKEY_NAME,
+                    crate::config::RENAMED_STORE_MODULE_1_5_3,
+                    crate::config::RENAMED_STORE_ASSET_STEM_1_5_3,
+                    crate::config::RENAMED_STORE_MANIFEST_NAME_1_5_3,
                 ));
             }
         }
@@ -902,6 +902,7 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
     // returned early if absent) with 1.4.x's real, always-SQLite semantics is what must drive this.
     let stray_module = take(&mut gov, "store").and_then(|v| v.as_str().map(str::to_string));
     let db_path = take(&mut gov, "db_path").and_then(|v| v.as_str().map(str::to_string));
+    // noun-neutrality: frozen-literal pinned-by=docs/design/inventory/1.5.5-config.md the 1.4.x durable backend --migrate-config writes as `store.module:`
     let module = stray_module.unwrap_or_else(|| "sqlite".to_string());
     {
         let mut store = Mapping::new();
@@ -909,10 +910,12 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
         let mut settings = Mapping::new();
         match (module.as_str(), db_path) {
             ("memory", _) => {}
+            // noun-neutrality: frozen-literal pinned-by=docs/design/inventory/1.5.5-config.md the 1.4.x `store.module:` value whose db_path the migrator carries
             ("sqlite", Some(p)) => {
                 settings.insert("db_path".into(), p.into());
             }
             // No explicit db_path: 1.4.x's real default was "busbar-governance.db", not memory.
+            // noun-neutrality: frozen-literal pinned-by=docs/design/inventory/1.5.5-config.md the 1.4.x `store.module:` value whose default db_path the migrator writes
             ("sqlite", None) => {
                 settings.insert("db_path".into(), DEFAULT_GOVERNANCE_DB_1_4.into());
             }
@@ -921,6 +924,7 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
             }
             (_, None) => {}
         }
+        // noun-neutrality: frozen-literal pinned-by=docs/design/inventory/1.5.5-config.md the 1.4.x `governance:` config key the migrator reads
         if let Some(busy) = take(&mut gov, "sqlite_busy_timeout_ms") {
             settings.insert("busy_timeout_ms".into(), busy);
         }
@@ -928,6 +932,7 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
             store.insert("settings".into(), Value::Mapping(settings));
         }
         root.insert("store".into(), Value::Mapping(store));
+        // noun-neutrality: frozen-literal pinned-by=docs/design/inventory/1.5.5-plugins-stores.md the --migrate-config change line an operator reads
         changes.push("governance.db_path -> store: { module: sqlite, settings: { db_path } } (1.4.x's only durable backend was SQLite)".into());
     }
 
@@ -2256,7 +2261,7 @@ fn migrate_store_module(root: &mut Mapping, changes: &mut Vec<String>, todos: &m
     if let Some(old) = retired {
         store.insert(
             "module".into(),
-            Value::from(crate::config::STORE_MODULE_VALKEY),
+            Value::from(crate::config::RENAMED_STORE_MODULE_1_5_3),
         );
         changes.push(format!(
             "store.module: {old} -> {} (the first-party store plugin for this backend was RENAMED \
@@ -2264,9 +2269,9 @@ fn migrate_store_module(root: &mut Mapping, changes: &mut Vec<String>, todos: &m
              renamed tarball — the old one no longer answers to any name in this config. Your \
              `settings.url` is UNCHANGED: `redis://` is the driver's own URL scheme, not a busbar \
              name.)",
-            crate::config::STORE_MODULE_VALKEY,
-            crate::config::STORE_MODULE_VALKEY_ASSET_STEM,
-            crate::config::STORE_MODULE_VALKEY_NAME,
+            crate::config::RENAMED_STORE_MODULE_1_5_3,
+            crate::config::RENAMED_STORE_ASSET_STEM_1_5_3,
+            crate::config::RENAMED_STORE_MANIFEST_NAME_1_5_3,
         ));
     }
     // Unconditional: `take_mapping` already REMOVED the block above, so every path out of this
