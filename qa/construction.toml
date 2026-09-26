@@ -272,6 +272,16 @@ busbar-voice = ["busbar-voice-codec"]
 # all ten as "a declared raise ... that is not a raise at the base". This is the commit after.
 # Nothing here moved a ceiling; the numbers live in qa/kind-isolation.toml and did not change.
 
+# ── NAMED RESERVATIONS ────────────────────────────────────────────────────────────────────────────
+# Headroom a ruling holds open under one ceiling, for a change that is ruled and not yet landed.
+# `ceiling-slack` subtracts a reservation before judging slack, so a ceiling at measurement plus
+# reservation is pinned and any further gap is still slack. Each names the ceiling by its exact
+# dotted path, holds a positive `lines`, and carries the ruling. The number is ratcheted like every
+# other number in this file: it shrinks as the reserved change spends it and never grows unannounced.
+[gate.ceiling_reservations."rules.loc-ceilings.kernel_ceiling"]
+lines   = 73
+because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 units plan): K2g's kernel change is ruled and not yet landed and holds up to 73 kernel code lines; every other change nets <= 0 on the kernel, and SD-8 and the timing fold re-arm by their own measured figures in their own commits."
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce
@@ -871,6 +881,9 @@ kernel_crate = "busbar-kernel"
 # ── LOWERED 51049 -> 50846: the measurement (50773) plus the one kernel reservation a ruling holds
 # open, K2g's <= 73 lines. Every other change nets <= 0 on the kernel. SD-8 and the timing fold
 # re-arm by their own measured figures, each in its own commit, as the kernel rulings require.
+# The 73 above the measurement are a NAMED reservation,
+# [gate.ceiling_reservations."rules.loc-ceilings.kernel_ceiling"] above, which ceiling-slack
+# subtracts before it judges slack, so any gap beyond them is still RED.
 kernel_ceiling = 50846
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at

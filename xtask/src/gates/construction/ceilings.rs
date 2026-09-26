@@ -88,6 +88,11 @@ pub struct Pin {
 }
 
 impl Pin {
+    /// The ceiling's dotted path, `<table>.<key>` — what a named reservation is keyed by.
+    pub fn path(&self) -> String {
+        format!("{}.{}", self.table, self.key)
+    }
+
     fn new(row: impl Into<String>, table: impl Into<String>, key: impl Into<String>) -> Pin {
         Pin {
             row: row.into(),
@@ -188,7 +193,8 @@ pub fn pins(cfg: &Cfg) -> Vec<Pin> {
 /// computed that list and said "the caller reports it"; this caller discarded it, so only the
 /// `--write` path ever saw it. It is reported and scored, beside the slack.
 pub fn ceiling_slack(cfg: &Cfg, rows: &[CRow]) -> Vec<CRow> {
-    let (slack, orphan) = slack_findings(cfg, rows);
+    let (slack, mut orphan) = slack_findings(cfg, rows);
+    orphan.extend(reservation_problems(cfg));
     let mut parts = Vec::new();
     if !slack.is_empty() {
         parts.push(format!(
@@ -204,8 +210,8 @@ pub fn ceiling_slack(cfg: &Cfg, rows: &[CRow]) -> Vec<CRow> {
     }
     if !orphan.is_empty() {
         parts.push(format!(
-            "{} ceiling(s) name a row this run did not emit, so nothing measured them and they \
-             cannot be re-pinned — point each at its row or strike it: {}",
+            "{} ceiling(s) or reservation(s) are not a measured, named room — point each at its row \
+             or strike it: {}",
             orphan.len(),
             orphan.join(", ")
         ));
@@ -219,7 +225,7 @@ pub fn ceiling_slack(cfg: &Cfg, rows: &[CRow]) -> Vec<CRow> {
     offenders.extend(
         orphan
             .iter()
-            .map(|o| format!("{o}: ceiling names a row this run did not emit")),
+            .map(|o| format!("{o}: not a measured, named room")),
     );
     vec![plain(
         ROW_SLACK,
@@ -237,20 +243,27 @@ pub fn ceiling_slack(cfg: &Cfg, rows: &[CRow]) -> Vec<CRow> {
 pub struct Slack {
     pub pin: Pin,
     pub measured: i64,
+    /// Headroom a named reservation holds open under this ceiling (0 when none is declared).
+    pub reserved: i64,
     pub ceiling: i64,
 }
 
 impl Slack {
     fn line(&self) -> String {
+        let held = if self.reserved > 0 {
+            format!(", {} of it reserved by name", self.reserved)
+        } else {
+            String::new()
+        };
         format!(
-            "{} measures {} against ceiling {} ({}.{} = {}, slack {})",
+            "{} measures {} against ceiling {} ({}.{} = {}, slack {}{held})",
             self.pin.row,
             self.measured,
             self.ceiling,
             self.pin.table,
             self.pin.key,
             self.ceiling,
-            self.ceiling - self.measured
+            self.ceiling - self.measured - self.reserved
         )
     }
 }
@@ -260,6 +273,11 @@ impl Slack {
 fn slack_findings(cfg: &Cfg, rows: &[CRow]) -> (Vec<Slack>, Vec<String>) {
     let by_id: BTreeMap<&str, &CRow> = rows.iter().map(|r| (r.id.as_str(), r)).collect();
     let (mut slack, mut orphan) = (Vec::new(), Vec::new());
+    let held: BTreeMap<String, i64> = reservations(cfg)
+        .into_iter()
+        .filter(|(_, r)| r.is_named())
+        .map(|(path, r)| (path, r.lines))
+        .collect();
     for pin in pins(cfg) {
         let Some(row) = by_id.get(pin.row.as_str()) else {
             orphan.push(pin.row.clone());
@@ -270,12 +288,14 @@ fn slack_findings(cfg: &Cfg, rows: &[CRow]) -> (Vec<Slack>, Vec<String>) {
         // stayed at the number it had when the subject existed, ready to absorb the subject coming
         // back at any size. `measure()` now scores an absent subject RED (see its scan-set floor),
         // and this row holds its ceiling to what it measures like every other.
-        if row.current < 0 || row.current >= row.threshold {
+        let reserved = held.get(&pin.path()).copied().unwrap_or(0);
+        if row.current < 0 || row.current + reserved >= row.threshold {
             continue;
         }
         slack.push(Slack {
             pin,
             measured: row.current,
+            reserved,
             ceiling: row.threshold,
         });
     }
@@ -314,12 +334,13 @@ pub fn rewrite(cx: &Ctx) -> Result<String, String> {
     let mut out = text.clone();
     let mut done = Vec::new();
     for s in &slack {
-        out = set_int(&out, &s.pin.table, &s.pin.key, s.measured).ok_or_else(|| {
-            format!(
-                "{CEILINGS} has no `{}` under [{}] to re-pin",
-                s.pin.key, s.pin.table
-            )
-        })?;
+        out =
+            set_int(&out, &s.pin.table, &s.pin.key, s.measured + s.reserved).ok_or_else(|| {
+                format!(
+                    "{CEILINGS} has no `{}` under [{}] to re-pin",
+                    s.pin.key, s.pin.table
+                )
+            })?;
         done.push(format!("{}: {} -> {}", s.pin.row, s.ceiling, s.measured));
     }
     std::fs::write(&path, &out).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -420,6 +441,76 @@ pub fn add_to_list(text: &str, table: &str, key: &str, items: &[String]) -> Opti
 
 /// The header prefix of every `[gate.ceiling_raises."<dotted path>"]` declaration table.
 pub const RAISES_PREFIX: &str = "gate.ceiling_raises.";
+
+/// The header prefix of every `[gate.ceiling_reservations."<dotted path>"]` table.
+pub const RESERVATIONS_PREFIX: &str = "gate.ceiling_reservations.";
+
+/// ONE NAMED RESERVATION: headroom a ruling holds open under one ceiling, for a change that is
+/// ruled and not yet landed.
+///
+/// `ceiling-slack` holds every ceiling to its measurement, and room above the measurement is room
+/// nobody voted for. A reservation is room somebody DID vote for: it names the ceiling it sits
+/// under by its exact dotted path, states how many units it holds, and carries the ruling that
+/// grants it. The gate subtracts it before judging slack, so a ceiling equal to its measurement
+/// plus its reservation is pinned, and any gap beyond the reservation is still slack. The number
+/// is itself a ratcheted figure in this file (`ceiling-rose` reads it like any other), so a
+/// reservation can shrink as the reserved change spends it and never grow without a declared raise.
+#[derive(Debug, Clone)]
+pub struct Reservation {
+    pub lines: i64,
+    pub because: String,
+}
+
+impl Reservation {
+    /// A reservation counts only when it holds a positive amount and says why at the length a
+    /// reason needs; anything less is an unexplained gap wearing a label.
+    fn is_named(&self) -> bool {
+        self.lines > 0 && self.because.len() >= MIN_REASON
+    }
+}
+
+/// The named reservations, keyed by the dotted path of the ceiling each sits under.
+pub fn reservations(cfg: &Cfg) -> BTreeMap<String, Reservation> {
+    cfg.doc
+        .tables()
+        .into_iter()
+        .filter_map(|(p, t)| {
+            let key = p.strip_prefix(RESERVATIONS_PREFIX)?;
+            Some((
+                key.trim_matches('"').to_string(),
+                Reservation {
+                    lines: t.int_of("lines").unwrap_or(0),
+                    because: t.str_of("because").unwrap_or("").trim().to_string(),
+                },
+            ))
+        })
+        .collect()
+}
+
+/// Every reservation that is not a measured, named room: one that holds nothing or gives no reason
+/// long enough to be one, or one that sits under no ratcheted ceiling. Each is RED on
+/// `ceiling-slack`, since a reservation the gate cannot tie to a pin and a ruling would otherwise
+/// excuse slack for nobody.
+fn reservation_problems(cfg: &Cfg) -> Vec<String> {
+    let paths: BTreeSet<String> = pins(cfg).iter().map(Pin::path).collect();
+    reservations(cfg)
+        .into_iter()
+        .filter_map(|(path, r)| {
+            if !paths.contains(&path) {
+                Some(format!(
+                    "reservation `{RESERVATIONS_PREFIX}\"{path}\"` sits under no ratcheted ceiling"
+                ))
+            } else if !r.is_named() {
+                Some(format!(
+                    "reservation `{RESERVATIONS_PREFIX}\"{path}\"` must hold a positive `lines` and \
+                     a `because` of at least {MIN_REASON} characters naming its ruling"
+                ))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
 
 /// The text with every table whose header starts with `prefix` removed, header to next header.
 /// The self-test's green fixture uses it to take `[gate.ceiling_raises.*]` out of a ceilings file
@@ -990,6 +1081,85 @@ mod tests {
             "{}",
             red[0].detail
         );
+    }
+
+    /// Every pin's row at its ceiling, except the kernel's, which measures `kernel` under 100.
+    fn rows_with_kernel_at(cfg: &Cfg, kernel: i64) -> Vec<CRow> {
+        pins(cfg)
+            .iter()
+            .map(|p| match p.row.as_str() {
+                "loc-ceilings:kernel" => plain(p.row.clone(), true, "t", "d", kernel, 100, vec![]),
+                _ => plain(p.row.clone(), true, "t", "d", 3, 3, vec![]),
+            })
+            .collect()
+    }
+
+    fn cfg_of(doc: &str) -> Cfg {
+        Cfg {
+            doc: crate::toml_doc::parse_str(doc).expect("the fixture parses"),
+        }
+    }
+
+    const RULED: &str =
+        "the kernel change this ruling reserves room for is ruled and not yet landed, \
+                         so its lines are held open by name";
+
+    /// A NAMED RESERVATION IS SUBTRACTED BEFORE SLACK IS JUDGED, AND ONLY ITS OWN AMOUNT. A ceiling
+    /// at measurement plus reservation is pinned (GREEN); the same ceiling one unit further up is an
+    /// unnamed gap (RED); with no reservation, the reserved amount is slack like any other (RED).
+    #[test]
+    fn a_named_reservation_is_subtracted_and_an_unnamed_gap_still_fails() {
+        let reserved = cfg_of(&format!(
+            "[gate.ceiling_reservations.\"rules.loc-ceilings.kernel_ceiling\"]\nlines = 10\n\
+             because = \"{RULED}\"\n"
+        ));
+        let green = ceiling_slack(&reserved, &rows_with_kernel_at(&reserved, 90));
+        assert_eq!(green[0].status, Status::Pass, "{}", green[0].detail);
+
+        let red = ceiling_slack(&reserved, &rows_with_kernel_at(&reserved, 89));
+        assert_eq!(red[0].status, Status::Fail, "{}", red[0].detail);
+        assert!(
+            red[0].detail.contains("slack 1, 10 of it reserved"),
+            "{}",
+            red[0].detail
+        );
+
+        let bare = cfg_of("[rules.x]\nn = 1\n");
+        let unnamed = ceiling_slack(&bare, &rows_with_kernel_at(&bare, 90));
+        assert_eq!(unnamed[0].status, Status::Fail, "{}", unnamed[0].detail);
+        assert!(
+            unnamed[0].detail.contains("slack 10"),
+            "{}",
+            unnamed[0].detail
+        );
+    }
+
+    /// A RESERVATION THAT DOES NOT SAY WHY, HOLDS NOTHING, OR SITS UNDER NO CEILING EXCUSES NOTHING
+    /// and is itself RED: a label on a gap is not a ruling.
+    #[test]
+    fn a_reservation_without_its_ruling_or_its_ceiling_is_refused() {
+        for doc in [
+            "[gate.ceiling_reservations.\"rules.loc-ceilings.kernel_ceiling\"]\nlines = 10\n\
+             because = \"K2g\"\n"
+                .to_string(),
+            format!(
+                "[gate.ceiling_reservations.\"rules.loc-ceilings.kernel_ceiling\"]\nlines = 0\n\
+                 because = \"{RULED}\"\n"
+            ),
+            format!(
+                "[gate.ceiling_reservations.\"rules.nowhere.ceiling\"]\nlines = 10\n\
+                 because = \"{RULED}\"\n"
+            ),
+        ] {
+            let cfg = cfg_of(&doc);
+            let at_ceiling: Vec<CRow> = pins(&cfg)
+                .iter()
+                .map(|p| plain(p.row.clone(), true, "t", "d", 3, 3, vec![]))
+                .collect();
+            let red = ceiling_slack(&cfg, &at_ceiling);
+            assert_eq!(red[0].status, Status::Fail, "{doc}: {}", red[0].detail);
+            assert!(red[0].detail.contains("reservation"), "{}", red[0].detail);
+        }
     }
 
     const DOC: &str = "# a comment\n[gate.surface_ceilings]\ngrammar = 500\n\n[rules.x]\nn = 1\n";
