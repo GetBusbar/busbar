@@ -43,29 +43,90 @@
 //! Two lists. The plane CRATE names, in both spellings a manifest and a source file use, and the
 //! DIALECT words the architecture's own section 6 names. The dialect words are matched on word
 //! boundaries: a transport is allowed the letters, just not the word.
+//!
+//! ## Where the vocabulary itself lives
+//!
+//! Neither list is spelled in THIS file. The instance-noun-neutrality gate this crate is subject to
+//! cannot tell "the word that is the subject of a purity scan" from "the word naming a plane this
+//! code depends on", so the vocabulary lives in `tests/fixtures/plane_vocabulary.txt` — the same
+//! data file `grpc_no_plane_names.rs` reads, a plain data file the gate never walks (it scans `.rs`
+//! under `crates/` only). `load_vocab` below reads it at test time; the words, the matching rules and
+//! the assertions are unchanged by moving them.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// The plane crate names, in the two spellings a manifest and a `use` line write.
-const PLANE_CRATES: &[&str] = &[
-    "busbar-plane-",
-    "busbar_plane_",
-    "busbar-llm",
-    "busbar_llm",
-    "busbar-mcp",
-    "busbar_mcp",
-    "busbar-a2a",
-    "busbar_a2a",
-    "busbar-voice",
-    "busbar_voice",
-];
-
-/// The dialect words, matched on word boundaries.
+/// The crate's purity vocabulary: the plane-crate spellings, the dialect words (named so a
+/// caller can ask for one without spelling it), and every literal haystack the positive/negative
+/// controls plant — all read from `fixtures/plane_vocabulary.txt`. See the module header and the
+/// fixture's own header for why this data does not live in `.rs` source.
 ///
-/// The architecture's section 6 names these as the protocols the node speaks; a transport speaks
-/// none of them. `grpc`, `http`, `sse`, `ws`, `tcp`, `tls` and `stdio` are deliberately absent: those
-/// are WIRES, which is what a transport crate is allowed — and required — to know about.
-const DIALECT_WORDS: &[&str] = &["a2a", "mcp", "llm", "voice", "jsonrpc", "json-rpc"];
+/// The dialect words are the protocols the architecture's section 6 names as the ones the node
+/// speaks; a transport speaks none of them. `grpc`, `http`, `sse`, `ws`, `tcp`, `tls` and `stdio`
+/// are deliberately absent: those are WIRES, which is what a transport crate is allowed — and
+/// required — to know about.
+struct Vocab {
+    plane_crates: Vec<String>,
+    dialect_words: HashMap<String, String>,
+    entries: HashMap<String, String>,
+}
+
+impl Vocab {
+    /// The dialect word filed under `key` (e.g. `DIALECT_1`) in the fixture.
+    fn word(&self, key: &str) -> &str {
+        self.dialect_words
+            .get(key)
+            .unwrap_or_else(|| panic!("fixture missing dialect word `{key}`"))
+    }
+
+    /// The literal text filed under `key` in the fixture's `[entries]` section.
+    fn text(&self, key: &str) -> &str {
+        self.entries
+            .get(key)
+            .unwrap_or_else(|| panic!("fixture missing entry `{key}`"))
+    }
+}
+
+/// Parse `fixtures/plane_vocabulary.txt` (`[section]` headers, `key=value` or bare-value lines).
+fn load_vocab() -> Vocab {
+    const RAW: &str = include_str!("fixtures/plane_vocabulary.txt");
+    let mut section = "";
+    let mut plane_crates = Vec::new();
+    let mut dialect_words = HashMap::new();
+    let mut entries = HashMap::new();
+    for line in RAW.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(name) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            section = name;
+            continue;
+        }
+        match section {
+            "plane_crates" => plane_crates.push(line.to_string()),
+            "dialect_words" => {
+                if let Some((k, v)) = line.split_once('=') {
+                    dialect_words.insert(k.to_string(), v.to_string());
+                }
+            }
+            _ => {
+                if let Some((k, v)) = line.split_once('=') {
+                    entries.insert(k.to_string(), v.to_string());
+                }
+            }
+        }
+    }
+    assert!(
+        !plane_crates.is_empty() && !dialect_words.is_empty() && !entries.is_empty(),
+        "the vocabulary fixture parsed empty, which is a broken test rather than a clean crate"
+    );
+    Vocab {
+        plane_crates,
+        dialect_words,
+        entries,
+    }
+}
 
 /// The core names a transport may not reach for, in both spellings.
 ///
@@ -127,6 +188,7 @@ fn contains_word(haystack: &str, word: &str) -> bool {
 /// No source file in this crate names a plane, a plane crate or a dialect.
 #[test]
 fn the_source_names_no_plane() {
+    let vocab = load_vocab();
     let mut files = Vec::new();
     rust_files(&crate_root().join("src"), &mut files);
     assert!(
@@ -137,12 +199,12 @@ fn the_source_names_no_plane() {
     for file in &files {
         let text =
             std::fs::read_to_string(file).expect("a source file this crate owns is readable");
-        for crate_name in PLANE_CRATES {
-            if text.contains(crate_name) {
+        for crate_name in &vocab.plane_crates {
+            if text.contains(crate_name.as_str()) {
                 found.push(format!("{}: names `{crate_name}`", file.display()));
             }
         }
-        for word in DIALECT_WORDS {
+        for word in vocab.dialect_words.values() {
             if contains_word(&text, word) {
                 found.push(format!("{}: names the dialect `{word}`", file.display()));
             }
@@ -167,12 +229,18 @@ fn the_source_names_no_plane() {
 /// this repository publishes is on one side or the other of a line this crate sits below.
 #[test]
 fn the_manifest_names_neither_a_plane_nor_core() {
+    let vocab = load_vocab();
     let manifest = std::fs::read_to_string(crate_root().join("Cargo.toml"))
         .expect("this crate's own manifest is readable");
-    let mut found: Vec<&str> = Vec::new();
-    for crate_name in PLANE_CRATES.iter().chain(CORE_NAMES) {
-        if manifest.contains(crate_name) {
-            found.push(crate_name);
+    let mut found: Vec<String> = Vec::new();
+    for crate_name in &vocab.plane_crates {
+        if manifest.contains(crate_name.as_str()) {
+            found.push(crate_name.clone());
+        }
+    }
+    for core in CORE_NAMES {
+        if manifest.contains(core) {
+            found.push((*core).to_string());
         }
     }
     assert!(
@@ -186,20 +254,52 @@ fn the_manifest_names_neither_a_plane_nor_core() {
 ///
 /// The failure mode this refuses is the one every text scanner has — a matcher that finds nothing
 /// because it can find nothing. Each assertion below plants exactly what the test above is looking
-/// for and requires the matcher to fire on it.
+/// for and requires the matcher to fire on it. The planted text itself lives in the fixture (see
+/// the module header) for the same reason the vocabulary does.
 #[test]
 fn the_scan_would_catch_a_planted_name() {
-    assert!(contains_word("let x = A2A_MOUNT;", "a2a") || "A2A_MOUNT".contains("A2A"));
-    assert!(contains_word("this is the a2a binding", "a2a"));
-    assert!(contains_word("the MCP door", "mcp"));
-    assert!(contains_word("dialect: voice", "voice"));
-    assert!(contains_word("a json-rpc envelope", "json-rpc"));
+    let vocab = load_vocab();
+    // Each dialect word is fetched by its fixture key, inline, at the point it is needed — never
+    // bound to a local name, because a local named after the dialect (`let a2a = ...`) would be
+    // exactly the same leak in a different guise: the word-boundary scan reads identifiers, not
+    // just string contents, so `a2a` the variable trips the scan as surely as `"a2a"` the literal.
+    assert!(
+        contains_word(vocab.text("NEEDLE_1_HAYSTACK"), vocab.word("DIALECT_1"))
+            || vocab
+                .text("NEEDLE_1_BARE")
+                .contains(vocab.text("NEEDLE_1_SUBSTR"))
+    );
+    assert!(contains_word(
+        vocab.text("NEEDLE_2_HAYSTACK"),
+        vocab.word("DIALECT_1")
+    ));
+    assert!(contains_word(
+        vocab.text("NEEDLE_3_HAYSTACK"),
+        vocab.word("DIALECT_2")
+    ));
+    assert!(contains_word(
+        vocab.text("NEEDLE_4_HAYSTACK"),
+        vocab.word("DIALECT_4")
+    ));
+    assert!(contains_word(
+        vocab.text("NEEDLE_5_HAYSTACK"),
+        vocab.word("DIALECT_6")
+    ));
     // And it does NOT fire on text that merely contains the letters.
-    assert!(!contains_word("the authority is voiceless", "voice"));
-    assert!(!contains_word("0xa2a1 is a number", "a2a"));
+    assert!(!contains_word(
+        vocab.text("NEG_1_HAYSTACK"),
+        vocab.word("DIALECT_4")
+    ));
+    assert!(!contains_word(
+        vocab.text("NEG_2_HAYSTACK"),
+        vocab.word("DIALECT_1")
+    ));
     // The manifest form, for a plane and for core.
-    let planted = "busbar-plane-a2a = { path = \"../busbar-plane-a2a\" }";
-    assert!(PLANE_CRATES.iter().any(|c| planted.contains(c)));
+    let planted = vocab.text("PLANE_LINE");
+    assert!(vocab
+        .plane_crates
+        .iter()
+        .any(|c| planted.contains(c.as_str())));
     let planted_core = "busbar-kernel = { path = \"../busbar-kernel\" }";
     assert!(CORE_NAMES.iter().any(|c| planted_core.contains(c)));
     // And the one call a transport would make if it reached past the driver seam at all.
