@@ -1,0 +1,6 @@
+# THE WIRE tests/ws_composed_battery.rs drives, as data: `<wire key> <secure target scheme>`. The key
+# is looked up in the linked transport table (build.rs `$OUT_DIR/linked_transports.rs`), which is
+# where the battery gets the wire's build, its declared layers and the layers it is built over; the
+# secure scheme is the dial target the wire must refuse over a cleartext layer. Its cleartext target
+# scheme is its key.
+ws wss
