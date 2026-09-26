@@ -2622,6 +2622,16 @@ drain   = "none while #2 (OWNER-LOCKED) names this edge as the witness's step (4
 
 [[dep]]
 from    = "busbar-plugin-loader"
+to      = "busbar-transport-tcp"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "BUSBAR-1.6.0.md #2 (OWNER-LOCKED), THE COST OF A REAL AUTH WITNESS steps (4) and (5), applied to the transport kind by #3 (OWNER-LOCKED: transport is one of the seven kinds, swappable compiled-in OR dropped-in over the ABI): the both-ways witness of a kind is a path dev-dependency from crates/plugin-loader/Cargo.toml on the kind's [\"rlib\", \"cdylib\"] fixture (step 4) and a conformance test in crates/plugin-loader/src/tests/ that links the rlib and dlopens the cdylib (step 5). ARCHITECT (K8 residue): both-ways fixture dev-edge, #2 (4)/(5), K5 precedent — the fixture is the crate plugin-loader's own [package.metadata.busbar.both-ways] names for `transport`, the one wire edge transport-registration excuses. `plugin-tooling -> transport` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge #2 orders, it does not grant a class."
+why     = "busbar-plugin-loader names busbar-transport-tcp: declared dev in the test graph so transport_conformance_tests can admit the COMPILED-IN `transport` fixture's decl (its rlib) and compare it against the same crate's DROPPED-IN cdylib, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none while #2 (OWNER-LOCKED) names this edge as the witness's step (4): deleting it deletes the `transport` kind's both-ways proof. The row holds the number, so a second declaration is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-plugin-loader"
 to      = "busbar-hook-test-plugin"
 half    = "test"
 count   = "1"
